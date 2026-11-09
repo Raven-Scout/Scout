@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer skip or redirect the commit hooks without being stopped** (#607; `engine/scout/kb/live_run.py`, `engine/scout/hooks/kb_read_gate.py`, `hooks/hooks.json`). The scheduled-run privacy and size blocks live in the pre-commit hook, and only phase prose forbade getting around it. `kb-read-gate` now denies a run's `--no-verify` (and any prefix git accepts) on commit, merge, rebase, am, cherry-pick, revert, push and pull; `-n` on commit and am, where it means the same, but not on merge, rebase, pull, push, cherry-pick or revert, where it doesn't; `-c` or `--config-env` before the subcommand and `git config` writes on `core.hooksPath`, `alias.*` and `include.path`; `GIT_CONFIG_*` variables other than `GIT_CONFIG_NOSYSTEM`; `commit-tree`, `fast-import`, `filter-branch`, `filter-repo`, `hash-object -t commit` and `update-ref` on a branch; and a Bash write into `.git/hooks` or `.git/config`. The deny names the form, tells the run to fix the finding, and records the event `kb_read_gate.hook_skip` with the form and mode, never the command. Reads and text that only mention these forms pass: `git log -n 5`, `git config --get`, `cat .git/hooks/pre-commit`, commit messages, here-documents and searches. So does what `scripts/git-safe-commit.sh` and `scoutctl` run inside themselves, since the gate reads only the top-level command. Owner sessions are unaffected. The hooks.json pre-filter sends these forms to Python and still keeps ordinary git calls in the shell.
+
 ## [0.18.11] - 2026-11-09
 
 ### Fixed

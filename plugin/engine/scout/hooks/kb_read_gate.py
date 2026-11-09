@@ -15,7 +15,11 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     ``tmux``/``screen``, ``script``, ``at``/``batch``, ``ssh``):
     :func:`scout.kb.live_run.run_escape`, #595. The commit hook knows a run's
     commits from the process table either way; the denial makes the attempt
-    fail in the open and leaves it in the transcript.
+    fail in the open and leaves it in the transcript. The same function flags
+    a git call that skips or redirects the commit hooks, which the hook can't
+    see because it never runs (``--no-verify``, ``-c core.hooksPath``,
+    ``commit-tree``, a write into ``.git/hooks``, #607): that deny names the
+    form and records the event ``kb_read_gate.hook_skip``.
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
@@ -138,11 +142,34 @@ def _deny_detach() -> str:
     )
 
 
+def _deny_hook_skip(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
+        "private and shared notes apart. Fix what the hook reports and commit again with "
+        "`scripts/git-safe-commit.sh`. If you can't fix it, leave the file uncommitted and say so in the run notes."
+    )
+
+
+def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
+    """The form and the run's mode, never the command: its text can quote a note."""
+    try:
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(vault),
+            kind="kb_read_gate.hook_skip",
+            source=f"hook:{GATE}",
+            payload={"form": form, "mode": mode},
+        )
+    except Exception:  # noqa: BLE001, S110 - the deny stands without the event
+        pass
+
+
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
 
-def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
+def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) -> str | None:
     """The deny reason for one run's tool call, or None to allow it. May raise: the caller fails closed."""
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
@@ -161,8 +188,13 @@ def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
         from scout.kb.live_run import run_escape
 
         escape = run_escape(command)
+        if escape == "env":
+            return _deny_run_env()
+        if escape == "detach":
+            return _deny_detach()
         if escape is not None:
-            return _deny_run_env() if escape == "env" else _deny_detach()
+            _record_hook_skip(vault, escape, mode)
+            return _deny_hook_skip(escape)
         return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
@@ -203,7 +235,8 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
         payload = json.load(src)
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
-        reason = decide(payload, reader=resolve_reader(None, env))
+        reader = resolve_reader(None, env)
+        reason = decide(payload, reader=reader, mode=env.get("SCOUT_MODE") or reader)
     except Exception as exc:  # noqa: BLE001 — a run fails closed
         reason = (
             f"{MARK} Scout's KB read gate could not check this call ({type(exc).__name__}), so it is blocked in "
