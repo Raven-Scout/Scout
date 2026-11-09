@@ -255,7 +255,101 @@ def test_a_replay_the_state_never_recorded_is_not_redone(vault: Path, host: Fake
     assert _replay_commits(vault, agnes_sha) == 1
     state = rs.load_state(vault)
     assert state is not None
-    assert {"laptop": replay, "mirror": agnes_sha, "kind": "replay"} in state.pairs
+    assert {"laptop": replay, "mirror": agnes_sha, "kind": "recovered"} in state.pairs
+
+
+# ----- a trailer is only a claim -----------------------------------------------------------------
+
+
+def test_a_trailer_on_a_commit_without_the_replay_does_not_skip_the_agnes_commit(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    _link(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "written in agnes\n"}, "agnes note")
+    _commit(vault, LAPTOP_FILE, "laptop edit\n", f"laptop edit\n\n{rs.REPLAY_TRAILER}: {agnes_sha}")
+
+    result = rs.sync(vault, host)
+
+    assert len(result.replayed) == 1
+    assert (vault / AGNES_FILE).read_text() == "written in agnes\n"
+    assert _tip(host, AGNES_FILE) == "written in agnes\n"
+    assert _stays_on_agnes_after(host, agnes_sha)
+    assert "laptop edit" in _bare_git(host.bare, "log", "-1", "--format=%B", "main")
+    state = rs.load_state(vault)
+    assert state is not None
+    assert not [p for p in state.pairs if p["mirror"] == agnes_sha and p["laptop"] != result.replayed[0]]
+
+
+def test_a_trailer_on_a_commit_that_only_touches_the_same_path_is_still_a_conflict(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    """It changes the path, so only the replay's message and identities can tell it from the real one."""
+    _link(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "written in agnes\n"}, "agnes note")
+    _commit(vault, AGNES_FILE, "written here\n", f"same path\n\n{rs.REPLAY_TRAILER}: {agnes_sha}")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+
+    assert e.value.code == "replay_conflict"
+    assert _tip(host, AGNES_FILE) == "written in agnes\n"
+
+
+def _forged_move_saved_by_a_failed_sync(vault: Path, host: FakeHost, tmp_path: Path) -> str:
+    """A commit built to pass for a replay, which also moves a file out of ``hold/``. A failed sync records it."""
+    _link(vault, host)
+    _commit(vault, "hold/x.md", "kept here\n", "hold a file")
+    rs.sync(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "written in agnes\n"}, "agnes note")
+
+    git(vault, "fetch", "-q", str(host.bare), "main")
+    meta = rs.commit_meta(vault, agnes_sha)
+    (vault / AGNES_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (vault / AGNES_FILE).write_text("written in agnes\n")
+    (vault / "open").mkdir()
+    git(vault, "add", "-A")
+    git(vault, "mv", "hold/x.md", "open/x.md")
+    tree = git(vault, "write-tree").strip()
+    message = meta.message.rstrip("\n") + f"\n\n{rs.REPLAY_TRAILER}: {agnes_sha}\n"
+    forged = rs._commit_tree(vault, tree, [git(vault, "rev-parse", "HEAD").strip()], message, meta.env())
+    git(vault, "update-ref", "HEAD", forged)
+
+    _refuse_pushes(host)
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "push_failed"
+    _allow_pushes(host)
+    return forged
+
+
+def test_a_commit_recovered_from_its_trailer_is_not_trusted_by_the_move_gate(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    _forged_move_saved_by_a_failed_sync(vault, host, tmp_path)
+    host.local_only = (*host.local_only, "hold/")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+
+    assert e.value.code == "local_only_move"
+    assert "open/x.md" not in _bare_git(host.bare, "ls-tree", "-r", "--name-only", "main").splitlines()
+
+
+def test_a_commit_recovered_from_its_trailer_is_no_base_for_the_move_gate(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    """After a history rewrite the gate compares HEAD with the newest synced commit: not this one, which isn't."""
+    _forged_move_saved_by_a_failed_sync(vault, host, tmp_path)
+    host.local_only = (*host.local_only, "hold/")
+    state = rs.load_state(vault)
+    assert state is not None
+    state.last_laptop = "0" * 40
+    rs.save_state(vault, state)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+
+    assert e.value.code == "local_only_move"
 
 
 # ----- what an ordinary sync does ----------------------------------------------------------------
@@ -304,6 +398,29 @@ def test_the_retry_still_warns_about_a_file_it_takes_off_agnes(vault: Path, host
     assert result.replay_skipped == [{"path": AGNES_NOTE, "mirror_commit": sha}]
     assert any(AGNES_NOTE in n for n in result.notes)
     assert AGNES_NOTE not in _tip_paths(host)
+    assert rs.sync(vault, host).replay_skipped == []
+
+
+def test_the_retry_warns_about_a_file_skipped_by_a_replay_the_state_never_recorded(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    """One file comes home, so there's a replay to recover; the other can't, and only the retry's push removes it."""
+    _linked(vault, host)
+    sha = _commit_on_mirror(
+        tmp_path,
+        host,
+        {"knowledge-base/projects/from-agnes.md": "allowed\n", AGNES_NOTE: "outside the list\n"},
+        "two notes in agnes",
+    )
+    _sync_killed_at(vault, host, "state")
+    assert (vault / "knowledge-base/projects/from-agnes.md").exists()
+
+    result = rs.sync(vault, host)
+
+    assert result.replay_skipped == [{"path": AGNES_NOTE, "mirror_commit": sha}]
+    assert any(AGNES_NOTE in n for n in result.notes)
+    assert AGNES_NOTE not in _tip_paths(host)
+    assert _replay_commits(vault, sha) == 1
     assert rs.sync(vault, host).replay_skipped == []
 
 
