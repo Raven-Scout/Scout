@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -11,7 +12,20 @@ from pathlib import Path
 
 import pytest
 
-from scout.kb.hook import MARKER, HookConflict, hooks_dir, install_hook, render_hook
+from scout.kb.hook import MARKER, HookConflict, default_scoutctl, hooks_dir, install_hook, render_hook
+
+
+def test_default_scoutctl_prefers_the_one_beside_this_python(tmp_path, monkeypatch) -> None:
+    (tmp_path / "scoutctl").touch()
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    assert default_scoutctl() == str(tmp_path / "scoutctl")
+
+
+@pytest.mark.parametrize(("on_path", "expected"), [("/opt/bin/scoutctl", "/opt/bin/scoutctl"), (None, "scoutctl")])
+def test_default_scoutctl_falls_back_to_the_path(tmp_path, monkeypatch, on_path: str | None, expected: str) -> None:
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setattr(shutil, "which", lambda _name: on_path)
+    assert default_scoutctl() == expected
 
 
 def test_install_writes_executable_marked_hook(kb_repo) -> None:

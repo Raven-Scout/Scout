@@ -14,6 +14,7 @@ their own terminal or app keep the owner's rules, run or no run.
 
 from __future__ import annotations
 
+import ctypes
 import io
 import json
 import os
@@ -26,7 +27,16 @@ import pytest
 
 from scout.kb import lint_privacy, live_run, outbound
 from scout.kb.lint import run_hook
-from scout.kb.live_run import Proc, commit_source, is_host_exe, parse_etime, run_escape, run_processes
+from scout.kb.live_run import (
+    Proc,
+    commit_source,
+    commit_source_now,
+    exe_path,
+    is_host_exe,
+    parse_etime,
+    run_escape,
+    run_processes,
+)
 from scout.kb.ontology import clear_frontmatter_cache
 from tests.unit.privacy_vault_helpers import build_privacy_vault, git
 
@@ -493,6 +503,128 @@ def test_the_real_executable_ignores_a_spoofed_argv0(tmp_path: Path) -> None:
             proc.wait()
 
 
+def _ps_prints(monkeypatch: pytest.MonkeyPatch, out: str) -> None:
+    def fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 0, out, "")
+
+    monkeypatch.setattr(live_run.subprocess, "run", fake_run)
+
+
+def test_a_line_before_any_process_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ps_prints(monkeypatch, "not a row\n  10   1 S    00:05 /bin/bash\n")
+    assert list(live_run.process_table()) == [10]
+
+
+def test_a_ps_that_lists_nothing_is_a_ps_that_cant_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ps_prints(monkeypatch, "")
+    with pytest.raises(OSError, match="no processes"):
+        live_run.process_table()
+
+
+class _FakeLibproc:
+    """``proc_pidpath``: writes the path into the buffer and returns its length, or 0 when it can't."""
+
+    def __init__(self, path: bytes) -> None:
+        self.path = path
+
+    def proc_pidpath(self, _pid: int, buf: ctypes.Array[ctypes.c_char], _size: int) -> int:
+        buf.value = self.path
+        return len(self.path)
+
+
+def test_on_macos_the_executable_comes_from_libproc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_run.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda _name: _FakeLibproc(b"/bin/bash"))
+    assert exe_path(42) == "/bin/bash"
+
+
+def test_on_macos_a_process_libproc_cant_read_has_no_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_run.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda _name: _FakeLibproc(b""))
+    assert exe_path(42) is None
+
+
+def test_on_macos_a_missing_libproc_means_no_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_library(_name: str) -> object:
+        raise OSError("no such library")
+
+    monkeypatch.setattr(live_run.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", no_library)
+    assert exe_path(42) is None
+
+
+def test_on_linux_the_executable_comes_from_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def readlink(path: str) -> str:
+        seen.append(path)
+        return "/usr/bin/bash"
+
+    monkeypatch.setattr(live_run.sys, "platform", "linux")
+    monkeypatch.setattr(live_run.os, "readlink", readlink)
+    assert exe_path(42) == "/usr/bin/bash"
+    assert seen == ["/proc/42/exe"]
+
+
+def test_on_linux_a_process_proc_wont_show_has_no_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def denied(_path: str) -> str:
+        raise PermissionError("another user's process")
+
+    monkeypatch.setattr(live_run.sys, "platform", "linux")
+    monkeypatch.setattr(live_run.os, "readlink", denied)
+    assert exe_path(42) is None
+
+
+def test_a_vault_path_that_wont_resolve_still_matches_as_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    def cant_resolve(_self: Path) -> Path:
+        raise OSError("gone")
+
+    monkeypatch.setattr(Path, "resolve", cant_resolve)
+    table, _ = _world(WRAPPER)
+    assert run_processes(V, table, holder=None) == {110}
+
+
+def test_a_reused_pid_named_by_a_stale_marker_is_no_run(tmp_path: Path) -> None:
+    """The holder died, and its PID now belongs to something else that is alive and isn't a runner."""
+    _lock(tmp_path, 200, "200 morning-briefing\n", age=RUN_AGE)
+    other: Row = (200, 1, "/usr/bin/some-unrelated-daemon", "/usr/bin/some-unrelated-daemon", 5)
+    orphan: Row = (130, 1, "/bin/zsh", "/bin/zsh", 5)
+    table, exes = _world(other, orphan, *_commit(130))
+    assert commit_source(tmp_path, table, start=902, exe=exes.get) is None
+
+
+def test_a_lock_that_vanished_between_reads_is_no_run(tmp_path: Path) -> None:
+    _lock(tmp_path, None, "100 morning-briefing\n")  # the marker is there; the lock file isn't
+    orphan: Row = (130, 1, "/bin/zsh", "/bin/zsh", 5)
+    table, exes = _world(orphan, *_commit(130))
+    assert commit_source(tmp_path, table, start=902, holder=100, exe=exes.get) is None
+
+
+def _no_ps_now() -> dict[int, Proc]:
+    raise OSError("ps")
+
+
+def test_without_ps_a_marker_naming_a_dead_holder_is_no_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    _lock(tmp_path, proc.pid, f"{proc.pid} morning-briefing\n")
+    monkeypatch.setattr(live_run, "process_table", _no_ps_now)
+    assert commit_source_now(tmp_path) is None
+
+
+def test_without_ps_a_holder_owned_by_another_user_is_still_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def not_yours(_pid: int, _sig: int) -> None:
+        raise PermissionError("another user's process")
+
+    _lock(tmp_path, 100, "100 morning-briefing\n")
+    monkeypatch.setattr(live_run, "process_table", _no_ps_now)
+    monkeypatch.setattr(live_run.os, "kill", not_yours)
+    src = commit_source_now(tmp_path)
+    assert src is not None and src.runs and src.by == "no-ps" and src.mode == "morning-briefing"
+
+
 # ----- the commit hook ------------------------------------------------------------
 
 
@@ -715,6 +847,50 @@ def test_a_commit_from_a_linked_worktree_finds_the_main_vaults_run(
 )
 def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
     assert run_escape(command) == "env"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env SCOUT_MODE=x git commit -m y",
+        "env -u OTHER -u SCOUT_MODE git commit",
+        "env -C notes -u SCOUT_MODE git commit",
+        "env -0 -u SCOUT_READER git commit",
+        "FOO=1 SCOUT_MODE= git commit",
+        "sudo unset SCOUT_MODE",
+        "command env -u SCOUT_MODE git commit",
+    ],
+)
+def test_env_changes_behind_other_options_and_prefixes_are_flagged(command: str) -> None:
+    assert run_escape(command) == "env"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m 'about <<EOF here'\nnohup git push",  # a quoted "<<" starts no here-document
+        "cat <<EOF\nno closing line\nnohup git push",  # an unterminated one keeps the rest scanned
+    ],
+)
+def test_text_that_only_looks_like_a_heredoc_is_still_scanned(command: str) -> None:
+    assert run_escape(command) == "detach"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "FOO=1",
+        "FOO=1 git commit -m x",
+        "sudo git status",
+        "env -u OTHER git status",
+        "env -S 'git status'",
+        "env -0 git status",
+        'git commit -m "unterminated',
+        "git commit -m 'about <<EOF here'",
+    ],
+)
+def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) -> None:
+    assert run_escape(command) is None
 
 
 @pytest.mark.parametrize(
