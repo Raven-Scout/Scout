@@ -340,7 +340,9 @@ Everything else stays on this computer, a new folder included, and isn't named o
 
 **A sync can stop anywhere and be run again.** What came from Agnes stays on both sides, and what this computer already pushed isn't copied back over later work here.
 
-**Uncommitted `scout-config.yaml` edits can only make a mirror stricter.** Until you commit the file, the stricter of its privacy settings and the last commit's applies, and the sync says so: what either keeps home stays home, and what either marks private is private. While they differ, an entry that opens up part of a private folder can lose to that folder, so a file can be stricter than either version says. A file only the uncommitted settings would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it.
+**Sharing changes need a commit.** After `scoutctl kb share` or `kb unshare`, commit `scout-config.yaml`, then run `scoutctl repo sync`. Link and sync refuse while the file's sharing settings differ from the last commit, and nothing is pushed, so a share you have and a share you're changing can't get mixed up.
+
+**Other uncommitted `scout-config.yaml` edits can only make a mirror stricter.** Until you commit the file, the stricter of its privacy settings and the last commit's applies, and the sync says so: what either keeps home stays home, and what either marks private is private. While they differ, an entry that opens up part of a private folder can lose to that folder, so a file can be stricter than either version says. A file only the uncommitted settings would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it.
 
 **A dropped commit gets a warning.** If a `git reset` or rebase drops commits that brought a file here from Agnes, the sync names each file it takes off Agnes's current files and how to read it from the repository's history, which keeps it.
 

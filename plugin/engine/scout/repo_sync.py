@@ -71,6 +71,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import subprocess
 import tempfile
 import unicodedata
@@ -610,6 +611,12 @@ def policy_at(vault: Path, rev: str, blobs: BlobReader) -> Policy:
     return policy_from_overlay(data.get("privacy"))
 
 
+def _committed_policy(vault: Path, rev: str, blobs: BlobReader) -> Policy | None:
+    """``rev``'s own policy, or None when it has no config, or one that can't be trusted."""
+    policy = policy_at(vault, rev, blobs)
+    return None if _blob_at(vault, rev, paths.VAULT_MARKER) is None or _broken(policy) else policy
+
+
 def _stricter_policy(live: Policy, committed: Policy) -> Policy:
     """A policy no more open than ``live`` or ``committed``, for a mirror commit when the two differ.
 
@@ -617,9 +624,14 @@ def _stricter_policy(live: Policy, committed: Policy) -> Policy:
     policy. Where the first match decides, the strictest entries of both go first,
     which can make a file stricter than either says: an entry that opens up part of
     a private folder loses to that folder until the two agree again. It fails
-    closed, and only while they differ. Scope defaults can't be combined that way,
-    so none apply. ``sync_only`` is ``committed``'s because the rules already
-    enforce the live list and a path must be on every list.
+    closed, and only while they differ. ``sync_only`` is ``committed``'s because
+    the rules already enforce the live list and a path must be on every list.
+
+    Scope defaults can't be combined that way, since dropping an entry can open what
+    it carved out, so none apply. That withdraws every folder share, so
+    :func:`sharing_gate` refuses it at HEAD. It reaches only an older commit in a
+    span, whose mirror commit goes up in one push under a tip that states them all.
+    ``local_only`` keeps ``committed``'s order, so a reorder leaves the document as it was.
     """
     if live == committed:
         return live
@@ -628,7 +640,7 @@ def _stricter_policy(live: Policy, committed: Policy) -> Policy:
     shared_surfaces = live.shared_surfaces | committed.shared_surfaces
     return dataclasses.replace(
         live,
-        local_only=tuple(dict.fromkeys((*live.local_only, *committed.local_only))),
+        local_only=tuple(dict.fromkeys((*committed.local_only, *live.local_only))),
         visibility_defaults=(
             live.visibility_defaults
             if same_visibility
@@ -747,9 +759,7 @@ class MirrorBuilder:
         return policy_at(self.vault, rev, self.blobs)
 
     def committed_policy(self, rev: str) -> Policy | None:
-        """``rev``'s own policy, or None when it has no config, or one that can't be trusted."""
-        policy = self.policy(rev)
-        return None if _blob_at(self.vault, rev, paths.VAULT_MARKER) is None or _broken(policy) else policy
+        return _committed_policy(self.vault, rev, self.blobs)
 
     def recorded_policy(self, rev: str, live: Policy) -> Policy:
         """The policy a mirror of ``rev`` goes up under: the stricter of its commit's and ``live``.
@@ -1454,6 +1464,7 @@ def link(
     overlay_gate(policy)
     migration_gate(vault)
     head = _head(vault)
+    sharing_gate(vault, policy)
 
     status = host.status()
     if not status.exists and not status.can_create:
@@ -1688,6 +1699,7 @@ def sync(
         raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
     policy = load_policy(vault)
     overlay_gate(policy)
+    sharing_gate(vault, policy)
 
     from scout import repo_lease
 
@@ -2098,9 +2110,44 @@ def _broken(policy: Policy) -> bool:
 
 
 def _uncommitted_privacy_edit(builder: MirrorBuilder, head: str, live: Policy) -> bool:
-    """Whether ``scout-config.yaml``'s privacy settings differ from HEAD's, so the stricter of the two is in force."""
+    """Whether ``scout-config.yaml``'s privacy settings differ from HEAD's, so the stricter of the two is in force.
+
+    The order of ``local_only`` means nothing, so a reorder alone is no difference.
+    """
     committed = builder.committed_policy(head)
-    return committed is not None and committed != live
+    if committed is None or set(committed.local_only) != set(live.local_only):
+        return committed is not None
+    return dataclasses.replace(committed, local_only=live.local_only) != live
+
+
+def _uncommitted_sharing(committed: Policy | None, live: Policy) -> bool:
+    """Whether the live folder shares differ from the committed ones. Their order counts: the first match decides."""
+    return committed is not None and (
+        committed.federation_defaults != live.federation_defaults
+        or committed.federation_enabled != live.federation_enabled
+    )
+
+
+def sharing_gate(vault: Path, live: Policy) -> None:
+    """Refuse a link or sync while ``scout-config.yaml``'s sharing settings differ from HEAD's.
+
+    Agnes applies one policy document, and no merge of two share lists is safe:
+    first match decides, so keeping the common entries opens what a dropped entry
+    carved out, and keeping none withdraws every share. So the owner commits first.
+    Read before the lease, any fetch or any replay, so nothing has moved.
+    """
+    blobs = BlobReader(vault)
+    try:
+        committed = _committed_policy(vault, _head(vault), blobs)
+    finally:
+        blobs.close()
+    if _uncommitted_sharing(committed, live):
+        raise RepoSyncError(
+            "sharing_uncommitted",
+            "refused: scout-config.yaml has uncommitted sharing changes, and Agnes applies what is committed. Run "
+            f"git -C {shlex.quote(str(vault))} commit scout-config.yaml -m 'privacy: update shares', then try again. "
+            "Nothing was pushed",
+        )
 
 
 def _committed_sync_only(vault: Path, since: str | None) -> tuple[str, ...] | None:
@@ -2157,8 +2204,8 @@ def _replay_skipped_note(skipped: Sequence[Mapping[str, str]]) -> str:
 def _dropped_note(dropped: Sequence[Mapping[str, str]]) -> str:
     return (
         f"warning: {len(dropped)} file(s) came from commits this vault's history no longer has (a git reset or "
-        "rebase?), so this computer no longer has these versions and this sync removes them from Agnes's current "
-        "files. Each one is still in the repository's history; to keep one, copy it into the vault:\n"
+        "rebase?), so this computer no longer has these versions and this sync removes or replaces them in Agnes's "
+        "current files. Each one is still in the repository's history; to keep one, copy it into the vault:\n"
         + _listed_files(dropped)
     )
 
@@ -2216,6 +2263,7 @@ class Preview:
     private: int
     host_local_only_paths: list[str]
     trading_unconfirmed: list[str]
+    uncommitted_sharing: bool = False
 
     @property
     def total(self) -> int:
@@ -2254,6 +2302,10 @@ class Preview:
         if self.trading_unconfirmed:
             out.append("Link or sync will ask about these trading-looking paths first:")
             out += [f"  {p}" for p in self.trading_unconfirmed]
+        if self.uncommitted_sharing:
+            out.append(
+                "scout-config.yaml has uncommitted sharing changes, so link and sync refuse until you commit it."
+            )
         out.append("Agnes's own Local-Only list can keep more home. Nothing was sent; only committed files count.")
         return out
 
@@ -2273,6 +2325,7 @@ def preview(vault: Path, *, depth: int = 2) -> Preview:
     builder = MirrorBuilder(vault, rules, _host_entries_for(policy, rules))
     try:
         plan = builder.plan(head, builder.recorded_policy(head, policy))
+        uncommitted_sharing = _uncommitted_sharing(builder.committed_policy(head), policy)
     finally:
         builder.close()
     uploaded = sorted([*(e.path for e in plan.kept), POLICY_PATH])
@@ -2291,6 +2344,7 @@ def preview(vault: Path, *, depth: int = 2) -> Preview:
         private=sum(1 for label in plan.labels if label.visibility == "private"),
         host_local_only_paths=builder.host_entries,
         trading_unconfirmed=[p for p in trading_candidates(vault, rules) if p not in set(confirmed)],
+        uncommitted_sharing=uncommitted_sharing,
     )
 
 

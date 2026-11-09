@@ -69,15 +69,19 @@ COPY_WARNING = (
     "Once someone's Scout has read a shared note, it can keep what it learned in their own vault. "
     "Un-sharing stops future reads; it can't recall what was already read."
 )
-SYNC_NOTE = "Nothing is shared until your next `scoutctl repo sync`; Agnes checks every read against it."
+SYNC_NOTE = (
+    "Nothing is shared until you commit scout-config.yaml and then run `scoutctl repo sync`, which refuses while "
+    "this change is uncommitted; Agnes checks every read against it."
+)
 GROUP_MEMBERS_NOTE = "members are shown once Agnes reports them (A8b)"
 GROUP_OWNER_NOTE = (
     "A group share works only while you are a member of that group: Agnes rechecks your membership and the "
     "reader's at every read (ruling 7). Scout can't see your membership yet, so it doesn't check it here."
 )
 UNSHARE_PENDING = (
-    "The stop takes effect in Agnes at your next `scoutctl repo sync` "
-    "(an instant stop from the laptop comes with Agnes's shares/stop, slice S1b)."
+    "The stop takes effect in Agnes once you commit scout-config.yaml and then run `scoutctl repo sync`, which "
+    "refuses while this change is uncommitted (an instant stop from the laptop comes with Agnes's shares/stop, "
+    "slice S1b)."
 )
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

@@ -18,8 +18,10 @@ from typing import Any
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from scout import repo_sync as rs
+from scout.cli import app
 from scout.kb.privacy import classify, load_policy, policy_from_overlay
 from scout.scripts import privacy_migrate
 
@@ -168,6 +170,19 @@ def test_a_reset_after_the_kill_is_not_undone_and_says_what_leaves_agnes(vault: 
     assert not (vault / NEW_FILE).exists()
     assert NEW_FILE not in _tip_paths(host)
     assert any(NEW_FILE in n and pushed[:12] in n for n in result.notes)
+
+
+def test_an_edit_amended_after_the_kill_warns_with_the_right_words(vault: Path, host: FakeHost) -> None:
+    """The tip keeps the path with new content, so "removes" alone would be wrong."""
+    _edited_then_killed(vault, host)
+    (vault / LAPTOP_FILE).write_text("amended\n", encoding="utf-8")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "--amend", "-m", "amended")
+
+    result = rs.sync(vault, host)
+
+    assert _tip(host, LAPTOP_FILE) == "amended\n"
+    assert any(LAPTOP_FILE in n and "removes or replaces" in n for n in result.notes)
 
 
 def test_an_amend_after_the_kill_is_not_replayed(vault: Path, host: FakeHost) -> None:
@@ -927,6 +942,238 @@ def test_a_refresh_of_a_commit_with_no_config_goes_up_under_the_live_one(vault: 
     assert mirror_policy(host.bare)["policy"] == load_policy(vault).to_json()
 
 
+def test_a_reorder_of_local_only_add_is_no_difference(vault: Path, host: FakeHost) -> None:
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    before = list(config["privacy"].get("local_only_add") or [])
+    _set_privacy(vault, local_only_add=[*before, "one/**", "two/**"])
+    _link(vault, host)
+    _write_privacy(vault, local_only_add=[*before, "two/**", "one/**"])
+
+    result = rs.sync(vault, host)
+
+    assert result.pushed == []
+    assert not [n for n in result.notes if "scout-config.yaml" in n]
+
+
+# ----- 2. uncommitted sharing: refused, because Agnes applies one policy ------------------------------
+
+SHARED = "knowledge-base/projects/widget"
+SHARED_NOTE = f"{SHARED}/plan.md"  # the fixture's widget.md sets its own scope, so it can't show a folder share
+GADGET = "knowledge-base/projects/gadget"
+PRIYA = "person:priya@example.com"
+SAM_PERSON = "person:sam@example.com"
+WIDGET_SHARE = {"glob": f"{SHARED}/**", "scope": [PRIYA]}
+GADGET_SHARE = {"glob": f"{GADGET}/**", "scope": [PRIYA]}
+
+
+def _kb(vault: Path, *args: str) -> Any:
+    result = CliRunner().invoke(app, ["kb", *args, "--repo", str(vault)])
+    assert result.exit_code == 0, result.output
+    return result
+
+
+def _commit_config(vault: Path, subject: str = "privacy: update shares") -> None:
+    git(vault, "add", "scout-config.yaml")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+
+
+def _synced_policy(host: FakeHost) -> dict[str, Any]:
+    return mirror_policy(host.bare)["policy"]
+
+
+def _assert_sharing_refusal(vault: Path, error: rs.RepoSyncError) -> None:
+    assert error.code == "sharing_uncommitted"
+    assert "Nothing was pushed" in error.message
+    assert "commit scout-config.yaml" in error.message
+    assert str(vault) in error.message
+
+
+def _sync_refused(vault: Path, host: FakeHost) -> None:
+    tip = _bare_git(host.bare, "rev-parse", "main")
+    head = _head(vault)
+    state = rs.state_path(vault).read_text(encoding="utf-8")
+    leases = len(host.__dict__.get("lease_calls", []))
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+
+    _assert_sharing_refusal(vault, e.value)
+    assert _bare_git(host.bare, "rev-parse", "main") == tip
+    assert _head(vault) == head
+    assert rs.state_path(vault).read_text(encoding="utf-8") == state
+    assert len(host.__dict__.get("lease_calls", [])) == leases  # stopped before it took the lease or fetched
+
+
+def test_an_uncommitted_share_is_refused_then_goes_up_once_committed(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    _link(vault, host)
+    _commit(vault, SHARED_NOTE, "a plan\n", "plan")
+    agnes_sha = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "written in agnes\n"}, "agnes note")
+    _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+
+    _sync_refused(vault, host)
+    assert _replay_commits(vault, agnes_sha) == 0
+
+    _commit_config(vault)
+    rs.sync(vault, host)
+
+    assert _synced_policy(host)["federation_defaults"] == [WIDGET_SHARE]
+    assert _synced_policy(host)["federation"]["enabled"] is True
+    label = next(lb for lb in mirror_policy(host.bare)["labels"] if lb["path"] == SHARED_NOTE)
+    assert label["federation_scope"] == [PRIYA]
+    assert _tip(host, AGNES_FILE) == "written in agnes\n"
+
+
+def _both_shared(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _commit(vault, SHARED_NOTE, "a plan\n", "plan")
+    _commit(vault, f"{GADGET}/gadget.md", "a gadget\n", "gadget")
+    _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+    _kb(vault, "share", GADGET, "--with", "priya@example.com", "--yes")
+    _commit_config(vault)
+    rs.sync(vault, host)
+    assert {e["glob"] for e in _synced_policy(host)["federation_defaults"]} == {f"{SHARED}/**", f"{GADGET}/**"}
+
+
+def test_an_uncommitted_unshare_is_refused_and_every_share_stays_until_committed(vault: Path, host: FakeHost) -> None:
+    _both_shared(vault, host)
+    _kb(vault, "unshare", GADGET)
+
+    _sync_refused(vault, host)
+    assert GADGET_SHARE in _synced_policy(host)["federation_defaults"]
+    assert WIDGET_SHARE in _synced_policy(host)["federation_defaults"]
+
+    _commit_config(vault)
+    rs.sync(vault, host)
+
+    assert _synced_policy(host)["federation_defaults"] == [WIDGET_SHARE]
+
+
+def test_an_uncommitted_carve_out_is_refused_and_keeps_the_folder_shared(vault: Path, host: FakeHost) -> None:
+    _both_shared(vault, host)
+    sub = f"{SHARED}/design"
+    _commit(vault, f"{sub}/notes.md", "design notes\n", "design")
+    rs.sync(vault, host)
+    _kb(vault, "unshare", sub)
+
+    _sync_refused(vault, host)
+    assert WIDGET_SHARE in _synced_policy(host)["federation_defaults"]
+
+    _commit_config(vault)
+    rs.sync(vault, host)
+
+    labels = {lb["path"]: lb for lb in mirror_policy(host.bare)["labels"]}
+    assert labels[f"{sub}/notes.md"]["federation_scope"] == "none"
+    assert labels[SHARED_NOTE]["federation_scope"] == [PRIYA]
+
+
+def test_adding_a_person_uncommitted_is_refused(vault: Path, host: FakeHost) -> None:
+    _both_shared(vault, host)
+    _kb(vault, "share", SHARED, "--with", "sam@example.com", "--yes")
+
+    _sync_refused(vault, host)
+    assert WIDGET_SHARE in _synced_policy(host)["federation_defaults"]
+
+    _commit_config(vault)
+    rs.sync(vault, host)
+
+    [widget] = [e for e in _synced_policy(host)["federation_defaults"] if e["glob"] == f"{SHARED}/**"]
+    assert set(widget["scope"]) == {PRIYA, SAM_PERSON}
+
+
+def test_a_reorder_of_shares_is_refused_because_the_first_match_decides(vault: Path, host: FakeHost) -> None:
+    _both_shared(vault, host)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    _write_privacy(vault, federation_defaults=list(reversed(config["privacy"]["federation_defaults"])))
+
+    _sync_refused(vault, host)
+
+
+def test_reverting_an_uncommitted_share_lets_the_sync_through(vault: Path, host: FakeHost) -> None:
+    _both_shared(vault, host)
+    config = vault / "scout-config.yaml"
+    committed = config.read_text(encoding="utf-8")
+    _kb(vault, "unshare", GADGET)
+    _sync_refused(vault, host)
+
+    config.write_text(committed, encoding="utf-8")
+
+    assert rs.sync(vault, host).pushed == []
+    assert GADGET_SHARE in _synced_policy(host)["federation_defaults"]
+
+
+def test_turning_sharing_on_or_off_uncommitted_is_refused(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _write_privacy(vault, federation={"enabled": True})
+    _sync_refused(vault, host)
+
+    _commit_config(vault, "sharing on")
+    rs.sync(vault, host)
+    assert _synced_policy(host)["federation"]["enabled"] is True
+
+    _write_privacy(vault, federation={"enabled": False})
+    _sync_refused(vault, host)
+
+
+def test_link_refuses_an_uncommitted_share_before_it_reaches_agnes(vault: Path, host: FakeHost) -> None:
+    _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+    privacy_migrate.accept(vault)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, host)
+
+    _assert_sharing_refusal(vault, e.value)
+    assert not host.exists
+    assert rs.load_state(vault) is None
+
+    _commit_config(vault)
+    privacy_migrate.accept(vault)
+    _link(vault, host)
+    assert _synced_policy(host)["federation_defaults"] == [WIDGET_SHARE]
+
+
+def test_preview_says_a_sync_would_be_refused(vault: Path) -> None:
+    assert rs.preview(vault).uncommitted_sharing is False
+    _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+
+    preview = rs.preview(vault)
+
+    assert preview.uncommitted_sharing is True
+    assert any("sharing" in line and "commit" in line for line in preview.lines())
+    assert preview.to_json(with_paths=False)["uncommitted_sharing"] is True
+
+    _commit_config(vault)
+    preview = rs.preview(vault)
+    assert preview.uncommitted_sharing is False
+    assert not any("uncommitted sharing" in line for line in preview.lines())
+
+
+def test_a_share_committed_in_a_span_goes_up_correct_at_the_tip(vault: Path, host: FakeHost) -> None:
+    """An older commit's mirror can't state both versions, but the push is atomic and only the tip is in force."""
+    _link(vault, host)
+    _commit(vault, f"{GADGET}/gadget.md", "a gadget\n", "gadget")
+    _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+    _commit_config(vault, "share widget")
+    _kb(vault, "share", GADGET, "--with", "priya@example.com", "--yes")
+    _commit_config(vault, "share gadget")
+
+    result = rs.sync(vault, host)
+
+    assert len(result.pushed) == 3
+    assert {e["glob"] for e in _synced_policy(host)["federation_defaults"]} == {f"{SHARED}/**", f"{GADGET}/**"}
+    older = mirror_policy(host.bare, "main~1")["policy"]["federation_defaults"]
+    assert older in ([], [WIDGET_SHARE])  # never more open than the commit it mirrors
+
+
+def test_share_and_unshare_tell_the_owner_to_commit_first(vault: Path) -> None:
+    shared = _kb(vault, "share", SHARED, "--with", "priya@example.com", "--yes")
+    assert "commit scout-config.yaml" in shared.output and "scoutctl repo sync" in shared.output
+
+    unshared = _kb(vault, "unshare", SHARED)
+    assert "commit scout-config.yaml" in unshared.output and "scoutctl repo sync" in unshared.output
+
+
 def test_the_stricter_policy_is_no_more_open_than_either() -> None:
     live = policy_from_overlay(
         {
@@ -965,7 +1212,6 @@ def test_the_stricter_policy_is_no_more_open_than_either() -> None:
     assert "custom" in merged.shared_surfaces and "custom" not in merged.owner_only_surfaces
     assert merged.federation_enabled is False
     assert [r.ceiling for r in merged.federation_ceilings_overlay] == ["none", "org"]
-    assert merged.federation_defaults == ()
     assert merged.sync_only == ("a/x/**",)  # the live list is enforced by the rules already; a path must be on both
     assert rs._stricter_policy(live, live) is live
 
