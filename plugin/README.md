@@ -338,7 +338,11 @@ Everything else stays on this computer, a new folder included, and isn't named o
 
 **Sync refuses a file moved out of a path Agnes keeps local-only.** When a commit since the last sync moves a file from a Local-Only Path you set in Agnes (not one from `privacy.local_only_add`, which you may move out of) to a path that uploads, `scoutctl repo sync` stops before it changes anything and names the new path. If it should upload, run `scoutctl repo sync --confirm-sync '<new path>'`; that counts for that sync only. If not, add the new path to `privacy.local_only_add`. The commit hook blocks a scheduled run's move out of such a path too. It runs offline, so it uses a copy of Agnes's list in `.scout-state/repo-sync-host.json`, which link, sync and every scheduled run (when it takes the lease) refresh. If that copy is missing or more than a week old, the hook only warns, and `scoutctl bootstrap doctor` says so.
 
-**A sync can stop anywhere and be run again.** What came from Agnes stays on both sides, and what this computer already pushed isn't copied back over later work here. Policy comes from the commit being mirrored: an uncommitted edit of `scout-config.yaml` can keep more on this computer, never upload more. If a `git reset` or rebase drops a commit that came from Agnes, the sync warns and names each file it takes off Agnes's current files; each one stays in the repository's history.
+**A sync can stop anywhere and be run again.** What came from Agnes stays on both sides, and what this computer already pushed isn't copied back over later work here.
+
+**Uncommitted `scout-config.yaml` edits can only make a mirror stricter.** Until you commit the file, the stricter of its privacy settings and the last commit's applies, and the sync says so: what either keeps home stays home, and what either marks private is private. While they differ, an entry that opens up part of a private folder can lose to that folder, so a file can be stricter than either version says. A file only the uncommitted settings would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it.
+
+**A dropped commit gets a warning.** If a `git reset` or rebase drops commits that brought a file here from Agnes, the sync names each file it takes off Agnes's current files and how to read it from the repository's history, which keeps it.
 
 ### Reading what colleagues share with you
 

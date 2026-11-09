@@ -11,6 +11,7 @@ Same harness as ``test_repo_sync_retry``: a fake host over a local bare reposito
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ import pytest
 import yaml
 
 from scout import repo_sync as rs
-from scout.kb.privacy import load_policy
+from scout.kb.privacy import classify, load_policy, policy_from_overlay
 from scout.scripts import privacy_migrate
 
 from .privacy_vault_helpers import git
@@ -559,10 +560,249 @@ def test_the_move_gate_runs_before_a_landed_push_is_recognised(vault: Path, host
     assert rs.state_path(vault).read_text(encoding="utf-8") == before
 
 
+def test_a_note_with_a_null_commit_counts_for_nothing(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "written in agnes\n"}, "agnes note")
+    doc = {"schema_version": 1, "pushes": [{"laptop": None, "mirror": agnes_sha}]}
+    (vault / NOTE).parent.mkdir(parents=True, exist_ok=True)
+    (vault / NOTE).write_text(json.dumps(doc), encoding="utf-8")
+
+    _assert_replayed(vault, host, rs.sync(vault, host), agnes_sha)
+
+
+def test_a_crafted_commit_outside_head_cannot_hide_behind_heads_own_edit(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    """HEAD isn't back to what Agnes replaced, so only the note's claim says this came from a commit now gone."""
+    _link(vault, host)
+    _commit(vault, LAPTOP_FILE, "base\n", "base")
+    rs.sync(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {LAPTOP_FILE: "edited in agnes\n"}, "agnes edit")
+    _commit(vault, LAPTOP_FILE, "edited here\n", "laptop edit")
+    crafted = _crafted(vault, host, agnes_sha, {LAPTOP_FILE: "edited in agnes\n"}, on_head=False)
+    _write_note(vault, (crafted, agnes_sha))
+
+    result = rs.sync(vault, host)
+
+    assert result.dropped == [{"path": LAPTOP_FILE, "mirror_commit": agnes_sha}]
+    assert _tip(host, LAPTOP_FILE) == "edited here\n"
+
+
+def test_hiding_an_agnes_deletion_behind_a_note_loses_nothing(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    _commit(vault, SAM, "kept\n", "edit")
+    rs.sync(vault, host)
+    agnes_sha = _commit_on_mirror(tmp_path, host, {SAM: None}, "agnes removes it")
+    crafted = _crafted(vault, host, agnes_sha, {LAPTOP_FILE: "edit\n"})
+    _write_note(vault, (crafted, agnes_sha))
+
+    rs.sync(vault, host)
+
+    assert (vault / SAM).read_text() == "kept\n"
+    assert _tip(host, SAM) == "kept\n"
+
+
+# ----- 1. a push that stripped a file the rules no longer refuse -----------------------------------
+
+STRIPPED = "notes/held/x.md"
+
+
+def _uploaded_then_stripped(vault: Path, host: FakeHost) -> list[str]:
+    """A file on Agnes, then a commit whose rule takes it off the tip. The list as it was before the rule."""
+    _link(vault, host)
+    _commit(vault, STRIPPED, "on both sides\n", "a file")
+    rs.sync(vault, host)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    before = list(config["privacy"].get("local_only_add") or [])
+    _set_privacy(vault, local_only_add=[*before, "**/held/**"])
+    return before
+
+
+def _assert_laptop_keeps_it(vault: Path, result: rs.Result) -> None:
+    assert result.replayed == []
+    assert _replayed_commits(vault) == 0
+    assert (vault / STRIPPED).read_text() == "on both sides\n"
+    assert not list(vault.rglob("*.proposed-merge"))
+
+
+def test_a_rule_removed_after_the_kill_does_not_delete_the_laptops_file(vault: Path, host: FakeHost) -> None:
+    before = _uploaded_then_stripped(vault, host)
+    _sync_killed_at(vault, host, "after-push")
+    assert STRIPPED not in _tip_paths(host)
+    _write_privacy(vault, local_only_add=before)
+
+    result = rs.sync(vault, host)
+
+    _assert_laptop_keeps_it(vault, result)
+    assert STRIPPED not in _tip_paths(host)
+
+
+def test_a_plain_retry_does_not_delete_the_laptops_file(vault: Path, host: FakeHost) -> None:
+    """The commit holds the rule and the live config doesn't, from before the kill: no owner step after it."""
+    before = _uploaded_then_stripped(vault, host)
+    _write_privacy(vault, local_only_add=before)
+    _sync_killed_at(vault, host, "after-push")
+    assert STRIPPED not in _tip_paths(host)
+
+    result = rs.sync(vault, host)
+
+    _assert_laptop_keeps_it(vault, result)
+    assert STRIPPED not in _tip_paths(host)
+
+
+def test_an_agnes_entry_removed_after_the_kill_does_not_delete_the_laptops_file(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _commit(vault, "hold/x.md", "on both sides\n", "a file")
+    rs.sync(vault, host)
+    host.local_only = (*host.local_only, "hold/")
+    _commit(vault, LAPTOP_FILE, "edit\n", "edit")
+    _sync_killed_at(vault, host, "after-push")
+    assert "hold/x.md" not in _tip_paths(host)
+    host.local_only = tuple(e for e in host.local_only if e != "hold/")
+
+    result = rs.sync(vault, host)
+
+    assert result.replayed == []
+    assert (vault / "hold/x.md").read_text() == "on both sides\n"
+    assert _tip(host, "hold/x.md") == "on both sides\n"
+
+
+def test_a_rule_removal_committed_after_the_kill_is_no_conflict(vault: Path, host: FakeHost) -> None:
+    before = _uploaded_then_stripped(vault, host)
+    _sync_killed_at(vault, host, "after-push")
+    _set_privacy(vault, subject="drop the rule", local_only_add=before)
+
+    result = rs.sync(vault, host)
+
+    _assert_laptop_keeps_it(vault, result)
+    assert _tip(host, STRIPPED) == "on both sides\n"
+
+
+def test_a_rule_on_and_off_in_two_commits_is_no_conflict_on_the_retry(vault: Path, host: FakeHost) -> None:
+    before = _uploaded_then_stripped(vault, host)
+    _set_privacy(vault, subject="drop the rule", local_only_add=before)
+    _sync_killed_at(vault, host, "after-push")
+
+    result = rs.sync(vault, host)
+
+    _assert_laptop_keeps_it(vault, result)
+    assert _tip(host, STRIPPED) == "on both sides\n"
+
+
 # ----- 2. an uncommitted config edit --------------------------------------------------------------
 
 HELD_GLOB = "**/held/**"  # not a plain path, so the host's list never carries it
 HELD = "notes/held/x.md"
+PLAIN_NOTE = "notes/a.md"
+NOTES_PRIVATE = [{"glob": "notes/**", "visibility": "private"}]
+
+
+def _label(host: FakeHost, rel: str = PLAIN_NOTE) -> str:
+    return next(lb["visibility"] for lb in mirror_policy(host.bare)["labels"] if lb["path"] == rel)
+
+
+def test_link_labels_by_an_uncommitted_tightening(vault: Path, host: FakeHost) -> None:
+    _commit(vault, PLAIN_NOTE, "a note\n", "a note")
+    _write_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+    privacy_migrate.accept(vault)
+
+    result = _link(vault, host)
+
+    assert _label(host) == "private"
+    assert {"glob": "notes/**", "visibility": "private"} in mirror_policy(host.bare)["policy"]["visibility_defaults"]
+    assert any("scout-config.yaml" in n for n in result.notes)
+
+
+def test_a_refresh_sync_labels_by_an_uncommitted_tightening(vault: Path, host: FakeHost) -> None:
+    _commit(vault, PLAIN_NOTE, "a note\n", "a note")
+    _link(vault, host)
+    assert _label(host) == "normal"
+    _write_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+
+    result = rs.sync(vault, host)
+
+    assert len(result.pushed) == 1
+    assert _label(host) == "private"
+
+
+def test_a_commit_by_commit_push_labels_by_an_uncommitted_tightening(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _write_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+    (vault / PLAIN_NOTE).parent.mkdir(parents=True, exist_ok=True)
+    (vault / PLAIN_NOTE).write_text("a note\n", encoding="utf-8")
+    git(vault, "add", PLAIN_NOTE)
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "a note")
+
+    assert len(rs.sync(vault, host).pushed) == 1
+
+    assert _label(host) == "private"
+    assert rs.sync(vault, host).pushed == []
+
+
+def test_an_uncommitted_loosening_does_not_loosen_the_label(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _set_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+    _commit(vault, PLAIN_NOTE, "a note\n", "a note")
+    rs.sync(vault, host)
+    assert _label(host) == "private"
+    _write_privacy(vault, visibility_defaults=None)
+
+    result = rs.sync(vault, host)
+
+    assert _label(host) == "private"
+    assert any("scout-config.yaml" in n for n in result.notes)
+
+
+def test_preview_counts_what_either_policy_marks_private(vault: Path) -> None:
+    _commit(vault, PLAIN_NOTE, "a note\n", "a note")
+    before = rs.preview(vault).private
+    _write_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+
+    assert rs.preview(vault).private == before + 1
+
+
+def test_a_committed_config_needs_no_note(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _set_privacy(vault, visibility_defaults=NOTES_PRIVATE)
+    _commit(vault, PLAIN_NOTE, "a note\n", "a note")
+
+    assert not [n for n in rs.sync(vault, host).notes if "scout-config.yaml" in n]
+
+
+def test_a_file_an_earlier_sync_uploaded_under_the_old_hole_says_why_it_leaves(vault: Path, host: FakeHost) -> None:
+    """v0.18.11's refresh uploaded it. The first sync with the fix takes it off the tip, which needs saying."""
+    _commit(vault, HELD, "uploaded\n", "a file")
+    _link(vault, host)
+    assert HELD in _tip_paths(host)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    before = list(config["privacy"].get("local_only_add") or [])
+    _set_privacy(vault, local_only_add=[*before, HELD_GLOB])
+    rs.sync(vault, host)
+    state = rs.load_state(vault)
+    assert state is not None
+    # Back to the tip v0.18.11 would have left, with the commit's rule still in HEAD.
+    _write_privacy(vault, local_only_add=before)
+    _commit_on_tip_with_file(vault, host, state, HELD, "uploaded\n")
+
+    result = rs.sync(vault, host)
+
+    assert HELD not in _tip_paths(host)
+    assert any("scout-config.yaml" in n and "comes off" in n for n in result.notes)
+
+
+def _commit_on_tip_with_file(vault: Path, host: FakeHost, state: rs.LinkState, rel: str, text: str) -> None:
+    """Put ``rel`` back on the mirror's tip as an older engine's push would have, and record it as pushed."""
+    blob = rs.git(vault, "hash-object", "-w", "--stdin", input=text).stdout.strip()
+    env = {"GIT_INDEX_FILE": str(vault / ".git" / "edge-index")}
+    rs.git(vault, "read-tree", state.last_mirror, env=env)
+    rs.git(vault, "update-index", "--add", "--cacheinfo", f"100644,{blob},{rel}", env=env)
+    tree = rs.git(vault, "write-tree", env=env).stdout.strip()
+    meta = rs.commit_meta(vault, state.last_mirror)
+    tip = rs._commit_tree(vault, tree, [state.last_mirror], "older push\n", meta.env())
+    rs.push(vault, host, str(host.bare), tip, ("token", 1))
+    state.last_mirror = tip
+    state.pairs.append({"laptop": _head(vault), "mirror": tip, "kind": "push"})
+    rs.save_state(vault, state)
 
 
 def _committed_hold(vault: Path) -> list[str]:
@@ -613,7 +853,7 @@ def test_the_retry_of_a_refused_push_keeps_what_the_first_attempt_held_back(vaul
     assert HELD not in mirror_history_paths(host.bare)
 
 
-def test_a_squashed_mirror_commit_records_the_commits_policy_not_the_edit(vault: Path, host: FakeHost) -> None:
+def test_a_squashed_mirror_commit_still_records_what_the_commit_holds_back(vault: Path, host: FakeHost) -> None:
     _link(vault, host)
     before = _committed_hold(vault)
     rs.sync(vault, host)
@@ -685,6 +925,61 @@ def test_a_refresh_of_a_commit_with_no_config_goes_up_under_the_live_one(vault: 
     rs.sync(vault, host)
 
     assert mirror_policy(host.bare)["policy"] == load_policy(vault).to_json()
+
+
+def test_the_stricter_policy_is_no_more_open_than_either() -> None:
+    live = policy_from_overlay(
+        {
+            "local_only_add": ["live/**"],
+            "visibility_defaults": [
+                {"glob": "a/pub/**", "visibility": "normal"},
+                {"glob": "a/**", "visibility": "private"},
+            ],
+            "shared_files_add": ["both/**", "live-shared/**"],
+            "surfaces": {"owner_only": ["custom"]},
+            "federation": {"enabled": True},
+            "federation_ceilings": [{"glob": "c/**", "ceiling": "org"}],
+            "federation_defaults": [{"glob": "d/**", "scope": "org"}],
+            "sync_only": ["a/**"],
+        }
+    )
+    committed = policy_from_overlay(
+        {
+            "local_only_add": ["committed/**"],
+            "visibility_defaults": [{"glob": "b/**", "visibility": "private"}],
+            "shared_files_add": ["both/**"],
+            "surfaces": {"shared": ["custom"]},
+            "federation": {"enabled": False},
+            "federation_ceilings": [{"glob": "c/**", "ceiling": "none"}],
+            "sync_only": ["a/x/**"],
+        }
+    )
+
+    merged = rs._stricter_policy(live, committed)
+
+    assert {"live/**", "committed/**"} <= set(merged.local_only)
+    for rel in ("a/note.md", "a/pub/note.md", "b/note.md"):
+        assert classify(rel, None, merged).visibility == "private"
+    assert classify("elsewhere/note.md", None, merged).visibility == "normal"
+    assert "both/**" in merged.shared_files and "live-shared/**" not in merged.shared_files
+    assert "custom" in merged.shared_surfaces and "custom" not in merged.owner_only_surfaces
+    assert merged.federation_enabled is False
+    assert [r.ceiling for r in merged.federation_ceilings_overlay] == ["none", "org"]
+    assert merged.federation_defaults == ()
+    assert merged.sync_only == ("a/x/**",)  # the live list is enforced by the rules already; a path must be on both
+    assert rs._stricter_policy(live, live) is live
+
+
+def test_the_stricter_policy_keeps_what_is_the_same_as_it_was() -> None:
+    live = policy_from_overlay({"visibility_defaults": [{"glob": "a/pub/**", "visibility": "normal"}]})
+    committed = dataclasses.replace(live, warnings=("privacy-overlay-invalid",), sync_only=None)
+
+    merged = rs._stricter_policy(dataclasses.replace(live, sync_only=("a/**",)), committed)
+
+    assert merged.visibility_defaults == live.visibility_defaults  # order is meaning; nothing to reorder
+    assert merged.federation_defaults == live.federation_defaults
+    assert merged.warnings == ("privacy-overlay-invalid",)
+    assert merged.sync_only == ("a/**",)
 
 
 # ----- 3. a reset that drops a recorded replay ----------------------------------------------------
@@ -813,6 +1108,77 @@ def test_a_sync_that_changes_no_file_never_looks_for_dropped_replays(
 
     assert rs._dropped_from_head(vault, rs.LocalOnlyRules.build([], ()), state, state.last_mirror) == []
     assert calls == ["diff-tree"]
+
+
+def test_a_reset_over_an_add_then_an_edit_warns(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    _commit_on_mirror(tmp_path, host, {AGNES_FILE: "first\n"}, "agnes adds")
+    newest = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "second\n"}, "agnes edits")
+    rs.sync(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~2")
+
+    result = rs.sync(vault, host)
+
+    assert result.dropped == [{"path": AGNES_FILE, "mirror_commit": newest}]
+    assert AGNES_FILE not in _tip_paths(host)
+
+
+def test_a_reset_over_two_agnes_edits_warns(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    _commit(vault, LAPTOP_FILE, "v0\n", "v0")
+    rs.sync(vault, host)
+    _commit_on_mirror(tmp_path, host, {LAPTOP_FILE: "v1\n"}, "agnes v1")
+    newest = _commit_on_mirror(tmp_path, host, {LAPTOP_FILE: "v2\n"}, "agnes v2")
+    rs.sync(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~2")
+
+    result = rs.sync(vault, host)
+
+    assert result.dropped == [{"path": LAPTOP_FILE, "mirror_commit": newest}]
+    assert _tip(host, LAPTOP_FILE) == "v0\n"
+
+
+def test_a_reset_over_the_newer_of_two_agnes_edits_warns(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    _commit(vault, LAPTOP_FILE, "v0\n", "v0")
+    rs.sync(vault, host)
+    _commit_on_mirror(tmp_path, host, {LAPTOP_FILE: "v1\n"}, "agnes v1")
+    newest = _commit_on_mirror(tmp_path, host, {LAPTOP_FILE: "v2\n"}, "agnes v2")
+    rs.sync(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~1")
+
+    result = rs.sync(vault, host)
+
+    assert result.dropped == [{"path": LAPTOP_FILE, "mirror_commit": newest}]
+    assert _tip(host, LAPTOP_FILE) == "v1\n"
+
+
+def test_an_older_rewrite_does_not_hide_a_later_dropped_replay(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    """The first replay was reworded long ago, so it stays gone from HEAD and comes up in every later look."""
+    _link(vault, host)
+    _commit_on_mirror(tmp_path, host, {AGNES_FILE: "first\n"}, "agnes adds")
+    rs.sync(vault, host)
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "--amend", "-m", "reworded")
+    rs.sync(vault, host)
+    newest = _commit_on_mirror(tmp_path, host, {AGNES_FILE: "second\n"}, "agnes edits")
+    rs.sync(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~1")
+
+    result = rs.sync(vault, host)
+
+    assert result.dropped == [{"path": AGNES_FILE, "mirror_commit": newest}]
+    assert _tip(host, AGNES_FILE) == "first\n"
+
+
+def test_a_later_agnes_removal_is_not_called_a_dropped_file(vault: Path, host: FakeHost, tmp_path: Path) -> None:
+    _link(vault, host)
+    _commit_on_mirror(tmp_path, host, {AGNES_FILE: "first\n"}, "agnes adds")
+    _commit_on_mirror(tmp_path, host, {AGNES_FILE: None}, "agnes removes")
+    rs.sync(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~1")
+    _commit(vault, LAPTOP_FILE, "edit\n", "edit")
+
+    assert rs.sync(vault, host).dropped == []
 
 
 # ----- 4. what _skips_since_last_push costs --------------------------------------------------------

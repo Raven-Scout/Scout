@@ -86,6 +86,7 @@ import scout
 from scout import paths
 from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
+    CEILING_LEVELS,
     HEAD_BYTES,
     Label,
     Policy,
@@ -196,6 +197,12 @@ SYNC_ONLY_INVALID = "privacy-sync-only-invalid"
 # squash's list of them, can name what the allowlist keeps home.
 SYNC_MESSAGE_PREFIX = "Scout sync: "
 GENERIC_MESSAGE = f"{SYNC_MESSAGE_PREFIX}mirror update\n"
+UNCOMMITTED_PRIVACY_NOTE = (
+    "scout-config.yaml's privacy settings have uncommitted changes, so the stricter of those and HEAD's applies: what "
+    "either keeps home stays home, and what either marks private is private. A file only the uncommitted settings "
+    "would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it. Commit the file to "
+    "use its settings alone"
+)
 SYNC_ONLY_HISTORY_NOTE = (
     "What is already on Agnes stays there: earlier commits and its Local-Only list keep their names. For a clean "
     "start, run scoutctl repo unlink --delete-remote, then link again"
@@ -603,6 +610,51 @@ def policy_at(vault: Path, rev: str, blobs: BlobReader) -> Policy:
     return policy_from_overlay(data.get("privacy"))
 
 
+def _stricter_policy(live: Policy, committed: Policy) -> Policy:
+    """A policy no more open than ``live`` or ``committed``, for a mirror commit when the two differ.
+
+    The Agnes indexer classifies from one policy document, so this has to be one
+    policy. Where the first match decides, the strictest entries of both go first,
+    which can make a file stricter than either says: an entry that opens up part of
+    a private folder loses to that folder until the two agree again. It fails
+    closed, and only while they differ. Scope defaults can't be combined that way,
+    so none apply. ``sync_only`` is ``committed``'s because the rules already
+    enforce the live list and a path must be on every list.
+    """
+    if live == committed:
+        return live
+    same_visibility = live.visibility_defaults == committed.visibility_defaults
+    same_defaults = live.federation_defaults == committed.federation_defaults
+    shared_surfaces = live.shared_surfaces | committed.shared_surfaces
+    return dataclasses.replace(
+        live,
+        local_only=tuple(dict.fromkeys((*live.local_only, *committed.local_only))),
+        visibility_defaults=(
+            live.visibility_defaults
+            if same_visibility
+            else tuple(
+                sorted(
+                    dict.fromkeys((*live.visibility_defaults, *committed.visibility_defaults)),
+                    key=lambda entry: entry[1] == "normal",
+                )
+            )
+        ),
+        owner_only_surfaces=(live.owner_only_surfaces | committed.owner_only_surfaces) - shared_surfaces,
+        shared_surfaces=shared_surfaces,
+        shared_files=tuple(g for g in live.shared_files if g in committed.shared_files),
+        federation_enabled=live.federation_enabled and committed.federation_enabled,
+        federation_ceilings_overlay=tuple(
+            sorted(
+                dict.fromkeys((*live.federation_ceilings_overlay, *committed.federation_ceilings_overlay)),
+                key=lambda rule: CEILING_LEVELS.index(rule.ceiling),
+            )
+        ),
+        federation_defaults=live.federation_defaults if same_defaults else (),
+        warnings=tuple(dict.fromkeys((*live.warnings, *committed.warnings))),
+        sync_only=live.sync_only if committed.sync_only is None else committed.sync_only,
+    )
+
+
 def label_blob(rel: str, entry: TreeEntry, policy: Policy, blobs: BlobReader) -> Label:
     """The label ``scoutctl kb classify`` gives ``rel`` when its content is the blob ``entry``."""
     if not rel.lower().endswith(".md") or entry.mode == "120000":
@@ -694,15 +746,19 @@ class MirrorBuilder:
     def policy(self, rev: str) -> Policy:
         return policy_at(self.vault, rev, self.blobs)
 
-    def recorded_policy(self, rev: str, live: Policy) -> Policy:
-        """The policy a mirror of ``rev`` goes up under when it stands for more than itself (a link, a squash).
+    def committed_policy(self, rev: str) -> Policy | None:
+        """``rev``'s own policy, or None when it has no config, or one that can't be trusted."""
+        policy = self.policy(rev)
+        return None if _blob_at(self.vault, rev, paths.VAULT_MARKER) is None or _broken(policy) else policy
 
-        The commit's own: an uncommitted edit of ``scout-config.yaml`` is no reason to upload what the commit
-        holds back, and ``self.rules`` keeps ``live``'s paths back as well, so the plan gets the stricter of the
-        two. ``live`` when the commit has no config, or one that can't be trusted.
+    def recorded_policy(self, rev: str, live: Policy) -> Policy:
+        """The policy a mirror of ``rev`` goes up under: the stricter of its commit's and ``live``.
+
+        An uncommitted edit of ``scout-config.yaml`` can keep more home or mark more private, and neither it nor
+        an older commit can upload more or mark less. ``live`` alone when the commit has no policy to go by.
         """
-        committed = self.policy(rev)
-        return live if _blob_at(self.vault, rev, paths.VAULT_MARKER) is None or _broken(committed) else committed
+        committed = self.committed_policy(rev)
+        return live if committed is None else _stricter_policy(live, committed)
 
     def plan(self, rev: str, policy: Policy) -> MirrorPlan:
         """The mirror of vault commit ``rev``. Reads only."""
@@ -994,7 +1050,11 @@ def load_pending_pushes(vault: Path) -> dict[str, str]:
         data = json.loads(pending_path(vault).read_text(encoding="utf-8"))
         if data["schema_version"] != SCHEMA_VERSION:
             return {}
-        return {p["mirror"]: p["laptop"] for p in data["pushes"]}
+        return {
+            p["mirror"]: p["laptop"]
+            for p in data["pushes"]
+            if isinstance(p["mirror"], str) and isinstance(p["laptop"], str)
+        }
     except (OSError, ValueError, TypeError, KeyError):
         return {}
 
@@ -1437,6 +1497,8 @@ def link(
 
     builder = MirrorBuilder(vault, rules, host_entries)
     try:
+        if _uncommitted_privacy_edit(builder, head, policy):
+            notes.append(UNCOMMITTED_PRIVACY_NOTE)
         tree, stripped = builder.tree(head, builder.recorded_policy(head, policy))
     finally:
         builder.close()
@@ -1729,22 +1791,24 @@ def _sync_under_lease(
     builder = MirrorBuilder(vault, rules, host_entries)
     pushes: list[tuple[str, str]] = []
     try:
-        policies = {c: builder.policy(c) for c in own}
+        if _uncommitted_privacy_edit(builder, head, policy):
+            result.notes.append(UNCOMMITTED_PRIVACY_NOTE)
         # A replay in the span, this sync's or one a sync that stopped short left, means the commits
         # before it lack Agnes's changes: their own trees on top of Agnes's tip would revert them (#609).
-        squash = len(own) < len(todo) or _replay_awaits_push(vault, state) or any(_broken(p) for p in policies.values())
+        squash = (
+            len(own) < len(todo) or _replay_awaits_push(vault, state) or any(_broken(builder.policy(c)) for c in own)
+        )
         subjects = [commit_meta(vault, c).message.splitlines()[0] for c in own]
         refresh_only = not own
         if squash or refresh_only:
             squash = True
             own = [head]
-            policies = {head: builder.recorded_policy(head, policy)}
             if subjects:
                 result.notes.append("Agnes had new commits, so this computer's commits go up as one")
         tip = state.last_mirror
         tip_tree = git(vault, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
         for c in own:
-            tree, stripped = builder.tree(c, policies[c])
+            tree, stripped = builder.tree(c, builder.recorded_policy(c, policy))
             result.stripped = max(result.stripped, stripped)
             if tree == tip_tree:
                 if not refresh_only:
@@ -1824,12 +1888,17 @@ def _holds_push(vault: Path, rules: LocalOnlyRules, commit: str, parent: str, re
     """Whether mirror commit ``rev`` (on ``parent``) went up from vault ``commit``, as the pending note says.
 
     A mirror commit has its vault commit's identities and either its message or
-    one a sync writes, and each path it changes that can come home is as in the
-    vault commit. So a note can only pass off a commit whose every change the
-    vault commit already holds; otherwise it counts for nothing and the mirror
-    commit replays as usual. ``commit`` needn't be in HEAD's history, since the
-    owner may have reset it away. :func:`_dropped_from_head` warns when that takes
-    a file off Agnes, so a note and a crafted commit can't do it silently.
+    one a sync writes, and each file it writes that can come home is as in the
+    vault commit. So a note can only pass off a commit whose every write the vault
+    commit already holds; otherwise it counts for nothing and the mirror commit
+    replays as usual. A removal always counts as held. A push removes what a rule
+    strips, the vault commit keeps its copy, and the rule may have gone by now, so
+    replaying would delete the laptop's file; a real removal passed off this way
+    loses nothing, since the file stays here and the next push restores it.
+
+    ``commit`` needn't be in HEAD's history, since the owner may have reset it
+    away. :func:`_dropped_from_head` warns when that takes a file off Agnes, so a
+    note and a crafted commit can't do it silently.
     """
     if _rev(vault, commit) != commit:
         return False
@@ -1840,7 +1909,7 @@ def _holds_push(vault: Path, rules: LocalOnlyRules, commit: str, parent: str, re
     if meta.message != found.message and not meta.message.startswith(SYNC_MESSAGE_PREFIX):
         return False
     return all(
-        ch.path == POLICY_PATH or rules.refused(ch.path) or _blob_at(vault, commit, ch.path) == ch.new
+        ch.path == POLICY_PATH or rules.refused(ch.path) or ch.new is None or _blob_at(vault, commit, ch.path) == ch.new
         for ch in mirror_changes(vault, parent, rev)
     )
 
@@ -1917,9 +1986,12 @@ def _dropped_from_head(vault: Path, rules: LocalOnlyRules, state: LinkState, new
 
     ``last_mirror`` is already past that commit, so nothing brings the file back:
     a ``git reset`` over a replay leaves it on neither side, in Agnes's history
-    alone. A path counts when the tip still has what the mirror commit wrote and
-    HEAD is back to what it replaced. A rewrite that kept the content, or an edit
-    since, isn't this. A sync that changes no file costs one diff.
+    alone. A path counts when the tip still has what the newest of those mirror
+    commits wrote and HEAD is back to a version one of them replaced, so a reset
+    over several commits on one file counts too. A rewrite that kept the content,
+    or an edit since, isn't this, except for a push read back from the pending
+    note: only the note says it came from a commit that's gone, so any change to
+    what it wrote counts. A sync that changes no file costs one diff.
     """
     changed = {ch.path for ch in mirror_changes(vault, state.last_mirror, new_tip)} - {POLICY_PATH}
     if not changed:
@@ -1929,19 +2001,21 @@ def _dropped_from_head(vault: Path, rules: LocalOnlyRules, state: LinkState, new
     mirrors = [m for c, m in came_here.items() if c in gone]
     if not mirrors:
         return []
+    claimed = {p["mirror"] for p in state.pairs if p.get("kind") == RECOVERED_PUSH_KIND}
     on_tip = {e.path: e for e in ls_tree(vault, state.last_mirror)}
     at_head = {e.path: e for e in ls_tree(vault, _head(vault))}
-    dropped: dict[str, str] = {}
-    for rev, ch in _log_changes(vault, "--no-walk", "--stdin", input="".join(f"{m}\n" for m in mirrors)):
-        if (
-            ch.path in changed
-            and ch.new is not None
-            and on_tip.get(ch.path) == ch.new
-            and at_head.get(ch.path) == ch.old
-            and not rules.refused(ch.path)
-        ):
-            dropped[ch.path] = rev
-    return [{"path": rel, "mirror_commit": rev} for rel, rev in sorted(dropped.items())]
+    newest: dict[str, tuple[str, TreeEntry | None]] = {}
+    replaced: dict[str, list[TreeEntry | None]] = {}
+    # In the order the state recorded them, oldest first, so the last one for a path is its newest.
+    for rev, ch in _log_changes(vault, "--no-walk=unsorted", "--stdin", input="".join(f"{m}\n" for m in mirrors)):
+        if ch.path in changed and not rules.refused(ch.path):
+            newest[ch.path] = (rev, ch.new)
+            replaced.setdefault(ch.path, []).append(ch.old)
+    return [
+        {"path": rel, "mirror_commit": rev}
+        for rel, (rev, written) in sorted(newest.items())
+        if written is not None and on_tip.get(rel) == written and (rev in claimed or at_head.get(rel) in replaced[rel])
+    ]
 
 
 def host_only_moves(
@@ -2021,6 +2095,12 @@ def host_moves_gate(
 def _broken(policy: Policy) -> bool:
     """A commit whose config can't be trusted: it goes up squashed, under HEAD's policy, never its own."""
     return "privacy-overlay-unreadable" in policy.warnings or SYNC_ONLY_INVALID in policy.warnings
+
+
+def _uncommitted_privacy_edit(builder: MirrorBuilder, head: str, live: Policy) -> bool:
+    """Whether ``scout-config.yaml``'s privacy settings differ from HEAD's, so the stricter of the two is in force."""
+    committed = builder.committed_policy(head)
+    return committed is not None and committed != live
 
 
 def _committed_sync_only(vault: Path, since: str | None) -> tuple[str, ...] | None:
