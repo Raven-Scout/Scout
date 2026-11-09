@@ -886,13 +886,13 @@ def test_otlp_settings_that_cannot_be_merged_are_refused(tmp_path: Path, body: s
 
 def test_gitignore_is_created_or_extended(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL]
+    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL, rs.PENDING_REL]
     assert rs.ensure_ignored(tmp_path) == []
     (tmp_path / ".gitignore").write_text("x")
-    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL]
+    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL, rs.PENDING_REL]
     assert (tmp_path / ".gitignore").read_text().startswith("x\n")
     (tmp_path / ".gitignore").write_text(f"{rs.STATE_REL}\n")  # a vault linked before #596
-    assert rs.ensure_ignored(tmp_path) == [rs.HOST_CACHE_REL]
+    assert rs.ensure_ignored(tmp_path) == [rs.HOST_CACHE_REL, rs.PENDING_REL]
 
 
 def test_link_and_sync_preconditions(vault: Path, host: FakeHost, tmp_path: Path) -> None:

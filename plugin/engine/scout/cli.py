@@ -405,7 +405,8 @@ def kb_share(
     Previews the notes that would be newly shared, the ones left out (private,
     local-only, over their ceiling, deciding for themselves) and the copy
     warning, then writes scout-config.yaml → privacy.federation_defaults and
-    turns sharing on. Agnes enforces it from your next `scoutctl repo sync`.
+    turns sharing on. Agnes enforces it once you commit scout-config.yaml and
+    then run `scoutctl repo sync`, which refuses while the change is uncommitted.
     Exit 1 = refused or not confirmed, 2 = bad argument.
     """
     import json
@@ -465,7 +466,8 @@ def kb_unshare(
     """Stop sharing a folder or note, with some people or everyone (owner only).
 
     Narrows scout-config.yaml → privacy.federation_defaults. In this release it
-    is vault only, so Agnes stops the share at your next `scoutctl repo sync`.
+    is vault only, so Agnes stops the share once you commit scout-config.yaml and
+    then run `scoutctl repo sync`, which refuses while the change is uncommitted.
     A note that shares itself in its own frontmatter is listed, not edited.
     """
     import json

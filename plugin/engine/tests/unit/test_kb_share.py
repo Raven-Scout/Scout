@@ -378,7 +378,7 @@ def test_unshare_with_one_person_keeps_the_others(vault: Path) -> None:
     res = kb(vault, "unshare", WIDGET, "--with", "sam@example.com")
     assert res.exit_code == 0, res.output
     assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
-    assert "next `scoutctl repo sync`" in res.output
+    assert "commit scout-config.yaml and then run `scoutctl repo sync`" in res.output
     assert f"{PLAN}  -sam@example.com" in res.output
     assert f"{SOLO}" in res.output  # it shares itself with Sam in its own frontmatter: listed, not edited
 
