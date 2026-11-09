@@ -316,6 +316,41 @@ _DETACH = {
 }  # fmt: skip
 _PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
+# An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
+_REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>]*)")
+
+# What skips or redirects the commit hooks (#607). Git takes a unique prefix of a long option.
+_NO_VERIFY = "--no-verify"
+_NO_V = "--no-v"
+_RUNS_HOOKS = {"commit", "merge", "rebase", "am", "cherry-pick", "revert", "push", "pull"}
+# Commands that run git for you: their own options come before it, so look for git among their words.
+_GIT_WRAPPERS = _PREFIX | {"timeout", "gtimeout", "caffeinate", "stdbuf", "ionice", "flock", "chronic", "find", "watch"}
+_GIT_VALUE_OPTIONS = {"-C", "--git-dir", "--work-tree", "--namespace", "--attr-source"}
+# Commits and refs written without `git commit`, so with no hook.
+_WRITES_COMMITS = {"commit-tree", "fast-import", "filter-branch", "filter-repo"}
+_CONFIG_READS = {
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--list", "-l",
+    "get", "list",
+}  # fmt: skip
+GIT_CONFIG_FORM = "GIT_CONFIG_*"
+_GIT_CONFIG_VAR = re.compile(r"^GIT_CONFIG(?!_NOSYSTEM=)[A-Z0-9_]*=")
+# A short -n means no-verify only on these: (letters that take a value, letters that take an attached one).
+_N_IS_NO_VERIFY = {"commit": ("mFCct", "uS"), "am": ("", "SCp")}
+# Long options whose value is free text, and a merge's short ones: "git commit --author --no-verify" names no flag.
+_VALUE_OPTIONS = {
+    "commit": {
+        "--message", "--file", "--reuse-message", "--reedit-message", "--fixup", "--squash", "--template", "--author",
+        "--date", "--cleanup", "--trailer", "--pathspec-from-file",
+    },
+    "merge": {"-m", "-F", "-s", "-X", "--message", "--file", "--strategy", "--strategy-option", "--into-name"},
+}  # fmt: skip
+# Writing these changes the hooks. Only a command that writes counts: reading them is fine.
+_HOOK_FILE = re.compile(r"(?:^|/)\.git/(hooks(?:/|$)|config$)")
+_GIT_DIR = re.compile(r"(?:^|/)(\.git(?:/hooks)?)/?$")
+_WRITERS = {"tee", "rm", "unlink", "mv", "chmod", "chown", "chflags", "touch", "truncate", "rmdir", "shred"}
+_COPIERS = {"cp", "install", "ln", "rsync"}  # the last argument is the one written
+_SED_IN_PLACE = re.compile(r"^(?:--in-place|-[A-Za-z]*i)")
 
 
 def _drop_heredoc_bodies(command: str) -> str:
@@ -351,6 +386,19 @@ def _segments(command: str) -> list[str]:
     return out
 
 
+def _split_redirects(segment: str) -> tuple[str, list[str]]:
+    """``segment`` without its unquoted redirects, and the files they write: an input redirect only reads."""
+    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), segment)
+    kept, targets, at = [], [], 0
+    for m in _REDIRECT.finditer(masked):
+        kept.append(segment[at : m.start()])
+        if ">" in m[1]:
+            targets.extend(_tokens(segment[m.start(2) : m.end(2)]))
+        at = m.end()
+    kept.append(segment[at:])
+    return "".join(kept), targets
+
+
 def _tokens(segment: str) -> list[str]:
     try:
         return shlex.split(segment, comments=False, posix=True)
@@ -379,7 +427,11 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
             return "env", []
         if a.startswith("-u") and a[2:] in RUN_VARS:
             return "env", []
-        if a in ("-C", "--chdir", "-P", "-S", "--split-string"):
+        if a == "-S" or a == "--split-string":
+            return _env_escape(_tokens(args[i + 1] if i + 1 < len(args) else "") + args[i + 2 :])
+        if a.startswith("--split-string="):
+            return _env_escape(_tokens(a.split("=", 1)[1]) + args[i + 1 :])
+        if a in ("-C", "--chdir", "-P"):
             i += 2
             continue
         if a.startswith("-"):
@@ -388,22 +440,197 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if _ASSIGN.match(a):
             if _sets_run_var(a):
                 return "env", []
+            if _GIT_CONFIG_VAR.match(a):
+                return GIT_CONFIG_FORM, []
             i += 1
             continue
         return None, args[i:]
     return None, []
 
 
+def _dynamic(word: str) -> bool:
+    """Whether the shell fills a word in, so what it says can't be read here."""
+    return "$" in word or "`" in word
+
+
+def _basename(word: str) -> str:
+    return word.rsplit("/", 1)[-1]
+
+
+def _git_words(words: list[str]) -> list[str] | None:
+    """The arguments of the git call ``words`` makes, directly or through a wrapper, else None."""
+    name = _basename(words[0])
+    if name == "git":
+        return words[1:]
+    if name.startswith("git-"):  # the dashed form of a subcommand; a script named git-*.sh matches no subcommand
+        return [name[4:], *words[1:]]
+    if name in _GIT_WRAPPERS:
+        for i, word in enumerate(words[1:], 1):
+            if _basename(word) == "git" or _basename(word).startswith("git-"):
+                return _git_words(words[i:])
+    return None
+
+
+def _config_form(key: str) -> str | None:
+    """The name of a config key that changes which hooks or commands run (keys don't depend on case)."""
+    key = key.lower()
+    if key == "core.hookspath":
+        return "core.hooksPath"
+    if key.startswith("alias."):
+        return "alias.*"
+    if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
+        return "include.path"
+    return None
+
+
+def _config_flag_form(flag: str, setting: str) -> str | None:
+    key = setting.split("=", 1)[0]
+    form = _config_form(key)
+    if form is not None:
+        return f"{flag} {form}"
+    return f"{flag} <unknown>" if _dynamic(key) else None
+
+
+def _short_no_verify(subcommand: str, flag: str) -> tuple[bool, bool]:
+    """Whether a short-option cluster has -n in it, and whether its last letter takes the next word as its value."""
+    takes_value, takes_attached = _N_IS_NO_VERIFY[subcommand]
+    for at, letter in enumerate(flag[1:], 1):
+        if letter == "n":
+            return True, False
+        if letter in takes_value:
+            return False, at == len(flag) - 1
+        if letter in takes_attached:
+            break
+    return False, False
+
+
+def _no_verify_form(subcommand: str, args: list[str]) -> str | None:
+    values = _VALUE_OPTIONS.get(subcommand, set())
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a == "--":
+            return None
+        elif a.startswith(_NO_V) and _NO_VERIFY.startswith(a):
+            return _NO_VERIFY
+        elif a in values:
+            skip = True
+        elif subcommand in _N_IS_NO_VERIFY and a.startswith("-") and not a.startswith("--"):
+            has_n, skip = _short_no_verify(subcommand, a)
+            if has_n:
+                return "-n"
+    return None
+
+
+def _moves_a_branch(args: list[str]) -> bool:
+    """Whether ``git update-ref args`` writes a branch: named, or a ref that can't be read here."""
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a == "--stdin":
+            return True
+        elif a == "-m":
+            skip = True
+        elif not a.startswith("-"):
+            return a in ("HEAD", "@") or a.startswith("refs/heads/") or _dynamic(a)
+    return True
+
+
+def _writes_a_commit_object(args: list[str]) -> bool:
+    return any(a in ("-tcommit", "--type=commit") for a in args) or any(
+        a in ("-t", "--type") and b == "commit" for a, b in zip(args, args[1:], strict=False)
+    )
+
+
+def _git_config_form(args: list[str]) -> str | None:
+    if any(a in _CONFIG_READS for a in args):
+        return None
+    for a in args:
+        form = _config_form(a)
+        if form is not None:
+            return f"git config {form}"
+    return None
+
+
+def _git_escape(args: list[str]) -> str | None:
+    """The form of a git call that skips or redirects the commit hooks, else None."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        a = args[i]
+        if a in ("-c", "--config-env"):
+            form = _config_flag_form(a, args[i + 1] if i + 1 < len(args) else "$")  # a substitution left no setting
+            i += 2
+        elif a.startswith("--config-env="):
+            form = _config_flag_form("--config-env", a.split("=", 1)[1])
+            i += 1
+        else:
+            form = None
+            i += 2 if a in _GIT_VALUE_OPTIONS else 1
+        if form is not None:
+            return form
+    if i >= len(args):
+        return None
+    subcommand, rest = args[i], args[i + 1 :]
+    if _dynamic(subcommand):
+        return "git <unknown>"
+    if subcommand in _WRITES_COMMITS:
+        return subcommand
+    if subcommand == "update-ref":
+        return subcommand if _moves_a_branch(rest) else None
+    if subcommand == "hash-object":
+        return "hash-object -t commit" if _writes_a_commit_object(rest) else None
+    if subcommand == "config":
+        return _git_config_form(rest)
+    return _no_verify_form(subcommand, rest) if subcommand in _RUNS_HOOKS else None
+
+
+def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | None:
+    """Whether a command writes ``.git/hooks`` or ``.git/config``: by a redirect, or a command that writes files."""
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
+        words = words[1:]
+    written = list(targets)
+    if words:
+        name, args = _basename(words[0]), words[1:]
+        if name in _WRITERS or (name == "sed" and any(_SED_IN_PLACE.match(a) for a in args)):
+            written += args
+        elif name in _COPIERS:
+            written += args[-1:]
+        elif name == "dd":
+            written += [a[3:] for a in args if a.startswith("of=")]
+    for path in written:
+        m = _HOOK_FILE.search(path if path.startswith("/") else cwd + path)
+        if m is not None:
+            return ".git/config" if m[1] == "config" else ".git/hooks"
+    return None
+
+
 def _words_escape(words: list[str], depth: int) -> str | None:
-    while words and _ASSIGN.match(words[0]):
+    form = None
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
         if _sets_run_var(words[0]):
             return "env"
+        if _GIT_CONFIG_VAR.match(words[0]):
+            form = GIT_CONFIG_FORM
         words = words[1:]
-    while words and words[0] in _PREFIX:
-        words = words[1:]
-    if not words:
-        return None
-    name, args = words[0].rsplit("/", 1)[-1], words[1:]
+    found = _command_escape(words, depth) if words else None
+    return found if found == "env" else form or found
+
+
+def _command_escape(words: list[str], depth: int) -> str | None:
+    command = words
+    while command and command[0] in _PREFIX:
+        command = command[1:]
+    found = _plain_escape(command, depth) if command else None
+    if found is not None:
+        return found
+    git = _git_words(words)
+    return _git_escape(git) if git is not None else None
+
+
+def _plain_escape(words: list[str], depth: int) -> str | None:
+    name, args = _basename(words[0]), words[1:]
     if name == "env":
         verdict, rest = _env_escape(args)
         return verdict or (_words_escape(rest, depth) if rest else None)
@@ -413,7 +640,7 @@ def _words_escape(words: list[str], depth: int) -> str | None:
         unexport = any(a in ("-n", "+x") or (a.startswith("+") and "x" in a) for a in args)
         if any(_sets_run_var(a) or (unexport and a in RUN_VARS) for a in args):
             return "env"
-        return None
+        return GIT_CONFIG_FORM if any(_GIT_CONFIG_VAR.match(a) for a in args) else None
     if name in _DETACH:
         return "detach"
     if depth < 3 and name in _SHELLS and "-c" in args[:-1]:
@@ -424,20 +651,31 @@ def _words_escape(words: list[str], depth: int) -> str | None:
 
 
 def run_escape(command: str, *, depth: int = 0) -> str | None:
-    """Whether a run's shell command hides that it's a run: "env" (changes SCOUT_MODE/SCOUT_READER or clears
-    the environment), "detach" (backgrounds or hands work to another process), else None.
+    """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
+    or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
+    that skips or redirects the hooks (``--no-verify``, ``-c core.hooksPath``, ``commit-tree``, ``.git/hooks``, #607),
+    else None. "env" wins, then a named form, then "detach".
 
     Only the forms that write count: reading ``$SCOUT_MODE``, ``printenv``, a mention in a commit message or a
-    search, ``2>&1``, and anything in a quoted argument or a here-document's body (a Telegram wrap's ``&amp;``)
-    all pass.
+    search, ``git log -n 5``, ``git config --get``, ``cat .git/hooks/pre-commit``, ``2>&1``, and anything in a quoted
+    argument or a here-document's body (a Telegram wrap's ``&amp;``) all pass. Only the top-level command is read,
+    so what ``scripts/git-safe-commit.sh`` or ``scoutctl`` run inside themselves is never in question.
     """
-    command = _drop_heredoc_bodies(command)
-    if _BACKGROUND.search(_QUOTED.sub("''", command)):
-        return "detach"
-    verdict: str | None = None
+    command = _drop_heredoc_bodies(command).replace("\\\n", " ")
+    detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
+    form: str | None = None
+    cwd = ""  # set by a `cd` into the git dir, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     for segment in _segments(command):
-        found = _words_escape(_tokens(segment), depth)
+        clean, targets = _split_redirects(segment)
+        words = _tokens(clean)
+        found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
         if found == "env":
             return "env"
-        verdict = verdict or found
-    return verdict
+        if found == "detach":
+            detach = True
+        else:
+            form = form or found
+        if words[:1] == ["cd"]:
+            m = _GIT_DIR.search(words[-1])
+            cwd = f"{m[1]}/" if m is not None else ""
+    return form or ("detach" if detach else None)

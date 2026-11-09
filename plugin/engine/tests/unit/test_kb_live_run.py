@@ -962,3 +962,357 @@ SCOUT_WRAP"""
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:
     assert run_escape(command) is None
+
+
+# ----- a run's git call that skips or redirects the commit hooks (#607) -----------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --no-verify -m x",
+        "git commit -m x --no-verify",
+        "git merge --no-verify feature",
+        "git rebase --no-verify main",
+        "git am --no-verify a.patch",
+        "git cherry-pick --no-verify abc123",
+        "git revert --no-verify abc123",
+        "git push --no-verify origin main",
+        "git push origin main --no-verify",
+        "git pull --no-verify",
+        "git commit --no-veri -m x",  # git takes a unique prefix
+        "git am --no-v a.patch",
+        "git commit --no-verify>/dev/null -m x",
+        "git commit --no-verify 2>&1",
+        "git commit --no-verify &> out.txt",
+        "git commit \\\n  --no-verify -m x",
+        "git -C notes commit --no-verify -m x",
+        "git --no-pager -C notes --git-dir .git --work-tree . commit --no-verify",
+        "/usr/bin/git commit --no-verify",
+        "git-commit --no-verify",
+        'g"i"t com\'mit\' --no"-"verify',
+        "command git commit --no-verify",
+        "sudo -u alex git commit --no-verify",
+        "nice -n 0 git commit --no-verify",
+        "timeout 60 git commit --no-verify",
+        "caffeinate -i git commit --no-verify",
+        "xargs -0 git commit --no-verify",
+        "find . -name x -exec git commit --no-verify \\;",
+        "FOO=1 git commit --no-verify",
+        "SCOUT_LINT_OVERRIDE=why git commit --no-verify",
+        "env FOO=1 git commit --no-verify",
+        "env -S 'git commit --no-verify'",
+        "env --split-string='git commit --no-verify'",
+        "if git commit --no-verify; then echo ok; fi",
+        "if ! git commit --no-verify; then echo no; fi",
+        "for f in a; do git commit --no-verify; done",
+        "{ git commit --no-verify; }",
+        "( git commit --no-verify )",
+        "echo $(git commit --no-verify)",
+        "ls notes\ngit commit --no-verify",
+        "bash -c 'git commit --no-verify'",
+        "eval 'git commit --no-verify'",
+        "git add notes/a.md && git commit --no-verify -m x",
+        "git commit --no-verify &",
+        "git commit --no-verify -F - <<'EOF'\nmessage\nEOF",
+    ],
+)
+def test_no_verify_is_named_on_every_command_that_takes_it(command: str) -> None:
+    assert run_escape(command) == "--no-verify"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -n -m x",
+        "git commit -m x -n",
+        "git commit -nm x",
+        "git commit -anm x",
+        "git commit -an -m x",
+        "git commit -qn",
+        "git am -n a.patch",
+        "git am -3n a.patch",
+        "git commit -n>/dev/null",
+    ],
+)
+def test_short_n_is_named_where_it_means_no_verify(command: str) -> None:
+    assert run_escape(command) == "-n"
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("git -c core.hooksPath=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git -c core.hookspath=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git -c CORE.HOOKSPATH=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git -c core.hooksPath commit -m x", "-c core.hooksPath"),
+        ("git -c user.name=x -c core.hooksPath=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git -C notes -c core.hooksPath=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git --no-pager -c core.hooksPath=/dev/null push", "-c core.hooksPath"),
+        ("git -c 'core.hooksPath=/dev/null' commit -m x", "-c core.hooksPath"),
+        ('git -c "core.hooksPath=$D" commit -m x', "-c core.hooksPath"),
+        ("git -c core.hooksPath=/dev/null log", "-c core.hooksPath"),
+        ("git --config-env=core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
+        ("git --config-env core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
+        ("git -c alias.c='commit --no-verify' c -m x", "-c alias.*"),
+        ("git -c include.path=/tmp/x commit -m x", "-c include.path"),
+        ("git -c includeIf.onbranch:main.path=/tmp/x commit -m x", "-c include.path"),
+        ('git -c "$K=/dev/null" commit -m x', "-c <unknown>"),
+        ("git -c $(cat /tmp/key) commit -m x", "-c <unknown>"),
+        ("git --config-env=$K=D commit -m x", "--config-env <unknown>"),
+        ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("git config core.hooksPath", "git config core.hooksPath"),
+        ("git config --local core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("git config --global core.hookspath /dev/null", "git config core.hooksPath"),
+        ("git config --file .git/config core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("git config --unset core.hooksPath", "git config core.hooksPath"),
+        ("git config set core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("git -C notes config core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("git config alias.c 'commit --no-verify'", "git config alias.*"),
+        ("git config include.path /tmp/x", "git config include.path"),
+    ],
+)
+def test_redirecting_the_hooks_through_config_is_named(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x",
+        "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/dev/null'\" git commit -m x",
+        "GIT_CONFIG_GLOBAL=/tmp/x git commit -m x",
+        "GIT_CONFIG_SYSTEM=/tmp/x git commit -m x",
+        "GIT_CONFIG=/tmp/x git config -l",
+        "export GIT_CONFIG_COUNT=1",
+        "export FOO=1 GIT_CONFIG_GLOBAL=/tmp/x",
+        "declare -x GIT_CONFIG_GLOBAL=/tmp/x",
+        "env GIT_CONFIG_GLOBAL=/tmp/x git commit -m x",
+        "env FOO=1 GIT_CONFIG_COUNT=1 git commit -m x",
+        "FOO=1 GIT_CONFIG_COUNT=1 ls",
+    ],
+)
+def test_setting_git_config_env_vars_is_named(command: str) -> None:
+    assert run_escape(command) == "GIT_CONFIG_*"
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ('c=$(git commit-tree "$(git write-tree)" -p HEAD -m x)', "commit-tree"),
+        ("git commit-tree abc -m x", "commit-tree"),
+        ("git -C notes commit-tree abc", "commit-tree"),
+        ("git fast-import < stream", "fast-import"),
+        ("git filter-branch --tree-filter x HEAD", "filter-branch"),
+        ("git filter-repo --force", "filter-repo"),
+        ("git hash-object -t commit -w --stdin < c", "hash-object -t commit"),
+        ("git hash-object -tcommit -w f", "hash-object -t commit"),
+        ("git hash-object --type commit -w f", "hash-object -t commit"),
+        ("git hash-object --type=commit -w f", "hash-object -t commit"),
+        ("git update-ref refs/heads/main abc", "update-ref"),
+        ("git update-ref HEAD abc", "update-ref"),
+        ("git update-ref @ abc", "update-ref"),
+        ("git update-ref -m why refs/heads/main abc def", "update-ref"),
+        ("git update-ref --no-deref HEAD abc", "update-ref"),
+        ("git update-ref -d refs/heads/main", "update-ref"),
+        ("git update-ref --stdin < cmds", "update-ref"),
+        ('git update-ref "$REF" abc', "update-ref"),
+        ("git update-ref `cat ref` abc", "update-ref"),  # the substitution is its own segment: no ref is left to check
+        ("git update-ref", "update-ref"),
+        ('git update-ref HEAD "$(git commit-tree abc)"', "update-ref"),
+        ("git $sub -m x", "git <unknown>"),
+        ('git "$sub" -m x', "git <unknown>"),
+    ],
+)
+def test_commits_made_without_git_commit_are_named(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("echo x > .git/hooks/pre-commit", ".git/hooks"),
+        ("echo x >> .git/hooks/pre-commit", ".git/hooks"),
+        ("echo x >.git/hooks/pre-commit", ".git/hooks"),
+        ('echo x > ".git/hooks/pre-commit"', ".git/hooks"),
+        ("cat > .git/hooks/pre-commit <<'EOF'\n#!/bin/sh\nEOF", ".git/hooks"),
+        ("echo x &> .git/hooks/pre-commit", ".git/hooks"),
+        (": > /tmp/vault/.git/hooks/pre-commit", ".git/hooks"),
+        ("tee .git/hooks/pre-commit < x", ".git/hooks"),
+        ("sudo tee -a .git/hooks/pre-commit < x", ".git/hooks"),
+        ("rm .git/hooks/pre-commit", ".git/hooks"),
+        ("rm -rf .git/hooks", ".git/hooks"),
+        ("unlink .git/hooks/pre-commit", ".git/hooks"),
+        ("mv .git/hooks/pre-commit /tmp/x", ".git/hooks"),
+        ("mv .git/hooks .git/h", ".git/hooks"),
+        ("chmod -x .git/hooks/pre-commit", ".git/hooks"),
+        ("truncate -s 0 .git/hooks/pre-commit", ".git/hooks"),
+        ("touch .git/hooks/pre-push", ".git/hooks"),
+        ("cp /tmp/x .git/hooks/pre-commit", ".git/hooks"),
+        ("ln -sf /dev/null .git/hooks/pre-commit", ".git/hooks"),
+        ("install -m 755 /tmp/x .git/hooks/pre-commit", ".git/hooks"),
+        ("sed -i '' 1d .git/hooks/pre-commit", ".git/hooks"),
+        ("sed --in-place 1d .git/hooks/pre-commit", ".git/hooks"),
+        ("dd if=/dev/null of=.git/hooks/pre-commit", ".git/hooks"),
+        ("cd .git/hooks && rm pre-commit", ".git/hooks"),
+        ("cd .git; rm hooks/pre-commit", ".git/hooks"),
+        ("cd /tmp/vault/.git/hooks\necho x > pre-commit", ".git/hooks"),
+        ("echo x >> .git/config", ".git/config"),
+        ("echo x >& .git/config", ".git/config"),
+        ("echo x 2> .git/config", ".git/config"),
+        ("cat <> .git/config", ".git/config"),
+        ("cat < /tmp/x >> .git/config", ".git/config"),
+        ("sort < .git/config > .git/hooks/pre-commit", ".git/hooks"),
+        ("cd .git && echo x >> config", ".git/config"),
+        ("sed -i '' 1d .git/config", ".git/config"),
+    ],
+)
+def test_writes_into_the_git_dir_that_change_the_hooks_are_named(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git log -n 5",
+        "git log -n 5 --oneline",
+        "git --no-pager log -n 5",
+        "git show -n 1",
+        "git show HEAD:notes/a.md",
+        "git diff --no-verify",
+        "git log --grep=--no-verify",
+        "git log --grep commit-tree",
+        "git log --grep='core.hooksPath'",
+        "git grep -e --no-verify",
+        "git grep -n update-ref",
+        "git add -n notes/a.md",
+        "git commit -m 'skip it with --no-verify'",
+        'git commit -m "never use --no-verify or -n here"',
+        'git commit -m "git -c core.hooksPath=/dev/null commit"',
+        "git commit -m \"$(cat <<'EOF'\nwhy --no-verify is wrong\ngit commit-tree\nEOF\n)\"",
+        "git commit -F - <<'EOF'\ngit commit --no-verify\ngit -c core.hooksPath=/dev/null commit\n.git/hooks/x\nEOF",
+        "git commit -m --no-verify",
+        "git commit -m -n",
+        "git commit -am -n",
+        "git commit --message --no-verify",
+        "git commit --message=--no-verify",
+        "git commit --author --no-verify -m x",
+        "git commit -mn",
+        "git commit -uno -m x",
+        "git commit -Sn -m x",
+        "git commit -Fn",
+        "git commit -Cn",
+        "git commit -cn",
+        "git commit -tn",
+        "git commit -m x -- --no-verify",
+        "git commit -m x -- -n",
+        "git commit --no-verbose -m x",
+        "git commit --no-edit",
+        "git commit -q -m x",
+        "git commit --verify -m x",
+        "git merge -n feature",
+        "git merge -m --no-verify feature",
+        "git merge --no-verify-signatures feature",
+        "git merge --no-stat feature",
+        "git rebase -n main",
+        "git pull -n",
+        "git push -n origin main",
+        "git push --dry-run origin main",
+        "git cherry-pick -n abc123",
+        "git revert -n abc123",
+        "git status",
+        "git",
+        "git --version",
+        "git -C",
+        "git config user.email alex@example.com",
+        'git config user.name "Scout Bot"',
+        "git config --get core.hooksPath",
+        "git config --get-all core.hooksPath",
+        "git config --get-regexp 'core.*'",
+        "git config --list",
+        "git config -l",
+        "git config get core.hooksPath",
+        "git config",
+        "git -c user.name=Scout -c user.email=s@example.com commit -m x",
+        "git -c commit.gpgsign=false commit -m x",
+        "git -c core.quotepath=off status",
+        "git --config-env=user.name=NAME commit -m x",
+        'git -c user.name="$NAME" commit -m x',
+        "GIT_CONFIG_NOSYSTEM=1 git status",
+        "export GIT_CONFIG_NOSYSTEM=1",
+        "FOO=1 ls",
+        "export FOO=1",
+        "git update-ref refs/scout/mirror abc",
+        "git update-ref refs/tags/v1 abc",
+        "git update-ref -d refs/notes/x",
+        "git update-ref -m why refs/scout/mirror abc",
+        "git hash-object notes/a.md",
+        "git hash-object -w notes/a.md",
+        "git hash-object -t blob -w notes/a.md",
+        "git hash-object --type=tree -w notes/a.md",
+        "git write-tree",
+        "git rev-parse --git-path hooks",
+        "git hook run pre-commit",  # runs the hook; it skips nothing
+        "cat .git/hooks/pre-commit",
+        "ls .git/hooks",
+        "ls -la .git/hooks/",
+        "grep -n scoutctl .git/hooks/pre-commit",
+        "head -5 .git/config",
+        "test -x .git/hooks/pre-commit",
+        "sed -n 1,5p .git/hooks/pre-commit",
+        "sed 1d .git/config",
+        "cp .git/hooks/pre-commit /tmp/backup",
+        "dd if=.git/hooks/pre-commit of=/tmp/backup",
+        "cat < .git/hooks/pre-commit",
+        "cat <.git/config",
+        "python3 x.py < .git/config",
+        "while read -r l; do echo $l; done < .git/config",
+        'grep core <<< ".git/config"',
+        "grep core <<< .git/hooks/pre-commit",
+        "cat <<.git/config\nbody\n.git/config",
+        "exec 3< .git/config",
+        "sort < .git/config > /tmp/sorted",
+        "cd .git/hooks && cat < pre-commit",
+        "rm -f .git/index.lock",
+        "rm -f .git/HEAD.lock",
+        "cd .git && rm -f index.lock",
+        "cd .git/hooks && ls",
+        "cd notes && rm a.md",
+        "cd && ls",
+        "echo x > notes/hooks.md",
+        "echo x > notes/.git-notes/config.md",
+        "echo git commit --no-verify",
+        "echo git -c core.hooksPath=/dev/null commit",
+        'echo "cat > .git/hooks/pre-commit"',
+        "echo 'x' '> .git/hooks/pre-commit'",
+        "printf '%s' 'git commit --no-verify'",
+        "grep -rn -- --no-verify phases/",
+        "grep -rn 'core.hooksPath' scripts/",
+        "rg commit-tree scripts/",
+        "cat <<'EOF' > notes/a.md\ngit commit --no-verify\nGIT_CONFIG_COUNT=1 git commit\necho x > .git/hooks/x\nEOF",
+        "xargs grep -l git",
+        "xargs grep -l git -n",
+        "find . -name git",
+        "scripts/git-safe-commit.sh 'kb: no --no-verify here' notes/a.md",
+        "scripts/git-safe-commit.sh msg notes/a.md 2>&1",
+        "scoutctl repo sync",
+        "scripts/scoutctl kb lint --staged",
+        "env -S",
+        "env -S 'git log -n 5'",
+    ],
+)
+def test_ordinary_git_and_text_about_the_forms_are_not_flagged(command: str) -> None:
+    assert run_escape(command) is None
+
+
+def test_a_hook_skip_wins_over_detach_but_a_run_env_change_wins_over_both() -> None:
+    assert run_escape("nohup true; git commit --no-verify") == "--no-verify"
+    assert run_escape("git commit --no-verify; nohup true") == "--no-verify"
+    assert run_escape("git status & git commit -n; nohup true") == "detach"  # the same segment: git status decides
+    assert run_escape("git commit --no-verify; unset SCOUT_MODE") == "env"
+    assert run_escape("SCOUT_MODE= GIT_CONFIG_COUNT=1 git commit") == "env"
+
+
+def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
+    assert run_escape("GIT_CONFIG_COUNT=1 git commit --no-verify") == "GIT_CONFIG_*"
+    assert run_escape("GIT_CONFIG_COUNT=1 nohup git commit") == "GIT_CONFIG_*"
