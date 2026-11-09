@@ -49,6 +49,13 @@ Every push goes up under the Repository Writer Lease (R2, ``scout.repo_lease``):
 a sync during a scheduled run reuses the run's lease, read from this computer's
 lease file, and any other sync or link takes the lease for itself and gives it
 back when it is done.
+
+A sync can stop anywhere between a replay and its push (a refused push, a
+SIGKILL). The state is saved after each replay, so ``last_mirror`` and ``pairs``
+say what has already come home and it is never replayed again; ``last_laptop``
+moves only when the sync finishes. The next sync reads that span from the state,
+not from what it replayed itself, so the laptop's commits still go up as one on
+top of Agnes's changes.
 """
 
 from __future__ import annotations
@@ -1595,6 +1602,7 @@ def _sync_under_lease(
     remote = remote_head(vault, host, status.clone_url)
     if remote is None:
         raise RepoSyncError("remote_empty", "refused: the repository on Agnes is empty; unlink, then link again")
+    replayed_to = state.last_mirror
     if remote != state.last_mirror:
         remote = fetch_remote(vault, host, status.clone_url)
         if _rev(vault, state.last_mirror) is None or not _is_ancestor(vault, state.last_mirror, remote):
@@ -1605,9 +1613,11 @@ def _sync_under_lease(
             )
         revs = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_mirror}..{remote}").stdout.split()
         parent = state.last_mirror
+        unrecorded = _unrecorded_replays(vault, state)
         for rev in revs:
-            new = replay_one(vault, rules, parent, rev, result.replay_skipped)
-            if new is not None:
+            if rev in unrecorded:
+                state.pairs.append({"laptop": unrecorded[rev], "mirror": rev, "kind": "replay"})
+            elif (new := replay_one(vault, rules, parent, rev, result.replay_skipped)) is not None:
                 result.replayed.append(new)
                 state.pairs.append({"laptop": new, "mirror": rev, "kind": "replay"})
                 if progress:
@@ -1615,8 +1625,10 @@ def _sync_under_lease(
             state.last_mirror = rev
             parent = rev
             save_state(vault, state)
-        if result.replay_skipped:
-            result.notes.append(_replay_skipped_note(result.replay_skipped))
+    if rules.sync_only:
+        result.replay_skipped[:0] = _skips_since_last_push(vault, rules, state, replayed_to)
+    if result.replay_skipped:
+        result.notes.append(_replay_skipped_note(result.replay_skipped))
 
     head = _head(vault)
     replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
@@ -1631,7 +1643,9 @@ def _sync_under_lease(
     pushes: list[tuple[str, str]] = []
     try:
         policies = {c: builder.policy(c) for c in own}
-        squash = bool(result.replayed) or any(_broken(p) for p in policies.values())
+        # A replay in the span, this sync's or one a sync that stopped short left, means the commits
+        # before it lack Agnes's changes: their own trees on top of Agnes's tip would revert them (#609).
+        squash = len(own) < len(todo) or any(_broken(p) for p in policies.values())
         subjects = [commit_meta(vault, c).message.splitlines()[0] for c in own]
         refresh_only = not own
         if squash or refresh_only:
@@ -1676,6 +1690,50 @@ def _sync_under_lease(
     state.last_laptop = head
     save_state(vault, state)
     return result
+
+
+def _unrecorded_replays(vault: Path, state: LinkState) -> dict[str, str]:
+    """``{mirror commit: vault commit}`` for replays since the last synced commit, read from their trailers.
+
+    A sync killed between moving HEAD and saving the state leaves a replay the
+    state doesn't know. Doing it again isn't safe: the file may have been edited
+    or removed here since. The caller only asks about mirror commits past
+    ``last_mirror``, so a commit carrying a stale trailer can't skip anything real.
+    """
+    head = _head(vault)
+    if not _is_ancestor(vault, state.last_laptop, head):
+        return {}
+    fmt = f"--format=%H %(trailers:key={REPLAY_TRAILER},valueonly,separator=%x20)"
+    lines = git(vault, "log", fmt, f"{state.last_laptop}..{head}").stdout.splitlines()
+    return {mirror: laptop for laptop, mirror in (ln.split() for ln in lines if len(ln.split()) == 2)}
+
+
+def _skips_since_last_push(
+    vault: Path, rules: LocalOnlyRules, state: LinkState, replayed_to: str
+) -> list[dict[str, str]]:
+    """Files an earlier sync replayed past, up to ``replayed_to``, outside ``privacy.sync_only`` and still on the tip.
+
+    A sync that skips a file takes it off the tip, so one left there means that
+    sync never got to push. Its warning went with it, and the replay that would
+    warn again won't run, so the next push would remove the file unannounced.
+    """
+    base = next((p["mirror"] for p in reversed(state.pairs) if p.get("kind") != "replay"), None)
+    if base is None or not _is_ancestor(vault, base, replayed_to):
+        return []
+    skipped: list[dict[str, str]] = []
+    parent = base
+    head = _head(vault)
+    for rev in git(vault, "rev-list", "--reverse", "--first-parent", f"{base}..{replayed_to}").stdout.split():
+        for ch in mirror_changes(vault, parent, rev):
+            if (
+                ch.new is not None
+                and rules.outside_sync_only(ch.path)
+                and _blob_at(vault, state.last_mirror, ch.path) is not None
+                and _blob_at(vault, head, ch.path) != ch.new
+            ):
+                skipped.append({"path": ch.path, "mirror_commit": rev})
+        parent = rev
+    return skipped
 
 
 def host_only_moves(
