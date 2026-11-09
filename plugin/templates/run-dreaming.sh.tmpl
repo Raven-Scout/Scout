@@ -90,6 +90,11 @@ echo "=== {{INSTANCE_NAME}} Dreaming run starting at $(date) ===" >> "$LOG_FILE"
 # labelled for that reader.
 export SCOUT_READER=autonomous
 
+# Claude Code otherwise sets its process title to "claude", which hides its argv
+# from ps. The commit hook reads that argv to tell this run's commits from the
+# owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
 # These write to .scout-cache/ for DREAMING.md to consume.
 PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"

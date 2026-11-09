@@ -173,6 +173,40 @@ def test_a_search_outside_the_vault_is_allowed(vault, tmp_path):
     assert _decision(vault, "Grep", {"pattern": "x", "path": str(elsewhere)}) is None
 
 
+# --- a run may not change the env that marks it a run, or its lock (#595) --------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u SCOUT_MODE -u SCOUT_READER git commit -m notes",
+        "SCOUT_MODE= SCOUT_READER=owner git commit -m notes",
+        "unset SCOUT_MODE; scripts/git-safe-commit.sh notes notes/a.md",
+        "env -i PATH=/usr/bin git commit -m notes",
+    ],
+)
+def test_run_denies_a_command_that_changes_its_run_env(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "SCOUT_MODE" in reason and "owner" in reason
+    assert "lock" not in reason and "PID" not in reason
+
+
+@pytest.mark.parametrize("command", ["nohup git commit -m x", "( git commit -m x & )", "osascript -e 'x'"])
+def test_run_denies_a_command_that_detaches(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "foreground" in reason
+
+
+@pytest.mark.parametrize("command", ['echo "$SCOUT_MODE ${SCOUT_READER:-}"', "printenv SCOUT_MODE", "env | grep SCOUT"])
+def test_run_may_read_its_run_env(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+@pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
+def test_owner_session_may_change_the_run_env(vault, env):
+    assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
+
+
 # --- owner and non-vault sessions -----------------------------------------------------
 
 
@@ -304,3 +338,59 @@ def test_run_grep_always_reaches_python(vault, tmp_path):
     payload = _payload("Grep", {"pattern": "Priya"}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u SCOUT_MODE git commit -m x",
+        "env -i git commit -m x",
+        "unset SCOUT_READER",
+        "nohup git commit -m x",
+        "git commit -m x &",
+        "(git commit -m x &)",
+        "setsid git commit",
+        "osascript -e x",
+        "open -a Terminal x.command",
+        "echo x | at now",
+        "tmux new -d x",
+        "ls notes\nnohup git commit -m x",
+        "ls notes\n\tsetsid git commit",
+    ],
+)
+def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word in the payload, so only the run-escape patterns can send it to Python (here: missing, so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_run_env_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+)
+def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_a_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
+    tool_input = {"command": "ls notes", "description": "Open the script at env; nohup & screen"}
+    payload = _payload("Bash", tool_input, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_the_telegram_wrap_is_allowed_through_the_real_cli(vault):
+    wrap = "scoutctl notify telegram --body-file - <<'SCOUT_WRAP'\n<b>Done.</b> R&amp;D (open since Monday)\nSCOUT_WRAP"
+    payload = _payload("Bash", {"command": wrap}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
