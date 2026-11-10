@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Control Center's session list reaches past its newest 30 runs** (`Scout/ControlCenter/RunWindow.swift`, `Scout/ControlCenter/SessionsListView.swift`). The list showed the first 30 runs that passed the filters and nothing else, so an older run could not be opened from the app. It now shows the same first 30, then "Show 30 more" and "Showing 30 of N" below them. Changing the search, the type filter or the day goes back to one page.
+
 ## [0.18.11] - 2026-11-09
 
 ## [0.18.10] - 2026-11-07
