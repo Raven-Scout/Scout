@@ -47,6 +47,43 @@ _BANNER = (
 )
 
 
+_SKIP_BANNER = (
+    "\n\n🔴 **Skipped an item-less day** — {skipped} had no checklist items at "
+    "all (no `- [ ]` and no `- [x]` lines), so it was not carried forward; "
+    "the list above comes from [[action-items-{prev}]] instead. An item-less "
+    "file after a non-empty one is a truncated rewrite, not a cleared board — "
+    "check {skipped} in git before trusting it."
+)
+
+# A checklist item of any state. A board the user genuinely cleared still has
+# its `- [x]` lines; a file with none at all lost its item sections.
+_CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\]", re.MULTILINE)
+
+
+def _has_items(path: Path) -> bool:
+    return bool(_CHECKBOX.search(path.read_text(encoding="utf-8")))
+
+
+def _pick_source(data_dir: Path | None, target_date: _dt.date) -> tuple[_dt.date, Path, list[_dt.date]] | None:
+    """Newest prior daily file within LOOKBACK_DAYS that has checklist items.
+
+    Item-less files newer than it are returned as skipped. When no file in the
+    window has items, the newest file is used as before (nothing to heal from).
+    """
+    found: list[tuple[_dt.date, Path]] = []
+    for days_back in range(1, LOOKBACK_DAYS + 1):
+        prev_date = target_date - _dt.timedelta(days=days_back)
+        prev = paths.action_items_daily_path(data_dir, date=prev_date)
+        if prev.exists():
+            found.append((prev_date, prev))
+    if not found:
+        return None
+    for i, (prev_date, prev) in enumerate(found):
+        if _has_items(prev):
+            return prev_date, prev, [d for d, _ in found[:i]]
+    return found[0][0], found[0][1], []
+
+
 def _human_date(d: _dt.date) -> str:
     # Avoid strftime's platform-dependent no-pad flag (%-d vs %#d).
     return f"{d.strftime('%A')}, {d.strftime('%b')} {d.day}, {d.year}"
@@ -265,15 +302,21 @@ def materialize(
     if not target.parent.is_dir():
         return None
 
-    for days_back in range(1, LOOKBACK_DAYS + 1):
-        prev_date = target_date - _dt.timedelta(days=days_back)
-        prev = paths.action_items_daily_path(data_dir, date=prev_date)
-        if not prev.exists():
-            continue
+    picked = _pick_source(data_dir, target_date)
+    if picked is not None:
+        prev_date, prev, skipped = picked
         banner = _BANNER.format(
             now=now.strftime("%H:%M %Z"),
             prev=prev_date.isoformat(),
         )
+        if skipped:
+            # Pattern #277: verbatim carry of a truncated file makes the
+            # accident tomorrow's baseline. Self-heal from the last good day,
+            # and say so in the file, because the session reading it needs to know.
+            banner += _SKIP_BANNER.format(
+                skipped=", ".join(d.isoformat() for d in skipped),
+                prev=prev_date.isoformat(),
+            )
         body = _carry_body(prev)
         # Before anything reshapes the body: a `## ` heading that names the day
         # we are carrying *from* is about to travel into a file dated something
