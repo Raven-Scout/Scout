@@ -2,7 +2,7 @@ name: plugin-test
 
 on:
   push:
-    branches: [main, "migrate/**"]
+    branches: [main, de-scout-next, "migrate/**"]
     paths:
       - "plugin/**"
       - ".claude-plugin/**"

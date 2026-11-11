@@ -3,7 +3,7 @@ name: plugin-lint
 on:
   pull_request:
   push:
-    branches: [main, "migrate/**"]
+    branches: [main, de-scout-next, "migrate/**"]
     paths:
       - "plugin/**"
       - "install.sh"

@@ -12,7 +12,7 @@ name: contract
 on:
   pull_request:
   push:
-    branches: [main, "migrate/**"]
+    branches: [main, de-scout-next, "migrate/**"]
 
 jobs:
   # Path-scoped `paths:` filters were removed from `on.pull_request` above so

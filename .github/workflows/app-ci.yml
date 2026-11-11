@@ -2,14 +2,14 @@ name: app-ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, de-scout-next]
     paths:
       - "apps/macos/**"
       # The app bundles plugin/ and must carry plugin.json's version (D2).
       - "plugin/.claude-plugin/plugin.json"
       - ".github/workflows/app-ci.yml"
   pull_request:
-    branches: [main]
+    branches: [main, de-scout-next]
 
 # Cancel an in-flight run when new commits land on the same ref.
 concurrency:
