@@ -2,6 +2,12 @@
 
 Working notes for AI agents in this repo (the Python Scout engine/plugin).
 
+**Vocabulary and decisions:** use the terms in the root
+[`CONTEXT.md`](../CONTEXT.md) and read the ADRs in [`docs/adr/`](../docs/adr/)
+that touch the area you change. A change that renames a term updates
+`CONTEXT.md` in the same PR; one that reverses an ADR adds a new ADR superseding
+it.
+
 ## Fixtures must be anonymized — this repo and its two siblings are public
 
 Scout runs against a real person's vault, so anything lifted from it into a
