@@ -8,7 +8,9 @@ authors = [{name = "Jordan Burger"}]
 license = {text = "MIT"}
 
 dependencies = [
-    "typer>=0.12",
+    # typer 0.29 depends on pydantic and imports it while parsing options, which
+    # adds about 125 modules to every scoutctl call (tests/perf/test_startup.py).
+    "typer>=0.12,<0.29",
     "pyyaml>=6.0",
     "jinja2>=3.1",
     "python-ulid>=2.2",
