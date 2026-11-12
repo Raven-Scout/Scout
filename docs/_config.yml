@@ -11,3 +11,5 @@ exclude:
   - specs/
   - research/
   - architecture/
+  - adr/
+  - agents/

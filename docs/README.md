@@ -13,6 +13,8 @@ Design docs and implementation plans for features in this repo. Filed by topic, 
 
 - **Design docs** live here as `<topic>-design.md`. Each captures the spec after brainstorming: what we're building, what we're not, what the architecture looks like, and how to verify. Design docs get committed *before* implementation.
 - **Implementation plans** live here as `<topic>-plan.md`. Each breaks a design into bite-sized TDD tasks with failing tests, real code, and commits. They're most useful during execution but stay around as a narrative record of how a feature was built.
+- **Decisions** that are hard to reverse live in `adr/` as `NNNN-slug.md`, one per file; the glossary is `CONTEXT.md` at the repo root.
+- **Agent-skill configuration** (issue tracker, triage labels, domain docs) lives in `agents/`.
 - **The `BACKLOG.md` at the repo root** is the running list of things to tackle next. Shipped items move to its "Shipped" section with the date.
 
 ## Writing a new one

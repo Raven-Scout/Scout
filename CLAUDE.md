@@ -12,6 +12,16 @@ Working notes for AI agents in the Scout monorepo.
 **Work in the subtree that owns the change, and read that subtree's `CLAUDE.md`
 first.** The two have different languages, test runners, and release flows.
 
+## Vocabulary and decisions
+
+- **`CONTEXT.md`** (repo root) is the glossary for both subtrees: one canonical word per concept, with the
+  words to avoid. Use its terms in code, docs, issues and PRs. A word listed under _Avoid_ that still appears
+  in code or UI is a rename waiting to happen, not a second meaning. A change that renames a term updates
+  `CONTEXT.md` in the same PR.
+- **`docs/adr/`** holds the decisions that are hard to reverse, surprising without context and a real
+  trade-off, one per file. Read the ones touching your area; a change that reverses one adds a new ADR that
+  supersedes it rather than editing the old one.
+
 ## Rules that span both subtrees
 
 - **`.claude-plugin/marketplace.json` lives at the REPO ROOT**, not in `plugin/`.
@@ -94,3 +104,20 @@ A change touching both subtrees (a new `scoutctl` subcommand the app calls, a
 snapshot schema change) lands as ONE commit, and `contract.yml` is the gate.
 That is the entire reason these repos were merged — do not split such a change
 across two PRs out of habit.
+
+## Agent skills
+
+### Issue tracker
+
+Scout Next (`de-scout-next`) tickets are draft items on the "Scout Next" project board for now; everything else
+is GitHub issues in `Raven-Scout/Scout`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles, each label named after its role (`needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`); only `wontfix` exists yet, the rest are created on first use. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. See "Vocabulary and decisions" above and `docs/agents/domain.md`.

@@ -43,6 +43,9 @@ guarded by tests rather than drawn.
 
 ## Naming used throughout
 
+`CONTEXT.md` at the repo root is the authoritative glossary; where this table or these documents disagree
+with it ("brain file", "Scout session", "wrap-up DM"), `CONTEXT.md` wins.
+
 | Term | Meaning |
 |---|---|
 | Plugin root | The directory Claude Code loads the plugin from: a marketplace cache entry or a clone |
