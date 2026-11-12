@@ -5,7 +5,7 @@ Two trackers, depending on which line of work a ticket belongs to.
 ## Scout Next (`de-scout-next`): the "Scout Next" project board, for now
 
 While the redesign lives on the `de-scout-next` integration branch, its tickets are **draft items on the
-"Scout Next" GitHub project board** (https://github.com/users/davidesner/projects/2), not GitHub issues, so
+"Scout Next" GitHub project board** (https://github.com/users/davidesner/projects/2, private), not GitHub issues, so
 they don't clutter the issue list of the shipping version. When `de-scout-next` merges into `main`, open
 drafts get converted to issues in `Raven-Scout/Scout` and this section is deleted.
 

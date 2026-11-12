@@ -3,6 +3,8 @@
 > **Implementation status:** the connector-based structure recommended below is **shipped and live** — `phase_assembly.py` + `bootstrap.py` assemble `phases/{connectors,core,modes,research}/` with section-level mode filtering, and `phases/core/00-run-modes.md` is the live dispatch table. What remains is the Phase-1 completeness work and the Phase-2 vault adoption (see Migration strategy).
 
 **Date:** 2026-06-22
+**Canonical ADR:** [`docs/adr/0004`](../../adr/0004-brain-skills-assembled-from-phases.md) summarises this decision.
+
 **Status:** Accepted — implemented (decision recorded 2026-07-05)
 **Executed by:** the briefing-mode layer (#153, `ced9247` — Run Modes table, weekend scope, Monday Preview, briefing digest) and the connector `phases/` backport that established the modular per-connector sections. This document is the design-rationale record (ADR) for that direction: why Scout's brain is connector-based, and what trade-off was consciously accepted.
 

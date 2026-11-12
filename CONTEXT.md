@@ -22,7 +22,7 @@ _Avoid_: domain, realm, area
 
 **Inbox**:
 The vault file where the user drops notes for the next run to route into action items or the knowledge base.
-_Avoid_: using "Inbox" for the daily file's section of unsorted mentions
+_Avoid_: using "Inbox" for the daily action-items file's section of unsorted mentions
 
 ### Knowledge base
 
@@ -58,7 +58,7 @@ The list of open review items.
 ### Runs
 
 **Run**:
-One execution of Scout, scheduled or manual, that ends with a wrap.
+One execution of Scout, started by a slot, by the heartbeat or by hand, that ends with a wrap.
 _Avoid_: session, Scout session
 
 **Session**:
@@ -74,12 +74,12 @@ A named, recurring time in the vault's schedule at which Scout starts a run.
 _Avoid_: schedule entry, job, using "slot" for an insertion point in a phase
 
 **Slot key**:
-The stable ID of a slot, such as `morning-briefing`, recorded by every run it starts; a manual run records a
-manual slot key instead.
+The ID of a slot, such as `morning-briefing`, recorded by every run it starts; a manual run or an extra run
+records a slot key of its own kind instead.
 _Avoid_: run mode, mode
 
 **Tick**:
-The check every five minutes that starts any slot that is due.
+The check every five minutes that starts a due slot, at most one per tick.
 _Avoid_: heartbeat, using "tick" for a heartbeat check
 
 **Heartbeat**:
@@ -166,9 +166,13 @@ _Avoid_: a bare "proposal", suggestion, using "proposal" for a review item, a me
 
 ### Action items
 
+**Daily action-items file**:
+The vault file, one per day, that lists the day's action items in sections and that the app shows.
+_Avoid_: daily note, briefing file
+
 **Action item**:
 One tagged thing the user should do or keep an eye on, listed in the daily action-items file.
-_Avoid_: task, todo, item, board item, using "step" for an action item
+_Avoid_: task, todo, a bare "item", board item, using "step" for an action item
 
 **Priority**:
 An action item's level: Urgent, To Do or Watching.
@@ -179,7 +183,8 @@ The file holding the full context behind one action item, named by its tag.
 _Avoid_: full context, details file
 
 **Side entry**:
-An untagged bullet in the daily file's Inbox or Loose ends, which is not an action item.
+An untagged bullet in one of the daily action-items file's side sections, such as unsorted mentions or loose
+ends. It is not an action item.
 
 **Section**:
 A user-facing part of the daily action-items file, such as Urgent, To Do, Watching, Parked, Meetings or Digest.
@@ -205,7 +210,7 @@ _Avoid_: run log, digest
 ### Install
 
 **Engine**:
-Scout's deterministic program, `scoutctl`, which runs, brain skills and the app call for anything that must
+`scoutctl`, Scout's deterministic program: runs, brain skills and the app all call it for anything that must
 not be left to a prompt.
 _Avoid_: using "engine" for the triggers dispatcher
 
@@ -216,7 +221,7 @@ _Avoid_: engine checkout, venv
 
 **Setup**:
 The first-time creation of a vault and an engine install.
-_Avoid_: bootstrap, install, onboarding
+_Avoid_: bootstrap, onboarding, using "install" for setup
 
 **Upgrade**:
 Bringing a vault to the version of its engine install: reassembling the brain skills, re-rendering the

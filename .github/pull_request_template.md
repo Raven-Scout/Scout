@@ -9,4 +9,5 @@
   (`plugin/engine/tests/eval/scenarios/`, `plugin/engine/tests/eval/harness/checks/`), or I say here why not.
 
 <!-- Answer the line below, or delete it if neither applies. -->
-- [ ] Does this change a term in `CONTEXT.md`, or need an ADR in `docs/adr/`? If so, it is updated in this PR.
+- [ ] This changes a term in `CONTEXT.md` or makes a decision that needs an ADR in `docs/adr/`, and I
+  updated them in this PR.
