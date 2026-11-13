@@ -84,6 +84,48 @@ _register_planning()
 hook_app = typer.Typer(help="PostToolUse / lifecycle hook entry points (invoked by Claude Code).")
 app.add_typer(hook_app, name="hook")
 
+gates_app = typer.Typer(help="Checks that Scout's privacy gates are live before a scheduled run.")
+app.add_typer(gates_app, name="gates")
+
+
+@gates_app.command("probe")
+def cli_gates_probe(
+    claude_bin: str = typer.Option("", "--claude-bin", help="The claude the runners launch (default: as bootstrap finds it)."),
+    vault: str | None = typer.Option(None, "--vault", help="Vault whose .scout-state caches the result (default: SCOUT_DATA_DIR / cwd)."),
+    cached: bool = typer.Option(False, "--cached", help="Reuse a fresh matching pass from .scout-state/gate-probe.json."),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+    plugin_root: str | None = typer.Option(None, "--plugin-root", hidden=True),
+    extra_flag: list[str] = typer.Option([], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."),
+) -> None:
+    """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
+
+    Runs claude once against a local fake endpoint (no model, no spend, never your
+    credentials) in a throwaway fixture vault. The runners call this with --cached
+    before each run and skip the run (skipped_gates) on exit 3. See
+    scout/agent_runtimes/gate_probe.py and spec 2026-11-13 §3.5.
+    """
+    import json
+
+    from scout import paths
+    from scout.agent_runtimes import gate_probe
+    from scout.scripts.bootstrap import resolve_claude_bin
+
+    binary = Path(resolve_claude_bin(claude_bin))
+    root = Path(plugin_root) if plugin_root else gate_probe.default_plugin_root()
+    flags = (*gate_probe.PROBE_FLAGS, *extra_flag)
+    if cached:
+        data_dir = paths.data_dir(vault)
+        result = gate_probe.cached_probe(data_dir, binary, plugin_root=root, flags=flags)
+    else:
+        result = gate_probe.probe(binary, plugin_root=root, flags=flags)
+    if as_json:
+        typer.echo(json.dumps(result.to_json(), indent=2))
+    else:
+        typer.echo(f"{'ok' if result.ok else 'REFUSED'}: {result.reason} (claude {result.claude_version or 'unknown'})")
+    if not result.ok:
+        typer.echo(f"[scout:gates] {result.reason}", err=True)
+        raise typer.Exit(3)
+
 
 @hook_app.command("connector-log")
 def hook_connector_log() -> None:
