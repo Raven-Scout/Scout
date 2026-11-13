@@ -36,7 +36,7 @@ README](../../plugin/README.md#install) covers `install.sh`, the no-app path.
 ## Requirements (for building from source)
 
 - macOS 15.7 or newer (the app's deployment target).
-- Xcode 15 or newer (for build + codesign).
+- Xcode 26 or newer (for build + codesign): the macOS 15.7 deployment target needs an SDK of 15.7 or later.
 - No pre-existing `~/Scout` vault is required — a Debug build runs the same
   onboarding as a release build, or adopts whatever engine/vault you already
   have, read-only.
