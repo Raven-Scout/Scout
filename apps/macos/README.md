@@ -15,7 +15,7 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 ## Install
 
-**You need:** a Mac on macOS 13+ and a paid Claude plan (Max recommended). No
+**You need:** a Mac on macOS 15.7 or later and a paid Claude plan (Max recommended). No
 Homebrew or Python needed — and you don't need Claude Code installed first;
 onboarding offers to install it for you.
 
@@ -35,7 +35,7 @@ README](../../plugin/README.md#install) covers `install.sh`, the no-app path.
 
 ## Requirements (for building from source)
 
-- macOS 13 (Ventura) or newer.
+- macOS 15.7 or newer (the app's deployment target).
 - Xcode 15 or newer (for build + codesign).
 - No pre-existing `~/Scout` vault is required — a Debug build runs the same
   onboarding as a release build, or adopts whatever engine/vault you already

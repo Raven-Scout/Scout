@@ -59,7 +59,7 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 | You need | Why | How |
 |---|---|---|
-| **A Mac on macOS 13+** (Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the [Mac app](https://github.com/Raven-Scout/Scout) is macOS-only | — |
+| **A Mac** (the [Mac app](https://github.com/Raven-Scout/Scout) needs macOS 15.7 or later; Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the Mac app is macOS-only | — |
 | **A paid Claude plan** — Max recommended | Every scheduled run is a Claude Code session on Opus (~$2.50–$5 each, ~8 runs on a weekday) | [claude.com/pricing](https://claude.com/pricing) |
 | **Claude Code, installed and signed in** | Scout runs as headless `claude -p` sessions under your login | [Install Claude Code](https://docs.claude.com/claude-code), then run `claude` once in Terminal to sign in |
 | **Your tools connected on claude.ai** | Scout reads Slack, Gmail, Calendar, Linear, Granola, Drive through claude.ai connectors | [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — turn on the ones you use |
