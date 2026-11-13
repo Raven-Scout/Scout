@@ -6,7 +6,7 @@
 
 **Start every day knowing what actually needs you.**
 
-An open-source background agent for [Claude Code](https://docs.claude.com/claude-code). Scout reads your work tools on a schedule,<br>
+An open-source background agent for [Claude Code](https://docs.claude.com/claude-code). Scout reads your work tools on a schedule,
 cross-checks them, and leaves you a short, sourced list of what needs you, plus a knowledge base of plain Markdown you own.
 
 [![Latest release](https://img.shields.io/github/v/release/Raven-Scout/Scout?label=release&color=2f6f4f)](https://github.com/Raven-Scout/Scout/releases/latest)
@@ -70,7 +70,7 @@ existing install as-is and never modifies an install it didn't create. You can [
 
 ### Requirements
 
-| | |
+| You need | Details |
 |---|---|
 | **Claude Code** | Installed and signed in. Each run is a headless `claude -p` session under your login. |
 | **A paid Claude plan** | Max is recommended: a weekday is about eight runs. A daily cap, a per-run cap and a five-hour limit keep usage in check. |
@@ -174,7 +174,7 @@ next dreaming run learns from it.
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TB
     you(("You"))
     sched["launchd or cron<br/>tick every 5 min"]
     app["Scout.app<br/>apps/macos"]
