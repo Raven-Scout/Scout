@@ -170,7 +170,7 @@ If the plugin isn't installed, the app still builds and runs; it just shows empt
 
 ## License & legal
 
-This app is open-source under the [MIT License](LICENSE).
+This app is open-source under the [MIT License](../../LICENSE).
 
 Scout is local-first and collects no data of its own — the macOS app only reads and writes files in your local `~/Scout/` folder. See the project's shared legal documents:
 
