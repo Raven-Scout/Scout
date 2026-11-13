@@ -22,7 +22,9 @@
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="site.css">
 <script>
-  /* Apply a saved theme before first paint. Without one, the page follows the system. */
+  /* Apply a saved theme before first paint. Without one, the page follows the system.
+     The js class lets the demos start in their "before" state without a flash. */
+  document.documentElement.classList.add('js');
   try { var t = localStorage.getItem('scout-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
 </script>
 <script src="site.js" defer></script>
@@ -35,10 +37,12 @@
     <a class="brand" href="./" aria-label="Scout home"><img src="assets/scout-icon.svg" alt="" width="28" height="28">Scout</a>
     <nav class="nav" aria-label="Sections">
       <a href="#how">How it works</a>
+      <a href="#self">Gets better</a>
       <a href="#app">Mac app</a>
       <a href="#privacy">Privacy</a>
       <a href="#install">Install</a>
     </nav>
+    <button class="icon-btn kbd-btn" type="button" id="cmdk-btn" aria-label="Jump to a section" aria-keyshortcuts="Meta+K Control+K" title="Jump to a section (⌘K)"><kbd>⌘K</kbd></button>
     <a class="icon-btn" href="https://github.com/Raven-Scout/Scout" aria-label="Scout on GitHub">
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
     </a>
@@ -48,6 +52,7 @@
     </button>
     <a class="btn btn-primary btn-sm head-cta" href="#install">Get Scout</a>
   </div>
+  <div class="progress" aria-hidden="true"><i id="progress"></i></div>
 </header>
 
 <main id="main">
@@ -73,14 +78,19 @@
         <p class="fineprint">Runs on your own Claude Code sign-in, with no separate API key. Needs a paid Claude plan. The app needs macOS 15.7 or later.</p>
       </div>
 
-      <figure class="mock-fig">
-        <div class="mock desk" aria-hidden="true">
-          <div class="menubar">
+      <div class="hero-vis">
+      <div class="seg" role="group" aria-label="Compare the same morning">
+        <button type="button" data-view="with" aria-pressed="true">With Scout</button>
+        <button type="button" data-view="without" aria-pressed="false">Without Scout</button>
+      </div>
+      <figure class="mock-fig" data-view="with">
+        <div class="mock desk" id="desk">
+          <div class="menubar" aria-hidden="true">
             <span>Finder</span><span>File</span><span>Edit</span><span class="sp"></span>
             <span class="mb-scout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="15" r="4"/><circle cx="17" cy="15" r="4"/><path d="M9 7h6M7 11V6a2 2 0 0 1 4 0M17 11V6a2 2 0 0 0-4 0"/></svg></span>
             <span>Mon 08:16</span>
           </div>
-          <div class="popover">
+          <div class="popover" aria-hidden="true">
             <div class="pop-head">
               <span class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="15" r="4"/><circle cx="17" cy="15" r="4"/><path d="M9 7h6M7 11V6a2 2 0 0 1 4 0M17 11V6a2 2 0 0 0-4 0"/></svg></span>
               <span class="t"><b>Scout</b><span>Quick control</span></span>
@@ -94,15 +104,37 @@
               <div class="r"><div><b>Research</b><span>Mon 14:00</span></div><i>Run now</i></div>
             </div>
           </div>
-          <div class="brief">
-            <div class="brief-h"><b>Today</b><span>briefing · 08:14</span></div>
-            <div class="item"><span class="p red"></span><div><h4>Reply to Priya about the report-builder migration. She's asked twice.</h4><p>The doc she needs is already in your drafts.</p><div class="tags"><span class="tag ok">verified</span><span class="tag">Slack</span><span class="tag">Gmail</span></div></div></div>
-            <div class="item"><span class="p amb"></span><div><h4>The design review may have moved to 15:00.</h4><p>Only the calendar says so. Treat it as tentative.</p><div class="tags"><span class="tag warn">single-source</span><span class="tag">Calendar</span></div></div></div>
-            <div class="item"><span class="p gray"></span><div><h4>Did PROJ-1234 ship? Your tools disagree.</h4><p>The ticket says done; the pull request is still open.</p><div class="tags"><span class="tag bad">contradicted</span><span class="tag">Linear</span><span class="tag">GitHub</span></div></div></div>
+          <div class="brief" id="brief" role="group" aria-label="Demo: this morning's briefing">
+            <div class="brief-h"><b>Today</b><span id="brief-status">briefing · 08:14</span><button class="mini" type="button" id="brief-replay" hidden>↻ Replay</button></div>
+            <div class="scan" id="scan" aria-hidden="true">
+              <span class="sc">Slack</span><span class="sc">Gmail</span><span class="sc">Calendar</span><span class="sc">Linear</span><span class="sc">GitHub</span>
+              <span class="scn"><b id="scan-n">0</b>/5 checked</span>
+            </div>
+            <div class="item"><span class="p red"></span><div><h4>Reply to Priya about the report-builder migration. She's asked twice.</h4><p>The doc she needs is already in your drafts.</p><div class="tags"><span class="tag ok">verified</span><span class="tag">Slack</span><span class="tag">Gmail</span><button class="why-btn" type="button" aria-expanded="false" aria-controls="why-1">How it knows</button></div><div class="why" id="why-1" hidden>Priya asked in a Slack thread, then again by email at 16:40. Two independent sources agree, so it's <b>verified</b>. Scout also found the doc she needs in your drafts.</div></div></div>
+            <div class="item"><span class="p amb"></span><div><h4>The design review may have moved to 15:00.</h4><p>Only the calendar says so. Treat it as tentative.</p><div class="tags"><span class="tag warn">single-source</span><span class="tag">Calendar</span><button class="why-btn" type="button" aria-expanded="false" aria-controls="why-2">How it knows</button></div><div class="why" id="why-2" hidden>The invite moved, but nothing in email or Slack mentions it. With one source, it's marked <b>single-source</b> and shown as tentative, not as fact.</div></div></div>
+            <div class="item"><span class="p gray"></span><div><h4>Did PROJ-1234 ship? Your tools disagree.</h4><p>The ticket says done; the pull request is still open.</p><div class="tags"><span class="tag bad">contradicted</span><span class="tag">Linear</span><span class="tag">GitHub</span><button class="why-btn" type="button" aria-expanded="false" aria-controls="why-3">How it knows</button></div><div class="why" id="why-3" hidden>Sam moved the ticket to Done at 18:12; the pull request is open with no approvals. Scout won't pick a winner. It shows you both sides, because a disagreement like this is often the most important thing in your day.</div></div></div>
           </div>
         </div>
-        <figcaption>Illustration: the menu-bar panel and a morning briefing. Names and items are invented.</figcaption>
+        <figcaption>Live demo: the menu-bar panel and a morning briefing. Tap “How it knows”. Names and items are invented.</figcaption>
       </figure>
+      <figure class="mock-fig" data-view="without" hidden>
+        <div class="mock chaos">
+          <p class="chaos-cap">The same morning without Scout. What matters is in here somewhere.</p>
+          <div class="apps" aria-hidden="true">
+            <span class="app"><i>Slack</i><b>47</b></span>
+            <span class="app"><i>Gmail</i><b>23</b></span>
+            <span class="app"><i>Linear</i><b>12</b></span>
+            <span class="app"><i>Calendar</i><b>5</b></span>
+            <span class="app"><i>GitHub</i><b>8</b></span>
+            <span class="app"><i>Granola</i><b>3</b></span>
+            <span class="app"><i>Drive</i><b>9</b></span>
+            <span class="app"><i>WhatsApp</i><b>6</b></span>
+          </div>
+          <p class="chaos-cap2">113 unread, and you reconcile them by hand, hoping nothing slipped.</p>
+        </div>
+        <figcaption>Illustration. Counts are invented.</figcaption>
+      </figure>
+      </div>
     </div>
   </section>
 
@@ -142,44 +174,152 @@
         <h2 id="how-title">A schedule of short runs, every day, without you asking.</h2>
         <p>Each run is a Claude Code session on your Mac. It reads what changed, cross-checks it, and writes the result to your files as a git commit you can read and undo.</p>
       </div>
-      <ol class="timeline">
-        <li class="slot">
+      <div class="day">
+      <div class="day-panel" aria-hidden="true">
+        <div class="dial">
+          <div class="rail">
+            <span class="mk" style="left:33.33%"></span><span class="mk" style="left:45.83%"></span><span class="mk" style="left:54.17%"></span><span class="mk" style="left:58.33%"></span><span class="mk" style="left:70.83%"></span><span class="mk" style="left:77.08%"></span><span class="mk" style="left:79.17%"></span><span class="mk" style="left:91.67%"></span>
+            <i class="needle" id="needle" style="left:33.33%"></i>
+          </div>
+          <div class="hours"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+        </div>
+        <div class="dp">
+          <div class="dp-top"><span class="dp-time" id="dp-time">08:00</span><b id="dp-name">Morning briefing</b></div>
+          <div class="io"><span>reads</span><em id="dp-reads">every connected tool + your notes</em></div>
+          <div class="io"><span>writes</span><em id="dp-writes">today's action items</em></div>
+          <div class="dp-commit" id="dp-commit">briefing [08:00]: 6 items · 2 urgent · 1 contradiction held</div>
+        </div>
+        <p class="dp-hint">Scroll the day. Times are the defaults.</p>
+      </div>
+      <ol class="timeline steps">
+        <li class="slot" data-pos="33.33" data-time="08:00" data-name="Morning briefing" data-reads="every connected tool + your notes" data-writes="today's action items" data-commit="briefing [08:00]: 6 items · 2 urgent · 1 contradiction held">
           <span class="when">08:00 weekdays · 08:30 weekends</span>
           <h3>Morning briefing</h3>
           <p>Reads every tool you've connected and your knowledge base, checks what it finds against each other, and writes today's action items.</p>
         </li>
-        <li class="slot">
+        <li class="slot" data-pos="45.83" data-time="11:00" data-name="Catch-up scan" data-reads="only what changed since the last run" data-writes="an updated, reconciled list" data-commit="consolidation [11:00]: 2 updated · 1 done · 1 new">
           <span class="when">11:00 · 13:00 · 17:00 · 19:00</span>
           <h3>Catch-up scans</h3>
           <p>Look only at what changed since the last run, such as a new reply, a merged pull request or a moved meeting, and update the list.</p>
         </li>
-        <li class="slot">
+        <li class="slot" data-pos="58.33" data-time="14:00" data-name="Research" data-reads="the web, docs and your tools" data-writes="fuller, fresher notes" data-commit="research [14:00]: refreshed report-builder · 4 sources">
           <span class="when">14:00 weekdays</span>
           <h3>Research</h3>
           <p>Picks the part of your knowledge base that's thinnest or most out of date and fills it in from the web, docs and your tools.</p>
         </li>
-        <li class="slot">
+        <li class="slot" data-pos="77.08" data-time="18:30" data-name="Dreaming" data-reads="your 👍 and 👎, and its own mistakes" data-writes="better instructions for tomorrow" data-commit="dreaming [18:30]: logged pattern #12 · 1 fix · 1 proposal">
           <span class="when">18:30 · 22:00</span>
           <h3>Dreaming: it reviews its own day</h3>
           <p>Reads your 👍 and 👎, logs its mistakes and fixes its own instructions. Small fixes apply directly. Bigger ones become proposals that apply after a few days unless you reject them.</p>
         </li>
-        <li class="slot">
+        <li class="slot" data-pos="91.67" data-time="22:00" data-name="Knowledge base tidy-up" data-reads="one overgrown project page" data-writes="a one-screen page + linked notes" data-commit="dreaming [22:00]: nightly KB pass · report-builder.md back to one screen">
           <span class="when">Nightly</span>
           <h3>Knowledge base tidy-up</h3>
           <p>Rebuilds one overgrown project page a night, so each stays a one-screen summary and the detail moves into linked notes.</p>
         </li>
-        <li class="slot">
+        <li class="slot" data-pos="" data-time="any time" data-name="You, in Claude Code" data-reads="today's list, one item at a time" data-writes="only what you say yes to" data-commit="/scout-work: 3 items closed, each with your OK">
           <span class="when">Whenever you want</span>
           <h3>You, in Claude Code</h3>
           <p><code>/scout-work</code> walks through today's items one at a time and acts only when you say yes. <code>/scout-ask</code> answers questions from your notes.</p>
         </li>
       </ol>
+      </div>
       <p class="note">These are the default times. You can move them, pick the model each run uses, or turn runs off. If your Mac is asleep, missed runs catch up later.</p>
     </div>
   </section>
 
+  <!-- ============ SELF-IMPROVEMENT (interactive) ============ -->
+  <section id="self" class="section-alt" aria-labelledby="self-title">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="kicker">It gets better on its own</p>
+        <h2 id="self-title">Six habits that make tomorrow's Scout better than today's.</h2>
+        <p>Each one is a real part of how Scout runs. Try them: every card below works. The names and items in them are invented.</p>
+      </div>
+      <div class="bento">
+
+        <article class="demo-card">
+          <h3>It keeps a record of its own mistakes</h3>
+          <p>Flag something with 👎 and Scout logs the error, the cause and the fix, then watches whether the fix holds. A “fixed” mistake that comes back is marked as a regression.</p>
+          <div class="demo pcard" id="pcard" data-state="regression">
+            <div class="pc-head"><span class="mono">Pattern #12</span><span class="pill bad" id="pc-pill">regression</span></div>
+            <div class="ln"><span>error</span>took a name from a meeting transcript</div>
+            <div class="ln"><span>cause</span>didn't check your people notes first</div>
+            <div class="ln"><span>fix</span>match names against people notes before writing</div>
+            <div class="pc-foot"><span class="occ" aria-hidden="true"><i></i><i></i><i></i></span><span id="pc-msg" aria-live="polite">Seen 3 times. The fix goes into its own instructions.</span></div>
+            <button class="mini act" type="button" id="pc-btn">Apply the fix</button>
+          </div>
+        </article>
+
+        <article class="demo-card">
+          <h3>It edits its own instructions, in the open</h3>
+          <p>Each evening it decides what to change about itself. Small fixes apply directly; bigger ones become proposals that apply after a few days unless you reject them. Every change is a git commit you can revert.</p>
+          <div class="demo prop" id="prop" data-state="pending">
+            <div class="pr-head"><span class="mono">proposal · match-names-to-notes</span><span class="pr-timer" id="pr-timer" aria-live="polite">applies in 3 days</span></div>
+            <p class="pr-text">Match people against your notes, never a transcript alone. <span>→ edits its instructions</span></p>
+            <div class="acts" id="pr-acts"><button class="mini ok" type="button" data-act="approve">✓ Approve now</button><button class="mini" type="button" data-act="reject">✕ Reject</button></div>
+            <div class="commit-line" id="pr-commit"><b>dreaming [22:00]:</b> <span id="pr-commit-msg">applied proposal match-names-to-notes</span> · <em>git revert any time</em></div>
+          </div>
+        </article>
+
+        <article class="demo-card">
+          <h3>It won't guess who someone is</h3>
+          <p>Mixing up two people is the worst mistake a set of notes can make. Scout won't merge, split or rename a person on one source; it holds the question for you.</p>
+          <div class="demo held" id="held" data-state="open">
+            <span class="held-lbl" id="held-lbl" aria-live="polite">⏸ Held for you</span>
+            <p class="held-claim" id="held-claim">Is <b>“A. Rivera”</b> someone new, or the Alex already in your notes? One source, so Scout can't tell.</p>
+            <div class="acts" id="held-acts"><button class="mini ok" type="button" data-act="confirm">✓ Same person</button><button class="mini" type="button" data-act="reject">✕ Someone new</button></div>
+          </div>
+        </article>
+
+        <article class="demo-card">
+          <h3>It goes and finds what it's missing</h3>
+          <p>Between briefings it scores which notes are thin or out of date and rotates through your projects. Leave a note in any file and it jumps to the front of the queue.</p>
+          <div class="demo rq" id="rq">
+            <div class="rq-pin"><code>//==&lt;&lt; check the vendor's new pricing &gt;&gt;==//</code><span>your note, moved to the front</span></div>
+            <ol class="rq-list" id="rq-list" aria-live="polite">
+              <li><b>report-builder</b><span>12 days old</span></li>
+              <li><b>billing-revamp</b><span>9 days old</span></li>
+              <li><b>api-migration</b><span>7 days old</span></li>
+              <li><b>onboarding-flow</b><span>6 days old</span></li>
+              <li class="done"><b>data-pipeline</b><span>done ✓</span></li>
+            </ol>
+            <button class="mini act" type="button" id="rq-run">▸ Run next</button>
+          </div>
+        </article>
+
+        <article class="demo-card">
+          <h3>It asks only what it can't find out</h3>
+          <p>Some facts aren't in any tool, like who really owns a decision. Now and then Scout asks one short question, with a link and a one-line summary. Your answer goes into your notes, and it never asks twice.</p>
+          <div class="demo chat" id="chat">
+            <div class="chat-head"><span class="av" aria-hidden="true">S</span><div><b>Scout</b><span>Slack DM</span></div><button class="mini" type="button" id="chat-replay" aria-label="Replay the conversation">↻</button></div>
+            <div class="chat-body" id="chat-body" aria-live="polite">
+              <div class="msg">Morning briefing: <b>3 need you</b>, 1 contradiction held for you.</div>
+              <div class="msg">One thing I can't tell from your tools: who owns the billing fix, you or Sam?</div>
+              <div class="msg me">Sam owns it</div>
+              <div class="msg">Got it. Saved to your notes, and I won't ask again. ✓</div>
+            </div>
+            <div class="chat-chips" id="chat-chips"></div>
+          </div>
+        </article>
+
+        <article class="demo-card">
+          <h3>It works through its own wishlist</h3>
+          <p>Scout keeps a list of improvements to itself and works it down, one item an evening. The Mac Control Center, a terminal view of action items and the research runs all started there. You can add to it too.</p>
+          <div class="demo wish" id="wish">
+            <button type="button" class="wi" aria-pressed="true"><span class="box" aria-hidden="true"></span>Mac Control Center app<em>shipped</em></button>
+            <button type="button" class="wi" aria-pressed="true"><span class="box" aria-hidden="true"></span>Terminal action-items view<em>shipped</em></button>
+            <button type="button" class="wi" aria-pressed="true"><span class="box" aria-hidden="true"></span>Research runs<em>shipped</em></button>
+            <button type="button" class="wi" aria-pressed="false"><span class="box" aria-hidden="true"></span>Something you asked for<em>queued</em></button>
+          </div>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
   <!-- ============ WHAT YOU GET ============ -->
-  <section class="section-alt" aria-labelledby="get-title">
+  <section aria-labelledby="get-title">
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">What you get</p>
@@ -198,23 +338,17 @@
           </ul>
         </div>
         <figure class="mock-fig">
-          <div class="mock win" aria-hidden="true">
-            <div class="win-bar"><i></i><i></i><i></i><span>Action Items</span></div>
-            <div class="pane">
-              <h5>Today</h5>
-              <div class="runs">
-                <div class="r"><span class="led" style="background:var(--bad)"></span><b>Send Sam the revised rollout plan</b><span class="tag ok">verified</span><span>Gmail · Calendar</span></div>
-                <div class="r"><span class="led warn"></span><b>Review the data-pipeline pull request</b><span class="tag warn">single-source</span><span>GitHub</span></div>
-                <div class="r"><span class="led" style="background:var(--ink-3)"></span><b>Confirm who owns the billing fix</b><span class="tag bad">contradicted</span><span>Slack · Linear</span></div>
-                <div class="r"><span class="led"></span><b>Prep for 1:1 with Alex</b><span class="tag ok">verified</span><span>Calendar · notes</span></div>
-              </div>
-              <div class="alert" style="background:var(--bad-wash)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--bad)"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 10v4M12 17v.01"/></svg>
-                <div><b>Sources disagree</b>Slack says Priya took the billing fix on Tuesday. The ticket is still assigned to Sam. Scout is holding this for you.</div>
-              </div>
+          <div class="demo xc" id="xc" role="group" aria-label="Demo: turn sources on and off and watch the confidence tag">
+            <div class="xc-claim"><span class="cap">The claim</span><b>Sam's rollout review is on Thursday at 10:00.</b></div>
+            <div class="xc-srcs">
+              <button type="button" class="srct" aria-pressed="true"><span class="sw" aria-hidden="true"></span><b>Calendar</b><small>invite for Thu 10:00</small></button>
+              <button type="button" class="srct" aria-pressed="true"><span class="sw" aria-hidden="true"></span><b>Slack</b><small>“see you Thursday at 10”</small></button>
+              <button type="button" class="srct" aria-pressed="false"><span class="sw" aria-hidden="true"></span><b>Gmail</b><small>agenda sent for Thu 10:00</small></button>
+              <button type="button" class="srct conflict" aria-pressed="false"><span class="sw" aria-hidden="true"></span><b>Linear</b><small>review due Friday</small></button>
             </div>
+            <div class="xc-out" id="xc-out" aria-live="polite"><span class="tag ok">verified</span><span>2 sources agree.</span></div>
           </div>
-          <figcaption>Illustration of the Action Items view. Names and items are invented.</figcaption>
+          <figcaption>Try it: turn sources on and off. Names and items are invented.</figcaption>
         </figure>
       </div>
 
@@ -249,11 +383,55 @@
           <figcaption>Illustration of a project page. The project and people are invented.</figcaption>
         </figure>
       </div>
+
+      <div class="feature">
+        <div>
+          <h3>Linked, so it can check itself.</h3>
+          <p class="body">People, projects, tasks and meetings are typed notes that link to each other, and every run checks them against a schema. Those links are what let Scout hold one source up against another.</p>
+          <ul class="checks">
+            <li><b>Typed, not a pile.</b> A person, a project and a task are different kinds of note with different rules.</li>
+            <li><b>Every run is a commit.</b> The git history is Scout's memory of what it changed and why, and any of it can be undone.</li>
+          </ul>
+        </div>
+        <figure class="mock-fig">
+          <div class="demo kg" id="kg">
+            <svg viewBox="0 0 420 250" role="group" aria-label="Demo: a small knowledge graph. Focus a node to see its links.">
+              <g class="edges" aria-hidden="true">
+                <line data-a="you" data-b="proj" x1="95" y1="120" x2="205" y2="72"/>
+                <line data-a="you" data-b="org" x1="95" y1="120" x2="345" y2="62"/>
+                <line data-a="you" data-b="mate" x1="95" y1="120" x2="330" y2="150"/>
+                <line data-a="you" data-b="task" x1="95" y1="120" x2="200" y2="185"/>
+                <line data-a="proj" data-b="mate" x1="205" y1="72" x2="330" y2="150"/>
+                <line data-a="proj" data-b="tool" x1="205" y1="72" x2="70" y2="46"/>
+                <line data-a="proj" data-b="task" x1="205" y1="72" x2="200" y2="185"/>
+                <line data-a="proj" data-b="meet" x1="205" y1="72" x2="320" y2="212"/>
+                <line data-a="task" data-b="pr" x1="200" y1="185" x2="120" y2="205"/>
+              </g>
+              <g class="node person" data-id="you" data-rels="works on → Project · works with → Teammate · assigned → Task · at → Org"><circle cx="95" cy="120" r="10"/><text x="95" y="143">You</text></g>
+              <g class="node project" data-id="proj" data-rels="worked on by → You, Teammate · uses → Tool · about it ← Task, Meeting"><circle cx="205" cy="72" r="10"/><text x="205" y="56">Project</text></g>
+              <g class="node thing" data-id="org" data-rels="employs → You"><circle cx="345" cy="62" r="10"/><text x="345" y="46">Org</text></g>
+              <g class="node person" data-id="mate" data-rels="works on → Project · works with → You"><circle cx="330" cy="150" r="10"/><text x="330" y="172">Teammate</text></g>
+              <g class="node task" data-id="task" data-rels="assigned to → You · about → Project · blocked by → PR"><circle cx="200" cy="185" r="10"/><text x="200" y="207">Task</text></g>
+              <g class="node thing" data-id="tool" data-rels="used by → Project"><circle cx="70" cy="46" r="10"/><text x="70" y="30">Tool</text></g>
+              <g class="node task" data-id="meet" data-rels="about → Project"><circle cx="320" cy="212" r="10"/><text x="320" y="234">Meeting</text></g>
+              <g class="node thing" data-id="pr" data-rels="blocks → Task"><circle cx="120" cy="205" r="10"/><text x="120" y="227">PR</text></g>
+            </svg>
+            <p class="kg-cap" id="kg-cap" aria-live="polite"><b>Hover or tab to a node</b> to trace its links.</p>
+            <div class="log" aria-label="Example commit log">
+              <div><b>briefing [08:00]:</b> 3 need you · 1 contradiction held</div>
+              <div><b>consolidation [13:00]:</b> reconciled 2 items · 1 done</div>
+              <div><b>research [14:00]:</b> refreshed report-builder</div>
+              <div><b>dreaming [18:30]:</b> logged pattern #12 · applied 1 fix</div>
+            </div>
+          </div>
+          <figcaption>Try it: a tiny graph of invented notes, and the commits that built it.</figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 
   <!-- ============ MAC APP ============ -->
-  <section id="app" aria-labelledby="app-title">
+  <section id="app" class="section-alt" aria-labelledby="app-title">
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">The Mac app</p>
@@ -350,7 +528,7 @@
   </section>
 
   <!-- ============ PRIVACY & TRUST ============ -->
-  <section id="privacy" class="section-alt" aria-labelledby="privacy-title">
+  <section id="privacy" aria-labelledby="privacy-title">
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">Privacy and trust</p>
@@ -387,7 +565,7 @@
   </section>
 
   <!-- ============ INSTALL ============ -->
-  <section id="install" aria-labelledby="install-title">
+  <section id="install" class="section-alt" aria-labelledby="install-title">
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">Install</p>
@@ -425,7 +603,7 @@
   </section>
 
   <!-- ============ FAQ ============ -->
-  <section class="section-alt" aria-labelledby="faq-title">
+  <section aria-labelledby="faq-title">
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">Questions</p>
@@ -478,5 +656,21 @@
     <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no analytics, trackers or third-party fonts.</p>
   </div>
 </footer>
+<div class="cmdk" id="cmdk" hidden>
+  <div class="cmdk-box" role="dialog" aria-modal="true" aria-label="Jump to a section">
+    <input id="cmdk-input" type="text" placeholder="Jump to…" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list">
+    <ul id="cmdk-list" role="listbox" aria-label="Sections">
+      <li role="option" id="ck-0" data-href="#main">Top</li>
+      <li role="option" id="ck-1" data-href="#how">How it works: a day of runs</li>
+      <li role="option" id="ck-2" data-href="#self">It gets better on its own</li>
+      <li role="option" id="ck-3" data-href="#get-title">What you get: the list and your notes</li>
+      <li role="option" id="ck-4" data-href="#app">The Mac app</li>
+      <li role="option" id="ck-5" data-href="#privacy">Privacy and trust</li>
+      <li role="option" id="ck-6" data-href="#install">Install</li>
+      <li role="option" id="ck-7" data-href="#faq-title">Questions</li>
+    </ul>
+    <p class="cmdk-foot"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to jump · <kbd>Esc</kbd> to close</p>
+  </div>
+</div>
 </body>
 </html>
