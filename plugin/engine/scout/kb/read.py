@@ -78,7 +78,6 @@ from scout.kb.privacy import (
     CEILING_LEVELS,
     CLASSIFIER_VERSION,
     FEDERATION_SOURCES,
-    FULL_READERS,
     VISIBILITIES,
     FederationScope,
     Label,
@@ -91,6 +90,7 @@ from scout.kb.privacy import (
     normalize_rel,
     note_facts,
     read_head,
+    reads_any,
     visible_to,
 )
 from scout.kb.read_log import log_event
@@ -538,14 +538,15 @@ def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[t
     when any of them matches. Plumbing (``local_only.always`` minus
     ``sync_allow``) is left out unless a glob names it explicitly (ruling R13).
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     root = vault.resolve()
-    labels = all_labels(root, load_policy(root), globs)
+    policy = load_policy(root)
+    labels = all_labels(root, policy, globs)
     return [
         (rel, label)
         for rel, label in sorted(labels.items())
-        if visible_to(label, reader) and (not globs or any(glob_match(g, rel) for g in globs))
+        if visible_to(label, reader, policy) and (not globs or any(glob_match(g, rel) for g in globs))
     ]
 
 
@@ -703,7 +704,7 @@ def read_file(vault: Path, reader: str, path: str) -> tuple[Label, bytes]:
     denial never says whether the file exists); ``UsageError`` for a path
     outside the vault, under ``.git/``, or that isn't a file.
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         raise Denied(reader)
     root = vault.resolve()
     try:
@@ -720,8 +721,9 @@ def read_file(vault: Path, reader: str, path: str) -> tuple[Label, bytes]:
     except OSError as e:
         raise UsageError(f"can't read {rel}: {e.strerror or e}") from e
     text = decode_head(data) if target.suffix.lower() == ".md" else None
-    label = classify(rel, text, load_policy(root))
-    if not visible_to(label, reader):
+    policy = load_policy(root)
+    label = classify(rel, text, policy)
+    if not visible_to(label, reader, policy):
         raise Denied(reader)
     return label, data
 
@@ -749,9 +751,9 @@ def load_graph(vault: Path, reader: str, kb_root: str | None = None, schema: str
     kb = Path(kb_root) if kb_root else vault / "knowledge-base"
     if schema is None:
         own = kb / "ontology" / "schema.yaml"
-        schema = str(own if reader in FULL_READERS and own.is_file() else ENGINE_SCHEMA)
+        schema = str(own if reads_any(reader) and own.is_file() else ENGINE_SCHEMA)
     store = None
-    if reader in FULL_READERS:
+    if reads_any(reader):
         root = vault.resolve()
         store = IndexStore(root, load_policy(root))
     try:
@@ -845,7 +847,7 @@ def resolve(vault: Path, reader: str, graph: KnowledgeGraph, name: str) -> list[
     people match of ``name_lookup``. Rows: ``path``, ``name`` (None for a plain
     note), ``match_strength``, ``matched_field``, ``label``.
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     key = name.strip().lower()
     if not key:

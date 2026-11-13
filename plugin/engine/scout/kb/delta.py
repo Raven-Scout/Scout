@@ -48,7 +48,6 @@ from scout.kb.git_io import (
 )
 from scout.kb.git_io import resolve_commit as git_resolve_commit
 from scout.kb.privacy import (
-    FULL_READERS,
     HEAD_BYTES,
     Label,
     Policy,
@@ -56,6 +55,7 @@ from scout.kb.privacy import (
     decode_head,
     label_file,
     load_policy,
+    reads_any,
     visible_to,
 )
 from scout.kb.read import Output, UsageError, all_labels
@@ -154,7 +154,7 @@ def delta(vault: Path, reader: str, since: str, with_diff: bool) -> list[Commit]
 
     ``UsageError`` when ``since`` is neither a commit nor a duration, or the vault isn't a git repository.
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     root = vault.resolve()
     commits = _log(root, since)
@@ -173,7 +173,7 @@ def delta(vault: Path, reader: str, since: str, with_diff: bool) -> list[Commit]
         paths = [
             (p, label)
             for p, label in _paths(labeller, commit, commit_changes(root, commit))
-            if visible_to(label, reader)
+            if visible_to(label, reader, labeller.policy)
         ]
         if not paths:
             continue

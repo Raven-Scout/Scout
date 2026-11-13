@@ -27,7 +27,8 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`)
     tells the session the note's privacy label instead. Only a reader that
     ``scoutctl kb`` shows nothing (an ``agent:*`` reader, #453 v1) is denied a
-    Read of a KB note. ``knowledge-base/ontology/schema.yaml`` and
+    Read of a KB note, and a ``delegate:<id>`` reader is denied one ``scoutctl
+    kb`` wouldn't show it (#550 §4.1). ``knowledge-base/ontology/schema.yaml`` and
     ``parser.py`` are tooling, not notes, and are never gated.
 
 Scope: only scheduled runs, by #517's rule (:func:`scout.kb.reader.is_scheduled`:
@@ -209,9 +210,14 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     rel = _rel(_target(raw, cwd), vault)
     if rel is None or not is_kb_note_path(rel):
         return None
-    from scout.kb.privacy import FULL_READERS
+    from scout.kb.privacy import FULL_READERS, label_file, load_policy, reads_any, visible_to
 
-    return None if reader in FULL_READERS else _deny_read()
+    if reader in FULL_READERS:
+        return None
+    if not reads_any(reader):
+        return _deny_read()
+    policy = load_policy(vault)  # a delegate (#550): the notes scoutctl kb shows it, no more
+    return None if visible_to(label_file(vault, rel, policy), reader, policy) else _deny_read()
 
 
 def _deny(reason: str) -> dict[str, Any]:

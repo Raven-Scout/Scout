@@ -9,7 +9,7 @@ the subcommand functions, not at module level.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -248,7 +248,9 @@ def kb_install_hook(
 def kb_classify(
     paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -258,31 +260,40 @@ def kb_classify(
     owner and autonomous readers get labels. An agent reader gets
     {"path": ..., "denied": true} for every path, without the file being looked
     at, so a denial says nothing about whether the file exists or what it is.
+    A delegate reader gets the label of each file it may see and the same
+    denial for every other path.
     """
     args = _kb_args("classify", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+        from scout.kb.privacy import label_file, load_policy, normalize_rel, reads_any, visible_to
         from scout.kb.read import Output, UsageError
 
-        if who not in FULL_READERS:
+        if not reads_any(who):
             return Output(
                 data=[{"path": p, "denied": True} for p in paths],
                 lines=[f"{p}: denied" for p in paths],
                 denied=len(paths),
             )
         policy = load_policy(root)
-        labels = []
+        data: list[dict[str, object]] = []
+        lines: list[str] = []
+        shown = []
         for p in paths:
             try:
                 rel = normalize_rel(root, p)
             except ValueError as e:
                 raise UsageError(str(e)) from e
-            labels.append(label_file(root, rel, policy))
+            label = label_file(root, rel, policy)
+            if not visible_to(label, who, policy):  # a delegate: same answer as for a missing path
+                data.append({"path": p, "denied": True})
+                lines.append(f"{p}: denied")
+                continue
+            data.append(label.to_json())
+            shown.append(label)
+            lines.append(f"[private] {label.path}" if label.visibility == "private" else label.path)
         return Output(
-            data=[label.to_json() for label in labels],
-            lines=[f"[private] {label.path}" if label.visibility == "private" else label.path for label in labels],
-            labels=[label.to_json() for label in labels],
+            data=data, lines=lines, labels=[label.to_json() for label in shown], denied=len(paths) - len(shown)
         )
 
     _kb_run(args, reader, repo, as_json, body)
@@ -291,7 +302,9 @@ def kb_classify(
 @kb_app.command("policy")
 def kb_policy(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -499,7 +512,9 @@ def kb_unshare(
 @kb_app.command("shares")
 def kb_shares(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -538,7 +553,7 @@ def _scope_text(scope: object) -> str:
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
 
-_READER_HELP = "owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+_READER_HELP = "owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow."
 _KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
 _SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
 
@@ -4321,7 +4336,77 @@ def _register_repo() -> None:
 _register_repo()
 
 
+# What a delegate checkout (SCOUT_READER=delegate:<id>, #550 §6.5) may run: reads only. A
+# delegate never writes the vault; it proposes through its inbox. This guards against an
+# accident, not an attack: the boundary is that a delegate's copy can't push the vault.
+_DELEGATE_COMMANDS = frozenset(
+    {
+        ("version",),
+        *(
+            ("kb", name)
+            for name in (
+                "files",
+                "search",
+                "read",
+                "resolve",
+                "query",
+                "related",
+                "traverse",
+                "path",
+                "name-lookup",
+                "delta",
+                "classify",
+                "policy",
+                "entity",
+                "export",
+                "stats",
+                "validate",
+            )
+        ),
+        ("action-items", "list"),
+        ("pre-session", "data"),
+        ("bootstrap", "doctor"),
+        ("manifest", "show"),
+    }
+)
+_DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them
+
+
+def delegate_write_refusal(argv: list[str], env: Mapping[str, str]) -> str | None:
+    """Why a ``delegate:<id>`` reader may not run ``argv`` (the words after ``scoutctl``), else None.
+
+    None for any other reader, and for ``--help``. Only the commands in
+    ``_DELEGATE_COMMANDS`` (and the ``hook`` group) pass; anything else, a bare
+    group included, is refused.
+    """
+    from scout.kb.reader import delegate_id, resolve_reader
+
+    reader = resolve_reader(None, env)
+    if delegate_id(reader) is None or "--help" in argv or "-h" in argv:
+        return None
+    words: list[str] = []
+    for arg in argv:
+        if arg.startswith("-"):
+            break
+        words.append(arg)
+    if words and (words[0] in _DELEGATE_GROUPS or tuple(words[:1]) in _DELEGATE_COMMANDS):
+        return None
+    if tuple(words[:2]) in _DELEGATE_COMMANDS:
+        return None
+    command = " ".join(words[:2]) or "(no command)"
+    return (
+        f"scoutctl: `{command}` isn't available to {reader}: this is a delegate checkout, which only reads "
+        "the vault. Propose the change through the delegate's inbox instead, or run it on the owner's computer."
+    )
+
+
 def main() -> None:
+    import os
+
+    refusal = delegate_write_refusal(sys.argv[1:], os.environ)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        sys.exit(3)
     try:
         app()
     except ScoutError as e:
