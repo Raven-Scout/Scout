@@ -79,7 +79,7 @@ def test_parser_validates_an_entity_against_the_seeded_schema(tmp_path: Path) ->
     person.write_text("---\ntype: no-such-type\nname: Alex\n---\n\nAlex.\n", encoding="utf-8")
 
     result = _validate(vault)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 3, result.stderr  # an unknown type is an error, and errors exit 3
     assert "validation error" in result.stdout
 
 
