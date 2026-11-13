@@ -23,6 +23,13 @@ dropped: in v1, ``owner`` and ``autonomous`` see every path and any
 commit's unified diff, limited to the paths listed; it may hold private
 content: the labels tell the run.
 
+A ``delegate:<id>`` reader (#550 §4.1) sees only the paths ``visible_to``
+shows it, and a commit subject only when every path the commit touched is one
+of them: a run's subject summarises what it did, hidden notes included, so
+the subject of a commit that also touched a hidden path reads
+:data:`WITHHELD_SUBJECT`. A shallow-clone boundary commit, whose paths are
+unknown, is left out for a delegate.
+
 Git plumbing lives in :mod:`scout.kb.git_io`; this module keeps
 ``scout/kb/read.py`` from growing further.
 """
@@ -56,6 +63,7 @@ from scout.kb.privacy import (
     decode_head,
     label_file,
     load_policy,
+    reads_any,
     visible_to,
 )
 from scout.kb.read import Output, UsageError, all_labels
@@ -149,36 +157,39 @@ def _paths(labeller: _Labeller, commit: LogCommit, changes: list[Change]) -> lis
     return list(out.items())
 
 
+WITHHELD_SUBJECT = "(subject withheld)"
+
+
 def delta(vault: Path, reader: str, since: str, with_diff: bool) -> list[Commit]:
     """The vault's commits since ``since`` that touch a path ``reader`` may see, labelled (module docstring).
 
     ``UsageError`` when ``since`` is neither a commit nor a duration, or the vault isn't a git repository.
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     root = vault.resolve()
     commits = _log(root, since)
     if not commits:
         return []
     labeller = _Labeller(root, load_policy(root))
+    full = reader in FULL_READERS
     shallow = shallow_boundaries(root)
     out: list[Commit] = []
     for commit in commits:
         if commit.parent is None and commit.sha in shallow:
             parent = recorded_parent(root, commit.sha)
             if parent is None:  # not a root that added every file: its own changes are unknown
-                out.append(Commit(commit.sha, commit.subject, commit.author, [], None, shallow_boundary=True))
+                if full:
+                    out.append(Commit(commit.sha, commit.subject, commit.author, [], None, shallow_boundary=True))
                 continue
             commit = replace(commit, parent=parent)
-        paths = [
-            (p, label)
-            for p, label in _paths(labeller, commit, commit_changes(root, commit))
-            if visible_to(label, reader)
-        ]
+        touched = _paths(labeller, commit, commit_changes(root, commit))
+        paths = [(p, label) for p, label in touched if visible_to(label, reader, labeller.policy)]
         if not paths:
             continue
+        subject = commit.subject if len(paths) == len(touched) else WITHHELD_SUBJECT
         diff = commit_diff(root, commit, [p for p, _ in paths]) if with_diff else None
-        out.append(Commit(sha=commit.sha, subject=commit.subject, author=commit.author, paths=paths, diff=diff))
+        out.append(Commit(sha=commit.sha, subject=subject, author=commit.author, paths=paths, diff=diff))
     return out
 
 

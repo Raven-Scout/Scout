@@ -27,7 +27,10 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`)
     tells the session the note's privacy label instead. Only a reader that
     ``scoutctl kb`` shows nothing (an ``agent:*`` reader, #453 v1) is denied a
-    Read of a KB note. ``knowledge-base/ontology/schema.yaml`` and
+    Read of a KB note. A ``delegate:<id>`` reader (#550 §4.1) is denied a Read
+    of any vault file ``scoutctl kb`` wouldn't show it, KB note or not (trading,
+    ``.scout-inbox``, ``.scout-cache``, ``.scout-logs`` included), and of a
+    missing one alike; hooks.json sends every delegate Read here. ``knowledge-base/ontology/schema.yaml`` and
     ``parser.py`` are tooling, not notes, and are never gated.
 
 Scope: only scheduled runs, by #517's rule (:func:`scout.kb.reader.is_scheduled`:
@@ -166,6 +169,10 @@ def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
         pass
 
 
+def _deny_delegate_read() -> str:
+    return f"{MARK} This delegate session may not read that file. {_REPLACEMENT}"
+
+
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
@@ -206,12 +213,60 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
-    rel = _rel(_target(raw, cwd), vault)
+    target = _target(raw, cwd)
+    from scout.kb.reader import delegate_id
+
+    if delegate_id(reader) is not None:
+        return _delegate_read(vault, target, reader)
+    rel = _rel(target, vault)
     if rel is None or not is_kb_note_path(rel):
         return None
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _vault_rel(vault: Path, target: Path) -> str | None:
+    """``target``'s canonical vault-relative path, ``"."`` for the vault itself, None when outside it.
+
+    Decided by file identity, not spelling: on a case-insensitive disk ``/Users/x/SCOUT/Trading/…``
+    is inside ``/Users/x/Scout``, so the ancestor that is the vault is found with ``samefile``, and
+    the rest takes each existing component's on-disk name (``normalize_rel``), so ``.GIT`` is ``.git``.
+    """
+    from scout.kb.privacy import normalize_rel
+
+    for anc in (target, *target.parents):
+        try:
+            if os.path.samefile(anc, vault):
+                tail = target.relative_to(anc).parts
+                break
+        except OSError:
+            continue
+    else:
+        return None
+    if not tail:
+        return "."
+    try:
+        return normalize_rel(vault, vault.joinpath(*tail))
+    except ValueError:
+        return "."
+
+
+def _delegate_read(vault: Path, target: Path, reader: str) -> str | None:
+    """A delegate (#550 §4.1) Reads only a vault file ``scoutctl kb`` would show it, KB note or not.
+
+    The vault itself, ``.git/``, a missing file and a hidden one get the same deny, so a deny
+    never says whether a file exists. A path outside the vault isn't this gate's to decide.
+    """
+    from scout.kb.privacy import label_file, load_policy, visible_to
+
+    rel = _vault_rel(vault, target)
+    if rel is None:
+        return None
+    if rel == "." or ".git" in rel.split("/") or not (vault / rel).is_file():
+        return _deny_delegate_read()
+    policy = load_policy(vault)
+    return None if visible_to(label_file(vault, rel, policy), reader, policy) else _deny_delegate_read()
 
 
 def _deny(reason: str) -> dict[str, Any]:
