@@ -119,7 +119,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 3  # 3: Stage 2 effective scope, ceiling, frontmatter kind (Agnes #6090 §4)
+CLASSIFIER_VERSION = 4  # 4: NoteFacts.shared_source, for delegates (#550); 3: Stage 2 (Agnes #6090 §4)
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -149,6 +149,11 @@ FederationSource = Literal["frontmatter", "default", "ceiling", "disabled"]
 FEDERATION_SOURCES: tuple[FederationSource, ...] = ("frontmatter", "default", "ceiling", "disabled")
 
 FULL_READERS = frozenset({"owner", "autonomous"})
+
+# Paths no delegate sees, include_private or not (Jordan, 2026-11-13): the phone-notification
+# inbox. Notes that cite someone's shared note (``source: shared:…``) are kept from delegates
+# by ``Label.shared_source`` instead.
+DELEGATE_NEVER = (".scout-inbox/**",)
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
@@ -289,6 +294,13 @@ class Label:
     written (it's an opaque host id), duplicates dropped in first-seen order.
     ``to_json`` renders a tuple as a list. ``ceiling`` and ``federation_source``
     are described in the module docstring.
+
+    ``shared_source`` is internal: the note may hold content someone shared with
+    the owner (its frontmatter ``source:`` claims ``shared:…``, or its
+    frontmatter can't be read, so that can't be ruled out). Only
+    :func:`visible_to` reads it, to keep such notes from delegates; it isn't in
+    ``to_json`` and doesn't take part in equality, so published labels and the
+    conformance corpus don't change.
     """
 
     path: str
@@ -301,6 +313,7 @@ class Label:
     local_only: bool = False
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
+    shared_source: bool = field(default=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -850,7 +863,8 @@ class NoteFacts:
     value overrides the folder defaults, so a note can keep itself out of a
     shared folder. ``kind`` is the frontmatter ``kind`` string, trimmed and
     lower-cased, or None. ``warnings`` are the text-only ones, in
-    :func:`classify`'s order.
+    :func:`classify`'s order. ``shared_source``: a frontmatter ``source:`` value
+    claims ``shared:…`` (the rule of :func:`scout.kb.shared_reads.is_shared_source`).
     """
 
     state: Literal["ok", "unparseable", "unreadable"] = "ok"
@@ -859,6 +873,7 @@ class NoteFacts:
     warnings: tuple[str, ...] = ()
     declared_present: bool = False
     kind: str | None = None
+    shared_source: bool = False
 
 
 def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
@@ -889,13 +904,21 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
         else:
             declared = scope
     kind = fm.get("kind")
+    source = fm.get("source")
+    sources = [source] if isinstance(source, str) else source if isinstance(source, list) else []
     return NoteFacts(
         visibility=visibility,
         declared=declared,
         warnings=tuple(warnings),
         declared_present="federation_scope" in fm,
         kind=(kind.strip().lower() or None) if isinstance(kind, str) else None,
+        shared_source=any(isinstance(v, str) and v.strip().casefold().startswith("shared:") for v in sources),
     )
+
+
+def holds_shared(facts: NoteFacts) -> bool:
+    """``Label.shared_source`` for these facts: a ``shared:`` source, or unreadable frontmatter (fail closed)."""
+    return facts.shared_source or facts.state != "ok"
 
 
 def _level(level: CeilingLevel) -> int:
@@ -971,6 +994,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
             local_only=local_only,
             shared_file=shared_by_path,
             warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
+            shared_source=True,
         )
 
     visibility: Visibility
@@ -1009,6 +1033,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         local_only=local_only,
         shared_file=shared_by_path or declared != "none" or scope != "none",
         warnings=_dedup(warnings),
+        shared_source=holds_shared(facts),
     )
 
 
@@ -1147,9 +1172,12 @@ def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
     ``owner`` and ``autonomous`` see every file (labelled); every
     ``agent:<principal>`` reader sees nothing. A ``delegate:<id>`` listed in
     ``policy`` sees a file that isn't local-only, and a private one only with
-    ``include_private``; an unlisted delegate, or any delegate when no policy
-    is given, sees nothing. Any other reader id is denied (fail-closed). The
-    agent rule stays so in Stage 2: another person reads a shared note only
+    ``include_private``; never a path in :data:`DELEGATE_NEVER` (the phone
+    inbox) or a note that may hold someone else's shared content
+    (``Label.shared_source``), include_private or not (Jordan, 2026-11-13). An
+    unlisted delegate, or any delegate when no policy is given, sees nothing.
+    Any other reader id is denied (fail-closed). The agent rule stays so in
+    Stage 2: another person reads a shared note only
     through Agnes's shared reader, which applies the effective
     ``federation_scope`` from the synced labels (Agnes #6090 §5.2); the laptop
     engine never serves another person.
@@ -1157,7 +1185,7 @@ def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
     if reader in FULL_READERS:
         return True
     rule = policy.delegate(reader) if policy is not None else None
-    if rule is None or label.local_only:
+    if rule is None or label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path):
         return False
     return label.visibility == "normal" or rule.include_private
 

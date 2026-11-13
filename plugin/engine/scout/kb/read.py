@@ -66,7 +66,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,7 @@ from scout.kb.privacy import (
     Policy,
     classify,
     decode_head,
+    holds_shared,
     label_from_facts,
     load_policy,
     normalize_rel,
@@ -98,7 +99,7 @@ from scout.kb.read_log import log_event
 from scout.kb.reader import delegate_id
 
 INDEX_FILENAME = "privacy-index.json"
-INDEX_VERSION = 3  # 3: entries may carry the graph's parsed frontmatter ("fm")
+INDEX_VERSION = 4  # 4: facts carry shared_source (#550); 3: entries may carry the graph's parsed frontmatter ("fm")
 SEARCH_BATCH = 500
 ENGINE_SCHEMA = Path(__file__).with_name("schema.yaml")
 _RACY_WINDOW_NS = 2_000_000_000
@@ -209,6 +210,7 @@ def _facts_json(facts: NoteFacts) -> dict[str, Any]:
         "warnings": list(facts.warnings),
         "declared_present": facts.declared_present,
         "kind": facts.kind,
+        "shared_source": facts.shared_source,
     }
 
 
@@ -223,20 +225,26 @@ def _facts_from_json(data: Any) -> NoteFacts | None:
     if not isinstance(data, dict) or set(data) != _FACT_KEYS:
         return None
     state, vis, declared, warnings = data["state"], data["visibility"], data["declared"], _str_tuple(data["warnings"])
-    present, kind = data["declared_present"], data["kind"]
+    present, kind, shared = data["declared_present"], data["kind"], data["shared_source"]
     if state not in _STATES or (vis is not None and vis not in VISIBILITIES) or warnings is None:
         return None
-    if not isinstance(present, bool) or not (kind is None or isinstance(kind, str)):
+    if not isinstance(present, bool) or not (kind is None or isinstance(kind, str)) or not isinstance(shared, bool):
         return None
     declared = _scope_from_json(declared)
     if declared is None:
         return None
     return NoteFacts(
-        state=state, visibility=vis, declared=declared, warnings=warnings, declared_present=present, kind=kind
+        state=state,
+        visibility=vis,
+        declared=declared,
+        warnings=warnings,
+        declared_present=present,
+        kind=kind,
+        shared_source=shared,
     )
 
 
-_FACT_KEYS = frozenset({"state", "visibility", "declared", "warnings", "declared_present", "kind"})
+_FACT_KEYS = frozenset({"state", "visibility", "declared", "warnings", "declared_present", "kind", "shared_source"})
 
 
 def _scope_from_json(value: Any) -> FederationScope | None:
@@ -348,6 +356,8 @@ def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = (), *, persis
             facts = _facts_from_json(entry.get("facts"))
             if facts is not None and same_policy:
                 label = _label_from_json(entry.get("label"), rel)
+                if label is not None:  # shared_source isn't stored in the label: it comes from the facts
+                    label = replace(label, shared_source=holds_shared(facts))
         if label is None:
             kept: dict[str, Any] = {}
             if facts is None:

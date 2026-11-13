@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,28 @@ PERMIT = "knowledge-base/personal/task-renew-permit.md"
 GIFT = "knowledge-base/personal/task-buy-gift.md"
 TRADING = "trading/positions.md"
 PRIVATE_CANARIES = {p: c for p, c in CANARIES.items() if p != TRADING}
+INBOX = ".scout-inbox/phone-notifications-2026-10-01.jsonl"
+BROKEN = "knowledge-base/topics/misc/broken.md"  # unparseable frontmatter: may be a provenance note
+# Private notes an include_private delegate still never sees (Jordan, 2026-11-13).
+NEVER_FOR_DELEGATES = {INBOX, BROKEN}
+
+# Notes built from a note Priya shared with the owner (#553 provenance): one private, as the lint
+# requires, and one the owner marked normal by hand. No delegate sees either.
+PROVENANCE_PRIVATE = "knowledge-base/topics/misc/from-priya.md"
+PROVENANCE_NORMAL = "knowledge-base/topics/misc/from-priya-normal.md"
+PROVENANCE_CANARY = "CANARY-SHARED-8Q3W"
+PROVENANCE = {
+    PROVENANCE_PRIVATE: (
+        "---\nname: from-priya\ntype: topic\nvisibility: private\n"
+        "source: shared:priya@example.com:knowledge-base/topics/plan.md\n---\n\n"
+        f"Notes on Priya's plan. {PROVENANCE_CANARY}\n"
+    ),
+    PROVENANCE_NORMAL: (
+        "---\ntitle: From Priya\nvisibility: normal\n"
+        "source:\n  - meeting\n  - Shared:PRIYA@example.com:knowledge-base/topics/plan.md\n---\n\n"
+        f"More on Priya's plan. {PROVENANCE_CANARY}\n"
+    ),
+}
 
 DELEGATES_BLOCK = """\
   delegates:
@@ -55,6 +78,8 @@ def shared_vault(tmp_path_factory: pytest.TempPathFactory) -> Path:
     vault = build_privacy_vault(tmp_path_factory.mktemp("kb-delegate"))
     config = vault / "scout-config.yaml"
     config.write_text(config.read_text(encoding="utf-8") + DELEGATES_BLOCK, encoding="utf-8")
+    for rel, text in PROVENANCE.items():
+        (vault / rel).write_text(text, encoding="utf-8")
     return vault
 
 
@@ -323,8 +348,8 @@ def test_a_path_to_a_private_entity_reads_like_one_to_no_entity(vault: Path) -> 
 
 def test_a_delegate_with_private_sees_private_but_never_local_only(vault: Path) -> None:
     paths = {r["path"] for r in kb_json(vault, "files", reader=WITH_PRIVATE)}
-    assert set(PRIVATE_CANARIES) <= paths
-    assert TRADING not in paths
+    assert set(PRIVATE_CANARIES) - NEVER_FOR_DELEGATES <= paths
+    assert TRADING not in paths and not paths & NEVER_FOR_DELEGATES
     got = kb_json(vault, "read", SAM, reader=WITH_PRIVATE)
     assert got["label"]["visibility"] == "private" and CANARIES[SAM] in got["content"]
     assert kb(vault, "read", TRADING, reader=WITH_PRIVATE).exit_code == 3
@@ -470,6 +495,47 @@ def test_a_shallow_boundary_commit_is_left_out_for_a_delegate(vault: Path, tmp_p
     assert not any(c.get("shallow_boundary") for c in delegate)
     shown = {c["sha"] for c in delegate}
     assert not shown & {c["sha"] for c in owner if c.get("shallow_boundary")}
+
+
+# ----- never for delegates: the phone inbox and shared provenance (Jordan, 2026-11-13) ------------
+
+
+@pytest.mark.parametrize("reader", [NORMAL_ONLY, WITH_PRIVATE])
+def test_no_delegate_sees_provenance_notes_or_the_inbox(vault: Path, reader: str) -> None:
+    owner = {r["path"] for r in kb_json(vault, "files", reader="owner")}
+    assert {*PROVENANCE, INBOX, BROKEN} <= owner
+    paths = {r["path"] for r in kb_json(vault, "files", reader=reader)}
+    assert not paths & {*PROVENANCE, INBOX, BROKEN}
+    assert kb_json(vault, "search", PROVENANCE_CANARY, reader=reader) == []
+    assert kb_json(vault, "search", CANARIES[INBOX], reader=reader) == []
+    missing = kb(vault, "read", "knowledge-base/people/nobody.md", reader=reader)
+    for rel in (*PROVENANCE, INBOX, BROKEN):
+        hidden = kb(vault, "read", rel, reader=reader)
+        assert (hidden.exit_code, hidden.output) == (missing.exit_code, missing.output), rel
+        assert _read(vault, rel, reader) == _read(vault, "knowledge-base/people/nobody.md", reader), rel
+    assert "from-priya" not in kb(vault, "query", "--type", "topic", reader=reader).output
+    assert PROVENANCE_CANARY not in kb(vault, "export", reader=reader).output
+
+
+def test_provenance_stays_hidden_when_labels_come_from_the_index(vault: Path) -> None:
+    old = time.time() - 86_400
+    for path in vault.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            os.utime(path, (old, old))
+    for _ in range(2):  # the second run reuses the stored labels
+        paths = {r["path"] for r in kb_json(vault, "files", reader=WITH_PRIVATE)}
+        assert not paths & {*PROVENANCE, INBOX, BROKEN}
+    assert (vault / ".scout-cache" / "privacy-index.json").is_file()
+
+
+def test_shared_source_stays_out_of_published_labels() -> None:
+    from scout.kb.privacy import classify
+
+    label = classify(PROVENANCE_PRIVATE, PROVENANCE[PROVENANCE_PRIVATE], POLICY)
+    assert label.shared_source is True
+    assert "shared_source" not in label.to_json()
+    plain = classify(PROVENANCE_PRIVATE, "---\nvisibility: private\n---\n", POLICY)
+    assert label == plain  # equality ignores it, so the conformance corpus is unaffected
 
 
 # ----- pre-session data --------------------------------------------------------------------------
