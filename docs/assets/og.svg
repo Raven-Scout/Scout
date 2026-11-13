@@ -1,38 +1,33 @@
-<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#f7f3ea"/><stop offset="1" stop-color="#efe7d8"/>
-    </linearGradient>
-    <radialGradient id="sun" cx="50%" cy="55%" r="55%">
-      <stop offset="0%" stop-color="#F4A73A" stop-opacity="0.95"/>
-      <stop offset="60%" stop-color="#E89326" stop-opacity="0.30"/>
-      <stop offset="100%" stop-color="#E89326" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="Scout: start every day knowing what actually needs you.">
+  <!-- Source for og.png (the social-share card). Render: open this file over http at a
+       1200x630 viewport and screenshot it, so the self-hosted fonts load. -->
+  <style>
+    @font-face { font-family: 'Inter'; font-weight: 100 900; src: url('fonts/inter.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-weight: 100 800; src: url('fonts/jetbrains-mono.woff2') format('woff2'); }
+    .sans { font-family: 'Inter', -apple-system, system-ui, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  </style>
+  <rect width="1200" height="630" fill="#fbfaf8"/>
+  <circle cx="1120" cy="-40" r="420" fill="#f6ebe3"/>
+  <image href="scout-icon.svg" x="80" y="72" width="64" height="64"/>
+  <text x="160" y="116" class="sans" font-size="34" font-weight="700" fill="#1b1916" letter-spacing="-0.6">Scout</text>
 
-  <rect width="1280" height="640" fill="url(#bg)"/>
-  <rect x="0" y="0" width="1280" height="8" fill="#b4541f"/>
+  <text class="sans" font-size="72" font-weight="700" fill="#1b1916" letter-spacing="-2.4">
+    <tspan x="80" y="262">Start every day knowing</tspan>
+    <tspan x="80" y="346">what actually needs you.</tspan>
+  </text>
+  <text class="sans" font-size="28" fill="#48443d">
+    <tspan x="80" y="420">An open-source background agent for Claude Code. It reads your</tspan>
+    <tspan x="80" y="458">tools, cross-checks them, and keeps your notes on your Mac.</tspan>
+  </text>
 
-  <!-- mark -->
-  <g transform="translate(96,236)">
-    <rect x="0" y="0" width="168" height="168" rx="40" fill="#f3ead5"/>
-    <rect x="0" y="0" width="168" height="168" rx="40" fill="url(#sun)"/>
-    <circle cx="84" cy="58" r="16" fill="#2F4A55"/>
-    <path d="M84 78 L132 150 L84 142 L36 150 Z" fill="#2B2F33"/>
-    <path d="M84 86 L84 142 L48 148 Z" fill="#f3ead5"/>
-    <rect x="58" y="150" width="52" height="13" rx="6" fill="#2B2F33"/>
+  <g class="mono" font-size="20" font-weight="500">
+    <rect x="80" y="514" width="130" height="40" rx="8" fill="#e6f2ea"/>
+    <text x="145" y="540" text-anchor="middle" fill="#2c7349">verified</text>
+    <rect x="224" y="514" width="200" height="40" rx="8" fill="#fbf1d9"/>
+    <text x="324" y="540" text-anchor="middle" fill="#8a5d00">single-source</text>
+    <rect x="438" y="514" width="184" height="40" rx="8" fill="#fbe9e7"/>
+    <text x="530" y="540" text-anchor="middle" fill="#b0302a">contradicted</text>
   </g>
-
-  <!-- text -->
-  <g font-family="'Iowan Old Style','Palatino Linotype',Georgia,serif">
-    <text x="300" y="250" font-size="62" font-weight="500" fill="#1c1814" letter-spacing="-1">Nothing falls through the cracks —</text>
-    <text x="300" y="328" font-size="62" font-weight="500" font-style="italic" fill="#b4541f" letter-spacing="-1">and you can trust what it surfaces.</text>
-  </g>
-  <text x="300" y="392" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="27" fill="#534c41">An autonomous agent that cross-checks all your work tools — for Claude Code.</text>
-
-  <g font-family="'JetBrains Mono',ui-monospace,Menlo,monospace" font-size="22" fill="#8a8173">
-    <text x="300" y="556">open source</text>
-    <circle cx="455" cy="549" r="3" fill="#b4541f"/>
-    <text x="476" y="556">raven-scout.github.io/Scout</text>
-  </g>
+  <text x="1120" y="541" text-anchor="end" class="sans" font-size="22" fill="#66615a">raven-scout.github.io/Scout</text>
 </svg>
