@@ -49,7 +49,7 @@
   <!-- item 2 — single-source -->
   <circle cx="92" cy="330" r="9" fill="#F4EFE1" stroke="#E0D9C6"/><circle cx="92" cy="330" r="4.5" fill="#C68A35"/>
   <text x="120" y="328" font-size="16.5" font-weight="600" fill="#30343F">Northwind renewal call may have moved to 3:00.</text>
-  <text x="120" y="353" font-size="14" fill="#5A5E69">Only the calendar says so — no confirmation from Dana by email or Slack. Treat the new time as tentative.</text>
+  <text x="120" y="353" font-size="14" fill="#5A5E69">Only the calendar says so — no confirmation from Alex by email or Slack. Treat the new time as tentative.</text>
   <g font-family="'JetBrains Mono', ui-monospace, monospace" font-size="11">
     <rect x="120" y="368" width="104" height="22" rx="6" fill="#EDE6D5"/><circle cx="133" cy="379" r="3.5" fill="#C68A35"/><text x="143" y="383" fill="#C68A35" font-weight="500">single-source</text>
     <rect x="232" y="368" width="74" height="22" rx="6" fill="#F4EFE1" stroke="#E0D9C6"/><text x="244" y="383" font-family="-apple-system, 'Segoe UI', sans-serif" fill="#5A5E69" font-weight="500">Calendar</text>
