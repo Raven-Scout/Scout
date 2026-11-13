@@ -175,6 +175,30 @@ def test_retries_on_enotfound_in_the_sibling_wording(tmp_path: Path) -> None:
     assert _attempts(scout_dir) == 2, "wrapper should have retried after the DNS failure"
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        "API Error: Unable to connect to API (FailedToOpenSocket)",
+        (
+            "API Error: 500 Internal server error. This is a server-side issue, "
+            "usually temporary \u2014 try again in a moment."
+        ),
+    ],
+)
+def test_retries_on_socket_open_failure_and_server_500(tmp_path: Path, output: str) -> None:
+    """Both signatures killed a real scheduled run unretried; the 500's own text says try again."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=output, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2, f"wrapper should have retried after: {output}"
+
+
 def test_existing_transient_pattern_still_retries(tmp_path: Path) -> None:
     """Guard: editing the regex alternation must not break a pre-existing pattern."""
     scout_dir = tmp_path / "Scout"
@@ -454,10 +478,12 @@ def test_retry_that_dies_on_auth_gets_banner_and_notification(tmp_path: Path) ->
     assert len(_notifications(record)) == 1
 
 
-def test_pre_session_403_then_api_500_is_not_an_auth_failure(tmp_path: Path) -> None:
+def test_pre_session_403_then_api_400_is_not_an_auth_failure(tmp_path: Path) -> None:
+    # The session's own error is a non-auth, non-transient status. This used a 500
+    # until 500 became transient; a 400 keeps the case a single, unretried attempt.
     scout_dir, logs, script = _vault(tmp_path)
     fake_bin, record = _notifier_bin(tmp_path)
-    claude = _scripted_claude(scout_dir, output="API Error: 500 Internal server error", exit_code=1)
+    claude = _scripted_claude(scout_dir, output="API Error: 400 Bad Request", exit_code=1)
     log_file = logs / "scout-1.log"
     # What the runner writes before the session: hook output that happens to
     # quote an HTTP status from some other service.
