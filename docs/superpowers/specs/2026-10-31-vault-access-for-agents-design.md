@@ -158,6 +158,8 @@ gains the scheme; every `scoutctl kb` command and the audit log
 | `visibility: normal` notes, labelled | yes | — |
 | `visibility: private` notes | **no** | yes, per delegate (`privacy.delegates.<id>.include_private: true`, §4.5), only for a delegate whose conversations are the owner's alone (§4.2) |
 | Local-only paths (plumbing, trading) | **never** | never: path-level, like any sync (privacy §4.3) |
+| The phone-notification inbox (`.scout-inbox/**`) | **never** | never (Jordan, 2026-11-13) |
+| Notes built from another person's shared note (#553 provenance, `source: shared:…`), and notes whose frontmatter can't be read | **never** | never, even when marked `visibility: normal` (Jordan, 2026-11-13): that content was shared with the owner, not with a third-party platform |
 | Action items (daily file, context notes) | yes, minus lines that link a private note (§4.4) | whole file, when private is widened |
 | Brain files, `scout-config.yaml` minus secrets, schedule snapshot | yes | — |
 | `.scout-state/` beyond the sync allow-list, `.scout-logs/`, `.scout-cache/` | never | never |
