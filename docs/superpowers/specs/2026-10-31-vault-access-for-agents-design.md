@@ -480,6 +480,22 @@ A failed sync is a run-health event, not a run failure.
 - **Agent → inbox:** per delegate, write access to its own inbox repo only.
 - Revocation: delete the deploy key or token; `scoutctl repo unlink <name>`.
 
+**As built (V2b, #633):**
+
+- `scoutctl delegate link <id> --create-repo owner/name` makes the private
+  repository with the owner's `gh` login. It runs only after the checks that
+  don't need the repository have passed.
+- `scoutctl delegate key <id>` makes an ed25519 deploy key with
+  `read_only=true`. It refuses, and deletes the key, if GitHub records it as
+  writable. The private half goes to `~/.scout-secrets/delegate-mirrors/`. The
+  command prints the agent's `git clone --depth 1` line. `--rotate` and
+  `--revoke` replace or delete the key.
+- `delegate unlink` revokes the key first, and keeps the link if GitHub won't.
+- The laptop's narrow token is optional: `delegate push-token`. Git gets it
+  through `GIT_CONFIG_*` in its environment, never its arguments. Without it,
+  the laptop pushes with git's own login.
+- The agent → inbox credential is V4's.
+
 ### 6.5 The engine inside the agent
 
 - **Install:** `uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"`
@@ -596,7 +612,7 @@ Each phase is one PR or more, and starts only on Jordan's go.
 |---|---|---|
 | **V0 Answers** | Jordan answers §10; a manual check of the facts §3 marks unknown: Grok Bot clones a private repo with a token from its secrets store and runs `pip`/`uv`; Duet reads a private repo through the GitHub connector, and whether it accepts a custom remote MCP connector | §3 has no unknowns that change the plan |
 | **V1 Delegate reader** (built: #625) | `delegate:<id>` in `scout/kb/reader.py`; `privacy.delegates` parsed per §4.5; every `kb` read command, the graph, `kb delta`, `kb classify`, the KB read gate and `pre-session data` filter for it unless `privacy.delegates.<id>.include_private`; audit rows; the write-refusal in §6.5. **No contract change:** delegates don't change labels, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, and the policy JSON names `delegates` only when a vault lists one. Delegate visibility is tested in the engine's own unit tests. Residual left for V2: a normal note's body that names a private note still shows (§4.4) | `scoutctl kb files` as `delegate:x` on the privacy fixture vault prints no `CANARY-PRIV-*` |
-| **V2 Delegate mirror** | **V2a (built: #632):** `scoutctl delegate link/sync [--all]/preview/status/unlink`; per-delegate tree with line redaction (§4.4); pre-push re-check; compare-and-swap push to a private GitHub repo or local path (§6.1 "As built"). **V2b:** create the private repo and the agent's read-only deploy key or token. **V2c:** the post-run and interval sync, and mirror ages in doctor and run health | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file (V2a's tests prove this with local bare repos; a real GitHub repo waits for V2b and Jordan's OK) |
+| **V2 Delegate mirror** | **V2a (built: #632):** `scoutctl delegate link/sync [--all]/preview/status/unlink`; per-delegate tree with line redaction (§4.4); pre-push re-check; compare-and-swap push to a private GitHub repo or local path (§6.1 "As built"). **V2b (built: #633, stacked on #632):** `link --create-repo`, `delegate key` (read-only deploy key, rotate, revoke), `delegate push-token`. **V2c:** the post-run and interval sync, and mirror ages in doctor and run health | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file (V2a's tests prove this with local bare repos; a real GitHub repo waits for V2b and Jordan's OK) |
 | **V3 Delegate bootstrap** | `scoutctl delegate init` (AGENTS.md / CLAUDE.md, env, install check); docs per platform | A fresh Linux container with only the mirror clone and a token answers a scout-ask question through `scoutctl kb` |
 | **V4 Inbox** | proposal schema; `inbox pull/apply`; the phase step in consolidation and briefing; review-queue routing | An `action_item_op` made in the container is applied by the next fixture run; an owner-only op lands in the review queue |
 | **V5 (only if needed) MCP** | `scoutctl mcp serve` over a delegate mirror clone: read tools (`kb_resolve/files/read/search/query/related`, `action_items_list`, `pre_session`) plus `inbox_propose`. Stdio first (Grok Bot can start it by command); streamable HTTP for Duet, which as a claude.ai custom connector must be publicly reachable and needs the MCP OAuth flow or an authless URL (an unguessable path is weak auth, acceptable only for a normal-only mirror; Jordan decides, Q3) | Duet answers a scout-ask question through it |
