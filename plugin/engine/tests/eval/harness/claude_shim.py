@@ -186,7 +186,33 @@ def _kill_group(pid: int) -> None:
         pass
 
 
+_LOOPBACK_PREFIXES = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+
+
+def _passthrough(runner_argv: list[str], env: dict[str, str]) -> int | None:
+    """Hand a call that isn't a run session to the real claude unchanged; None for a session.
+
+    The runners always pass ``--name``. Calls without it are the runners' gate probe
+    (``scoutctl gates probe``, spec 2026-11-13 §3.5: a session against a fake model on
+    127.0.0.1) and ``--version``. They must test the claude the sessions use and never
+    write this sample's result dir. Anything else without ``--name`` is refused, so a
+    nameless call can't reach a real endpoint and bill a key past the session guards.
+    """
+    if "--name" in runner_argv:
+        return None
+    real = env.get("SCOUT_EVAL_REAL_CLAUDE")
+    loopback = env.get("ANTHROPIC_BASE_URL", "").startswith(_LOOPBACK_PREFIXES)
+    if not real or not (runner_argv == ["--version"] or loopback):
+        print("claude-shim: not an eval session (no --name) and not the gate probe; refusing", file=sys.stderr)
+        return EXIT_ENV
+    os.execvpe(real, [real, *runner_argv], env)
+    return EXIT_ENV  # unreachable: execvpe replaces this process
+
+
 def run(runner_argv: list[str], env: dict[str, str]) -> int:
+    passed = _passthrough(runner_argv, env)
+    if passed is not None:
+        return passed
     missing = [k for k in REQUIRED_ENV if not env.get(k)]
     if missing:
         print(f"claude-shim: not an eval run, missing {', '.join(missing)}", file=sys.stderr)
