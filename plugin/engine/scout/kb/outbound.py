@@ -59,6 +59,7 @@ from __future__ import annotations
 import bisect
 import os
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,11 +157,16 @@ class PrivateTerms:
         return bool(self.notes)
 
 
+def _norm(text: str) -> str:
+    """NFKC case folding: ``Jose\u0301``, ``José`` and ``JOSÉ`` all become ``josé``."""
+    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+
+
 def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
-    """One pattern for ``terms`` over case-folded text (module docstring)."""
+    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring)."""
     parts: set[str] = set()
     for t in terms:
-        words = [w for w in _SPLIT.split(t.casefold()) if w]
+        words = [w for w in _SPLIT.split(_norm(t)) if w]
         if words:
             parts.add(_SEP.join(re.escape(w) for w in words))
     if not parts:
@@ -234,13 +240,13 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
         parts = (rel[: len(rel) - len(name)] + slug).split("/")
         named += ["/".join(parts[i:]) for i in range(len(parts) - 1)] if len(parts) > 1 else [name]
     terms = tuple(dict.fromkeys(n for n in named if len(n) >= MIN_TERM_CHARS))
-    keys = {n.casefold() for n in names} | {name.casefold(), _strip_md(name).casefold()}
+    keys = {_norm(n) for n in names} | {_norm(name), _norm(_strip_md(name))}
     return PrivateNote(
         path=rel,
         slug=slug,
         terms=terms,
         link_keys=frozenset(keys),
-        link_path=_strip_md(rel).casefold(),
+        link_path=_norm(_strip_md(rel)),
         pattern=_term_regex(terms),
     )
 
@@ -312,13 +318,13 @@ def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
         return PrivateNote(path=key, slug=slug, terms=(rel,), link_keys=frozenset(), link_path="", pattern=None)
     names = [n for n in (title, slug) if n and _words(n) >= MIN_SHARED_NAME_WORDS]
     terms = tuple(dict.fromkeys(["/".join(parts[i:]) for i in range(len(parts) - 1)] + names))
-    keys = {slug.casefold(), path.rsplit("/", 1)[-1].casefold()} if slug in names else set()
+    keys = {_norm(slug), _norm(path.rsplit("/", 1)[-1])} if slug in names else set()
     return PrivateNote(
         path=key,
         slug=slug,
         terms=terms,
         link_keys=frozenset(keys),
-        link_path=rel.casefold(),
+        link_path=_norm(rel),
         pattern=None,
     )
 
@@ -377,21 +383,32 @@ def _link_target(inner: str) -> str:
     """A wikilink's target, case-folded: display text (``|`` or a table's ``\\|``),
     heading/block ref and ``.md`` dropped."""
     target = inner.split("|", 1)[0].rstrip("\\").split("#", 1)[0].strip().strip("/")
-    return _strip_md(target).casefold()
+    return _norm(_strip_md(target))
+
+
+def _joins(ch: str) -> bool:
+    """Whether ``ch`` belongs with the character before it: a combining mark, or a Hangul vowel or final jamo."""
+    return bool(unicodedata.combining(ch)) or "\u1160" <= ch <= "\u11ff"
 
 
 def _fold(text: str) -> tuple[str, list[int] | None]:
-    """``text`` case-folded, and for each folded character the index of the
-    character it came from (None when folding kept every length)."""
-    folded = text.casefold()
-    if len(folded) == len(text):  # casefold never shortens a character
-        return folded, None
+    """``text`` NFKC case-folded (:func:`_norm`), and for each folded character the
+    index of the character it came from (None when it is ASCII, where folding keeps
+    every position). Normalised one base character with its marks at a time, so a
+    name spelled with combining accents (NFD) matches its precomposed term."""
+    if text.isascii():
+        return text.lower(), None
     out: list[str] = []
     origin: list[int] = []
-    for i, ch in enumerate(text):
-        cf = ch.casefold()
-        out.append(cf)
-        origin.extend([i] * len(cf))
+    i, n = 0, len(text)
+    while i < n:
+        j = i + 1
+        while j < n and _joins(text[j]):
+            j += 1
+        folded = _norm(text[i:j])
+        out.append(folded)
+        origin.extend([i] * len(folded))
+        i = j
     return "".join(out), origin
 
 
@@ -465,7 +482,7 @@ def linked_slugs(line: str, terms: PrivateTerms) -> set[str]:
     slugs never reach its output.
     """
     out: set[str] = set()
-    for m in _WIKILINK.finditer(line.casefold()):
+    for m in _WIKILINK.finditer(_fold(line)[0]):
         target = _link_target(m.group(1))
         if target:
             out |= {note.slug.casefold() for note in terms.notes if note.linked_by(target)}
