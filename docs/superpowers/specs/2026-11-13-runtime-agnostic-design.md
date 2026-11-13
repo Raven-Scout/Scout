@@ -9,7 +9,9 @@ Builds on, and cites as "privacy §n", "delegates §n", "models §n", "eval §n"
 
 - `2026-10-20-per-note-privacy-design.md` (#453): readers, output classes, `scoutctl kb`.
 - `2026-10-31-vault-access-for-agents-design.md` (draft PR #550): the
-  `delegate:<id>` reader (built, #625), delegate mirrors and the inbox.
+  `delegate:<id>` reader (V1, built in #625), the per-delegate mirror (V2a,
+  draft #632: `scout/delegate_mirror.py` and `scoutctl delegate
+  link|sync|preview|status|unlink`), and the inbox.
 - `2026-10-13-slot-model-selection-design.md` (#460, #461, #462).
 - `2026-10-12-eval-harness-design.md` and the KB-writing release gate (`eval.sh kb-gate`).
 - `2026-10-11-run-health-and-headless-updates-design.md` (auth, usage limits, self-update).
@@ -35,22 +37,32 @@ marketing copy.
 
 ## 2. Summary of the recommendation
 
-1. **The four names fall into two kinds of target** (§3):
-   - **Local agent CLIs** that Scout launches on the owner's Mac, as Claude
-     Code is today:
+1. **Two tracks** (§3):
+   - **Track A: Scout's own sessions on another CLI.** Scheduled runs and
+     interactive skills, launched by Scout on the owner's Mac, as Claude Code
+     is today. The targets are:
      - OpenAI **Codex CLI**;
      - Google's CLI, which for consumer plans is now **Antigravity CLI**
        (Gemini CLI moved those users there on 2026-06-18 and now needs a paid
        key or a Code Assist licence);
-     - xAI's **Grok Build** CLI, *if* that is what "Grokbot" means.
-   - **Hosted agent platforms** that run off the laptop and that Scout never
-     launches: xAI's **Grok Bot** and Anthropic's **Claude Duet**. Both are
-     official, and neither has a CLI, API or hooks. Jordan's own spec #550
-     already uses "grokbot" and "Claude duet" for exactly these two, and the
-     `delegate:<id>` reader built for them has shipped (#625).
+     - xAI's **Grok Build** CLI.
 
-   Both identities stay explicit questions for Jordan (Q1, Q2). The evidence
-   points to the hosted platforms.
+     This spec designs Track A.
+   - **Track B: off-laptop agents consuming Scout.** These are **Grokbot**
+     (xAI's Grok Bot) and **Claude Duet** (Anthropic's proactive agent,
+     announced 2026-10-21, per Claude account). Both are settled as agent
+     platforms that run off the laptop, by Jordan's earlier research and spec
+     #550. Neither has a CLI, API or hooks, and Scout never launches them.
+     They read the vault through #550's delegate path:
+     - the `delegate:<id>` reader (V1, built in #625);
+     - the per-delegate filtered mirror (V2a, draft #632);
+     - `scoutctl` inside the agent;
+     - later the bootstrap (V3) and the inbox (V4).
+
+     This spec doesn't redesign any of that, and its phases don't touch
+     `delegate_mirror` or `repo_sync` code. For Track B it adds only the
+     shared capability vocabulary, the marketing rule and the acceptance
+     line (§8.12, §13).
 1a. **Urgent, and independent of the rest.** Claude Code's docs say `--bare`
    will become the default for `-p`, and bare mode loads no hooks. Scout's
    gates would then silently stop running in scheduled runs. A guard ships
@@ -68,8 +80,9 @@ marketing copy.
      adapter's *verified* capabilities with what the vault, reader and mode
      need. An unsafe combination is refused with a reason.
    - A runtime that can't block a tool call before it runs gets no scheduled
-     run on a real vault. It may still read a **delegate mirror** (#550), which
-     is safe without hooks because private and local-only content isn't in it.
+     run on a real vault. It may still read a **delegate mirror** (#550 V2a,
+     #632), which is safe without hooks because private and local-only
+     content isn't in it.
    - A new model provider (OpenAI, Google, xAI) sees vault content only after
      the owner opts in, per provider (§8.4).
    - No existing gate is weakened to fit a runtime.
@@ -79,10 +92,16 @@ marketing copy.
    - Model values are validated per runtime.
    - Slots already have a `runtime: local|remote` field (where the slot runs),
      so the new key gets a different name.
-5. **Hosted platforms get no runtime adapter.** "Support" for Grok Bot and
-   Claude Duet means #550's delegate path: mirror, bootstrap, inbox and,
-   later, the MCP server. This spec only adds their marketing rule and how
-   their acceptance is checked (§10).
+5. **Track B gets no runtime adapter.** "Support" for Grokbot and Claude Duet
+   means #550's delegate path:
+   - V1 reader (#625);
+   - V2a mirror (#632);
+   - V3 bootstrap;
+   - V4 inbox;
+   - later the V5 MCP server.
+
+   This spec only adds their marketing rule and how their acceptance is
+   checked (§10).
 6. **Claims follow shipped code.** A runtime is "supported" on the site or in
    the README only once it has shipped in a release *and* passed:
    - its conformance suite;
@@ -167,9 +186,14 @@ Google target is in practice Antigravity CLI (Q5).
     valid JSON, including on its own errors. That is checkable, but it is the
     opposite of today's exit-2 default.
 
-### 3.3 "Grokbot": xAI's Grok Bot, or xAI's Grok Build CLI
+### 3.3 xAI: Grokbot (Track B) and the Grok Build CLI (Track A)
 
-- **Grok Bot**
+"Grokbot" is settled: it is xAI's Grok Bot, an agent platform that runs off
+the laptop. That is Jordan's earlier research and #550 §3.1. Grok Build is a
+different xAI product, the coding CLI. It is the only xAI candidate for
+Track A.
+
+- **Grok Bot (Track B)**
   - Official xAI product, announced 2026-08-11, beta [docs:
     x.ai/news/introducing-grok-bot]. Team Bots in public beta since
     2026-09-28 [docs: x.ai/news/team-bots].
@@ -177,9 +201,9 @@ Google target is in practice Antigravity CLI (Q5).
     SuperGrok tiers and with some Cursor plans. It "signs in with your Cursor
     account" [docs: docs.x.ai/grok-bot/faq].
   - **No CLI, API or headless mode** is documented.
-  - It is the product Jordan's #550 calls "grokbot". It is a hosted
-    platform, so Tier D by construction (§8.12).
-- **Grok Build (`grok`)**
+  - It reaches Scout through its delegate mirror and `scoutctl` in
+    `/workspace` (#550 §3.1, §6.5). Tier D by construction (§8.12).
+- **Grok Build (`grok`, Track A)**
   - xAI's official coding CLI; early beta from 2026-05-25 for SuperGrok and
     X Premium+ [docs: x.ai/news/grok-build-cli].
   - Apache-2.0, `xai-org/grok-build`; install `curl -fsSL
@@ -207,21 +231,26 @@ Google target is in practice Antigravity CLI (Q5).
   2026-05-15, MIT). API key only, so it is out under the no-paid-API rule.
   Nothing literally named "Grokbot" was found as a CLI.
 
-**For Scout:** if Jordan means the CLI, Grok Build is a runtime candidate,
-but **fail-open hooks keep it out of Tier F** unless Phase 0 finds a
-fail-closed setting. Its path-deny rules may give a structural tier instead
-(§8.3, Tier S). If he means the Bot, it is #550's delegate. Q1.
+**For Scout:** Grok Build is a Track A candidate, but **fail-open hooks keep
+it out of Tier F** unless Phase 0 finds a fail-closed setting. Its
+path-deny rules may give a structural tier instead (§8.3, Tier S). Whether
+Track A should include it at all is Q1.
 
-### 3.4 "Claude Duet": three candidates
+### 3.4 Claude Duet (Track B)
+
+"Claude Duet" is settled: it is Anthropic's proactive agent, per Claude
+account. That is Jordan's earlier research and #550 §3.2. The two
+similarly named community projects below are recorded only so nobody
+mistakes them for the target later.
 
 | Candidate | Evidence | What "support" would mean |
 |---|---|---|
-| **Anthropic Claude Duet** | Official: "Introducing Claude Duet", 2026-10-21 [docs: claude.com/blog/claude-duet]; product page claude.com/product/claude-duet; help article "Get started with Claude Duet" on support.claude.com. Proactive agent app on iOS, Android and claude.ai, working on its own cloud computer; research preview with a waitlist for US Pro, Max and Ultra; model not selectable; uses the account's connectors, plugins and skills. **No CLI, API or hooks documented.** It is what #550 calls "Claude duet" | Tier D delegate via #550: the mirror through its GitHub connector, later a `scoutctl mcp` connector (#550 V5). Not a runtime adapter |
+| **Anthropic Claude Duet** | Official: "Introducing Claude Duet", 2026-10-21 [docs: claude.com/blog/claude-duet]; product page claude.com/product/claude-duet; help article "Get started with Claude Duet" on support.claude.com. Proactive agent app on iOS, Android and claude.ai, working on its own cloud computer; research preview with a waitlist for US Pro, Max and Ultra; model not selectable; uses the account's connectors, plugins and skills. **No CLI, API or hooks documented.** It is what #550 calls "Claude duet" | **The target.** Tier D delegate via #550: its delegate mirror (#632) through the GitHub connector, later a `scoutctl mcp` connector (#550 V5). Not a runtime adapter |
 | `claude-duet` (EliranG) | npm 0.3.2 (2026-03-11), MIT [repo: github.com/EliranG/claude-duet]. Shares one Claude Code session between two people (P2P, end-to-end encrypted), driving the Claude Code CLI headless | Nothing to port: it *is* Claude Code underneath. At most a docs note that Scout's skills work inside it |
 | `duet-cli` | PyPI 0.2.21 (2026-11-11), MIT [repo: github.com/volkan/duet]. Two agent CLIs (Claude Code, Codex, Gemini, …) take alternating implement/review turns | An orchestrator over runtimes. Covered once each runtime it drives is; no adapter of its own |
 
-The brief's "unverified site" for the 2026-10-21 launch is now verified on
-Anthropic's own pages. Recommended reading: the Anthropic product (Q2).
+The 2026-10-21 launch is confirmed on Anthropic's own pages, which matches
+#550.
 
 ### 3.5 Agent Client Protocol, and Claude Code itself
 
@@ -639,7 +668,7 @@ passing test is treated as absent. The ones that matter:
   - This is a bigger build than Tier F. It only happens if a wanted runtime
     can't reach Tier F.
 - **Tier D (delegate only):** anything less.
-  - The runtime may run only against a **delegate mirror clone** (#550 V2)
+  - The runtime may run only against a **delegate mirror clone** (#550 V2a, #632)
     as `delegate:<id>`.
   - No private notes, no local-only paths, no shared-from-others notes, and
     no `.scout-*` state are in the checkout, so nothing a missing hook would
@@ -967,24 +996,28 @@ owner's Claude account (§6.7), and no other CLI can use them.
 - **Launch menus** ("Launch Claude Code", "Ask Claude") get one entry per
   installed runtime, in a later phase.
 
-### 8.12 Hosted platforms: Grok Bot and Claude Duet
+### 8.12 Track B: Grokbot and Claude Duet consume Scout through the delegate path
 
-Covered by #550, which this spec doesn't duplicate:
+Covered by #550 and its PRs. This spec builds on them and doesn't redesign
+them:
 
-- the `delegate:<id>` reader (V1, built #625);
-- the per-delegate mirror (V2);
+- the `delegate:<id>` reader (V1, built in #625);
+- the per-delegate filtered mirror (V2a, draft #632):
+  `scout/delegate_mirror.py` and `scoutctl delegate
+  link|sync|preview|status|unlink`, a redacted mirror pushed to a private
+  repo per delegate;
 - `scoutctl delegate init` writing `AGENTS.md`/`CLAUDE.md` (V3);
 - the inbox (V4);
 - an MCP server only if needed (V5).
 
-This spec adds two things:
+**No phase of this spec changes `delegate_mirror` or `repo_sync` code.**
+This spec adds three things:
 
 - these platforms are Tier D by construction, so the same capability table
   describes them;
+- Track A's Tier D (§8.3) *reuses* #632's mirror: a local CLI without proven
+  gates may work only in a clone of a delegate mirror, as a delegate;
 - their marketing rule (§13).
-
-If "Grokbot" turns out to mean the Grok Build CLI (Q1), it becomes an agent
-runtime in Phase 4 instead.
 
 ## 9. Error handling and failure modes
 
@@ -1089,18 +1122,18 @@ and per-PR checks are in the plan.
 | **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, doctor loop, vestigial-variable cleanup | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
 | **2 Codex CLI** | `codex` adapter; gate translation + generated config; fake-model conformance; provider consent; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; generated Codex commands/skills | Conformance at Tier F (or L) for a pinned version; `kb-gate` + privacy scenario pass on Codex; one slot live for a week | 8–12 |
 | **3 Google CLI** | `antigravity` adapter (or `gemini`, per Q5); skills/plugin packaging; conformance by model-backed runs only for Antigravity; eval shim | Same bar as Codex | 5–8 (+2–3 for a second, Gemini CLI adapter) |
-| **4 Grok** | If Grok Build CLI: adapter + conformance. Its hooks fail open (§3.3), so it starts Tier D and reaches Tier S only if the Tier S work is approved. If Grok Bot: #550 V2–V4 (mirror, bootstrap, inbox) for a Grok delegate | CLI: same bar as Codex at whatever tier it proves. Bot: #550 V2–V4 "done when" + V6 | CLI 4–8, plus Tier S (MCP server, path-deny profiles) 8–12 if wanted; Bot 8–12 (shared with Duet) |
-| **5 Claude Duet** | #550 path: mirror via the GitHub connector first, V5 MCP only if needed | #550 V2 + Duet answers a scout-ask question from its mirror; V6 live | 3–6 after Phase 4's mirror work (V5 adds 4–6) |
+| **4 Grok Build CLI (Track A, if Q1 says yes)** | Adapter + conformance. Its hooks fail open (§3.3), so it starts Tier D (a delegate-mirror clone) and reaches Tier S only if the Tier S work is approved (Q10) | Same bar as Codex at whatever tier it proves | 4–8, plus Tier S (MCP server, path-deny profiles) 8–12 if wanted |
+| **5 Track B: Grokbot and Claude Duet** | #550's own track, owned there and only tracked here: V2a mirror (#632), then V2 sync hooks, V3 bootstrap, V4 inbox; Duet reads its mirror through the GitHub connector first, with V5 MCP only if needed | #550's "done when" lines; Grokbot and Duet each answer a scout-ask question from their mirror; V6 live | Per #550's plan, not estimated here |
 | **6 Marketing** | Copy changes per §13, one PR per claim change, each citing its evidence row | Claims match `docs/runtimes.md` | 1–2 per step |
 
 Phase 1a can start today and doesn't wait for this spec's approval of the
-rest. Phase 1 doesn't depend on Q1/Q2. Phases 2 and 3 are independent of
-each other once Phase 1 lands. Phase 4/5 and the #550 track can run in
-parallel with them.
+rest. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
+independent of each other once Phase 1 lands. Track B (Phase 5) runs on
+#550's own schedule, in parallel.
 
-**Total, recommended path** (1a, 1, Codex, Antigravity, and the hosted
-platforms via #550 V2–V4): about 35–50 agent-days over 20–30 PRs, plus
-Jordan's review time and the per-runtime live weeks.
+**Total, Track A recommended path** (1a, 1b, 1, Codex, Antigravity): about
+25–35 agent-days over 15–20 PRs, plus Jordan's review time and the
+per-runtime live weeks. Track B is estimated in #550.
 
 ## 13. What the repo and site may claim, phase by phase
 
@@ -1124,7 +1157,7 @@ Every claim below must point at a row.
 | Released, conformance green, evals not yet passed | "Preview" in `plugin/README.md`'s runtime section and `docs/runtimes.md` only. No site hero, no root README pitch |
 | Released + conformance + `kb-gate` + privacy scenario passed on that runtime | **"Supported"**: site, README and app onboarding may say "Runs on Claude Code, Codex CLI …". Each wording names what is supported (scheduled runs, interactive skills, or both) and the tier, if it isn't F |
 | Tier D only (a CLI without proven gates) | "Works with X for read-only questions over a filtered copy of your notes." Never "runs Scout" |
-| Hosted platforms after #550 V3–V4 ship and V6 is live | "Your Grok Bot / Claude Duet agent can read your Scout notes (normal notes only) and propose updates." Never "runs your briefings" |
+| Track B (Grokbot, Claude Duet) after #550 V3–V4 ship and V6 is live | "Your Grok Bot / Claude Duet agent can read your Scout notes (normal notes only) and propose updates." Never "runs your briefings" |
 
 Never, at any phase:
 
@@ -1135,14 +1168,12 @@ Never, at any phase:
 
 ## 14. Open questions for Jordan
 
-1. **"Grokbot":** xAI's hosted **Grok Bot** (the reading in your #550 spec,
-   where you wrote "grokbot (xAI's Grok Bot)"), or xAI's **Grok Build** CLI
-   (§3.3)? Or both: the Bot as a delegate, the CLI as a runtime?
-2. **"Claude Duet":** Anthropic's hosted **Claude Duet** (your #550 reading),
-   the `claude-duet` npm package (shared Claude Code sessions: nothing to
-   port, since it already runs Claude Code), or `duet-cli` (Claude and Codex
-   taking turns: covered once Codex is)? §3.4 has the evidence. Recommended:
-   the hosted product, via #550.
+1. **Grok Build in Track A?** Grokbot is settled as the off-laptop Grok Bot
+   (Track B). Should Track A *also* add xAI's Grok Build CLI as a runtime
+   for Scout's own sessions? Its hooks fail open, so it would be Tier D
+   until Q10 is answered.
+2. *(Settled: Claude Duet is Anthropic's agent, Track B via #550. No
+   question left.)*
 3. **Approach:** A (engine adapters, shell runners exec through `scoutctl`), as
    recommended in §7?
 4. **Providers (§8.4):** opt-in per provider with `[anthropic]` as the
@@ -1173,8 +1204,10 @@ Never, at any phase:
 
 ## 15. Calls made in this spec (check while reading)
 
-- Two kinds of target: local agent runtimes vs hosted delegate platforms
-  (§2, §8.1).
+- Two tracks:
+  - A, Scout's own sessions on another CLI, designed here;
+  - B, Grokbot and Duet through #550's delegate path (#625, #632),
+    referenced and not redesigned. See §2 and §8.12.
 - New key `agent_runtime`, because `Slot.runtime` is taken (§8.1, §8.7).
 - Approach A; the wrapper keeps the name `claude-with-retry.sh` for liveness
   (§7, §8.2).

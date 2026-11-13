@@ -6,6 +6,14 @@
 than Claude Code, behind one adapter interface, with every privacy gate
 enforced or the run refused.
 
+**Two tracks:**
+
+- **Track A** is Scout's own sessions on Codex, Google's CLI and maybe
+  Grok Build. Phases 0–4 and 6 belong to it, and this plan owns them.
+- **Track B** is Grokbot and Claude Duet consuming Scout through #550's
+  delegate mirror (#625, #632) plus `scoutctl`. Phase 5 tracks it, but
+  #550's plan owns it.
+
 **Architecture:** A new engine package `scout/agent_runtimes/` holds one
 adapter per local CLI, behind a protocol with declared and verified
 capabilities. The shell runners keep lock, lease, retry and liveness. They
@@ -572,22 +580,29 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
   `hook_out` that always prints valid JSON (malformed output fails open).
 - Same acceptance bar as Codex.
 
-## Phase 4 — Grok (cards; after Q1, Q10)
+## Phase 4 — Grok Build CLI, Track A (cards; only if Q1 says yes; Q10 decides Tier S)
 
-- **Grok Build CLI:**
-  - adapter and conformance;
-  - starts Tier D, because hooks fail open after a 5 s default timeout;
-  - Tier S only if Q10 says build it: `scoutctl mcp serve` on the laptop
-    over the canonical vault as `autonomous` (shares code with #550 V5),
-    plus path-deny profiles for the KB, local-only paths and gate configs.
-- **Grok Bot:** #550 V2 (delegate mirror), V3 (`delegate init`), V4 (inbox),
-  then V6 live. #550's own plan has the tasks.
+- Adapter and conformance.
+- It starts Tier D, because hooks fail open after a 5 s default timeout.
+  Tier D means it works in a clone of a #632 delegate mirror, as a delegate.
+- Tier S only if Q10 says build it: `scoutctl mcp serve` on the laptop over
+  the canonical vault as `autonomous` (shares code with #550 V5), plus
+  path-deny profiles for the KB, local-only paths and gate configs.
 
-## Phase 5 — Claude Duet (cards; after Q2)
+## Phase 5 — Track B: Grokbot and Claude Duet (tracked here, owned by #550)
 
-- #550 path: V2 mirror, then Duet reads it through its GitHub connector
-  (no Scout server). V5 MCP only if that's too weak (#550 Q3/Q9).
-- Acceptance: Duet answers a scout-ask question from its mirror; V6 live.
+- Grokbot (Grok Bot) and Claude Duet are off-laptop agents that consume
+  Scout through #550's delegate path:
+  - V1 reader, built in #625;
+  - V2a mirror, draft #632 (`scout/delegate_mirror.py`, `scoutctl delegate
+    link|sync|preview|status|unlink`);
+  - then V3 `delegate init`, V4 inbox, and V6 live.
+  - Duet first reads its mirror through the GitHub connector; V5 MCP only
+    if that's too weak (#550 Q3/Q9).
+- **No card from this plan touches `delegate_mirror` or `repo_sync` code.**
+  The tasks live in #550's plan and are owned by its session.
+- Acceptance: #550's "done when" lines; each agent answers a scout-ask
+  question from its mirror.
 
 ## Phase 6 — Marketing (cards, one per claim change)
 
