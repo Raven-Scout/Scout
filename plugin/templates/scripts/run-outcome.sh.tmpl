@@ -64,6 +64,13 @@ case "$ENGINE_ALERT_INTERVAL_S" in ''|*[!0-9]*) ENGINE_ALERT_INTERVAL_S=86400 ;;
 # bootstrap_doctor.CLI_AUTH_FAILURE_ERE (a test keeps them equal), so the ledger
 # class, the desktop alert and the doctor agree on what a rejected login is.
 AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired|Not logged in)'
+# Cloudflare's bot-challenge page in front of the API ("403 Attention Required! |
+# Cloudflare"). The CLI prints it as "Failed to authenticate. API Error: 403 …", so
+# AUTH_RE matches it too, but the credentials were never rejected: the edge refused
+# the request. Checked on the LAST attempt only, before AUTH_RE, so a retry that then
+# dies on a real 401 is still oauth_expired. The retry wrapper's TRANSIENT_PATTERNS
+# carries the same string.
+EDGE_CHALLENGE_RE='Attention Required! \| Cloudflare'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to
@@ -91,6 +98,7 @@ classify_failure() {
     tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
     last_txt="$(awk '/^=== Claude retry attempt /{buf=""; next} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$tail_txt" 2>/dev/null || true)"
     if grep -qiE "$BUDGET_RE" <<<"$last_txt"; then echo "budget"
+    elif grep -qE "$EDGE_CHALLENGE_RE" <<<"$last_txt"; then echo "network"
     elif grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
     elif grep -qiE "$NETWORK_RE" <<<"$tail_txt"; then echo "network"
     elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"

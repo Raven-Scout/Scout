@@ -243,6 +243,21 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         ),
         # A Mac set up again comes up logged out rather than expired (#267).
         pytest.param("Not logged in · Please run /login\n", "oauth_expired", id="not-logged-in"),
+        # Cloudflare's challenge page in front of the API: the CLI words it as an auth
+        # failure, but no credential was rejected, so "log in again" would be wrong.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n",
+            "network",
+            id="cloudflare-challenge",
+        ),
+        # A retry after the challenge that then hits a real 401 is still an auth failure.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/3 ===\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="cloudflare-then-real-401",
+        ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.

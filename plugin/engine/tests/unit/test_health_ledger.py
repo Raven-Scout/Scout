@@ -266,6 +266,16 @@ def test_a_bare_401_in_a_run_log_is_not_an_auth_failure(tmp_path):
     assert health.evaluate(v, now=NOW).findings == ()
 
 
+def test_a_cloudflare_challenge_in_a_run_log_is_not_an_auth_failure(tmp_path):
+    """Cloudflare's 403 challenge page reads like the CLI's auth error, but no credential
+    was rejected; "log in again" would send the user to fix the wrong thing."""
+    v = _vault(tmp_path)
+    (v / ".scout-logs" / "scout-2026-10-11_08-00.log").write_text(
+        "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n", encoding="utf-8"
+    )
+    assert "auth.expired" not in {f.id for f in health.evaluate(v, now=NOW).findings}
+
+
 def test_three_lock_skips_in_a_day_are_yellow(tmp_path):
     v = _vault(tmp_path)
     _ledger(v, [_row(NOW - timedelta(hours=h), outcome="skipped_lock") for h in (20, 10, 1)])
