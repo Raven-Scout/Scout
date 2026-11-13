@@ -916,8 +916,9 @@ def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, 
     if current is None:
         raise RepoSyncError("not_linked", f"refused: {delegate} has no mirror")
     result = Result(delegate=delegate, action="unlink")
-    if current.deploy_key_id is not None:
-        _delete_key(current, gh=gh)
+    repo = github_repo(current.remote)
+    if current.deploy_key_id is not None and repo is not None:
+        _delete_key(repo, current.deploy_key_id, gh=gh)
         result.notes.append("revoked the agent's deploy key")
     _remove_key_files(vault, delegate)
     del links[delegate]
@@ -963,16 +964,13 @@ def _key_title(delegate: str) -> str:
     return f"scout-delegate-{delegate}"
 
 
-def _delete_key(current: DelegateLink, *, gh: GhRunner) -> None:
-    repo = github_repo(current.remote)
-    if repo is None or current.deploy_key_id is None:
-        return
-    proc = gh(["api", "-X", "DELETE", f"repos/{repo}/keys/{current.deploy_key_id}"])
+def _delete_key(repo: str, key_id: int, *, gh: GhRunner) -> None:
+    proc = gh(["api", "-X", "DELETE", f"repos/{repo}/keys/{key_id}"])
     if proc.returncode != 0 and "Not Found" not in proc.stdout + proc.stderr:
         why = (proc.stderr or proc.stdout).strip().splitlines()
         raise RepoSyncError(
             "key_revoke_failed",
-            f"refused: couldn't delete deploy key {current.deploy_key_id} on {repo}: "
+            f"refused: couldn't delete deploy key {key_id} on {repo}: "
             f"{why[-1] if why else 'gh failed'}; delete it in the repository's settings, then retry",
         )
 
@@ -1008,7 +1006,7 @@ def deploy_key(
     if revoke:
         if current.deploy_key_id is None:
             raise RepoSyncError("no_key", f"refused: {delegate} has no deploy key on record")
-        _delete_key(current, gh=gh)
+        _delete_key(repo, current.deploy_key_id, gh=gh)
         _remove_key_files(vault, delegate)
         links[delegate] = dataclasses.replace(current, deploy_key_id=None)
         save_links(vault, links)
@@ -1048,11 +1046,11 @@ def deploy_key(
             raise RepoSyncError("key_add_failed", "refused: GitHub's answer to the new key didn't parse")
         added = dataclasses.replace(current, deploy_key_id=int(fields[0]))
         if fields[1] != "true":
-            _delete_key(added, gh=gh)
+            _delete_key(repo, int(fields[0]), gh=gh)
             raise RepoSyncError("key_not_read_only", "refused: GitHub recorded the key as writable; it was deleted")
         if current.deploy_key_id is not None:
             try:
-                _delete_key(current, gh=gh)
+                _delete_key(repo, current.deploy_key_id, gh=gh)
             except RepoSyncError as e:
                 result.notes.append(e.message.replace("refused: ", "warning: ", 1))
         key = key_path(vault, delegate)
