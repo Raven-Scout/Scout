@@ -90,12 +90,20 @@ app.add_typer(gates_app, name="gates")
 
 @gates_app.command("probe")
 def cli_gates_probe(
-    claude_bin: str = typer.Option("", "--claude-bin", help="The claude the runners launch (default: as bootstrap finds it)."),
-    vault: str | None = typer.Option(None, "--vault", help="Vault whose .scout-state caches the result (default: SCOUT_DATA_DIR / cwd)."),
-    cached: bool = typer.Option(False, "--cached", help="Reuse a fresh matching pass from .scout-state/gate-probe.json."),
+    claude_bin: str = typer.Option(
+        "", "--claude-bin", help="The claude the runners launch (default: as bootstrap finds it)."
+    ),
+    vault: str | None = typer.Option(
+        None, "--vault", help="Vault whose .scout-state caches the result (default: SCOUT_DATA_DIR / cwd)."
+    ),
+    cached: bool = typer.Option(
+        False, "--cached", help="Reuse a fresh matching pass from .scout-state/gate-probe.json."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
     plugin_root: str | None = typer.Option(None, "--plugin-root", hidden=True),
-    extra_flag: list[str] = typer.Option([], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."),
+    extra_flag: list[str] = typer.Option(
+        [], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."
+    ),
 ) -> None:
     """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
 

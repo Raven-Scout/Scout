@@ -49,7 +49,13 @@ MAX_AGE = timedelta(hours=24)
 CACHE_REL = Path(".scout-state") / "gate-probe.json"
 DEFAULT_TIMEOUT_S = 90.0
 # Never handed to the probe's claude: it talks to the fake only.
-_CREDENTIAL_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+_CREDENTIAL_VARS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
 _DUMMY_KEY = "sk-ant-scout-gate-probe-not-a-key"
 
 
@@ -151,7 +157,7 @@ def probe(
     def result(ok: bool, reason: str, version: str | None) -> ProbeResult:
         return ProbeResult(ok, reason, version, sha, flags, key, _now_iso())
 
-    resolved = shutil.which(str(claude_bin)) if not os.path.sep in str(claude_bin) else str(claude_bin)
+    resolved = shutil.which(str(claude_bin)) if os.path.sep not in str(claude_bin) else str(claude_bin)
     if not resolved or not Path(resolved).is_file():
         return result(False, f"claude not found at {claude_bin}", None)
     if not os.access(resolved, os.X_OK):

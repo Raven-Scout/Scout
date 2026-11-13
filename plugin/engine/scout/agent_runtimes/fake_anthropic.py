@@ -95,8 +95,8 @@ class FakeAnthropic:
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, name="fake-anthropic", daemon=True)
         self._thread.start()
-        host, port = self._server.server_address[:2]
-        self.base_url = f"http://{host}:{port}"
+        port = self._server.server_address[1]
+        self.base_url = f"http://127.0.0.1:{port}"
         return self.base_url
 
     def stop(self) -> None:
@@ -140,7 +140,9 @@ class FakeAnthropic:
                 turn = self._script[n]
                 tool_id = f"toolu_probe_{uuid.uuid4().hex[:16]}"
                 self._issued_ids.append(tool_id)
-                return [{"type": "tool_use", "id": tool_id, "name": turn.tool_name, "input": turn.tool_input}], "tool_use"
+                return [
+                    {"type": "tool_use", "id": tool_id, "name": turn.tool_name, "input": turn.tool_input}
+                ], "tool_use"
         return [{"type": "text", "text": "done"}], "end_turn"
 
     def _record_results(self, messages: Iterable[Any]) -> None:
@@ -176,10 +178,18 @@ class FakeAnthropic:
                 events.append({"type": "content_block_start", "index": i, "content_block": {**block, "input": {}}})
                 delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
             else:
-                events.append({"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}})
+                events.append(
+                    {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}
+                )
                 delta = {"type": "text_delta", "text": block["text"]}
             events.append({"type": "content_block_delta", "index": i, "delta": delta})
             events.append({"type": "content_block_stop", "index": i})
-        events.append({"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": 1}})
+        events.append(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": stop, "stop_sequence": None},
+                "usage": {"output_tokens": 1},
+            }
+        )
         events.append({"type": "message_stop"})
         return events
