@@ -564,7 +564,7 @@ Each phase is one PR or more, and starts only on Jordan's go.
 | Phase | Ships | Done when |
 |---|---|---|
 | **V0 Answers** | Jordan answers §10; a manual check of the facts §3 marks unknown: Grok Bot clones a private repo with a token from its secrets store and runs `pip`/`uv`; Duet reads a private repo through the GitHub connector, and whether it accepts a custom remote MCP connector | §3 has no unknowns that change the plan |
-| **V1 Delegate reader** | `delegate:<id>` in `scout/kb/reader.py`; every `kb` command filters private notes for it unless `privacy.delegates.<id>.include_private`; audit rows; the write-refusal in §6.5; `privacy-corpus.json` gains delegate cases (contract change: tell the Agnes indexer owners) | `scoutctl kb files` as `delegate:x` on the privacy fixture vault prints no `CANARY-PRIV-*` |
+| **V1 Delegate reader** (built: #625) | `delegate:<id>` in `scout/kb/reader.py`; `privacy.delegates` parsed per §4.5; every `kb` read command, the graph, `kb delta`, `kb classify`, the KB read gate and `pre-session data` filter for it unless `privacy.delegates.<id>.include_private`; audit rows; the write-refusal in §6.5. **No contract change:** delegates don't change labels, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, and the policy JSON names `delegates` only when a vault lists one. Delegate visibility is tested in the engine's own unit tests. Residual left for V2: a normal note's body that names a private note still shows (§4.4) | `scoutctl kb files` as `delegate:x` on the privacy fixture vault prints no `CANARY-PRIV-*` |
 | **V2 Delegate mirror** | `GitHubHost`; link profiles; multi-link state; line redaction for mixed files (§4.4); `repo sync --all`; the post-run and interval sync hooks | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file |
 | **V3 Delegate bootstrap** | `scoutctl delegate init` (AGENTS.md / CLAUDE.md, env, install check); docs per platform | A fresh Linux container with only the mirror clone and a token answers a scout-ask question through `scoutctl kb` |
 | **V4 Inbox** | proposal schema; `inbox pull/apply`; the phase step in consolidation and briefing; review-queue routing | An `action_item_op` made in the container is applied by the next fixture run; an owner-only op lands in the review queue |
@@ -613,9 +613,10 @@ Nothing here changes an Agnes plan. Points to weigh there:
   many and adds profiles. The Agnes link stays profile `full`, one entry in the
   map, same behaviour. The refactor touches R1's code; the sub-coordinator
   should review that PR.
-- **The delegate reader and the indexer.** `delegate:*` is a new reader in the
-  privacy corpus. The Agnes indexer runs that corpus, so V1 is a contract
-  change it has to accept (it can ignore delegates, but must not fail on them).
+- **The delegate reader and the indexer.** `delegate:*` is a new reader, but
+  it changes no label, so the privacy corpus the Agnes indexer runs is
+  unchanged and V1 is not a contract change. A synced `privacy-policy.json`
+  may carry a `delegates` key; the indexer ignores readers it doesn't know.
 - **Agnes as the Phase 3 host.** Agnes already plans owner-only repository
   MCP tools. An external delegate calling them today would need an Agnes PAT,
   which carries the owner's full RBAC (no read-only or repository-only scope),
