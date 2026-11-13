@@ -27,8 +27,10 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`)
     tells the session the note's privacy label instead. Only a reader that
     ``scoutctl kb`` shows nothing (an ``agent:*`` reader, #453 v1) is denied a
-    Read of a KB note, and a ``delegate:<id>`` reader is denied one ``scoutctl
-    kb`` wouldn't show it (#550 §4.1). ``knowledge-base/ontology/schema.yaml`` and
+    Read of a KB note. A ``delegate:<id>`` reader (#550 §4.1) is denied a Read
+    of any vault file ``scoutctl kb`` wouldn't show it, KB note or not (trading,
+    ``.scout-inbox``, ``.scout-cache``, ``.scout-logs`` included), and of a
+    missing one alike; hooks.json sends every delegate Read here. ``knowledge-base/ontology/schema.yaml`` and
     ``parser.py`` are tooling, not notes, and are never gated.
 
 Scope: only scheduled runs, by #517's rule (:func:`scout.kb.reader.is_scheduled`:
@@ -167,6 +169,10 @@ def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
         pass
 
 
+def _deny_delegate_read() -> str:
+    return f"{MARK} This delegate session may not read that file. {_REPLACEMENT}"
+
+
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
@@ -208,16 +214,31 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
     rel = _rel(_target(raw, cwd), vault)
-    if rel is None or not is_kb_note_path(rel):
+    if rel is None:
         return None
-    from scout.kb.privacy import FULL_READERS, label_file, load_policy, reads_any, visible_to
+    from scout.kb.reader import delegate_id
 
-    if reader in FULL_READERS:
+    if delegate_id(reader) is not None:
+        return _delegate_read(vault, rel, reader)
+    if not is_kb_note_path(rel):
         return None
-    if not reads_any(reader):
-        return _deny_read()
-    policy = load_policy(vault)  # a delegate (#550): the notes scoutctl kb shows it, no more
-    return None if visible_to(label_file(vault, rel, policy), reader, policy) else _deny_read()
+    from scout.kb.privacy import FULL_READERS
+
+    return None if reader in FULL_READERS else _deny_read()
+
+
+def _delegate_read(vault: Path, rel: str, reader: str) -> str | None:
+    """A delegate (#550 §4.1) Reads only a vault file ``scoutctl kb`` would show it, KB note or not.
+
+    The vault itself, ``.git/``, a missing file and a hidden one get the same deny, so a deny
+    never says whether a file exists.
+    """
+    from scout.kb.privacy import label_file, load_policy, visible_to
+
+    if rel == "." or ".git" in rel.split("/") or not (vault / rel).is_file():
+        return _deny_delegate_read()
+    policy = load_policy(vault)
+    return None if visible_to(label_file(vault, rel, policy), reader, policy) else _deny_delegate_read()
 
 
 def _deny(reason: str) -> dict[str, Any]:

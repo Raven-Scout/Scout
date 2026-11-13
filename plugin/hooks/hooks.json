@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ] && [ \"$SCOUT_READER\" != autonomous ] || exit 0; p=$(cat); case \"$p\" in *knowledge-base*|*knowledge_base*|*action-items/context*) ;; *) exit 0 ;; esac; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook kb-read-gate && exit 0; echo \"[scout:kb-read-gate] Scout's KB read gate could not run, so this Read is blocked for this reader.\" >&2; exit 2",
+            "command": "[ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ] && [ \"$SCOUT_READER\" != autonomous ] || exit 0; p=$(cat); case \"$SCOUT_READER\" in [Dd][Ee][Ll][Ee][Gg][Aa][Tt][Ee]:*) ;; *) case \"$p\" in *knowledge-base*|*knowledge_base*|*action-items/context*) ;; *) exit 0 ;; esac ;; esac; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook kb-read-gate && exit 0; echo \"[scout:kb-read-gate] Scout's KB read gate could not run, so this Read is blocked for this reader.\" >&2; exit 2",
             "timeout": 15
           }
         ]

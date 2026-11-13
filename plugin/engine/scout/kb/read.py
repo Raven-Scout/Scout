@@ -78,6 +78,7 @@ from scout.kb.privacy import (
     CEILING_LEVELS,
     CLASSIFIER_VERSION,
     FEDERATION_SOURCES,
+    FULL_READERS,
     VISIBILITIES,
     FederationScope,
     Label,
@@ -94,6 +95,7 @@ from scout.kb.privacy import (
     visible_to,
 )
 from scout.kb.read_log import log_event
+from scout.kb.reader import delegate_id
 
 INDEX_FILENAME = "privacy-index.json"
 INDEX_VERSION = 3  # 3: entries may carry the graph's parsed frontmatter ("fm")
@@ -702,23 +704,32 @@ def read_file(vault: Path, reader: str, path: str) -> tuple[Label, bytes]:
 
     ``Denied`` for a reader that sees nothing (before anything is touched, so a
     denial never says whether the file exists); ``UsageError`` for a path
-    outside the vault, under ``.git/``, or that isn't a file.
+    outside the vault, under ``.git/``, or that isn't a file. A delegate gets
+    ``Denied`` for a path under ``.git/``, a missing or unreadable file and a
+    hidden one alike, so a denial never tells it which (#550 §4.1).
     """
     if not reads_any(reader):
         raise Denied(reader)
+    full = reader in FULL_READERS
     root = vault.resolve()
     try:
         rel = normalize_rel(root, path)
     except ValueError as e:
         raise UsageError(str(e)) from e
     if ".git" in rel.split("/"):
+        if not full:
+            raise Denied(reader)
         raise UsageError(f"not a vault file: {rel}")
     target = root / rel
     if not target.is_file():
+        if not full:
+            raise Denied(reader)
         raise UsageError(f"no such file: {rel}")
     try:
         data = target.read_bytes()
     except OSError as e:
+        if not full:
+            raise Denied(reader) from e
         raise UsageError(f"can't read {rel}: {e.strerror or e}") from e
     text = decode_head(data) if target.suffix.lower() == ".md" else None
     policy = load_policy(root)
@@ -746,8 +757,11 @@ def load_graph(vault: Path, reader: str, kb_root: str | None = None, schema: str
 
     The schema defaults to the vault's ``knowledge-base/ontology/schema.yaml``,
     else the engine's. A reader that sees nothing gets an empty graph, and no
-    file is looked at.
+    file is looked at. A delegate may not name a KB root or a schema: either
+    would open a path of its choosing, outside the policy (``UsageError``).
     """
+    if delegate_id(reader) is not None and (kb_root is not None or schema is not None):
+        raise UsageError("--kb-root and --schema aren't available to a delegate reader")
     kb = Path(kb_root) if kb_root else vault / "knowledge-base"
     if schema is None:
         own = kb / "ontology" / "schema.yaml"

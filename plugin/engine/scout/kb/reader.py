@@ -34,8 +34,13 @@ _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
 _AGENT_PREFIX = "agent:"
 _DELEGATE_PREFIX = "delegate:"
-# A delegate id (#550 §4.5): the key under ``privacy.delegates``.
-DELEGATE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+# A delegate id (#550 §4.5): the key under ``privacy.delegates``. Match it with is_delegate_id.
+DELEGATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+
+
+def is_delegate_id(value: str) -> bool:
+    """Whether ``value`` is a delegate id: ASCII, matched whole (no trailing newline)."""
+    return value.isascii() and DELEGATE_ID_RE.fullmatch(value) is not None
 
 
 def _canonical(reader: str) -> str | None:
@@ -49,8 +54,10 @@ def _canonical(reader: str) -> str | None:
     if reader in ("owner", "autonomous"):
         return reader
     if reader[: len(_DELEGATE_PREFIX)].lower() == _DELEGATE_PREFIX:
+        if not reader.isascii():  # before lower(): a non-ASCII letter may lower to an ASCII one
+            return None
         lowered = reader.lower()
-        return lowered if DELEGATE_ID_RE.match(lowered[len(_DELEGATE_PREFIX) :]) else None
+        return lowered if is_delegate_id(lowered[len(_DELEGATE_PREFIX) :]) else None
     if reader[: len(_AGENT_PREFIX)].lower() != _AGENT_PREFIX:
         return None
     principal = reader[len(_AGENT_PREFIX) :]
@@ -66,7 +73,7 @@ def delegate_id(reader: str) -> str | None:
     if not reader.startswith(_DELEGATE_PREFIX):
         return None
     rest = reader[len(_DELEGATE_PREFIX) :]
-    return rest if DELEGATE_ID_RE.match(rest) else None
+    return rest if is_delegate_id(rest) else None
 
 
 def _rank(reader: str) -> int:

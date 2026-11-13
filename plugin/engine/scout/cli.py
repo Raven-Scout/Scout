@@ -260,13 +260,13 @@ def kb_classify(
     owner and autonomous readers get labels. An agent reader gets
     {"path": ..., "denied": true} for every path, without the file being looked
     at, so a denial says nothing about whether the file exists or what it is.
-    A delegate reader gets the label of each file it may see and the same
-    denial for every other path.
+    A delegate reader gets the label of each existing file it may see and the
+    same denial for every other path, missing ones included.
     """
     args = _kb_args("classify", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from scout.kb.privacy import label_file, load_policy, normalize_rel, reads_any, visible_to
+        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel, reads_any, visible_to
         from scout.kb.read import Output, UsageError
 
         if not reads_any(who):
@@ -285,7 +285,8 @@ def kb_classify(
             except ValueError as e:
                 raise UsageError(str(e)) from e
             label = label_file(root, rel, policy)
-            if not visible_to(label, who, policy):  # a delegate: same answer as for a missing path
+            if not visible_to(label, who, policy) or (who not in FULL_READERS and not (root / rel).is_file()):
+                # a delegate: a hidden file and a missing one get the same denial
                 data.append({"path": p, "denied": True})
                 lines.append(f"{p}: denied")
                 continue
@@ -582,9 +583,11 @@ def _kb_run(
 
     from scout.errors import KBError
     from scout.kb.read import Output, UsageError, audit, graph_vault
-    from scout.kb.reader import resolve_reader
+    from scout.kb.reader import delegate_id, resolve_reader
 
-    vault = graph_vault(_kb_repo(repo), None if repo else kb_root)
+    # A delegate never gets --kb-root's vault lookup: it would stat a path of its choosing.
+    delegate = delegate_id(resolve_reader(None, os.environ)) is not None
+    vault = graph_vault(_kb_repo(repo), None if repo or delegate else kb_root)
     try:
         who = resolve_reader(reader, os.environ)
     except typer.BadParameter:
@@ -4338,7 +4341,9 @@ _register_repo()
 
 # What a delegate checkout (SCOUT_READER=delegate:<id>, #550 §6.5) may run: reads only. A
 # delegate never writes the vault; it proposes through its inbox. This guards against an
-# accident, not an attack: the boundary is that a delegate's copy can't push the vault.
+# accident, not an attack: it covers `scoutctl` only (not `python -m scout.scripts.*`), and
+# the boundary is that a delegate's copy can't push the vault. `action-items list` waits for
+# V2: the daily file links private notes, which only the delegate mirror redacts (#550 §4.4).
 _DELEGATE_COMMANDS = frozenset(
     {
         ("version",),
@@ -4363,7 +4368,6 @@ _DELEGATE_COMMANDS = frozenset(
                 "validate",
             )
         ),
-        ("action-items", "list"),
         ("pre-session", "data"),
         ("bootstrap", "doctor"),
         ("manifest", "show"),
@@ -4375,20 +4379,24 @@ _DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate ses
 def delegate_write_refusal(argv: list[str], env: Mapping[str, str]) -> str | None:
     """Why a ``delegate:<id>`` reader may not run ``argv`` (the words after ``scoutctl``), else None.
 
-    None for any other reader, and for ``--help``. Only the commands in
-    ``_DELEGATE_COMMANDS`` (and the ``hook`` group) pass; anything else, a bare
-    group included, is refused.
+    None for any other reader. Only the commands in ``_DELEGATE_COMMANDS`` (and
+    the ``hook`` group) pass, and ``--help`` right after the command words
+    (``scoutctl kb share --help``), where it can't be another option's value;
+    anything else, a bare group included, is refused. ``-h`` isn't help here:
+    on some commands it is ``--hours``.
     """
     from scout.kb.reader import delegate_id, resolve_reader
 
     reader = resolve_reader(None, env)
-    if delegate_id(reader) is None or "--help" in argv or "-h" in argv:
+    if delegate_id(reader) is None:
         return None
     words: list[str] = []
     for arg in argv:
         if arg.startswith("-"):
             break
         words.append(arg)
+    if argv[len(words) : len(words) + 1] == ["--help"]:
+        return None
     if words and (words[0] in _DELEGATE_GROUPS or tuple(words[:1]) in _DELEGATE_COMMANDS):
         return None
     if tuple(words[:2]) in _DELEGATE_COMMANDS:

@@ -307,9 +307,6 @@ class _Labeller:
         except ValueError:
             return fast
 
-    def label(self, path: Path, facts: NoteFacts) -> dict[str, Any]:
-        return self.label_obj(path, facts).to_json()
-
     def label_obj(self, path: Path, facts: NoteFacts) -> Label:
         return label_from_facts(self.rel(path), facts, self.policy)
 

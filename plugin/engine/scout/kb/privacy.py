@@ -21,7 +21,8 @@ ignored, so later sections are additive.
 Delegates (#550 §4.1, §4.5): ``delegates: {<id>: {include_private}}`` lists the
 owner's own agents that run off the laptop, read as ``delegate:<id>``. A listed
 delegate sees normal notes, private ones only with ``include_private: true``
-(nothing else counts as true), and never a local-only path; an unlisted one
+written exactly so (``yes``, ``on``, ``True`` or a quoted ``"true"`` count as
+false, with a warning), and never a local-only path; an unlisted one
 sees nothing. Labels don't change: what a delegate sees is derived from the
 label's ``visibility`` and ``local_only`` (:func:`visible_to`). Delegate keys
 never sit inside the ``federation*`` keys, nor federation keys inside
@@ -80,7 +81,8 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
   nothing and is dropped.
 - ``privacy-overlay-invalid`` also covers ``delegates``: a non-mapping block,
   an id that isn't ``[a-z0-9][a-z0-9-]{0,39}``, an entry that isn't a mapping
-  (each dropped), and a non-boolean ``include_private`` (kept as false).
+  (each dropped), and an ``include_private`` that isn't written ``true`` or
+  ``false`` (kept as false).
 - ``privacy-sync-only-invalid``: ``sync_only`` has the wrong shape or an entry
   that can't name a vault path. It is kept as an empty list, which uploads
   nothing, and ``scoutctl repo`` refuses until it is fixed.
@@ -107,7 +109,7 @@ import yaml
 from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
-from scout.kb.reader import DELEGATE_ID_RE, delegate_id
+from scout.kb.reader import delegate_id, is_delegate_id
 from scout.yaml_safe import load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
@@ -452,25 +454,62 @@ def _sync_only_entries(value: Any) -> tuple[str, ...] | None:
     return _dedup(entries)
 
 
-def _delegate_rules(value: Any) -> tuple[tuple[DelegateRule, ...], bool]:
-    """``delegates`` entries and whether any part was malformed (bad parts are dropped, or kept narrower)."""
+def _delegate_rules(value: Any, literal_true: frozenset[str] | None) -> tuple[tuple[DelegateRule, ...], bool]:
+    """``delegates`` entries and whether any part was malformed (bad parts are dropped, or kept narrower).
+
+    ``literal_true`` is the ids whose ``include_private`` the config text spells
+    exactly ``true`` (:func:`_literal_true_delegates`); a YAML 1.1 ``yes``, ``on``
+    or ``True`` loads as the same boolean but widens nothing, with a warning.
+    None (an overlay built in Python, such as the corpus's) trusts the boolean.
+    """
     if not isinstance(value, Mapping):
         return (), True
     rules: list[DelegateRule] = []
     bad = False
     for key, entry in value.items():
-        if (
-            not isinstance(key, str)
-            or not DELEGATE_ID_RE.match(key)
-            or not (entry is None or isinstance(entry, Mapping))
-        ):
+        if not isinstance(key, str) or not is_delegate_id(key) or not (entry is None or isinstance(entry, Mapping)):
             bad = True
             continue
         include = (entry or {}).get("include_private", False)
-        if not isinstance(include, bool):
+        if not isinstance(include, bool) or (include and literal_true is not None and key not in literal_true):
             bad, include = True, False
         rules.append(DelegateRule(id=key, include_private=include))
     return tuple(rules), bad
+
+
+def _child(node: Any, key: str) -> Any:
+    """The value node of ``key`` in a composed YAML mapping (the last one, as loading keeps), else None."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    found = None
+    for k, v in node.value:
+        if isinstance(k, yaml.ScalarNode) and k.value == key:
+            found = v
+    return found
+
+
+def _literal_true_delegates(text: str) -> frozenset[str]:
+    """Ids under ``privacy.delegates`` whose ``include_private`` is written exactly ``true`` (plain, unquoted).
+
+    From the composed node tree, before YAML 1.1 turns ``yes``/``on``/``True``
+    into the same boolean. Empty when the text doesn't compose (fail closed).
+    """
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return frozenset()
+    delegates = _child(_child(root, "privacy"), "delegates")
+    out: set[str] = set()
+    if isinstance(delegates, yaml.MappingNode):
+        for k, v in delegates.value:
+            if not isinstance(k, yaml.ScalarNode):
+                continue
+            flag = _child(v, "include_private")
+            if isinstance(flag, yaml.ScalarNode) and flag.style is None and flag.value == "true":
+                out.add(k.value)
+            else:
+                out.discard(k.value)  # a later duplicate key wins, as when loading
+    return frozenset(out)
 
 
 def load_policy(vault: Path | None) -> Policy:
@@ -518,7 +557,7 @@ def policy_from_config_text(text: str | None) -> Policy:
         return _engine_default()
     if not isinstance(data, dict):
         return _unreadable_policy(None)
-    return policy_from_overlay(data.get("privacy"))
+    return policy_from_overlay(data.get("privacy"), literal_true=_literal_true_delegates(text))
 
 
 def _unreadable_policy(text: str | None) -> Policy:
@@ -565,13 +604,13 @@ def _narrowing_overlay(overlay: Any) -> Any:
     return kept
 
 
-def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
+def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: frozenset[str] | None = None) -> Policy:
     """Engine default merged with a ``privacy:`` overlay mapping (no vault needed).
 
     ``None`` means the engine default. This is the merge :func:`load_policy`
     applies, exposed so the contract corpus (and the Agnes indexer's runner)
     can build a policy from a bare overlay. A non-mapping overlay is ignored
-    with ``privacy-overlay-invalid``.
+    with ``privacy-overlay-invalid``. ``literal_true``: see :func:`_delegate_rules`.
     """
     base = _engine_default()
     if overlay is None:
@@ -685,7 +724,7 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
 
     delegates: tuple[DelegateRule, ...] = ()
     if "delegates" in overlay:
-        delegates, bad = _delegate_rules(overlay["delegates"])
+        delegates, bad = _delegate_rules(overlay["delegates"], literal_true)
         if bad:
             warnings.append("privacy-overlay-invalid")
 

@@ -94,7 +94,16 @@ def test_a_delegate_reader_is_canonicalised(raw: str, canonical: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["delegate:", "delegate:-grok", "delegate:_defaults", "delegate:grok personal", "delegate:" + "x" * 41, "delegate"],
+    [
+        "delegate:",
+        "delegate:-grok",
+        "delegate:_defaults",
+        "delegate:grok personal",
+        "delegate:" + "x" * 41,
+        "delegate",
+        "delegate:ok\n",  # a trailing newline isn't part of an id
+        "delegate:\u212aey",  # KELVIN SIGN lower-cases to an ASCII k: refused before lowering
+    ],
 )
 def test_a_malformed_delegate_fails_closed(raw: str) -> None:
     assert resolve_reader(None, {"SCOUT_READER": raw}) == FAIL_CLOSED_READER
@@ -173,6 +182,38 @@ def test_an_unreadable_config_lists_no_delegates() -> None:
     policy = policy_from_config_text(text)
     assert policy.delegates == ()
     assert "privacy-overlay-unreadable" in policy.warnings
+
+
+@pytest.mark.parametrize("spelling", ["yes", "on", "True", "TRUE", "y", '"true"', "!!bool true", "1"])
+def test_only_a_plain_true_in_the_config_widens(spelling: str) -> None:
+    text = f"privacy:\n  delegates:\n    duet:\n      include_private: {spelling}\n"
+    policy = policy_from_config_text(text)
+    (duet,) = policy.delegates
+    assert duet.include_private is (spelling == "!!bool true")  # an explicit tag on the plain word true
+    if spelling != "!!bool true":
+        assert "privacy-overlay-invalid" in policy.warnings
+
+
+def test_a_plain_true_widens_and_false_is_quiet() -> None:
+    text = (
+        "privacy:\n  delegates:\n    duet:\n      include_private: true\n"
+        "    grok: {include_private: false}\n    bare: {}\n"
+    )
+    policy = policy_from_config_text(text)
+    assert {d.id: d.include_private for d in policy.delegates} == {"duet": True, "grok": False, "bare": False}
+    assert policy.warnings == ()
+
+
+def test_a_later_duplicate_key_decides_as_loading_does() -> None:
+    text = "privacy:\n  delegates:\n    duet:\n      include_private: true\n    duet:\n      include_private: yes\n"
+    (duet,) = policy_from_config_text(text).delegates
+    assert duet.include_private is False
+
+
+def test_an_id_with_a_trailing_newline_is_dropped() -> None:
+    policy = policy_from_config_text('privacy:\n  delegates:\n    "ok\\n": {}\n')
+    assert policy.delegates == ()
+    assert "privacy-overlay-invalid" in policy.warnings
 
 
 # ----- visible_to ---------------------------------------------------------------------------
@@ -279,18 +320,44 @@ def test_an_unlisted_delegate_sees_nothing(vault: Path, args: list[str]) -> None
 
 
 def test_classify_answers_a_delegate_only_for_what_it_sees(vault: Path) -> None:
-    rows = kb_json(vault, "classify", PRIYA, SAM, reader=NORMAL_ONLY)
+    rows = kb_json(vault, "classify", PRIYA, SAM, "knowledge-base/people/nobody.md", TRADING, reader=NORMAL_ONLY)
     assert rows[0]["path"] == PRIYA and rows[0]["visibility"] == "normal"
-    assert rows[1] == {"path": SAM, "denied": True}
+    assert rows[1:] == [
+        {"path": SAM, "denied": True},
+        {"path": "knowledge-base/people/nobody.md", "denied": True},  # missing reads like hidden
+        {"path": TRADING, "denied": True},
+    ]
 
 
-def test_delta_drops_private_paths_for_a_delegate(vault: Path) -> None:
+@pytest.mark.parametrize("reader", [NORMAL_ONLY, WITH_PRIVATE])
+@pytest.mark.parametrize("hidden", [SAM, TRADING, ".git/config"])
+def test_a_delegate_cannot_tell_a_hidden_file_from_a_missing_one(vault: Path, reader: str, hidden: str) -> None:
+    if reader == WITH_PRIVATE and hidden == SAM:
+        pytest.skip("visible to this delegate")
+    there = kb(vault, "read", hidden, reader=reader)
+    missing = kb(vault, "read", "knowledge-base/people/nobody.md", reader=reader)
+    assert there.exit_code == 3
+    assert (there.exit_code, there.output) == (missing.exit_code, missing.output)
+
+
+@pytest.mark.parametrize("flag", ["--schema", "--kb-root"])
+@pytest.mark.parametrize("target", ["/etc/hosts", "/no/such/path", "knowledge-base"])
+def test_a_delegate_may_not_point_the_graph_elsewhere(vault: Path, flag: str, target: str) -> None:
+    result = kb(vault, "query", flag, target, reader=NORMAL_ONLY)
+    assert result.exit_code == 2
+    assert "aren't available to a delegate reader" in result.output
+
+
+def test_delta_drops_private_paths_and_withholds_mixed_subjects(vault: Path) -> None:
     commits = kb_json(vault, "delta", "--since", "52w", reader=NORMAL_ONLY)
     subjects = [c["subject"] for c in commits]
-    assert "private only" not in subjects
-    assert "private and normal" in subjects and "normal only" in subjects
+    assert "normal only" in subjects
+    assert "private only" not in subjects and "private and normal" not in subjects
+    assert "(subject withheld)" in subjects
     seen = {p["path"] for c in commits for p in c["paths"]}
     assert not seen & set(CANARIES)
+    owner = [c["subject"] for c in kb_json(vault, "delta", "--since", "52w", reader="owner")]
+    assert "private and normal" in owner and "(subject withheld)" not in owner
 
 
 # ----- the kb-read gate (a delegate session in Claude Code) -----------------------------------------
@@ -303,9 +370,30 @@ def _read(vault: Path, rel: str, reader: str) -> dict[str, Any] | None:
 
 def test_the_read_gate_lets_a_delegate_read_only_what_kb_shows_it(vault: Path) -> None:
     assert _read(vault, PRIYA, NORMAL_ONLY) is None
+    assert _read(vault, "inbox.md", NORMAL_ONLY) is None  # a normal file outside the KB
     assert _read(vault, SAM, NORMAL_ONLY) is not None
     assert _read(vault, SAM, WITH_PRIVATE) is None
     assert _read(vault, PRIYA, UNLISTED) is not None
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        TRADING,
+        ".scout-inbox/phone-notifications-2026-10-01.jsonl",
+        ".scout-cache/session-context.json",
+        ".scout-logs/kb-reads.jsonl",
+        ".git/config",
+    ],
+)
+def test_the_read_gate_denies_a_delegate_every_hidden_vault_file(vault: Path, rel: str) -> None:
+    target = vault / rel
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}\n", encoding="utf-8")
+    hidden = _read(vault, rel, NORMAL_ONLY)
+    missing = _read(vault, "knowledge-base/people/nobody.md", NORMAL_ONLY)
+    assert hidden is not None and hidden == missing
 
 
 # ----- pre-session data --------------------------------------------------------------------------
@@ -346,7 +434,8 @@ def test_pre_session_data_for_a_delegate_has_no_private_path(tmp_path: Path, mon
     assert [t["name"] for t in ctx.personal_tasks] == ["task-buy-gift"]
     assert ctx.linear_own_activity_status == "skipped"
     assert ctx.run_notes_before == [] and ctx.past_due_tasks == []
-    assert all("private only" not in row["subject"] for row in ctx.git_recent)
+    assert all(row["subject"] not in ("private only", "private and normal") for row in ctx.git_recent)
+    assert "(subject withheld)" in {row["subject"] for row in ctx.git_recent}
 
 
 # ----- the write guard (spec §6.5) ------------------------------------------------------------------
@@ -358,13 +447,14 @@ def test_pre_session_data_for_a_delegate_has_no_private_path(tmp_path: Path, mon
         ["kb", "files"],
         ["kb", "read", "x.md", "--json"],
         ["kb", "name-lookup", "Sam"],
-        ["action-items", "list"],
         ["pre-session", "data"],
         ["bootstrap", "doctor", "--json"],
         ["hook", "kb-read-gate"],
         ["version"],
         ["--help"],
+        ["action-items", "--help"],
         ["action-items", "mark-done", "--help"],
+        ["action-items", "mark-done", "OPS-1", "--help"],  # no option before it, so click shows help
     ],
 )
 def test_a_delegate_may_run_read_commands(argv: list[str]) -> None:
@@ -384,6 +474,9 @@ def test_a_delegate_may_run_read_commands(argv: list[str]) -> None:
         ["notify", "telegram", "hi"],
         ["self-update", "check"],
         ["phases", "backport"],
+        ["action-items", "list"],  # waits for V2: the daily file links private notes
+        ["action-items", "add-comment", "--subject", "X", "--comment", "--help"],  # --help as a value
+        ["session", "index", "--render", "-h", "48"],  # -h is --hours here
         ["kb"],
         [],
     ],
