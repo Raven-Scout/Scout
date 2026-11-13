@@ -233,6 +233,15 @@ files. So the delegate profile:
   by name is a lint question for the owner, and `kb lint --report` lists them
   (privacy §8.2). Open question Q6 asks whether to strip those lines too.
 
+**As built (V2a, #632):** redaction runs on every kept text file, not only the
+files above. This is the fail-closed answer to Q6, and Jordan may narrow it. It
+matches against every note hidden from that delegate, not only private ones:
+local-only notes, provenance notes and notes shared with the owner (their
+citing form and quotes). A hit in the frontmatter removes the whole list item
+or top-level key, so the YAML stays whole. A file that would no longer parse, or
+whose label would change, is left out. A non-markdown text file other than
+`.txt`/`.csv`/`.tsv`/`.jsonl` that hits is left out whole.
+
 The redacted file is a new blob in the mirror commit only; the vault file is
 untouched, so the laptop never replays a redaction back (§7.3).
 
@@ -253,7 +262,7 @@ privacy:
   delegates:                    # delegate:* readers (this spec, V1)
     grok-personal:              # the <id> in delegate:<id>
       include_private: false    # §4.1; only the literal `true` widens, anything else is false
-      account_unshared: true    # §4.2; the owner's one-time confirmation that no Bot on the account is shared
+      # account_unshared: not a key; as built it is `delegate link --confirm-account-unshared`, kept in link state (§4.2)
     duet: {}
   # delegation: {...}           # reserved for policy-wide delegate switches; none in V1
 ```
@@ -417,6 +426,26 @@ widening-guard gates, and history that starts at link time. Changes:
    make (`mirror_diverged`, already a refusal) and never replays: writes come
    through the inbox (§7).
 
+**As built (V2a, #632): a separate module, not a generalised `repo_sync`.**
+Items 1–4 above assumed one sync engine for both hosts. A delegate mirror
+needs none of the Agnes machinery (no lease, replay, host list or pending note),
+so `scout/delegate_mirror.py` reuses `repo_sync`'s building blocks read-only:
+`LocalOnlyRules`, the tree writer, the gates and `_stricter_policy`. It keeps its
+own state (`.scout-state/delegate-mirrors.json`, keyed by delegate id) and refs
+(`refs/scout-delegate/<id>`). The Agnes link's code, state and refs don't change.
+Other differences from items 1–4:
+
+- **One generic commit per sync** that changes the tree, not one per vault
+  commit. It has a fixed identity and a fixed message, so no vault commit
+  subject goes up.
+- **The push is a compare-and-swap** on the remote's `main`
+  (`--force-with-lease`).
+- **The new tree is checked again before the push** (`check_tree`), separately
+  from the build.
+- **The remote** is a private GitHub repository, verified private through
+  `gh api` at link and before every push (fail closed), or a local path.
+- **Repository creation and dedicated credentials** are V2b.
+
 ### 6.2 When it syncs
 
 - At the end of every scheduled run, after the run's own commit (a new
@@ -567,7 +596,7 @@ Each phase is one PR or more, and starts only on Jordan's go.
 |---|---|---|
 | **V0 Answers** | Jordan answers §10; a manual check of the facts §3 marks unknown: Grok Bot clones a private repo with a token from its secrets store and runs `pip`/`uv`; Duet reads a private repo through the GitHub connector, and whether it accepts a custom remote MCP connector | §3 has no unknowns that change the plan |
 | **V1 Delegate reader** (built: #625) | `delegate:<id>` in `scout/kb/reader.py`; `privacy.delegates` parsed per §4.5; every `kb` read command, the graph, `kb delta`, `kb classify`, the KB read gate and `pre-session data` filter for it unless `privacy.delegates.<id>.include_private`; audit rows; the write-refusal in §6.5. **No contract change:** delegates don't change labels, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, and the policy JSON names `delegates` only when a vault lists one. Delegate visibility is tested in the engine's own unit tests. Residual left for V2: a normal note's body that names a private note still shows (§4.4) | `scoutctl kb files` as `delegate:x` on the privacy fixture vault prints no `CANARY-PRIV-*` |
-| **V2 Delegate mirror** | `GitHubHost`; link profiles; multi-link state; line redaction for mixed files (§4.4); `repo sync --all`; the post-run and interval sync hooks | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file |
+| **V2 Delegate mirror** | **V2a (built: #632):** `scoutctl delegate link/sync [--all]/preview/status/unlink`; per-delegate tree with line redaction (§4.4); pre-push re-check; compare-and-swap push to a private GitHub repo or local path (§6.1 "As built"). **V2b:** create the private repo and the agent's read-only deploy key or token. **V2c:** the post-run and interval sync, and mirror ages in doctor and run health | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file (V2a's tests prove this with local bare repos; a real GitHub repo waits for V2b and Jordan's OK) |
 | **V3 Delegate bootstrap** | `scoutctl delegate init` (AGENTS.md / CLAUDE.md, env, install check); docs per platform | A fresh Linux container with only the mirror clone and a token answers a scout-ask question through `scoutctl kb` |
 | **V4 Inbox** | proposal schema; `inbox pull/apply`; the phase step in consolidation and briefing; review-queue routing | An `action_item_op` made in the container is applied by the next fixture run; an owner-only op lands in the review queue |
 | **V5 (only if needed) MCP** | `scoutctl mcp serve` over a delegate mirror clone: read tools (`kb_resolve/files/read/search/query/related`, `action_items_list`, `pre_session`) plus `inbox_propose`. Stdio first (Grok Bot can start it by command); streamable HTTP for Duet, which as a claude.ai custom connector must be publicly reachable and needs the MCP OAuth flow or an authless URL (an unguessable path is weak auth, acceptable only for a normal-only mirror; Jordan decides, Q3) | Duet answers a scout-ask question through it |
@@ -597,7 +626,8 @@ rules: affected tests only locally, fixture vaults anonymized, no test touching
 5. **Platform memory:** is it acceptable that a delegate's own memory may keep
    what it read from normal notes, beyond Scout's reach?
 6. **Normal notes that name a private note** (§4.4): strip those lines from
-   delegate mirrors too, or leave it to lint?
+   delegate mirrors too, or leave it to lint? *V2a strips them (fail closed);
+   say if lint alone should handle it.*
 7. **Team bots:** confirm that a team or shared-channel bot gets nothing
    (`agent:*`), as Agnes ruling 3 says, and that the Grok account holding
    your personal delegate has no Team Bot on it (§4.2: all Bots on an
@@ -611,10 +641,11 @@ rules: affected tests only locally, fixture vaults anonymized, no test touching
 
 Nothing here changes an Agnes plan. Points to weigh there:
 
-- **Shared code, two hosts.** V2 generalises `repo_sync` from one link to
-  many and adds profiles. The Agnes link stays profile `full`, one entry in the
-  map, same behaviour. The refactor touches R1's code; the sub-coordinator
-  should review that PR.
+- **Shared code, two hosts.** As built, V2 doesn't touch `repo_sync`: delegate
+  mirrors are their own module that imports R1's building blocks (§6.1 "As
+  built"). An R1 change to `LocalOnlyRules`, `_stricter_policy` or the gates now
+  also reaches delegate mirrors, so the sub-coordinator should run
+  `test_delegate_mirror.py` alongside R1's tests.
 - **The delegate reader and the indexer.** `delegate:*` is a new reader, but
   it changes no label, so the privacy corpus the Agnes indexer runs is
   unchanged and V1 is not a contract change. A synced `privacy-policy.json`
