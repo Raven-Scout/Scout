@@ -193,6 +193,27 @@ def test_existing_transient_pattern_still_retries(tmp_path: Path) -> None:
     assert _attempts(scout_dir) == 2
 
 
+def test_retries_on_cloudflare_challenge_page(tmp_path: Path) -> None:
+    """Cloudflare's 403 challenge page is the edge refusing the request, not a rejected
+    credential: retry it, and don't print the re-authenticate banner (2026-11-13: a run
+    that had worked for five minutes died here and health said the login expired)."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(
+        scout_dir,
+        first_attempt_output="Failed to authenticate. API Error: 403 Attention Required! | Cloudflare",
+        first_attempt_exit=1,
+    )
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2
+    assert "Authentication failure" not in log_file.read_text()
+
+
 def test_does_not_retry_non_transient_error(tmp_path: Path) -> None:
     """Guard: the classifier stays narrow — auth failures are not retried."""
     scout_dir = tmp_path / "Scout"

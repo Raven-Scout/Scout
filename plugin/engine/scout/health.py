@@ -71,6 +71,12 @@ CLI_AUTH_FAILURE_ERE = (
 # CLI's raw error (pre-0.8.0 runners never wrote the banner).
 _AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
 
+# Cloudflare's bot-challenge page in front of the API. The CLI reports it as
+# "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare", which the
+# auth pattern above matches, but no credential was rejected: telling the user to log in
+# again would be wrong. Same string as run-outcome.sh.tmpl's EDGE_CHALLENGE_RE.
+_EDGE_CHALLENGE_RE = re.compile(r"Attention Required! \| Cloudflare")
+
 _AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)"
 
 # The line that names a failed run's error, per ledger failure class, best first (#445). Each is
@@ -338,7 +344,8 @@ def _log_auth_finding(vault: Path) -> Finding | None:
         latest = max(candidates, key=lambda p: p.stat().st_mtime)
     except OSError:
         return None
-    if not _AUTH_FAILURE_RE.search(_tail_text(latest)):
+    tail = _tail_text(latest)
+    if not _AUTH_FAILURE_RE.search(tail) or _EDGE_CHALLENGE_RE.search(tail):
         return None
     return Finding(
         id="auth.expired",
