@@ -4431,17 +4431,29 @@ def _register_delegate() -> None:
     def cli_delegate_sync(
         delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
         all_: bool = typer.Option(False, "--all", help="Every linked delegate; one failing doesn't stop the rest."),
+        if_moved: bool = typer.Option(
+            False,
+            "--if-moved",
+            help="With --all: only delegates whose mirror may be behind (HEAD moved, or the last sync failed).",
+        ),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
-        """Push a new mirror commit when the vault's HEAD changed what the delegate may see."""
+        """Push a new mirror commit when the vault's HEAD changed what the delegate may see.
+
+        Scheduled runs call `sync --all` when they finish, and the schedule tick
+        calls `sync --all --if-moved` at most every 15 minutes. A failure is
+        recorded for run health and doctor, never failing the run.
+        """
         import json as _json
 
         from scout import paths as _paths
         from scout.delegate_mirror import sync, sync_all
         from scout.repo_sync import RepoSyncError
 
-        if (delegate is None) == (not all_):
-            typer.echo("scoutctl delegate sync: name one delegate, or pass --all", err=True)
+        if (delegate is None) == (not all_) or (if_moved and not all_):
+            typer.echo(
+                "scoutctl delegate sync: name one delegate, or pass --all (and --if-moved only with --all)", err=True
+            )
             raise typer.Exit(2)
         if delegate is not None:
             try:
@@ -4451,7 +4463,7 @@ def _register_delegate() -> None:
             _say(result, as_json)
             return
         try:
-            done, failed = sync_all(_paths.data_dir())
+            done, failed = sync_all(_paths.data_dir(), only_moved=if_moved)
         except RepoSyncError as e:
             _fail(e, as_json)
         if as_json:

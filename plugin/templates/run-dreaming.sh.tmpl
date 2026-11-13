@@ -207,6 +207,13 @@ else
     echo "connector-health roll-up skipped: scoutctl not found at $SCOUTCTL_BIN" >> "$LOG_FILE"
 fi
 
+# Delegate mirrors (#550 V2c): push what this run changed to the owner's agents' mirrors.
+# Only a vault that links one has the state file. A failure is recorded for run health and
+# `scoutctl bootstrap doctor`; it never changes this run's exit code.
+if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then
+    "$SCOUTCTL_BIN" delegate sync --all >> "$LOG_FILE" 2>&1 || true
+fi
+
 # Track session cost. A session can't know its own spend, so the runner records it:
 # `scoutctl budget record-run` reads claude's own figure (the cost-state row it writes
 # at exit) from every attempt's transcript and writes the runner's row with it, which

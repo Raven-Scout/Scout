@@ -101,7 +101,7 @@ import tempfile
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -160,6 +160,8 @@ from scout.repo_sync import (
 SCHEMA_VERSION = 1
 STATE_REL = ".scout-state/delegate-mirrors.json"
 LOCK_REL = ".scout-state/delegate-mirrors.lock"
+TICK_REL = ".scout-state/delegate-sync.tick"  # when the schedule tick last started a sync (its mtime)
+SYNC_INTERVAL = timedelta(minutes=15)
 MANIFEST_PATH = ".scout-state/delegate-mirror.json"
 REF_PREFIX = "refs/scout-delegate/"
 REMOTE_BRANCH = "refs/heads/main"
@@ -217,6 +219,8 @@ class DelegateLink:
     last_sync: str | None = None
     pending_mirror: str | None = None
     deploy_key_id: int | None = None
+    last_attempt: str | None = None
+    last_error: dict[str, str] | None = None  # {"code", "at"} of the last sync that failed, until one succeeds
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -233,6 +237,8 @@ class DelegateLink:
             last_sync=data.get("last_sync"),
             pending_mirror=data.get("pending_mirror"),
             deploy_key_id=data.get("deploy_key_id"),
+            last_attempt=data.get("last_attempt"),
+            last_error=data.get("last_error"),
         )
 
 
@@ -278,7 +284,8 @@ def locked(vault: Path) -> Iterator[None]:
 
 def ensure_ignored(vault: Path) -> bool:
     """Add the link state and its lock to the vault's .gitignore unless already ignored. True when added."""
-    missing = [rel for rel in (STATE_REL, LOCK_REL) if git(vault, "check-ignore", "-q", rel, check=False).returncode]
+    rels = (STATE_REL, LOCK_REL, TICK_REL)
+    missing = [rel for rel in rels if git(vault, "check-ignore", "-q", rel, check=False).returncode]
     if not missing:
         return False
     gi = vault / ".gitignore"
@@ -1185,31 +1192,98 @@ def _adopt_pending(vault: Path, current: DelegateLink) -> DelegateLink:
     return current
 
 
+def _event(vault: Path, kind: str, payload: dict[str, Any]) -> None:
+    """A run-health event row (``.scout-logs/schedule-events-*.jsonl``); best effort. Codes and ids only."""
+    try:
+        from scout.events import append_event
+
+        append_event(paths.logs_dir(vault), kind=kind, source="cli:delegate", payload=payload)
+    except Exception:  # pragma: no cover - an event log that can't be written never stops a sync
+        pass
+
+
 def sync(vault: Path, delegate: str, *, gh: GhRunner = _gh) -> Result:
-    """Push a new mirror commit for ``delegate`` when the vault's HEAD changed what it may see."""
+    """Push a new mirror commit for ``delegate`` when the vault's HEAD changed what it may see.
+
+    The outcome is recorded on the link (``last_attempt``; ``last_error`` until
+    a sync succeeds) and as a run-health event. A failure isn't a run failure:
+    run health and ``bootstrap doctor`` show it. ``busy`` records nothing.
+    """
     vault = vault.resolve()
     with locked(vault):
         links = load_links(vault)
         current = links.get(delegate)
         if current is None:
             raise RepoSyncError("not_linked", f"refused: {delegate} has no mirror; run scoutctl delegate link")
-        current = _adopt_pending(vault, current)
-        links[delegate] = current
+        try:
+            current = _adopt_pending(vault, current)
+            links[delegate] = current
 
-        def record(pending: DelegateLink) -> None:
-            save_links(vault, {**links, delegate: pending})
+            def record(pending: DelegateLink) -> None:
+                save_links(vault, {**links, delegate: pending})
 
-        result, updated = _build_and_push(vault, current, fresh=False, expect=current.last_mirror, gh=gh, record=record)
-        links[delegate] = updated
+            result, updated = _build_and_push(
+                vault, current, fresh=False, expect=current.last_mirror, gh=gh, record=record
+            )
+        except RepoSyncError as e:
+            latest = load_links(vault)
+            failed = dataclasses.replace(
+                latest.get(delegate, current), last_attempt=_now(), last_error={"code": e.code, "at": _now()}
+            )
+            save_links(vault, {**latest, delegate: failed})
+            _event(vault, "delegate_mirror.sync_failed", {"delegate": delegate, "code": e.code})
+            raise
+        links[delegate] = dataclasses.replace(updated, last_attempt=_now(), last_error=None)
         save_links(vault, links)
+    _event(vault, "delegate_mirror.synced", {"delegate": delegate, "pushed": result.pushed is not None})
     return result
 
 
-def sync_all(vault: Path, *, gh: GhRunner = _gh) -> tuple[list[Result], dict[str, RepoSyncError]]:
-    """Sync every linked delegate; a failure of one doesn't stop the rest."""
+def needs_sync(vault: Path, links: Mapping[str, DelegateLink]) -> list[str]:
+    """The linked delegates whose mirror may be behind: HEAD moved, or a sync failed or didn't finish."""
+    head = _rev(vault, "HEAD")
+    return sorted(
+        k for k, v in links.items() if v.last_vault != head or v.last_error is not None or v.pending_mirror is not None
+    )
+
+
+def due(vault: Path, *, now: datetime | None = None) -> bool:
+    """Whether the schedule tick should start a sync: some mirror may be behind and none started for 15 minutes.
+
+    Cheap when nothing is linked: one ``stat``. Never raises on a state it can't read (the sync reports that).
+    """
+    if not state_path(vault).exists():
+        return False
+    now = now or datetime.now(UTC)
+    try:
+        last = datetime.fromtimestamp((vault / TICK_REL).stat().st_mtime, UTC)
+    except OSError:
+        last = None
+    if last is not None and now - last < SYNC_INTERVAL:
+        return False
+    try:
+        return bool(needs_sync(vault, load_links(vault)))
+    except RepoSyncError:
+        return True  # the sync records why it can't run, for run health
+
+
+def mark_started(vault: Path) -> None:
+    """Note that the tick started a sync now (the tick file's mtime)."""
+    tick = vault / TICK_REL
+    tick.parent.mkdir(parents=True, exist_ok=True)
+    tick.touch()
+    os.utime(tick)
+
+
+def sync_all(
+    vault: Path, *, only_moved: bool = False, gh: GhRunner = _gh
+) -> tuple[list[Result], dict[str, RepoSyncError]]:
+    """Sync every linked delegate, or with ``only_moved`` those :func:`needs_sync` names. One failing doesn't stop
+    the rest."""
     done: list[Result] = []
     failed: dict[str, RepoSyncError] = {}
-    for delegate in sorted(load_links(vault.resolve())):
+    links = load_links(vault.resolve())
+    for delegate in needs_sync(vault.resolve(), links) if only_moved else sorted(links):
         try:
             done.append(sync(vault, delegate, gh=gh))
         except RepoSyncError as e:

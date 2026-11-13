@@ -803,6 +803,50 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
+def delegate_findings(vault: Path) -> list[Finding]:
+    """Yellow for a delegate mirror whose last sync failed (#550 V2c): its agent reads an older copy until one works.
+
+    Nothing for a vault that links no delegate. A failed sync is never a run failure;
+    this is where it shows.
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError:
+        return [
+            Finding(
+                id="delegate.state_unreadable",
+                severity="yellow",
+                since=None,
+                summary="The delegate mirror state (.scout-state/delegate-mirrors.json) can't be read, "
+                "so no agent's mirror syncs",
+                fix="Fix or delete that file, then link each delegate again with: scoutctl delegate link",
+                source="config",
+            )
+        ]
+    found = []
+    for key, link in sorted(links.items()):
+        if link.last_error is None:
+            continue
+        code = link.last_error.get("code", "unknown")
+        found.append(
+            Finding(
+                id="delegate.sync_failed",
+                severity="yellow",
+                since=_parse_ts(link.last_error.get("at")),
+                summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
+                f"{link.last_sync or 'when it was linked'}",
+                fix=f"See why with: scoutctl delegate sync {key}",
+                source="events",
+            )
+        )
+    return found
+
+
 def config_findings(vault: Path) -> list[Finding]:
     """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits may be refused."""
     problem = config_load_problem(vault)
@@ -1454,6 +1498,10 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
     config = config_findings(vault)
+    delegates = delegate_findings(vault)
     return build_report(
-        found + sched + lanes + updates + engine + config, now=now, last_ok_at=_last_ok_at(rows), slots=slots
+        found + sched + lanes + updates + engine + config + delegates,
+        now=now,
+        last_ok_at=_last_ok_at(rows),
+        slots=slots,
     )

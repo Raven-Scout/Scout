@@ -71,6 +71,8 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f"Notes from Priya's shared plan. {PROVENANCE_CANARY}\n",
         encoding="utf-8",
     )
+    with (v / ".gitignore").open("a", encoding="utf-8") as gi:
+        gi.write(".scout-logs/\n")  # as templates/.gitignore.tmpl has it: run-health events stay out of commits
     git(v, "add", "-A")
     git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "list delegates")
     privacy_migrate.accept(v)
