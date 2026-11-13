@@ -285,8 +285,9 @@ def kb_classify(
             except ValueError as e:
                 raise UsageError(str(e)) from e
             label = label_file(root, rel, policy)
-            if not visible_to(label, who, policy) or (who not in FULL_READERS and not (root / rel).is_file()):
-                # a delegate: a hidden file and a missing one get the same denial
+            hidden_kind = ".git" in rel.split("/") or not (root / rel).is_file()
+            if not visible_to(label, who, policy) or (who not in FULL_READERS and hidden_kind):
+                # a delegate: a hidden file, a missing one and anything under .git/ get the same denial
                 data.append({"path": p, "denied": True})
                 lines.append(f"{p}: denied")
                 continue

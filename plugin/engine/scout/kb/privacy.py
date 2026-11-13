@@ -110,7 +110,7 @@ from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
 from scout.kb.reader import delegate_id, is_delegate_id
-from scout.yaml_safe import load_yaml, load_yaml_key
+from scout.yaml_safe import _KEY_TAGS, load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
 
@@ -477,13 +477,18 @@ def _delegate_rules(value: Any, literal_true: frozenset[str] | None) -> tuple[tu
     return tuple(rules), bad
 
 
+def _key(node: Any) -> str | None:
+    """A composed mapping key as the plain string loading builds, else None (``!!null privacy:`` isn't ``privacy``)."""
+    return node.value if isinstance(node, yaml.ScalarNode) and node.tag in _KEY_TAGS else None
+
+
 def _child(node: Any, key: str) -> Any:
     """The value node of ``key`` in a composed YAML mapping (the last one, as loading keeps), else None."""
     if not isinstance(node, yaml.MappingNode):
         return None
     found = None
     for k, v in node.value:
-        if isinstance(k, yaml.ScalarNode) and k.value == key:
+        if _key(k) == key:
             found = v
     return found
 
@@ -492,7 +497,10 @@ def _literal_true_delegates(text: str) -> frozenset[str]:
     """Ids under ``privacy.delegates`` whose ``include_private`` is written exactly ``true`` (plain, unquoted).
 
     From the composed node tree, before YAML 1.1 turns ``yes``/``on``/``True``
-    into the same boolean. Empty when the text doesn't compose (fail closed).
+    into the same boolean. A key counts only with a plain-string tag, at every
+    level, as :func:`scout.yaml_safe.load_yaml_key` does, so a ``!!null``
+    duplicate can't stand in for the key loading keeps. Empty when the text
+    doesn't compose (fail closed).
     """
     try:
         root = yaml.compose(text, Loader=yaml.SafeLoader)
@@ -502,13 +510,14 @@ def _literal_true_delegates(text: str) -> frozenset[str]:
     out: set[str] = set()
     if isinstance(delegates, yaml.MappingNode):
         for k, v in delegates.value:
-            if not isinstance(k, yaml.ScalarNode):
+            ident = _key(k)
+            if ident is None:
                 continue
             flag = _child(v, "include_private")
             if isinstance(flag, yaml.ScalarNode) and flag.style is None and flag.value == "true":
-                out.add(k.value)
+                out.add(ident)
             else:
-                out.discard(k.value)  # a later duplicate key wins, as when loading
+                out.discard(ident)  # a later duplicate key wins, as when loading
     return frozenset(out)
 
 

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -216,6 +218,26 @@ def test_an_id_with_a_trailing_newline_is_dropped() -> None:
     assert "privacy-overlay-invalid" in policy.warnings
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a !!null key loads as None, not "include_private": the plain `yes` is what counts
+        "privacy:\n  delegates:\n    duet:\n      include_private: yes\n      !!null include_private: true\n",
+        # the same one level up: the delegate id
+        "privacy:\n  delegates:\n    duet: {include_private: yes}\n    !!null duet: {include_private: true}\n",
+        # and at delegates: and privacy:
+        "privacy:\n  delegates:\n    duet: {include_private: yes}\n"
+        "  !!null delegates:\n    duet: {include_private: true}\n",
+        "privacy:\n  delegates:\n    duet: {include_private: yes}\n"
+        "!!null privacy:\n  delegates:\n    duet: {include_private: true}\n",
+    ],
+)
+def test_a_tagged_key_cannot_stand_in_for_the_key_loading_keeps(text: str) -> None:
+    policy = policy_from_config_text(text)
+    assert [d.include_private for d in policy.delegates if d.id == "duet"] == [False]
+    assert "privacy-overlay-invalid" in policy.warnings
+
+
 # ----- visible_to ---------------------------------------------------------------------------
 
 
@@ -394,6 +416,60 @@ def test_the_read_gate_denies_a_delegate_every_hidden_vault_file(vault: Path, re
     hidden = _read(vault, rel, NORMAL_ONLY)
     missing = _read(vault, "knowledge-base/people/nobody.md", NORMAL_ONLY)
     assert hidden is not None and hidden == missing
+
+
+def _case_insensitive_disk(vault: Path) -> bool:
+    return (vault / "SCOUT-CONFIG.YAML").exists()
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "Trading/positions.md",
+        "TRADING/POSITIONS.MD",
+        "Knowledge-Base/personal/task-renew-permit.md",
+        "knowledge-base/People/SAM.md",
+        ".GIT/HEAD",
+        ".Git/config",
+    ],
+)
+def test_the_read_gate_is_not_fooled_by_case(vault: Path, spelling: str) -> None:
+    # On a case-insensitive disk each spelling opens the hidden file; on a case-sensitive one it
+    # doesn't exist. Either way a delegate gets the same deny as for a missing note.
+    missing = _read(vault, "knowledge-base/people/nobody.md", NORMAL_ONLY)
+    assert _read(vault, spelling, NORMAL_ONLY) == missing
+
+
+def test_the_read_gate_finds_the_vault_under_another_spelling(vault: Path) -> None:
+    if not _case_insensitive_disk(vault):
+        pytest.skip("needs a case-insensitive disk")
+    upper = Path(str(vault).upper())
+    body = {"tool_name": "Read", "tool_input": {"file_path": str(upper / SAM)}, "cwd": str(vault), "session_id": "s"}
+    out = gate.run(stdin=io.StringIO(json.dumps(body)), env={"SCOUT_READER": NORMAL_ONLY, "SCOUT_DATA_DIR": str(vault)})
+    assert out is not None
+
+
+@pytest.mark.parametrize("rel", [".git/HEAD", ".git/config", ".git/no-such-file"])
+def test_classify_denies_every_git_path_to_a_delegate(vault: Path, rel: str) -> None:
+    assert kb_json(vault, "classify", rel, reader=NORMAL_ONLY) == [{"path": rel, "denied": True}]
+
+
+def test_a_shallow_boundary_commit_is_left_out_for_a_delegate(vault: Path, tmp_path: Path) -> None:
+    clone = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "2", f"file://{vault}", str(clone)],
+        check=True,
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+    )
+    (clone / "scout-config.yaml").write_text(
+        (vault / "scout-config.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    owner = kb_json(clone, "delta", "--since", "52w", reader="owner")
+    assert any(c.get("shallow_boundary") for c in owner)
+    delegate = kb_json(clone, "delta", "--since", "52w", reader=NORMAL_ONLY)
+    assert not any(c.get("shallow_boundary") for c in delegate)
+    shown = {c["sha"] for c in delegate}
+    assert not shown & {c["sha"] for c in owner if c.get("shallow_boundary")}
 
 
 # ----- pre-session data --------------------------------------------------------------------------

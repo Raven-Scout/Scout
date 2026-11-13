@@ -213,28 +213,56 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
-    rel = _rel(_target(raw, cwd), vault)
-    if rel is None:
-        return None
+    target = _target(raw, cwd)
     from scout.kb.reader import delegate_id
 
     if delegate_id(reader) is not None:
-        return _delegate_read(vault, rel, reader)
-    if not is_kb_note_path(rel):
+        return _delegate_read(vault, target, reader)
+    rel = _rel(target, vault)
+    if rel is None or not is_kb_note_path(rel):
         return None
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
 
 
-def _delegate_read(vault: Path, rel: str, reader: str) -> str | None:
+def _vault_rel(vault: Path, target: Path) -> str | None:
+    """``target``'s canonical vault-relative path, ``"."`` for the vault itself, None when outside it.
+
+    Decided by file identity, not spelling: on a case-insensitive disk ``/Users/x/SCOUT/Trading/…``
+    is inside ``/Users/x/Scout``, so the ancestor that is the vault is found with ``samefile``, and
+    the rest takes each existing component's on-disk name (``normalize_rel``), so ``.GIT`` is ``.git``.
+    """
+    from scout.kb.privacy import normalize_rel
+
+    for anc in (target, *target.parents):
+        try:
+            if os.path.samefile(anc, vault):
+                tail = target.relative_to(anc).parts
+                break
+        except OSError:
+            continue
+    else:
+        return None
+    if not tail:
+        return "."
+    try:
+        return normalize_rel(vault, vault.joinpath(*tail))
+    except ValueError:
+        return "."
+
+
+def _delegate_read(vault: Path, target: Path, reader: str) -> str | None:
     """A delegate (#550 §4.1) Reads only a vault file ``scoutctl kb`` would show it, KB note or not.
 
     The vault itself, ``.git/``, a missing file and a hidden one get the same deny, so a deny
-    never says whether a file exists.
+    never says whether a file exists. A path outside the vault isn't this gate's to decide.
     """
     from scout.kb.privacy import label_file, load_policy, visible_to
 
+    rel = _vault_rel(vault, target)
+    if rel is None:
+        return None
     if rel == "." or ".git" in rel.split("/") or not (vault / rel).is_file():
         return _deny_delegate_read()
     policy = load_policy(vault)
