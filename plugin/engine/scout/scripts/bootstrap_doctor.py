@@ -392,6 +392,27 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
+    """The last gate probe the runners ran (spec 2026-11-13 §3.5): (warnings, notes). Reads the cache only.
+
+    A failed probe means scheduled runs are being skipped because claude doesn't load
+    Scout's privacy hooks. No cache (no run since the probe shipped) says nothing.
+    """
+    from scout.agent_runtimes.gate_probe import read_cache
+
+    cached = read_cache(vault)
+    if cached is None:
+        return [], []
+    version = cached.claude_version or "an unknown version"
+    if not cached.ok:
+        return [
+            f"gate probe failed ({cached.checked_at}, claude {version}): {cached.reason}. Scheduled runs are "
+            "skipped until it passes. Run `scoutctl gates probe` to re-check; update Scout, or pin Claude Code "
+            "to the last version that passed."
+        ], []
+    return [], [f"gate probe passed for claude {version} at {cached.checked_at}: Scout's privacy hooks load."]
+
+
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
     """How scheduled runs sign in to Claude (#267), as (warnings, notes).
 
@@ -777,6 +798,10 @@ def run_doctor(
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
         errors.extend(claude_errors)
         warnings.extend(claude_warnings)
+        # Whether that claude loads Scout's privacy hooks, from the runners' last gate probe.
+        probe_warnings, probe_notes = _check_gate_probe(vault=vault)
+        warnings.extend(probe_warnings)
+        notes.extend(probe_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:
             auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)

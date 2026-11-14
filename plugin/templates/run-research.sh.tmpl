@@ -100,6 +100,20 @@ if [ -x "$BUDGET_CHECK" ]; then
     fi
 fi
 
+# Gate probe: Scout's privacy gates are Claude Code hooks, and a claude that
+# doesn't load hooks (bare mode, which Claude Code's docs say will become the -p
+# default) would run with every gate off. Before each run, `scoutctl gates probe`
+# checks for free against a local fake endpoint that this claude, with these
+# flags, fires the kb-read-gate (cached per claude version for 24 h); if it
+# doesn't, or the probe can't tell, the run is skipped (spec 2026-11-13 §3.5).
+# A missing scoutctl skips the run too: the hooks run another scoutctl (the
+# plugin's), so a broken one here says nothing about whether claude loads them.
+if [ ! -x "$SCOUTCTL_BIN" ] || ! "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" >> "$LOG_FILE" 2>&1; then
+    echo "=== Gate probe failed, or scoutctl is missing at $SCOUTCTL_BIN: Scout's privacy hooks are not known to load in $CLAUDE_BIN — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
+    scout_record_skip skipped_gates
+    exit 0
+fi
+
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
 # session-tokens — see hooks/hooks.json) see it inside the claude child
 # process. When it is unset, session-tool-log deliberately writes nothing (so

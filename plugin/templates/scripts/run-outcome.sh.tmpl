@@ -21,7 +21,8 @@
 #
 # <outcome> is given only for a deliberate skip (#401): skipped_lock (another
 # session held the vault lock), skipped_budget (the budget check said no),
-# skipped_redundant, or a Repository Writer Lease skip of a vault linked to
+# skipped_redundant, skipped_gates (the gate probe found claude not loading
+# Scout's privacy hooks), or a Repository Writer Lease skip of a vault linked to
 # Agnes (R2): lease_held (Agnes holds the lease) or lease_unavailable (Agnes
 # couldn't grant it). A lease skip is recorded as outcome skipped_lease with the
 # reason as its failure_class. A runner records its skip before it exits, so a fired slot
@@ -168,7 +169,7 @@ cmd_record() {
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     local lease_class=""
     case "$outcome" in
-        skipped_lock|skipped_budget|skipped_redundant) ;;
+        skipped_lock|skipped_budget|skipped_redundant|skipped_gates) ;;
         lease_held|lease_unavailable) lease_class="$outcome"; outcome="skipped_lease"; code=0 ;;
         *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;
     esac

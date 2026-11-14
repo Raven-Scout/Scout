@@ -184,6 +184,62 @@ def test_a_run_that_was_not_skipped_records_no_skip(vault: Path, runner: str) ->
     assert row["runner"] == {"run-scout.sh.tmpl": "scout", "run-dreaming.sh.tmpl": "dreaming"}.get(runner, "research")
 
 
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_failed_gate_probe_records_skipped_gates_and_never_launches(vault: Path, runner: str) -> None:
+    """Bare-mode guard (spec 2026-11-13 §3.5): claude without Scout's hooks never runs against the vault."""
+    _script(
+        vault / "bin" / "scoutctl",
+        '#!/bin/bash\nif [ "$1" = gates ]; then echo "[scout:gates] not loaded" >&2; exit 3; fi\nexit 0\n',
+    )
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["slot"], row["outcome"], row["exit_code"]) == (SLOT, "skipped_gates", 0)
+    assert not (vault / ".scout-logs" / ".scout-session.lock").exists()
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize("broken", ["missing", "not-executable"])
+def test_a_missing_scoutctl_skips_the_run_instead_of_running_ungated(vault: Path, runner: str, broken: str) -> None:
+    """The hooks run the plugin's scoutctl, not this one, so a broken one here proves nothing (review of #635)."""
+    stub = vault / "bin" / "scoutctl"
+    if broken == "missing":
+        stub.unlink()
+    else:
+        stub.chmod(0o644)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["slot"], row["outcome"]) == (SLOT, "skipped_gates")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_gate_probe_gets_the_runners_claude_and_vault(vault: Path, runner: str) -> None:
+    _script(vault / "bin" / "scoutctl", f'#!/bin/bash\necho "$@" >> "{vault}/scoutctl-calls"\nexit 0\n')
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    calls = (vault / "scoutctl-calls").read_text(encoding="utf-8").splitlines()
+    (probe,) = [c for c in calls if c.startswith("gates probe")]
+    assert probe == f"gates probe --cached --vault {vault} --claude-bin /usr/bin/true"
+    assert (vault / "session-ran").exists()
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_gate_probe_runs_after_the_lock_and_budget_and_before_claude(runner: str) -> None:
+    text = (TEMPLATES / runner).read_text(encoding="utf-8")
+    probe = text.index("gates probe --cached")
+    assert text.index("scout_lock_acquire") < probe
+    assert text.index("scout_record_skip skipped_budget") < probe
+    assert probe < text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+
+
 # ----- the health reading of a skip --------------------------------------------
 
 

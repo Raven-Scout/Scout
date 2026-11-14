@@ -30,7 +30,9 @@ from scout.update_outcomes import UpdateOutcome
 from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
-SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease"})
+SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease", "skipped_gates"})
+# A run skipped because the gate probe found claude not loading Scout's hooks (spec 2026-11-13 §3.5).
+GATES_SKIP = "skipped_gates"
 # A vault linked to Agnes skips a run it can't take the Repository Writer Lease
 # for (R2): failure_class lease_held (Agnes holds it) or lease_unavailable.
 LEASE_SKIP = "skipped_lease"
@@ -544,6 +546,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
 
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
+    findings.extend(gates_findings(rows, vault=vault))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -573,6 +576,44 @@ def _trailing_lease_unavailable(rows: list[OutcomeRow]) -> list[OutcomeRow]:
             break
         streak.append(r)
     return streak[::-1]
+
+
+def _trailing_gates_skips(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The newest gate-probe skips, oldest first, passing over other skips; any run ends the streak."""
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != GATES_SKIP:
+            continue
+        if r.outcome != GATES_SKIP:
+            break
+        streak.append(r)
+    return streak[::-1]
+
+
+def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """Runs skipped because claude didn't load Scout's privacy hooks (spec 2026-11-13 §3.5)."""
+    streak = _trailing_gates_skips(rows)
+    if not streak:
+        return []
+    log = _run_log(vault, streak[-1])
+    return [
+        Finding(
+            id="gates.not_loaded",
+            severity="red",
+            since=streak[0].finished_at,
+            summary=(
+                f"The last {len(streak)} scheduled run(s) were skipped: the claude the runners use didn't load "
+                "Scout's privacy hooks (for example in bare mode), so no run may read the vault."
+            ),
+            fix=(
+                "Run `scoutctl gates probe` to see why. Update Scout (a newer plugin may know this Claude Code "
+                "version), or pin Claude Code to the last version whose probe passed. Runs resume on their own "
+                "once the probe passes."
+            ),
+            source="ledger",
+            log=str(log) if log else None,
+        )
+    ]
 
 
 def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:

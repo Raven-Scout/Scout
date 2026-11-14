@@ -134,18 +134,21 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    # Before the session the runner asks the engine for the run's model; after
-    # it, for the connector-health roll-up and the run's cost. All against this vault.
+    # Before the session the runner runs the gate probe (spec 2026-11-13 §3.5) and
+    # asks the engine for the run's model; after it, for the connector-health
+    # roll-up and the run's cost. All against this vault.
     lines = calls.read_text(encoding="utf-8").splitlines()
-    assert lines[:2] == [f"{vault} model resolve --slot {slot}", f"{vault} connector-health-report"]
+    assert lines[0].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
+    assert lines[1:3] == [f"{vault} model resolve --slot {slot}", f"{vault} connector-health-report"]
     run_type = {"dreaming-nightly": "dreaming", "research": "research"}.get(slot, slot)
-    assert len(lines) == 3 and lines[2].startswith(f"{vault} budget record-run {run_type} --name scout-{slot}-")
-    assert lines[2].endswith(f"--cap 25 --exit-code {exit_code}")
+    assert len(lines) == 4 and lines[3].startswith(f"{vault} budget record-run {run_type} --name scout-{slot}-")
+    assert lines[3].endswith(f"--cap 25 --exit-code {exit_code}")
     assert "connector-health: 2 sessions in window" in _runner_log(vault)
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
-def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, slot: str) -> None:
+def test_runner_without_scoutctl_skips_the_run(vault: Path, template: str, slot: str) -> None:
+    """Without scoutctl the gate probe can't run, so the run is skipped, not run ungated (spec 2026-11-13 §3.5)."""
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(vault / "bin" / "absent"))
     _stub_claude(vault, 0)
 
@@ -153,14 +156,16 @@ def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, s
 
     assert result.returncode == 0, result.stderr
     log = _runner_log(vault)
-    assert "run finished" in log
-    assert "connector-health roll-up skipped" in log
+    assert "scoutctl is missing" in log
+    assert "run finished" not in log
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot: str) -> None:
+    # Every helper fails except the gate probe, which a failing engine would turn into a skipped run.
     scoutctl = _script(
-        vault / "bin" / "scoutctl", "#!/bin/bash\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n"
+        vault / "bin" / "scoutctl",
+        "#!/bin/bash\n[ \"$1\" = gates ] && exit 0\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n",
     )
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)

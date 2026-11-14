@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._gate_probe import HOOKED_CLAUDE_PRELUDE
 from tests._waits import wait_until
 from tests.eval.harness.plan import PlanRefused, session_plan
 from tests.eval.harness.runner import run_sample
@@ -130,8 +131,12 @@ def test_plan_uses_opus_only_when_asked(busy) -> None:
     assert session_plan([busy], reps=1, opus=True, many=False).model == "opus"
 
 
-FAKE_CLAUDE = """#!/usr/bin/env python3
+FAKE_CLAUDE = (
+    """#!/usr/bin/env python3
 import glob, json, os, sys, time
+"""
+    + HOOKED_CLAUDE_PRELUDE
+    + """
 if os.environ.get("EVAL_FAKE_ENRICH"):  # rewrite today's file the way a session would: drop the carry banner
     path = sorted(glob.glob("action-items/action-items-*.md"))[-1]
     lines = [ln for ln in open(path) if "Mechanical carry-forward" not in ln]
@@ -156,6 +161,7 @@ print(json.dumps({"type": "result", "subtype": subtype, "is_error": subtype != "
                   "num_turns": 1, "duration_ms": 1000, "total_cost_usd": 0 if api_error else 0.01,
                   "result": api_error or "Nothing to do.", "usage": {"input_tokens": 1, "output_tokens": 1}}))
 """
+)
 
 
 def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch) -> None:
