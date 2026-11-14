@@ -28,10 +28,12 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
 
 **How terms match.** Text and terms are compared NFKC-normalised under full
 Unicode case folding (``STRASSE`` matches ``Straße``; a fullwidth or
-combining-accent spelling matches the plain one). Accents are optional on both
-sides: each term also matches without its accents, and accented text is matched
-once more with them stripped, so ``Rene`` and ``René`` match each other however
-either is written. A term's boundary is anything but a
+combining-accent spelling matches the plain one). For terms of two words or
+more, and one-word terms of 5+ characters (``UNACCENT_MIN_CHARS``), accents on
+Latin, Greek and Cyrillic letters are also ignored on both sides, so ``Rene Lee``
+and ``René Lee`` match each other however either is written; a short term such
+as ``Mila`` stays exact, so the Czech greeting ``Milá`` passes. Japanese voicing
+marks, Indic vowel signs and Thai tone marks are never ignored. A term's boundary is anything but a
 letter or digit, so ``_Sammy_`` (Slack italics), ``sammy_notes``, ``Sammy.``
 and ``(Sammy)`` all match and ``Sammyson`` doesn't. The parts of a term match
 across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
@@ -93,6 +95,13 @@ from scout.kb.shared_reads import (
 )
 
 MIN_TERM_CHARS = 4
+# Which terms also match with their accents ignored (``Rene`` for ``René`` and back). The more terms,
+# the more an ordinary word in another language trips them: hidden ``Mila`` would block the Czech
+# greeting "Milá". Default: terms of two words or more, and one-word terms of 5+ characters. Set
+# UNACCENT_MIN_CHARS to MIN_TERM_CHARS to ignore accents on every term, or very high (with
+# UNACCENT_MULTI_WORD False) to never ignore them; exact and NFKC matching stay as they are.
+UNACCENT_MIN_CHARS = 5
+UNACCENT_MULTI_WORD = True
 MIN_SHARED_NAME_WORDS = 3
 # Entity types whose names are proper nouns (schema.yaml's, and free-form ones vaults use):
 # a one-word name stays a term even when it's an ordinary word (#576).
@@ -127,6 +136,7 @@ class PrivateNote:
     link_keys: frozenset[str]
     link_path: str
     pattern: re.Pattern[str] | None
+    bare_pattern: re.Pattern[str] | None = None  # the accent-free forms of its longer terms, over bare text
 
     def linked_by(self, target: str) -> bool:
         """``target`` (already case-folded, heading, display and ``.md`` stripped) names this note."""
@@ -156,6 +166,7 @@ class PrivateTerms:
     notes: tuple[PrivateNote, ...]
     any_term: re.Pattern[str] | None  # a fast pre-check: any note's term
     excerpts: ExcerptIndex | None = None  # quotes of notes shared with this person (with_shared)
+    any_bare: re.Pattern[str] | None = None  # the same pre-check for the notes' bare_pattern
 
     def __bool__(self) -> bool:
         return bool(self.notes)
@@ -166,23 +177,58 @@ def _norm(text: str) -> str:
     return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
 
 
+def _strips(base: str) -> bool:
+    """Whether accents on ``base`` are ignored: Latin, Greek and Cyrillic only. A Japanese voicing
+    mark (``ガ`` is ``カ`` plus U+3099), an Indic vowel sign or a Thai tone mark changes the word."""
+    o = ord(base)
+    return o < 0x0530 or any(lo <= o <= hi for lo, hi in _STRIP_RANGES)
+
+
+# Latin, Greek and Cyrillic past U+0530: Cyrillic Extended-C, Latin and Greek Extended, Latin Extended-C,
+# Cyrillic Extended-A and -B, Latin Extended-D and -E.
+_STRIP_RANGES = ((0x1C80, 0x1C8F), (0x1E00, 0x1FFF), (0x2C60, 0x2C7F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F),
+                 (0xA720, 0xA7FF), (0xAB30, 0xAB6F))  # fmt: skip
+
+
 def _unaccent(text: str) -> str:
-    """``text`` with its combining marks dropped: ``café`` becomes ``cafe``. Characters with none stay."""
-    decomposed = unicodedata.normalize("NFD", text)
-    return unicodedata.normalize("NFC", "".join(c for c in decomposed if not unicodedata.combining(c)))
+    """``text`` without the combining marks on Latin, Greek and Cyrillic letters: ``café`` becomes ``cafe``."""
+    out: list[str] = []
+    base = ""
+    for c in unicodedata.normalize("NFD", text):
+        if unicodedata.combining(c):
+            if base and _strips(base):
+                continue
+        else:
+            base = c
+        out.append(c)
+    return unicodedata.normalize("NFC", "".join(out))
 
 
-def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
-    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring), each with and without accents."""
-    parts: set[str] = set()
-    for t in terms:
-        for form in {_norm(t), _unaccent(_norm(t))}:
-            words = [w for w in _SPLIT.split(form) if w]
-            if words:
-                parts.add(_SEP.join(re.escape(w) for w in words))
+def _words_of(term: str) -> list[str]:
+    return [w for w in _SPLIT.split(term) if w]
+
+
+def _alternation(forms: Iterable[str]) -> re.Pattern[str] | None:
+    parts = {_SEP.join(re.escape(w) for w in words) for f in forms if (words := _words_of(f))}
     if not parts:
         return None
     return re.compile(_BEFORE + "(?:" + "|".join(sorted(parts, key=len, reverse=True)) + ")" + _AFTER)
+
+
+def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
+    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring)."""
+    return _alternation(_norm(t) for t in terms)
+
+
+def _unaccents(term: str) -> bool:
+    """Whether ``term`` also matches with its accents ignored (UNACCENT_MIN_CHARS, UNACCENT_MULTI_WORD)."""
+    words = _words_of(_norm(term))
+    return (UNACCENT_MULTI_WORD and len(words) > 1) or len(_norm(term)) >= UNACCENT_MIN_CHARS
+
+
+def _bare_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
+    """One pattern for the accent-free forms of ``terms`` that ignore accents, over bare text (:func:`_folds`)."""
+    return _alternation(_unaccent(_norm(t)) for t in terms if _unaccents(t))
 
 
 def _strings(value: Any) -> list[str]:
@@ -259,6 +305,7 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
         link_keys=frozenset(keys),
         link_path=_norm(_strip_md(rel)),
         pattern=_term_regex(terms),
+        bare_pattern=_bare_regex(terms),
     )
 
 
@@ -303,7 +350,11 @@ def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
     for n in notes:
         seen.setdefault((n.path, n.terms, n.link_keys), n)
     kept = tuple(seen.values())
-    return PrivateTerms(notes=kept, any_term=_term_regex(t for n in kept for t in n.terms))
+    return PrivateTerms(
+        notes=kept,
+        any_term=_term_regex(t for n in kept for t in n.terms),
+        any_bare=_bare_regex(t for n in kept if n.bare_pattern is not None for t in n.terms),
+    )
 
 
 def _words(text: str) -> int:
@@ -377,6 +428,7 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         for key, group in merged.items()
     ]
     paths = _term_regex(t for n in shared for t in n.terms)
+    bare_paths = _bare_regex(t for n in shared for t in n.terms)
     together = PrivateNote(
         path="shared-note-paths",
         slug="shared-note-paths",
@@ -384,10 +436,17 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         link_keys=frozenset(),
         link_path="",
         pattern=paths,
+        bare_pattern=bare_paths,
     )
     notes = (*terms.notes, _CITATION, together, *shared)
     patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
-    return PrivateTerms(notes=notes, any_term=re.compile("|".join(patterns)), excerpts=ExcerptIndex(merged))
+    bare = [p.pattern for p in (terms.any_bare, bare_paths) if p is not None]
+    return PrivateTerms(
+        notes=notes,
+        any_term=re.compile("|".join(patterns)),
+        excerpts=ExcerptIndex(merged),
+        any_bare=re.compile("|".join(bare)) if bare else None,
+    )
 
 
 def _link_target(inner: str) -> str:
@@ -465,17 +524,18 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     for n, target in targets:
         if target:
             found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
-    forms = [(folded, origin)]
-    if bare[0] != folded:  # accented text is matched once more without its accents
-        forms.append(bare)
-    for form, where in forms:
-        if terms.any_term is None or not terms.any_term.search(form):
+    for form, where, pre, attr in (
+        (folded, origin, terms.any_term, "pattern"),
+        (bare[0], bare[1], terms.any_bare, "bare_pattern"),  # accents ignored, for the terms that allow it
+    ):
+        if pre is None or not pre.search(form):
             continue
         for note in terms.notes:
-            if note.pattern is not None:
+            pattern = getattr(note, attr)
+            if pattern is not None:
                 found += [
                     (note.path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1))
-                    for m in note.pattern.finditer(form)
+                    for m in pattern.finditer(form)
                 ]
     if terms.excerpts is not None:
         found += terms.excerpts.hits(text)
