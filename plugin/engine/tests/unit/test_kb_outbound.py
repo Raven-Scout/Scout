@@ -174,6 +174,26 @@ def test_multi_word_unicode_terms(tmp_path: Path) -> None:
     assert outbound.find_mentions("\n".join(hits), terms, allow_markers=False) == [1, 2, 3, 4, 5]
 
 
+def test_accents_are_optional_on_both_sides() -> None:
+    """A term matches with or without its accents, however the text spells them (precomposed or NFD)."""
+    nfd = "Rene\u0301 Lee and Project Cafe\u0301\n"
+
+    def hits(name: str, text: str) -> list[int]:
+        terms = outbound.terms_of([outbound.note_from_text(f"people/{name}.md", f"---\nname: {name}\n---\n")])
+        return outbound.find_mentions(text, terms, allow_markers=False)
+
+    assert hits("Rene Lee", nfd) == [1]  # an unaccented term, accented text
+    assert hits("Project Cafe", nfd) == [1]
+    assert hits("Ren\u00e9 Lee", "Call Rene Lee\n") == [1]  # an accented term, unaccented text
+    assert hits("Ren\u00e9 Lee", "x\nREN\u00c9 LEE\n") == [2]
+    assert hits("Rene Lee", "Renee Lee and Ren Lee\n") == []  # still whole words
+    # Hangul vowel jamo aren't accents: a Korean name, precomposed or as jamo, still matches only itself
+    assert hits(
+        "\ud55c\uad6d\uc5b4 \uc0ac\ub78c", "\u1112\u1161\u11ab\u1100\u116e\u11a8\u110b\u1165 \uc0ac\ub78c\n"
+    ) == [1]
+    assert hits("\ud55c\uad6d\uc5b4 \uc0ac\ub78c", "\u1112\u1100\u110b \uc0ac\ub78c\n") == []
+
+
 def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     own = build_privacy_vault(tmp_path)
     outbound.clear_cache()
