@@ -63,6 +63,8 @@ from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb
 
 GATE = "kb-read-gate"
 MARK = f"[scout:{GATE}]"
+# Claude Code's file-writing tools: a run's write into hook or agent config is denied (scout.kb.hook_paths).
+WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _REPLACEMENT = (
     "Read the KB through `scripts/scoutctl kb` instead: `kb search <words>`, `kb files [dir]`, "
     "`kb read <path>`, `kb resolve <name>`, `kb name-lookup <name>`, `kb delta` (in place of git log/diff). "
@@ -154,6 +156,20 @@ def _deny_hook_skip(form: str) -> str:
     )
 
 
+def _deny_agent_settings(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't write the agent's settings or hook config ({form}): those files decide "
+        "which of Scout's checks run, for this run and every later one. Leave them as they are; if they need a "
+        "change, say so in the run notes for the owner."
+    )
+
+
+def _deny_skip_form(form: str) -> str:
+    from scout.kb.hook_paths import AGENT_SETTINGS
+
+    return _deny_agent_settings(form) if form == AGENT_SETTINGS else _deny_hook_skip(form)
+
+
 def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
     """The form and the run's mode, never the command: its text can quote a note."""
     try:
@@ -183,6 +199,8 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     tool_input = payload.get("tool_input")
     if not isinstance(tool, str) or not isinstance(tool_input, dict):
         raise ValueError("not a tool-call payload")
+    if tool in WRITE_TOOLS:
+        return _decide_write(payload, tool, tool_input, mode)
     if tool not in ("Bash", "Read", "Grep", "Glob"):
         return None
     vault = session_vault(payload)
@@ -202,7 +220,7 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
             return _deny_detach()
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
-            return _deny_hook_skip(escape)
+            return _deny_skip_form(escape)
         return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
@@ -224,6 +242,29 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _decide_write(payload: Mapping[str, Any], tool: str, tool_input: Mapping[str, Any], mode: str | None) -> str | None:
+    """A run's file write into what decides which hooks run (Phase 1b; scout.kb.hook_paths) is denied."""
+    from scout.kb.hook_paths import protected_write
+
+    key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+    raw = tool_input.get(key)
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"{tool} call without a {key}")
+    vault = session_vault(payload)
+    if vault is not None:
+        cwd = _cwd(payload, vault)
+    else:
+        given = payload.get("cwd")
+        cwd = paths.resolve_path(given if isinstance(given, str) and given else os.getcwd())
+    p = Path(raw).expanduser()
+    form = protected_write(p if p.is_absolute() else cwd / p, vault)  # protected_write resolves symlinks itself
+    if form is None:
+        return None
+    if vault is not None:
+        _record_hook_skip(vault, form, mode)
+    return _deny_skip_form(form)
 
 
 def _vault_rel(vault: Path, target: Path) -> str | None:
