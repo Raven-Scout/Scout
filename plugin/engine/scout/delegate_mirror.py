@@ -229,6 +229,9 @@ class DelegateLink:
     deploy_key_id: int | None = None
     last_attempt: str | None = None
     last_error: dict[str, str] | None = None  # {"code", "at"} of the last sync that failed, until one succeeds
+    # Old deploy keys GitHub didn't delete when they were replaced: still live, retried by key, sync and unlink.
+    stale_key_ids: list[int] = field(default_factory=list)
+    key_file: str | None = None  # where the agent's private key was written (outside the vault)
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -247,6 +250,8 @@ class DelegateLink:
             deploy_key_id=data.get("deploy_key_id"),
             last_attempt=data.get("last_attempt"),
             last_error=data.get("last_error"),
+            stale_key_ids=[int(k) for k in data.get("stale_key_ids") or []],
+            key_file=data.get("key_file"),
         )
 
 
@@ -336,11 +341,16 @@ def _local_remote(remote: str) -> Path | None:
     return Path(raw).expanduser()
 
 
-def _ask_gh(gh: GhRunner, args: Sequence[str], repo: str) -> str:
+def _run_gh(gh: GhRunner, args: Sequence[str], repo: str) -> subprocess.CompletedProcess[str]:
+    """Run ``gh``; a missing or unrunnable ``gh`` is a refusal, never a traceback."""
     try:
-        proc = gh(args)
+        return gh(args)
     except OSError as e:
         raise RepoSyncError("remote_unverified", f"refused: can't ask GitHub about {repo} (gh: {e})") from e
+
+
+def _ask_gh(gh: GhRunner, args: Sequence[str], repo: str) -> str:
+    proc = _run_gh(gh, args, repo)
     if proc.returncode != 0:
         why = (proc.stderr or proc.stdout).strip().splitlines()
         raise RepoSyncError(
@@ -350,11 +360,18 @@ def _ask_gh(gh: GhRunner, args: Sequence[str], repo: str) -> str:
 
 
 def _check_github(repo: str, gh: GhRunner) -> None:
-    fields = _ask_gh(gh, ["api", f"repos/{repo}", "--jq", "[.visibility, .owner.type, .owner.login] | @tsv"], repo)
+    jq = "[.visibility, .owner.type, .owner.login, .fork] | @tsv"
+    fields = _ask_gh(gh, ["api", f"repos/{repo}", "--jq", jq], repo)
     parts = fields.strip().split("\t")
-    if len(parts) != 3:
+    if len(parts) != 4 or parts[3] not in ("true", "false"):
         raise RepoSyncError("remote_unverified", f"refused: GitHub's answer about {repo} didn't parse")
-    visibility, owner_type, owner = parts
+    visibility, owner_type, owner, fork = parts
+    if fork == "true":
+        raise RepoSyncError(
+            "remote_fork",
+            f"refused: {repo} is a fork, and the people with access to the repository it was forked from can "
+            "reach it; make a new private repository for the mirror",
+        )
     if visibility != "private":
         raise RepoSyncError(
             "remote_public", f"refused: {repo} is {visibility or 'not private'}, not private; nothing was pushed"
@@ -456,6 +473,46 @@ def _push_token(vault: Path) -> str | None:
     return p.read_text(encoding="utf-8").strip() or None
 
 
+def remote_env(vault: Path, remote: str) -> dict[str, str]:
+    """The environment for git talking to a mirror remote: certificate checks forced on, the push token added.
+
+    ``GIT_SSL_NO_VERIFY`` is dropped and ``http.sslVerify`` set true, for every URL and for this remote's own
+    (the most specific match, so a user's ``http.<url>.sslVerify false`` can't win), so the token never goes
+    out over a connection that isn't verified. Inherited ``GIT_CONFIG_*`` pairs are replaced by these.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "GIT_SSL_NO_VERIFY" and not k.startswith("GIT_CONFIG_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.pop("GIT_INDEX_FILE", None)
+    pairs = [("http.sslVerify", "true")]
+    if remote.startswith("https://"):
+        pairs.append((f"http.{remote}.sslVerify", "true"))
+    token = auth_env(vault, remote)
+    if token:
+        pairs.append((token["GIT_CONFIG_KEY_0"], token["GIT_CONFIG_VALUE_0"]))
+    env["GIT_CONFIG_COUNT"] = str(len(pairs))
+    for i, (key, value) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{i}"] = key
+        env[f"GIT_CONFIG_VALUE_{i}"] = value
+    return env
+
+
+def _remote_git(vault: Path, remote: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """``git *args`` in ``vault`` against ``remote``, in :func:`remote_env`."""
+    proc = subprocess.run(
+        ["git", "-c", "core.quotepath=false", *args],
+        cwd=vault,
+        env=remote_env(vault, remote),
+        capture_output=True,
+        check=False,
+    )
+    out = subprocess.CompletedProcess(
+        proc.args, proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
+    )
+    if check and proc.returncode != 0:
+        raise RepoSyncError("git_failed", f"git {args[0]} failed: {out.stderr.strip() or out.stdout.strip()}")
+    return out
+
+
 def auth_env(vault: Path, remote: str) -> dict[str, str]:
     """Git config, in the environment, that sends the stored push token to an ``https://github.com`` remote."""
     token = _push_token(vault) if remote.startswith("https://github.com/") else None
@@ -493,23 +550,14 @@ def _overlaps(target: Path, home: Path) -> bool:
 
 
 def remote_head(vault: Path, remote: str) -> str | None:
-    out = git(vault, "ls-remote", remote, REMOTE_BRANCH, env=auth_env(vault, remote)).stdout.split()
+    out = _remote_git(vault, remote, "ls-remote", remote, REMOTE_BRANCH).stdout.split()
     return out[0] if out else None
 
 
 def push(vault: Path, remote: str, commit: str, expect: str | None) -> None:
     """Move the remote's ``main`` from ``expect`` (None: it must not exist) to ``commit``, or refuse."""
     lease = f"--force-with-lease={REMOTE_BRANCH}:{expect or ''}"
-    proc = git(
-        vault,
-        "push",
-        "--porcelain",
-        lease,
-        remote,
-        f"{commit}:{REMOTE_BRANCH}",
-        env=auth_env(vault, remote),
-        check=False,
-    )
+    proc = _remote_git(vault, remote, "push", "--porcelain", lease, remote, f"{commit}:{REMOTE_BRANCH}", check=False)
     if proc.returncode != 0:
         tail = " | ".join((proc.stderr.strip() or proc.stdout.strip()).splitlines()[-3:])
         code = "mirror_diverged" if "stale info" in proc.stdout + proc.stderr else "push_failed"
@@ -1259,9 +1307,21 @@ def link(
     widening_guard_gate(vault, env)
     migration_gate(vault)
     with locked(vault):
+        if create_repo is not None and remote:
+            raise RepoSyncError("bad_arguments", "refused: pass --remote or --create-repo, not both")
+        before = load_links(vault).get(delegate)
+        target = f"https://github.com/{create_repo}.git" if create_repo is not None else remote
+        if (
+            before is not None
+            and before.remote != target
+            and (before.deploy_key_id is not None or before.stale_key_ids)
+        ):
+            raise RepoSyncError(
+                "key_on_record",
+                f"refused: {delegate}'s deploy key on {before.remote} is still on record and live; run "
+                f"scoutctl delegate key {delegate} --revoke first, so it doesn't stay with the agent untracked",
+            )
         if create_repo is not None:
-            if remote:
-                raise RepoSyncError("bad_arguments", "refused: pass --remote or --create-repo, not both")
             if load_policy(vault).delegate(f"delegate:{delegate}") is None:
                 raise RepoSyncError(
                     "delegate_not_listed",
@@ -1289,6 +1349,8 @@ def link(
             linked_at=_now(),
             account_unshared=True,
             deploy_key_id=old.deploy_key_id if old is not None and old.remote == remote else None,
+            stale_key_ids=list(old.stale_key_ids) if old is not None and old.remote == remote else [],
+            key_file=old.key_file if old is not None and old.remote == remote else None,
         )
         result, updated = _build_and_push(vault, new, fresh=True, expect=current, gh=gh, record=record)
         links[delegate] = updated
@@ -1353,10 +1415,20 @@ def sync(vault: Path, delegate: str, *, gh: GhRunner = _gh) -> Result:
             save_links(vault, {**latest, delegate: failed})
             _event(vault, "delegate_mirror.sync_failed", {"delegate": delegate, "code": e.code})
             raise
+        updated, notes = _retry_stale_quietly(updated, gh)
+        result.notes += notes
         links[delegate] = dataclasses.replace(updated, last_attempt=_now(), last_error=None)
         save_links(vault, links)
     _event(vault, "delegate_mirror.synced", {"delegate": delegate, "pushed": result.pushed is not None})
     return result
+
+
+def _retry_stale_quietly(link: DelegateLink, gh: GhRunner) -> tuple[DelegateLink, list[str]]:
+    """A sync's best try at the old keys a rotation left live: it never fails the sync."""
+    repo = github_repo(link.remote)
+    if not link.stale_key_ids or repo is None:
+        return link, []
+    return _retry_stale(repo, link, gh)
 
 
 def needs_sync(vault: Path, links: Mapping[str, DelegateLink]) -> list[str]:
@@ -1425,8 +1497,20 @@ def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, 
         repo = github_repo(current.remote)
         if current.deploy_key_id is not None and repo is not None:
             _delete_key(repo, current.deploy_key_id, gh=gh)
+            current = dataclasses.replace(current, deploy_key_id=None)
+            save_links(vault, {**links, delegate: current})
             result.notes.append("revoked the agent's deploy key")
-        _remove_key_files(vault, delegate)
+        if current.stale_key_ids and repo is not None:
+            current, notes = _retry_stale(repo, current, gh)
+            save_links(vault, {**links, delegate: current})
+            if current.stale_key_ids:
+                raise RepoSyncError(
+                    "key_revoke_failed",
+                    f"refused: old deploy key(s) {', '.join(map(str, current.stale_key_ids))} on {repo} are still "
+                    "live; delete them in the repository's settings, then unlink again",
+                )
+            result.notes += notes
+        _remove_key_files(vault, delegate, current)
         del links[delegate]
         git(vault, "update-ref", "-d", mirror_ref(delegate), check=False)
         save_links(vault, links)
@@ -1450,16 +1534,24 @@ def make_repo(repo: str, *, gh: GhRunner = _gh) -> str:
             f"refused: --create-repo makes the mirror only under your own GitHub user ({me or 'unknown'}), "
             "not an organisation or another account",
         )
-    proc = gh(["repo", "create", repo, "--private", "--description", "Scout delegate mirror"])
+    proc = _run_gh(gh, ["repo", "create", repo, "--private", "--description", "Scout delegate mirror"], repo)
     if proc.returncode != 0:
         why = (proc.stderr or proc.stdout).strip().splitlines()
+        hint = ""
+        if "already exists" in proc.stderr + proc.stdout:
+            hint = (
+                f"; if an earlier try made it, link it with --remote https://github.com/{repo}.git (the checks "
+                "still run, so it must be private and empty)"
+            )
         raise RepoSyncError(
-            "repo_create_failed", f"refused: gh couldn't create {repo}: {why[-1] if why else 'gh failed'}"
+            "repo_create_failed", f"refused: gh couldn't create {repo}: {why[-1] if why else 'gh failed'}{hint}"
         )
     return f"https://github.com/{repo}.git"
 
 
 Keygen = Callable[[Path, str], None]
+# GitHub's published SSH host key (https://api.github.com/meta "ssh_keys"; docs: "GitHub's SSH key fingerprints").
+GITHUB_KNOWN_HOSTS = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 
 def _keygen(path: Path, comment: str) -> None:
@@ -1478,19 +1570,54 @@ def _key_title(delegate: str) -> str:
 
 
 def _delete_key(repo: str, key_id: int, *, gh: GhRunner) -> None:
-    proc = gh(["api", "-X", "DELETE", f"repos/{repo}/keys/{key_id}"])
-    if proc.returncode != 0 and "Not Found" not in proc.stdout + proc.stderr:
-        why = (proc.stderr or proc.stdout).strip().splitlines()
-        raise RepoSyncError(
-            "key_revoke_failed",
-            f"refused: couldn't delete deploy key {key_id} on {repo}: "
-            f"{why[-1] if why else 'gh failed'}; delete it in the repository's settings, then retry",
-        )
+    """Delete deploy key ``key_id`` on ``repo``, or refuse. Gone already counts only when GitHub shows it gone.
+
+    GitHub answers 404 both for a key that's gone and for a private repository this ``gh`` account can't see
+    (another account, after ``gh auth switch``), so a 404 is checked against the repository's key list.
+    """
+    proc = _run_gh(gh, ["api", "-X", "DELETE", f"repos/{repo}/keys/{key_id}"], repo)
+    if proc.returncode == 0:
+        return
+    why = (proc.stderr or proc.stdout).strip().splitlines()
+    reason = why[-1] if why else "gh failed"
+    if "Not Found" in proc.stdout + proc.stderr or "HTTP 404" in proc.stdout + proc.stderr:
+        try:
+            listed = _ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[].id"], repo)
+        except RepoSyncError:
+            reason = f"GitHub says Not Found, and this gh account can't list {repo}'s keys (check gh auth status)"
+        else:
+            if str(key_id) not in listed.split():
+                return
+    raise RepoSyncError(
+        "key_revoke_failed",
+        f"refused: couldn't delete deploy key {key_id} on {repo}: {reason}; delete it in the repository's "
+        "settings, then retry",
+    )
 
 
-def _remove_key_files(vault: Path, delegate: str) -> None:
-    key = key_path(vault, delegate)
-    for p in (key, key.with_name(key.name + ".pub")):
+def _retry_stale(repo: str, link: DelegateLink, gh: GhRunner) -> tuple[DelegateLink, list[str]]:
+    """Try again to delete the old keys a rotation couldn't; the link with those still live, and notes."""
+    left: list[int] = []
+    notes: list[str] = []
+    for key_id in link.stale_key_ids:
+        try:
+            _delete_key(repo, key_id, gh=gh)
+        except RepoSyncError as e:
+            left.append(key_id)
+            notes.append(e.message.replace("refused: ", "warning: ", 1))
+        else:
+            notes.append(f"deleted old deploy key {key_id} on {repo}")
+    return dataclasses.replace(link, stale_key_ids=left), notes
+
+
+def _key_files(vault: Path, delegate: str, link: DelegateLink | None) -> list[Path]:
+    """The agent's key files: where the link says it wrote them, and where this vault's path puts them."""
+    keys = {key_path(vault, delegate)} | ({Path(link.key_file)} if link is not None and link.key_file else set())
+    return [p for k in sorted(keys) for p in (k, k.with_name(k.name + ".pub"), k.with_name(k.name + ".known_hosts"))]
+
+
+def _remove_key_files(vault: Path, delegate: str, link: DelegateLink | None = None) -> None:
+    for p in _key_files(vault, delegate, link):
         p.unlink(missing_ok=True)
 
 
@@ -1521,12 +1648,19 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
     if repo is None:
         raise RepoSyncError("key_needs_github", "refused: a deploy key needs a GitHub mirror repository")
     result = Result(delegate=delegate, action="key")
+    if current.stale_key_ids:
+        current, notes = _retry_stale(repo, current, gh)
+        links[delegate] = current
+        save_links(vault, links)
+        result.notes += notes
     if revoke:
         if current.deploy_key_id is None:
+            if result.notes:  # only old keys were on record; they were retried above
+                return result
             raise RepoSyncError("no_key", f"refused: {delegate} has no deploy key on record")
         _delete_key(repo, current.deploy_key_id, gh=gh)
-        _remove_key_files(vault, delegate)
-        links[delegate] = dataclasses.replace(current, deploy_key_id=None)
+        _remove_key_files(vault, delegate, current)
+        links[delegate] = dataclasses.replace(current, deploy_key_id=None, key_file=None)
         save_links(vault, links)
         result.notes.append(f"revoked {delegate}'s deploy key; its agent can't fetch the mirror any more")
         return result
@@ -1538,7 +1672,8 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
         new = Path(tmp) / "key"
         keygen(new, _key_title(delegate))
         public = new.with_name("key.pub").read_text(encoding="utf-8").strip()
-        proc = gh(
+        proc = _run_gh(
+            gh,
             [
                 "api",
                 "-X",
@@ -1552,7 +1687,8 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
                 "read_only=true",
                 "--jq",
                 "[.id, .read_only] | @tsv",
-            ]
+            ],
+            repo,
         )
         if proc.returncode != 0:
             why = (proc.stderr or proc.stdout).strip().splitlines()
@@ -1570,18 +1706,28 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
             try:
                 _delete_key(repo, current.deploy_key_id, gh=gh)
             except RepoSyncError as e:
-                result.notes.append(e.message.replace("refused: ", "warning: ", 1))
+                added = dataclasses.replace(added, stale_key_ids=[*added.stale_key_ids, current.deploy_key_id])
+                result.notes.append(
+                    e.message.replace("refused: ", "warning: ", 1)
+                    + f"; it stays on record, and delegate key, sync and unlink try again (scoutctl delegate key "
+                    f"{delegate})"
+                )
         key = key_path(vault, delegate)
-        _remove_key_files(vault, delegate)
+        _remove_key_files(vault, delegate, current)
         shutil.move(str(new), key)
         shutil.move(str(new.with_name("key.pub")), key.with_name(key.name + ".pub"))
         os.chmod(key, 0o600)
+        known = key.with_name(key.name + ".known_hosts")
+        known.write_text(GITHUB_KNOWN_HOSTS + "\n", encoding="utf-8")
+        added = dataclasses.replace(added, key_file=str(key))
     links[delegate] = added
     save_links(vault, links)
     result.notes += [
         f"{'replaced' if rotate and current.deploy_key_id else 'added'} a read-only deploy key on {repo}",
         f"private key: {key}; put it in the agent's secret store, then delete it here if you like",
-        "the agent clones with: GIT_SSH_COMMAND='ssh -i <key file> -o IdentitiesOnly=yes' "
+        f"known hosts: {known}; it pins GitHub's published host key, so put it next to the key",
+        "the agent clones with: GIT_SSH_COMMAND='ssh -i <key file> -o IdentitiesOnly=yes "
+        "-o StrictHostKeyChecking=yes -o UserKnownHostsFile=<known hosts file>' "
         f"git clone --depth 1 git@github.com:{repo}.git",
     ]
     return result
