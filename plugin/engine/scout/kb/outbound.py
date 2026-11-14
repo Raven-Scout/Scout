@@ -99,7 +99,9 @@ MIN_TERM_CHARS = 4
 # the more an ordinary word in another language trips them: hidden ``Mila`` would block the Czech
 # greeting "Milá". Default: terms of two words or more, and one-word terms of 5+ characters. Set
 # UNACCENT_MIN_CHARS to MIN_TERM_CHARS to ignore accents on every term, or very high (with
-# UNACCENT_MULTI_WORD False) to never ignore them; exact and NFKC matching stay as they are.
+# UNACCENT_MULTI_WORD False) to never ignore them; exact and NFKC matching stay as they are. A deliberate
+# trade: a one-word term under 5 characters without accents (``Rene``) no longer matches text that has them
+# (``René``, precomposed or NFD); only the exact spelling does.
 UNACCENT_MIN_CHARS = 5
 UNACCENT_MULTI_WORD = True
 MIN_SHARED_NAME_WORDS = 3

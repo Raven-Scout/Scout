@@ -4390,7 +4390,10 @@ def _register_delegate() -> None:
     def cli_delegate_link(
         delegate: str = typer.Argument(..., help="The delegate id, as listed under privacy.delegates."),
         remote: str = typer.Option(
-            ..., "--remote", help="Its private GitHub repository (https://github.com/<owner>/<repo>) or a local path."
+            "", "--remote", help="Its private GitHub repository (https://github.com/<owner>/<repo>) or a local path."
+        ),
+        create_repo: str | None = typer.Option(
+            None, "--create-repo", help="Create this private GitHub repository (owner/name) with gh and use it."
         ),
         confirm_account_unshared: bool = typer.Option(
             False,
@@ -4418,6 +4421,7 @@ def _register_delegate() -> None:
                 remote,
                 account_unshared=confirm_account_unshared,
                 replace_remote=replace_remote,
+                create_repo=create_repo,
             )
         except RepoSyncError as e:
             _fail(e, as_json)
@@ -4501,14 +4505,72 @@ def _register_delegate() -> None:
         if not links:
             typer.echo("no delegate mirrors on this computer")
         for k, v in sorted(links.items()):
-            typer.echo(f"{k}: {v.remote}; last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}")
+            key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
+            if v.stale_key_ids:
+                key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
+            synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
+            typer.echo(f"{k}: {v.remote}; {key}; {synced}")
+
+    @delegate_app.command("key")
+    def cli_delegate_key(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        rotate: bool = typer.Option(False, "--rotate", help="Replace the agent's deploy key with a new one."),
+        revoke: bool = typer.Option(False, "--revoke", help="Delete the agent's deploy key: it can't fetch any more."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Give the agent a read-only deploy key on its mirror repository (or rotate or revoke it).
+
+        The private key is kept in ~/.scout-secrets/delegate-mirrors/ for you to
+        put in the agent's secret store; the command prints where, and how the
+        agent clones with it.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import deploy_key
+        from scout.repo_sync import RepoSyncError
+
+        if rotate and revoke:
+            typer.echo("scoutctl delegate key: pass --rotate or --revoke, not both", err=True)
+            raise typer.Exit(2)
+        try:
+            result = deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("push-token")
+    def cli_delegate_push_token(
+        token_file: Path | None = typer.Option(
+            None, "--token-file", help="A file holding the token. Default: ask for it."
+        ),
+    ) -> None:
+        """Store a GitHub token this computer pushes the mirrors with, instead of git's own login.
+
+        Make it fine-grained: contents read and write on the mirror repositories
+        only. It is kept in ~/.scout-secrets/delegate-mirrors/, never in the vault.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import push_token_path, save_push_token
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if token_file is not None:
+                token = token_file.expanduser().read_text(encoding="utf-8")
+            else:
+                token = typer.prompt("GitHub token for the delegate mirrors", hide_input=True)
+            save_push_token(vault, token)
+        except RepoSyncError as e:
+            _fail(e, False)
+        except OSError as e:
+            _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), False)
+        typer.echo(f"stored at {push_token_path(vault)}")
 
     @delegate_app.command("unlink")
     def cli_delegate_unlink(
         delegate: str = typer.Argument(..., help="The delegate id."),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
-        """Forget a delegate's mirror on this computer. The remote stays: revoke the agent's access there."""
+        """Forget a delegate's mirror on this computer and revoke its deploy key. The repository stays."""
         from scout import paths as _paths
         from scout.delegate_mirror import unlink
         from scout.repo_sync import RepoSyncError
