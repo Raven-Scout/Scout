@@ -36,7 +36,7 @@ import subprocess
 import sys
 import time as _time
 import traceback
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -707,6 +707,55 @@ def run() -> Event:
         )
 
 
+# Delegate mirrors (#550 V2c): only a vault with this file imports scout.delegate_mirror on a tick.
+_DELEGATE_STATE = ".scout-state/delegate-mirrors.json"
+_DELEGATE_LOG = "delegate-sync.log"
+
+
+def _spawn_delegate_sync(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl delegate sync --all --if-moved`` detached, so its pushes never hold the tick lock."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_MODE", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / _DELEGATE_LOG).open("a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "scout", "delegate", "sync", "--all", "--if-moved"],
+            cwd=str(vault),
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path], int] | None = None) -> None:
+    """Start a delegate-mirror sync when some mirror may be behind and none started for 15 minutes. Never raises.
+
+    So hand edits (Obsidian) reach the owner's agents between scheduled runs,
+    which sync at their own end. A vault with no delegate links costs one stat.
+    """
+    if not (vault / _DELEGATE_STATE).exists():
+        return
+    try:
+        from scout import delegate_mirror
+
+        if not delegate_mirror.due(vault):
+            return
+        delegate_mirror.mark_started(vault)
+        pid = (spawn or _spawn_delegate_sync)(vault, log_dir)
+        _emit_event(log_dir, kind="delegate_mirror.sync_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="delegate_mirror.spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
 def _evaluate_triggers(*, vault: Path, log_dir: Path) -> None:
     """Run trigger evaluation before schedule evaluation. Never raises.
 
@@ -740,6 +789,7 @@ def _do_tick(
 ) -> Event:
     # Event triggers evaluate first (spec: docs/specs/event-triggers.md §Event flow).
     _evaluate_triggers(vault=vault, log_dir=log_dir)
+    _sync_delegates(vault=vault, log_dir=log_dir)
 
     schedule = _load_or_default(vault)
     last_fire = _get_last_fire_index(state_dir, tracker_path)

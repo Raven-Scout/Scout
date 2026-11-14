@@ -624,6 +624,65 @@ def _check_repo_sync_host_cache(*, vault: Path, now: datetime | None) -> list[st
     ]
 
 
+def _age(delta: timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 0)} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return f"{minutes // (24 * 60)} days"
+
+
+def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[str], list[str]]:
+    """Each delegate mirror's age, as (warnings, notes) (#550 V2c). Nothing for a vault that links none.
+
+    Warns on a failed last sync, a push that didn't finish, and a mirror behind
+    HEAD that no sync has tried for an hour (the schedule tick tries every 15 min).
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return [], []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError, git
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError as e:
+        return [f"delegate mirrors: {e.message}"], []
+    now = now or datetime.now(UTC)
+    head = git(vault, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip() or None
+
+    def when(stamp: str | None) -> datetime | None:
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")) if stamp else None
+        except ValueError:
+            return None
+
+    warnings: list[str] = []
+    notes: list[str] = []
+    for key, link in sorted(links.items()):
+        synced = when(link.last_sync)
+        notes.append(
+            f"delegate mirror {key}: last synced {_age(now - synced)} ago"
+            if synced
+            else f"delegate mirror {key}: never synced"
+        )
+        if link.last_error is not None:
+            warnings.append(
+                f"delegate mirror {key}: the last sync failed ({link.last_error.get('code', 'unknown')}); "
+                f"see why with: scoutctl delegate sync {key}"
+            )
+        elif link.pending_mirror is not None:
+            warnings.append(f"delegate mirror {key}: a push didn't finish; the next sync checks the remote")
+        else:
+            tried = when(link.last_attempt) or synced
+            if head is not None and link.last_vault != head and (tried is None or now - tried > timedelta(hours=1)):
+                warnings.append(
+                    f"delegate mirror {key}: behind HEAD, and no sync has tried for over an hour; is the schedule "
+                    "tick running? (scoutctl delegate sync --all syncs now)"
+                )
+    return warnings, notes
+
+
 def run_doctor(
     *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
 ) -> DoctorReport:
@@ -744,6 +803,9 @@ def run_doctor(
     warnings.extend(_check_privacy_audit(vault=vault, now=now))
     warnings.extend(_check_kb_lint_config(vault=vault))
     warnings.extend(_check_repo_sync_host_cache(vault=vault, now=now))
+    delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
+    warnings.extend(delegate_warnings)
+    notes.extend(delegate_notes)
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)
