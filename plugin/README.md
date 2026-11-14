@@ -3,7 +3,7 @@
 > **The autonomous daily briefing that cross-checks all your work tools — so nothing falls through the cracks, and you can trust what it surfaces.**
 
 <p align="center">
-  <img src="docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
+  <img src="../docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
 </p>
 
 Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you — every item tagged by how many sources confirm it. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
