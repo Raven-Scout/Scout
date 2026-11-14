@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 from scout import delegate_mirror as dm
 from scout import repo_sync as rs
 from scout.cli import app, delegate_write_refusal
-from scout.kb.outbound import clear_cache, find_mentions, note_from_text, terms_of
+from scout.kb.outbound import PrivateTerms, clear_cache, find_mentions, note_from_text, terms_of
 from scout.kb.privacy import load_frontmatter_yaml, load_policy
 from scout.scripts import privacy_migrate
 
@@ -1091,14 +1091,77 @@ def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None
     the_plan, _ = _planned(vault)
     good = json.loads(the_plan.manifest())
     paths = {f.path for f in the_plan.files}
-    assert dm._manifest_ok(json.dumps(good).encode(), "grok-personal", paths)
+
+    def canonical(doc: object) -> bytes:
+        return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode()
+
+    assert dm._manifest_ok(canonical(good), "grok-personal", paths)
     for bad in (
         b"not json",
-        b"[]",
-        json.dumps({**good, "delegate": "duet"}).encode(),
-        json.dumps({**good, "files": -1}).encode(),
-        json.dumps({**good, "files": True}).encode(),
-        json.dumps({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}).encode(),
-        json.dumps({**good, "redacted_lines": ["x"]}).encode(),
+        canonical([]),
+        canonical({**good, "delegate": "duet"}),
+        canonical({**good, "files": -1}),
+        canonical({**good, "files": True}),
+        canonical({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}),
+        canonical({**good, "redacted_lines": ["x"]}),
     ):
         assert not dm._manifest_ok(bad, "grok-personal", paths), bad
+
+
+# ----- final review of #632 (coordinator, 2026-11-14) ---------------------------------------------
+
+
+def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Path, tmp_path: Path) -> None:
+    """The standard layout: an allowlist of the KB and the config, and the ``knowledge_base`` symlink."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    config += '  sync_only: ["knowledge-base/**", "scout-config.yaml"]\n'
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "sync only the KB")
+    privacy_migrate.accept(vault)
+    full = dm.preview(vault, "grok-personal")
+    assert full.left_out < 3 and not full.notes, full
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    kb = {f for f in files if f.startswith("knowledge-base/")}
+    assert kb and "knowledge_base" not in files and result.left_out == 0
+    assert not [n for n in result.notes if n.startswith("warning")]
+    assert all(f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" for f in files), files
+
+
+def test_path_terms_match_exactly_and_skip_symlinks_and_bare_root_names() -> None:
+    hidden = ["notes/my_plan.md", "knowledge_base", "clients/acme-link", "budget.xlsx"]
+    scan = dm.Scanner(terms_of([]), hidden, links={"clients/acme-link"})
+    text = "notes/my-plan\nnotes/my_plan\nknowledge_base\nclients/acme-link\nsee budget.xlsx\n[x](knowledge_base)\n"
+    assert scan.lines(text) == [2, 5, 6]  # an exact link still counts
+    assert not scan.names("knowledge-base/people/sam.md")
+
+
+def test_the_scanner_keeps_the_citation_and_shared_path_pre_check() -> None:
+    from scout.kb.outbound import _CITATION
+
+    terms = PrivateTerms(notes=(_CITATION,), any_term=_CITATION.pattern)
+    scan = dm.Scanner(terms, ["clients/acme-renewal.md"])
+    assert scan.lines("Filed from Priya's shared note today.\nclients/acme-renewal\nnothing\n") == [1, 2]
+
+
+def test_a_sync_that_drops_most_files_says_so(vault: Path) -> None:
+    the_plan, _ = _planned(vault)
+    assert dm._drop_warning("grok-personal", the_plan) == []
+    files = len(the_plan.files)
+    the_plan.left_out = max(dm.DROP_WARN_MIN, files + 1)
+    (note,) = dm._drop_warning("grok-personal", the_plan)
+    assert note.startswith(f"warning: {the_plan.left_out} of the {files + the_plan.left_out} file(s)")
+    the_plan.left_out = dm.DROP_WARN_MIN - 1
+    the_plan.files = the_plan.files[:1]
+    assert dm._drop_warning("grok-personal", the_plan) == []  # a few, even of a small mirror: no warning
+
+
+def test_the_manifest_must_be_the_exact_bytes_a_sync_writes(vault: Path) -> None:
+    the_plan, _ = _planned(vault)
+    good = the_plan.manifest()
+    paths = {f.path for f in the_plan.files}
+    assert dm._manifest_ok(good, "grok-personal", paths)
+    dup = good.replace(b'  "delegate": "grok-personal"', b'  "delegate": "Sam Lee",\n  "delegate": "grok-personal"', 1)
+    assert dup != good and json.loads(dup)["delegate"] == "grok-personal"
+    assert not dm._manifest_ok(dup, "grok-personal", paths)
+    assert not dm._manifest_ok(json.dumps(json.loads(good)).encode(), "grok-personal", paths)  # not canonical
