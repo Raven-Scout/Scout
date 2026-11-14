@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer write the files that decide which hooks run** (spec `docs/superpowers/specs/2026-11-13-runtime-agnostic-design.md` §8.5, plan Phase 1b; `engine/scout/kb/hook_paths.py`, `engine/scout/hooks/kb_read_gate.py`, `engine/scout/kb/live_run.py`, `hooks/hooks.json`). #607 kept a run's shell out of `.git/hooks` and `.git/config`, but its Write, Edit, MultiEdit and NotebookEdit calls went past the gate, and nothing kept any run out of the agent's own settings, where `"disableAllHooks": true` in a `.claude/settings.local.json` turns every Scout gate off for every later run. `kb-read-gate` now also denies a run's file-tool write into the vault's git dir (all of it, including `.git/info/*` and refs, and a worktree's real git dir and common dir), the user's git config (`~/.gitconfig`, `~/.config/git/`, `$GIT_CONFIG_GLOBAL`), the agent's `settings.json` / `settings.local.json` in the vault's `.claude/`, `~/.claude/` and `$CLAUDE_CONFIG_DIR`, its plugin store, and the hook config dirs of other agent CLIs (`.codex`, `.gemini`, `.agents`, `.grok`, `.cursor`) in the vault and the home folder. The path is checked after `~`, `..` and every symlink are resolved, and without regard to case. A run's shell write to the agent's settings or the user's git config is denied the same way. Each deny names the form and records `kb_read_gate.hook_skip`. Every run write now goes to the gate (about 40 ms), since a symlink can hide its path from the shell; owner sessions are unchanged.
+
 ## [0.18.12] - 2026-11-13
 
 ### Added

@@ -347,6 +347,13 @@ _VALUE_OPTIONS = {
 }  # fmt: skip
 # Writing these changes the hooks. Only a command that writes counts: reading them is fine.
 _HOOK_FILE = re.compile(r"(?:^|/)\.git/(hooks(?:/|$)|config$)")
+# And these decide which of the agent's hooks run, or redirect git's from the user's config
+# (scout.kb.hook_paths names them for the write tools; here by spelling, as a shell path can't be resolved).
+_AGENT_SETTINGS_FILE = re.compile(
+    r"(?:^|/)\.claude/(?:settings(?:\.local)?\.json$|plugins(?:/|$))|(?:^|/)\.(?:codex|gemini|agents|grok|cursor)(?:/|$)",
+    re.IGNORECASE,
+)
+_USER_GIT_CONFIG_FILE = re.compile(r"(?:^|/)\.gitconfig$|(?:^|/)\.config/git(?:/|$)", re.IGNORECASE)
 _GIT_DIR = re.compile(r"(?:^|/)(\.git(?:/hooks)?)/?$")
 _WRITERS = {"tee", "rm", "unlink", "mv", "chmod", "chown", "chflags", "touch", "truncate", "rmdir", "shred"}
 _COPIERS = {"cp", "install", "ln", "rsync"}  # the last argument is the one written
@@ -603,6 +610,10 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
         m = _HOOK_FILE.search(path if path.startswith("/") else cwd + path)
         if m is not None:
             return ".git/config" if m[1] == "config" else ".git/hooks"
+        if _AGENT_SETTINGS_FILE.search(path):
+            return "agent settings"  # scout.kb.hook_paths.AGENT_SETTINGS
+        if _USER_GIT_CONFIG_FILE.search(path):
+            return "git config"  # scout.kb.hook_paths.USER_GIT_CONFIG
     return None
 
 
