@@ -32,13 +32,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
+import plistlib
+import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,8 +57,9 @@ PROBE_COMMAND = "cat knowledge-base/probe.md"
 PROBE_MODE = "gate-probe"  # the probe session's SCOUT_MODE; the eval shim recognises it
 # The runners' permission flags (run-*.sh.tmpl; a test keeps the two in step). Model, cap and name don't decide hooks.
 PROBE_FLAGS: tuple[str, ...] = ("--permission-mode", "auto")
-# Environment that switches claude's hook loading (``--bare`` sets CLAUDE_CODE_SIMPLE) or where it reads settings.
-HOOK_ENV_VARS: tuple[str, ...] = ("CLAUDE_CODE_SIMPLE", "CLAUDE_CONFIG_DIR")
+# A project settings env key that switches claude's hook loading (``--bare`` sets CLAUDE_CODE_SIMPLE): copied into
+# the probe's fixture. The cache key covers every CLAUDE_*/ANTHROPIC_* variable (env_key).
+HOOK_ENV_COPY: tuple[str, ...] = ("CLAUDE_CODE_SIMPLE",)
 MAX_AGE = timedelta(hours=24)
 CACHE_REL = Path(".scout-state") / "gate-probe.json"
 DEFAULT_TIMEOUT_S = 90.0
@@ -63,14 +68,46 @@ TMP_PREFIX = "scout-gate-probe-"
 STALE_TMP = timedelta(hours=1)
 # Never handed to the probe's claude: it talks to the fake only.
 _CREDENTIAL_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
-# Set to "0", not removed: a settings file's env could switch them back on, and the process env wins.
-_PROVIDER_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+# Provider switches: each is set to "0", not removed, since a settings file's env could turn it back on and the
+# process env wins. The known ones, plus every CLAUDE_CODE_USE_* the claude binary or a settings env names, minus
+# the few that aren't providers (an unknown new switch is treated as a provider: zeroed).
+_KNOWN_PROVIDER_SWITCHES = frozenset(
+    {
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_GATEWAY",
+    }
+)
+_NOT_PROVIDER_SWITCHES = frozenset(
+    {
+        "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH",
+        "CLAUDE_CODE_USE_POWERSHELL_TOOL",
+        "CLAUDE_CODE_USE_COWORK_PLUGINS",
+        "CLAUDE_CODE_USE_CCR_V2",
+    }
+)
+_SWITCH_RE = re.compile(rb"CLAUDE_CODE_USE_[A-Z0-9_]+")
+# A settings env key that names an endpoint. *_BASE_URL is pointed at the fake; any other one can't be
+# neutralised from outside, so without the network sandbox the probe refuses rather than risk it.
+_ENDPOINT_KEY_RE = re.compile(r"(URL|ENDPOINT|HOST)$", re.IGNORECASE)
+_LOOPBACK_NO_PROXY = "127.0.0.1,localhost,::1"
+# The probe's claude may reach the fake on loopback and nothing else (macOS; elsewhere the env layers above).
+SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
+SANDBOX_PROFILE = (
+    "(version 1) (allow default) (deny network-outbound) "
+    '(allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket))'
+)
 DUMMY_KEY = "sk-ant-scout-gate-probe-not-a-key"
 _SETTINGS_FILES = ("settings.json", "settings.local.json")
-_MANAGED_SETTINGS = (
-    Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
-    Path("/etc/claude-code/managed-settings.json"),
-)
+# The project settings keys that decide whether and which hooks load; only these go into the probe's fixture,
+# so a project hook, statusLine or apiKeyHelper never runs from the probe.
+_HOOK_SETTING_KEYS = ("disableAllHooks", "allowManagedHooksOnly", "enabledPlugins", "permissions")
+MANAGED_DIRS: tuple[Path, ...] = (Path("/Library/Application Support/ClaudeCode"), Path("/etc/claude-code"))
+MDM_DIR = Path("/Library/Managed Preferences")
 
 
 @dataclass(frozen=True)
@@ -132,8 +169,12 @@ def hooks_sha256(plugin_root: Path) -> str:
 
 
 def env_key(env: Mapping[str, str] | None = None) -> str:
+    """A hash of every CLAUDE_* and ANTHROPIC_* variable but the credentials: any of them may change hook loading."""
     env = os.environ if env is None else env
-    return ";".join(f"{k}={env.get(k, '')}" for k in HOOK_ENV_VARS)
+    relevant = sorted(
+        (k, v) for k, v in env.items() if k.startswith(("CLAUDE_", "ANTHROPIC_")) and k not in _CREDENTIAL_VARS
+    )
+    return "sha256:" + hashlib.sha256(json.dumps(relevant).encode()).hexdigest()
 
 
 def claude_config_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -158,16 +199,86 @@ def _installed_scout_hooks(config: Path) -> list[Path]:
         return []
 
 
+def managed_files() -> list[Path]:
+    """Managed settings: managed-settings.json, its managed-settings.d/ drop-ins, and MDM managed preferences."""
+    files: list[Path] = []
+    for d in MANAGED_DIRS:
+        files.append(d / "managed-settings.json")
+        files += sorted((d / "managed-settings.d").glob("*.json"))
+    files += sorted(MDM_DIR.glob("com.anthropic.claudecode*.plist"))
+    files += sorted(MDM_DIR.glob("*/com.anthropic.claudecode*.plist"))
+    return files
+
+
 def config_files(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Path]:
     """The files that decide which hooks claude loads for a run of ``vault``."""
     config = claude_config_dir(env)
     files = [config / name for name in _SETTINGS_FILES]
     files += [config / "plugins" / "installed_plugins.json", config / "plugins" / "known_marketplaces.json"]
     files += _installed_scout_hooks(config)
-    files += list(_MANAGED_SETTINGS)
+    files += managed_files()
     if vault is not None:
         files += [vault / ".claude" / name for name in _SETTINGS_FILES]
     return files
+
+
+def _load_settings(path: Path) -> Mapping[str, Any] | None:
+    try:
+        data = plistlib.loads(path.read_bytes()) if path.suffix == ".plist" else json.loads(path.read_text("utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable settings file has no env to worry about
+        return None
+    return data if isinstance(data, Mapping) else None
+
+
+def settings_env_blocks(env: Mapping[str, str] | None = None) -> list[Mapping[str, Any]]:
+    """The ``env`` blocks of the user's and the managed settings: the probe's claude reads these as they are."""
+    config = claude_config_dir(env)
+    blocks: list[Mapping[str, Any]] = []
+    for path in [*(config / name for name in _SETTINGS_FILES), *managed_files()]:
+        data = _load_settings(path)
+        block = data.get("env") if data is not None else None
+        if isinstance(block, Mapping):
+            blocks.append(block)
+    return blocks
+
+
+def _binary_switches(claude_bin: Path) -> set[str]:
+    """Every CLAUDE_CODE_USE_* name in the claude binary (or its script): new provider switches included."""
+    try:
+        with open(os.path.realpath(claude_bin), "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return {match.decode() for match in set(_SWITCH_RE.findall(m))}
+    except (OSError, ValueError):
+        return set()
+
+
+def provider_switches(claude_bin: Path | None, blocks: Sequence[Mapping[str, Any]]) -> set[str]:
+    names = set(_KNOWN_PROVIDER_SWITCHES)
+    if claude_bin is not None:
+        names |= _binary_switches(claude_bin)
+    for block in blocks:
+        names |= {str(k) for k in block if str(k).startswith("CLAUDE_CODE_USE_")}
+    return names - _NOT_PROVIDER_SWITCHES
+
+
+def endpoint_keys(blocks: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
+    """(base URLs to point at the fake, endpoint keys that can't be neutralised) in the settings env blocks."""
+    base_urls: set[str] = set()
+    other: set[str] = set()
+    for block in blocks:
+        for raw in block:
+            key = str(raw)
+            if key.endswith("_BASE_URL"):
+                base_urls.add(key)
+            elif _ENDPOINT_KEY_RE.search(key) and not key.startswith("OTEL_"):
+                other.add(key)
+    return base_urls, other
+
+
+def sandbox_prefix() -> list[str]:
+    """The command prefix that limits the probe's claude to loopback, or [] where there is none (not macOS)."""
+    if sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK):
+        return [str(SANDBOX_EXEC), "-p", SANDBOX_PROFILE]
+    return []
 
 
 def config_sha256(vault: Path | None, env: Mapping[str, str] | None = None) -> str:
@@ -193,10 +304,23 @@ def claude_version(claude_bin: Path, *, timeout_s: float = 15.0) -> str | None:
     return line[0].strip() if out.returncode == 0 and line else None
 
 
-def probe_env(*, base_url: str, vault: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """The probe's environment: the caller's, minus every credential, pointed at the fake and the fixture vault."""
+def probe_env(
+    *,
+    base_url: str,
+    vault: Path,
+    base: Mapping[str, str] | None = None,
+    switches: Iterable[str] = _KNOWN_PROVIDER_SWITCHES,
+    base_urls: Iterable[str] = (),
+) -> dict[str, str]:
+    """The probe's environment: the caller's, minus every credential, pointed at the fake and the fixture vault.
+
+    Every provider switch is "0" and every base URL a settings env names is the fake's: the process env wins
+    over a settings env, so no setting can send the probe to a billed provider.
+    """
     env = {k: v for k, v in (os.environ if base is None else base).items() if k not in _CREDENTIAL_VARS}
-    env.update({k: "0" for k in _PROVIDER_SWITCHES})
+    env.update({k: "0" for k in switches})
+    env.update({k: base_url for k in base_urls})
+    env.update(NO_PROXY=_LOOPBACK_NO_PROXY, no_proxy=_LOOPBACK_NO_PROXY)
     env.update(
         ANTHROPIC_BASE_URL=base_url,
         ANTHROPIC_API_KEY=DUMMY_KEY,
@@ -220,10 +344,17 @@ def _fixture_vault(root: Path, source: Path | None) -> Path:
     (vault / "knowledge-base" / "probe.md").write_text(f"{CANARY}\n", encoding="utf-8")
     if source is not None:
         for name in _SETTINGS_FILES:
-            src = source / ".claude" / name
-            if src.is_file():
-                (vault / ".claude").mkdir(exist_ok=True)
-                shutil.copyfile(src, vault / ".claude" / name)
+            data = _load_settings(source / ".claude" / name)
+            if data is None:
+                continue
+            kept: dict[str, Any] = {k: data[k] for k in _HOOK_SETTING_KEYS if k in data}
+            block = data.get("env")
+            if isinstance(block, Mapping):
+                hook_env = {k: block[k] for k in HOOK_ENV_COPY if k in block}
+                if hook_env:
+                    kept["env"] = hook_env
+            (vault / ".claude").mkdir(exist_ok=True)
+            (vault / ".claude" / name).write_text(json.dumps(kept), encoding="utf-8")
     return vault
 
 
@@ -276,6 +407,21 @@ def probe(
     version = version or claude_version(Path(resolved))
     sweep_stale_tmp()
 
+    # No request may leave the machine: a loopback-only sandbox where there is one (macOS), and in any case every
+    # provider switch off and every base URL a settings env names pointed at the fake (the process env wins).
+    sandbox = sandbox_prefix()
+    blocks = settings_env_blocks()
+    switches = provider_switches(Path(resolved), blocks)
+    base_urls, other_endpoints = endpoint_keys(blocks)
+    if not sandbox and other_endpoints:
+        return result(
+            False,
+            "can't probe safely: a settings env names an endpoint the probe can't point at its local fake "
+            f"({', '.join(sorted(other_endpoints))}) and there is no network sandbox here",
+            version,
+        )
+    network = "loopback-only sandbox" if sandbox else "provider switches off, base URLs at the fake"
+
     fake = FakeAnthropic([ScriptedTurn("Bash", {"command": PROBE_COMMAND})])
     try:
         base_url = fake.start()
@@ -288,9 +434,9 @@ def probe(
             with out_path.open("wb") as out:
                 try:
                     proc = subprocess.Popen(
-                        [resolved, *flags, "--no-session-persistence", "-p", "Scout gate probe."],
+                        [*sandbox, resolved, *flags, "--no-session-persistence", "-p", "Scout gate probe."],
                         cwd=fixture,
-                        env=probe_env(base_url=base_url, vault=fixture),
+                        env=probe_env(base_url=base_url, vault=fixture, switches=switches, base_urls=base_urls),
                         stdin=subprocess.DEVNULL,
                         stdout=out,
                         stderr=subprocess.STDOUT,
@@ -332,7 +478,7 @@ def probe(
         return result(False, f"claude never answered the probe's tool call (exit {proc.returncode})", version)
     if not (results[0].get("is_error") is True and GATE_MARK in texts[0]):
         return result(False, f"the probe's shell read was not denied by the kb-read-gate: {texts[0][:300]}", version)
-    return result(True, "kb-read-gate denied the probe's shell read of a KB note", version)
+    return result(True, f"kb-read-gate denied the probe's shell read of a KB note (network: {network})", version)
 
 
 def read_cache(vault: Path) -> ProbeResult | None:

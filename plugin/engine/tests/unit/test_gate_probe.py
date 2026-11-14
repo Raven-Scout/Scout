@@ -65,6 +65,8 @@ def _isolated_claude_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     config = tmp_path / "claude-config"
     (config / "plugins").mkdir(parents=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.setattr(gate_probe, "MANAGED_DIRS", (tmp_path / "managed",))
+    monkeypatch.setattr(gate_probe, "MDM_DIR", tmp_path / "mdm")
     return config
 
 
@@ -345,15 +347,38 @@ def test_a_corrupt_cache_is_a_miss_and_gets_rewritten(tmp_path: Path, corrupt: d
     assert gate_probe.read_cache(vault) is not None
 
 
-def test_probe_flags_match_the_runners_launch(tmp_path: Path) -> None:
-    """PROBE_FLAGS is a copy of the runners' permission flags; keep them in step (review #635, should-fix 6)."""
+# Launch flags that don't decide whether hooks load, each with its value. Everything else must be PROBE_FLAGS.
+_HOOK_NEUTRAL = {"--model", "--max-budget-usd", "--name", "-p"}
+
+
+def _launch_flags(template_text: str) -> list[str]:
+    """Every flag the runner passes claude, minus the hook-neutral ones and their values."""
+    launch = template_text[template_text.index('"$CLAUDE_BIN" \\') :].split("|| EXIT_CODE")[0]
+    words = launch.replace("\\\n", " ").split()[1:]  # drop "$CLAUDE_BIN"
+    kept: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word in _HOOK_NEUTRAL:
+            skip = True
+        else:
+            kept.append(word)
+    return kept
+
+
+def test_probe_flags_match_the_runners_launch() -> None:
+    """PROBE_FLAGS is a copy of the runners' flags that can matter to hooks; keep them in step (review #635)."""
     templates = Path(gate_probe.default_plugin_root()) / "templates"
     for name in ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"):
-        text = (templates / name).read_text(encoding="utf-8")
-        launch = text[text.index('"$CLAUDE_BIN" \\') :].split("-p ")[0]
-        words = [w for w in launch.replace("\\", " ").split() if w]
-        mode_at = words.index("--permission-mode")
-        assert tuple(words[mode_at : mode_at + 2]) == gate_probe.PROBE_FLAGS, name
+        assert _launch_flags((templates / name).read_text(encoding="utf-8")) == list(gate_probe.PROBE_FLAGS), name
+
+
+def test_the_flag_pin_catches_a_new_launch_flag() -> None:
+    text = (Path(gate_probe.default_plugin_root()) / "templates" / "run-scout.sh.tmpl").read_text(encoding="utf-8")
+    with_bare = text.replace("--permission-mode auto \\", "--permission-mode auto \\\n    --bare \\", 1)
+    assert with_bare != text
+    assert _launch_flags(with_bare) != list(gate_probe.PROBE_FLAGS)
 
 
 def test_a_cache_miss_asks_claude_for_its_version_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -386,3 +411,161 @@ def test_stale_probe_dirs_are_swept(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     os.utime(other, (two_hours_ago, two_hours_ago))
     gate_probe.sweep_stale_tmp()
     assert not old.exists() and fresh.exists() and other.exists()
+
+
+# --- re-review of #635: no request may leave the machine -----------------------------
+
+
+@pytest.mark.parametrize(
+    "switch",
+    [
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_GATEWAY",
+        "CLAUDE_CODE_USE_SOMETHING_NEW",  # a switch a later CLI adds: treated as a provider
+    ],
+)
+def test_a_provider_switch_in_a_settings_env_is_set_to_0(_isolated_claude_config: Path, switch: str) -> None:
+    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {switch: "1"}}))
+    switches = gate_probe.provider_switches(None, gate_probe.settings_env_blocks())
+    env = gate_probe.probe_env(base_url="http://127.0.0.1:1", vault=Path("/v"), base={switch: "1"}, switches=switches)
+    assert env[switch] == "0"
+
+
+def test_switches_that_arent_providers_are_left_alone() -> None:
+    blocks = [{"CLAUDE_CODE_USE_NATIVE_FILE_SEARCH": "1", "CLAUDE_CODE_USE_COWORK_PLUGINS": "1"}]
+    switches = gate_probe.provider_switches(None, blocks)
+    assert "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH" not in switches
+    assert "CLAUDE_CODE_USE_COWORK_PLUGINS" not in switches
+    assert {"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_MANTLE"} <= switches
+
+
+def test_switches_the_binary_names_are_zeroed_too(tmp_path: Path) -> None:
+    binary = tmp_path / "claude"
+    binary.write_bytes(b"\x00junk CLAUDE_CODE_USE_FUTURECLOUD more junk CLAUDE_CODE_USE_POWERSHELL_TOOL\x00")
+    switches = gate_probe.provider_switches(binary, [])
+    assert "CLAUDE_CODE_USE_FUTURECLOUD" in switches
+    assert "CLAUDE_CODE_USE_POWERSHELL_TOOL" not in switches
+
+
+def test_base_urls_in_a_settings_env_point_at_the_fake(_isolated_claude_config: Path) -> None:
+    (_isolated_claude_config / "settings.json").write_text(
+        json.dumps({"env": {"ANTHROPIC_BEDROCK_BASE_URL": "https://gw.example", "ANTHROPIC_BASE_URL": "https://x"}})
+    )
+    base_urls, other = gate_probe.endpoint_keys(gate_probe.settings_env_blocks())
+    assert other == set()
+    env = gate_probe.probe_env(base_url="http://127.0.0.1:9", vault=Path("/v"), base={}, base_urls=base_urls)
+    assert (
+        env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9" and env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9"
+    )
+    assert "127.0.0.1" in env["NO_PROXY"] and "127.0.0.1" in env["no_proxy"]
+
+
+def test_managed_settings_envs_are_read(tmp_path: Path) -> None:
+    drop_in = tmp_path / "managed" / "managed-settings.d"
+    drop_in.mkdir(parents=True)
+    (drop_in / "10-provider.json").write_text(json.dumps({"env": {"CLAUDE_CODE_USE_MANTLE": "1"}}))
+    (tmp_path / "mdm").mkdir()
+    import plistlib
+
+    (tmp_path / "mdm" / "com.anthropic.claudecode.plist").write_bytes(
+        plistlib.dumps({"env": {"ACME_GATEWAY_URL": "https://gw.example"}})
+    )
+    blocks = gate_probe.settings_env_blocks()
+    assert {"CLAUDE_CODE_USE_MANTLE": "1"} in blocks
+    assert gate_probe.endpoint_keys(blocks)[1] == {"ACME_GATEWAY_URL"}
+
+
+def test_an_endpoint_that_cant_be_neutralised_refuses_without_a_sandbox(
+    tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ACME_LLM_ENDPOINT": "https://x"}}))
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    refused = gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
+    assert not refused.ok and "can't probe safely" in refused.reason and "ACME_LLM_ENDPOINT" in refused.reason
+    # Behind the network sandbox the same setting is harmless: nothing can leave anyway.
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: ["env"])
+    assert gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path)).ok
+
+
+def test_telemetry_endpoints_dont_refuse() -> None:
+    assert gate_probe.endpoint_keys([{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example"}]) == (set(), set())
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not gate_probe.SANDBOX_EXEC.exists(), reason="macOS sandbox only")
+def test_the_sandbox_lets_loopback_through_and_nothing_else(tmp_path: Path) -> None:
+    import socket
+    import subprocess
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    script = (
+        "import socket, sys\n"
+        f"socket.create_connection(('127.0.0.1', {port}), timeout=3).close()\n"
+        "try:\n"
+        "    socket.create_connection(('1.1.1.1', 443), timeout=3)\n"
+        "    sys.exit('egress allowed')\n"
+        "except OSError:\n"
+        "    print('egress blocked')\n"
+    )
+    out = subprocess.run(
+        [*gate_probe.sandbox_prefix(), sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    server.close()
+    assert out.returncode == 0, out.stderr
+    assert "egress blocked" in out.stdout
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not gate_probe.SANDBOX_EXEC.exists(), reason="macOS sandbox only")
+def test_on_macos_the_probe_runs_inside_the_sandbox(tmp_path: Path) -> None:
+    result = gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
+    assert result.ok and "loopback-only sandbox" in result.reason
+
+
+def test_only_hook_deciding_keys_reach_the_fixture(tmp_path: Path) -> None:
+    """A project hook, statusLine or apiKeyHelper never runs from the probe (re-review of #635, should-fix 2)."""
+    source = tmp_path / "vault"
+    (source / ".claude").mkdir(parents=True)
+    full = {
+        "disableAllHooks": True,
+        "allowManagedHooksOnly": False,
+        "enabledPlugins": {"scout@scout-plugin": True},
+        "permissions": {"deny": []},
+        "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "/abs/path/hook.sh"}]}]},
+        "statusLine": {"type": "command", "command": "x"},
+        "apiKeyHelper": "/abs/helper.sh",
+        "env": {"CLAUDE_CODE_SIMPLE": "1", "CLAUDE_CODE_USE_BEDROCK": "1", "SECRET": "s"},
+    }
+    (source / ".claude" / "settings.local.json").write_text(json.dumps(full))
+    fixture = gate_probe._fixture_vault(tmp_path / "probe", source)
+    copied = json.loads((fixture / ".claude" / "settings.local.json").read_text())
+    assert copied == {
+        "disableAllHooks": True,
+        "allowManagedHooksOnly": False,
+        "enabledPlugins": {"scout@scout-plugin": True},
+        "permissions": {"deny": []},
+        "env": {"CLAUDE_CODE_SIMPLE": "1"},
+    }
+
+
+def test_managed_drop_ins_and_mdm_preferences_are_in_the_cache_key(tmp_path: Path) -> None:
+    before = gate_probe.config_sha256(None)
+    drop_in = tmp_path / "managed" / "managed-settings.d"
+    drop_in.mkdir(parents=True)
+    (drop_in / "20.json").write_text('{"disableAllHooks": true}')
+    after_drop_in = gate_probe.config_sha256(None)
+    (tmp_path / "mdm").mkdir()
+    (tmp_path / "mdm" / "com.anthropic.claudecode.plist").write_bytes(b"x")
+    assert len({before, after_drop_in, gate_probe.config_sha256(None)}) == 3
+
+
+def test_every_claude_and_anthropic_variable_is_in_the_env_key_but_credentials() -> None:
+    base = {"CLAUDE_CODE_SIMPLE": "0", "PATH": "/bin"}
+    key = gate_probe.env_key(base)
+    assert gate_probe.env_key({**base, "CLAUDE_CODE_DISABLE_HOOKS_X": "1"}) != key
+    assert gate_probe.env_key({**base, "ANTHROPIC_MODEL": "m"}) != key
+    assert gate_probe.env_key({**base, "PATH": "/usr/bin"}) == key
+    assert gate_probe.env_key({**base, "CLAUDE_CODE_OAUTH_TOKEN": "t"}) == key  # a rotated token isn't a new config

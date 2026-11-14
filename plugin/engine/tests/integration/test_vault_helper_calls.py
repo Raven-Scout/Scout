@@ -181,6 +181,38 @@ def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot
     assert "connector-health: fatal error: engine broken" in log
 
 
+@pytest.mark.parametrize(("template", "slot"), RUNNERS)
+def test_a_working_engine_without_the_optional_vault_helpers_still_runs(vault: Path, template: str, slot: str) -> None:
+    """scoutctl works, but run-outcome.sh, budget-check.sh, the pre-session hooks and the cost tracker are absent."""
+    scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    _stub_claude(vault, 0)
+
+    result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
+
+    assert result.returncode == 0, result.stderr
+    assert "run finished" in _runner_log(vault)
+    assert not (vault / "scripts" / "run-outcome.sh").exists()
+
+
+@pytest.mark.parametrize(("template", "slot"), RUNNERS)
+def test_an_engine_gone_mid_run_skips_the_rollup_and_falls_back_for_the_cost_row(
+    vault: Path, template: str, slot: str
+) -> None:
+    """The probe passed, then scoutctl vanished (an engine upgrade moved it): the runner's fallbacks still record."""
+    scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    _script(vault / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\nrm -f "{scoutctl}"\nexit 0\n')
+    cost_args = vault / "cost.args"
+    _script(vault / "scripts" / "write-session-cost.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{cost_args}"\n')
+
+    result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
+
+    assert result.returncode == 0, result.stderr
+    assert "connector-health roll-up skipped: scoutctl not found" in _runner_log(vault)
+    assert cost_args.read_text(encoding="utf-8").splitlines()[-1] == "runner"
+
+
 # ---------- kb-pre-filter.sh: git-truth staleness ranking ----------
 
 
