@@ -47,8 +47,11 @@ kept, files withheld, lines removed per file), never removed text.
 What the matchers can't see: a note whose name is short (under 4 characters)
 or one ordinary word is matched only by its wikilinks and its path, as for
 ``kb check-outbound``; prose that names it otherwise stays. A hidden file's path
-is a term as written when it is in a folder (``Clients/Acme``), but a file at
-the vault root is matched by its full name (``health.md``), not its bare stem.
+counts as naming it, matched exactly (``-`` and ``_`` are not folded together):
+in a folder, as written (``Clients/Acme``); at the vault root, only by its full
+name with its extension (``health.md``). A root name with no extension
+(``knowledge_base``) and a hidden symlink are matched only by an exact link.
+A sync that leaves out most of the files the delegate may see says so.
 
 **History.** One mirror commit per sync that changes the tree, with a fixed
 identity and a generic message: a vault commit's subject never goes up. The
@@ -103,7 +106,7 @@ import shutil
 import subprocess
 import tempfile
 import unicodedata
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -116,9 +119,10 @@ import scout
 from scout import paths
 from scout.kb.lint_config import glob_match
 from scout.kb.outbound import (
+    _AFTER,
+    _BEFORE,
     PrivateNote,
     PrivateTerms,
-    _term_regex,
     find_mentions,
     note_from_text,
     terms_of,
@@ -558,6 +562,19 @@ def _stem(rel: str) -> str:
     return rel[:-3] if rel.lower().endswith(".md") else rel
 
 
+def _path_term(rel: str) -> str | None:
+    """What of the hidden path ``rel`` counts as naming it in text, matched exactly (no ``-``/``_`` folding).
+
+    In a folder, the path as written (``clients/acme-renewal``). At the vault root, the full file name
+    (``health.md``), never a bare word: a root note's name is matched by its own rules (length, ordinary
+    words), and a root file with no extension (``knowledge_base``, often a symlink) only by an exact link.
+    Hidden symlinks make no path term at all (:class:`Scanner`): the files behind them do.
+    """
+    if "/" in rel:
+        return _stem(rel)
+    return rel if posixpath.splitext(rel)[1] else None
+
+
 def _plumbing(rel: str) -> bool:
     """A path under a top-level dot folder (``.scout-state``, ``.obsidian``): its name is no secret."""
     return rel.startswith(".")
@@ -566,13 +583,10 @@ def _plumbing(rel: str) -> bool:
 class Scanner:
     """Finds what names a file the delegate can't see: the outbound matchers, plus hidden vault paths."""
 
-    def __init__(self, terms: PrivateTerms, hidden: Sequence[str] = ()) -> None:
+    def __init__(self, terms: PrivateTerms, hidden: Sequence[str] = (), links: Collection[str] = ()) -> None:
         named = [p for p in hidden if not _plumbing(p)]
         stems = sorted({_stem(p) for p in named})
-        # A path in a folder is specific enough to match as written. A root file's bare stem is just a word
-        # (``health``, ``labels``), and a root note's name is already matched by its own rules (length,
-        # ordinary words): only its full file name is a path term.
-        path_terms = sorted({_stem(p) if "/" in p else p for p in named})
+        self.terms = terms
         path_notes = [
             PrivateNote(
                 path=f"path:{t}",
@@ -580,13 +594,17 @@ class Scanner:
                 terms=(t,),
                 link_keys=frozenset(),
                 link_path="",
-                pattern=_term_regex([t]),
+                pattern=re.compile(_BEFORE + re.escape(_fold_path(t)) + _AFTER),
             )
-            for t in path_terms
+            for t in sorted({t for t in (_path_term(p) for p in named if p not in links) if t is not None})
         ]
-        self.terms = terms_of([*terms.notes, *path_notes]) if path_notes else terms
-        if terms.excerpts is not None:
-            self.terms = dataclasses.replace(self.terms, excerpts=terms.excerpts)
+        if path_notes:
+            # The pre-check is the union of patterns, not rebuilt from terms: the citing form and the
+            # shared paths (:func:`with_shared`) have patterns but no terms.
+            pre = [x.pattern for x in [terms.any_term, *(n.pattern for n in path_notes)] if x is not None]
+            self.terms = dataclasses.replace(
+                terms, notes=(*terms.notes, *path_notes), any_term=re.compile("|".join(pre))
+            )
         self.hidden = frozenset(_fold_path(s) for s in [*named, *stems])
 
     def _link_hit(self, target: str, rel: str) -> bool:
@@ -813,6 +831,8 @@ def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str]) -> bool:
         return False
     if not isinstance(doc, dict) or set(doc) != _MANIFEST_KEYS or not isinstance(doc["redacted_lines"], dict):
         return False
+    if data != (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8"):
+        return False  # only the bytes Plan.manifest writes: no duplicate key can carry a first value
     counts = [doc["files"], doc["withheld_files"], *doc["redacted_lines"].values()]
     return (
         (doc["schema_version"], doc["generator"], doc["engine_version"], doc["delegate"])
@@ -854,7 +874,7 @@ def hidden_terms(vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str
         terms = with_shared(terms_of(notes), vault)
     except SharedReadsUnreadable as e:
         raise RepoSyncError("shared_reads_unreadable", f"refused: the shared-reads ledger can't be read ({e})") from e
-    return Scanner(terms, hidden)
+    return Scanner(terms, hidden, links={rel for rel in hidden if by_path[rel].mode == SYMLINK_MODE})
 
 
 def _link_target(entry: TreeEntry, target: bytes) -> str | None:
@@ -1163,6 +1183,7 @@ def _build_and_push(
         redacted_files=len(the_plan.redacted),
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
+        notes=_drop_warning(link.id, the_plan),
     )
     parent = None if fresh else link.last_mirror
     if parent is not None and git(vault, "rev-parse", f"{parent}^{{tree}}").stdout.strip() == tree:
@@ -1186,6 +1207,21 @@ def _build_and_push(
         )
     done = dataclasses.replace(link, last_mirror=commit, last_vault=head, last_sync=_now(), pending_mirror=None)
     return result, done
+
+
+DROP_WARN_MIN = 5  # left-out files below this never warn: a few redaction casualties are normal
+
+
+def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
+    """A warning when most files the delegate may see were left out: a path term or a rule matching too much."""
+    total = len(the_plan.files) + the_plan.left_out
+    if the_plan.left_out < DROP_WARN_MIN or the_plan.left_out * 2 <= total:
+        return []
+    return [
+        f"warning: {the_plan.left_out} of the {total} file(s) {delegate} may see were left out of its mirror, "
+        "because they name a hidden file or can't be scanned; check `scoutctl delegate preview "
+        f"{delegate}` and the privacy settings before relying on this mirror"
+    ]
 
 
 def link(
@@ -1568,4 +1604,5 @@ def preview(vault: Path, delegate: str) -> Result:
         redacted_files=len(the_plan.redacted),
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
+        notes=_drop_warning(delegate, the_plan),
     )

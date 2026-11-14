@@ -194,6 +194,27 @@ def test_accents_are_optional_on_both_sides() -> None:
     assert hits("\ud55c\uad6d\uc5b4 \uc0ac\ub78c", "\u1112\u1100\u110b \uc0ac\ub78c\n") == []
 
 
+def test_accents_are_ignored_only_for_longer_terms_and_only_on_latin_greek_cyrillic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def hits(name: str, text: str) -> list[int]:
+        terms = outbound.terms_of([outbound.note_from_text(f"people/{name}.md", f"---\nname: {name}\n---\n")])
+        return outbound.find_mentions(text, terms, allow_markers=False)
+
+    assert hits("Mila", "Mil\u00e1 Jano, d\u00edky\n") == []  # one word under 5 characters: exact only
+    assert hits("Mila", "Mila said\n") == [1]
+    assert hits("Milan", "Mil\u00e1n\n") == [1]  # 5+ characters
+    assert hits("\u039d\u03af\u03ba\u03bf\u03c2 Lee", "\u039d\u03b9\u03ba\u03bf\u03c2 Lee\n") == [1]  # Greek
+    assert hits("\u0419\u043e\u0440\u0434\u0430\u043d", "\u0418\u043e\u0440\u0434\u0430\u043d\n") == [1]  # Cyrillic
+    # a Japanese voicing mark changes the word: \u30ab (ka) is not \u30ac (ga)
+    assert hits("\u30ab\u30b9\u30bf\u30e0\u8a08\u753b", "\u30ac\u30b9\u30bf\u30e0\u8a08\u753b\n") == []
+    assert hits("\u30ab\u30b9\u30bf\u30e0\u8a08\u753b", "\u30ab\u30b9\u30bf\u30e0\u8a08\u753b\n") == [1]
+    # Devanagari vowel signs stay
+    assert hits("\u0915\u093f\u0924\u093e\u092c\u0918\u0930", "\u0915\u0924\u093e\u092c\u0918\u0930\n") == []
+    monkeypatch.setattr(outbound, "UNACCENT_MIN_CHARS", outbound.MIN_TERM_CHARS)
+    assert hits("Mila", "Mil\u00e1 Jano\n") == [1]  # one setting widens it to every term
+
+
 def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     own = build_privacy_vault(tmp_path)
     outbound.clear_cache()
