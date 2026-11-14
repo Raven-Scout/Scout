@@ -326,11 +326,18 @@ def _ask_gh(gh: GhRunner, args: Sequence[str], repo: str) -> str:
 
 
 def _check_github(repo: str, gh: GhRunner) -> None:
-    fields = _ask_gh(gh, ["api", f"repos/{repo}", "--jq", "[.visibility, .owner.type, .owner.login] | @tsv"], repo)
+    jq = "[.visibility, .owner.type, .owner.login, .fork] | @tsv"
+    fields = _ask_gh(gh, ["api", f"repos/{repo}", "--jq", jq], repo)
     parts = fields.strip().split("\t")
-    if len(parts) != 3:
+    if len(parts) != 4 or parts[3] not in ("true", "false"):
         raise RepoSyncError("remote_unverified", f"refused: GitHub's answer about {repo} didn't parse")
-    visibility, owner_type, owner = parts
+    visibility, owner_type, owner, fork = parts
+    if fork == "true":
+        raise RepoSyncError(
+            "remote_fork",
+            f"refused: {repo} is a fork, and the people with access to the repository it was forked from can "
+            "reach it; make a new private repository for the mirror",
+        )
     if visibility != "private":
         raise RepoSyncError(
             "remote_public", f"refused: {repo} is {visibility or 'not private'}, not private; nothing was pushed"

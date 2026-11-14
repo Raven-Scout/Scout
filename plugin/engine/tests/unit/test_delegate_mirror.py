@@ -113,10 +113,15 @@ class GitHubRepo:
     """``gh api`` for one repository: its visibility, owner and collaborators."""
 
     def __init__(
-        self, visibility: str = "private", owner_type: str = "User", collaborators: tuple[str, ...] = ("someone",)
+        self,
+        visibility: str = "private",
+        owner_type: str = "User",
+        collaborators: tuple[str, ...] = ("someone",),
+        fork: str = "false",
     ) -> None:
         self.visibility = visibility
         self.owner_type = owner_type
+        self.fork = fork
         self.collaborators = collaborators
         self.calls: list[list[str]] = []
 
@@ -124,7 +129,8 @@ class GitHubRepo:
         a = list(args)  # type: ignore[call-overload]
         self.calls.append(a)
         if a[-1].endswith("@tsv"):
-            return subprocess.CompletedProcess(["gh"], 0, f"{self.visibility}\t{self.owner_type}\tsomeone\n", "")
+            out = f"{self.visibility}\t{self.owner_type}\tsomeone\t{self.fork}\n"
+            return subprocess.CompletedProcess(["gh"], 0, out, "")
         if any(x.endswith("/collaborators") for x in a):
             return subprocess.CompletedProcess(["gh"], 0, "".join(f"{c}\n" for c in self.collaborators), "")
         raise AssertionError(f"unexpected gh call {a}")
@@ -388,7 +394,7 @@ def test_a_github_remote_must_be_private_personal_and_unshared(remote: str, vaul
     gh = GitHubRepo()
     dm.check_remote(remote, vault=vault, gh=gh)
     assert gh.calls == [
-        ["api", "repos/o/r", "--jq", "[.visibility, .owner.type, .owner.login] | @tsv"],
+        ["api", "repos/o/r", "--jq", "[.visibility, .owner.type, .owner.login, .fork] | @tsv"],
         ["api", "--paginate", "repos/o/r/collaborators", "--jq", ".[].login"],
     ]
     for repo, code in (
@@ -396,11 +402,12 @@ def test_a_github_remote_must_be_private_personal_and_unshared(remote: str, vaul
         (GitHubRepo(visibility="internal"), "remote_public"),
         (GitHubRepo(owner_type="Organization"), "remote_org_owned"),
         (GitHubRepo(collaborators=("someone", "teammate")), "remote_shared"),
+        (GitHubRepo(fork="true"), "remote_fork"),
     ):
         with pytest.raises(rs.RepoSyncError) as e:
             dm.check_remote(remote, vault=vault, gh=repo)
         assert e.value.code == code
-    for out, rc in (("", 1), ("garbled\n", 0)):
+    for out, rc in (("", 1), ("garbled\n", 0), ("private\tUser\tsomeone\tmaybe\n", 0)):
         with pytest.raises(rs.RepoSyncError) as e:
             dm.check_remote(
                 remote, vault=vault, gh=lambda _a, o=out, r=rc: subprocess.CompletedProcess(["gh"], r, o, "")
