@@ -8,6 +8,7 @@ Every blob of every mirror commit is read to prove what never reaches it.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 import shutil
@@ -990,6 +991,310 @@ def test_an_unrelated_url_rewrite_is_fine(vault: Path) -> None:
     dm.check_remote("https://github.com/someone/grok-mirror.git", vault=vault, gh=GitHubRepo())
 
 
+# ----- V2b: the repository, the agent's deploy key, the push token ------------------------------
+
+GITHUB = "https://github.com/someone/grok-mirror.git"
+
+
+class FakeGh:
+    """``gh`` for one private repository: records every call, answers like GitHub."""
+
+    def __init__(
+        self,
+        *,
+        read_only: str = "true",
+        create_ok: bool = True,
+        delete_ok: bool = True,
+        delete_404: bool = False,
+        can_list: bool = True,
+    ) -> None:
+        self.calls: list[list[str]] = []
+        self.keys: dict[int, str] = {}
+        self.read_only = read_only
+        self.create_ok = create_ok
+        self.delete_ok = delete_ok
+        self.delete_404 = delete_404  # DELETE answers 404 without deleting: the repository isn't visible to this gh
+        self.can_list = can_list
+
+    def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        self.calls.append(a)
+        ok = subprocess.CompletedProcess(["gh"], 0, "", "")
+        if a[:2] == ["repo", "create"]:
+            return ok if self.create_ok else subprocess.CompletedProcess(["gh"], 1, "", "GraphQL: name already exists")
+        if a[:2] == ["api", "-X"] and a[2] == "POST":
+            new = 100 + len(self.keys)
+            self.keys[new] = next(x[4:] for x in a if x.startswith("key="))
+            return subprocess.CompletedProcess(["gh"], 0, f"{new}\t{self.read_only}\n", "")
+        if a[:2] == ["api", "-X"] and a[2] == "DELETE":
+            if not self.delete_ok:
+                return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+            if self.delete_404:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            key_id = int(a[3].rsplit("/", 1)[1])
+            if key_id not in self.keys:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            del self.keys[key_id]
+            return ok
+        if a[:2] == ["api", "--paginate"] and a[2].endswith("/keys"):
+            if not self.can_list:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(["gh"], 0, "".join(f"{k}\n" for k in self.keys), "")
+        if a[:2] == ["api", "user"]:
+            return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
+        if a[-1].endswith("@tsv"):
+            return subprocess.CompletedProcess(["gh"], 0, "private\tUser\tsomeone\tfalse\n", "")
+        if any(x.endswith("/collaborators") for x in a):
+            return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
+        raise AssertionError(f"unexpected gh call {a}")
+
+
+def _fake_keygen(path: Path, comment: str) -> None:
+    path.write_text("PRIVATE-KEY-STAND-IN\n", encoding="utf-8")
+    path.with_name(path.name + ".pub").write_text(f"ssh-ed25519 AAAAstandin {comment}\n", encoding="utf-8")
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    h = tmp_path / "home"
+    h.mkdir()
+    monkeypatch.setenv("HOME", str(h))
+    return h
+
+
+@pytest.fixture
+def github_link(vault: Path, tmp_path: Path, home: Path) -> Path:
+    """A link pushed to a local bare repository, then pointed at a GitHub URL as if it lived there."""
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    links = dm.load_links(vault)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], remote=GITHUB)
+    dm.save_links(vault, links)
+    return vault
+
+
+def test_a_deploy_key_is_added_read_only_and_its_private_half_kept_outside_the_vault(github_link: Path) -> None:
+    gh = FakeGh()
+    result = dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    post = next(c for c in gh.calls if c[:3] == ["api", "-X", "POST"])
+    assert post[3] == "repos/someone/grok-mirror/keys"
+    assert "read_only=true" in post and "title=scout-delegate-grok-personal" in post
+    key = dm.key_path(github_link, "grok-personal")
+    assert key.read_text(encoding="utf-8") == "PRIVATE-KEY-STAND-IN\n"
+    assert key.stat().st_mode & 0o777 == 0o600 and key.parent.stat().st_mode & 0o777 == 0o700
+    assert not str(key).startswith(str(github_link))
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100
+    assert any("git clone --depth 1 git@github.com:someone/grok-mirror.git" in n for n in result.notes)
+    assert all("PRIVATE-KEY" not in n for n in result.notes)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "key_exists"
+
+
+def test_rotate_replaces_the_key_and_revoke_deletes_it(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    assert list(gh.keys) == [101]
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 101
+    dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert gh.keys == {} and not dm.key_path(github_link, "grok-personal").exists()
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id is None
+
+
+def test_a_key_github_records_as_writable_is_deleted_and_refused(github_link: Path) -> None:
+    gh = FakeGh(read_only="false")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "key_not_read_only"
+    assert gh.keys == {} and not dm.key_path(github_link, "grok-personal").exists()
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id is None
+
+
+def test_a_key_needs_a_github_mirror_and_the_owner(vault: Path, tmp_path: Path, home: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(vault, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    assert e.value.code == "key_needs_github"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(vault, "grok-personal", env={"SCOUT_MODE": "briefing"}, gh=FakeGh(), keygen=_fake_keygen)
+    assert e.value.code == "headless_refused"
+
+
+def test_unlink_revokes_the_key_and_keeps_the_link_when_it_cannot(github_link: Path) -> None:
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=FakeGh(delete_ok=False))
+    assert e.value.code == "key_revoke_failed"
+    assert "grok-personal" in dm.load_links(github_link)
+    gh = FakeGh()
+    result = dm.unlink(github_link, "grok-personal", gh=gh)
+    assert ["api", "-X", "DELETE", "repos/someone/grok-mirror/keys/100"] in gh.calls
+    assert "revoked the agent's deploy key" in result.notes
+    assert dm.load_links(github_link) == {} and not dm.key_path(github_link, "grok-personal").exists()
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+def test_the_real_keygen_makes_an_ed25519_pair(tmp_path: Path) -> None:
+    dm._keygen(tmp_path / "k", "scout-delegate-x")
+    assert (tmp_path / "k.pub").read_text(encoding="utf-8").startswith("ssh-ed25519 ")
+    assert (tmp_path / "k.pub").read_text(encoding="utf-8").strip().endswith("scout-delegate-x")
+
+
+def test_make_repo_creates_a_private_repository(home: Path) -> None:
+    gh = FakeGh()
+    assert dm.make_repo("someone/grok-mirror", gh=gh) == GITHUB
+    assert gh.calls == [
+        ["api", "user", "--jq", ".login"],
+        ["repo", "create", "someone/grok-mirror", "--private", "--description", "Scout delegate mirror"],
+    ]
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("acme/grok-mirror", gh=FakeGh())
+    assert e.value.code == "remote_org_owned"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=FakeGh(create_ok=False))
+    assert e.value.code == "repo_create_failed" and "already exists" in e.value.message
+    for bad in ("grok-mirror", "a/b/c", "a/b c", "--private/x", "o/--public", "o/.x"):
+        with pytest.raises(rs.RepoSyncError):
+            dm.make_repo(bad, gh=gh)
+
+
+def test_link_creates_the_repository_only_after_its_checks_pass(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[str] = []
+    bare = _bare(tmp_path, "grok")
+
+    def fake_make(repo: str, *, gh: object) -> str:
+        made.append(repo)
+        return str(bare)
+
+    monkeypatch.setattr(dm, "make_repo", fake_make)
+    for kw in ({"account_unshared": False}, {"env": {"SCOUT_MODE": "briefing"}}):
+        with pytest.raises(rs.RepoSyncError):
+            dm.link(vault, "grok-personal", "", **{"account_unshared": True, **kw, "create_repo": "o/r"})  # type: ignore[arg-type]
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "unlisted", "", account_unshared=True, create_repo="o/r")
+    assert e.value.code == "delegate_not_listed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "grok-personal", str(bare), account_unshared=True, create_repo="o/r")
+    assert e.value.code == "bad_arguments"
+    assert made == []
+    result = dm.link(vault, "grok-personal", "", account_unshared=True, create_repo="o/r")
+    assert made == ["o/r"] and result.pushed
+    assert dm.load_links(vault)["grok-personal"].remote == str(bare)
+
+
+def test_the_push_token_goes_to_git_in_its_environment_for_github_only(vault: Path, home: Path) -> None:
+    assert dm.auth_env(vault, GITHUB) == {}
+    dm.save_push_token(vault, "github_pat_STANDIN\n")
+    p = dm.push_token_path(vault)
+    assert p.stat().st_mode & 0o777 == 0o600 and str(p).startswith(str(home))
+    env = dm.auth_env(vault, GITHUB)
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert base64.b64decode(env["GIT_CONFIG_VALUE_0"].split()[-1]).decode() == "x-access-token:github_pat_STANDIN"
+    assert dm.auth_env(vault, "/some/local/path.git") == {}
+    assert dm.auth_env(vault, "git@github.com:o/r.git") == {}
+    p.chmod(0o644)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.auth_env(vault, GITHUB)
+    assert e.value.code == "token_insecure"
+    with pytest.raises(rs.RepoSyncError):
+        dm.save_push_token(vault, "  ")
+
+
+def test_link_to_github_points_at_the_key_command(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "github_repo", lambda _r: "someone/grok-mirror")
+    monkeypatch.setattr(dm, "check_remote", lambda *_a, **_k: None)
+    result = dm.link(vault, "grok-personal", str(_bare(tmp_path, "grok")), account_unshared=True, gh=FakeGh())
+    assert any("scoutctl delegate key grok-personal" in n for n in result.notes)
+
+
+def test_not_linked_and_no_key_refusals(vault: Path, home: Path) -> None:
+    for call in (
+        lambda: dm.sync(vault, "duet"),
+        lambda: dm.unlink(vault, "duet"),
+        lambda: dm.deploy_key(vault, "duet", gh=FakeGh(), keygen=_fake_keygen),
+    ):
+        with pytest.raises(rs.RepoSyncError) as e:
+            call()
+        assert e.value.code == "not_linked"
+
+
+def test_key_failures(github_link: Path, tmp_path: Path) -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=FakeGh())
+    assert e.value.code == "no_key"
+
+    def failing(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if "POST" in a:
+            return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 422: key is already in use")
+        return FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=failing, keygen=_fake_keygen)
+    assert e.value.code == "key_add_failed" and "already in use" in e.value.message
+
+    def garbled(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(["gh"], 0, "{}\n", "") if "POST" in a else FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=garbled, keygen=_fake_keygen)
+    assert e.value.code == "key_add_failed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._keygen(tmp_path / "no-such-dir" / "k", "x")
+    assert e.value.code == "keygen_failed"
+
+
+def test_the_cli_key_command_and_an_unreadable_state(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, bool, bool]] = []
+
+    def fake_key(_vault: Path, delegate: str, *, rotate: bool, revoke: bool) -> dm.Result:
+        calls.append((delegate, rotate, revoke))
+        return dm.Result(delegate=delegate, action="key", notes=["added a read-only deploy key on o/r"])
+
+    monkeypatch.setattr(dm, "deploy_key", fake_key)
+    r = runner.invoke(app, ["delegate", "key", "duet", "--rotate"])
+    assert r.exit_code == 0 and "added a read-only deploy key" in r.stdout and calls == [("duet", True, False)]
+    dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    dm.state_path(vault).write_text("[]", encoding="utf-8")
+    for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
+        r = runner.invoke(app, argv)
+        assert r.exit_code == 2 and "can't be read" in r.output
+
+
+def test_the_cli_key_and_push_token_commands(vault: Path, tmp_path: Path, home: Path) -> None:
+    r = runner.invoke(app, ["delegate", "key", "duet", "--rotate", "--revoke"])
+    assert r.exit_code == 2
+    r = runner.invoke(app, ["delegate", "key", "duet"])
+    assert r.exit_code == 2 and "has no mirror" in r.output
+    token = tmp_path / "token"
+    token.write_text("github_pat_STANDIN\n", encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(token)])
+    assert r.exit_code == 0 and str(dm.push_token_path(vault)) in r.stdout
+    r = runner.invoke(app, ["delegate", "push-token"], input="github_pat_OTHER\n")
+    assert r.exit_code == 0 and "OTHER" in dm.push_token_path(vault).read_text(encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(tmp_path / "missing")])
+    assert r.exit_code == 2
+    blank = tmp_path / "blank"
+    blank.write_text("  \n", encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(blank)])
+    assert r.exit_code == 2 and "no token" in r.output
+
+
+def test_create_repo_link_checks_the_new_repository_too(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = "https://github.com/someone/grok-mirror.git"
+    pushed: list[str] = []
+    monkeypatch.setattr(dm, "remote_head", lambda *_a: None)
+    monkeypatch.setattr(dm, "push", lambda *a: pushed.append(a[1]))
+    gh = FakeGh()
+    result = dm.link(vault, "grok-personal", "", account_unshared=True, create_repo="someone/grok-mirror", gh=gh)
+    assert result.pushed and pushed == [remote]
+    kinds = [c[0] if c[0] == "repo" else c[1] for c in gh.calls]
+    assert kinds[:3] == ["user", "repo", "repos/someone/grok-mirror"]
+
+
 # ----- second review of #632 (coordinator, 2026-11-14) --------------------------------------------
 
 
@@ -1172,3 +1477,193 @@ def test_the_manifest_must_be_the_exact_bytes_a_sync_writes(vault: Path) -> None
     assert dup != good and json.loads(dup)["delegate"] == "grok-personal"
     assert not dm._manifest_ok(dup, "grok-personal", paths)
     assert not dm._manifest_ok(json.dumps(json.loads(good)).encode(), "grok-personal", paths)  # not canonical
+
+
+# ----- review of #633 (coordinator, 2026-11-14) ----------------------------------------------------
+
+
+def test_a_404_on_delete_counts_as_gone_only_when_the_key_list_shows_it_gone(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    key = dm.key_path(github_link, "grok-personal")
+    for blind in (FakeGh(delete_404=True), FakeGh(delete_404=True, can_list=False)):
+        blind.keys = dict(gh.keys)  # the key is still live on GitHub
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.unlink(github_link, "grok-personal", gh=blind)
+        assert e.value.code == "key_revoke_failed"
+        assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100 and key.exists()
+    assert "gh auth status" in e.value.message
+    gone = FakeGh(delete_404=True)  # 404, and the list confirms it: deleted in the settings already
+    result = dm.unlink(github_link, "grok-personal", gh=gone)
+    assert "revoked the agent's deploy key" in result.notes and dm.load_links(github_link) == {}
+
+
+def test_an_old_key_a_rotation_couldnt_delete_stays_on_record_until_it_goes(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.delete_ok = False
+    result = dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    assert any(n.startswith("warning: couldn't delete deploy key 100") and "stays on record" in n for n in result.notes)
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (101, [100])
+    out = runner.invoke(app, ["delegate", "status"], env={"SCOUT_DATA_DIR": str(github_link)})
+    assert "1 old key(s) still live" in out.output
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=gh)
+    assert e.value.code == "key_revoke_failed" and dm.load_links(github_link)["grok-personal"].deploy_key_id == 101
+
+    def only_old_fails(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if a[:3] == ["api", "-X", "DELETE"] and a[3].endswith("/100"):
+            return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+        gh.delete_ok = True
+        return gh(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:  # the current key goes; the old one is still live
+        dm.unlink(github_link, "grok-personal", gh=only_old_fails)
+    assert e.value.code == "key_revoke_failed" and "100" in e.value.message
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (None, [100])
+    result = dm.unlink(github_link, "grok-personal", gh=gh)
+    assert "deleted old deploy key 100 on someone/grok-mirror" in result.notes
+    assert gh.keys == {} and dm.load_links(github_link) == {}
+
+
+def test_key_and_sync_retry_an_old_key(github_link: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.delete_ok = False
+    dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    with pytest.raises(rs.RepoSyncError):
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    gh.delete_ok = True
+    result = dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert "deleted old deploy key 100 on someone/grok-mirror" in result.notes
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (None, [])
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert e.value.code == "no_key"
+    links = dm.load_links(github_link)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], stale_key_ids=[7])
+    dm.save_links(github_link, links)
+    gh.keys[7] = "old"
+    gh.delete_ok = False
+    result = dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)  # only an old key: retried, no raise
+    assert any(n.startswith("warning:") for n in result.notes)
+    monkeypatch.setattr(dm, "_build_and_push", lambda _v, link, **_k: (dm.Result("grok-personal", "sync"), link))
+    assert any(n.startswith("warning:") for n in dm.sync(github_link, "grok-personal", gh=gh).notes)
+    assert dm.load_links(github_link)["grok-personal"].stale_key_ids == [7]
+    gh.delete_ok = True
+    assert "deleted old deploy key 7 on someone/grok-mirror" in dm.sync(github_link, "grok-personal", gh=gh).notes
+    assert dm.load_links(github_link)["grok-personal"].stale_key_ids == []
+    assert dm.sync(github_link, "grok-personal", gh=gh).notes == []
+
+
+def test_relinking_to_another_remote_needs_the_key_revoked_first(github_link: Path, tmp_path: Path) -> None:
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    for kw in ({"remote": str(_bare(tmp_path, "other"))}, {"remote": "", "create_repo": "someone/other"}):
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.link(github_link, "grok-personal", account_unshared=True, gh=FakeGh(), **kw)  # type: ignore[arg-type]
+        assert e.value.code == "key_on_record" and "--revoke" in e.value.message
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100
+
+
+def test_remote_git_forces_certificate_checks_and_carries_the_token(
+    vault: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dm.save_push_token(vault, "github_pat_STANDIN")
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "http.sslVerify")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    env = dm.remote_env(vault, GITHUB)
+    assert "GIT_SSL_NO_VERIFY" not in env
+    pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert pairs["http.sslVerify"] == "true" and pairs[f"http.{GITHUB}.sslVerify"] == "true"
+    assert (
+        base64.b64decode(pairs["http.https://github.com/.extraheader"].split()[-1])
+        == b"x-access-token:github_pat_STANDIN"
+    )
+    assert set(dm.remote_env(vault, "/some/local.git")) >= {"GIT_CONFIG_COUNT"}
+    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "1"  # no token off GitHub
+
+
+def test_push_passes_the_token_in_the_environment_not_the_arguments(
+    vault: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dm.save_push_token(vault, "github_pat_STANDIN")
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(args: list[str], **kw: object) -> subprocess.CompletedProcess[bytes]:
+        seen.append((list(args), dict(kw["env"])))  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(dm.subprocess, "run", fake_run)
+    dm.push(vault, GITHUB, "abc123", None)
+    dm.remote_head(vault, GITHUB)
+    assert len(seen) == 2
+    for args, env in seen:
+        assert not any("STANDIN" in a or "extraheader" in a for a in args)
+        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "3"
+    monkeypatch.setattr(dm.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, b"", b"boom"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.remote_head(vault, GITHUB)
+    assert e.value.code == "git_failed"
+
+
+def test_a_missing_gh_is_a_refusal_for_unlink_and_the_key(github_link: Path) -> None:
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+
+    def missing(_args: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=missing)
+    assert e.value.code == "remote_unverified"
+
+    def no_post(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if "POST" in a:
+            raise FileNotFoundError("gh")
+        return FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", rotate=True, gh=no_post, keygen=_fake_keygen)
+    assert e.value.code == "remote_unverified"
+
+
+def test_a_failed_create_says_how_to_link_the_repository_it_made() -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=FakeGh(create_ok=False))
+    assert e.value.code == "repo_create_failed"
+    assert "--remote https://github.com/someone/grok-mirror.git" in e.value.message
+
+    def forbidden(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 403") if a[:2] == ["repo", "create"] else FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=forbidden)
+    assert e.value.message.endswith("HTTP 403")
+
+
+def test_the_key_file_is_recorded_and_a_known_hosts_pin_written(github_link: Path, tmp_path: Path) -> None:
+    result = dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    key = dm.key_path(github_link, "grok-personal")
+    link = dm.load_links(github_link)["grok-personal"]
+    assert link.key_file == str(key)
+    known = key.with_name(key.name + ".known_hosts")
+    assert known.read_text(encoding="utf-8") == dm.GITHUB_KNOWN_HOSTS + "\n"
+    assert dm.GITHUB_KNOWN_HOSTS.startswith("github.com ssh-ed25519 ")
+    assert any("StrictHostKeyChecking=yes" in n and "UserKnownHostsFile" in n for n in result.notes)
+    # the vault moved: its path no longer gives the key file, but the link still names it
+    moved = tmp_path / "elsewhere-key"
+    for suffix in ("", ".pub", ".known_hosts"):
+        Path(str(key) + suffix).rename(str(moved) + suffix)
+    links = dm.load_links(github_link)
+    links["grok-personal"] = dataclasses.replace(link, key_file=str(moved))
+    dm.save_links(github_link, links)
+    dm.unlink(github_link, "grok-personal", gh=FakeGh())
+    assert not any(Path(str(moved) + suffix).exists() for suffix in ("", ".pub", ".known_hosts"))
