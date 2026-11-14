@@ -4506,6 +4506,8 @@ def _register_delegate() -> None:
             typer.echo("no delegate mirrors on this computer")
         for k, v in sorted(links.items()):
             key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
+            if v.stale_key_ids:
+                key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
             typer.echo(f"{k}: {v.remote}; {key}; {synced}")
 
