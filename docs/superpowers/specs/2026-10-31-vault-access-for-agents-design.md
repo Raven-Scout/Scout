@@ -242,6 +242,19 @@ or top-level key, so the YAML stays whole. A file that would no longer parse, or
 whose label would change, is left out. A non-markdown text file other than
 `.txt`/`.csv`/`.tsv`/`.jsonl` that hits is left out whole.
 
+The review of #632 added these rules:
+- **Content decides, not the extension.** Any file that decodes as UTF-8 is
+  scanned as text. A file that doesn't is left out, unless it is a known binary
+  type, which is kept on its label alone (Jordan to accept).
+- **Paths are matched as well as content.** A hidden file's path counts as
+  naming it. In a folder, the path matches as written. At the vault root, only
+  the full file name (`health.md`) counts, so an ordinary-word note name blocks
+  nothing.
+- **Accents are optional** in the shared matcher, so `Rene` and `René` match
+  each other.
+- **The generated policy document and manifest** are not scanned for names. The
+  pre-push check rebuilds them from the tree itself and compares.
+
 The redacted file is a new blob in the mirror commit only; the vault file is
 untouched, so the laptop never replays a redaction back (§7.3).
 
