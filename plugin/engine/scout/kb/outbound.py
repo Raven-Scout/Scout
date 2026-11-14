@@ -26,8 +26,12 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
   whatever the length of its target, so ``[[sam]]`` hits although ``sam`` is
   too short to be a term.
 
-**How terms match.** Text and terms are compared under full Unicode case
-folding (``STRASSE`` matches ``Straße``). A term's boundary is anything but a
+**How terms match.** Text and terms are compared NFKC-normalised under full
+Unicode case folding (``STRASSE`` matches ``Straße``; a fullwidth or
+combining-accent spelling matches the plain one). Accents are optional on both
+sides: each term also matches without its accents, and accented text is matched
+once more with them stripped, so ``Rene`` and ``René`` match each other however
+either is written. A term's boundary is anything but a
 letter or digit, so ``_Sammy_`` (Slack italics), ``sammy_notes``, ``Sammy.``
 and ``(Sammy)`` all match and ``Sammyson`` doesn't. The parts of a term match
 across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
@@ -162,13 +166,20 @@ def _norm(text: str) -> str:
     return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
 
 
+def _unaccent(text: str) -> str:
+    """``text`` with its combining marks dropped: ``café`` becomes ``cafe``. Characters with none stay."""
+    decomposed = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize("NFC", "".join(c for c in decomposed if not unicodedata.combining(c)))
+
+
 def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
-    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring)."""
+    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring), each with and without accents."""
     parts: set[str] = set()
     for t in terms:
-        words = [w for w in _SPLIT.split(_norm(t)) if w]
-        if words:
-            parts.add(_SEP.join(re.escape(w) for w in words))
+        for form in {_norm(t), _unaccent(_norm(t))}:
+            words = [w for w in _SPLIT.split(form) if w]
+            if words:
+                parts.add(_SEP.join(re.escape(w) for w in words))
     if not parts:
         return None
     return re.compile(_BEFORE + "(?:" + "|".join(sorted(parts, key=len, reverse=True)) + ")" + _AFTER)
@@ -386,49 +397,86 @@ def _link_target(inner: str) -> str:
     return _norm(_strip_md(target))
 
 
+_ASCII_RUN = re.compile(r"[\x00-\x7f]+")
+
+
 def _joins(ch: str) -> bool:
     """Whether ``ch`` belongs with the character before it: a combining mark, or a Hangul vowel or final jamo."""
     return bool(unicodedata.combining(ch)) or "\u1160" <= ch <= "\u11ff"
 
 
-def _fold(text: str) -> tuple[str, list[int] | None]:
-    """``text`` NFKC case-folded (:func:`_norm`), and for each folded character the
-    index of the character it came from (None when it is ASCII, where folding keeps
-    every position). Normalised one base character with its marks at a time, so a
-    name spelled with combining accents (NFD) matches its precomposed term."""
+def _folds(text: str) -> tuple[tuple[str, list[int] | None], tuple[str, list[int] | None]]:
+    """``text`` NFKC case-folded (:func:`_norm`), then the same without accents
+    (:func:`_unaccent`), each with, for every folded character, the index of the
+    character it came from (None when ``text`` is ASCII, where folding keeps every
+    position). Normalised one base character with its marks at a time, so a name
+    spelled with combining accents (NFD) matches its precomposed term."""
     if text.isascii():
-        return text.lower(), None
+        lower = text.lower()
+        return (lower, None), (lower, None)
     out: list[str] = []
+    bare: list[str] = []
     origin: list[int] = []
+    bare_origin: list[int] = []
     i, n = 0, len(text)
     while i < n:
+        run = _ASCII_RUN.match(text, i)
+        if run is not None:
+            j = run.end()
+            if j < n and _joins(text[j]):
+                j -= 1  # the run's last character folds with the marks after it
+            if j > i:
+                part, where = text[i:j].lower(), range(i, j)
+                out.append(part)
+                bare.append(part)
+                origin.extend(where)
+                bare_origin.extend(where)
+                i = j
+                continue
         j = i + 1
         while j < n and _joins(text[j]):
             j += 1
         folded = _norm(text[i:j])
+        stripped = folded if folded.isascii() else _unaccent(folded)
         out.append(folded)
+        bare.append(stripped)
         origin.extend([i] * len(folded))
+        bare_origin.extend([i] * len(stripped))
         i = j
-    return "".join(out), origin
+    return ("".join(out), origin), ("".join(bare), bare_origin)
+
+
+def _fold(text: str) -> tuple[str, list[int] | None]:
+    """``text`` NFKC case-folded, with each folded character's origin (:func:`_folds`)."""
+    return _folds(text)[0]
+
+
+def _line(starts: list[int], origin: list[int] | None, pos: int) -> int:
+    """The 0-based line of ``text`` that folded position ``pos`` came from (``starts``: each line's offset)."""
+    return bisect.bisect_right(starts, origin[pos] if origin is not None else pos) - 1
 
 
 def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     """``(note path, first line, last line)`` (0-based lines of ``text``) of every term and link hit."""
-    folded, origin = _fold(text)
+    (folded, origin), bare = _folds(text)
     starts = [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
-
-    def line(pos: int) -> int:
-        return bisect.bisect_right(starts, origin[pos] if origin is not None else pos) - 1
-
     found: list[tuple[str, int, int]] = []
-    targets = [(line(m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
+    targets = [(_line(starts, origin, m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
     for n, target in targets:
         if target:
             found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
-    if terms.any_term is not None and terms.any_term.search(folded):
+    forms = [(folded, origin)]
+    if bare[0] != folded:  # accented text is matched once more without its accents
+        forms.append(bare)
+    for form, where in forms:
+        if terms.any_term is None or not terms.any_term.search(form):
+            continue
         for note in terms.notes:
             if note.pattern is not None:
-                found += [(note.path, line(m.start()), line(m.end() - 1)) for m in note.pattern.finditer(folded)]
+                found += [
+                    (note.path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1))
+                    for m in note.pattern.finditer(form)
+                ]
     if terms.excerpts is not None:
         found += terms.excerpts.hits(text)
     return found

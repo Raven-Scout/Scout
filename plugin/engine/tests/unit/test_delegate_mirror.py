@@ -981,3 +981,124 @@ def test_a_file_the_clone_would_label_differently_is_left_out(vault: Path, monke
 def test_an_unrelated_url_rewrite_is_fine(vault: Path) -> None:
     git(vault, "config", "url.https://example.org/.insteadOf", "https://elsewhere.example/")
     dm.check_remote("https://github.com/someone/grok-mirror.git", vault=vault, gh=GitHubRepo())
+
+
+# ----- second review of #632 (coordinator, 2026-11-14) --------------------------------------------
+
+
+def test_a_private_root_note_with_a_generic_name_neither_blocks_nor_over_redacts(vault: Path, tmp_path: Path) -> None:
+    private = "---\nvisibility: private\n---\n\nquiet\n"
+    _commit_files(
+        vault,
+        {
+            "Personal.md": private.encode(),
+            "labels.md": private.encode(),
+            "health.md": private.encode(),
+            "notes/routine.md": b"# Routine\n\nA health check.\nMy personal best.\nSee health.md for more.\n",
+        },
+        "generic root names",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)  # neither config_names_hidden nor delegate_mirror_unsafe
+    assert not {"Personal.md", "labels.md", "health.md"} & _head_files(bare)
+    # the bare stems are ordinary words; a root file's full name still counts as naming it
+    assert _show(bare, "notes/routine.md") == "# Routine\n\nA health check.\nMy personal best.\n"
+
+
+def test_a_folder_path_is_still_a_term_as_written() -> None:
+    scan = dm.Scanner(terms_of([]), ["clients/acme-renewal.md", "health.md"])
+    assert scan.lines("see clients/acme-renewal for it\nhealth\nhealth.md\n") == [1, 3]
+
+
+def test_a_case_variant_of_the_vault_path_is_refused(vault: Path) -> None:
+    variant = vault.parent / vault.name.swapcase()
+    if not variant.exists():
+        pytest.skip("this volume is case-sensitive")
+    inner = vault / "mirror2.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(inner)], check=True)
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "grok-personal", variant / "mirror2.git")
+    assert e.value.code == "remote_in_vault"
+
+
+def test_overlap_is_decided_by_file_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    real = dm._inode
+    assert real(tmp_path / "missing") is None
+    ids = {"/v/Vault": (1, 7), "/v/vault": (1, 7), "/v": (1, 2), "/v/Up": (1, 2)}
+    monkeypatch.setattr(dm, "_inode", lambda p: ids.get(str(p)))
+    assert dm._overlaps(Path("/v/Vault/m.git"), Path("/v/vault"))  # inside, by another spelling
+    assert dm._overlaps(Path("/v/Up"), Path("/v/vault"))  # a folder above, by another spelling
+    assert not dm._overlaps(Path("/v/other/m.git"), Path("/v/vault"))
+
+
+def test_text_with_a_binary_extension_is_scanned(vault: Path, tmp_path: Path) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/summary.pdf": b"Notes on Sammy, see [[sam]]\n",
+            "attachments/plain.pdf": b"nothing private\n",
+            "attachments/real.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00Sammy\n",
+        },
+        "pdfs",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "attachments/summary.pdf" not in files
+    assert {"attachments/plain.pdf", "attachments/real.pdf"} <= files  # a real binary: kept on its label
+    commit, head = _tampered(vault, "grok-personal", {"attachments/plain.pdf": b"Sammy [[sam]]\n"})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_a_symlink_whose_folder_empties_at_the_last_check_goes_too(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit_files(vault, {"solo/only.md": b"# Only\n\nfine\n"}, "solo")
+    (vault / "solo-link").symlink_to("solo")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "link")
+    real = dm._same_label
+    monkeypatch.setattr(dm, "_same_label", lambda a, b: not a.path.startswith("solo/") and real(a, b))
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)  # check_tree passes: no dangling link reached it
+    assert not {"solo/only.md", "solo-link"} & _head_files(bare)
+
+
+def test_check_tree_refuses_generated_files_the_tree_does_not_imply(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    the_plan, head = _planned(vault)
+    real_doc, real_manifest = dm.Plan.policy_document, dm.Plan.manifest
+    for attr, real, fake in (
+        (
+            "policy_document",
+            real_doc,
+            lambda self: real_doc(self).replace(b'"labels"', b'"extra": "Sammy",\n  "labels"', 1),
+        ),
+        ("manifest", real_manifest, lambda self: real_manifest(self)[:-3] + b',\n  "note": "Sammy"\n}\n'),
+    ):
+        monkeypatch.setattr(dm.Plan, attr, fake)
+        commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+        monkeypatch.setattr(dm.Plan, attr, real)
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", attr
+
+
+def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None:
+    the_plan, _ = _planned(vault)
+    good = json.loads(the_plan.manifest())
+    paths = {f.path for f in the_plan.files}
+    assert dm._manifest_ok(json.dumps(good).encode(), "grok-personal", paths)
+    for bad in (
+        b"not json",
+        b"[]",
+        json.dumps({**good, "delegate": "duet"}).encode(),
+        json.dumps({**good, "files": -1}).encode(),
+        json.dumps({**good, "files": True}).encode(),
+        json.dumps({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}).encode(),
+        json.dumps({**good, "redacted_lines": ["x"]}).encode(),
+    ):
+        assert not dm._manifest_ok(bad, "grok-personal", paths), bad
