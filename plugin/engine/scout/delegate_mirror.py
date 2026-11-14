@@ -384,7 +384,9 @@ def _check_github(repo: str, gh: GhRunner) -> None:
 
 
 def _check_rewrites(vault: Path, remote: str) -> None:
-    out = git(vault, "config", "--get-regexp", r"^url\..*\.(push)?insteadof$", check=False).stdout
+    """Refuse a remote git would rewrite. Read under :func:`remote_env`, the environment the push runs in,
+    so the config checked (``GIT_CONFIG_GLOBAL``, ``GIT_CONFIG_SYSTEM`` and all) is the config pushed with."""
+    out = _remote_git(vault, remote, "config", "--get-regexp", r"^url\..*\.(push)?insteadof$", check=False).stdout
     for line in out.splitlines():
         _key, _, prefix = line.partition(" ")
         if prefix and remote.startswith(prefix):
@@ -393,7 +395,7 @@ def _check_rewrites(vault: Path, remote: str) -> None:
                 f"refused: git rewrites {remote} ({_key}); drop that rewrite so the repository checked is the one "
                 "pushed to",
             )
-    url = git(vault, "ls-remote", "--get-url", remote, check=False).stdout.strip()
+    url = _remote_git(vault, remote, "ls-remote", "--get-url", remote, check=False).stdout.strip()
     if url and url != remote:  # pragma: no cover - a rewrite is caught above; this is the backstop
         raise RepoSyncError("remote_rewritten", f"refused: git would push {remote} somewhere else ({url})")
 
@@ -466,14 +468,20 @@ def _push_token(vault: Path) -> str | None:
     return p.read_text(encoding="utf-8").strip() or None
 
 
+_COMMAND_LINE_CONFIG = re.compile(r"^GIT_CONFIG_(COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)$")
+
+
 def remote_env(vault: Path, remote: str) -> dict[str, str]:
     """The environment for git talking to a mirror remote: certificate checks forced on, the push token added.
 
     ``GIT_SSL_NO_VERIFY`` is dropped and ``http.sslVerify`` set true, for every URL and for this remote's own
     (the most specific match, so a user's ``http.<url>.sslVerify false`` can't win), so the token never goes
-    out over a connection that isn't verified. Inherited ``GIT_CONFIG_*`` pairs are replaced by these.
+    out over a connection that isn't verified. Inherited command-line config (``GIT_CONFIG_COUNT`` and its
+    ``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>`` pairs, ``GIT_CONFIG_PARAMETERS``) is replaced by these;
+    which config files git reads (``GIT_CONFIG_GLOBAL``, ``GIT_CONFIG_SYSTEM``, ``GIT_CONFIG_NOSYSTEM``) is
+    kept, and :func:`_check_rewrites` reads them in this same environment.
     """
-    env = {k: v for k, v in os.environ.items() if k != "GIT_SSL_NO_VERIFY" and not k.startswith("GIT_CONFIG_")}
+    env = {k: v for k, v in os.environ.items() if k != "GIT_SSL_NO_VERIFY" and not _COMMAND_LINE_CONFIG.match(k)}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env.pop("GIT_INDEX_FILE", None)
     pairs = [("http.sslVerify", "true")]
@@ -609,7 +617,8 @@ def _path_term(rel: str) -> str | None:
     In a folder, the path as written (``clients/acme-renewal``). At the vault root, the full file name
     (``health.md``), never a bare word: a root note's name is matched by its own rules (length, ordinary
     words), and a root file with no extension (``knowledge_base``, often a symlink) only by an exact link.
-    Hidden symlinks make no path term at all (:class:`Scanner`): the files behind them do.
+    Hidden symlinks make no path term at all (:class:`Scanner`): the files behind them do, and the symlink's
+    own name is caught only by an exact link to it.
     """
     if "/" in rel:
         return _stem(rel)
@@ -1477,6 +1486,9 @@ def make_repo(repo: str, *, gh: GhRunner = _gh) -> str:
 
 Keygen = Callable[[Path, str], None]
 # GitHub's published SSH host key (https://api.github.com/meta "ssh_keys"; docs: "GitHub's SSH key fingerprints").
+# If GitHub ever rotates it, agents' clones fail closed (StrictHostKeyChecking=yes). To recover: after an engine
+# release with the new key, `scoutctl delegate key <id> --rotate` writes a new pin; or replace the line in the
+# agent's `.known_hosts` file with `github.com <key>` from `gh api meta --jq '.ssh_keys[]'`.
 GITHUB_KNOWN_HOSTS = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 

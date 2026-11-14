@@ -1667,3 +1667,30 @@ def test_the_key_file_is_recorded_and_a_known_hosts_pin_written(github_link: Pat
     dm.save_links(github_link, links)
     dm.unlink(github_link, "grok-personal", gh=FakeGh())
     assert not any(Path(str(moved) + suffix).exists() for suffix in ("", ".pub", ".known_hosts"))
+
+
+def test_the_rewrite_check_reads_the_config_the_push_uses(
+    vault: Path, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewrite hidden in the config git reads only under one environment can't pass the check (#633 review)."""
+    (home / ".gitconfig").write_text('[url "https://evil.example/"]\n\tinsteadOf = https://github.com/\n')
+    clean = tmp_path / "clean.gitconfig"
+    clean.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(clean))
+    env = dm.remote_env(vault, GITHUB)
+    assert env["GIT_CONFIG_GLOBAL"] == str(clean) and env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+    def push_url() -> str:
+        return dm._remote_git(vault, GITHUB, "ls-remote", "--get-url", GITHUB).stdout.strip()
+
+    dm._check_rewrites(vault, GITHUB)  # the config git will push with has no rewrite...
+    assert push_url() == GITHUB  # ...and the push goes where the check looked
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._check_rewrites(vault, GITHUB)
+    assert e.value.code == "remote_rewritten"
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(clean))
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'url.https://evil.example/.insteadof'='https://github.com/'")
+    assert "GIT_CONFIG_PARAMETERS" not in dm.remote_env(vault, GITHUB)
+    dm._check_rewrites(vault, GITHUB)  # dropped for the check and the push alike
+    assert push_url() == GITHUB
