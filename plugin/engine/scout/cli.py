@@ -121,11 +121,11 @@ def cli_gates_probe(
     binary = Path(resolve_claude_bin(claude_bin))
     root = Path(plugin_root) if plugin_root else gate_probe.default_plugin_root()
     flags = (*gate_probe.PROBE_FLAGS, *extra_flag)
+    data_dir = paths.data_dir(vault)  # its .claude/settings*.json go into the probe, as they would into a run
     if cached:
-        data_dir = paths.data_dir(vault)
         result = gate_probe.cached_probe(data_dir, binary, plugin_root=root, flags=flags)
     else:
-        result = gate_probe.probe(binary, plugin_root=root, flags=flags)
+        result = gate_probe.probe(binary, plugin_root=root, flags=flags, vault=data_dir)
     if as_json:
         typer.echo(json.dumps(result.to_json(), indent=2))
     else:

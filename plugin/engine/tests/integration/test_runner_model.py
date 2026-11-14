@@ -140,7 +140,11 @@ def test_runner_falls_back_to_opus_when_resolve_fails(tmp_path: Path, name: str,
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)
-def test_runner_without_an_engine_runs_on_opus(tmp_path: Path, name: str, slot_key: str) -> None:
+def test_runner_without_an_engine_never_launches_claude(tmp_path: Path, name: str, slot_key: str) -> None:
+    """No engine, no gate probe: the run is skipped rather than run ungated (spec 2026-11-13 §3.5, review of #635).
+
+    The opus fallback for a resolve that fails is test_runner_falls_back_to_opus_when_resolve_fails.
+    """
     scout_dir = tmp_path / "Scout"
     scout_dir.mkdir()
     script = _render(TEMPLATES / name, scout_dir, "/nonexistent/scoutctl")
@@ -149,7 +153,8 @@ def test_runner_without_an_engine_runs_on_opus(tmp_path: Path, name: str, slot_k
     result = _run(script, slot_key)
 
     assert result.returncode == 0, result.stderr + _log(scout_dir)
-    assert _model_arg(argv_file) == ["--model", "opus"]
+    assert not argv_file.exists()
+    assert "scoutctl is missing" in _log(scout_dir)
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)

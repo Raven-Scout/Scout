@@ -41,6 +41,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .runner_env import SECRETS
 
@@ -186,7 +187,26 @@ def _kill_group(pid: int) -> None:
         pass
 
 
-_LOOPBACK_PREFIXES = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _is_gate_probe(env: dict[str, str]) -> bool:
+    """The runners' gate probe: plain http to a loopback host (no userinfo), its dummy key and its mode."""
+    from scout.agent_runtimes.gate_probe import DUMMY_KEY, PROBE_MODE
+
+    try:
+        url = urlsplit(env.get("ANTHROPIC_BASE_URL", ""))
+        host = url.hostname
+    except ValueError:
+        return False
+    return (
+        url.scheme == "http"
+        and host in _LOOPBACK_HOSTS
+        and url.username is None
+        and url.password is None
+        and env.get("ANTHROPIC_API_KEY") == DUMMY_KEY
+        and env.get("SCOUT_MODE") == PROBE_MODE
+    )
 
 
 def _passthrough(runner_argv: list[str], env: dict[str, str]) -> int | None:
@@ -201,8 +221,7 @@ def _passthrough(runner_argv: list[str], env: dict[str, str]) -> int | None:
     if "--name" in runner_argv:
         return None
     real = env.get("SCOUT_EVAL_REAL_CLAUDE")
-    loopback = env.get("ANTHROPIC_BASE_URL", "").startswith(_LOOPBACK_PREFIXES)
-    if not real or not (runner_argv == ["--version"] or loopback):
+    if not real or not (runner_argv == ["--version"] or _is_gate_probe(env)):
         print("claude-shim: not an eval session (no --name) and not the gate probe; refusing", file=sys.stderr)
         return EXIT_ENV
     os.execvpe(real, [real, *runner_argv], env)

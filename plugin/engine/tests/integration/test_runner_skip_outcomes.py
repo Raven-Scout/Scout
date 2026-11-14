@@ -202,6 +202,24 @@ def test_a_failed_gate_probe_records_skipped_gates_and_never_launches(vault: Pat
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize("broken", ["missing", "not-executable"])
+def test_a_missing_scoutctl_skips_the_run_instead_of_running_ungated(vault: Path, runner: str, broken: str) -> None:
+    """The hooks run the plugin's scoutctl, not this one, so a broken one here proves nothing (review of #635)."""
+    stub = vault / "bin" / "scoutctl"
+    if broken == "missing":
+        stub.unlink()
+    else:
+        stub.chmod(0o644)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["slot"], row["outcome"]) == (SLOT, "skipped_gates")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
 def test_the_gate_probe_gets_the_runners_claude_and_vault(vault: Path, runner: str) -> None:
     _script(vault / "bin" / "scoutctl", f'#!/bin/bash\necho "$@" >> "{vault}/scoutctl-calls"\nexit 0\n')
 

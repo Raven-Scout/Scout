@@ -15,7 +15,8 @@ def _cache(vault: Path, **over: object) -> None:
         "claude_version": "2.1.318 (Claude Code)",
         "hooks_sha256": "abc",
         "flags": ["--permission-mode", "auto"],
-        "env_key": "CLAUDE_CODE_SIMPLE=",
+        "env_key": "CLAUDE_CODE_SIMPLE=;CLAUDE_CONFIG_DIR=",
+        "config_sha256": "def",
         "checked_at": "2026-11-13T21:29:05+00:00",
         **over,
     }

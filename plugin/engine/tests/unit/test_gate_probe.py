@@ -11,6 +11,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -25,11 +26,16 @@ _STUB = """#!{python}
 import json, os, sys, time, urllib.request
 mode = {mode!r}
 if "--version" in sys.argv:
+    if os.environ.get("STUB_VERSION_LOG"):
+        open(os.environ["STUB_VERSION_LOG"], "a").write("v\\n")
     print("9.9.9 (Claude Code)"); sys.exit(0)
 if mode == "exit1":
     sys.exit(1)
-if mode == "hang":
+if mode in ("hang", "silent"):  # silent: alive, but talking to some other endpoint
     time.sleep(30); sys.exit(0)
+if mode == "honours_project_settings":  # what claude does with a project disableAllHooks
+    cfg = os.path.join(".claude", "settings.local.json")
+    mode = "ran" if os.path.exists(cfg) and "disableAllHooks" in open(cfg).read() else "deny"
 base = os.environ["ANTHROPIC_BASE_URL"]
 vault = os.environ["SCOUT_DATA_DIR"]
 def post(body):
@@ -51,6 +57,15 @@ post({{"model": "m", "tools": tools, "messages": [{{"role": "user", "content": "
       {{"role": "assistant", "content": [block]}}, {{"role": "user", "content": [result]}}]}})
 print("done")
 """
+
+
+@pytest.fixture(autouse=True)
+def _isolated_claude_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The probe's cache key reads the user's Claude settings: point it at a throwaway one."""
+    config = tmp_path / "claude-config"
+    (config / "plugins").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    return config
 
 
 def _stub(tmp_path: Path, mode: str) -> Path:
@@ -127,9 +142,9 @@ def test_cached_probe_reuses_a_fresh_matching_result(tmp_path: Path) -> None:
     vault, root = _vault(tmp_path), _plugin_root(tmp_path)
     calls: list[int] = []
 
-    def fake_probe(claude_bin: Path, **kw: object) -> ProbeResult:
+    def fake_probe(claude_bin: Path, **kw: Any) -> ProbeResult:
         calls.append(1)
-        return gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=root)
+        return gate_probe.probe(_stub(tmp_path, "deny"), **kw)
 
     claude = _stub(tmp_path, "deny")
     first = gate_probe.cached_probe(vault, claude, plugin_root=root, runner=fake_probe)
@@ -232,3 +247,142 @@ def test_probe_does_not_inherit_bare_switch_silently(tmp_path: Path, monkeypatch
     monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
     assert gate_probe.env_key() != key_a
     assert os.environ["CLAUDE_CODE_SIMPLE"] == "1"
+
+
+# --- review of #635 ----------------------------------------------------------------------
+
+
+def test_the_vaults_project_settings_reach_the_probe(tmp_path: Path) -> None:
+    """A project-level disableAllHooks kills the run's gates, so it must fail the probe (review #635, must-fix 2)."""
+    vault, root = _vault(tmp_path), _plugin_root(tmp_path)
+    claude = _stub(tmp_path, "honours_project_settings")
+    assert gate_probe.probe(claude, plugin_root=root, vault=vault).ok
+    (vault / ".claude").mkdir()
+    (vault / ".claude" / "settings.local.json").write_text('{"disableAllHooks": true}')
+    refused = gate_probe.probe(claude, plugin_root=root, vault=vault)
+    assert not refused.ok and "gates are not loaded" in refused.reason
+
+
+@pytest.mark.parametrize("change", ["vault_settings", "user_settings", "plugin_registry", "installed_hooks"])
+def test_a_config_change_reprobes(tmp_path: Path, _isolated_claude_config: Path, change: str) -> None:
+    """`claude plugin disable scout`, a new disableAllHooks, a plugin update: the next run probes again."""
+    vault, root = _vault(tmp_path), _plugin_root(tmp_path)
+    config = _isolated_claude_config
+    install = tmp_path / "installed-scout"
+    (install / "hooks").mkdir(parents=True)
+    (install / "hooks" / "hooks.json").write_text('{"hooks": {"PreToolUse": [1]}}')
+    registry = {"version": 2, "plugins": {"scout@scout-plugin": [{"installPath": str(install), "version": "1"}]}}
+    (config / "plugins" / "installed_plugins.json").write_text(json.dumps(registry))
+    claude = _stub(tmp_path, "deny")
+    calls: list[int] = []
+
+    def counting(claude_bin: Path, **kw: object) -> ProbeResult:
+        calls.append(1)
+        return gate_probe.probe(claude, plugin_root=root, vault=vault)
+
+    gate_probe.cached_probe(vault, claude, plugin_root=root, runner=counting)
+    gate_probe.cached_probe(vault, claude, plugin_root=root, runner=counting)
+    assert len(calls) == 1
+    if change == "vault_settings":
+        (vault / ".claude").mkdir()
+        (vault / ".claude" / "settings.json").write_text('{"disableAllHooks": true}')
+    elif change == "user_settings":
+        (config / "settings.json").write_text('{"enabledPlugins": {"scout@scout-plugin": false}}')
+    elif change == "plugin_registry":
+        registry["plugins"]["scout@scout-plugin"][0]["version"] = "2"
+        (config / "plugins" / "installed_plugins.json").write_text(json.dumps(registry))
+    else:
+        (install / "hooks" / "hooks.json").write_text('{"hooks": {}}')
+    gate_probe.cached_probe(vault, claude, plugin_root=root, runner=counting)
+    assert len(calls) == 2
+
+
+def test_other_providers_are_switched_off_not_just_unset() -> None:
+    """A settings env can turn Bedrock/Vertex/Foundry back on; the process env wins (review #635, should-fix 3)."""
+    env = gate_probe.probe_env(
+        base_url="http://127.0.0.1:1",
+        vault=Path("/v"),
+        base={"CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "PATH": "/bin"},
+    )
+    for var in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+        assert env[var] == "0"
+    assert env["ANTHROPIC_API_KEY"] == gate_probe.DUMMY_KEY and env["SCOUT_MODE"] == gate_probe.PROBE_MODE
+
+
+def test_a_claude_that_never_asks_the_fake_fails_fast(tmp_path: Path) -> None:
+    started = datetime.now(UTC)
+    result = gate_probe.probe(_stub(tmp_path, "silent"), plugin_root=_plugin_root(tmp_path), first_request_s=1)
+    assert not result.ok and "sent no request" in result.reason
+    assert (datetime.now(UTC) - started).total_seconds() < 15
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"checked_at": "2026-11-13T21:29:05"},  # naive: comparing it with an aware now raised (exit 70)
+        {"ok": "false"},
+        {"ok": 1},
+        {"flags": "--permission-mode auto"},
+        {"config_sha256": None, "drop": "config_sha256"},
+        {"checked_at": "yesterday"},
+    ],
+)
+def test_a_corrupt_cache_is_a_miss_and_gets_rewritten(tmp_path: Path, corrupt: dict) -> None:
+    """Never a wedge: an unreadable cache re-probes and is replaced (review #635, should-fix 4)."""
+    vault, root = _vault(tmp_path), _plugin_root(tmp_path)
+    claude = _stub(tmp_path, "deny")
+    gate_probe.cached_probe(vault, claude, plugin_root=root)
+    cache = vault / ".scout-state" / "gate-probe.json"
+    data = json.loads(cache.read_text())
+    drop = corrupt.pop("drop", None)
+    data.update(corrupt)
+    if drop:
+        del data[drop]
+    cache.write_text(json.dumps(data))
+    assert gate_probe.read_cache(vault) is None
+    result = gate_probe.cached_probe(vault, claude, plugin_root=root)
+    assert result.ok
+    assert gate_probe.read_cache(vault) is not None
+
+
+def test_probe_flags_match_the_runners_launch(tmp_path: Path) -> None:
+    """PROBE_FLAGS is a copy of the runners' permission flags; keep them in step (review #635, should-fix 6)."""
+    templates = Path(gate_probe.default_plugin_root()) / "templates"
+    for name in ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"):
+        text = (templates / name).read_text(encoding="utf-8")
+        launch = text[text.index('"$CLAUDE_BIN" \\') :].split("-p ")[0]
+        words = [w for w in launch.replace("\\", " ").split() if w]
+        mode_at = words.index("--permission-mode")
+        assert tuple(words[mode_at : mode_at + 2]) == gate_probe.PROBE_FLAGS, name
+
+
+def test_a_cache_miss_asks_claude_for_its_version_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "versions.log"
+    monkeypatch.setenv("STUB_VERSION_LOG", str(log))
+    gate_probe.cached_probe(_vault(tmp_path), _stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
+    assert log.read_text().count("v") == 1
+
+
+def test_a_fake_that_cant_bind_is_named_as_such(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_bind(self: object) -> str:
+        raise OSError("address in use")
+
+    monkeypatch.setattr(gate_probe.FakeAnthropic, "start", no_bind)
+    result = gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
+    assert not result.ok and "local endpoint" in result.reason and "could not start claude" not in result.reason
+
+
+def test_stale_probe_dirs_are_swept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gate_probe.tempfile, "gettempdir", lambda: str(tmp_path))
+    old, fresh, other = (
+        tmp_path / f"{gate_probe.TMP_PREFIX}old",
+        tmp_path / f"{gate_probe.TMP_PREFIX}new",
+        tmp_path / "x",
+    )
+    for d in (old, fresh, other):
+        d.mkdir()
+    two_hours_ago = datetime.now(UTC).timestamp() - 7200
+    os.utime(old, (two_hours_ago, two_hours_ago))
+    os.utime(other, (two_hours_ago, two_hours_ago))
+    gate_probe.sweep_stale_tmp()
+    assert not old.exists() and fresh.exists() and other.exists()

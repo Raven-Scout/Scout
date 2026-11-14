@@ -147,7 +147,8 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
-def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, slot: str) -> None:
+def test_runner_without_scoutctl_skips_the_run(vault: Path, template: str, slot: str) -> None:
+    """Without scoutctl the gate probe can't run, so the run is skipped, not run ungated (spec 2026-11-13 §3.5)."""
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(vault / "bin" / "absent"))
     _stub_claude(vault, 0)
 
@@ -155,14 +156,16 @@ def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, s
 
     assert result.returncode == 0, result.stderr
     log = _runner_log(vault)
-    assert "run finished" in log
-    assert "connector-health roll-up skipped" in log
+    assert "scoutctl is missing" in log
+    assert "run finished" not in log
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot: str) -> None:
+    # Every helper fails except the gate probe, which a failing engine would turn into a skipped run.
     scoutctl = _script(
-        vault / "bin" / "scoutctl", "#!/bin/bash\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n"
+        vault / "bin" / "scoutctl",
+        "#!/bin/bash\n[ \"$1\" = gates ] && exit 0\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n",
     )
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)

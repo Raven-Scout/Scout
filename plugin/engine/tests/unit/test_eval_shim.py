@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scout.agent_runtimes.gate_probe import DUMMY_KEY, PROBE_MODE
 from tests._waits import wait_until
 from tests.eval.harness.claude_shim import SHIM, build_command, session_plugin_root, settings, tool_hooks
 from tests.eval.harness.runner_env import build_env
@@ -214,14 +215,17 @@ print("passthrough")
 """
 
 
+PROBE_ARGV = ["--permission-mode", "auto", "--no-session-persistence", "-p", "Scout gate probe."]
+PROBE_ENV = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5555", "ANTHROPIC_API_KEY": DUMMY_KEY, "SCOUT_MODE": PROBE_MODE}
+
+
 @pytest.mark.parametrize(
     ("argv", "extra"),
     [
         (["--version"], {}),
-        (
-            ["--permission-mode", "auto", "--no-session-persistence", "-p", "Scout gate probe."],
-            {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5555"},
-        ),
+        (PROBE_ARGV, PROBE_ENV),
+        (PROBE_ARGV, {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://[::1]:5555"}),
+        (PROBE_ARGV, {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://localhost:5555/"}),
     ],
 )
 def test_a_call_without_name_goes_to_the_real_claude_unchanged(
@@ -237,16 +241,24 @@ def test_a_call_without_name_goes_to_the_real_claude_unchanged(
     assert not result.exists()  # the sample's result dir is never touched
 
 
-def test_a_nameless_call_to_a_real_endpoint_is_refused(tmp_path: Path) -> None:
-    """Only --version or a loopback endpoint passes through: never a session that could bill a key."""
-    proc, _ = _run(
-        tmp_path,
-        [],
-        argv=["--permission-mode", "auto", "-p", "hi"],
-        fake_source=PASSTHROUGH_CLAUDE,
-        extra_env={"ANTHROPIC_BASE_URL": "https://api.example.com"},
-    )
-    assert proc.returncode == 2
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "https://api.example.com"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1:1@api.example.com"},  # userinfo, real host
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://user@127.0.0.1:5555"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "https://127.0.0.1:5555"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1.example.com:5555"},
+        {**PROBE_ENV, "ANTHROPIC_API_KEY": "sk-ant-real"},
+        {**PROBE_ENV, "SCOUT_MODE": "morning-briefing"},
+        {},
+    ],
+)
+def test_a_nameless_call_that_isnt_the_probe_is_refused(tmp_path: Path, extra: dict[str, str]) -> None:
+    """Only --version or the gate probe itself passes through: never a session that could bill a key."""
+    env = {k: v for k, v in extra.items()}
+    proc, _ = _run(tmp_path, [], argv=PROBE_ARGV, fake_source=PASSTHROUGH_CLAUDE, extra_env=env)
+    assert proc.returncode == 2, extra
     assert not (tmp_path / "argv.json").exists()
 
 

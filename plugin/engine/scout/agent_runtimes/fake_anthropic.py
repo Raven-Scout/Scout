@@ -33,6 +33,7 @@ class FakeAnthropic:
         self._issued_ids: list[str] = []
         self._results: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._requests = 0
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.base_url = ""
@@ -54,6 +55,8 @@ class FakeAnthropic:
                 self.end_headers()
 
             def do_POST(self) -> None:  # noqa: N802
+                with fake._lock:
+                    fake._requests += 1
                 length = int(self.headers.get("content-length") or 0)
                 raw = self.rfile.read(length) if length else b""
                 try:
@@ -106,6 +109,12 @@ class FakeAnthropic:
             self._server = None
 
     # -- what the probe reads ------------------------------------------------------
+
+    @property
+    def requests(self) -> int:
+        """How many POSTs the client has sent: zero means it talks to some other endpoint."""
+        with self._lock:
+            return self._requests
 
     @property
     def issued(self) -> int:
