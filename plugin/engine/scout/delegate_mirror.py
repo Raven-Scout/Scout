@@ -27,15 +27,17 @@ case-folded.
   out.
 - ``.txt``, ``.csv``, ``.tsv`` and ``.jsonl`` files lose the lines that hit; any
   other text file that hits is left out whole.
-- A file that isn't UTF-8 text is left out, since it can't be scanned, unless
-  its extension is a known binary type (:data:`BINARY_TYPES`), which is kept on
-  its label alone.
+- Any file that decodes as UTF-8 is text and is scanned, whatever its
+  extension. A file that isn't UTF-8 text is left out, since it can't be
+  scanned, unless its extension is a known binary type (:data:`BINARY_TYPES`),
+  which is kept on its label alone.
 - ``scout-config.yaml`` is rewritten (:func:`mirror_config`): ``privacy``
   keeps only known keys, and of their path entries only those that match a
   mirrored file, so no local-only or hidden folder is named; ``delegates``
   lists only this delegate; any other top-level key that names a hidden note
   is dropped.
-- A symlink is kept only when it points at a folder in the mirror.
+- A symlink is kept only when it points at a folder in the mirror, checked
+  after every other file is settled.
 
 A file stays only when the policy the clone will compute from that config gives
 it the same label. ``.scout-state/privacy-policy.json`` holds that policy and
@@ -44,7 +46,9 @@ kept, files withheld, lines removed per file), never removed text.
 
 What the matchers can't see: a note whose name is short (under 4 characters)
 or one ordinary word is matched only by its wikilinks and its path, as for
-``kb check-outbound``; prose that names it otherwise stays.
+``kb check-outbound``; prose that names it otherwise stays. A hidden file's path
+is a term as written when it is in a folder (``Clients/Acme``), but a file at
+the vault root is matched by its full name (``health.md``), not its bare stem.
 
 **History.** One mirror commit per sync that changes the tree, with a fixed
 identity and a generic message: a vault commit's subject never goes up. The
@@ -395,8 +399,7 @@ def check_remote(remote: str, *, vault: Path, gh: GhRunner = _gh) -> None:
         _check_github(repo, gh)
         return
     assert local is not None
-    target, home = local.resolve(), vault.resolve()
-    if target == home or home in target.parents or target in home.parents:
+    if _overlaps(local.resolve(), vault.resolve()):
         raise RepoSyncError("remote_in_vault", "refused: a local mirror must live outside the vault and its folders")
 
 
@@ -460,6 +463,29 @@ def auth_env(vault: Path, remote: str) -> dict[str, str]:
         "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
         "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
     }
+
+
+def _inode(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
+
+
+def _overlaps(target: Path, home: Path) -> bool:
+    """Whether ``target`` is ``home``, inside it, or a folder above it.
+
+    By file identity, not by name: on a case-insensitive volume (APFS's
+    default) ``…/Vault/x.git`` and ``…/vault/x.git`` are the same place.
+    """
+    if target == home or home in target.parents or target in home.parents:
+        return True
+    home_id = _inode(home)
+    if home_id is not None and any(_inode(p) == home_id for p in (target, *target.parents)):
+        return True
+    target_id = _inode(target)
+    return target_id is not None and any(_inode(p) == target_id for p in home.parents)
 
 
 def remote_head(vault: Path, remote: str) -> str | None:
@@ -528,6 +554,10 @@ def _fold_path(path: str) -> str:
     return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", path).casefold())
 
 
+def _stem(rel: str) -> str:
+    return rel[:-3] if rel.lower().endswith(".md") else rel
+
+
 def _plumbing(rel: str) -> bool:
     """A path under a top-level dot folder (``.scout-state``, ``.obsidian``): its name is no secret."""
     return rel.startswith(".")
@@ -538,23 +568,25 @@ class Scanner:
 
     def __init__(self, terms: PrivateTerms, hidden: Sequence[str] = ()) -> None:
         named = [p for p in hidden if not _plumbing(p)]
-        stems = sorted({p[:-3] if p.lower().endswith(".md") else p for p in named})
+        stems = sorted({_stem(p) for p in named})
+        # A path in a folder is specific enough to match as written. A root file's bare stem is just a word
+        # (``health``, ``labels``), and a root note's name is already matched by its own rules (length,
+        # ordinary words): only its full file name is a path term.
+        path_terms = sorted({_stem(p) if "/" in p else p for p in named})
         path_notes = [
             PrivateNote(
-                path=f"path:{s}",
-                slug=s,
-                terms=(s,),
+                path=f"path:{t}",
+                slug=t,
+                terms=(t,),
                 link_keys=frozenset(),
                 link_path="",
-                pattern=_term_regex([s]),
+                pattern=_term_regex([t]),
             )
-            for s in stems
+            for t in path_terms
         ]
         self.terms = terms_of([*terms.notes, *path_notes]) if path_notes else terms
         if terms.excerpts is not None:
             self.terms = dataclasses.replace(self.terms, excerpts=terms.excerpts)
-        # Generated JSON isn't prose: the fuzzy matcher for quotes of shared notes misreads its punctuation.
-        self.plain = dataclasses.replace(self.terms, excerpts=None)
         self.hidden = frozenset(_fold_path(s) for s in [*named, *stems])
 
     def _link_hit(self, target: str, rel: str) -> bool:
@@ -565,12 +597,9 @@ class Scanner:
         candidates = {posixpath.normpath(posixpath.join(here, target)), posixpath.normpath(target.lstrip("/"))}
         return any(_fold_path(c) in self.hidden for c in candidates)
 
-    def lines(self, text: str, rel: str = "", *, prose: bool = True) -> list[int]:
-        """Sorted 1-based numbers of the lines of ``text`` that name a hidden file.
-
-        ``prose=False`` (generated files) leaves out the quote matcher for shared notes.
-        """
-        out = set(find_mentions(text, self.terms if prose else self.plain, allow_markers=False))
+    def lines(self, text: str, rel: str = "") -> list[int]:
+        """Sorted 1-based numbers of the lines of ``text`` that name a hidden file."""
+        out = set(find_mentions(text, self.terms, allow_markers=False))
         for n, line in enumerate(text.split("\n"), 1):
             links = [m.group(1) for m in _MD_LINK.finditer(line)]
             ref = _REF_LINK.match(line)
@@ -756,26 +785,59 @@ class Plan:
 
     def policy_document(self) -> bytes:
         assert self.mirror_policy is not None
-        doc = {
-            "schema_version": SCHEMA_VERSION,
-            "generator": "scoutctl delegate sync",
-            "engine_version": scout.__version__,
-            "policy": self.mirror_policy.to_json(),
-            "labels": [lb.to_json() for lb in sorted(self.labels, key=lambda lb: lb.path)],
-        }
-        return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        return policy_document(self.mirror_policy, self.labels)
+
+
+def policy_document(policy: Policy, labels: Sequence[Label]) -> bytes:
+    """``.scout-state/privacy-policy.json``: the clone's policy and each file's label under it."""
+    doc = {
+        "schema_version": SCHEMA_VERSION,
+        "generator": "scoutctl delegate sync",
+        "engine_version": scout.__version__,
+        "policy": policy.to_json(),
+        "labels": [lb.to_json() for lb in sorted(labels, key=lambda lb: lb.path)],
+    }
+    return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+_MANIFEST_KEYS = frozenset(
+    {"schema_version", "generator", "engine_version", "delegate", "files", "withheld_files", "redacted_lines"}
+)
+
+
+def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str]) -> bool:
+    """Whether ``data`` is a manifest :meth:`Plan.manifest` could have written: constants, counts, tree paths."""
+    try:
+        doc = json.loads(data)
+    except ValueError:
+        return False
+    if not isinstance(doc, dict) or set(doc) != _MANIFEST_KEYS or not isinstance(doc["redacted_lines"], dict):
+        return False
+    counts = [doc["files"], doc["withheld_files"], *doc["redacted_lines"].values()]
+    return (
+        (doc["schema_version"], doc["generator"], doc["engine_version"], doc["delegate"])
+        == (SCHEMA_VERSION, "scoutctl delegate sync", scout.__version__, delegate)
+        and set(doc["redacted_lines"]) <= tree_paths
+        and all(type(n) is int and n >= 0 for n in counts)
+    )
 
 
 def _content(rel: str, data: bytes) -> tuple[str, str | None]:
-    """``("text", text)`` for UTF-8 text, ``("binary", None)`` for a known binary type, else ``("opaque", None)``."""
+    """``("text", text)`` for UTF-8 text, ``("binary", None)`` for a known binary type, else ``("opaque", None)``.
+
+    The bytes decide before the extension: a ``.pdf`` that is really UTF-8 text is text, and is scanned.
+    """
+    text: str | None = None
+    if b"\0" not in data:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    if text is not None:
+        return "text", text
     if posixpath.splitext(rel.lower())[1] in BINARY_TYPES:
         return "binary", None
-    if b"\0" in data:
-        return "opaque", None
-    try:
-        return "text", data.decode("utf-8")
-    except UnicodeDecodeError:
-        return "opaque", None
+    return "opaque", None
 
 
 def hidden_terms(vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str], blobs: BlobReader) -> Scanner:
@@ -802,6 +864,11 @@ def _link_target(entry: TreeEntry, target: bytes) -> str | None:
         return None
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(entry.path), name))
     return None if resolved in (".", "..") or resolved.startswith("../") else resolved
+
+
+def _note_head(rel: str, data: bytes) -> str | None:
+    """What :func:`classify` reads of a file: a note's first bytes, decoded; nothing for any other file."""
+    return decode_head(data[:HEAD_BYTES]) if rel.lower().endswith(".md") else None
 
 
 def _folders(files: Sequence[str]) -> set[str]:
@@ -840,7 +907,7 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
         elif e.mode == SYMLINK_MODE:
             out.links.append(e)
         else:
-            head_text = decode_head(blobs.read(e.sha)[:HEAD_BYTES]) if e.path.lower().endswith(".md") else None
+            head_text = _note_head(e.path, blobs.read(e.sha))
             label = classify(e.path, head_text, policy)
             if visible_to(label, reader, policy):
                 out.visible.append((e, label))
@@ -868,9 +935,11 @@ def plan(vault: Path, head: str, delegate: str, blobs: BlobReader) -> tuple[Plan
         if made is not None:
             kept.append(made)
     folders = _folders([f.path for f, _, _ in kept])
+    link_targets: dict[str, str] = {}
     for e in seen.links:
         target = _link_target(e, blobs.read(e.sha))
         if target is not None and target in folders and not rules.refused(target) and not scan.names(e.path):
+            link_targets[e.path] = target
             kept.append((MirrorFile(e.path, e.mode, None, e.sha), classify(e.path, None, policy), None))
         else:
             out.hidden_paths.add(e.path)
@@ -884,13 +953,21 @@ def plan(vault: Path, head: str, delegate: str, blobs: BlobReader) -> tuple[Plan
     else:
         out.mirror_policy = policy
     reader = f"delegate:{delegate}"
+    final: list[tuple[MirrorFile, Label]] = []
     for f, label, text in kept:  # the clone's own policy must label each file the same
-        head_text = text[:HEAD_BYTES] if text is not None and f.path.lower().endswith(".md") else None
+        head_text = _note_head(f.path, text.encode("utf-8")) if text is not None else None
         theirs = classify(f.path, head_text, out.mirror_policy)
         if f.mode != SYMLINK_MODE and (
             not _same_label(label, theirs) or not visible_to(theirs, reader, out.mirror_policy)
         ):
             out.left_out += 1
+            continue
+        final.append((f, theirs))
+    # A folder can empty out above, so each symlink is checked again against what is left.
+    left = _folders([f.path for f, _ in final if f.mode != SYMLINK_MODE])
+    for f, theirs in final:
+        if f.mode == SYMLINK_MODE and link_targets[f.path] not in left:
+            out.hidden_paths.add(f.path)
             continue
         out.files.append(f)
         out.labels.append(theirs)
@@ -952,9 +1029,12 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str) -> None:
     again from ``HEAD``; the policy the clone will use is read from the tree's
     own ``scout-config.yaml``. Every path must be one ``HEAD`` shows the
     delegate and must name no hidden file; every file must be visible under both
-    policies with the same label; every text file, the config and the generated
-    files included, must name no hidden file; a file that isn't text must be a
-    known binary type; every symlink must point at a folder the tree holds.
+    policies with the same label; every text file, the config included, must
+    name no hidden file; a file that isn't text must be a known binary type;
+    every symlink must point at a folder the tree holds. The generated files
+    must be exactly what the tree implies: the policy document is regenerated
+    from the tree's config and files and compared byte for byte, and the
+    manifest may hold only constants, counts and the tree's own paths.
     """
     reader = f"delegate:{delegate}"
     blobs = BlobReader(vault)
@@ -968,30 +1048,34 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str) -> None:
             raise RepoSyncError("policy_missing", f"refused: mirror commit {rev[:12]} lacks its generated files")
         theirs = policy_from_config_text(blobs.read(by_path[paths.VAULT_MARKER].sha).decode("utf-8", "replace"))
         folders = _folders([e.path for e in entries if e.mode != SYMLINK_MODE])
+        tree_paths = {e.path for e in entries if e.path not in GENERATED}
+        labels: list[Label] = []
         bad = 0
         for e in entries:
-            data = blobs.read(e.sha) if e.kind == "blob" else b""
             if e.path in GENERATED:
-                kind, text = _content(e.path, data)
-                bad += kind != "text" or bool(text is not None and scan.lines(text, prose=False))
                 continue
+            data = blobs.read(e.sha) if e.kind == "blob" else b""
             if e.kind != "blob" or e.path not in allowed or seen.rules.refused(e.path) or scan.names(e.path):
                 bad += 1
                 continue
             if e.mode == SYMLINK_MODE:
                 target = _link_target(e, data)
                 bad += target is None or target not in folders
+                labels.append(classify(e.path, None, theirs))
                 continue
             kind, text = _content(e.path, data)
             if kind == "opaque" or (text is not None and scan.lines(text, e.path)):
                 bad += 1
                 continue
-            head_text = decode_head(data[:HEAD_BYTES]) if e.path.lower().endswith(".md") else None
+            head_text = _note_head(e.path, data) if text is not None else None
             ours, mirrored = classify(e.path, head_text, seen.policy), classify(e.path, head_text, theirs)
+            labels.append(mirrored)
             if not (visible_to(ours, reader, seen.policy) and visible_to(mirrored, reader, theirs)):
                 bad += 1
             elif e.path != paths.VAULT_MARKER and not _same_label(ours, mirrored):
                 bad += 1
+        bad += blobs.read(by_path[POLICY_PATH].sha) != policy_document(theirs, labels)
+        bad += not _manifest_ok(blobs.read(by_path[MANIFEST_PATH].sha), delegate, tree_paths)
         if bad:
             raise RepoSyncError(
                 "delegate_mirror_unsafe",
