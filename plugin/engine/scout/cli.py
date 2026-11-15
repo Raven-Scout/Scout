@@ -128,6 +128,14 @@ def hook_kb_read_gate() -> None:
     raise typer.Exit(kb_read_gate_main())
 
 
+@hook_app.command("kb-write-gate")
+def hook_kb_write_gate() -> None:
+    """PreToolUse hook: deny a scheduled run's file write into what decides which checks run (Phase 1b)."""
+    from scout.hooks.kb_write_gate import main as kb_write_gate_main
+
+    raise typer.Exit(kb_write_gate_main())
+
+
 @hook_app.command("kb-read-label")
 def hook_kb_read_label() -> None:
     """PostToolUse hook: attach a KB note's privacy label to a Read of it (private: never to a shared surface)."""

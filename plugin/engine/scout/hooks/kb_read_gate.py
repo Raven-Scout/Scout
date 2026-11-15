@@ -164,25 +164,73 @@ def _deny_agent_settings(form: str) -> str:
     )
 
 
-def _deny_skip_form(form: str) -> str:
-    from scout.kb.hook_paths import AGENT_SETTINGS
+def _deny_engine(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't change {form}, which start each run and run Scout's checks. If something "
+        "there needs a change, say so in the run notes for the owner; engine changes go through the engine repo."
+    )
 
-    return _deny_agent_settings(form) if form == AGENT_SETTINGS else _deny_hook_skip(form)
+
+def _deny_git_dir(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't write into the vault's git folder or git's own files ({form}) with a file "
+        "tool or the shell: git's hooks and config live there. Use git commands, and commit with "
+        "`scripts/git-safe-commit.sh`."
+    )
+
+
+def _deny_startup(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't write {form} (the shell's login and rc files, LaunchAgents): they run "
+        "outside Scout's checks. If one needs a change, say so in the run notes for the owner."
+    )
+
+
+def _deny_hard_link(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't write {form}: another name for the same file may be one Scout's checks "
+        "depend on. Write a new file instead."
+    )
+
+
+def _deny_skip_form(form: str) -> str:
+    from scout.kb import hook_paths as hp
+
+    by_form = {
+        hp.AGENT_SETTINGS: _deny_agent_settings,
+        hp.ENGINE: _deny_engine,
+        hp.RUNNER_SCRIPTS: _deny_engine,
+        hp.STARTUP: _deny_startup,
+        hp.HARD_LINK: _deny_hard_link,
+        hp.GIT_DIR: _deny_git_dir,
+    }
+    return by_form.get(form, _deny_hook_skip)(form)
+
+
+# Audit rows wait here until the decision is out (main prints the deny first): writing a log can never delay it.
+_PENDING_AUDIT: list[tuple[Path, str, str | None]] = []
 
 
 def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
-    """The form and the run's mode, never the command: its text can quote a note."""
-    try:
-        from scout.events import append_event
+    """Queue the form and the run's mode, never the command: its text can quote a note."""
+    _PENDING_AUDIT.append((vault, form, mode))
 
-        append_event(
-            paths.logs_dir(vault),
-            kind="kb_read_gate.hook_skip",
-            source=f"hook:{GATE}",
-            payload={"form": form, "mode": mode},
-        )
-    except Exception:  # noqa: BLE001, S110 - the deny stands without the event
-        pass
+
+def flush_audit() -> None:
+    """Write the queued rows, best effort: the event writer refuses anything but a regular file (scout.events)."""
+    from scout.events import append_event
+
+    while _PENDING_AUDIT:
+        vault, form, mode = _PENDING_AUDIT.pop(0)
+        try:
+            append_event(
+                paths.logs_dir(vault),
+                kind="kb_read_gate.hook_skip",
+                source=f"hook:{GATE}",
+                payload={"form": form, "mode": mode},
+            )
+        except Exception:  # noqa: BLE001, S110 - the deny stands without the event
+            pass
 
 
 def _deny_delegate_read() -> str:
@@ -193,14 +241,17 @@ def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
 
-def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) -> str | None:
+def decide(
+    payload: Mapping[str, Any], *, reader: str, mode: str | None = None, env: Mapping[str, str] | None = None
+) -> str | None:
     """The deny reason for one run's tool call, or None to allow it. May raise: the caller fails closed."""
+    env = os.environ if env is None else env
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
     if not isinstance(tool, str) or not isinstance(tool_input, dict):
         raise ValueError("not a tool-call payload")
     if tool in WRITE_TOOLS:
-        return _decide_write(payload, tool, tool_input, mode)
+        return _decide_write(payload, tool, tool_input, mode, env)
     if tool not in ("Bash", "Read", "Grep", "Glob"):
         return None
     vault = session_vault(payload)
@@ -211,9 +262,16 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
+        from scout.kb import hook_paths
         from scout.kb.live_run import run_escape
 
-        escape = run_escape(command)
+        def protect(raw: str, removes: bool) -> str | None:
+            expanded = hook_paths._expand(raw, env)
+            target = expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            check = hook_paths.removes_protected if removes else hook_paths.protected_write
+            return check(target, vault, env)
+
+        escape = run_escape(command, protect=protect)
         if escape == "env":
             return _deny_run_env()
         if escape == "detach":
@@ -244,9 +302,11 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
     return None if reader in FULL_READERS else _deny_read()
 
 
-def _decide_write(payload: Mapping[str, Any], tool: str, tool_input: Mapping[str, Any], mode: str | None) -> str | None:
+def _decide_write(
+    payload: Mapping[str, Any], tool: str, tool_input: Mapping[str, Any], mode: str | None, env: Mapping[str, str]
+) -> str | None:
     """A run's file write into what decides which hooks run (Phase 1b; scout.kb.hook_paths) is denied."""
-    from scout.kb.hook_paths import protected_write
+    from scout.kb.hook_paths import _expand, protected_write
 
     key = "notebook_path" if tool == "NotebookEdit" else "file_path"
     raw = tool_input.get(key)
@@ -258,8 +318,8 @@ def _decide_write(payload: Mapping[str, Any], tool: str, tool_input: Mapping[str
     else:
         given = payload.get("cwd")
         cwd = paths.resolve_path(given if isinstance(given, str) and given else os.getcwd())
-    p = Path(raw).expanduser()
-    form = protected_write(p if p.is_absolute() else cwd / p, vault)  # protected_write resolves symlinks itself
+    p = Path(_expand(raw, env))
+    form = protected_write(p if p.is_absolute() else cwd / p, vault, env, file_tool=True)  # resolves symlinks itself
     if form is None:
         return None
     if vault is not None:
@@ -320,8 +380,22 @@ def _deny(reason: str) -> dict[str, Any]:
     }
 
 
-def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
-    """Read one PreToolUse payload; return the deny decision, or None to allow."""
+def run(
+    *, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None, defer_audit: bool = False
+) -> dict[str, Any] | None:
+    """Read one PreToolUse payload; return the deny decision, or None to allow.
+
+    The audit rows a deny queues are written before returning, unless ``defer_audit`` (main: it prints the
+    decision first, then calls :func:`flush_audit`).
+    """
+    try:
+        return _run(stdin=stdin, env=env)
+    finally:
+        if not defer_audit:
+            flush_audit()
+
+
+def _run(*, stdin: IO[str] | None, env: Mapping[str, str] | None) -> dict[str, Any] | None:
     from scout.kb.reader import is_scheduled, resolve_reader
 
     env = os.environ if env is None else env
@@ -333,7 +407,7 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
         reader = resolve_reader(None, env)
-        reason = decide(payload, reader=reader, mode=env.get("SCOUT_MODE") or reader)
+        reason = decide(payload, reader=reader, mode=env.get("SCOUT_MODE") or reader, env=env)
     except Exception as exc:  # noqa: BLE001 — a run fails closed
         reason = (
             f"{MARK} Scout's KB read gate could not check this call ({type(exc).__name__}), so it is blocked in "
@@ -343,8 +417,10 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
 
 
 def main() -> int:
-    """CLI entry point: scoutctl hook kb-read-gate."""
-    decision = run()
+    """CLI entry point: scoutctl hook kb-read-gate (and kb-write-gate). The decision goes out before any audit."""
+    decision = run(defer_audit=True)
     if decision is not None:
-        print(json.dumps(decision))
+        sys.stdout.write(json.dumps(decision) + "\n")
+        sys.stdout.flush()
+    flush_audit()
     return 0

@@ -304,7 +304,7 @@ def _alive(pid: int) -> bool:
 # ----- the PreToolUse gate's check: a run's command that hides it's a run ------------
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
-_SEGMENTS = re.compile(r"&&|\|\||[;|\n`]|\$\(|\(|\)")
+_SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
 # A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
 _BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
 _QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
@@ -318,7 +318,7 @@ _PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 # An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
-_REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>]*)")
+_REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>\||>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>|]*)")
 
 # What skips or redirects the commit hooks (#607). Git takes a unique prefix of a long option.
 _NO_VERIFY = "--no-verify"
@@ -354,7 +354,7 @@ _AGENT_SETTINGS_FILE = re.compile(
     re.IGNORECASE,
 )
 _USER_GIT_CONFIG_FILE = re.compile(r"(?:^|/)\.gitconfig$|(?:^|/)\.config/git(?:/|$)", re.IGNORECASE)
-_GIT_DIR = re.compile(r"(?:^|/)(\.git(?:/hooks)?)/?$")
+
 _WRITERS = {"tee", "rm", "unlink", "mv", "chmod", "chown", "chflags", "touch", "truncate", "rmdir", "shred"}
 _COPIERS = {"cp", "install", "ln", "rsync"}  # the last argument is the one written
 _SED_IN_PLACE = re.compile(r"^(?:--in-place|-[A-Za-z]*i)")
@@ -478,6 +478,16 @@ def _git_words(words: list[str]) -> list[str] | None:
     return None
 
 
+# Config keys that run a command of their choosing (keys don't depend on case): setting one is as good as a hook.
+_COMMAND_KEYS = {
+    "core.fsmonitor", "core.sshcommand", "core.pager", "core.editor", "core.attributesfile", "core.askpass",
+    "credential.helper", "init.templatedir", "sequence.editor", "diff.external", "gpg.program",
+    "uploadpack.packobjectshook", "receive.procreceiverefs",
+}  # fmt: skip
+_COMMAND_KEY_SUFFIXES = (".helper", ".textconv", ".driver", ".process", ".clean", ".smudge", ".command", ".cmd")
+_COMMAND_KEY_PREFIXES = ("pager.", "filter.", "credential.", "diff.", "merge.", "gpg.")
+
+
 def _config_form(key: str) -> str | None:
     """The name of a config key that changes which hooks or commands run (keys don't depend on case)."""
     key = key.lower()
@@ -487,6 +497,10 @@ def _config_form(key: str) -> str | None:
         return "alias.*"
     if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
         return "include.path"
+    if key in _COMMAND_KEYS or (key.startswith(_COMMAND_KEY_PREFIXES) and key.endswith(_COMMAND_KEY_SUFFIXES)):
+        return key
+    if key.startswith("pager."):
+        return key
     return None
 
 
@@ -551,6 +565,9 @@ def _writes_a_commit_object(args: list[str]) -> bool:
     )
 
 
+_CONFIG_SCOPES = {"--global", "--system", "--file", "-f", "--worktree", "--blob"}
+
+
 def _git_config_form(args: list[str]) -> str | None:
     if any(a in _CONFIG_READS for a in args):
         return None
@@ -558,6 +575,9 @@ def _git_config_form(args: list[str]) -> str | None:
         form = _config_form(a)
         if form is not None:
             return f"git config {form}"
+    scope = next((a for a in args if a in _CONFIG_SCOPES or a.startswith("--file=")), None)
+    if scope is not None and scope != "--blob" and any(not a.startswith("-") for a in args):
+        return f"git config {scope.split('=', 1)[0]}"  # any key: the user's or another config file
     return None
 
 
@@ -593,19 +613,66 @@ def _git_escape(args: list[str]) -> str | None:
     return _no_verify_form(subcommand, rest) if subcommand in _RUNS_HOOKS else None
 
 
+# Set by run_escape for the call in progress: decides a written, removed or linked path against
+# scout.kb.hook_paths (resolving symlinks, so `ln -s` then `echo >` is caught). None: spelling only.
+_PROTECT: Callable[[str, bool], str | None] | None = None
+_REMOVERS = {"rm", "rmdir", "unlink", "shred", "mv"}
+
+
+def _destinations(name: str, args: list[str]) -> list[str]:
+    """What a copy or move writes: its target, and each source's name inside it (a directory target, or -t DIR)."""
+    plain = [a for a in args if not a.startswith("-")]
+    target = next((a.split("=", 1)[1] for a in args if a.startswith("--target-directory=")), None)
+    for flag, value in zip(args, args[1:], strict=False):
+        if flag in ("-t", "--target-directory"):
+            target = value
+    if target is not None:
+        inside = target.rstrip("/")
+        return [target, *(f"{inside}/{os.path.basename(src.rstrip('/'))}" for src in plain if src != target)]
+    if not plain:
+        return []
+    last, sources = plain[-1], plain[:-1]
+    return [last, *(f"{last.rstrip('/')}/{os.path.basename(src.rstrip('/'))}" for src in sources)]
+
+
 def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | None:
-    """Whether a command writes ``.git/hooks`` or ``.git/config``: by a redirect, or a command that writes files."""
+    """Whether a command writes what decides which checks run: a redirect, or a command that writes files."""
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
         words = words[1:]
     written = list(targets)
+    removed: list[str] = []
+    linked: list[str] = []
     if words:
         name, args = _basename(words[0]), words[1:]
+        plain = [a for a in args if not a.startswith("-")]
+        if name in _REMOVERS:
+            removed += plain[:-1] if name == "mv" else plain
+        if name in ("cp", "mv", "install", "rsync"):
+            written += _destinations(name, args)
+        elif name == "ln":
+            linked += plain  # the link and what it points at: either may be a protected file
+            if len(plain) >= 2:  # a symlink's relative target is read from the link's own folder
+                link_dir = os.path.dirname(plain[-1].rstrip("/")) or "."
+                linked += [f"{link_dir}/{src}" for src in plain[:-1] if not src.startswith(("/", "~"))]
         if name in _WRITERS or (name == "sed" and any(_SED_IN_PLACE.match(a) for a in args)):
             written += args
+        elif name == "perl" and any(a.startswith("-") and "i" in a for a in args):
+            written += plain
         elif name in _COPIERS:
             written += args[-1:]
         elif name == "dd":
             written += [a[3:] for a in args if a.startswith("of=")]
+        elif name in ("curl", "wget"):
+            for flag, value in zip(args, args[1:], strict=False):
+                if flag in ("-o", "--output", "-O", "--output-document"):
+                    written.append(value)
+    if _PROTECT is not None:
+        for paths, removes in ((written, False), (linked, False), (removed, True)):
+            for path in paths:
+                where = path if path.startswith(("/", "~")) else cwd + path
+                found = _PROTECT(where, removes)
+                if found is not None:
+                    return found
     for path in written:
         m = _HOOK_FILE.search(path if path.startswith("/") else cwd + path)
         if m is not None:
@@ -661,7 +728,7 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
     return None
 
 
-def run_escape(command: str, *, depth: int = 0) -> str | None:
+def run_escape(command: str, *, depth: int = 0, protect: Callable[[str, bool], str | None] | None = None) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
     that skips or redirects the hooks (``--no-verify``, ``-c core.hooksPath``, ``commit-tree``, ``.git/hooks``, #607),
@@ -672,10 +739,22 @@ def run_escape(command: str, *, depth: int = 0) -> str | None:
     argument or a here-document's body (a Telegram wrap's ``&amp;``) all pass. Only the top-level command is read,
     so what ``scripts/git-safe-commit.sh`` or ``scoutctl`` run inside themselves is never in question.
     """
+    global _PROTECT
+    outer = depth == 0
+    if outer:
+        _PROTECT = protect
+    try:
+        return _run_escape(command, depth)
+    finally:
+        if outer:
+            _PROTECT = None
+
+
+def _run_escape(command: str, depth: int) -> str | None:
     command = _drop_heredoc_bodies(command).replace("\\\n", " ")
     detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
     form: str | None = None
-    cwd = ""  # set by a `cd` into the git dir, so `cd .git/hooks && rm pre-commit` reads as the path it writes
+    cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     for segment in _segments(command):
         clean, targets = _split_redirects(segment)
         words = _tokens(clean)
@@ -687,6 +766,11 @@ def run_escape(command: str, *, depth: int = 0) -> str | None:
         else:
             form = form or found
         if words[:1] == ["cd"]:
-            m = _GIT_DIR.search(words[-1])
-            cwd = f"{m[1]}/" if m is not None else ""
+            dest = words[1] if len(words) > 1 else "~"
+            if dest == "-":
+                cwd = ""
+            elif dest.startswith(("/", "~")):
+                cwd = dest.rstrip("/") + "/"
+            else:
+                cwd = cwd + dest.rstrip("/") + "/"
     return form or ("detach" if detach else None)

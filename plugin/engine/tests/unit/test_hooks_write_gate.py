@@ -58,9 +58,11 @@ def _input(tool: str, path: str) -> dict:
     return {"file_path": path, "old_string": "a", "new_string": "b"}
 
 
-def _decision(vault: Path, tool: str, tool_input: dict, *, cwd: Path | None = None, env: dict = RUN):
+def _decision(vault: Path, tool: str, tool_input: dict, *, cwd: Path | None = None, env: dict | None = None):
+    """The hook's decision for a run (or ``env``): the process env as the hook sees it, plus the run's variables."""
     body = {"tool_name": tool, "tool_input": tool_input, "cwd": str(cwd or vault), "session_id": "s1"}
-    return gate.run(stdin=io.StringIO(json.dumps(body)), env=env)
+    base = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER")}
+    return gate.run(stdin=io.StringIO(json.dumps(body)), env={**base, **(RUN if env is None else env)})
 
 
 def _denied(out) -> str:
@@ -213,7 +215,6 @@ def test_a_worktree_vaults_real_git_dir_is_protected(
         ".github/workflows/ci.yml",
         "notes/my.gitconfig.md",
         "notes/.git-notes.md",
-        ".claude/commands/x.md",
         "~/.claude/projects/x/notes.md",
         "/tmp/scratch.txt",
     ],
@@ -329,3 +330,238 @@ def test_a_shell_write_to_agent_settings_reaches_python(vault: Path, tmp_path: P
     payload = _payload("Bash", {"command": command}, vault)
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, tmp_path / "missing", "Grep|Glob|Bash")
     assert res.returncode == 2, command
+
+
+# --- review of #637 ----------------------------------------------------------------------------------
+
+
+def _bash(vault: Path, command: str, *, cwd: Path | None = None):
+    return _decision(vault, "Bash", {"command": command}, cwd=cwd)
+
+
+def test_a_fifo_where_the_audit_log_belongs_cant_hold_the_deny_back(vault: Path) -> None:
+    """Must-fix 1: the deny goes out first, and the audit never blocks (a hook that times out is an allow)."""
+    import datetime as dt
+    import sys
+    import time
+
+    logs = vault / ".scout-logs"
+    logs.mkdir(exist_ok=True)
+    os.mkfifo(logs / f"schedule-events-{dt.datetime.now(dt.UTC).date().isoformat()}.jsonl")
+    payload = _payload("Write", _input("Write", ".claude/settings.local.json"), vault)
+    env = {**os.environ, **RUN, "SCOUT_DATA_DIR": str(vault), "HOME": os.environ["HOME"]}
+    started = time.monotonic()
+    out = subprocess.run(
+        [sys.executable, "-m", "scout.hooks", "kb-write-gate"],
+        input=payload, capture_output=True, text=True, env=env, timeout=20,
+    )  # fmt: skip
+    assert time.monotonic() - started < 10
+    assert json.loads(out.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_the_event_writer_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    from scout.events import append_event
+
+    log = tmp_path / "logs"
+    log.mkdir()
+    import datetime as dt
+
+    os.mkfifo(log / f"schedule-events-{dt.datetime.now(dt.UTC).date().isoformat()}.jsonl")
+    with pytest.raises(OSError):
+        append_event(log, kind="k", source="s", payload={})
+
+
+def test_the_engine_the_hooks_run_is_protected(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Must-fix 2: the interpreter cache, the engine's own code, its venv, the pointer, $CLAUDE_PLUGIN_ROOT."""
+    import sys
+
+    import scout
+    from scout.hooks import kb_read_gate
+
+    plugin_root = tmp_path / "installed-plugin"
+    (plugin_root / "engine").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin_root))
+    engine_plugin = Path(scout.__file__).resolve().parents[2]
+    for path in (
+        plugin_root / ".scoutctl-py-cache",
+        engine_plugin / ".scoutctl-py-cache",
+        Path(kb_read_gate.__file__),
+        Path(scout.__file__).resolve().parent / "kb" / "hook_paths.py",
+        engine_plugin / "hooks" / "hooks.json",
+        Path(sys.prefix) / "bin" / "python",
+        Path(os.environ["HOME"]) / ".local" / "state" / "scout" / "engine.json",
+    ):
+        assert "Scout's engine" in _denied(_decision(vault, "Write", _input("Write", str(path)))), path
+
+
+def test_the_plugin_the_pre_commit_hook_calls_is_protected(vault: Path, tmp_path: Path) -> None:
+    other = tmp_path / "other-plugin"
+    (vault / ".git" / "hooks" / "pre-commit").write_text(f"#!/bin/sh\nSCOUTCTL={other}/engine/bin/scoutctl\n")
+    assert "Scout's engine" in _denied(
+        _decision(vault, "Edit", _input("Edit", str(other / "engine" / "scout" / "x.py")))
+    )
+
+
+@pytest.mark.parametrize(
+    "rel", ["scripts/claude-with-retry.sh", "run-scout.sh", "scripts/scoutctl", "scripts/git-safe-commit.sh"]
+)
+def test_the_runner_scripts_are_protected(vault: Path, rel: str) -> None:
+    """Must-fix 3: `unset SCOUT_MODE` in a runner script would make the next run an owner session."""
+    assert "runner scripts" in _denied(_decision(vault, "Edit", _input("Edit", rel)))
+    assert "runner scripts" in _denied(_bash(vault, f"sed -i '' 's/x/y/' {rel}"))
+
+
+def test_files_runs_may_grow_stay_writable(vault: Path) -> None:
+    assert _decision(vault, "Edit", _input("Edit", "knowledge-base/ontology/parser.py")) is None
+    assert _decision(vault, "Write", _input("Write", "scripts/my-own-helper.py")) is None
+
+
+def test_the_runner_file_list_matches_bootstrap() -> None:
+    from scout.kb.hook_paths import RUNNER_FILES
+    from scout.scripts import bootstrap
+
+    expected = {dest for dest, _ in bootstrap._CAT1_TEMPLATES if dest not in bootstrap._CAT1_APPEND_ONLY}
+    expected |= {dest for dest, _ in bootstrap._CAT1B_RUNNERS}
+    expected |= {dest for dest in bootstrap._CAT1_FILES_FROM_PLUGIN if dest.startswith("scripts/")}
+    assert set(RUNNER_FILES) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo x > .claude/"settings.local.json"',
+        "echo x > .claude/set''tings.local.json",
+        "echo x >> ~/.git''config",
+        "cp a .Claude/Settings.json",
+    ],
+)
+def test_quoting_cant_hide_a_write_from_the_shell_prefilter(vault: Path, tmp_path: Path, command: str) -> None:
+    payload = _payload("Bash", {"command": command}, vault)
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, tmp_path / "missing", "Grep|Glob|Bash")
+    assert res.returncode == 2, command
+    assert _bash(vault, command) is not None, command
+
+
+def test_symlink_then_write_is_denied_at_both_steps(vault: Path) -> None:
+    """Should-fix 5a: `ln -s` a protected file, then write through the link in another command."""
+    assert "agent settings" in _denied(_bash(vault, "ln -s ../.claude/settings.local.json notes/s.json"))
+    (vault / ".claude" / "settings.local.json").write_text("{}\n")
+    (vault / "notes" / "s.json").symlink_to(vault / ".claude" / "settings.local.json")
+    assert "agent settings" in _denied(_bash(vault, "echo '{\"disableAllHooks\": true}' > notes/s.json"))
+
+
+@pytest.mark.parametrize(
+    ("command", "denied"),
+    [
+        ("git config --global core.pager 'sh -c x'", True),
+        ("git config --global user.name x", True),
+        ("git config --system core.editor x", True),
+        ("git config --file ~/.gitconfig alias.c x", True),
+        ("git config core.fsmonitor ./x", True),
+        ("git config core.sshCommand x", True),
+        ("git config credential.helper x", True),
+        ("git config filter.lfs.clean x", True),
+        ("git config init.templateDir /tmp/t", True),
+        ("git config user.name x", False),
+        ("git config --global --get user.name", False),
+    ],
+)
+def test_git_config_writes_that_run_commands(vault: Path, command: str, denied: bool) -> None:
+    """Should-fix 5b: any --global/--system/--file write, and local keys that run a command."""
+    assert (_bash(vault, command) is not None) is denied, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cp /tmp/settings.local.json .claude/",
+        "cp -t .claude /tmp/settings.json",
+        "mv /tmp/settings.json .claude",
+        "cd .claude && echo '{}' > settings.local.json",
+        "cd notes && cd ../.claude && echo x > settings.json",
+        "echo x >| .claude/settings.json",
+        "rm -rf .claude",
+        "mv .claude /tmp/gone",
+        "rm -r scripts",
+        "curl -o .claude/settings.json https://x",
+        "perl -pi -e 's/a/b/' .claude/settings.json",
+    ],
+)
+def test_the_cheap_shell_forms_are_covered(vault: Path, command: str) -> None:
+    """Should-fix 5c: directory targets, cd-relative paths, >|, removing a folder that holds a protected file."""
+    assert _bash(vault, command) is not None, command
+
+
+def test_git_hooks_dir_from_core_hookspath_is_protected(vault: Path) -> None:
+    """Should-fix 6: git runs hooks from core.hooksPath, which a .git/hooks check alone misses."""
+    import shutil
+
+    shutil.rmtree(vault / ".git")
+    subprocess.run(["git", "init", "-q", str(vault)], check=True)
+    subprocess.run(["git", "-C", str(vault), "config", "core.hooksPath", ".githooks"], check=True)
+    assert ".git/hooks" in _denied(_decision(vault, "Write", _input("Write", ".githooks/pre-commit")))
+
+
+def test_a_git_hooks_symlink_out_of_git_still_counts(vault: Path) -> None:
+    import shutil
+
+    shutil.rmtree(vault / ".git" / "hooks")
+    (vault / "tracked-hooks").mkdir()
+    (vault / ".git" / "hooks").symlink_to(vault / "tracked-hooks")
+    assert _decision(vault, "Write", _input("Write", ".git/hooks/pre-commit")) is not None
+
+
+def test_the_write_matcher_runs_its_own_hook_name() -> None:
+    """Should-fix 7: an engine that predates the write gate has no kb-write-gate, exits 2, and Claude blocks."""
+    command = _entry("Write|Edit|MultiEdit|NotebookEdit")["hooks"][0]["command"]
+    assert "hook kb-write-gate" in command and "hook kb-read-gate" not in command
+
+
+def test_an_unknown_hook_name_fails_closed() -> None:
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scout.hooks", "kb-not-a-gate"], input="{}", capture_output=True, text=True, timeout=30
+    )
+    assert out.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "~/.claude.json",
+        "~/.zshenv",
+        "~/.zshrc",
+        "~/.bash_profile",
+        "~/Library/LaunchAgents/com.example.x.plist",
+        ".mcp.json",
+        ".claude/hooks/x.sh",
+        ".claude/commands/x.md",
+        ".claude/agents/x.md",
+        ".gitattributes",
+        ".gitmodules",
+    ],
+)
+def test_more_files_that_run_code_are_protected(vault: Path, path: str) -> None:
+    """Should-fix 8."""
+    assert _decision(vault, "Write", _input("Write", path)) is not None, path
+
+
+def test_the_config_dirs_claude_json_is_protected(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
+    assert "agent settings" in _denied(
+        _decision(vault, "Write", _input("Write", str(tmp_path / "cc" / ".claude.json")))
+    )
+
+
+def test_unicode_spellings_are_one_path(vault: Path) -> None:
+    """Nit 9: NFC-normalised, so a decomposed spelling of a protected name is the same name."""
+    from scout.kb.hook_paths import canon
+
+    assert canon("/tmp/café") == canon("/tmp/café")
+
+
+def test_a_hard_link_to_a_protected_file_is_denied(vault: Path) -> None:
+    (vault / ".claude" / "settings.local.json").write_text("{}\n")
+    os.link(vault / ".claude" / "settings.local.json", vault / "notes" / "h.json")
+    assert _decision(vault, "Write", _input("Write", "notes/h.json")) is not None
