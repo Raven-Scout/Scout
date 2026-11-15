@@ -287,7 +287,7 @@ def test_replay_names_sandbox_only_forms(vault: Path, monkeypatch) -> None:
     rules = sbx.build_rules(vault)
     assert replay._form(os.path.realpath(vault), vault, rules) == "a folder holding a protected path"
     secret = os.path.realpath(vault.parent / "home" / ".scout-secrets") + "/k"
-    assert replay._form(secret, vault, rules) == "Scout's secrets"
+    assert replay._form(secret, vault, rules) == hook_paths.SECRETS
     assert replay._form("/usr/lib/cron/tabs/x", vault, rules) == "sandbox-only rule"
 
 

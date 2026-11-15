@@ -96,13 +96,7 @@ def _form(target: str, vault: Path, rules: list[sbx.Rule]) -> str:
         return form
     if any(r.op == "file-write-unlink" and sbx._matches(r, target) for r in rules):
         return "a folder holding a protected path"
-    if any(_under_any(target, d) for d in sbx.secrets_dirs(os.environ)):
-        return "Scout's secrets"
-    return "sandbox-only rule"
-
-
-def _under_any(target: str, d: Path) -> bool:
-    return sbx._under(target, os.path.realpath(d))
+    return "sandbox-only rule"  # the secrets are a hook_paths form too (#637), so protected_write names them
 
 
 def _collect(command: str) -> list[tuple[str, bool]]:

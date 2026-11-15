@@ -156,6 +156,7 @@ def test_replay_counts_denies_by_form_and_reports_no_paths(tmp_path: Path) -> No
             ("Bash", {"command": "python3 -c \"print(open('scripts/claude-with-retry.sh').read())\""}),
             ("Bash", {"command": "ls ~/.scout-secrets/ | grep telegram; cat ~/.scout-secrets/linear-api-key"}),
             ("Bash", {"command": "T=$(mktemp -d); rm -rf $T"}),
+        ("Bash", {"command": "python3 -c \"open('.git/hooks/post-merge','w').write('')\""}),
         ],
     )
     _session(project, "owner", "claude-desktop", [("Edit", {"file_path": str(vault / ".git" / "config")})])
@@ -163,9 +164,10 @@ def test_replay_counts_denies_by_form_and_reports_no_paths(tmp_path: Path) -> No
     report = replay.replay(project, vault, limit=50)
 
     assert report["sessions"] == 1
-    assert report["tool_calls"] == 6
+    assert report["tool_calls"] == 7
     assert report["denied_writes_by_form"] == {"agent settings": 1, ".git/hooks": 1}
-    assert report["inline_program_literals_under_a_deny"] == {}  # the program only reads it (#637 round 3)
+    # The program that only reads a runner script isn't counted (#637 round 3); the one that writes a hook is.
+    assert report["inline_program_literals_under_a_deny"] == {".git/hooks": 1}
     assert report["denied_secret_reads"] == 1
     assert report["git_subcommands"] == {"commit": 1}
     assert str(vault) not in json.dumps(report) and str(tmp_path) not in replay.format_report(report)
