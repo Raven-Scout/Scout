@@ -223,3 +223,52 @@ def test_signature_change_in_sub_bullets_triggers_verbatim_fallback(tmp_path: Pa
     created = materialize_mod.materialize(data_dir=tmp_path, date=TODAY)
     text = created.read_text(encoding="utf-8")
     assert "  - owner: they close at 5" in text
+
+
+# --- Never carry an item-less file forward ---------------------------------------
+
+
+def test_skips_item_less_day_and_carries_last_good_one(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _write_daily(
+        vault,
+        "2026-07-04",
+        "# Action Items — Saturday, Jul 4, 2026\n\n## 🔴 Urgent\n- [ ] [#AAAA] **call the bank**\n",
+    )
+    # A briefing died mid-rewrite: only the run-notes section survived.
+    _write_daily(
+        vault,
+        "2026-07-05",
+        "# Action Items — Sunday, Jul 5, 2026\n\n## 🪵 Run notes & connector availability\n- ran\n",
+    )
+
+    text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
+
+    assert "- [ ] [#AAAA] **call the bank**" in text
+    assert "[[action-items-2026-07-04]]" in text
+    assert "Skipped an item-less day" in text
+    assert "2026-07-05 had no checklist items" in text
+
+
+def test_cleared_board_is_not_item_less(tmp_path: Path) -> None:
+    """A board with only `- [x]` lines was cleared on purpose: carry it, never resurrect older items."""
+    vault = _vault(tmp_path)
+    _write_daily(vault, "2026-07-04", "# Action Items — Saturday, Jul 4, 2026\n- [ ] [#AAAA] **old**\n")
+    _write_daily(vault, "2026-07-05", "# Action Items — Sunday, Jul 5, 2026\n- [x] [#AAAA] **old**\n")
+
+    text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
+
+    assert "[[action-items-2026-07-05]]" in text
+    assert "Skipped an item-less day" not in text
+    assert "- [ ] [#AAAA]" not in text
+
+
+def test_all_item_less_falls_back_to_newest(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _write_daily(vault, "2026-07-04", "# Action Items — Saturday, Jul 4, 2026\nnothing\n")
+    _write_daily(vault, "2026-07-05", "# Action Items — Sunday, Jul 5, 2026\nstill nothing\n")
+
+    text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
+
+    assert "[[action-items-2026-07-05]]" in text
+    assert "Skipped an item-less day" not in text
