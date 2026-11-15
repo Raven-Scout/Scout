@@ -156,7 +156,7 @@ def test_replay_counts_denies_by_form_and_reports_no_paths(tmp_path: Path) -> No
             ("Bash", {"command": "python3 -c \"print(open('scripts/claude-with-retry.sh').read())\""}),
             ("Bash", {"command": "ls ~/.scout-secrets/ | grep telegram; cat ~/.scout-secrets/linear-api-key"}),
             ("Bash", {"command": "T=$(mktemp -d); rm -rf $T"}),
-        ("Bash", {"command": "python3 -c \"open('.git/hooks/post-merge','w').write('')\""}),
+            ("Bash", {"command": "python3 -c \"open('.git/hooks/post-merge','w').write('')\""}),
         ],
     )
     _session(project, "owner", "claude-desktop", [("Edit", {"file_path": str(vault / ".git" / "config")})])
