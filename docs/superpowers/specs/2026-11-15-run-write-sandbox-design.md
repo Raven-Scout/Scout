@@ -94,6 +94,7 @@ fresh outside the sandbox at every attempt and passed by value (§4).
 | A long-running daemon that runs commands for its clients: Docker (`docker run -v ~/Scout:/v …`), a tmux/screen server, `ssh localhost` | Unix-socket connects to `docker.sock`, `tmux-*/`, `.screen/` and TCP to loopback :22 are denied. This is the one network change. |
 | cron / at | Writes to `/usr/lib/cron` and `/private/var/at` are denied (crontab is setuid; the sandbox survives exec) |
 | Other spawners we haven't listed (the Claude desktop app, Scout.app, a user's own agent daemons) | **Residual.** Named in the doc and the PR; health can't see it. |
+| **Commit a changed protected tracked file without writing it** (`git hash-object -w` + `git update-index --cacheinfo` + `git commit`, or `commit-tree` + `update-ref`), so a later unsandboxed `reset --hard`, checkout or pull on any machine writes it | **Residual, open (§13).** The git carve-outs let a run write objects, the index and refs, and the file on disk stays intact during the run. Fix options are in §13. |
 
 Per-command git tricks stay with the hook layer (non-goal above). A run can still
 *commit* with `-c core.hooksPath=/dev/null` if it also gets past #607's shell gate,
@@ -414,3 +415,25 @@ All of Q1–Q8 were answered with the recommendation.
   commits. Real claude 2.1.318 finished a session against FakeAnthropic, writing a note,
   committing and writing its transcript; its protected writes were refused and
   `~/.claude.json` was left as it was.
+- **Found after the build: a run can commit a protected tracked file's change without
+  writing the file.** The carve-outs let git write objects, the index and refs. So
+  `git hash-object -w` + `git update-index --cacheinfo … scripts/claude-with-retry.sh`
+  + `git commit` lands an edited runner script in HEAD. The file on disk is untouched
+  (the kernel refuses `git checkout --` into it), but the next unsandboxed `git reset
+  --hard`, checkout or pull writes it, including a pull on another machine that shares
+  the vault. That's no worse than before Phase 1c, when a run could just write the file,
+  but it is a hole in the guarantee. A throwaway check in a scratch repo reproduced it.
+  Options, for Jordan:
+  1. **Post-run integrity check (recommended).** Outside the sandbox, after claude
+     exits, the runner compares the protected tracked paths (`hook_paths`' vault files:
+     runner scripts, `.gitattributes`, `.gitmodules`, `.mcp.json`, `.claude/…`) in
+     HEAD, in the index and in every ref the run moved, against the run's start. On a
+     change, it restores them in a new commit, records it, and turns health red. It
+     judges results, not commands, so plumbing doesn't get past it.
+  2. A pre-commit refusal. Plumbing (`commit-tree`) skips hooks, so it leans on #607's
+     parser again.
+  3. The Phase 1d commit broker: no git writes inside the sandbox at all.
+- **More attack cases (from #637's list of what it leaves to 1c):** a script the run
+  writes and then runs; `chr()`- and base64-built names in inline Python; `tar -C` into
+  the git dir; `find -exec`; `xargs`; `git checkout --` of a staged blob over a runner
+  script. The kernel refuses every one; all 27 attacks are pinned.
