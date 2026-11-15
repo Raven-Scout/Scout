@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from scout.kb.structure import Marker
+from tests._gate_probe import HOOKED_CLAUDE_PRELUDE
 from tests.eval.harness.build import EVAL_ROOT, build_vault
 from tests.eval.harness.checks.kb_writing import (
     KB_CHECKS,
@@ -570,8 +571,12 @@ def test_kb_score_prints_a_json_report_and_exits_by_verdict(tmp_path: Path, caps
     assert main(["kb-score", str(tmp_path / "nowhere")]) == 2
 
 
-FAKE_CLAUDE = """#!/usr/bin/env python3
-import json, os
+FAKE_CLAUDE = (
+    """#!/usr/bin/env python3
+import json, os, sys
+"""
+    + HOOKED_CLAUDE_PRELUDE
+    + """
 servers = [s for s in os.environ["EVAL_FAKE_SERVERS"].split(",") if s]
 print(json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "apiKeySource": "none",
                   "mcp_servers": [{"name": s, "status": "connected"} for s in servers]}), flush=True)
@@ -579,6 +584,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "nu
                   "duration_ms": 1000, "total_cost_usd": 0.01, "result": "Nothing to do.",
                   "usage": {"input_tokens": 1, "output_tokens": 1}}))
 """
+)
 
 
 def test_kb_gate_runs_one_session_and_writes_the_report(
