@@ -765,3 +765,65 @@ def test_derivation_and_matcher_code_rules() -> None:
     assert not dm._config_derives(b"[1, 2]\n", b"a: 1\n", "d")
     assert dm._config_derives(b"privacy:\n  delegates:\n    d: {include_private: true}\n", b"a: 1\n", "d")
     assert len(dm._matcher_source()) == 64
+
+
+def test_the_signing_key_missing_garbled_or_made_concurrently(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    key = dm.secrets_dir() / dm.STATE_KEY
+    assert key.stat().st_mode & 0o777 == 0o600 and not str(key).startswith(str(vault))
+    saved = key.read_text(encoding="utf-8")
+    key.unlink()
+    with pytest.raises(rs.RepoSyncError) as e:  # signed by a key this computer no longer has
+        dm.load_links(vault)
+    assert e.value.code == "state_unverified"
+    key.write_text("not hex\n", encoding="utf-8")
+    assert dm._state_key(create=False) is None
+    key.unlink()
+    real_open = dm.os.open
+
+    def racing(path: object, flags: int, mode: int = 0o777) -> int:
+        key.write_text(saved, encoding="utf-8")  # another process got there first
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(dm.os, "open", racing)
+    assert dm._state_key(create=True) == bytes.fromhex(saved.strip())
+    monkeypatch.setattr(dm.os, "open", real_open)
+    assert dm.load_links(vault)  # the original key again: the state verifies
+
+
+def test_a_signed_state_of_the_wrong_shape_is_unreadable(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    key = dm._state_key(create=False)
+    assert key is not None
+    doc: dict[str, object] = {"schema_version": 1, "links": {"grok-personal": "not a link"}}
+    doc["mac"] = dm._sign(key, "links", doc)
+    dm.state_path(vault).write_text(json.dumps(doc), encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.load_links(vault)
+    assert e.value.code == "state_unreadable"
+
+
+def test_check_tree_refuses_a_changed_mode_or_symlink(vault: Path) -> None:  # noqa: F811
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    link = next(f for f in the_plan.files if f.mode == "120000")
+    other = rs.git(vault, "hash-object", "-w", "--stdin", input="knowledge-base/people").stdout.strip()
+    for swap in (
+        {PRIYA: dm.MirrorFile(PRIYA, "100755", None, _blob(vault, PRIYA))},
+        {link.path: dm.MirrorFile(link.path, link.mode, None, other)},
+    ):
+        p, _ = (the_plan, head)
+        files = [swap.get(f.path, f) for f in p.files]
+        planned = dataclasses.replace(p, files=files)
+        commit = git(vault, "commit-tree", dm.write_tree(vault, planned), "-m", "x").strip()
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", list(swap)
