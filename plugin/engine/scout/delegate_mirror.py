@@ -230,6 +230,7 @@ LEFT_OUT_REASONS = {
     "legacy_office": "an old binary Office file",
     "mislabeled": "named as an image, sound, video or PDF, but its bytes aren't one (or hold an archive)",
     "not_text": "not text, and not a type the mirror can scan",
+    "broken_metadata": "its metadata can't be read",
 }
 LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
 MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until clean
@@ -1188,14 +1189,23 @@ def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Poli
     if kind in ("binary", "mislabeled", "archive"):
         # A label-only file's metadata, and the contents of any zip a file is or hides: a name there leaves it
         # out whatever allow_unscanned says.
-        readings = [delegate_media.metadata(rel, data)] if kind != "archive" else []
+        broken = False
+        readings: list[str] = []
+        if kind != "archive":
+            meta, broken = delegate_media.read(rel, data)
+            readings.append(meta)
+        if kind == "mislabeled" and not containers.looks_like(rel, data):
+            readings.append(containers.strings(data))  # not media at all: its plain text, under a glob too
         if containers.is_zip(data):
             readings += containers.unpack(data, posixpath.splitext(rel.lower())[1]).parts
         hit = _readings_name_hidden(readings, scan, rel)
         if hit == "names_hidden":
             return hit
         if kind == "binary":
-            return None
+            # Metadata that didn't parse can't be vouched for: what did parse was scanned above.
+            if not broken and hit is None:
+                return None
+            return None if allowed_unscanned(rel, policy) else (hit or "broken_metadata")
     if kind == "container":
         unpacked = containers.unpack(data, posixpath.splitext(rel.lower())[1])
         # Every reading the unpacking got to, even past a refusal: a name anywhere leaves the file out,

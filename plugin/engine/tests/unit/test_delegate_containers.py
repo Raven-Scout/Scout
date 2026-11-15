@@ -58,7 +58,7 @@ def test_runs_split_inside_a_word_are_joined_and_metadata_is_one_field_a_line() 
     got = _clean(of.docx(_runs(_r("Pri"), "<w:r><w:rPr><w:b/></w:rPr><w:t>ya</w:t></w:r>")))
     assert _named(got)
     lines = set(got.text.splitlines())
-    assert {"Alex", "Quarterly plan"} <= lines and "Example Co" not in lines  # app.xml's Company is a tool field
+    assert {"Alex", "Quarterly plan", "Example Co"} <= lines  # app.xml's Company is read: it names an organisation
 
 
 def test_attributes_comments_and_member_names_are_read() -> None:

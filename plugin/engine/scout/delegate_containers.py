@@ -84,7 +84,8 @@ from scout import delegate_media
 # hidden note named after a vendor ("Microsoft", "Adobe") doesn't leave out every Office file.
 _TOOL_PART = re.compile(r"(?:^|/)(?:fontTable\.xml|theme/[^/]+\.xml)$", re.IGNORECASE)
 _TOOL_FIELDS = {
-    "docprops/app.xml": frozenset({"Application", "AppVersion", "Company", "Template"}),
+    # Company stays: it names an organisation, often the client's own (#639 review, round 4).
+    "docprops/app.xml": frozenset({"Application", "AppVersion", "Template"}),
     "meta.xml": frozenset({"generator", "template"}),
 }
 # Elements whose attributes are typeface names (w:rFonts, a:latin, xl's <font><name val>, ODF font-face).
@@ -607,7 +608,13 @@ def _part(name: str, raw: bytes, odf: bool, out: Unpacked, depth: int = 0) -> No
         if ext in MEDIA_TYPES and _signed(name, raw):
             # An image, a sound, a video or a font: its descriptive metadata, never a raw strings pass (compressed
             # pixels would now and then spell a name). EMF and WMF draw text as records: their strings are text.
-            out.add(strings(raw) if ext in (".emf", ".wmf") else delegate_media.metadata(name, raw))
+            if ext in (".emf", ".wmf"):
+                out.add(strings(raw))
+                return
+            meta, broken = delegate_media.read(name, raw)
+            out.add(meta)
+            if broken:
+                out.refuse("broken_part")
             return
         out.add(strings(raw))
         if not _KNOWN_BINARY.match(name):
