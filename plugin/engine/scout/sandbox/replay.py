@@ -119,12 +119,14 @@ def _bash_targets(command: str) -> tuple[list[tuple[str, bool]] | None, list[tup
     """(what the command writes or removes for certain, that plus every inline program's path literals)."""
     try:
         everything = _collect(command)
-        real = live_run._inline_program
-        live_run._inline_program = lambda _words: False  # type: ignore[assignment]
+        # The same command with #637's inline-program check (live_run._program_escape) switched off: what is
+        # left is what the shell itself writes.
+        real = live_run._program_escape
+        live_run._program_escape = lambda *_a, **_k: None
         try:
             definite = _collect(command)
         finally:
-            live_run._inline_program = real
+            live_run._program_escape = real
     except Exception:  # noqa: BLE001 - a command the parser can't read is counted, not fatal
         return None, []
     return definite, everything

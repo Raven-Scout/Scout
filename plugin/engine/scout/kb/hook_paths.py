@@ -30,7 +30,13 @@ Protected (each with the form name a deny and the audit row use):
   plugin the vault's pre-commit hook calls;
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
   ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
-- ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``.
+- ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
+- ``Scout's secrets``: ``~/.scout-secrets`` and ``$SCOUT_SECRETS_DIR`` (also read-gated in runs: Read, Grep, Glob,
+  and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS`);
+- ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json`` and ``.scout-state/delegate-scan/``.
+
+:func:`protected_specs` is the list as built (before resolving and case-folding), for the OS write sandbox
+(Phase 1c); :func:`protected_roots` is it normalised for matching.
 
 A path is compared after ``~``, ``..`` and symlinks are resolved *and* as spelled (so a
 ``.git/hooks`` that is a symlink out of ``.git`` still counts), NFC-normalised and
@@ -43,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import unicodedata
@@ -61,8 +68,11 @@ STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
 # The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
 SANDBOX_SWITCH_NAME = "run-sandbox.json"
+SECRETS = "Scout's secrets"
+DELEGATE_STATE = "Scout's delegate state"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
+INLINE_WRITE = "an inline program that writes next to a protected name"
 
 AGENT_DIRS = (".codex", ".gemini", ".agents", ".grok", ".cursor")
 CLAUDE_SETTINGS_FILES = ("settings.json", "settings.local.json")
@@ -227,7 +237,9 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     return roots
 
 
-_ENV_KEYS = ("HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT")
+_ENV_KEYS = (
+    "HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT", "SCOUT_SECRETS_DIR",
+)  # fmt: skip
 _ROOTS_CACHE: dict[tuple[str, ...], list[Root]] = {}
 
 
@@ -250,6 +262,16 @@ def _build_roots(vault: Path | None, env: Mapping[str, str]) -> list[Root]:
         for key in {canon(spec.path, env), spelled(spec.path, env)}:
             roots.append(Root(key, spec.form, spec.tree))
     return roots
+
+
+def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
+    """Where Scout keeps its API keys and tokens: ``~/.scout-secrets``, and ``$SCOUT_SECRETS_DIR`` when it is set
+    (scout.linear_activity.secrets_dir reads the same variable)."""
+    home = Path(env.get("HOME") or Path.home())
+    dirs = [home / ".scout-secrets"]
+    if env.get("SCOUT_SECRETS_DIR"):
+        dirs.append(Path(env["SCOUT_SECRETS_DIR"]))
+    return dirs
 
 
 def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Spec]:
@@ -282,6 +304,10 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
             add(vault / name, AGENT_SETTINGS, tree=True)
         for rel in RUNNER_FILES:
             add(vault / rel, RUNNER_SCRIPTS, tree=False)
+        # Which delegates exist and what their mirrors may hold (#550): a run that wrote these could widen a
+        # delegate's view of the vault.
+        add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
+        add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
@@ -304,6 +330,8 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
     for name in SHELL_STARTUP:
         add(home / name, STARTUP, tree=False)
     add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
+    for secrets in secrets_dirs(env):
+        add(secrets, SECRETS, tree=True)
     return roots
 
 
@@ -361,13 +389,70 @@ def removes_protected(target: str | Path, vault: Path | None, env: Mapping[str, 
     return None
 
 
-def unresolved_could_be_protected(path: str, vault: Path | None, env: Mapping[str, str] | None = None) -> str | None:
-    """A written path with a ``$variable`` the gate couldn't resolve: deny when its literal parts could still
-    name a protected file (``$d/settings.local.json``, ``$HOME/.gitconfig``), else None."""
-    literal = [part for part in path.split("/") if part and "$" not in part and "`" not in part]
-    if not literal:
-        return None
-    names: set[str] = set()
-    for root in protected_roots(vault, env):
-        names.add(root.key.rsplit("/", 1)[-1])
-    return UNRESOLVED if any(_norm(part) in names for part in literal) else None
+# The two secrets a run reads itself (`scoutctl notify telegram`, and the run prompts' Telegram steps).
+TELEGRAM_SECRETS = ("telegram-bot-token", "telegram-chat-id")
+
+
+def _secret_roots(env: Mapping[str, str]) -> set[str]:
+    return {key for d in secrets_dirs(env) for key in (canon(d, env), spelled(d, env))}
+
+
+def secret_read(target: str | Path, env: Mapping[str, str] | None = None) -> str | None:
+    """:data:`SECRETS` when reading ``target`` reads one of Scout's secrets, else None.
+
+    The Telegram token and chat id are a run's to read. Both spellings are judged, so a link named like one of
+    them that points at another secret is still a secret.
+    """
+    env = os.environ if env is None else env
+    roots = _secret_roots(env)
+    for key in (canon(target, env), spelled(target, env)):
+        for root in roots:
+            if _under(key, root) and key[len(root) :].lstrip("/") not in TELEGRAM_SECRETS:
+                return SECRETS
+    return None
+
+
+def holds_secrets(target: str | Path, env: Mapping[str, str] | None = None) -> bool:
+    """Whether a folder searched from ``target`` takes in one of Scout's secrets folders (``~`` does)."""
+    env = os.environ if env is None else env
+    keys = {canon(target, env), spelled(target, env)}
+    return any(_under(root, key) for root in _secret_roots(env) for key in keys)
+
+
+# Names only the protected files carry (no generic word like ``config`` or ``hooks``). A program that writes files
+# and names one of these is denied even when the gate can't follow how it builds the path (os.path.join,
+# Path / "…", string concatenation). scoutctl and git-safe-commit.sh are left out: runs call them all the time.
+PROTECTED_TOKENS: tuple[str, ...] = (
+    ".claude",
+    "settings.local.json",
+    ".claude.json",
+    ".mcp.json",
+    ".git",
+    ".gitconfig",
+    ".gitattributes",
+    ".gitmodules",
+    ".scoutctl-py-cache",
+    "engine.json",
+    "hooks.json",
+    "pyvenv.cfg",
+    ".scout-secrets",
+    "delegate-mirrors.json",
+    "delegate-scan",
+    "LaunchAgents",
+    *AGENT_DIRS,
+    *SHELL_STARTUP,
+    *sorted(
+        {r.rsplit("/", 1)[-1] for r in RUNNER_FILES} - {"scoutctl", "git-safe-commit.sh"},
+    ),
+)
+_TOKEN_RE = re.compile(
+    r"(?<![\w.-])(" + "|".join(re.escape(t) for t in sorted(PROTECTED_TOKENS, key=len, reverse=True)) + r")(?![\w.-])",
+    re.IGNORECASE,
+)
+
+
+def protected_token(text: str) -> str | None:
+    """The first :data:`PROTECTED_TOKENS` name in ``text`` (case ignored), ending a path component: ``.gitignore``
+    is not ``.git``, nor a template ``claude-with-retry.sh.tmpl`` a runner script. Else None."""
+    m = _TOKEN_RE.search(unicodedata.normalize("NFC", text))
+    return m[1] if m else None

@@ -79,7 +79,7 @@ PLUGIN_DATA = "data"
 # ~/.scout-secrets: no reads of the contents, no writes (#636's review). Metadata (stat, `test -s`) stays allowed.
 # The Telegram wrap is sent from inside the session (phases/connectors/telegram.md, 18 of the last 50 runs), so
 # its two files stay readable until a send-only broker exists (spec Q8).
-SECRETS_READABLE: tuple[str, ...] = ("telegram-bot-token", "telegram-chat-id")
+SECRETS_READABLE: tuple[str, ...] = hook_paths.TELEGRAM_SECRETS
 
 # The ways out of a sandbox (spec §3): a daemon or service that runs a command for its client, outside it.
 SPAWN_EXECS: tuple[str, ...] = ("/bin/launchctl", "/usr/bin/open", "/usr/bin/osascript")
@@ -126,14 +126,9 @@ def _claude_dirs(env: Mapping[str, str]) -> list[Path]:
 
 
 def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
-    """~/.scout-secrets and ``$SCOUT_SECRETS_DIR``, if set: what :func:`scout.linear_activity.secrets_dir` resolves
-    (the engine's one override-aware helper; a test keeps the two in step), plus the default it overrides, which
-    notify_telegram and delegate_mirror still read directly."""
-    home = Path(env.get("HOME") or Path.home())
-    dirs = [home / ".scout-secrets"]
-    if env.get("SCOUT_SECRETS_DIR"):
-        dirs.append(Path(env["SCOUT_SECRETS_DIR"]))
-    return dirs
+    """~/.scout-secrets and ``$SCOUT_SECRETS_DIR``: :func:`scout.kb.hook_paths.secrets_dirs`, the one definition both
+    layers use (it reads the variable :func:`scout.linear_activity.secrets_dir` reads)."""
+    return hook_paths.secrets_dirs(env)
 
 
 def _under(path: str, root: str) -> bool:
