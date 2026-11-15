@@ -49,7 +49,7 @@ def vault(tmp_path: Path) -> Path:
     for placeholder, value in {
         "{{SCOUT_DIR}}": str(v),
         "{{CLAUDE_BIN}}": str(v / "bin" / "claude"),
-        "{{SCOUTCTL_BIN}}": "/nonexistent/scoutctl",  # the connector-health roll-up is skipped
+        "{{SCOUTCTL_BIN}}": "/usr/bin/true",  # a no-op engine: the gate probe passes, every other step does nothing
         "{{INSTANCE_NAME_LOWER}}": "scout",
         "{{INSTANCE_NAME}}": "Scout",
         "{{MAX_BUDGET}}": "25",

@@ -255,7 +255,7 @@ _scout_awake_now() {
     # sleeps: CLOCK_UPTIME_RAW on macOS, CLOCK_MONOTONIC on Linux (both exclude
     # suspend). Without python3, wall time -- the clock name keeps the two
     # from ever being subtracted from each other.
-    python3 -c 'import time; c = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC); print("awake", int(time.clock_gettime(c)))' 2>/dev/null \
+    python3 -I -c 'import time; c = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC); print("awake", int(time.clock_gettime(c)))' 2>/dev/null \
         || echo "wall $(date +%s)"
 }
 
@@ -464,7 +464,7 @@ _scout_witness() {
     local window="${SCOUT_REDUNDANT_WINDOW_MIN:-60}"
     case "$window" in ''|*[!0-9]*) window=60 ;; esac
     command -v python3 >/dev/null 2>&1 || return 0
-    python3 - "$LOG_DIR/run-outcomes.jsonl" "$RUNNER_KIND" "$(date +%s)" "$window" <<'PY' 2>/dev/null || true
+    python3 -I - "$LOG_DIR/run-outcomes.jsonl" "$RUNNER_KIND" "$(date +%s)" "$window" <<'PY' 2>/dev/null || true
 import json, sys
 ledger, kind, now, window = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 best = None
