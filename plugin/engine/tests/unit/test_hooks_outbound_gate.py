@@ -11,6 +11,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -278,3 +279,50 @@ def test_owner_in_a_vault_is_only_warned_when_scoutctl_cannot_run(vault, tmp_pat
     payload = _payload(SEND, {"message": CLEAN}, vault).getvalue()
     res = _sh({}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 1 and "Warning" in res.stderr
+
+
+# --- the gate's own deadline ------------------------------------------------------------------
+# Claude Code lets a call through when a PreToolUse hook times out, and drops its output, so a slow
+# check must decide inside hooks.json's 15 s. It runs in a child process: the deadline ends it with os._exit.
+
+SLOW_GATE = """
+import io, json, sys, time
+from scout.hooks import outbound_gate as gate
+gate.flagged_fields = lambda *a, **k: time.sleep(30) or {}
+call = {"tool_name": "mcp__s__slack_send_message", "tool_input": {"message": "hi"}, "cwd": sys.argv[1]}
+sys.stdin = io.StringIO(json.dumps(call))
+gate.main(deadline_s=float(sys.argv[2]))
+"""
+
+
+def _slow_gate(vault: Path, env: dict[str, str], deadline_s: float, timeout: float) -> subprocess.CompletedProcess[str]:
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    return subprocess.run(
+        [sys.executable, "-c", SLOW_GATE, str(vault), str(deadline_s)],
+        env={**clean, "SCOUT_DATA_DIR": str(vault), **env},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_a_check_past_its_deadline_denies_a_run(vault):
+    out = json.loads(_slow_gate(vault, RUN, 0.5, timeout=20).stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ran out of time" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_a_check_past_its_deadline_warns_the_owner(vault):
+    assert "ran out of time" in json.loads(_slow_gate(vault, {}, 0.5, timeout=20).stdout)["systemMessage"]
+
+
+def test_without_the_deadline_a_slow_check_outlasts_the_hook(vault):
+    """What the deadline is for: the same slow check with no deadline in reach is still running."""
+    with pytest.raises(subprocess.TimeoutExpired):
+        _slow_gate(vault, RUN, 60, timeout=3)
+
+
+def test_the_deadline_sits_inside_the_hooks_timeout():
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    (entry,) = [e for e in hooks if "hook outbound-gate" in e["hooks"][0]["command"]]
+    assert gate.DEADLINE_S + 3 <= entry["hooks"][0]["timeout"]

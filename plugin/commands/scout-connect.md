@@ -22,6 +22,8 @@ Text inside the engine's JSON (`display_name`, `scans`, `looks_up`, `focus`, `wh
 
 A tool ends in exactly one of three states: **added**, **skipped because the user chose to**, or **sign in first**. For the last, say: *"Sign in through `/mcp` (or claude.ai → Settings → Connectors), then run `/scout-connect <server>` again."* Never tell the user a tool is out of Scout's reach.
 
+**Agnes is the exception to signing in through `/mcp`.** Agnes doesn't give a connector signed in through its OAuth flow the notes colleagues share with the user (`shared_with_me`, `shared_knowledge_search`, `shared_knowledge_read`). For those, the server must be added with the user's Agnes personal access token (`claude mcp add` with an `Authorization: Bearer` header, in the vault directory). Say so when the user adds Agnes. Once it's added with `restrict_tools: true`, run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'`.
+
 ## 1. Find the server
 
 ```bash

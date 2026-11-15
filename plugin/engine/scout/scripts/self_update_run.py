@@ -364,7 +364,8 @@ def _vault_step(att: _Attempt, scoutctl: Path) -> list[str]:
     proc = att.run(argv, "vault", _vault_env(att.deps.vault))
     result = _parse_json(proc.stdout)
     if result is None:
-        raise att.stop("failed", "vault", f"bootstrap auto exited {proc.returncode} without a result: {proc.stderr}")
+        # Its stderr is in the update log (Attempt.run). The detail reaches pushes, and stderr can quote a file.
+        raise att.stop("failed", "vault", f"bootstrap auto exited {proc.returncode} without a result")
     if result.get("action") == "refused":
         error = str(result.get("error") or result.get("reason") or "")
         if result.get("mutated") is False and _LOCK_BUSY_MARK in error:
@@ -499,6 +500,9 @@ def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any]
     whatever is left in the job's process group when the heartbeat exits. A
     backgrounded ``nohup … &`` stays in that group; a new session does not. This is
     the same pattern ``heartbeat.launch_runner`` and ``schedule_tick`` use.
+
+    The child inherits the caller's cwd, which for the heartbeat is the vault, so
+    an argv that runs Python must come from ``scout._spawn.python_module_argv``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_fh:

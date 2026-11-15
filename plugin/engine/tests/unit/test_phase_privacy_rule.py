@@ -95,6 +95,11 @@ def test_every_brain_file_carries_the_privacy_rule(kind: str, connectors: set[st
         "never drops the wrap",
         "scoutctl kb read <path>",  # the sanctioned read of a note the run isn't editing
         "copy its title exactly as written",  # owner-only surfaces: no paraphrase, no "(private)" tag
+        # Notes shared with the reader (Agnes Shared Areas §7, ruling 10): private to the reader, cited, never copied.
+        "shared_knowledge_read",
+        "`<owner>'s shared note <path>`",
+        "`source: shared:<owner-email>:<path>`",
+        "Never copy a note whole",
     ):
         assert needle in rule, needle
 

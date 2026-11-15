@@ -109,7 +109,9 @@ def test_upgrade_with_the_template_missing_leaves_the_vault_gitignore_alone(vaul
     before = gitignore.read_text(encoding="utf-8") + "secrets.env\n"
     gitignore.write_text(before, encoding="utf-8")
     pruned = tmp_path / "pruned-plugin"
-    shutil.copytree(PLUGIN_ROOT, pruned, ignore=shutil.ignore_patterns(".git", ".venv", "*.egg-info", "__pycache__"))
+    # `.coverage*`: on the coverage job, parallel workers create and delete these mid-copy.
+    ignored = shutil.ignore_patterns(".git", ".venv", "*.egg-info", "__pycache__", ".coverage*")
+    shutil.copytree(PLUGIN_ROOT, pruned, ignore=ignored)
     (pruned / "templates" / ".gitignore.tmpl").unlink()
 
     upgrade(BootstrapConfig(**{**_config(vault, version="0.4.1").__dict__, "plugin_root": pruned}))

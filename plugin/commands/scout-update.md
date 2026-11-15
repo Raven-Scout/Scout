@@ -25,7 +25,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -55,7 +55,7 @@ grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/de
 Scout's plugin lives in `Raven-Scout/Scout` under `plugin/`. That repo is the former `Raven-Scout/scout-plugin`, renamed when the app moved in; GitHub redirects the old name, so a marketplace that still says `Raven-Scout/scout-plugin` is fine. A `scout-plugin` marketplace pointing at any other repo makes Step 0.5's refresh "succeed" while pulling nothing of Scout's, so the vault would be upgraded against the wrong templates. Check before refreshing:
 
 ```bash
-python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
+python3 -I - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
 import json, os, re, sys
 try:
     entry = json.load(open(sys.argv[1], encoding="utf-8")).get("scout-plugin")
@@ -112,7 +112,7 @@ else
   # registered, so the resolver below would hand back the old plugin. update switches it,
   # once for every scope Scout is installed in (update alone only touches user scope).
   SCOPES="$(claude plugin list --json 2>/dev/null \
-    | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
+    | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
     || echo user)"
   for scope in $SCOPES; do
     claude plugin update scout@scout-plugin --scope "$scope" || echo "PLUGIN_UPDATE_FAILED:$scope"
@@ -134,7 +134,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -159,7 +159,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -220,7 +220,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -248,7 +248,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -292,6 +292,8 @@ If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKI
   templated, so upgrades leave them untouched — and every upgrade re-renders the
   custom connectors' sections from the current templates.
 
+  That means a new tool never reaches a `restrict_tools` allowlist on its own. Run `"$SCOUTCTL" connectors custom list`. If a connector reads Agnes and has `restrict_tools: true`, tell the user: *colleagues can share notes with you through Agnes. Your Scout can read them only if this connector lists the three read-only tools for it; what it reads stays private to you.* Ask first, and on a yes run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'` (`SCOUTCTL` as set in the block above). Also tell them the connector must sign in with their Agnes personal access token: Agnes doesn't offer shared notes to a connector signed in through its OAuth flow (`/mcp`). Skip this step if nothing is restricted or the user says no; ask again on a later update only if they raise it.
+
 ## Step 3b: Per-note privacy — legacy markers and local-only trading paths
 
 First tell the user, in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by them and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by default, with no line needed (`visibility: normal` on one of them opts it out). `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `scoutctl kb policy` shows the effective policy, including the paths that never leave this computer.
@@ -306,7 +308,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -349,7 +351,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }

@@ -90,6 +90,11 @@ echo "=== {{INSTANCE_NAME}} Dreaming run starting at $(date) ===" >> "$LOG_FILE"
 # labelled for that reader.
 export SCOUT_READER=autonomous
 
+# Claude Code otherwise sets its process title to "claude", which hides its argv
+# from ps. The commit hook reads that argv to tell this run's commits from the
+# owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
 # These write to .scout-cache/ for DREAMING.md to consume.
 PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"
@@ -122,6 +127,31 @@ if [ -x "$BUDGET_CHECK" ]; then
     fi
 fi
 
+# Gate probe: Scout's privacy gates are Claude Code hooks, and a claude that
+# doesn't load hooks (bare mode, which Claude Code's docs say will become the -p
+# default) would run with every gate off. Before each run, `scoutctl gates probe`
+# checks for free against a local fake endpoint that this claude, with these
+# flags, fires the kb-read-gate (cached per claude version for 24 h); if it
+# doesn't, or the probe can't tell, the run is skipped (spec 2026-11-13 §3.5).
+# A missing scoutctl skips the run too: the hooks run another scoutctl (the
+# plugin's), so a broken one here says nothing about whether claude loads them.
+GATE_RC=127
+if [ -x "$SCOUTCTL_BIN" ]; then
+    GATE_RC=0
+    "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" >> "$LOG_FILE" 2>&1 || GATE_RC=$?
+fi
+if [ "$GATE_RC" -eq 4 ] || [ "$GATE_RC" -eq 5 ]; then
+    GATE_CAUSE=endpoint
+    [ "$GATE_RC" -eq 5 ] && GATE_CAUSE=launcher
+    echo "=== Gate probe: Scout couldn't check its privacy hooks safely here ($GATE_CAUSE; see scoutctl gates probe) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip "gates_unsafe_$GATE_CAUSE"
+    exit 0
+elif [ "$GATE_RC" -ne 0 ]; then
+    echo "=== Gate probe failed, or scoutctl is missing at $SCOUTCTL_BIN: Scout's privacy hooks are not known to load in $CLAUDE_BIN — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
+    scout_record_skip skipped_gates
+    exit 0
+fi
+
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
 # session-tokens — see hooks/hooks.json) see it inside the claude child
 # process. When it is unset, session-tool-log deliberately writes nothing (so
@@ -143,19 +173,25 @@ fi
 export SCOUT_MODEL
 echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
 
+# The session's --name. Every retry attempt gets the same one, so the cost step
+# below can find each attempt's transcript by it.
+RUN_NAME="{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)"
 START_TIME=$(date +%s)
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
 # ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+# With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
+# and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE=dreaming SCOUT_RUN_STARTED="$START_TIME" \
+    "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \
     --permission-mode auto \
     --model "$SCOUT_MODEL" \
     --max-budget-usd {{MAX_BUDGET}} \
-    --name "{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)" \
+    --name "$RUN_NAME" \
     -p "$PROMPT" \
     || EXIT_CODE=$?
 END_TIME=$(date +%s)
@@ -196,9 +232,24 @@ else
     echo "connector-health roll-up skipped: scoutctl not found at $SCOUTCTL_BIN" >> "$LOG_FILE"
 fi
 
-# Track session cost (skill self-reports actual cost from inside the session via the
-# same script; this runner call is a fallback so failed/crashed runs still leave a row).
+# Track session cost. A session can't know its own spend, so the runner records it:
+# `scoutctl budget record-run` reads claude's own figure (the cost-state row it writes
+# at exit) from every attempt's transcript and writes the runner's row with it, which
+# the budget check counts in place of the session's row. Without that command (an
+# older engine), the old fallback row with $0, so a failed run still leaves a row.
 COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
-if [ -x "$COST_TRACKER" ]; then
+if [ -x "$SCOUTCTL_BIN" ] && "$SCOUTCTL_BIN" budget record-run "dreaming" --name "$RUN_NAME" \
+    --started "$START_TIME" --cap {{MAX_BUDGET}} --exit-code "$EXIT_CODE" >> "$LOG_FILE" 2>&1; then
+    :
+elif [ -x "$COST_TRACKER" ]; then
     "$COST_TRACKER" "dreaming" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
+fi
+
+# Delegate mirrors (#550 V2c): push what this run changed to the owner's agents' mirrors.
+# Last, after the cost record, so the run's own bookkeeping never waits on a push. Only a vault
+# that links one has the state file, and `--if-moved` skips a mirror HEAD hasn't moved for.
+# A failure is recorded for run health and `scoutctl bootstrap doctor`; it never changes this
+# run's exit code.
+if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then
+    "$SCOUTCTL_BIN" delegate sync --all --if-moved >> "$LOG_FILE" 2>&1 || true
 fi

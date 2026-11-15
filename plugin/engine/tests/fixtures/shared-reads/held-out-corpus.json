@@ -1,0 +1,46 @@
+{
+  "about": "Invented text only, and none of the privacy fixture vault's private note names (its `billing` note would refuse the word on its own). `shared` are notes a colleague shares with the reader. `ordinary` is the reader's own writing on the same projects, which nobody shared: it reuses project phrases up to nine words long, or scatters a shared sentence's words across a long paragraph, and must pass. `refused` quotes ten words or more, or rewords one sentence closely, and must be refused.",
+  "owner": "priya@example.com",
+  "shared": [
+    {
+      "path": "knowledge-base/projects/widget/rollout-plan.md",
+      "title": "Widget rollout plan",
+      "text": "We'll send the updated rollout plan to the board on Monday. The pilot covers three regions, and support staffing doubles for the first two weeks. If the vendor misses the audit again, the launch moves to the next quarter and finance rebudgets the marketing spend."
+    },
+    {
+      "path": "knowledge-base/projects/invoicing/migration-notes.md",
+      "title": "Invoicing migration notes",
+      "text": "The invoicing migration runs over the weekend, starting Friday night after the last invoice batch. Customers on the legacy plan keep their current price until the renewal date. Rollback means restoring the snapshot and replaying the payment queue, which takes about four hours."
+    },
+    {
+      "path": "knowledge-base/topics/hiring/interview-loop.md",
+      "title": "Interview loop",
+      "text": "Each candidate meets the hiring manager, two engineers and someone from product. The take-home exercise should take no more than three hours. Feedback goes into the tracker within one business day of the interview."
+    },
+    {
+      "path": "knowledge-base/projects/widget/vendor-review.md",
+      "title": "Vendor review findings",
+      "text": "The vendor review found gaps in access logging and in how backups are encrypted. They promised fixes by the end of the month, but the last two promises slipped. Sam suggested we keep a second vendor warm in case this one fails the audit."
+    }
+  ],
+  "ordinary": [
+    "I'll send the updated rollout plan to Sam tomorrow.",
+    "Support staffing doubles for the first two weeks of every launch we run.",
+    "The invoicing migration runs over the weekend again, so expect alerts.",
+    "Customers on the legacy plan keep their discount, per the new policy.",
+    "Each candidate meets the hiring manager first, then the panel.",
+    "Feedback goes into the tracker within a day, please.",
+    "They promised fixes by the end of the month for the dashboard bug.",
+    "The take-home exercise should take no more than an evening, I think.",
+    "Quick status for everyone: the payment page redesign is in review with design and should land next sprint if nothing else comes up, while the queue dashboard that ops asked for still needs work on filters, exports, alert routing and the empty states, plus four more screens of copy from marketing, and the hours I logged this week went mostly to the snapshot tests, which are flaky on the shared runners, so after lunch I'm replaying the failed jobs from yesterday, then restoring the staging data that someone wiped on Tuesday, which takes a while on that box, and finally the rollback checklist, which means we can ship whenever product signs off, assuming legal is happy with the terms page.",
+    "Reminder that the vendor portal is down for maintenance this weekend."
+  ],
+  "refused": [
+    "The pilot covers three regions, and support staffing doubles for the first two weeks.",
+    "starting Friday night after the last invoice batch, customers on the legacy plan",
+    "Feedback goes into the tracker within one business day of the interview, as usual.",
+    "If the vendor fails the audit again, the launch slips to next quarter and finance rebudgets the marketing spend.",
+    "The snapshot restore and a replay of the payment queue are what a rollback means, and it takes four hours.",
+    "Sam suggested keeping a second vendor warm in case this one fails its audit."
+  ]
+}

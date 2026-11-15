@@ -73,7 +73,7 @@ def test_a_checker_error_lets_the_owner_commit_with_a_warning_and_a_row(
     i = lines.index("kb-lint: privacy check could not run")
     assert lines[i + 1] == (
         "kb-lint: WARNING: the privacy check could not run (RuntimeError); this commit was NOT checked "
-        "for private links in shared files. Run scoutctl doctor."
+        "for private links in shared files. Run scoutctl bootstrap doctor."
     )
     assert "CANARY" not in out
     assert _events(vault) == []

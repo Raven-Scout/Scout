@@ -33,6 +33,14 @@
 # (a Python pre-check would add ~20-60 ms to every hook call). A cache that
 # fails the check is deleted, and we fall through to the full probe. The cache
 # lives inside the plugin so different plugin installs don't share state.
+#
+# Every Python call here passes -P (Python 3.11+, which the engine requires).
+# `python -m` and `python -c` put the working directory first on sys.path, and
+# hooks, the pre-commit hook and the heartbeat run this with the vault as cwd,
+# so a vault-root typer.py, yaml.py or scout/ would be imported in place of the
+# engine's. -P leaves the cwd off. A python3 older than 3.11 rejects -P, which
+# changes nothing: it could not run the engine anyway. scout/_spawn.py does the
+# same for the engine's own `python -m` children.
 set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -47,7 +55,7 @@ CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 MODULE=scout.cli
 if [ "${1:-}" = hook ]; then
     case "${2:-}" in
-        kb-read-gate | kb-read-label | outbound-gate)
+        kb-read-gate | kb-read-label | outbound-gate | shared-read-record)
             MODULE=scout.hooks
             shift
             ;;
@@ -81,7 +89,7 @@ if [ -r "$CACHE_FILE" ]; then
         done
     } <"$CACHE_FILE"
     if [ -n "$CACHED_PY" ] && [ -x "$CACHED_PY" ] && [ "$STAMPED" = 1 ] && [ "$MISSING" = 0 ]; then
-        exec "$CACHED_PY" -m "$MODULE" "$@"
+        exec "$CACHED_PY" -P -m "$MODULE" "$@"
     fi
     rm -f "$CACHE_FILE" 2>/dev/null || true
 fi
@@ -139,13 +147,13 @@ fi
 
 for VENV_PY in "${candidates[@]}"; do
     # The probe gets /dev/null as stdin, which leaves the hook payload for the real call.
-    if [ -x "$VENV_PY" ] && STAMP_LINES="$("$VENV_PY" -c "$PROBE" </dev/null 2>/dev/null)"; then
+    if [ -x "$VENV_PY" ] && STAMP_LINES="$("$VENV_PY" -P -c "$PROBE" </dev/null 2>/dev/null)"; then
         # Best-effort write to the cache so the next call skips the probe.
         # Failures (read-only plugin root in Claude Code's cache copy, no
         # write perms, etc.) are silently ignored.
         printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE" 2>/dev/null || true
-        exec "$VENV_PY" -m "$MODULE" "$@"
+        exec "$VENV_PY" -P -m "$MODULE" "$@"
     fi
 done
 
-exec python3 -m "$MODULE" "$@"
+exec python3 -P -m "$MODULE" "$@"

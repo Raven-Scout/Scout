@@ -60,6 +60,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels
 from scout.kb.reader import resolve_reader
+from scout.yaml_safe import load_yaml, yaml_problem
 
 Outcome = Literal["rewritten", "unchanged", "refused"]
 
@@ -240,7 +241,11 @@ def private_links_in_shared(vault: Path, *, persist: bool = True) -> list[tuple[
         own = terms
         if labels[rel].visibility == "private":
             # any_term is only a pre-check, so a superset of the remaining notes' terms is fine.
-            own = PrivateTerms(notes=tuple(n for n in terms.notes if n.path != rel), any_term=terms.any_term)
+            own = PrivateTerms(
+                notes=tuple(n for n in terms.notes if n.path != rel),
+                any_term=terms.any_term,
+                any_bare=terms.any_bare,
+            )
         lines = find_mentions(data.decode("utf-8", errors="replace"), own, allow_markers=True)
         if lines:
             out.append((rel, lines))
@@ -367,7 +372,10 @@ def add_local_only(vault: Path, globs: Iterable[str]) -> list[str]:
     root = vault.resolve()
     config = paths.config_path(root)
     text = config.read_text(encoding="utf-8") if config.exists() else ""
-    data = yaml.safe_load(text) if text.strip() else {}
+    try:
+        data = load_yaml(text) if text.strip() else {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"scout-config.yaml doesn't parse ({yaml_problem(e, text)}); fix it by hand first") from e
     if data is None:
         data = {}
     if not isinstance(data, dict):
@@ -425,7 +433,7 @@ class _StrictLoader(yaml.SafeLoader):
 def _load(text: str) -> Any:
     """``yaml.safe_load`` that rejects duplicate keys; None when it doesn't parse."""
     try:
-        return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - a SafeLoader subclass
+        return load_yaml(text, loader=_StrictLoader)
     except yaml.YAMLError:
         return None
 

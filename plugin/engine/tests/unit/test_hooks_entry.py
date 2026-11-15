@@ -28,8 +28,10 @@ def run(name, body):
     assert main([name]) == 0
 run("kb-read-gate", {"tool_name": "Bash", "tool_input": {"command": "cat knowledge-base/people/sam.md"}})
 run("kb-read-gate", {"tool_name": "Grep", "tool_input": {"pattern": "x"}})
+run("kb-read-gate", {"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}})
 run("kb-read-label", {"tool_name": "Read", "tool_input": {"file_path": str(vault / "knowledge-base/people/sam.md")}})
 run("outbound-gate", {"tool_name": "mcp__s__slack_send_message", "tool_input": {"message": "Ask Sammy."}})
+run("shared-read-record", {"tool_name": "mcp__s__shared_with_me", "tool_response": {"owners": []}})
 heavy = sorted(m for m in sys.modules if m == "typer" or m.startswith("typer.") or m in ("click", "scout.cli"))
 print("HEAVY=" + json.dumps(heavy))
 """
@@ -63,7 +65,7 @@ def test_the_launcher_routes_exactly_the_entrys_hooks_to_it():
     text = LAUNCHER.read_text()
     (case,) = re.findall(r'case "\$\{2:-\}" in\s+([^)]+)\)\s+MODULE=scout\.hooks', text)
     assert {name.strip() for name in case.split("|")} == set(HOOKS)
-    assert text.count('-m "$MODULE" "$@"') == 3 and "-m scout.cli" not in text
+    assert text.count('-P -m "$MODULE" "$@"') == 3 and "-m scout.cli" not in text
 
 
 def test_the_launcher_runs_a_hook_through_the_entry(vault):
