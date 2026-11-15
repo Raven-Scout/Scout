@@ -228,7 +228,7 @@ LEFT_OUT_REASONS = {
     "names_hidden": "names a hidden note inside",
     "archive": "an archive",
     "legacy_office": "an old binary Office file",
-    "mislabeled": "an archive or Office file named as an image, sound, video or PDF",
+    "mislabeled": "named as an image, sound, video or PDF, but its bytes aren't one (or hold an archive)",
     "not_text": "not text, and not a type the mirror can scan",
 }
 LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
@@ -1162,7 +1162,8 @@ def _content(rel: str, data: bytes) -> tuple[str, str | None]:
     if ext in BINARY_TYPES:
         # The bytes decide here too: an archive or an Office file renamed scan.png or scan.pdf isn't kept on
         # the label an image gets.
-        return ("mislabeled" if data.startswith(containers.ARCHIVE_MAGIC) else "binary"), None
+        disguised = data.startswith(containers.ARCHIVE_MAGIC) or containers.is_zip(data)
+        return ("mislabeled" if disguised or not containers.looks_like(rel, data) else "binary"), None
     if ext in containers.CONTAINER_TYPES:
         return "container", None
     if ext in containers.ARCHIVE_TYPES:
@@ -1184,8 +1185,17 @@ def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Poli
     file. One that can't be vouched for, an archive, an old binary Office file and anything else that
     can't be scanned go only under ``allow_unscanned``; one whose text names a hidden file never does.
     """
-    if kind == "binary":
-        return None
+    if kind in ("binary", "mislabeled", "archive"):
+        # A label-only file's metadata, and the contents of any zip a file is or hides: a name there leaves it
+        # out whatever allow_unscanned says.
+        readings = [containers.media_metadata(rel, data)] if kind != "archive" else []
+        if containers.is_zip(data):
+            readings += containers.unpack(data, posixpath.splitext(rel.lower())[1]).parts
+        hit = _readings_name_hidden(readings, scan, rel)
+        if hit == "names_hidden":
+            return hit
+        if kind == "binary":
+            return None
     if kind == "container":
         unpacked = containers.unpack(data, posixpath.splitext(rel.lower())[1])
         # Every reading the unpacking got to, even past a refusal: a name anywhere leaves the file out,
@@ -1204,7 +1214,10 @@ def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Poli
 
 
 SCAN_CHUNK = 256 * 1024  # readings are scanned in batches of about this many characters
-MAX_SCAN_SECONDS = 30.0  # one container's scan; past it the file is too large to vouch for (fails closed)
+# A far backstop for one file's scan, past which it is too large to vouch for (fails closed). The 2M-character
+# cap (delegate_containers.MAX_TEXT_CHARS) already bounds a scan at about 8 s, so the build and check_tree agree
+# unless the machine is far slower than that.
+MAX_SCAN_SECONDS = 120.0
 
 
 def _readings_name_hidden(parts: Sequence[str], scan: Scanner, rel: str) -> str | None:
@@ -1403,6 +1416,11 @@ class ScanMemo:
 
     def put(self, rel: str, entry: list[Any]) -> None:
         self.seen[rel] = entry
+
+    def discard(self) -> None:
+        """Forget every result: check_tree refused a tree built from them."""
+        with contextlib.suppress(OSError):
+            self.path.unlink(missing_ok=True)
 
     def save(self, the_plan: Plan) -> None:
         """Keep this build's results (the files it saw, nothing stale), once its new blobs are written."""
@@ -1820,9 +1838,14 @@ def _build_and_push(
     )
     parent = None if fresh else link.last_mirror
     parent_tree = git(vault, "rev-parse", "--verify", "-q", f"{parent}^{{tree}}", check=False) if parent else None
-    if parent_tree is not None and parent_tree.stdout.strip() == tree:
+    if parent is not None and parent_tree is not None and parent_tree.stdout.strip() == tree:
+        # The same tree is current only under the fingerprint check_tree passed it under. Anything else (a note
+        # hidden since, new code, a memo "keep" this build trusted) means the remote's tree is checked again.
+        checked = link.checked_fingerprint
+        if checked != the_plan.fingerprint:
+            checked = _checked(vault, memo, parent, link.id, head, trusted=None)
         result.unchanged = True
-        return result, dataclasses.replace(link, last_vault=head, last_sync=_now())
+        return result, dataclasses.replace(link, last_vault=head, last_sync=_now(), checked_fingerprint=checked)
     # The remote must be this delegate's own mirror before anything is built on it: the link state is no proof,
     # since whatever can read the signing key can sign a forged one.
     check_remote(link.remote, vault=vault, gh=gh)
@@ -1838,7 +1861,7 @@ def _build_and_push(
     args = ["commit-tree", "--no-gpg-sign", tree] + (["-p", parent] if parent else [])
     commit = git(vault, *args, env=IDENTITY, input=MESSAGE).stdout.strip()
     trusted = (link.last_mirror, link.checked_fingerprint) if link.last_mirror and link.checked_fingerprint else None
-    fingerprint = check_tree(vault, commit, link.id, head, trusted=None if fresh else trusted)
+    fingerprint = _checked(vault, memo, commit, link.id, head, trusted=None if fresh else trusted)
     check_remote(link.remote, vault=vault, gh=gh)  # again, right before the push
     git(vault, "update-ref", mirror_ref(link.id), commit)  # keeps its objects while it is pending
     record(dataclasses.replace(link, pending_mirror=commit))
@@ -1858,6 +1881,18 @@ def _build_and_push(
         checked_fingerprint=fingerprint,
     )
     return result, done
+
+
+def _checked(
+    vault: Path, memo: ScanMemo, rev: str, delegate: str, head: str, *, trusted: tuple[str, str] | None
+) -> str:
+    """:func:`check_tree`; when it refuses, the memo the build trusted goes too, so the next sync scans afresh
+    instead of failing on the same rows for ever."""
+    try:
+        return check_tree(vault, rev, delegate, head, trusted=trusted)
+    except RepoSyncError:
+        memo.discard()
+        raise
 
 
 DROP_WARN_MIN = 5  # left-out files below this never warn: a few redaction casualties are normal

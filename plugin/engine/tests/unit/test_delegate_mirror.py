@@ -12,7 +12,9 @@ import base64
 import dataclasses
 import json
 import shutil
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 
 import pytest
@@ -43,6 +45,15 @@ INBOX_CANARY = CANARIES[".scout-inbox/phone-notifications-2026-10-01.jsonl"]
 TRADING_CANARY = CANARIES["trading/positions.md"]
 BROKEN_CANARY = CANARIES["knowledge-base/topics/misc/broken.md"]
 PRIYA = "knowledge-base/people/priya.md"
+
+
+def _png(kind: bytes, body: bytes, tail: bytes = b"") -> bytes:
+    """A PNG with one chunk of ``kind`` holding ``body``, then IEND, then ``tail``."""
+
+    def chunk(k: bytes, b: bytes) -> bytes:
+        return struct.pack(">L", len(b)) + k + b + struct.pack(">L", zlib.crc32(k + b))
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", b"\x00" * 13) + chunk(kind, body) + chunk(b"IEND", b"") + tail
 
 
 def _commit(vault: Path, rel: str, text: str, subject: str) -> None:
@@ -588,7 +599,7 @@ def test_a_local_only_config_means_no_mirror(vault: Path, tmp_path: Path) -> Non
 
 def test_odd_files_binary_undecodable_absolute_links_lookalikes_and_label_changes(vault: Path, tmp_path: Path) -> None:
     files = {
-        "notes/pic.png": b"\x89PNG\x00\x00binary [[sam]]",
+        "notes/pic.png": _png(b"IDAT", b"binary [[sam]]"),  # the image data itself isn't read
         "notes/latin1.txt": b"caf\xe9 [[sam]]\n",
         "notes/clean.json": b'{"ok": true}\n',
         "notes/bare.md": b"# Bare\n\nWith [[sam]] here.\nKept line.\n",
@@ -1381,14 +1392,15 @@ def test_text_with_a_binary_extension_is_scanned(vault: Path, tmp_path: Path) ->
         {
             "attachments/summary.pdf": b"Notes on Sammy, see [[sam]]\n",
             "attachments/plain.pdf": b"nothing private\n",
-            "attachments/real.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00Sammy\n",
+            "attachments/real.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00Weekly figures\n",
+            "attachments/author.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00<< /Author (Sammy) >>\n",  # its metadata
         },
         "pdfs",
     )
     bare = _bare(tmp_path, "grok")
     _link(vault, "grok-personal", bare)
     files = _head_files(bare)
-    assert "attachments/summary.pdf" not in files
+    assert not {"attachments/summary.pdf", "attachments/author.pdf"} & files
     assert {"attachments/plain.pdf", "attachments/real.pdf"} <= files  # a real binary: kept on its label
     commit, head = _tampered(vault, "grok-personal", {"attachments/plain.pdf": b"Sammy [[sam]]\n"})
     with pytest.raises(rs.RepoSyncError) as e:
@@ -1789,7 +1801,7 @@ UNSCANNABLE = {
     "attachments/protected.xlsx": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 a password-protected workbook",
     "attachments/corrupt.pptx": of.pptx()[:-40],
     "attachments/nested.docx": of.docx(extra={"word/embeddings/sheet.xlsx": of.xlsx()}),
-    "attachments/bundle.zip": of.zipped({"plan.txt": "Sammy"}),
+    "attachments/bundle.zip": of.zipped({"plan.txt": "budget notes"}),
     "attachments/backup.tar.gz": b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03 compressed",
     "attachments/photos.7z": b"7z\xbc\xaf\x27\x1c\x00\x04 archive",
     "attachments/old.doc": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 an old Word file",
@@ -1919,6 +1931,25 @@ def test_an_archive_or_office_file_named_as_an_image_or_pdf_is_left_out(vault: P
     with pytest.raises(rs.RepoSyncError) as e:
         dm.check_tree(vault, commit, "grok-personal", head)
     assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_allow_unscanned_never_ships_a_name_inside_an_embedded_or_renamed_document(vault: Path) -> None:
+    """Round 2 of the #639 review: what a zip holds, or a picture's metadata, is read under the glob too."""
+    named = of.docx(SPLIT_NAME)
+    files = {
+        "attachments/embeds.docx": of.docx(extra={"word/embeddings/Document1.docx": named}),
+        "attachments/media.docx": of.docx(extra={"word/media/image1.png": named}),
+        "attachments/renamed.png": named,
+        "attachments/glued.png": _png(b"IDAT", b"\x00") + named,
+        "attachments/tagged.png": _png(b"tEXt", b"Author\x00Sammy"),
+        "attachments/named.zip": of.zipped({"plan.txt": "Sammy"}),
+    }
+    _commit_files(vault, {**files, "attachments/plain.png": _png(b"tEXt", b"Title\x00Holiday")}, "nested")
+    _allow_unscanned(vault, '["attachments/*"]')
+    the_plan, _head = _planned(vault)
+    kept = {f.path for f in the_plan.files}
+    assert not set(files) & kept and "attachments/plain.png" in kept
+    assert {p: the_plan.left_out_files.get(p) for p in files} == dict.fromkeys(files, "names_hidden")
 
 
 def test_allow_unscanned_only_in_the_uncommitted_config_ships_nothing(vault: Path) -> None:

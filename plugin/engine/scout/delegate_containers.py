@@ -34,10 +34,15 @@ the reader got to still counts, except for the three that stop it:
 - ``too_large``: over :data:`MAX_FILE_BYTES`, over :data:`MAX_MEMBERS` parts (read
   from the end-of-directory record, before the directory is parsed), over
   :data:`MAX_UNPACKED_BYTES` unpacked (declared, then counted as read) or over
-  :data:`MAX_TEXT_CHARS` of readings: the zip-bomb guard;
-- ``unreadable``: not a zip, a corrupt one or one whose members overlap. A
-  password-protected Office file is an OLE compound file, not a zip, so it
-  lands here;
+  :data:`MAX_TEXT_CHARS` of readings: the zip-bomb guard. A name past the
+  point where reading stopped isn't seen, so such a file ships only under an
+  ``allow_unscanned`` glob, as one that can't be scanned does;
+- ``unreadable``: not a zip, a corrupt one, one whose members overlap, one
+  whose member doesn't fill its span exactly (a deflate stream that ends
+  early is fine only if the bytes after it are read as stray), or one packed
+  other than stored or deflated (any decoder error lands here too, never an
+  exception). A password-protected Office file is an OLE compound file, not
+  a zip, so it lands here;
 - ``encrypted``: a zip-encrypted part, or an OpenDocument manifest that lists
   encryption.
 
@@ -46,7 +51,8 @@ And the ones that don't:
 - ``macros``: a ``vbaProject.bin``, or an OpenDocument ``Basic/`` or ``Scripts/``
   folder;
 - ``nested_archive``: a part that is itself an archive or an Office file (an
-  embedded spreadsheet), by name or by its first bytes;
+  embedded spreadsheet), by name or by its first bytes. A zip part is read
+  too, one level deep and within the same budget, so a name inside it counts;
 - ``unscannable_part``: a binary part that isn't a known image, sound, video or
   font, or one whose bytes don't look like one (an embedded OLE object, an
   ActiveX control); printer settings and LibreOffice's layout cache are known
@@ -61,6 +67,7 @@ And the ones that don't:
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import posixpath
 import re
@@ -121,7 +128,8 @@ _ASCII_STRINGS = re.compile(rb"[\x20-\x7e\t]{4,}")
 _UTF16_STRINGS = re.compile(rb"(?:[\x20-\xff]\x00){4,}")
 # Values that are never a name: numbers, cell references, ids.
 _TRIVIAL = re.compile(
-    r"^(?:[-+]?[\d.,eE:%\s]*|\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|\{?[0-9A-Fa-f-]{8,}\}?|[A-Za-z]?\d*)$"
+    r"^(?:[-+]?[\d.,eE:%\s]*|\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|[A-Za-z]?\d*"
+    r"|\{?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}?|(?=[^\d]*\d)[0-9A-Fa-f]{8,})$"
 )
 # Excel header/footer codes: sections (&L &C &R), fields (&P &N &D &T &A &F &Z &G), styles (&B &I &U &E &S &X &Y
 # &H &O), a font (&"name,style"), a size (&12), a colour (&K…).
@@ -171,6 +179,7 @@ class Unpacked:
     parts: list[str] = field(default_factory=list)
     refusal: str | None = None
     chars: int = 0
+    budget: int = 0  # unpacked bytes left to read, shared with a nested document
 
     @property
     def text(self) -> str:
@@ -362,22 +371,23 @@ def check_layout(data: bytes, out: Unpacked) -> None:
         raise _Stop("unreadable")
     _stray(out, data[:base])
     cd_start, cd_end = base + cd_offset, tail
-    members: list[tuple[int, int, int]] = []  # local header offset, compressed size, flags
+    members: list[tuple[int, int, int, int, int]] = []  # local header offset, packed and unpacked size, flags, method
     at = cd_start
     for _ in range(entries):
         if data[at : at + 4] != b"PK\x01\x02":
             raise _Stop("unreadable")
         f = struct.unpack_from("<4s6H3L5H2L", data, at)
-        flags, csize, usize, nlen, xlen, clen, lho = f[3], f[8], f[9], f[10], f[11], f[12], f[16]
+        flags, method, csize, usize, nlen, xlen, clen, lho = f[3], f[4], f[8], f[9], f[10], f[11], f[12], f[16]
         extra = _extras(data[at + 46 + nlen : at + 46 + nlen + xlen], out)
         usize, csize, lho = _zip64(extra, usize, csize, lho)
-        members.append((base + lho, csize, flags))
+        members.append((base + lho, csize, usize, flags, method))
         at += 46 + nlen + xlen + clen
     if at > cd_end:
         raise _Stop("unreadable")
     _stray(out, data[at:cd_end])
     pos = base
-    for lho, csize, flags in sorted(members):
+    unpacked = 0
+    for lho, csize, usize, flags, method in sorted(members):
         if lho < pos:
             raise _Stop("unreadable")  # overlapping members
         _stray(out, data[pos:lho])
@@ -385,7 +395,9 @@ def check_layout(data: bytes, out: Unpacked) -> None:
             raise _Stop("unreadable")
         nlen, xlen = struct.unpack_from("<HH", data, lho + 26)
         _extras(data[lho + 30 + nlen : lho + 30 + nlen + xlen], out)
-        pos = lho + 30 + nlen + xlen + csize
+        start = lho + 30 + nlen + xlen
+        unpacked += _span(data[start : start + csize], usize, flags, method, out, MAX_UNPACKED_BYTES - unpacked)
+        pos = start + csize
         if flags & 0x8:  # a data descriptor follows: signed or not, 32- or 64-bit sizes
             if data[pos : pos + 4] == b"PK\x07\x08":
                 pos += 4
@@ -394,6 +406,38 @@ def check_layout(data: bytes, out: Unpacked) -> None:
     if pos > cd_start:
         raise _Stop("unreadable")
     _stray(out, data[pos:cd_start])
+
+
+def _span(span: bytes, usize: int, flags: int, method: int, out: Unpacked, budget: int) -> int:
+    """Check that a member's data is exactly its stream; bytes after the stream are stray. Its unpacked size.
+
+    zipfile reads a stored member only up to its unpacked size and a deflated one only to the end of its
+    stream, so anything after that inside the member's span would otherwise go unread. Office writes only
+    stored and deflated members; any other method is ``unreadable``.
+    """
+    if flags & 0x1:
+        raise _Stop("encrypted")
+    if method == 0:
+        if usize > len(span):
+            raise _Stop("unreadable")
+        _stray(out, span[usize:])
+        return usize
+    if method != 8:
+        raise _Stop("unreadable")
+    d = zlib.decompressobj(-15)
+    rest, total = span, 0
+    while not d.eof:
+        chunk = d.decompress(rest, _CHUNK)
+        rest = d.unconsumed_tail
+        total += len(chunk)
+        if total > budget:
+            raise _Stop("too_large")
+        if not chunk and not rest:
+            break
+    if not d.eof or total != usize:
+        raise _Stop("unreadable")
+    _stray(out, d.unused_data + rest)
+    return total
 
 
 # ----- reading the parts -----------------------------------------------------------------------
@@ -410,24 +454,135 @@ def _read(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> bytes | No
     return bytes(buf)
 
 
+def is_zip(data: bytes) -> bool:
+    """Whether ``data`` is, or ends with, a zip: its first bytes, or an end-of-directory record that closes it."""
+    if data.startswith((b"PK\x03\x04", b"PK\x05\x06")):
+        return True
+    at = data.rfind(b"PK\x05\x06", max(0, len(data) - 65557))
+    return at >= 0 and at + 22 <= len(data) and at + 22 + struct.unpack_from("<H", data, at + 20)[0] == len(data)
+
+
+def _riff(kind: bytes) -> Callable[[bytes], bool]:
+    return lambda d: d[:4] == b"RIFF" and d[8:12] == kind
+
+
+_MOV_ATOMS = (b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot")
+# What a vault file of each label-only type starts with (delegate_mirror.BINARY_TYPES).
+_LOOKS_LIKE: dict[str, Callable[[bytes], bool]] = {
+    ".png": lambda d: d.startswith(b"\x89PNG\r\n\x1a\n"),
+    ".jpg": lambda d: d.startswith(b"\xff\xd8\xff"),
+    ".jpeg": lambda d: d.startswith(b"\xff\xd8\xff"),
+    ".gif": lambda d: d.startswith((b"GIF87a", b"GIF89a")),
+    ".webp": _riff(b"WEBP"),
+    ".wav": _riff(b"WAVE"),
+    ".heic": lambda d: d[4:8] == b"ftyp",
+    ".m4a": lambda d: d[4:8] == b"ftyp",
+    ".mp4": lambda d: d[4:8] == b"ftyp",
+    ".mov": lambda d: d[4:8] in _MOV_ATOMS,
+    ".bmp": lambda d: d.startswith(b"BM"),
+    ".ico": lambda d: d.startswith(b"\x00\x00\x01\x00"),
+    ".tif": lambda d: d.startswith((b"II*\x00", b"MM\x00*")),
+    ".tiff": lambda d: d.startswith((b"II*\x00", b"MM\x00*")),
+    ".pdf": lambda d: b"%PDF-" in d[:1024],
+    ".mp3": lambda d: d.startswith(b"ID3") or (len(d) > 1 and d[0] == 0xFF and d[1] & 0xE0 == 0xE0),
+}
+
+
+def looks_like(rel: str, data: bytes) -> bool:
+    """Whether a vault file's bytes are the image, sound, video or PDF its extension names."""
+    check = _LOOKS_LIKE.get(_ext(rel))
+    return check is None or check(data)
+
+
+_WINDOW = 64 * 1024
+
+
+def _png_metadata(data: bytes) -> list[bytes]:
+    """A PNG's text and EXIF chunks (zTXt inflated) and any bytes after its last chunk."""
+    out: list[bytes] = []
+    at = 8
+    while at + 12 <= len(data):
+        size, kind = struct.unpack_from(">L4s", data, at)
+        body = data[at + 8 : at + 8 + size]
+        if kind in (b"tEXt", b"iTXt", b"eXIf"):
+            out.append(body)
+        elif kind == b"zTXt":
+            d = zlib.decompressobj()
+            with contextlib.suppress(zlib.error):
+                out.append(d.decompress(body.split(b"\0", 1)[-1][1:], _WINDOW))
+        at += 12 + size
+        if kind == b"IEND":
+            break
+    out.append(data[at:])  # anything after IEND, or what didn't parse
+    return out
+
+
+def _jpeg_metadata(data: bytes) -> list[bytes]:
+    """A JPEG's application and comment segments (EXIF, XMP, IPTC) and any bytes after its end marker."""
+    out: list[bytes] = []
+    at = 2
+    while at + 4 <= len(data) and data[at] == 0xFF:
+        marker = data[at + 1]
+        if marker == 0xDA:  # start of scan: image data follows
+            break
+        (size,) = struct.unpack_from(">H", data, at + 2)
+        if 0xE0 <= marker <= 0xEF or marker == 0xFE:
+            out.append(data[at + 4 : at + 2 + size])
+        at += 2 + size
+    end = data.rfind(b"\xff\xd9")
+    out.append(data[end + 2 :] if end >= 0 else data[-_WINDOW:])
+    return out
+
+
+def media_metadata(rel: str, data: bytes) -> str:
+    """The text a label-only file carries besides its picture or sound: PNG text chunks, JPEG EXIF/XMP/comments,
+    bytes after the end of the image, and for other types (a PDF's info dictionary, a video's tags) the strings of
+    its first and last 64 KB. The image or sound data itself, and the middle of anything else, isn't read."""
+    ext = _ext(rel)
+    try:
+        if ext == ".png" and data.startswith(b"\x89PNG"):
+            pieces = _png_metadata(data)
+        elif ext in (".jpg", ".jpeg") and data.startswith(b"\xff\xd8"):
+            pieces = _jpeg_metadata(data)
+        else:
+            pieces = [data[:_WINDOW], data[-_WINDOW:]] if len(data) > 2 * _WINDOW else [data]
+    except struct.error:
+        pieces = [data[:_WINDOW], data[-_WINDOW:]]
+    return "\n".join(strings(p) for p in pieces)
+
+
 def unpack(data: bytes, ext: str) -> Unpacked:
     """Every reading of the Office container ``data`` (extension ``ext``), and why it can't be vouched for."""
-    out = Unpacked()
+    out = Unpacked(budget=MAX_UNPACKED_BYTES)
     if len(data) > MAX_FILE_BYTES:
         out.refuse("too_large")
         return out
     try:
         check_layout(data, out)
-        _unpack(data, ext in ODF_TYPES, out)
+        _unpack(data, ext in ODF_TYPES, out, depth=0)
     except _Stop as e:
         out.refuse(e.reason)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, RuntimeError, ValueError, EOFError,
-            OSError, zlib.error, struct.error, gzip.BadGzipFile):  # fmt: skip
+    except Exception:  # any decoder's error (zlib, lzma, struct, XML, a corrupt header): fail closed, never raise
         out.refuse("unreadable")
     return out
 
 
-def _unpack(data: bytes, odf: bool, out: Unpacked) -> None:
+def _nested(raw: bytes, out: Unpacked) -> None:
+    """Read a zip inside a container (an embedded document) into ``out``, one level deep, within the same budget.
+
+    Its own refusals don't stop the outer reading; running out of budget does.
+    """
+    try:
+        check_layout(raw, out)
+        _unpack(raw, b"opendocument" in raw[:200], out, depth=1)
+    except _Stop as e:
+        if e.reason == "too_large":
+            raise
+    except Exception:
+        pass
+
+
+def _unpack(data: bytes, odf: bool, out: Unpacked, *, depth: int) -> None:
     with zipfile.ZipFile(BytesIO(data)) as zf:
         infos = zf.infolist()
         if len(infos) > MAX_MEMBERS:
@@ -448,15 +603,14 @@ def _unpack(data: bytes, odf: bool, out: Unpacked) -> None:
             if ext in ARCHIVE_TYPES or ext in CONTAINER_TYPES or ext in LEGACY_OFFICE_TYPES:
                 out.refuse("nested_archive")
             wanted.append(info)
-        if sum(i.file_size for i in wanted) > MAX_UNPACKED_BYTES:
+        if sum(i.file_size for i in wanted) > out.budget:
             raise _Stop("too_large")
-        budget = MAX_UNPACKED_BYTES
         for info in wanted:
-            raw = _read(zf, info, budget)
+            raw = _read(zf, info, out.budget)
             if raw is None:
                 raise _Stop("too_large")
-            budget -= len(raw)
-            _part(info.filename, raw, odf, out)
+            out.budget -= len(raw)
+            _part(info.filename, raw, odf, out, depth)
 
 
 def _deobfuscated(name: str, raw: bytes) -> bytes:
@@ -475,17 +629,20 @@ def _signed(name: str, raw: bytes) -> bool:
     return any(raw[at : at + len(sig)] == sig for at, sig in _SIGNATURES)
 
 
-def _part(name: str, raw: bytes, odf: bool, out: Unpacked) -> None:
+def _part(name: str, raw: bytes, odf: bool, out: Unpacked, depth: int = 0) -> None:
     """Add one part's readings to ``out``, and its refusal if it can't be vouched for."""
     ext = _ext(name)
     if raw.startswith(ARCHIVE_MAGIC):
         if ext == ".svgz" and raw.startswith(b"\x1f\x8b"):
-            raw = gzip.GzipFile(fileobj=BytesIO(raw)).read(MAX_UNPACKED_BYTES + 1)
-            if len(raw) > MAX_UNPACKED_BYTES:
+            raw = gzip.GzipFile(fileobj=BytesIO(raw)).read(out.budget + 1)
+            if len(raw) > out.budget:
                 raise _Stop("too_large")
-            return _part(name[:-1], raw, odf, out)  # the SVG inside, read as any part is
+            out.budget -= len(raw)
+            return _part(name[:-1], raw, odf, out, depth)  # the SVG inside, read as any part is
         out.refuse("nested_archive")
         out.add(strings(raw))
+        if depth == 0 and is_zip(raw):
+            _nested(raw, out)  # an embedded document: its names count too
         return
     text = _decode(raw)
     if text is None:

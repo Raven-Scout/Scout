@@ -7,6 +7,7 @@ import io
 import random
 import struct
 import zipfile
+import zlib
 
 import pytest
 
@@ -269,3 +270,96 @@ def test_mutated_files_never_raise() -> None:
                 data[at:at] = rng.randbytes(rng.randint(1, 64))
         got = dc.unpack(bytes(data), rng.choice([".docx", ".odt"]))
         assert got.refusal is None or got.refusal in dc.REASONS, (n, got.refusal)
+
+
+# ----- round 2 of the #639 review --------------------------------------------------------------
+
+DOC = f'<w:document xmlns:w="{of.W}"><w:body><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:body></w:document>'.encode()
+
+
+def test_a_hand_written_zip_with_exact_spans_is_clean() -> None:
+    data = of.raw_zip([("word/document.xml", 8, of.deflated(DOC), DOC), ("docProps/app.xml", 0, b"<a/>", b"<a/>")])
+    assert not _named(_clean(data))
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        ("word/document.xml", 8, of.deflated(DOC) + b"Sammy CANARY after the stream", DOC),  # zipfile stops at its end
+        ("word/document.xml", 0, DOC + b"Sammy CANARY past file_size", DOC),  # zipfile reads file_size bytes
+    ],
+)
+def test_bytes_inside_a_members_span_that_zipfile_never_reads_are_stray_and_read(
+    entry: tuple[str, int, bytes, bytes],
+) -> None:
+    got = dc.unpack(of.raw_zip([entry]), ".docx")
+    assert got.refusal == "stray_bytes"
+    assert dm._readings_name_hidden(got.parts, SCAN, "x.docx") == "names_hidden"
+
+
+@pytest.mark.parametrize("method", [12, 14, 99])  # bzip2, LZMA, unknown: Office writes none of them
+def test_a_member_packed_other_than_stored_or_deflated_is_unreadable(method: int) -> None:
+    assert dc.unpack(of.raw_zip([("word/document.xml", method, b"\x00garbage", DOC)]), ".docx").refusal == "unreadable"
+
+
+def test_a_deflate_stream_that_ends_early_or_sizes_that_lie_are_unreadable() -> None:
+    assert dc.unpack(of.raw_zip([("a.xml", 8, of.deflated(DOC)[:-5], DOC)]), ".docx").refusal == "unreadable"
+    assert dc.unpack(of.raw_zip([("a.xml", 8, of.deflated(DOC), DOC + b"x")]), ".docx").refusal == "unreadable"
+    assert dc.unpack(of.raw_zip([("a.xml", 0, DOC[:-1], DOC)]), ".docx").refusal == "unreadable"
+
+
+def test_any_decoder_error_is_unreadable_never_an_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lzma
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise lzma.LZMAError("corrupt input data")
+
+    monkeypatch.setattr(dc, "_unpack", boom)
+    assert dc.unpack(of.docx(), ".docx").refusal == "unreadable"
+
+
+def test_an_embedded_document_is_read_one_level_deep() -> None:
+    inner = of.docx(_runs(_r("Dear Priya")))
+    for name in ("word/embeddings/Document1.docx", "word/media/image1.png", "word/embeddings/blob.bin"):
+        got = dc.unpack(of.docx(extra={name: inner}), ".docx")
+        assert got.refusal == "nested_archive" and _named(got), name
+    deeper = of.docx(extra={"word/embeddings/outer.docx": of.docx(extra={"word/embeddings/inner.docx": inner})})
+    got = dc.unpack(deeper, ".docx")
+    assert got.refusal == "nested_archive" and not _named(got)  # two levels down: refused, not read
+
+
+def test_an_embedded_document_shares_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    inner = of.docx(extra={"word/fill.xml": "<x>" + "a" * 600_000 + "</x>"})
+    monkeypatch.setattr(dc, "MAX_UNPACKED_BYTES", 1_000_000)
+    got = dc.unpack(of.docx(extra={"word/fill.xml": "<x>" + "a" * 600_000 + "</x>", "word/e/d.docx": inner}), ".docx")
+    assert got.refusal == "too_large"
+
+
+def test_is_zip_finds_a_zip_at_the_start_or_closing_the_file() -> None:
+    assert dc.is_zip(of.docx()) and dc.is_zip(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50 + of.docx())
+    assert not dc.is_zip(b"\x89PNG\r\n\x1a\n" + b"PK\x05\x06" + b"\x00" * 40)  # a stray marker that closes nothing
+
+
+def test_label_only_types_are_checked_by_their_first_bytes() -> None:
+    assert dc.looks_like("a.png", b"\x89PNG\r\n\x1a\n...") and not dc.looks_like("a.png", b"GIF89a")
+    assert dc.looks_like("a.pdf", b"junk\n%PDF-1.7") and not dc.looks_like("a.pdf", b"plain")
+    assert dc.looks_like("a.mp3", b"\xff\xfb\x90") and dc.looks_like("a.mov", b"\x00\x00\x00\x08wide")
+    assert dc.looks_like("a.unknown", b"anything")
+
+
+def test_media_metadata_reads_text_chunks_comments_and_what_follows_the_image() -> None:
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">L", len(body)) + kind + body + b"\x00\x00\x00\x00"
+
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", b"\x00" * 13)
+    text = png + chunk(b"tEXt", b"Author\x00Priya") + chunk(b"IDAT", b"Hidden pixels") + chunk(b"IEND", b"")
+    meta = dc.media_metadata("a.png", text)
+    assert "Priya" in meta and "Hidden pixels" not in meta  # image data isn't read
+    ztxt = png + chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"for Priya")) + chunk(b"IEND", b"")
+    assert "for Priya" in dc.media_metadata("a.png", ztxt)
+    assert "Priya" in dc.media_metadata("a.png", png + chunk(b"IEND", b"") + b"notes for Priya")
+    jpeg = b"\xff\xd8" + b"\xff\xfe" + struct.pack(">H", 10) + b"Priya x." + b"\xff\xda\x00\x02scan\xff\xd9"
+    assert "Priya" in dc.media_metadata("a.jpg", jpeg)
+    assert "Priya" in dc.media_metadata("a.jpg", b"\xff\xd8\xff\xda\x00\x02scan\xff\xd9 trailing Priya")
+    big = b"%PDF-1.7\n" + b"\x00" * 300_000 + b"<< /Author (Priya) >>"
+    assert "Priya" in dc.media_metadata("a.pdf", big) and dc.media_metadata("a.png", b"\x89PNG\x00") is not None

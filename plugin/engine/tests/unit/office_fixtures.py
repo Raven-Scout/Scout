@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import struct
 import zipfile
+import zlib
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -111,6 +112,30 @@ def odt(text: str = "Plain words only.", extra: dict[str, str | bytes] | None = 
         },
         compression=zipfile.ZIP_STORED,
     )
+
+
+def raw_zip(entries: list[tuple[str, int, bytes, bytes]]) -> bytes:
+    """A zip written by hand: ``(name, method, payload as stored, the content it stands for)`` per entry.
+
+    The sizes and CRC come from the content, the span from the payload, so a test can put bytes in a member's
+    span that zipfile itself never reads.
+    """
+    local, central = bytearray(), bytearray()
+    for name, method, payload, content in entries:
+        n = name.encode()
+        crc = zlib.crc32(content)
+        head = struct.pack("<4s5H3L2H", b"PK\x03\x04", 20, 0, method, 0, 0x21, crc, len(payload), len(content),
+                           len(n), 0)  # fmt: skip
+        central += struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 20, 20, 0, method, 0, 0x21, crc, len(payload),
+                               len(content), len(n), 0, 0, 0, 0, 0, len(local)) + n  # fmt: skip
+        local += head + n + payload
+    end = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, len(entries), len(entries), len(central), len(local), 0)
+    return bytes(local + central + end)
+
+
+def deflated(content: bytes) -> bytes:
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return c.compress(content) + c.flush()
 
 
 def mark_encrypted(data: bytes) -> bytes:

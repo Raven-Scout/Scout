@@ -25,6 +25,7 @@ from scout.cli import app
 from scout.kb.outbound import note_from_text, terms_of
 from scout.scripts import bootstrap_doctor, privacy_migrate, schedule_tick
 
+from . import office_fixtures as of
 from .privacy_vault_helpers import git
 from .test_delegate_mirror import (  # noqa: F401 - the fixtures
     GITHUB,
@@ -1324,3 +1325,70 @@ def test_withdrawing_allow_unscanned_takes_the_archive_out_on_the_next_sync(
     privacy_migrate.accept(vault)
     result = dm.sync(vault, "grok-personal")
     assert ARCHIVE not in set(_bare_files(bare)) and result.left_out_files[ARCHIVE] == "archive"
+
+
+SAM = "knowledge-base/people/sam.md"
+NEWLY = {
+    "attachments/roadmap.docx": of.docx("<w:p><w:r><w:t>Widgetron roadmap</w:t></w:r></w:p>"),
+    "notes/widget.md": b"# Widget\n\nWidgetron plan\nKept line.\n",
+}
+
+
+def test_an_unchanged_tree_is_checked_again_when_the_fingerprint_moved(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """Round 2 of the #639 review: a signed "keep" can't make a newly named file "unchanged" on the remote.
+
+    A clean .docx and .md are mirrored; an alias added to a hidden note makes both name it; a key holder signs
+    memo rows that keep them. The build's tree is then the remote's tree, but the fingerprint moved, so check_tree
+    runs on it, refuses, and drops the memo; the next sync scans afresh and takes both out.
+    """
+    _commit_files(vault, NEWLY, "widget files")
+    bare = _synced(vault, tmp_path)
+    assert set(NEWLY) <= set(_bare_files(bare))
+    before = _main(bare)
+    sam = (vault / SAM).read_text(encoding="utf-8")
+    _commit(vault, SAM, sam.replace("aliases: [Sammy]", "aliases: [Sammy, Widgetron]"), "an alias")
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        fingerprint = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    assert fingerprint != dm.load_links(vault)["grok-personal"].checked_fingerprint
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    forged = dm.ScanMemo(memo.path, delegate="grok-personal")
+    forged.seen = {**memo.files, **{rel: [_blob(vault, rel), "keep", _blob(vault, rel), 0] for rel in NEWLY}}
+    forged.save(dm.Plan(delegate="grok-personal", fingerprint=fingerprint))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "delegate_mirror_unsafe"
+    assert _main(bare) == before and not memo.path.exists()  # nothing pushed, and the forged memo is gone
+    result = dm.sync(vault, "grok-personal")
+    assert result.pushed and "attachments/roadmap.docx" not in set(_bare_files(bare))
+    assert _show(bare, "notes/widget.md") == "# Widget\n\nKept line.\n"
+    assert dm.load_links(vault)["grok-personal"].checked_fingerprint == fingerprint
+
+
+def test_an_unchanged_tree_under_the_same_fingerprint_skips_the_check(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+    calls: list[str] = []
+    real = dm.check_tree
+
+    def counting(*a: object, **k: object) -> str:
+        calls.append("check")
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dm, "check_tree", counting)
+    assert dm.sync(vault, "grok-personal").unchanged and calls == []  # same tree, same fingerprint: no check
+    links = dm.load_links(vault)
+    dm.save_links(
+        vault, {**links, "grok-personal": dataclasses.replace(links["grok-personal"], checked_fingerprint="x")}
+    )
+    assert dm.sync(vault, "grok-personal").unchanged and calls == ["check"]  # another fingerprint: checked again
+    assert dm.load_links(vault)["grok-personal"].checked_fingerprint not in (None, "x")

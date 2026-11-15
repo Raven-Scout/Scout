@@ -180,7 +180,8 @@ def _norm(text: str) -> str:
     return folded.translate(_INVISIBLE)  # a soft hyphen or zero-width character inside a name hides nothing
 
 
-# Characters that change no word a reader sees: the soft hyphen and the zero-width ones.
+# Characters that change no word a reader sees: the soft hyphen and the zero-width ones. ZWNJ and ZWJ do shape
+# Persian and Indic words; folding them out only makes a match likelier there (fails towards leaving text out).
 _INVISIBLE = dict.fromkeys(map(ord, "­᠎​‌‍⁠﻿"))
 
 
