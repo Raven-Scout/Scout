@@ -54,6 +54,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import signal
 import sys
 from collections.abc import Mapping
@@ -61,6 +62,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
+from scout.kb.live_run import _DIGIT_PARAMS, _SUBST_NAME, _VAR
 from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb_path, raw_kb_read
 
 GATE = "kb-read-gate"
@@ -204,8 +206,32 @@ def _deny_too_many(form: str) -> str:
 
 def _deny_unresolved(form: str) -> str:
     return (
-        f"{MARK} This shell command writes {form} (a $variable or command substitution) whose literal part could "
-        "name a file that decides which checks run. Write the path out in full."
+        f"{MARK} In a scheduled run, a shell command writes only paths Scout's gate can read: this one writes "
+        f"{form} (a command substitution, a backtick, or a variable set elsewhere). Write the path out in full, "
+        "or set the variable in the same command (`d=notes; echo x > $d/a.md`)."
+    )
+
+
+def _deny_inline_write(form: str) -> str:
+    return (
+        f"{MARK} This command runs {form}: a program that writes files and names a file that decides which of "
+        "Scout's checks run. Write ordinary files with the Write or Edit tool or a plain shell command; leave those "
+        "files as they are and say so in the run notes if one needs a change."
+    )
+
+
+def _deny_secrets(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't read or change {form} (~/.scout-secrets): API keys and tokens. The "
+        "scoutctl commands that need a key read it themselves; Telegram's token and chat id are the exception."
+    )
+
+
+def _deny_delegate_state(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't change {form} (.scout-state/delegate-mirrors.json, "
+        ".scout-state/delegate-scan/): they decide what each delegate's mirror holds. Use `scoutctl delegate`, "
+        "outside a run."
     )
 
 
@@ -215,6 +241,9 @@ def _deny_skip_form(form: str) -> str:
     by_form = {
         hp.TOO_MANY: _deny_too_many,
         hp.UNRESOLVED: _deny_unresolved,
+        hp.INLINE_WRITE: _deny_inline_write,
+        hp.SECRETS: _deny_secrets,
+        hp.DELEGATE_STATE: _deny_delegate_state,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
@@ -273,6 +302,14 @@ def decide(
     if tool not in ("Bash", "Read", "Grep", "Glob"):
         return None
     vault = session_vault(payload)
+    if tool != "Bash":
+        given = payload.get("cwd")
+        here = _cwd(payload, vault) if vault is not None else Path(given if isinstance(given, str) and given else ".")
+        secret_form = _secret_tool_read(tool, tool_input, here, env)
+        if secret_form is not None:
+            if vault is not None:
+                _record_hook_skip(vault, secret_form, mode)
+            return _deny_skip_form(secret_form)
     if vault is None:
         return None  # not a Scout vault: nothing here is the KB
     cwd = _cwd(payload, vault)
@@ -283,11 +320,19 @@ def decide(
         from scout.kb import hook_paths
         from scout.kb.live_run import run_escape
 
+        def resolve(raw: str) -> str | None:
+            """The path a word names, with the environment's variables put in; None when the shell fills in
+            part of it the gate can't know (a substitution, a variable neither the command nor the run sets)."""
+            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), raw))
+            if "$" in text or "`" in text:
+                return None
+            expanded = hook_paths._expand(text, env)
+            return expanded if os.path.isabs(expanded) else str(cwd / expanded)
+
         def protect(raw: str, removes: bool) -> str | None:
-            expanded = hook_paths._expand(raw, env)
-            target = expanded if os.path.isabs(expanded) else str(cwd / expanded)
-            if "$" in target or "`" in target:  # a variable live_run couldn't resolve
-                return hook_paths.unresolved_could_be_protected(target, vault, env)
+            target = resolve(raw)
+            if target is None:
+                return hook_paths.UNRESOLVED  # round 3, must-fix 1: a run writes only paths the gate can read
             check = hook_paths.removes_protected if removes else hook_paths.protected_write
             # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
             targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
@@ -297,7 +342,11 @@ def decide(
                     return found
             return None
 
-        escape = run_escape(command, protect=protect)
+        def secret(raw: str) -> str | None:
+            target = resolve(raw)
+            return None if target is None else hook_paths.secret_read(target, env)
+
+        escape = run_escape(command, protect=protect, secret=secret)
         if escape == "env":
             return _deny_run_env()
         if escape == "detach":
@@ -326,6 +375,33 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _env_value(m: re.Match[str], env: Mapping[str, str]) -> str:
+    """A ``$NAME`` live_run left as written: the run's environment value, when it has one."""
+    name = m[1] or m[2]
+    return env[name] if name != _SUBST_NAME and name in env else m[0]
+
+
+def _secret_tool_read(tool: str, tool_input: Mapping[str, Any], cwd: Path, env: Mapping[str, str]) -> str | None:
+    """A run's Read of one of Scout's secrets, or a Grep/Glob that searches them (the Telegram two excepted)."""
+    from scout.kb import hook_paths
+
+    def full(raw: str) -> str:
+        expanded = hook_paths._expand(raw, env)
+        return expanded if os.path.isabs(expanded) else str(cwd / expanded)
+
+    if tool == "Read":
+        raw = tool_input.get("file_path")
+        return hook_paths.secret_read(full(raw), env) if isinstance(raw, str) and raw else None
+    raw = tool_input.get("path")
+    root = full(raw) if isinstance(raw, str) and raw else str(cwd)
+    if hook_paths.secret_read(root, env) is not None:
+        return hook_paths.SECRETS
+    filters = " ".join(str(tool_input.get(k) or "") for k in ("glob", "pattern"))
+    if hook_paths.holds_secrets(root, env) and "scout-secrets" in filters.casefold():
+        return hook_paths.SECRETS
+    return None
 
 
 def _decide_write(
