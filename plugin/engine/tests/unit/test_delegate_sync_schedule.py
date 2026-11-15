@@ -1177,3 +1177,15 @@ def test_the_trust_state_cli_needs_each_link_confirmed(vault: Path, tmp_path: Pa
     out = runner.invoke(app, ["delegate", "trust-state", "--confirm", "grok-personal"], env=env)
     assert out.exit_code == 0 and "holds grok-personal's mirror" in out.output
     assert dm.load_links(vault)["grok-personal"].last_mirror
+
+
+def test_a_preview_writes_nothing_not_even_the_vault_salt(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    secrets = dm.secrets_dir()
+    assert not secrets.exists()  # a fresh computer
+    assert dm._vault_mark(vault) == ""  # no salt yet: no mark, and no manifest matches ""
+    dm.preview(vault, "grok-personal")
+    assert not secrets.exists() and not dm.state_path(vault).exists()
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))  # the first push makes the salt
+    assert (secrets / dm.VAULT_SALT).stat().st_mode & 0o777 == 0o600
+    mark = dm._vault_mark(vault)
+    assert len(mark) == 32 and dm._vault_mark(vault, create=True) == mark
