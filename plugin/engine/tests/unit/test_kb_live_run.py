@@ -1332,3 +1332,28 @@ def test_a_hook_skip_wins_over_detach_but_a_run_env_change_wins_over_both() -> N
 def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
     assert run_escape("GIT_CONFIG_COUNT=1 git commit --no-verify") == "GIT_CONFIG_*"
     assert run_escape("GIT_CONFIG_COUNT=1 nohup git commit") == "GIT_CONFIG_*"
+
+
+@pytest.mark.parametrize(
+    ("command", "flagged"),
+    [
+        ("scoutctl delegate link duet --remote x", True),
+        ("scoutctl --json delegate trust-state", True),
+        ("/abs/plugin/engine/bin/scoutctl delegate key duet --revoke", True),
+        ("python -m scout delegate unlink duet", True),
+        ("python3 -Pm scout delegate unlink duet", True),  # -m closing a short-option cluster
+        ("python3 -IPm scout delegate key duet --revoke", True),
+        ("python3 -mscout delegate link duet --remote x", True),
+        ("python3 -W ignore -m scout delegate trust-state", True),
+        ("python3 -Im scout delegate sync", False),
+        ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
+        ("scoutctl delegate sync duet", False),
+        ("scoutctl delegate preview duet", False),
+        ("echo scoutctl delegate link", False),
+        ("python -c 'print(1)'", False),
+    ],
+)
+def test_the_owners_delegate_commands_are_a_named_form(command, flagged):
+    from scout.kb.live_run import DELEGATE_FORM
+
+    assert (run_escape(command) == DELEGATE_FORM) is flagged

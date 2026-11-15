@@ -334,6 +334,49 @@ _CONFIG_READS = {
     "get", "list",
 }  # fmt: skip
 GIT_CONFIG_FORM = "GIT_CONFIG_*"
+# What a run never does to the owner's agents' mirrors: link, unlink, deploy keys and re-trusting the link state
+# are the owner's, at the keyboard (#550; each command also refuses a scheduled run itself).
+DELEGATE_FORM = "scoutctl delegate"
+_DELEGATE_WRITES = {"link", "unlink", "key", "trust-state"}
+
+
+def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
+    """The module ``python [options] -m MODULE ARGS`` runs, and its arguments; None when it runs no module.
+
+    Short options are read as Python reads them: ``-Pm scout``, ``-IPm scout``, ``-mscout``, ``-W ignore -m scout``.
+    A letter that takes a value (``c``, ``m``, ``W``, ``X``) takes the rest of its cluster, else the next word.
+    """
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--" or not a.startswith("-") or a.startswith("--") or a == "-":
+            return None  # a script, stdin, or the end of python's own options
+        for at, letter in enumerate(a[1:], 1):
+            if letter in "cmWX":
+                value, used = (a[at + 1 :], 1) if at + 1 < len(a) else (args[i + 1] if i + 1 < len(args) else "", 2)
+                if letter == "m":
+                    return value, args[i + used :]
+                if letter == "c":
+                    return None  # an inline program, not a module
+                i += used
+                break
+        else:
+            i += 1
+    return None
+
+
+def _delegate_write(name: str, args: list[str]) -> bool:
+    """``scoutctl delegate link|unlink|key|trust-state``, by any path to scoutctl or as ``python -m scout``."""
+    if name == "scoutctl":
+        rest = args
+    elif name.startswith("python") and (module := _python_module(args)) is not None and module[0] == "scout":
+        rest = module[1]
+    else:
+        return False
+    words = [a for a in rest if not a.startswith("-")]
+    return words[:1] == ["delegate"] and len(words) > 1 and words[1] in _DELEGATE_WRITES
+
+
 _GIT_CONFIG_VAR = re.compile(r"^GIT_CONFIG(?!_NOSYSTEM=)[A-Z0-9_]*=")
 # A short -n means no-verify only on these: (letters that take a value, letters that take an attached one).
 _N_IS_NO_VERIFY = {"commit": ("mFCct", "uS"), "am": ("", "SCp")}
@@ -1233,6 +1276,8 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
         return GIT_CONFIG_FORM if any(_GIT_CONFIG_VAR.match(a) for a in args) else None
     if name in _DETACH:
         return "detach"
+    if _delegate_write(name, args):
+        return DELEGATE_FORM
     if name in _SHELLS and "-c" in args[:-1]:
         return _run_escape(args[args.index("-c") + 1], depth + 1)
     if name == "eval":
