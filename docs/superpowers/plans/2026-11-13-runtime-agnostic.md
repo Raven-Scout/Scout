@@ -90,6 +90,10 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 
 ## Phase 1a — Bare-mode guard for Claude Code (urgent)
 
+**Status: merged as #635** (2026-11-15), with #638 and #640 (the vault's cwd
+kept off `sys.path`). The tasks below are kept as the record of what was
+planned.
+
 Why: Claude Code's headless docs say `--bare` "will become the default for
 `-p` in a future release". Bare mode loads no hooks, plugin hooks included,
 and there is no documented opt-out (spec §3.5). A Claude update could
@@ -268,6 +272,28 @@ missing scoutctl.
   - unit tests in `test_hooks_kb_read_gate.py`.
 - It ships as its own fix, before Phase 1, so Phase 1's byte-identical
   `hooks.json` golden pins the hardened file.
+- **Status: in progress, draft #637** (`fix/gate-write-edit-config-paths`).
+  The build departs from this card in two ways, both from review (spec §8.5).
+  - The protected list is wider: `scout/kb/hook_paths.py`.
+  - Every run write goes to Python, rather than a prefilter on `.git/` and
+    agent-config words, because a symlink can hide the path from the shell.
+  - A separate hook name `kb-write-gate`, so an older engine fails closed.
+  - The shell gate shares the list, denies paths it can't resolve, and
+    judges inline programs.
+  - Tests are in `test_hooks_write_gate.py`.
+  - Its acceptance adds a replay of the last 50 scheduled runs' tool calls
+    through `decide()`, which must find no deny that main doesn't make.
+
+## Phase 1c — OS write sandbox for scheduled runs (added 2026-11-15)
+
+- **Why:** a hook only sees the tool call. A run can write a script and run
+  it, or write through `tar -C`, `find -exec` or an MCP server, and #637's
+  gate can't see the path.
+- **What:** the runners start the session inside an OS write sandbox (macOS:
+  SBPL) generated from `hook_paths.protected_specs()`, the same list as
+  #637, so the two layers can't drift.
+- **Status: in progress, draft #642** (`feat/run-write-sandbox`), stacked on
+  #637's `hook_paths`. Details, tests and acceptance are in #642.
 
 ---
 

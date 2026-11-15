@@ -1,17 +1,29 @@
 # Runtime-agnostic Scout: scheduled runs and skills on agent CLIs other than Claude Code — design
 
-Status: **draft for Jordan's review.** Docs only; nothing here is built.
-Implementation starts per phase (§12) on Jordan's go, after the open questions
-(§14) are answered. The coordinator cuts implementation cards from the plan
+Status: **draft for Jordan's review.** The open questions (§14) are still
+unanswered. Implementation starts per phase (§12) on Jordan's go. The
+coordinator cuts implementation cards from the plan
 (`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
+
+Progress (2026-11-15). Only the Claude Code hardening has started; nothing in
+the adapter phases (1 to 4) is built.
+
+- **Phase 1a, the bare-mode guard: merged** as #635 (3b30ed1b, 2026-11-15).
+  Two follow-ups also merged: #638 and #640 keep the vault's working
+  directory off `sys.path` in Scout's Python processes.
+- **Phase 1b, the run write gate: in progress,** as draft #637. Its scope grew
+  past this spec's first card; see §8.5 and §12.
+- **Phase 1c, an OS-level write sandbox for runs: in progress,** as draft #642.
+  This phase was added after the first draft (§12).
 
 Builds on, and cites as "privacy §n", "delegates §n", "models §n", "eval §n":
 
 - `2026-10-20-per-note-privacy-design.md` (#453): readers, output classes, `scoutctl kb`.
 - `2026-10-31-vault-access-for-agents-design.md` (draft PR #550): the
   `delegate:<id>` reader (V1, built in #625), the per-delegate mirror (V2a,
-  draft #632: `scout/delegate_mirror.py` and `scoutctl delegate
-  link|sync|preview|status|unlink`), and the inbox.
+  merged as #632: `scout/delegate_mirror.py` and `scoutctl delegate
+  link|sync|preview|status|unlink`; V2b, the repository and read-only key,
+  merged as #633), and the inbox.
 - `2026-10-13-slot-model-selection-design.md` (#460, #461, #462).
 - `2026-10-12-eval-harness-design.md` and the KB-writing release gate (`eval.sh kb-gate`).
 - `2026-10-11-run-health-and-headless-updates-design.md` (auth, usage limits, self-update).
@@ -271,6 +283,14 @@ The 2026-10-21 launch is confirmed on Anthropic's own pages, which matches
       running in scheduled runs.**
     - This is a live risk independent of this spec. It gets its own urgent
       card (§12, "Phase 1a").
+    - **Shipped as #635.** Before each run, `scoutctl gates probe` starts
+      `claude` with the run's flags. It points at a local fake Anthropic
+      endpoint (`scout/agent_runtimes/fake_anthropic.py`) with a dummy key,
+      in a loopback-only sandbox on macOS. A scripted Bash read of a fixture
+      KB note must come back denied by the kb-read-gate. The result is cached
+      by Claude version, `hooks.json` hash, flags and the config that decides
+      which hooks load. The runners skip a run whose probe fails
+      (`skipped_gates`), and health and doctor report `gates.not_loaded`.
   - Since v2.1.302, `-p` starts in Manual mode when nothing sets a mode.
     Scout's runners set `--permission-mode auto`, so they are unaffected.
   - `total_cost_usd` and the `--max-budget-usd` check are documented as
@@ -776,6 +796,38 @@ this, because it never had to.
       ships as a normal fix. It isn't a Phase 1 change, so G4's
       byte-identical `hooks.json` pins the file as it is when Phase 1
       starts.
+    - **Being closed by #637 (Phase 1b, draft).** In review it grew from
+      `.git/hooks` and agent config to everything that decides whether
+      Scout's checks run. `scout/kb/hook_paths.py` is the one list:
+      - the vault's git dir, and git's hooks dir however `core.hooksPath`
+        points it;
+      - the user's git config;
+      - the agent settings and plugin store, plus other CLIs' hook dirs
+        (`.codex`, `.gemini`, `.agents`, `.grok`, `.cursor`);
+      - the engine the hooks run, with its launcher cache, venv and
+        `engine.json` pointer;
+      - the runner scripts bootstrap installs;
+      - the shell's startup files and `~/Library/LaunchAgents`;
+      - Scout's secrets (`~/.scout-secrets`, also read-gated) and the
+        vault's delegate state.
+    - A new `kb-write-gate` hook judges Write, Edit, MultiEdit and
+      NotebookEdit against that list. The shell gate judges every path a
+      command writes, removes or links against the same list.
+      - A path it can't read (a command substitution, an unknown variable)
+        is denied.
+      - An inline program is judged on its own text, when it writes.
+    - Every run write goes to Python. A watchdog denies before the 15 s
+      hook timeout, which would count as an allow.
+    - Before each round ships, the gate is replayed in-process over the last
+      50 scheduled runs' tool calls. At round 3 it denies nothing that main
+      allows.
+    - **What it can't see** goes to Phase 1c, an OS write sandbox
+      generated from `hook_paths.protected_specs()` (draft #642):
+      - a script file the run writes and then runs;
+      - `tar -C`, `find -exec`, `xargs`;
+      - a name built with `chr()` or base64;
+      - an MCP filesystem server's writes.
+    - Any future runtime's gate config path joins the same list.
   - Where a runtime only loads hooks from the project directory (inside the
     vault), the run's gate denies writes to that file. The adapter is still
     Tier F only if the conformance suite proves a deleted or edited config
@@ -1117,8 +1169,9 @@ and per-PR checks are in the plan.
 | Phase | Ships | Done when | Effort (agent-days) |
 |---|---|---|---|
 | **0 Answers and facts** | Jordan answers §14. A throwaway spike per CLI checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Spec updated | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
-| **1a Bare-mode guard (urgent, Claude Code only)** | **Prevention before launch,** because a bare session fires no hook that could detect it from inside. A free pre-launch probe runs `claude` with the run's own flags against a local fake Anthropic endpoint (`ANTHROPIC_BASE_URL`). A scripted tool call reads a fixture KB file, and the probe passes only if Scout's kb-read-gate denied it. Cached by Claude version + `hooks.json` hash + flags. The runners skip the run (`skipped_gates`) on a failed or unrunnable probe; health and doctor report `gates.not_loaded`. If Claude Code later ships an opt-out flag, the runners pass it too | Unit tests; the manual probe passes with today's flags and fails with `--bare` added | 2–3 |
-| **1b Claude Write/Edit hardening (separate privacy fix)** | `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault (§8.5) | Unit tests on `decide()`; the hooks.json prefilter covers Write/Edit only for those paths, so the cost per call stays low | 1–2 |
+| **1a Bare-mode guard (urgent, Claude Code only)** — *merged, #635* | **Prevention before launch,** because a bare session fires no hook that could detect it from inside. A free pre-launch probe runs `claude` with the run's own flags against a local fake Anthropic endpoint (`ANTHROPIC_BASE_URL`). A scripted tool call reads a fixture KB file, and the probe passes only if Scout's kb-read-gate denied it. Cached by Claude version + `hooks.json` hash + flags. The runners skip the run (`skipped_gates`) on a failed or unrunnable probe; health and doctor report `gates.not_loaded`. If Claude Code later ships an opt-out flag, the runners pass it too | Unit tests; the manual probe passes with today's flags and fails with `--bare` added | 2–3 |
+| **1b Claude run write gate (separate privacy fix)** — *in progress, draft #637* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; three review rounds so far |
+| **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *in progress, draft #642* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so what the hooks can't see is still refused by the kernel: script files a run writes and runs, `tar -C`, `find -exec`, MCP servers' writes. An owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description. A later runtime adapter could reuse the same profile (see Q10) | Per #642 |
 | **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, doctor loop, vestigial-variable cleanup | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
 | **2 Codex CLI** | `codex` adapter; gate translation + generated config; fake-model conformance; provider consent; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; generated Codex commands/skills | Conformance at Tier F (or L) for a pinned version; `kb-gate` + privacy scenario pass on Codex; one slot live for a week | 8–12 |
 | **3 Google CLI** | `antigravity` adapter (or `gemini`, per Q5); skills/plugin packaging; conformance by model-backed runs only for Antigravity; eval shim | Same bar as Codex | 5–8 (+2–3 for a second, Gemini CLI adapter) |
@@ -1126,8 +1179,8 @@ and per-PR checks are in the plan.
 | **5 Track B: Grokbot and Claude Duet** | #550's own track, owned there and only tracked here: V2a mirror (#632), then V2 sync hooks, V3 bootstrap, V4 inbox; Duet reads its mirror through the GitHub connector first, with V5 MCP only if needed | #550's "done when" lines; Grokbot and Duet each answer a scout-ask question from their mirror; V6 live | Per #550's plan, not estimated here |
 | **6 Marketing** | Copy changes per §13, one PR per claim change, each citing its evidence row | Claims match `docs/runtimes.md` | 1–2 per step |
 
-Phase 1a can start today and doesn't wait for this spec's approval of the
-rest. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
+Phase 1a didn't wait for this spec's approval of the rest, and has shipped;
+1b and 1c don't wait for it either. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
 independent of each other once Phase 1 lands. Track B (Phase 5) runs on
 #550's own schedule, in parallel.
 
@@ -1196,7 +1249,11 @@ Never, at any phase:
    launch skills; `scout-update`/`scout-connect` per runtime later)?
 10. **Tier S (§8.3):** worth building, so that a runtime with fail-open hooks
     but path-deny rules (Grok Build) can run scheduled slots? Or is such a
-    runtime delegate-only until its vendor fixes the hooks?
+    runtime delegate-only until its vendor fixes the hooks? (Context, not an
+    answer: Phase 1c's OS write sandbox, draft #642, applies to the run's
+    whole process tree whatever the CLI. If it lands, it covers the
+    write-deny half of Tier S, but not the read side or hooks that fail
+    open.)
 11. **CLIs Scout can't probe for free (Antigravity, §8.3 rule 4):** each new
     CLI version is refused until a model-backed run on your login re-proves
     it. Accept that, ask users to pin the CLI version, or skip such
@@ -1227,6 +1284,9 @@ Never, at any phase:
 - Google's target is Antigravity CLI unless Jordan says Gemini CLI (§3.2,
   Q5).
 - The Claude bare-mode guard ships first, as Phase 1a, ahead of the rest
-  (§3.5).
+  (§3.5). Done: #635.
+- One protected list (`scout/kb/hook_paths.py`) decides the file-tool gate,
+  the shell gate and the OS sandbox. A run writes only paths the gate can
+  read (§8.5, Phases 1b and 1c).
 - Tier S exists on paper only, until a wanted runtime needs it (§8.3, Q10).
 - Every hook reply is well-formed, never a crash meaning "block" (§8.5).
