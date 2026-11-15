@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutctl kb validate` exits 3 when the graph has errors** (#554; `engine/scout/kb/read.py`). It printed its findings and returned 0 unconditionally, so a vault preflight that renders the knowledge graph's health row from the exit code showed a broken graph as clean. The parser shim (v0.18.6) had dropped the vault parser's exit-3 contract, and `test_parser_shim.py` pinned 0 on both sides, so nothing caught it. Known gaps are accepted backlog and still exit 0. `test_validate_exit_code_is_the_contract` now owns the exit code on a clean and a broken graph.
+
 ## [0.18.13] - 2026-11-15
 
 ### Added
