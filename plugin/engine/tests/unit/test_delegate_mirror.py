@@ -26,6 +26,7 @@ from scout.kb.outbound import PrivateTerms, clear_cache, find_mentions, note_fro
 from scout.kb.privacy import load_frontmatter_yaml, load_policy
 from scout.scripts import privacy_migrate
 
+from . import office_fixtures as of
 from .privacy_vault_helpers import CANARIES, build_privacy_vault, git, git_env
 
 runner = CliRunner()
@@ -1694,3 +1695,185 @@ def test_the_rewrite_check_reads_the_config_the_push_uses(
     assert "GIT_CONFIG_PARAMETERS" not in dm.remote_env(vault, GITHUB)
     dm._check_rewrites(vault, GITHUB)  # dropped for the check and the push alike
     assert push_url() == GITHUB
+
+
+# ----- Office files and archives (content-scanning gap, 2026-11-15) ---------------------------
+
+
+def _allow_unscanned(vault: Path, globs: str, *, commit: bool = True) -> None:
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert "    grok-personal: {}\n" in config
+    config = config.replace("    grok-personal: {}\n", f"    grok-personal:\n      allow_unscanned: {globs}\n")
+    if commit:
+        _commit_files(vault, {"scout-config.yaml": config.encode()}, "allow unscanned")
+    else:
+        (vault / "scout-config.yaml").write_text(config, encoding="utf-8")
+    privacy_migrate.accept(vault)
+
+
+def _raw(bare: Path, rel: str) -> bytes:
+    return subprocess.run(["git", "-C", str(bare), "show", f"main:{rel}"], check=True, capture_output=True).stdout
+
+
+SPLIT_NAME = "<w:p><w:r><w:t>Call Sam</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>my today</w:t></w:r></w:p>"
+# Each names sam (private, hidden from grok-personal) in one place only.
+LEFT_OUT_OFFICE = {
+    "attachments/body.docx": of.docx(SPLIT_NAME),
+    "attachments/header.docx": of.docx(
+        extra={"word/header1.xml": of.word_part("hdr", "<w:p><w:r><w:t>Prepared for Sammy</w:t></w:r></w:p>")}
+    ),
+    "attachments/footer.docx": of.docx(
+        extra={"word/footer1.xml": of.word_part("ftr", "<w:p><w:r><w:t>Sam CANARY-PRIV-2S4M</w:t></w:r></w:p>")}
+    ),
+    "attachments/comments.docx": of.docx(
+        extra={
+            "word/comments.xml": of.word_part(
+                "comments", '<w:comment w:id="0" w:author="Sammy"><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:comment>'
+            )
+        }
+    ),
+    "attachments/metadata.docx": of.docx(creator="Sammy"),
+    "attachments/custom.docx": of.docx(extra={"customXml/item1.xml": "<props><owner>[[sam]]</owner></props>"}),
+    "attachments/strings.xlsx": of.xlsx(strings=("Budget", "Sammy rate")),
+    "attachments/inline.xlsm": of.xlsx(inline="see [[sam]]"),
+    "attachments/notes.pptx": of.pptx(notes="Ask Sammy"),
+    "attachments/slide.pptx": of.pptx(slide="Sammy roadmap"),
+    "attachments/letter.odt": of.odt("Dear Sammy,"),
+}
+UNSCANNABLE = {
+    "attachments/macro.docm": of.docx(extra={"word/vbaProject.bin": b"\xd0\xcf\x11\xe0 macro"}),
+    "attachments/locked.docx": of.mark_encrypted(of.docx()),
+    "attachments/protected.xlsx": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 a password-protected workbook",
+    "attachments/corrupt.pptx": of.pptx()[:-40],
+    "attachments/nested.docx": of.docx(extra={"word/embeddings/sheet.xlsx": of.xlsx()}),
+    "attachments/bundle.zip": of.zipped({"plan.txt": "Sammy"}),
+    "attachments/backup.tar.gz": b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03 compressed",
+    "attachments/photos.7z": b"7z\xbc\xaf\x27\x1c\x00\x04 archive",
+    "attachments/old.doc": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 an old Word file",
+}
+CLEAN_OFFICE = {
+    "attachments/clean.docx": of.docx(),
+    "attachments/clean.xlsx": of.xlsx(),
+    "attachments/clean.pptx": of.pptx(),
+    "attachments/clean.odt": of.odt(),
+    "attachments/clean.docm": of.docx(),  # a macro-enabled type with no macros in it
+}
+
+
+def test_office_files_are_scanned_inside_kept_when_clean_and_left_out_whole_when_they_name_a_hidden_note(
+    vault: Path, tmp_path: Path
+) -> None:
+    _commit_files(vault, {**CLEAN_OFFICE, **LEFT_OUT_OFFICE}, "attachments")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert set(CLEAN_OFFICE) <= files
+    assert not set(LEFT_OUT_OFFICE) & files
+    assert {p: result.left_out_files.get(p) for p in LEFT_OUT_OFFICE} == dict.fromkeys(LEFT_OUT_OFFICE, "names_hidden")
+    assert all(_raw(bare, rel) == data for rel, data in CLEAN_OFFICE.items())  # kept byte for byte
+
+
+def test_unscannable_files_and_archives_are_left_out_and_listed_with_why(vault: Path, tmp_path: Path) -> None:
+    _commit_files(vault, UNSCANNABLE, "attachments")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    assert not set(UNSCANNABLE) & _head_files(bare)
+    assert {p: result.left_out_files[p] for p in UNSCANNABLE} == {
+        "attachments/macro.docm": "macros",
+        "attachments/locked.docx": "encrypted",
+        "attachments/protected.xlsx": "unreadable",
+        "attachments/corrupt.pptx": "unreadable",
+        "attachments/nested.docx": "nested_archive",
+        "attachments/bundle.zip": "archive",
+        "attachments/backup.tar.gz": "archive",
+        "attachments/photos.7z": "archive",
+        "attachments/old.doc": "legacy_office",
+    }
+    note = next(n for n in result.notes if n.startswith("left out of grok-personal's mirror"))
+    assert "attachments/macro.docm (holds macros)" in note and "allow_unscanned" in note
+    r = runner.invoke(app, ["delegate", "preview", "grok-personal"])
+    assert "attachments/bundle.zip (an archive)" in r.stdout
+    r = runner.invoke(app, ["delegate", "preview", "grok-personal", "--json"])
+    assert json.loads(r.stdout)["left_out_files"]["attachments/old.doc"] == "legacy_office"
+    assert "bundle.zip" not in _show(bare, dm.MANIFEST_PATH)  # the list is the owner's; the mirror holds counts
+
+
+def test_a_long_left_out_list_names_the_first_few(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _commit_files(vault, UNSCANNABLE, "attachments")
+    monkeypatch.setattr(dm, "LEFT_OUT_LISTED", 2)
+    note = next(n for n in dm.preview(vault, "grok-personal").notes if n.startswith("left out"))
+    assert f"and {len(UNSCANNABLE) - 2} more (--json lists them all)" in note
+
+
+def test_a_zip_bomb_is_left_out_not_unpacked(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout import delegate_containers
+
+    bomb = of.docx(extra={"word/fill.xml": "<x>" + "a" * 3_000_000 + "</x>"})
+    _commit_files(vault, {"attachments/bomb.docx": bomb}, "bomb")
+    monkeypatch.setattr(delegate_containers, "MAX_UNPACKED_BYTES", 1_000_000)
+    assert dm.preview(vault, "grok-personal").left_out_files["attachments/bomb.docx"] == "too_large"
+
+
+def test_allow_unscanned_ships_what_cant_be_scanned_but_never_an_office_file_that_names_a_hidden_note(
+    vault: Path, tmp_path: Path
+) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"],
+            "attachments/other.zip": UNSCANNABLE["attachments/bundle.zip"],
+            "attachments/macro.docm": UNSCANNABLE["attachments/macro.docm"],
+            "attachments/body.docx": LEFT_OUT_OFFICE["attachments/body.docx"],
+        },
+        "attachments",
+    )
+    _allow_unscanned(vault, '["attachments/bundle.zip", "attachments/*.doc?"]')
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert {"attachments/bundle.zip", "attachments/macro.docm"} <= files  # the owner's choice, on its label
+    assert "attachments/other.zip" not in files  # no glob names it
+    assert "attachments/body.docx" not in files and result.left_out_files["attachments/body.docx"] == "names_hidden"
+    assert "allow_unscanned" not in _show(bare, "scout-config.yaml")  # the clone doesn't need it
+
+
+def test_allow_unscanned_only_in_the_uncommitted_config_ships_nothing(vault: Path) -> None:
+    _commit_files(vault, {"attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"]}, "zip")
+    _allow_unscanned(vault, '["attachments/*.zip"]', commit=False)
+    assert dm.preview(vault, "grok-personal").left_out_files["attachments/bundle.zip"] == "archive"
+
+
+def test_check_tree_refuses_a_mirror_that_carries_a_now_left_out_office_file_or_an_archive(vault: Path) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/clean.docx": CLEAN_OFFICE["attachments/clean.docx"],
+            "attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"],
+        },
+        "attachments",
+    )
+    commit, head = _tampered(vault, "grok-personal", {})
+    dm.check_tree(vault, commit, "grok-personal", head)  # the honest build passes
+    for swap in (
+        LEFT_OUT_OFFICE["attachments/metadata.docx"],  # names a hidden note in its metadata
+        UNSCANNABLE["attachments/macro.docm"],  # holds macros
+        UNSCANNABLE["attachments/locked.docx"],  # encrypted
+    ):
+        commit, head = _tampered(vault, "grok-personal", {"attachments/clean.docx": swap})
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe"
+    the_plan, head = _planned(vault)
+    assert "attachments/bundle.zip" not in {f.path for f in the_plan.files}
+    zipped = rs._blob_at(vault, head, "attachments/bundle.zip")
+    assert zipped is not None
+    the_plan.files.append(dm.MirrorFile(zipped.path, zipped.mode, None, zipped.sha))  # an old or tampered mirror
+    commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+    _allow_unscanned(vault, '["attachments/*.zip"]')
+    the_plan, head = _planned(vault)
+    assert "attachments/bundle.zip" in {f.path for f in the_plan.files}
+    commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+    dm.check_tree(vault, commit, "grok-personal", head)  # opted in: the check agrees
