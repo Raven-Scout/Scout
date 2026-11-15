@@ -105,6 +105,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import unicodedata
@@ -328,7 +329,7 @@ def load_links(vault: Path) -> dict[str, DelegateLink]:
         raise RepoSyncError(
             "state_unverified",
             f"refused: {STATE_REL} wasn't written by Scout on this computer (its signature doesn't match), so "
-            "nothing in it is trusted; delete it and link each delegate again",
+            "nothing in it is trusted; check each link and sign it again with: scoutctl delegate trust-state",
         )
     try:
         return {k: DelegateLink.from_json(v) for k, v in body["links"].items()}
@@ -636,6 +637,75 @@ def _overlaps(target: Path, home: Path) -> bool:
         return True
     target_id = _inode(target)
     return target_id is not None and any(_inode(p) == target_id for p in home.parents)
+
+
+def _same_remote(a: str, b: str) -> bool:
+    """Whether two remote URLs are the same repository (GitHub by owner/name, a local path by where it is)."""
+    ra, rb = github_repo(a), github_repo(b)
+    if ra is not None or rb is not None:
+        return (ra or "").casefold() == (rb or "").casefold()
+    la, lb = _local_remote(a), _local_remote(b)
+    if la is not None and lb is not None:
+        return la.resolve() == lb.resolve() or (_inode(la) is not None and _inode(la) == _inode(lb))
+    return a == b
+
+
+def _mirror_owner(vault: Path, remote: str, commit: str) -> str | None:
+    """The delegate the manifest in mirror commit ``commit`` names (fetched from ``remote`` if it isn't here)."""
+    if git(vault, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
+        _remote_git(vault, remote, "fetch", "--no-tags", "--quiet", remote, REMOTE_BRANCH, check=False)
+    shown = git(vault, "show", f"{commit}:{MANIFEST_PATH}", check=False)
+    try:
+        doc = json.loads(shown.stdout) if shown.returncode == 0 else None
+    except ValueError:
+        return None
+    named = doc.get("delegate") if isinstance(doc, dict) else None
+    return named if isinstance(named, str) else None
+
+
+def bind_remote(
+    vault: Path, link: DelegateLink, links: Mapping[str, DelegateLink], *, gh: GhRunner, mode: str
+) -> str | None:
+    """Refuse unless ``link.remote`` is this delegate's own mirror; the remote's current main (None: empty).
+
+    Checked when used, whatever the (signed) link state says, so state forged by
+    anything that can read the signing key still can't point one delegate's
+    push, or a key deletion, at another repository:
+
+    - no other link may use the same remote;
+    - the remote's main must hold a mirror manifest naming this delegate. At
+      ``mode="link"`` an empty remote, or one that isn't a Scout mirror
+      (``--replace-remote``), is allowed, but never another delegate's;
+    - for ``mode="push"`` with a deploy key on record, the GitHub repository
+      must have a key titled for this delegate.
+    """
+    for other_id, other in links.items():
+        if other_id != link.id and _same_remote(other.remote, link.remote):
+            raise RepoSyncError(
+                "remote_taken",
+                f"refused: {link.remote} is {other_id}'s mirror too; each delegate needs its own repository",
+            )
+    head = remote_head(vault, link.remote)
+    owner = _mirror_owner(vault, link.remote, head) if head is not None else None
+    if owner == link.id or (mode == "link" and owner is None):
+        pass
+    else:
+        found = f"{owner}'s mirror" if owner else ("empty" if head is None else "not a Scout delegate mirror")
+        raise RepoSyncError(
+            "remote_unbound",
+            f"refused: {link.remote} is {found}, not {link.id}'s; nothing was pushed or deleted. If the link "
+            f"state is wrong, check it with: scoutctl delegate trust-state",
+        )
+    repo = github_repo(link.remote)
+    if mode == "push" and repo is not None and link.deploy_key_id is not None:
+        titles = _ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[].title"], repo).split()
+        if _key_title(link.id) not in titles:
+            raise RepoSyncError(
+                "remote_unbound",
+                f"refused: {repo} has no deploy key for {link.id}, though one is on record; check the link with: "
+                "scoutctl delegate trust-state",
+            )
+    return head
 
 
 def remote_head(vault: Path, remote: str) -> str | None:
@@ -1243,32 +1313,47 @@ def plan(
             kept.append((MirrorFile(e.path, e.mode, None, e.sha), _classify(e.path, None, policy), None))
         else:
             out.hidden_paths.add(e.path)
-    if config is not None:
-        mirrored = [f.path for f, _, _ in kept] + [paths.VAULT_MARKER]
-        include_private = policy.delegates[0].include_private
-        config_text = blobs.read(config.sha).decode("utf-8", "replace")
-        data = mirror_config(config_text, delegate, include_private, mirrored, scan)
-        kept.append((MirrorFile(config.path, config.mode, data, ""), _classify(config.path, None, policy), None))
-        out.mirror_policy = policy_from_config_text(data.decode("utf-8"))
-    else:
-        out.mirror_policy = policy
+    # The config lists only what is mirrored, and the clone's policy (from that config) can leave more
+    # out, so settle the two together: the config the mirror holds is exactly mirror_config() of its own
+    # file list, which check_tree regenerates byte for byte.
     reader = f"delegate:{delegate}"
-    final: list[tuple[MirrorFile, Label]] = []
-    for f, label, text in kept:  # the clone's own policy must label each file the same
-        head_text = _note_head(f.path, text.encode("utf-8")) if text is not None else None
-        theirs = _classify(f.path, head_text, out.mirror_policy)
-        if f.mode != SYMLINK_MODE and (
-            not _same_label(label, theirs) or not visible_to(theirs, reader, out.mirror_policy)
-        ):
-            out.left_out += 1
-            continue
-        final.append((f, theirs))
-    # A folder can empty out above, so each symlink is checked again against what is left.
-    left = _folders([f.path for f, _ in final if f.mode != SYMLINK_MODE])
-    for f, theirs in final:
-        if f.mode == SYMLINK_MODE and link_targets[f.path] not in left:
-            out.hidden_paths.add(f.path)
-            continue
+    include_private = policy.delegates[0].include_private
+    config_text = blobs.read(config.sha).decode("utf-8", "replace") if config is not None else None
+    for _ in range(MAX_PASSES):
+        mirrored = [f.path for f, _, _ in kept] + ([paths.VAULT_MARKER] if config is not None else [])
+        candidates = list(kept)
+        if config is not None and config_text is not None:
+            data = mirror_config(config_text, delegate, include_private, mirrored, scan)
+            config_file = MirrorFile(config.path, config.mode, data, "")
+            candidates.append((config_file, _classify(config.path, None, policy), None))
+            out.mirror_policy = policy_from_config_text(data.decode("utf-8"))
+        else:
+            out.mirror_policy = policy
+        final: list[tuple[MirrorFile, Label]] = []
+        relabelled: set[str] = set()
+        for f, label, text in candidates:  # the clone's own policy must label each file the same
+            head_text = _note_head(f.path, text.encode("utf-8")) if text is not None else None
+            theirs = _classify(f.path, head_text, out.mirror_policy)
+            if f.mode != SYMLINK_MODE and (
+                not _same_label(label, theirs) or not visible_to(theirs, reader, out.mirror_policy)
+            ):
+                relabelled.add(f.path)
+                continue
+            final.append((f, theirs))
+        # A folder can empty out above, so each symlink is checked again against what is left.
+        left = _folders([f.path for f, _ in final if f.mode != SYMLINK_MODE])
+        dangling = {f.path for f, _ in final if f.mode == SYMLINK_MODE and link_targets[f.path] not in left}
+        settled = [(f, t) for f, t in final if f.path not in dangling]
+        if {f.path for f, _ in settled} == set(mirrored) or paths.VAULT_MARKER in relabelled:
+            break
+        out.left_out += len(relabelled - {paths.VAULT_MARKER})
+        out.hidden_paths |= dangling
+        kept = [k for k in kept if k[0].path not in relabelled and k[0].path not in dangling]
+    else:  # pragma: no cover - each pass only shrinks the list, so it settles well inside MAX_PASSES
+        raise RepoSyncError("mirror_unsettled", "refused: the mirror's file list and its config didn't settle")
+    out.left_out += len(relabelled - {paths.VAULT_MARKER})
+    out.hidden_paths |= dangling
+    for f, theirs in settled:
         out.files.append(f)
         out.labels.append(theirs)
     out.withheld = len(out.hidden_paths)
@@ -1362,24 +1447,17 @@ def _derives(mirror: bytes, source: bytes) -> bool:
     return all(any(line == mine for mine in ours) for line in theirs)  # an ordered subsequence
 
 
-def _scalars(value: Any) -> set[str]:
-    """Every key and leaf value in a parsed YAML document, as strings."""
-    if isinstance(value, dict):
-        return {str(k) for k in value} | {s for v in value.values() for s in _scalars(v)}
-    if isinstance(value, list):
-        return {s for v in value for s in _scalars(v)}
-    return {str(value)}
-
-
-def _config_derives(mirror: bytes, source: bytes, delegate: str) -> bool:
-    """Whether the mirror's ``scout-config.yaml`` holds nothing that isn't in HEAD's (:func:`mirror_config` only
-    drops entries, and adds ``privacy.delegates.<delegate>.include_private``)."""
+def _config_regenerates(
+    mirror: bytes, source: bytes, delegate: str, policy: Policy, tree_paths: Collection[str], scan: Scanner
+) -> bool:
+    """Whether the mirror's ``scout-config.yaml`` is exactly :func:`mirror_config` of HEAD's for this tree."""
     try:
-        theirs, ours = load_yaml(mirror.decode("utf-8")), load_yaml(source.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, yaml.YAMLError):
+        expected = mirror_config(
+            source.decode("utf-8", "replace"), delegate, policy.delegates[0].include_private, list(tree_paths), scan
+        )
+    except RepoSyncError:
         return False
-    added = {"privacy", "delegates", delegate, "include_private", "True"}
-    return isinstance(theirs, dict) and _scalars(theirs) <= _scalars(ours) | added
+    return mirror == expected
 
 
 def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tuple[str, str] | None = None) -> str:
@@ -1442,7 +1520,7 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
                     continue
                 at_source = blobs.read(source.sha)
                 derived = (
-                    _config_derives(data, at_source, delegate)
+                    _config_regenerates(data, at_source, delegate, seen.policy, tree_paths, scan)
                     if e.path == paths.VAULT_MARKER
                     else _content(e.path, at_source)[0] == "text" and _derives(data, at_source)
                 )
@@ -1533,6 +1611,7 @@ def _build_and_push(
     expect: str | None,
     gh: GhRunner,
     record: Callable[[DelegateLink], None],
+    links: Mapping[str, DelegateLink] | None = None,
 ) -> tuple[Result, DelegateLink]:
     head = _head(vault)
     memo = ScanMemo.load(vault, link.id)
@@ -1561,9 +1640,18 @@ def _build_and_push(
         notes=_drop_warning(link.id, the_plan),
     )
     parent = None if fresh else link.last_mirror
-    if parent is not None and git(vault, "rev-parse", f"{parent}^{{tree}}").stdout.strip() == tree:
+    parent_tree = git(vault, "rev-parse", "--verify", "-q", f"{parent}^{{tree}}", check=False) if parent else None
+    if parent_tree is not None and parent_tree.stdout.strip() == tree:
         result.unchanged = True
         return result, dataclasses.replace(link, last_vault=head, last_sync=_now())
+    # The remote must be this delegate's own mirror before anything is built on it: the link state is no proof,
+    # since whatever can read the signing key can sign a forged one.
+    check_remote(link.remote, vault=vault, gh=gh)
+    bound = bind_remote(vault, link, links or {}, gh=gh, mode="link" if fresh else "push")
+    if bound != expect:
+        raise RepoSyncError(
+            "mirror_diverged", f"refused: {link.remote}'s main moved since the last mirror; nothing was pushed"
+        )
     if parent is not None:
         before = set(git(vault, "ls-tree", "-r", "-z", "--name-only", parent).stdout.split("\0")) - {""}
         result.in_history = len(before & the_plan.hidden_paths)
@@ -1571,7 +1659,7 @@ def _build_and_push(
     commit = git(vault, *args, env=IDENTITY, input=MESSAGE).stdout.strip()
     trusted = (link.last_mirror, link.checked_fingerprint) if link.last_mirror and link.checked_fingerprint else None
     fingerprint = check_tree(vault, commit, link.id, head, trusted=None if fresh else trusted)
-    check_remote(link.remote, vault=vault, gh=gh)
+    check_remote(link.remote, vault=vault, gh=gh)  # again, right before the push
     git(vault, "update-ref", mirror_ref(link.id), commit)  # keeps its objects while it is pending
     record(dataclasses.replace(link, pending_mirror=commit))
     push(vault, link.remote, commit, expect)
@@ -1687,7 +1775,7 @@ def link(
             stale_key_ids=list(old.stale_key_ids) if old is not None and old.remote == remote else [],
             key_file=old.key_file if old is not None and old.remote == remote else None,
         )
-        result, updated = _build_and_push(vault, new, fresh=True, expect=current, gh=gh, record=record)
+        result, updated = _build_and_push(vault, new, fresh=True, expect=current, gh=gh, record=record, links=links)
         links[delegate] = dataclasses.replace(updated, last_inputs=sync_inputs(vault))  # else the first tick re-syncs
         if ignored:
             result.notes.append(f"added {STATE_REL} to .gitignore")
@@ -1743,7 +1831,7 @@ def sync(vault: Path, delegate: str, *, gh: GhRunner = _gh) -> Result:
                 save_links(vault, {**links, delegate: pending})
 
             result, updated = _build_and_push(
-                vault, current, fresh=False, expect=current.last_mirror, gh=gh, record=record
+                vault, current, fresh=False, expect=current.last_mirror, gh=gh, record=record, links=links
             )
         except Exception as e:
             err = e if isinstance(e, RepoSyncError) else RepoSyncError("internal", f"{type(e).__name__}: {e}")
@@ -1753,7 +1841,7 @@ def sync(vault: Path, delegate: str, *, gh: GhRunner = _gh) -> Result:
             raise err from e
         if ignored:
             result.notes.append(f"added {STATE_REL} and its companions to .gitignore")
-        updated, notes = _retry_stale_quietly(updated, gh)
+        updated, notes = _retry_stale_quietly(vault, updated, links, gh)
         result.notes += notes
         links[delegate] = dataclasses.replace(updated, last_attempt=_now(), last_error=None, last_inputs=inputs)
         save_links(vault, links)
@@ -1812,11 +1900,22 @@ def _retry_due(link: DelegateLink, head: str | None, inputs: str, now: datetime)
     return now - tried >= wait or now < tried
 
 
-def _retry_stale_quietly(link: DelegateLink, gh: GhRunner) -> tuple[DelegateLink, list[str]]:
-    """A sync's best try at the old keys a rotation left live: it never fails the sync."""
+def _retry_stale_quietly(
+    vault: Path, link: DelegateLink, links: Mapping[str, DelegateLink], gh: GhRunner
+) -> tuple[DelegateLink, list[str]]:
+    """A sync's best try at the old keys a rotation left live: it never fails the sync.
+
+    Only after the remote is checked and bound to this delegate again, also when
+    the sync changed nothing (that path skips the push and its checks).
+    """
     repo = github_repo(link.remote)
     if not link.stale_key_ids or repo is None:
         return link, []
+    try:
+        check_remote(link.remote, vault=vault, gh=gh)
+        bind_remote(vault, link, links, gh=gh, mode="keys")
+    except RepoSyncError as e:
+        return link, [e.message.replace("refused: ", "warning: old deploy keys not retried: ", 1)]
     return _retry_stale(repo, link, gh)
 
 
@@ -1897,8 +1996,10 @@ def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, 
         if current is None:
             raise RepoSyncError("not_linked", f"refused: {delegate} has no mirror")
         repo = github_repo(current.remote)
+        if repo is not None and (current.deploy_key_id is not None or current.stale_key_ids):
+            bind_remote(vault, current, links, gh=gh, mode="keys")
         if current.deploy_key_id is not None and repo is not None:
-            _delete_key(repo, current.deploy_key_id, gh=gh)
+            _delete_key(repo, current.deploy_key_id, gh=gh, title=_key_title(delegate))
             current = dataclasses.replace(current, deploy_key_id=None)
             save_links(vault, {**links, delegate: current})
             result.notes.append("revoked the agent's deploy key")
@@ -1975,56 +2076,103 @@ def _key_title(delegate: str) -> str:
     return f"scout-delegate-{delegate}"
 
 
-def _delete_key(repo: str, key_id: int, *, gh: GhRunner) -> None:
-    """Delete deploy key ``key_id`` on ``repo``, or refuse. Gone already counts only when GitHub shows it gone.
+def _not_found(proc: subprocess.CompletedProcess[str]) -> bool:
+    return "Not Found" in proc.stdout + proc.stderr or "HTTP 404" in proc.stdout + proc.stderr
 
-    GitHub answers 404 both for a key that's gone and for a private repository this ``gh`` account can't see
-    (another account, after ``gh auth switch``), so a 404 is checked against the repository's key list.
+
+def _key_gone(repo: str, key_id: int, gh: GhRunner) -> bool:
+    """Whether GitHub's key list for ``repo`` shows ``key_id`` gone (a 404 alone also means "can't see the repo")."""
+    try:
+        listed = _ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[].id"], repo)
+    except RepoSyncError:
+        return False
+    return str(key_id) not in listed.split()
+
+
+def _delete_key(repo: str, key_id: int, *, gh: GhRunner, title: str) -> None:
+    """Delete deploy key ``key_id`` on ``repo`` if it is titled ``title`` (this delegate's), or refuse.
+
+    Never trusts the link state for whose key it is: GitHub must show the
+    title first. Gone already counts only when the key list shows it gone,
+    since GitHub answers 404 both for a deleted key and for a private
+    repository this ``gh`` account can't see.
     """
+    unseen = (
+        f"refused: couldn't delete deploy key {key_id} on {repo}: GitHub says Not Found, and this gh account "
+        "can't list its keys (check gh auth status); delete it in the repository's settings, then retry"
+    )
+    got = _run_gh(gh, ["api", f"repos/{repo}/keys/{key_id}", "--jq", ".title"], repo)
+    if got.returncode != 0:
+        if _not_found(got):
+            if _key_gone(repo, key_id, gh):
+                return
+            raise RepoSyncError("key_revoke_failed", unseen)
+        why = (got.stderr or got.stdout).strip().splitlines()
+        raise RepoSyncError(
+            "key_revoke_failed",
+            f"refused: couldn't read deploy key {key_id} on {repo}: {why[-1] if why else 'gh failed'}",
+        )
+    if got.stdout.strip() != title:
+        raise RepoSyncError(
+            "key_not_ours",
+            f"refused: deploy key {key_id} on {repo} is titled {got.stdout.strip()!r}, not {title!r}: it isn't "
+            "this delegate's, so it was left alone",
+        )
     proc = _run_gh(gh, ["api", "-X", "DELETE", f"repos/{repo}/keys/{key_id}"], repo)
-    if proc.returncode == 0:
+    if proc.returncode == 0 or (_not_found(proc) and _key_gone(repo, key_id, gh)):
         return
     why = (proc.stderr or proc.stdout).strip().splitlines()
-    reason = why[-1] if why else "gh failed"
-    if "Not Found" in proc.stdout + proc.stderr or "HTTP 404" in proc.stdout + proc.stderr:
-        try:
-            listed = _ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[].id"], repo)
-        except RepoSyncError:
-            reason = f"GitHub says Not Found, and this gh account can't list {repo}'s keys (check gh auth status)"
-        else:
-            if str(key_id) not in listed.split():
-                return
     raise RepoSyncError(
         "key_revoke_failed",
-        f"refused: couldn't delete deploy key {key_id} on {repo}: {reason}; delete it in the repository's "
-        "settings, then retry",
+        f"refused: couldn't delete deploy key {key_id} on {repo}: {why[-1] if why else 'gh failed'}; delete it "
+        "in the repository's settings, then retry",
     )
 
 
 def _retry_stale(repo: str, link: DelegateLink, gh: GhRunner) -> tuple[DelegateLink, list[str]]:
-    """Try again to delete the old keys a rotation couldn't; the link with those still live, and notes."""
+    """Try again to delete the old keys a rotation couldn't; the link with those still live, and notes.
+
+    A key GitHub shows under another title isn't this delegate's: it is dropped from the list, untouched.
+    """
     left: list[int] = []
     notes: list[str] = []
     for key_id in link.stale_key_ids:
         try:
-            _delete_key(repo, key_id, gh=gh)
+            _delete_key(repo, key_id, gh=gh, title=_key_title(link.id))
         except RepoSyncError as e:
-            left.append(key_id)
+            if e.code != "key_not_ours":
+                left.append(key_id)
             notes.append(e.message.replace("refused: ", "warning: ", 1))
         else:
             notes.append(f"deleted old deploy key {key_id} on {repo}")
     return dataclasses.replace(link, stale_key_ids=left), notes
 
 
+_KEY_FILE = re.compile(r"[0-9a-f]{16}-(?P<delegate>[a-z0-9][a-z0-9-]{0,39})")
+
+
 def _key_files(vault: Path, delegate: str, link: DelegateLink | None) -> list[Path]:
-    """The agent's key files: where the link says it wrote them, and where this vault's path puts them."""
-    keys = {key_path(vault, delegate)} | ({Path(link.key_file)} if link is not None and link.key_file else set())
+    """The agent's key files that may be deleted: this vault's path for them, and the one the link recorded only
+    when it is a key file for this delegate directly in the secrets folder (a forged path is ignored)."""
+    keys = {key_path(vault, delegate)}
+    if link is not None and link.key_file:
+        recorded = Path(link.key_file)
+        match = _KEY_FILE.fullmatch(recorded.name)
+        with contextlib.suppress(OSError):
+            if match and match["delegate"] == delegate and recorded.parent.resolve() == secrets_dir().resolve():
+                keys.add(recorded)
     return [p for k in sorted(keys) for p in (k, k.with_name(k.name + ".pub"), k.with_name(k.name + ".known_hosts"))]
 
 
 def _remove_key_files(vault: Path, delegate: str, link: DelegateLink | None = None) -> None:
+    """Delete the agent's key files: regular files with one link only, never through a symlink or hard link."""
     for p in _key_files(vault, delegate, link):
-        p.unlink(missing_ok=True)
+        try:
+            st = p.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+            p.unlink()
 
 
 def deploy_key(
@@ -2054,6 +2202,7 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
     if repo is None:
         raise RepoSyncError("key_needs_github", "refused: a deploy key needs a GitHub mirror repository")
     result = Result(delegate=delegate, action="key")
+    bind_remote(vault, current, links, gh=gh, mode="keys")  # whatever the state says, before any key changes
     if current.stale_key_ids:
         current, notes = _retry_stale(repo, current, gh)
         links[delegate] = current
@@ -2064,7 +2213,7 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
             if result.notes:  # only old keys were on record; they were retried above
                 return result
             raise RepoSyncError("no_key", f"refused: {delegate} has no deploy key on record")
-        _delete_key(repo, current.deploy_key_id, gh=gh)
+        _delete_key(repo, current.deploy_key_id, gh=gh, title=_key_title(delegate))
         _remove_key_files(vault, delegate, current)
         links[delegate] = dataclasses.replace(current, deploy_key_id=None, key_file=None)
         save_links(vault, links)
@@ -2106,11 +2255,11 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
             raise RepoSyncError("key_add_failed", "refused: GitHub's answer to the new key didn't parse")
         added = dataclasses.replace(current, deploy_key_id=int(fields[0]))
         if fields[1] != "true":
-            _delete_key(repo, int(fields[0]), gh=gh)
+            _delete_key(repo, int(fields[0]), gh=gh, title=_key_title(delegate))
             raise RepoSyncError("key_not_read_only", "refused: GitHub recorded the key as writable; it was deleted")
         if current.deploy_key_id is not None:
             try:
-                _delete_key(repo, current.deploy_key_id, gh=gh)
+                _delete_key(repo, current.deploy_key_id, gh=gh, title=_key_title(delegate))
             except RepoSyncError as e:
                 added = dataclasses.replace(added, stale_key_ids=[*added.stale_key_ids, current.deploy_key_id])
                 result.notes.append(
@@ -2137,6 +2286,81 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
         f"git clone --depth 1 git@github.com:{repo}.git",
     ]
     return result
+
+
+def trust_state(vault: Path, *, env: Mapping[str, str] | None = None, gh: GhRunner = _gh) -> Result:
+    """Check each link in a state file whose signature doesn't verify, and sign it again. The owner only.
+
+    For when the signing key was lost or the file was edited. Nothing in the
+    file is taken on trust except which delegates have which remotes: each
+    remote must pass :func:`check_remote` and hold this delegate's mirror
+    (:func:`bind_remote`), the last mirror becomes what the remote holds, and
+    the deploy keys are read back from GitHub by title (the one on record is
+    kept only if GitHub shows it as this delegate's; any other key titled for
+    this delegate is kept on record as an old key, so it is deleted next time).
+    Sync times, fingerprints, the key file and the scan memos are reset. If any
+    link fails, nothing is written.
+    """
+    env = os.environ if env is None else env
+    vault = vault.resolve()
+    headless_gate(env, "Signing the delegate mirror state again")
+    result = Result(delegate="*", action="trust-state")
+    with locked(vault):
+        path = state_path(vault)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))["links"]
+            claimed = {str(k): DelegateLink.from_json(v) for k, v in raw.items()}
+        except FileNotFoundError as e:
+            raise RepoSyncError("not_linked", f"refused: {STATE_REL} doesn't exist; there is nothing to check") from e
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            raise RepoSyncError(
+                "state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it"
+            ) from e
+        checked: dict[str, DelegateLink] = {}
+        for key, link in sorted(claimed.items()):
+            _check_id(key)
+            if link.id != key:
+                raise RepoSyncError("state_unreadable", f"refused: the link under {key!r} names {link.id!r}")
+            check_remote(link.remote, vault=vault, gh=gh)
+            head = bind_remote(vault, link, claimed, gh=gh, mode="keys")
+            deploy, stale = _keys_on_github(link, gh)
+            if head is not None and git(vault, "cat-file", "-e", f"{head}^{{commit}}", check=False).returncode == 0:
+                git(vault, "update-ref", mirror_ref(key), head)
+            checked[key] = DelegateLink(
+                id=key,
+                remote=link.remote,
+                linked_at=link.linked_at,
+                account_unshared=link.account_unshared,
+                last_mirror=head,
+                deploy_key_id=deploy,
+                stale_key_ids=stale,
+            )
+            keys = f"deploy key {deploy}" if deploy is not None else "no deploy key"
+            old = f", {len(stale)} old key(s) to delete" if stale else ""
+            result.notes.append(f"{key}: {link.remote} holds {key}'s mirror; {keys}{old}; the next sync rebuilds it")
+        save_links(vault, checked)
+        for memo in (vault / SCAN_DIR).glob("*.json"):
+            memo.unlink(missing_ok=True)
+    result.notes.append(f"signed {STATE_REL} again for {len(checked)} delegate(s)")
+    return result
+
+
+def _keys_on_github(link: DelegateLink, gh: GhRunner) -> tuple[int | None, list[int]]:
+    """The deploy key to keep on record for ``link`` and the old ones to delete, as GitHub lists them by title."""
+    repo = github_repo(link.remote)
+    if repo is None:
+        return None, []
+    listed = _ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[] | [.id, .title] | @tsv"], repo)
+    ours = sorted(
+        int(i)
+        for i, _, t in (line.partition("\t") for line in listed.splitlines())
+        if i.isdigit() and t == _key_title(link.id)
+    )
+    if link.deploy_key_id in ours:
+        return link.deploy_key_id, [k for k in ours if k != link.deploy_key_id]
+    if len(ours) == 1:
+        return ours[0], []
+    return None, ours
 
 
 def preview(vault: Path, delegate: str) -> Result:

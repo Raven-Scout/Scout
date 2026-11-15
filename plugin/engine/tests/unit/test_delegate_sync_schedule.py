@@ -21,16 +21,20 @@ from scout import delegate_mirror as dm
 from scout import health
 from scout import repo_sync as rs
 from scout.cli import app
+from scout.kb.outbound import note_from_text, terms_of
 from scout.scripts import bootstrap_doctor, schedule_tick
 
 from .privacy_vault_helpers import git
 from .test_delegate_mirror import (  # noqa: F401 - the fixtures
+    GITHUB,
     INBOX_CANARY,
     PRIYA,
+    FakeGh,
     _all_blobs,
     _bare,
     _commit,
     _commit_files,
+    _fake_keygen,
     _link,
     _show,
     github_link,
@@ -200,10 +204,13 @@ def test_run_health_shows_a_failed_mirror_and_nothing_without_links(vault: Path,
     assert finding.id == "delegate.sync_failed" and finding.severity == "yellow"
     assert "remote_public" in finding.summary and finding.since == datetime(2026, 11, 13, 10, tzinfo=UTC)
     assert "scoutctl delegate sync grok-personal" in finding.fix
-    dm.state_path(vault).write_text("[]", encoding="utf-8")
+    dm.state_path(vault).write_text("not json", encoding="utf-8")
     [finding] = health.delegate_findings(vault)
     assert finding.id == "delegate.state_unreadable"
     assert any(f.id == "delegate.state_unreadable" for f in health.evaluate(vault).findings)
+    dm.state_path(vault).write_text("[]", encoding="utf-8")  # JSON, but not signed by this computer
+    [finding] = health.delegate_findings(vault)
+    assert finding.id == "delegate.state_unverified" and "trust-state" in finding.fix
 
 
 def test_doctor_shows_mirror_ages_and_warns_when_one_is_stuck(vault: Path, tmp_path: Path) -> None:  # noqa: F811
@@ -391,7 +398,8 @@ def test_check_tree_skips_only_blobs_it_checked_under_the_same_fingerprint(
     fp = dm.check_tree(
         vault, link.last_mirror, "grok-personal", head, trusted=(link.last_mirror, link.checked_fingerprint)
     )
-    assert fp == link.checked_fingerprint and len(scanned) == 0 < full
+    files = [r for r in scanned if r]  # "" is the config, regenerated and compared on every check
+    assert fp == link.checked_fingerprint and len(files) == 0 < full
     current = dataclasses.replace(link, pending_mirror="abc")
     monkeypatch.setattr(dm, "remote_head", lambda *_a: "abc")
     adopted = dm._adopt_pending(vault, current)
@@ -756,15 +764,13 @@ def test_a_forged_state_is_refused_so_a_newly_hidden_name_cant_stay(
         dm.sync(vault, "grok-personal")
     assert e.value.code == "state_unverified"
     assert "Zephyr Orchard" in _show(bare, mention)  # nothing was pushed from the forged state
-    assert health.delegate_findings(vault)[0].id == "delegate.state_unreadable"
+    assert health.delegate_findings(vault)[0].id == "delegate.state_unverified"
 
 
 def test_derivation_and_matcher_code_rules() -> None:
     assert dm._derives(b"a\nc\n", b"a\nb\nc\n") and dm._derives(b"", b"x\n")
     assert not dm._derives(b"c\na\n", b"a\nb\nc\n") and not dm._derives(b"a\nz\n", b"a\nb\n")
-    assert not dm._derives(b"\xff", b"\xff") and not dm._config_derives(b"\xff", b"a: 1\n", "d")
-    assert not dm._config_derives(b"[1, 2]\n", b"a: 1\n", "d")
-    assert dm._config_derives(b"privacy:\n  delegates:\n    d: {include_private: true}\n", b"a: 1\n", "d")
+    assert not dm._derives(b"\xff", b"\xff")
     assert len(dm._matcher_source()) == 64
 
 
@@ -828,3 +834,225 @@ def test_check_tree_refuses_a_changed_mode_or_symlink(vault: Path) -> None:  # n
         with pytest.raises(rs.RepoSyncError) as e:
             dm.check_tree(vault, commit, "grok-personal", head)
         assert e.value.code == "delegate_mirror_unsafe", list(swap)
+
+
+# ----- third review of #636 (coordinator, 2026-11-15): state forged by a key holder is checked at use ------
+
+
+def _forge(vault: Path, delegate: str, **changes: object) -> None:  # noqa: F811
+    """Change a link and sign it, as anything that can read the signing key could."""
+    links = dm.load_links(vault)
+    links[delegate] = dataclasses.replace(links[delegate], **changes)  # type: ignore[arg-type]
+    dm.save_links(vault, links)
+
+
+def _main(bare: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(bare), "rev-parse", "main"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_a_forged_link_cant_push_one_delegates_mirror_into_anothers_repo(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    grok = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", grok)
+    _link(vault, "duet", _bare(tmp_path, "duet"))  # include_private: true
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    before = _main(grok)
+    _forge(vault, "duet", remote=str(grok), last_mirror=before)  # the lease would match
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "duet")
+    assert e.value.code == "remote_taken" and _main(grok) == before
+    links = dm.load_links(vault)
+    del links["grok-personal"]  # even with grok's own link gone, grok's repo holds grok's mirror
+    dm.save_links(vault, links)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "duet")
+    assert e.value.code == "remote_unbound" and "grok-personal's mirror" in e.value.message
+    assert _main(grok) == before
+
+
+def test_a_forged_remote_cant_overwrite_another_repository(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    other = _bare(tmp_path, "notes")
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(other), str(seed)], check=True, capture_output=True)
+    (seed / "README.md").write_text("someone else's repository\n", encoding="utf-8")
+    git(seed, "add", "-A")
+    git(seed, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "theirs")
+    git(seed, "push", "-q", "origin", "HEAD:main")
+    before = _main(other)
+    _forge(vault, "grok-personal", remote=str(other), last_mirror=before)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "remote_unbound" and "not a Scout delegate mirror" in e.value.message
+    assert _main(other) == before
+
+
+def test_forged_old_keys_on_another_repo_are_never_deleted(
+    github_link: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gh = FakeGh()
+    gh.keys = {7: "theirs"}
+    gh.titles = {7: "ci-deploy"}
+    head = rs._head(github_link)  # a commit with no mirror manifest: the other repo's main, say
+    real = dm.remote_head
+    other = "https://github.com/someone/other-repo.git"
+    monkeypatch.setattr(dm, "remote_head", lambda v, r: head if r == other else real(v, r))
+    _forge(github_link, "grok-personal", remote=other, stale_key_ids=[7])
+    result = dm.sync(github_link, "grok-personal", gh=gh)  # unchanged: returns before the push
+    assert any("not retried" in n and "not a Scout delegate mirror" in n for n in result.notes)
+    assert not any(c[:3] == ["api", "-X", "DELETE"] for c in gh.calls) and 7 in gh.keys
+    # and even a bound repository only loses keys titled for this delegate
+    link = dataclasses.replace(dm.load_links(github_link)["grok-personal"], stale_key_ids=[7])
+    left, notes = dm._retry_stale("someone/other-repo", link, gh)
+    assert left.stale_key_ids == [] and 7 in gh.keys and "isn't this delegate's" in notes[0]
+
+
+def test_a_forged_key_file_is_never_deleted(github_link: Path, home: Path) -> None:  # noqa: F811
+    ssh = home / ".ssh"
+    ssh.mkdir()
+    own = ssh / "id_ed25519"
+    own.write_text("the owner's own key\n", encoding="utf-8")
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    for step in (
+        lambda: dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen),
+        lambda: dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh),
+        lambda: dm.unlink(github_link, "grok-personal", gh=gh),
+    ):
+        _forge(github_link, "grok-personal", key_file=str(own))
+        step()
+        assert own.read_text(encoding="utf-8") == "the owner's own key\n"
+
+
+def test_key_files_behind_a_symlink_or_hard_link_are_left_alone(github_link: Path, home: Path) -> None:  # noqa: F811
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    key = dm.key_path(github_link, "grok-personal")
+    precious = home / "precious"
+    precious.write_text("x\n", encoding="utf-8")
+    pub = key.with_name(key.name + ".pub")
+    pub.unlink()
+    pub.symlink_to(precious)
+    known = key.with_name(key.name + ".known_hosts")
+    known.unlink()
+    os.link(precious, known)
+    dm._remove_key_files(github_link, "grok-personal")
+    assert precious.exists() and pub.is_symlink() and known.exists() and not key.exists()
+
+
+def test_trust_state_checks_each_link_and_signs_it_again(github_link: Path) -> None:  # noqa: F811
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.keys[150], gh.titles[150] = "older", "scout-delegate-grok-personal"  # a live key the state lost
+    gh.keys[151], gh.titles[151] = "theirs", "ci-deploy"
+    (dm.secrets_dir() / dm.STATE_KEY).unlink()  # the signing key is gone
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.load_links(github_link)
+    assert e.value.code == "state_unverified" and "trust-state" in e.value.message
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.trust_state(github_link, env={"SCOUT_MODE": "briefing"}, gh=gh)
+    assert e.value.code == "headless_refused"
+    result = dm.trust_state(github_link, gh=gh)
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (100, [150])  # 151 isn't this delegate's
+    assert link.last_vault is None and link.checked_fingerprint is None and link.key_file is None
+    assert any("holds grok-personal's mirror" in n for n in result.notes)
+    out = runner.invoke(app, ["delegate", "trust-state"], env={"SCOUT_DATA_DIR": str(github_link)})
+    assert out.exit_code == 2  # gh isn't faked for the CLI: it refuses rather than trusting
+
+
+def test_trust_state_refuses_a_link_whose_remote_isnt_its_mirror(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    grok = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", grok)
+    _link(vault, "duet", _bare(tmp_path, "duet"))
+    state = json.loads(dm.state_path(vault).read_text(encoding="utf-8"))
+    duet_remote = state["links"]["duet"]["remote"]
+    state["links"]["duet"]["remote"] = str(grok)  # a hand edit: unsigned now
+    dm.state_path(vault).write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.trust_state(vault)
+    assert e.value.code == "remote_taken"
+    with pytest.raises(rs.RepoSyncError):
+        dm.load_links(vault)  # nothing was signed
+    for bad, code in (("not json", "state_unreadable"), (None, "not_linked")):
+        if bad is None:
+            dm.state_path(vault).unlink()
+        else:
+            dm.state_path(vault).write_text(bad, encoding="utf-8")
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.trust_state(vault)
+        assert e.value.code == code
+    state["links"]["duet"]["remote"] = duet_remote
+    state["links"]["grok-personal"]["id"] = "duet"
+    dm.state_path(vault).write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.trust_state(vault)
+    assert e.value.code == "state_unreadable"
+
+
+def test_remote_identity_and_mirror_ownership_edges(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    assert dm._same_remote("https://github.com/O/R.git", "git@github.com:o/r.git")
+    assert not dm._same_remote("https://github.com/o/r", str(tmp_path / "r.git"))
+    bare = _bare(tmp_path, "grok")
+    assert dm._same_remote(str(bare), f"file://{bare}") and not dm._same_remote(str(bare), str(tmp_path / "x.git"))
+    assert dm._same_remote("odd:thing", "odd:thing") and not dm._same_remote("odd:a", "odd:b")
+    _link(vault, "grok-personal", bare)
+    head = _main(bare)
+    git(vault, "update-ref", "-d", dm.mirror_ref("grok-personal"))
+    git(vault, "-c", "gc.reflogExpire=now", "reflog", "expire", "--all", "--expire=now")
+    git(vault, "-c", "gc.pruneExpire=now", "gc", "-q", "--prune=now")
+    assert dm._mirror_owner(vault, str(bare), head) == "grok-personal"  # fetched: it wasn't here any more
+    blob = rs.git(vault, "hash-object", "-w", "--stdin", input="{not json").stdout.strip()
+    tree = rs._write_tree(vault, [f"100644 {blob}\t{dm.MANIFEST_PATH}"])
+    odd = git(vault, "commit-tree", tree, "-m", "x").strip()
+    assert dm._mirror_owner(vault, str(bare), odd) is None
+
+
+def test_a_push_needs_a_key_titled_for_the_delegate_when_one_is_on_record(
+    github_link: Path,  # noqa: F811
+) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.titles[100] = "someone-elses-key"
+    _commit(github_link, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(github_link, "grok-personal", gh=gh)
+    assert e.value.code == "remote_unbound" and "no deploy key for grok-personal" in e.value.message
+
+
+def test_push_failures_are_named(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    for out, code in (("! [rejected] (stale info)", "mirror_diverged"), ("remote: denied", "push_failed")):
+        monkeypatch.setattr(dm, "_remote_git", lambda *_a, o=out, **_k: subprocess.CompletedProcess(["git"], 1, "", o))
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.push(vault, "/some/mirror.git", "abc", None)
+        assert e.value.code == code
+
+
+def test_a_config_that_cant_be_regenerated_is_refused(vault: Path) -> None:  # noqa: F811
+    from scout.kb.privacy import DelegateRule, load_policy
+
+    terms = terms_of([note_from_text("people/sam-lee.md", "---\nname: Sam Lee\n---\n")])
+    policy = dataclasses.replace(load_policy(vault), delegates=(DelegateRule(id="d"),))
+    source = b"privacy:\n  surfaces: {owner_only: [Sam Lee]}\n"
+    assert not dm._config_regenerates(b"x", source, "d", policy, [], dm.Scanner(terms))
+
+
+def test_key_lookups_on_github(github_link: Path) -> None:  # noqa: F811
+    def broken(args: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500: busy")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._delete_key("someone/grok-mirror", 1, gh=broken, title="t")
+    assert e.value.code == "key_revoke_failed" and "busy" in e.value.message
+    link = dataclasses.replace(dm.load_links(github_link)["grok-personal"], deploy_key_id=999)
+    gh = FakeGh()
+    gh.keys, gh.titles = {150: "k"}, {150: "scout-delegate-grok-personal"}
+    assert dm._keys_on_github(link, gh) == (150, [])  # the one key titled for it
+    gh.keys[151], gh.titles[151] = "k", "scout-delegate-grok-personal"
+    assert dm._keys_on_github(link, gh) == (None, [150, 151])  # which is current isn't known: rotate
+    assert dm._keys_on_github(dataclasses.replace(link, remote="/x.git"), gh) == (None, [])

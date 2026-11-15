@@ -4631,6 +4631,19 @@ def _register_delegate() -> None:
             _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), False)
         typer.echo(f"stored at {push_token_path(vault)}")
 
+    @delegate_app.command("trust-state")
+    def cli_delegate_trust_state(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
+        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only)."""
+        from scout import paths as _paths
+        from scout.delegate_mirror import trust_state
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = trust_state(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
     @delegate_app.command("unlink")
     def cli_delegate_unlink(
         delegate: str = typer.Argument(..., help="The delegate id."),

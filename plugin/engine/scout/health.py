@@ -896,7 +896,19 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
 
     try:
         links = load_links(vault)
-    except RepoSyncError:
+    except RepoSyncError as e:
+        if e.code == "state_unverified":
+            return [
+                Finding(
+                    id="delegate.state_unverified",
+                    severity="yellow",
+                    since=None,
+                    summary="The delegate mirror state's signature doesn't match (it wasn't written by Scout on "
+                    "this computer, or the signing key is gone), so no agent's mirror syncs",
+                    fix="Check each link and sign it again with: scoutctl delegate trust-state",
+                    source="state",
+                )
+            ]
         return [
             Finding(
                 id="delegate.state_unreadable",
