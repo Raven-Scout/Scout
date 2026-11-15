@@ -241,7 +241,11 @@ def private_links_in_shared(vault: Path, *, persist: bool = True) -> list[tuple[
         own = terms
         if labels[rel].visibility == "private":
             # any_term is only a pre-check, so a superset of the remaining notes' terms is fine.
-            own = PrivateTerms(notes=tuple(n for n in terms.notes if n.path != rel), any_term=terms.any_term)
+            own = PrivateTerms(
+                notes=tuple(n for n in terms.notes if n.path != rel),
+                any_term=terms.any_term,
+                any_bare=terms.any_bare,
+            )
         lines = find_mentions(data.decode("utf-8", errors="replace"), own, allow_markers=True)
         if lines:
             out.append((rel, lines))
