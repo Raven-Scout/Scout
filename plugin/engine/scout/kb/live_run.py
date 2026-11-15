@@ -1318,21 +1318,32 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         command, bodies = _split_heredocs(command, start=len(_STATE["bodies"]))
         _STATE["bodies"].extend(bodies)
     command = command.replace("\\\n", " ")
-    results: list[str | None] = []
+    # Every verdict with where it sits in the command, so the first form in the text names the deny
+    # (`c=$(git commit-tree …) && git update-ref …` is commit-tree; `git update-ref HEAD "$(git commit-tree …)"`
+    # is update-ref).
+    results: list[tuple[int, str | None]] = []
     # Each substitution's command on its own, and a placeholder in its place (see SUBST): `> $(printf .claude)/x`.
-    # Judged after the command around it, so the outer command's form names the deny.
     spans = _substitutions(command)
     inner = [_run_escape(command[a:b], depth + 1, split=False) for _s, _e, a, b in spans]
+    rebuilt, at, shift = [], 0, 0
+    for (start, end, a, b), found in zip(spans, inner, strict=True):
+        known = _known_output(command[a:b]) if command[start] not in "<>" else None
+        rebuilt += [command[at:start], known or SUBST]
+        results.append((start - shift, found))
+        shift += (end - start) - len(known or SUBST)
+        at = end
+    command = "".join([*rebuilt, command[at:]])
     for text, expands in bodies:  # an unquoted here-document runs its substitutions; quotes there are text
         if expands:
-            inner += [_run_escape(text[a:b], depth + 1) for _s, _e, a, b in _substitutions(text, quotes=False)]
-    for start, end, a, b in reversed(spans):
-        known = _known_output(command[a:b]) if command[start] != "<" and command[start] != ">" else None
-        command = command[:start] + (known or SUBST) + command[end:]
+            for _s, _e, a, b in _substitutions(text, quotes=False):
+                results.append((len(command), _run_escape(text[a:b], depth + 1)))
     detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
+    position = 0
     for segment, op in _segments_with_ops(command):
+        position += len(op)
+        here, position = position, position + len(segment)
         fed = previous if op in ("|", "|&") else None  # the segment piped into this one
         clean, targets, reads, strings = _redirects(segment)
         words = _tokens(clean)
@@ -1349,7 +1360,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             found = _secret_read(words, reads, cwd)
         if found == "env":
             return "env"
-        results.append(found)
+        results.append((here, found))
         previous = segment
         if words[:1] == ["cd"]:
             dest = _substitute(words[1])[0] if len(words) > 1 else "~"
@@ -1359,7 +1370,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 cwd = dest.rstrip("/") + "/"
             else:
                 cwd = cwd + dest.rstrip("/") + "/"
-    return _merge([*results, *inner], detach)
+    return _merge([found for _, found in sorted(results, key=lambda r: r[0])], detach)
 
 
 def _shell_stdin_escape(segment: str, strings: list[str], fed: str | None, depth: int) -> str | None:

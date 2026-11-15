@@ -1130,6 +1130,20 @@ def test_commits_made_without_git_commit_are_named(command: str, form: str) -> N
 @pytest.mark.parametrize(
     ("command", "form"),
     [
+        ('c=$(git commit-tree "$(git write-tree)" -p HEAD -m x) && git update-ref HEAD "$c"', "commit-tree"),
+        ('git update-ref HEAD "$(git commit-tree abc)"', "update-ref"),
+        ("echo `git commit-tree abc` && git commit --no-verify", "commit-tree"),
+        ('git commit --no-verify -m "$(git commit-tree abc)"', "--no-verify"),
+    ],
+)
+def test_the_first_form_in_the_text_names_the_deny(command: str, form: str) -> None:
+    """A substitution is judged where it sits: before what follows it, after the command it's an argument of."""
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
         ("echo x > .git/hooks/pre-commit", ".git/hooks"),
         ("echo x >> .git/hooks/pre-commit", ".git/hooks"),
         ("echo x >.git/hooks/pre-commit", ".git/hooks"),
