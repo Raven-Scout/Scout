@@ -1056,3 +1056,35 @@ def test_key_lookups_on_github(github_link: Path) -> None:  # noqa: F811
     gh.keys[151], gh.titles[151] = "k", "scout-delegate-grok-personal"
     assert dm._keys_on_github(link, gh) == (None, [150, 151])  # which is current isn't known: rotate
     assert dm._keys_on_github(dataclasses.replace(link, remote="/x.git"), gh) == (None, [])
+
+
+def test_known_residual_a_key_holder_can_keep_a_newly_hidden_name_on_main(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """Pins a known gap, accepted until #637 and Phase 1c make ~/.scout-secrets unreadable to runs (option (c)
+    in #636's review): with the signing key, a forged checked_fingerprint and a "keep" memo entry let a blob
+    already on the mirror skip the rescan, so a name hidden since stays on main. Without the key (an unsigned
+    forgery) it can't: see test_a_forged_state_is_refused_so_a_newly_hidden_name_cant_stay. When the skip is
+    dropped or anchored elsewhere, flip the last assertion."""
+    mention = "knowledge-base/topics/misc/mention.md"
+    _commit(vault, mention, "---\ntitle: Mention\n---\n\nPlanning with Zephyr Orchard.\nKept.\n", "mention")
+    bare = _synced(vault, tmp_path)
+    _commit(
+        vault,
+        "knowledge-base/people/zephyr-orchard.md",
+        "---\nname: Zephyr Orchard\ntype: person\nvisibility: private\n---\n\nquiet\n",
+        "a private note",
+    )
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        new_fp = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    _forge(vault, "grok-personal", checked_fingerprint=new_fp)  # signed: the forger holds the key
+    memo = dm.ScanMemo(vault / dm.SCAN_DIR / "grok-personal.json", delegate="grok-personal")
+    memo.seen = {mention: [_blob(vault, mention), "keep", _blob(vault, mention), 0]}
+    memo.save(dm.Plan(delegate="grok-personal", fingerprint=new_fp))
+    dm.sync(vault, "grok-personal")
+    assert "Zephyr Orchard" in _show(bare, mention)  # the residual; an honest sync redacts it (tested above)

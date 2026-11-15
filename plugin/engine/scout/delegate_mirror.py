@@ -1490,6 +1490,12 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
         fingerprint = scan_fingerprint(vault, seen.policy, seen.entries, seen.hidden)
         scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
         checked: set[tuple[str, str]] = set()
+        # TODO(#637, Phase 1c): this skip trusts the signed checked_fingerprint, which is sound only while runs
+        # can't read ~/.scout-secrets (the signing key). Until #637 gates that folder and Phase 1c sandboxes a
+        # run's Bash, a run holding the key can sign a forged fingerprint (and a "keep" memo entry), so a blob
+        # already on the mirror isn't rescanned for a name hidden since; it can push there with the owner's git
+        # login anyway. If that changes before then, drop the skip (every push rescans). Pinned by
+        # test_known_residual_a_key_holder_can_keep_a_newly_hidden_name_on_main.
         if trusted is not None and trusted[1] == fingerprint:
             checked = {(e.path, e.sha) for e in ls_tree(vault, trusted[0])}
         allowed = {e.path for e, _ in seen.visible} | {e.path for e in seen.links}
