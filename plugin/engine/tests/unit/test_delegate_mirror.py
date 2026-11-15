@@ -1837,6 +1837,47 @@ def test_allow_unscanned_ships_what_cant_be_scanned_but_never_an_office_file_tha
     assert "allow_unscanned" not in _show(bare, "scout-config.yaml")  # the clone doesn't need it
 
 
+def test_allow_unscanned_never_ships_a_refused_office_file_that_names_a_hidden_note(vault: Path) -> None:
+    """A macro, an embedded file or a DOCTYPE doesn't stop the scan: what can be read is still read (#639 review)."""
+    named = of.docx(SPLIT_NAME, extra={"word/vbaProject.bin": b"\xd0\xcf\x11\xe0 macro"})
+    _commit_files(
+        vault,
+        {
+            "attachments/macro-named.docm": named,
+            "attachments/embedded-named.docm": of.docx(SPLIT_NAME, extra={"word/embeddings/a.xlsx": of.xlsx()}),
+            "attachments/dtd-named.docm": of.docx(
+                extra={"customXml/i.xml": '<!DOCTYPE x [<!ENTITY a "b">]><x>Sammy</x>'}
+            ),
+            "attachments/macro-clean.docm": UNSCANNABLE["attachments/macro.docm"],
+        },
+        "docm",
+    )
+    _allow_unscanned(vault, '["attachments/*.docm"]')
+    the_plan, _head = _planned(vault)
+    assert {f.path for f in the_plan.files if f.path.endswith(".docm")} == {"attachments/macro-clean.docm"}
+    assert {p: w for p, w in the_plan.left_out_files.items() if p.endswith(".docm")} == {
+        "attachments/macro-named.docm": "names_hidden",
+        "attachments/embedded-named.docm": "names_hidden",
+        "attachments/dtd-named.docm": "names_hidden",
+    }
+
+
+def test_an_archive_or_office_file_named_as_an_image_or_pdf_is_left_out(vault: Path) -> None:
+    disguised = {
+        "attachments/scan.png": CLEAN_OFFICE["attachments/clean.docx"],
+        "attachments/scan.pdf": UNSCANNABLE["attachments/bundle.zip"],
+        "attachments/scan.jpg": UNSCANNABLE["attachments/old.doc"],
+    }
+    _commit_files(vault, {**disguised, "attachments/real.png": b"\x89PNG\r\n\x1a\n\x00\x00"}, "disguised")
+    the_plan, head = _planned(vault)
+    assert {p: the_plan.left_out_files.get(p) for p in disguised} == dict.fromkeys(disguised, "mislabeled")
+    assert "attachments/real.png" in {f.path for f in the_plan.files}
+    commit, head = _tampered(vault, "grok-personal", {"attachments/real.png": CLEAN_OFFICE["attachments/clean.docx"]})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
 def test_allow_unscanned_only_in_the_uncommitted_config_ships_nothing(vault: Path) -> None:
     _commit_files(vault, {"attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"]}, "zip")
     _allow_unscanned(vault, '["attachments/*.zip"]', commit=False)

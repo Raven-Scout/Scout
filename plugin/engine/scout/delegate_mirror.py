@@ -126,6 +126,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -215,9 +216,9 @@ LEFT_OUT_REASONS = {
     "names_hidden": "names a hidden note inside",
     "archive": "an archive",
     "legacy_office": "an old binary Office file",
-    "not_text": "not UTF-8 text",
+    "mislabeled": "an archive or Office file named as an image, sound, video or PDF",
+    "not_text": "not text, and not a type the mirror can scan",
 }
-UNSCANNED_KINDS = frozenset({"archive", "legacy_office", "opaque"})
 LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
 MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until clean
 GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH})
@@ -952,7 +953,9 @@ def _content(rel: str, data: bytes) -> tuple[str, str | None]:
         return "text", text
     ext = posixpath.splitext(rel.lower())[1]
     if ext in BINARY_TYPES:
-        return "binary", None
+        # The bytes decide here too: an archive or an Office file renamed scan.png or scan.pdf isn't kept on
+        # the label an image gets.
+        return ("mislabeled" if data.startswith(containers.ARCHIVE_MAGIC) else "binary"), None
     if ext in containers.CONTAINER_TYPES:
         return "container", None
     if ext in containers.ARCHIVE_TYPES:
@@ -978,12 +981,41 @@ def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Poli
         return None
     if kind == "container":
         unpacked = containers.unpack(data, posixpath.splitext(rel.lower())[1])
-        if unpacked.text is not None:
-            return "names_hidden" if scan.lines(unpacked.text, rel) else None
-        reason = unpacked.refusal or "unreadable"
+        # Every reading the unpacking got to, even past a refusal: a name anywhere leaves the file out,
+        # allow_unscanned or not.
+        hit = _readings_name_hidden(unpacked.parts, scan, rel)
+        if hit == "names_hidden":
+            return hit
+        reason = hit or unpacked.refusal
+        if reason is None:
+            return None
     else:
-        reason = {"archive": "archive", "legacy_office": "legacy_office"}.get(kind, "not_text")
+        reason = {"archive": "archive", "legacy_office": "legacy_office", "mislabeled": "mislabeled"}.get(
+            kind, "not_text"
+        )
     return None if allowed_unscanned(rel, policy) else reason
+
+
+SCAN_CHUNK = 256 * 1024  # readings are scanned in batches of about this many characters
+MAX_SCAN_SECONDS = 30.0  # one container's scan; past it the file is too large to vouch for (fails closed)
+
+
+def _readings_name_hidden(parts: Sequence[str], scan: Scanner, rel: str) -> str | None:
+    """``names_hidden`` when a reading names a hidden file, ``too_large`` when the scan runs out of time."""
+    deadline = time.monotonic() + MAX_SCAN_SECONDS
+    batch: list[str] = []
+    size = 0
+    for i, part in enumerate(parts):
+        batch.append(part)
+        size += len(part)
+        if size < SCAN_CHUNK and i + 1 < len(parts):
+            continue
+        if scan.lines("\n".join(batch), rel):
+            return "names_hidden"
+        if time.monotonic() > deadline:
+            return "too_large"
+        batch, size = [], 0
+    return None
 
 
 def hidden_terms(vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str], blobs: BlobReader) -> Scanner:

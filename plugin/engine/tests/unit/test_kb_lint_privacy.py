@@ -513,6 +513,14 @@ def test_a_run_may_not_touch_the_privacy_block(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
+def test_a_run_may_not_let_a_delegate_mirror_ship_files_unscanned(vault: Path) -> None:
+    """``allow_unscanned`` (#550) is the owner's alone: a scheduled run's commit that adds it is refused."""
+    text = _read(vault, "scout-config.yaml")
+    opt_in = '  delegates:\n    grok:\n      allow_unscanned: ["attachments/*.zip"]\n'
+    stage(vault, "scout-config.yaml", text + opt_in)
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+
+
 def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> None:
     n = append(vault, DRAFT, "See [[sam]].")
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
