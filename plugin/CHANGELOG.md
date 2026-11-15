@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`kb lint` reads an inline `aliases:` list that has a trailing comment** (`engine/scout/kb/lint.py`). `aliases: [Sam Rivera]   # why` was read as the single alias `[Sam Rivera]`, brackets included, so every link to `[[Sam Rivera]]` was reported as `dangling-link` although YAML and Obsidian both resolve it. The inline-list branch now accepts a ` # comment` after the closing bracket; quoted items that contain ` #` are unaffected. On one mature vault this removed 57 of 70 targets that kb lint called dangling but the vault resolved.
+
 ## [0.18.13] - 2026-11-15
 
 ### Added
