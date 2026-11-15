@@ -281,6 +281,7 @@ def _fake_python(venv: Path, tag: str, *, importable: bool = True) -> Path:
     """
     py = venv / "bin" / "python"
     py.parent.mkdir(parents=True, exist_ok=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")  # as every real venv has
     if importable:
         cli = venv / "src" / "scout" / "cli.py"
         cli.parent.mkdir(parents=True, exist_ok=True)
@@ -449,18 +450,53 @@ def test_dead_in_tree_venv_falls_through_to_pointer(tmp_path):
 
 
 def test_valid_cache_takes_the_fast_path_without_probing(tmp_path):
-    """A stamped cache whose files all exist execs straight away: no probe,
-    so no Python start-up beyond the real call. The cached interpreter is not
-    a candidate, so a re-probe would have picked TREE_PY instead."""
+    """A stamped cache that names a candidate and whose files all exist execs straight away: no probe, so no
+    Python start-up beyond the real call. The cached interpreter is the pointer's, which a re-probe would rank
+    below TREE_PY."""
     home = tmp_path / "home"
     root = _plugin_tree(tmp_path)
     _fake_python(root / ".venv", "TREE_PY")
     cached = _fake_python(tmp_path / "elsewhere", "CACHED_PY")
+    _write_pointer(home, cached)
     _seed_cache(root, cached, tmp_path / "elsewhere" / "src" / "scout" / "cli.py")
 
     assert _run_isolated(root, home) == "CACHED_PY -m scout.cli version"
     assert (tmp_path / "elsewhere" / "calls").read_text().splitlines() == ["-m"]
     assert not (root / ".venv" / "calls").exists()
+
+
+def test_a_cache_naming_an_interpreter_that_isnt_a_candidate_is_never_run(tmp_path):
+    """Review of #637: `/usr/bin/true` (or any binary) written into the cache would answer every hook."""
+    home = tmp_path / "home"
+    root = _plugin_tree(tmp_path)
+    _fake_python(root / ".venv", "TREE_PY")
+    rogue = _fake_python(tmp_path / "rogue", "ROGUE_PY")
+    cache = _seed_cache(root, rogue, tmp_path / "rogue" / "src" / "scout" / "cli.py")
+    assert _run_isolated(root, home) == "TREE_PY -m scout.cli version"
+    assert not (tmp_path / "rogue" / "calls").exists()
+    assert cache.read_text().splitlines()[0] == str(root / ".venv" / "bin" / "python")  # re-probed and rewritten
+
+
+def test_a_cache_whose_stamp_names_no_cli_is_never_run(tmp_path):
+    home = tmp_path / "home"
+    root = _plugin_tree(tmp_path)
+    tree = _fake_python(root / ".venv", "TREE_PY")
+    hosts = tmp_path / "hosts"
+    hosts.write_text("x\n")
+    _seed_cache(root, tree, hosts)  # an existing file, but not scout/cli.py
+    _run_isolated(root, home)
+    assert (root / ".venv" / "calls").read_text().splitlines()[0] == "-c"  # it probed instead of trusting
+
+
+def test_a_pointer_naming_a_binary_that_isnt_a_venvs_python_is_ignored(tmp_path):
+    home = tmp_path / "home"
+    fake = tmp_path / "not-a-venv" / "bin" / "python"
+    fake.parent.mkdir(parents=True)
+    fake.write_text('#!/bin/sh\necho "FAKE $*"\n')
+    fake.chmod(0o755)
+    _write_pointer(home, fake)
+    sysbin = _fake_system_python3(tmp_path)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
 
 
 def test_unusable_cache_is_deleted_when_nothing_resolves(tmp_path):

@@ -50,7 +50,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 LOCK_NAME = ".scout-session.lock"
 RUN_MARKER = LOCK_NAME + ".run"
@@ -568,8 +568,31 @@ def _writes_a_commit_object(args: list[str]) -> bool:
 _CONFIG_SCOPES = {"--global", "--system", "--file", "-f", "--worktree", "--blob"}
 
 
+_CONFIG_VALUE_FLAGS = {"--file", "-f", "--blob", "--type", "--default", "--comment"}
+_CONFIG_WRITE_FLAGS = {
+    "--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit",
+}  # fmt: skip
+_CONFIG_WRITE_SUBCOMMANDS = {"set", "unset", "rename-section", "remove-section", "edit"}
+
+
+def _config_writes(args: list[str]) -> bool:
+    """Whether a `git config` call writes: a write flag or subcommand, or a key with a value (`key` alone reads)."""
+    positional: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in _CONFIG_VALUE_FLAGS:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    if any(a in _CONFIG_WRITE_FLAGS for a in args):
+        return True
+    return bool(positional) and (positional[0] in _CONFIG_WRITE_SUBCOMMANDS or len(positional) >= 2)
+
+
 def _git_config_form(args: list[str]) -> str | None:
-    if any(a in _CONFIG_READS for a in args):
+    if any(a in _CONFIG_READS for a in args) or not _config_writes(args):
         return None
     for a in args:
         form = _config_form(a)
@@ -617,6 +640,61 @@ def _git_escape(args: list[str]) -> str | None:
 # scout.kb.hook_paths (resolving symlinks, so `ln -s` then `echo >` is caught). None: spelling only.
 _PROTECT: Callable[[str, bool], str | None] | None = None
 _REMOVERS = {"rm", "rmdir", "unlink", "shred", "mv"}
+# Per call: how many paths were checked (above the cap the command is denied as too complex to check, so a run
+# can't make the gate slow enough to time out: review of #637), and the shell variables set so far
+# (`d=.claude; echo > $d/x`).
+MAX_CHECKED_PATHS = 256
+_STATE: dict[str, Any] = {"checked": 0, "vars": {}}
+_VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+# An interpreter given its program inline or on stdin: its text may name a path the shell parser can't see.
+_INTERPRETER = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|perl[0-9.]*|node|nodejs|ruby|php|deno|bun)$")
+_INLINE_FLAGS = {"-c", "-e", "-E", "-", "-r", "--eval", "-p"}
+# Each quote style scanned on its own, so a single-quoted path inside a double-quoted program is still seen.
+_PATH_LITERALS = (
+    re.compile(r"'([^'\n]{1,512})'"),
+    re.compile(r'"([^"\n]{1,512})"'),
+    re.compile(r"""(?<![\w.$-])((?:~|\.{1,2}|[\w.@-]+)?/[^\s'"();|&<>,]+)"""),
+)
+
+
+def _substitute(path: str) -> str:
+    """``path`` with the variables this command set (``d=.claude``) put in; unknown ones stay as written."""
+    known: dict[str, str] = _STATE["vars"]
+    return _VAR.sub(lambda m: known.get(m[1] or m[2], m[0]), path)
+
+
+def _inline_program(words: list[str]) -> bool:
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
+        words = words[1:]
+    if not words or not _INTERPRETER.match(_basename(words[0])):
+        return False
+    args = words[1:]
+    return any(a in _INLINE_FLAGS or a.startswith(("-c", "-e")) for a in args) or not any(
+        not a.startswith("-") for a in args
+    )
+
+
+def _inline_paths(raw: str) -> list[str]:
+    """The path-like literals in a command's text, here-documents included."""
+    out: list[str] = []
+    for pattern in _PATH_LITERALS:
+        for m in pattern.finditer(raw):
+            text = m[1].strip()
+            if text and ("/" in text or text.startswith("~")) and text not in out:
+                out.append(text)
+    return out[:MAX_CHECKED_PATHS]
+
+
+def _check(path: str, removes: bool, cwd: str) -> str | None:
+    """Ask _PROTECT about one path, counting it against the per-call cap."""
+    from scout.kb.hook_paths import TOO_MANY
+
+    assert _PROTECT is not None
+    _STATE["checked"] += 1
+    if _STATE["checked"] > MAX_CHECKED_PATHS:
+        return TOO_MANY
+    path = _substitute(path)
+    return _PROTECT(path if path.startswith(("/", "~", "$")) else cwd + path, removes)
 
 
 def _destinations(name: str, args: list[str]) -> list[str]:
@@ -667,10 +745,11 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
                 if flag in ("-o", "--output", "-O", "--output-document"):
                     written.append(value)
     if _PROTECT is not None:
-        for paths, removes in ((written, False), (linked, False), (removed, True)):
+        gone = set(removed)  # a removed path is checked once, the stricter way
+        written_only = list(dict.fromkeys(p for p in written if p not in gone))
+        for paths, removes in ((written_only, False), (linked, False), (list(dict.fromkeys(removed)), True)):
             for path in paths:
-                where = path if path.startswith(("/", "~")) else cwd + path
-                found = _PROTECT(where, removes)
+                found = _check(path, removes, cwd)
                 if found is not None:
                     return found
     for path in written:
@@ -743,6 +822,7 @@ def run_escape(command: str, *, depth: int = 0, protect: Callable[[str, bool], s
     outer = depth == 0
     if outer:
         _PROTECT = protect
+        _STATE.update(checked=0, vars={})
     try:
         return _run_escape(command, depth)
     finally:
@@ -751,6 +831,7 @@ def run_escape(command: str, *, depth: int = 0, protect: Callable[[str, bool], s
 
 
 def _run_escape(command: str, depth: int) -> str | None:
+    raw = command  # here-document bodies included: an interpreter's program can be in one
     command = _drop_heredoc_bodies(command).replace("\\\n", " ")
     detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
     form: str | None = None
@@ -758,7 +839,16 @@ def _run_escape(command: str, depth: int) -> str | None:
     for segment in _segments(command):
         clean, targets = _split_redirects(segment)
         words = _tokens(clean)
+        if words and all(_ASSIGN.match(w) for w in words):  # VAR=value only: later paths may use it
+            for word in words:
+                name, _, value = word.partition("=")
+                _STATE["vars"][name] = _substitute(value)
         found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
+        if found is None and _PROTECT is not None and _inline_program(words):
+            for path in _inline_paths(raw):
+                found = _check(path, False, cwd)
+                if found is not None:
+                    break
         if found == "env":
             return "env"
         if found == "detach":

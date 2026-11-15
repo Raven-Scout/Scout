@@ -58,6 +58,8 @@ ENGINE = "Scout's engine"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
+TOO_MANY = "too many paths to check"
+UNRESOLVED = "a path the gate can't resolve"
 
 AGENT_DIRS = (".codex", ".gemini", ".agents", ".grok", ".cursor")
 CLAUDE_SETTINGS_FILES = ("settings.json", "settings.local.json")
@@ -165,11 +167,11 @@ def git_hooks_dir(vault: Path) -> Path | None:
     return Path(line) if out.returncode == 0 and line else None
 
 
-def _precommit_engine(vault: Path) -> Path | None:
+def _precommit_engine(vault: Path, hooks: Path | None) -> Path | None:
     """The plugin dir of the scoutctl the vault's pre-commit hook calls (its ``SCOUTCTL=`` line)."""
-    for gitdir in git_dirs(vault):
+    for hooks_dir in [*([hooks] if hooks is not None else []), *(g / "hooks" for g in git_dirs(vault))]:
         try:
-            text = (gitdir / "hooks" / "pre-commit").read_text(encoding="utf-8", errors="replace")
+            text = (hooks_dir / "pre-commit").read_text(encoding="utf-8", errors="replace")[:65536]
         except OSError:
             continue
         for line in text.splitlines():
@@ -194,8 +196,24 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     return roots
 
 
+_ENV_KEYS = ("HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT")
+_ROOTS_CACHE: dict[tuple[str, ...], list[Root]] = {}
+
+
 def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Root]:
+    """The protected roots for this vault and environment, built once per process (a hook is one process).
+
+    Building them runs ``git rev-parse`` and resolves every root; a command naming hundreds of paths checks
+    each against this one list, so the gate stays fast however many paths it is handed (review of #637).
+    """
     env = os.environ if env is None else env
+    key = (str(vault), *(env.get(k, "") for k in _ENV_KEYS))
+    if key not in _ROOTS_CACHE:
+        _ROOTS_CACHE[key] = _build_roots(vault, env)
+    return _ROOTS_CACHE[key]
+
+
+def _build_roots(vault: Path | None, env: Mapping[str, str]) -> list[Root]:
     home = Path(env.get("HOME") or Path.home())
     roots: list[Root] = []
 
@@ -220,7 +238,7 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
             add(vault / name, AGENT_SETTINGS, tree=True)
         for rel in RUNNER_FILES:
             add(vault / rel, RUNNER_SCRIPTS, tree=False)
-        engine = _precommit_engine(vault)
+        engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
     add(home / ".gitconfig", USER_GIT_CONFIG, tree=False)
@@ -297,3 +315,15 @@ def removes_protected(target: str | Path, vault: Path | None, env: Mapping[str, 
         if any(_under(root.key, k) and root.key != k for k in keys):
             return root.form
     return None
+
+
+def unresolved_could_be_protected(path: str, vault: Path | None, env: Mapping[str, str] | None = None) -> str | None:
+    """A written path with a ``$variable`` the gate couldn't resolve: deny when its literal parts could still
+    name a protected file (``$d/settings.local.json``, ``$HOME/.gitconfig``), else None."""
+    literal = [part for part in path.split("/") if part and "$" not in part and "`" not in part]
+    if not literal:
+        return None
+    names: set[str] = set()
+    for root in protected_roots(vault, env):
+        names.add(root.key.rsplit("/", 1)[-1])
+    return UNRESOLVED if any(_norm(part) in names for part in literal) else None

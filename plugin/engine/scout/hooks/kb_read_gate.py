@@ -51,8 +51,10 @@ what the gate denies and what the eval counts are one definition.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
+import signal
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -193,10 +195,26 @@ def _deny_hard_link(form: str) -> str:
     )
 
 
+def _deny_too_many(form: str) -> str:
+    return (
+        f"{MARK} This shell command names more files than Scout's gate checks in one call ({form}). Split it into "
+        "smaller commands."
+    )
+
+
+def _deny_unresolved(form: str) -> str:
+    return (
+        f"{MARK} This shell command writes {form} (a $variable or command substitution) whose literal part could "
+        "name a file that decides which checks run. Write the path out in full."
+    )
+
+
 def _deny_skip_form(form: str) -> str:
     from scout.kb import hook_paths as hp
 
     by_form = {
+        hp.TOO_MANY: _deny_too_many,
+        hp.UNRESOLVED: _deny_unresolved,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
@@ -268,8 +286,16 @@ def decide(
         def protect(raw: str, removes: bool) -> str | None:
             expanded = hook_paths._expand(raw, env)
             target = expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            if "$" in target or "`" in target:  # a variable live_run couldn't resolve
+                return hook_paths.unresolved_could_be_protected(target, vault, env)
             check = hook_paths.removes_protected if removes else hook_paths.protected_write
-            return check(target, vault, env)
+            # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
+            targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
+            for one in targets:
+                found = check(one, vault, env)
+                if found is not None:
+                    return found
+            return None
 
         escape = run_escape(command, protect=protect)
         if escape == "env":
@@ -416,11 +442,31 @@ def _run(*, stdin: IO[str] | None, env: Mapping[str, str] | None) -> dict[str, A
     return None if reason is None else _deny(reason)
 
 
+# Below every kb-read-gate / kb-write-gate matcher's timeout in hooks.json (15 s; a test keeps it so). Claude Code
+# treats a hook that times out as an allow, so a gate a run makes slow (hundreds of paths, a git that blocks on a
+# FIFO) must deny before that happens, and so must a hang after the decision was printed.
+WATCHDOG_S = 8
+
+
+def _on_watchdog(_signum: int, _frame: object) -> None:
+    os.write(2, f"{MARK} Scout's gate took too long to check this call, so it is blocked.\n".encode())
+    os._exit(2)
+
+
 def main() -> int:
     """CLI entry point: scoutctl hook kb-read-gate (and kb-write-gate). The decision goes out before any audit."""
-    decision = run(defer_audit=True)
-    if decision is not None:
-        sys.stdout.write(json.dumps(decision) + "\n")
-        sys.stdout.flush()
-    flush_audit()
+    armed = hasattr(signal, "SIGALRM")
+    previous = signal.signal(signal.SIGALRM, _on_watchdog) if armed else None
+    if armed:
+        signal.alarm(WATCHDOG_S)
+    try:
+        decision = run(defer_audit=True)
+        if decision is not None:
+            sys.stdout.write(json.dumps(decision) + "\n")
+            sys.stdout.flush()
+        flush_audit()  # still under the watchdog: a hang here ends in a block, not a timeout
+    finally:
+        if armed:  # disarmed on the way out, so a caller in the same process (a test) isn't killed later
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
     return 0

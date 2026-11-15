@@ -1061,7 +1061,6 @@ def test_short_n_is_named_where_it_means_no_verify(command: str) -> None:
         ("git -c $(cat /tmp/key) commit -m x", "-c <unknown>"),
         ("git --config-env=$K=D commit -m x", "--config-env <unknown>"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
-        ("git config core.hooksPath", "git config core.hooksPath"),
         ("git config --local core.hooksPath /dev/null", "git config core.hooksPath"),
         ("git config --global core.hookspath /dev/null", "git config core.hooksPath"),
         ("git config --file .git/config core.hooksPath /dev/null", "git config core.hooksPath"),
@@ -1227,6 +1226,9 @@ def test_writes_into_the_git_dir_that_change_the_hooks_are_named(command: str, f
         "git config user.email alex@example.com",
         'git config user.name "Scout Bot"',
         "git config --get core.hooksPath",
+        "git config core.hooksPath",  # a key with no value reads it (review of #637)
+        "git config --global user.name",
+        "git config --file .gitmodules submodule.x.path",
         "git config --get-all core.hooksPath",
         "git config --get-regexp 'core.*'",
         "git config --list",

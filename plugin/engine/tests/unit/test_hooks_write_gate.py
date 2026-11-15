@@ -297,7 +297,7 @@ def _payload(tool: str, tool_input: dict, cwd: Path) -> str:
 
 def test_write_tools_have_their_own_exact_matcher() -> None:
     entry = _entry("Write|Edit|MultiEdit|NotebookEdit")
-    assert "kb-read-gate" in entry["hooks"][0]["command"]
+    assert "hook kb-write-gate" in entry["hooks"][0]["command"]
 
 
 def test_every_run_write_reaches_python_and_fails_closed(vault: Path, tmp_path: Path) -> None:
@@ -306,7 +306,7 @@ def test_every_run_write_reaches_python_and_fails_closed(vault: Path, tmp_path: 
     res = _sh(
         {**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, tmp_path / "missing", "Write|Edit|MultiEdit|NotebookEdit"
     )
-    assert res.returncode == 2 and gate.MARK in res.stderr
+    assert res.returncode == 2 and "[scout:kb-write-gate]" in res.stderr
 
 
 def test_an_owner_write_never_starts_python(vault: Path, tmp_path: Path) -> None:
@@ -565,3 +565,140 @@ def test_a_hard_link_to_a_protected_file_is_denied(vault: Path) -> None:
     (vault / ".claude" / "settings.local.json").write_text("{}\n")
     os.link(vault / ".claude" / "settings.local.json", vault / "notes" / "h.json")
     assert _decision(vault, "Write", _input("Write", "notes/h.json")) is not None
+
+
+# --- re-review of #637 --------------------------------------------------------------------------------
+
+
+def test_the_watchdog_fires_before_every_gate_matchers_timeout() -> None:
+    """Must-fix 1(b): a hook that times out is an allow, so the gate must give up (deny) first."""
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    timeouts = [
+        h["timeout"]
+        for e in hooks
+        for h in e["hooks"]
+        if "kb-read-gate" in h["command"] or "kb-write-gate" in h["command"]
+    ]
+    assert len(timeouts) == 3
+    assert gate.WATCHDOG_S < min(timeouts)
+
+
+def test_main_disarms_its_watchdog_on_the_way_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller in the same process (a test) must not be killed seconds later by a leftover alarm."""
+    import signal
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    gate.main()
+    assert signal.alarm(0) == 0
+
+
+def test_a_gate_that_hangs_is_cut_off_with_a_block(vault: Path) -> None:
+    import sys
+    import time
+
+    script = (
+        "import time, scout.hooks.kb_read_gate as g\ng.WATCHDOG_S = 1\ng.run = lambda **k: time.sleep(30)\ng.main()\n"
+    )
+    started = time.monotonic()
+    out = subprocess.run([sys.executable, "-c", script], input="{}", capture_output=True, text=True, timeout=20)
+    assert time.monotonic() - started < 5
+    assert out.returncode == 2 and gate.MARK in out.stderr
+
+
+def test_hundreds_of_paths_and_a_protected_write_is_denied_fast(vault: Path) -> None:
+    """Must-fix 1(a)/(c): the reviewer's 450-path rm then a disableAllHooks write took 17.6 s and was allowed."""
+    import time
+
+    many = " ".join(f"notes/f{i}" for i in range(450))
+    started = time.monotonic()
+    out = _bash(vault, f"rm -f {many}; echo '{{\"disableAllHooks\":true}}' > .claude/settings.local.json")
+    assert out is not None
+    assert time.monotonic() - started < 5
+
+
+def test_a_command_under_the_cap_is_checked_path_by_path_and_quickly(vault: Path) -> None:
+    import time
+
+    some = " ".join(f"notes/f{i}" for i in range(200))
+    started = time.monotonic()
+    assert _bash(vault, f"rm -f {some}") is None
+    assert "agent settings" in _denied(_bash(vault, f"rm -f {some} .claude/settings.json"))
+    assert time.monotonic() - started < 5
+
+
+def test_a_command_over_the_cap_is_denied_as_too_complex(vault: Path) -> None:
+    from scout.kb.live_run import MAX_CHECKED_PATHS
+
+    many = " ".join(f"notes/f{i}" for i in range(MAX_CHECKED_PATHS + 5))
+    assert "too many paths" in _denied(_bash(vault, f"rm -f {many}"))
+
+
+def test_an_inline_program_naming_the_engine_cache_is_denied(vault: Path) -> None:
+    """Must-fix 2(b): `python3 -c "open('<plugin>/.scoutctl-py-cache','w')…"` poisoned every gate."""
+    import scout
+
+    cache = Path(scout.__file__).resolve().parents[2] / ".scoutctl-py-cache"
+    command = f"""python3 -c "open('{cache}','w').write('/usr/bin/true\\\\n/etc/hosts\\\\n')\""""
+    assert "Scout's engine" in _denied(_bash(vault, command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 - <<'EOF'\nopen('.claude/settings.local.json', 'w').write('{}')\nEOF",
+        'perl -e \'open(F, ">", "$ENV{HOME}/.gitconfig")\' ; perl -e \'open(F, ">", ".git/hooks/pre-commit")\'',
+        "node -e \"require('fs').writeFileSync('.claude/settings.json', '{}')\"",
+        "ruby -e \"File.write('scripts/claude-with-retry.sh', 'x')\"",
+    ],
+)
+def test_inline_programs_that_name_a_protected_path_are_denied(vault: Path, command: str) -> None:
+    assert _bash(vault, command) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 - <<'EOF'\nimport json\nprint(json.load(open('.scout-cache/session-context.json')))\nEOF",
+        "python3 -c \"print(open('notes/a.md').read())\"",
+        "python3 scripts/my-own-helper.py notes/a.md",
+    ],
+)
+def test_ordinary_inline_programs_pass(vault: Path, command: str) -> None:
+    assert _bash(vault, command) is None, command
+
+
+def test_a_glob_is_judged_by_what_it_matches(vault: Path) -> None:
+    """Should-fix 3: `> .claude/settings.local.j*` wrote the file."""
+    (vault / ".claude" / "settings.local.json").write_text("{}\n")
+    assert "agent settings" in _denied(_bash(vault, "echo '{\"disableAllHooks\":true}' > .claude/settings.local.j*"))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "d=.claude; echo x > $d/settings.local.json",
+        "d=.claude && echo x > ${d}/settings.local.json",
+        "echo x > $SOMEWHERE/settings.local.json",
+        "echo x >> $HOME/.gitconfig",
+    ],
+)
+def test_variables_in_a_written_path_are_resolved_or_fail_closed(vault: Path, command: str) -> None:
+    assert _bash(vault, command) is not None, command
+
+
+def test_a_variable_path_that_cant_name_a_protected_file_passes(vault: Path) -> None:
+    assert _bash(vault, "echo x > $TMPDIR/scout-out.txt") is None
+
+
+def test_the_write_hooks_fallback_names_its_own_gate() -> None:
+    command = _entry("Write|Edit|MultiEdit|NotebookEdit")["hooks"][0]["command"]
+    assert "[scout:kb-write-gate]" in command
+
+
+@pytest.mark.parametrize(
+    "command", ["python3 -c \"open('x').read()\"", "node -e '1'", "python3 - <<'EOF'\nprint(1)\nEOF"]
+)
+def test_inline_programs_reach_python_from_the_shell(vault: Path, tmp_path: Path, command: str) -> None:
+    payload = _payload("Bash", {"command": command}, vault)
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, tmp_path / "missing", "Grep|Glob|Bash")
+    assert res.returncode == 2, command
