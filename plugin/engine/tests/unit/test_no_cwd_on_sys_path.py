@@ -4,7 +4,7 @@
 sys.path. Scout starts processes with the vault as cwd, so a vault-root
 ``json.py`` or ``typer.py`` would be imported in place of the real module.
 The engine builds its argv with ``scout._spawn.python_module_argv`` (``-P``);
-shell snippets in templates and commands pass ``-I`` (stdlib only, and it
+shell snippets in templates, commands, phases and skills pass ``-I`` (stdlib only, and it
 works on Apple's python3 3.9, which has no ``-P``).
 """
 
@@ -52,10 +52,11 @@ def test_engine_code_builds_python_argv_through_the_helper():
     assert _offenders(sources, _HAND_ARGV, skip_comments=True) == []
 
 
-def test_templates_and_commands_never_run_bare_python_snippets():
+def test_templates_commands_and_phases_never_run_bare_python_snippets():
+    """Phases and skills count too: a run's session executes their shell blocks with the vault as cwd."""
     files = [
         p
-        for root in (PLUGIN / "templates", PLUGIN / "commands", PLUGIN / "hooks")
+        for root in (PLUGIN / "templates", PLUGIN / "commands", PLUGIN / "hooks", PLUGIN / "phases", PLUGIN / "skills")
         for p in root.rglob("*")
         if p.is_file() and p.suffix in {".tmpl", ".sh", ".md", ".json"}
     ]
