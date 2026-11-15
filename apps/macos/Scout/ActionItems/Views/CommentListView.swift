@@ -6,8 +6,9 @@ import SwiftUI
 ///
 /// Each comment row exposes hover-revealed edit/delete affordances backed
 /// by `scoutctl action-items edit-comment` / `delete-comment`. The 1-based
-/// `index` here mirrors scoutctl's `--index` selector — the parser filters
-/// out the `snoozed-until` marker for the same reason.
+/// `index` here counts the comments shown; the card maps it to scoutctl's
+/// `--index`, which also counts `/scout-plan` markers, through
+/// `ActionTask.commentSelector(at:)`.
 struct CommentListView: View {
     let comments: [TaskComment]
     /// Invoked when the user clicks edit on a comment. The closure receives

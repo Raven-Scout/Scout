@@ -118,6 +118,22 @@ def test_it_blocks_in_report_mode_and_ignores_the_override(vault: Path) -> None:
     assert not (vault / ".scout-logs" / "lint-overrides.log").exists()
 
 
+@pytest.mark.parametrize("rel", [DRAFT, WIDGET])
+def test_it_blocks_on_a_path_whose_rule_says_report(vault: Path, rel: str) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(
+            "kb_lint:\n  mode: block\n  path_modes:\n"
+            "    - {glob: 'knowledge-base/**', mode: report}\n    - {glob: 'drafts/**', mode: report}\n"
+        )
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "report paths")
+    append(vault, rel, "See [[sam]] for the details.")
+    rc, out = hook(vault, {"SCOUT_LINT_OVERRIDE": "need it now"})
+    assert rc == 1
+    assert "Commit blocked by the privacy checks" in out
+    assert "override accepted" not in out
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -133,7 +149,7 @@ def test_a_link_by_alias_display_name_or_path_is_a_private_link(vault: Path, lin
 
 
 @pytest.mark.parametrize(
-    "line", ["Ask Sammy about the contract.", "Remember task-renew-permit before Friday.", "The billing terms changed."]
+    "line", ["Ask Sammy about the contract.", "Remember task-renew-permit before Friday.", "See billing/billing."]
 )
 def test_naming_a_private_note_in_a_shared_file_is_a_private_mention(vault: Path, line: str) -> None:
     n = append(vault, DRAFT, line)
@@ -141,6 +157,13 @@ def test_naming_a_private_note_in_a_shared_file_is_a_private_mention(vault: Path
     rc, out = hook(vault)
     assert rc == 1
     assert_no_private_words(out)
+
+
+def test_an_ordinary_word_a_private_note_is_named_with_is_not_a_mention(vault: Path) -> None:
+    """``billing`` is a private note's slug, and an ordinary word (#576)."""
+    append(vault, DRAFT, "The billing terms changed.")
+    assert checks(vault) == []
+    assert hook(vault)[0] == 0
 
 
 def test_the_same_line_marker_lets_exactly_that_link_through(vault: Path) -> None:
@@ -161,7 +184,7 @@ def test_a_marker_on_another_line_allows_nothing(vault: Path) -> None:
 
 
 def test_a_marker_allows_one_target_not_a_second_one_on_the_line(vault: Path) -> None:
-    n = append(vault, DRAFT, "See [[sam]] and the billing terms. %%privacy:allow sam%%")
+    n = append(vault, DRAFT, "See [[sam]] and the task-renew-permit terms. %%privacy:allow sam%%")
     assert checks(vault) == [(DRAFT, "private-mention", True, n)]
 
 
@@ -206,6 +229,17 @@ def test_shared_files_add_in_the_overlay_widens_the_lint_scope(vault: Path) -> N
     assert checks(vault) == [("outbox/slack.txt", "private-mention", True, 1)]
 
 
+def test_a_long_shared_files_glob_still_blocks_a_private_link(vault: Path) -> None:
+    """kb-lint caps its own globs; this one must keep guarding the file, with or without a warning."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write('  shared_files_add:\n    - "**/x/**/y/**/z/**"\n')
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "a deep shared folder")
+    stage(vault, "w/x/y/z/note.txt", "Ask Sammy.\n")
+    assert checks(vault) == [("w/x/y/z/note.txt", "private-mention", True, 1)]
+    assert hook(vault)[0] == 1
+
+
 # ----- the warn / error rules ---------------------------------------------------
 
 
@@ -233,11 +267,41 @@ def test_unparseable_frontmatter_warns_in_the_hook(vault: Path) -> None:
     assert rc == 0 and "[frontmatter-unparseable]" in out
 
 
-def test_a_stage_2_overlay_key_warns(vault: Path) -> None:
+_SHARE_TOPICS = (
+    "  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/topics/misc/**", scope: ["person:priya@example.com"]}\n'
+)
+
+
+def test_stage_2_overlay_keys_no_longer_warn(vault: Path) -> None:
     with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
-        fh.write("  federation:\n    enabled: true\n")
+        fh.write(_SHARE_TOPICS)
     git(vault, "add", "scout-config.yaml")
-    assert checks(vault) == [("scout-config.yaml", "federation-reserved", False, None)]
+    assert checks(vault) == []
+
+
+def test_a_note_shared_by_a_folder_default_is_a_shared_file(vault: Path) -> None:
+    """Agnes #6090 §4: a note with an effective share blocks a private link like any shared file."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(_SHARE_TOPICS)
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "share topics/misc with Priya")
+    n = append(vault, PLAIN, "See [[sam]] for the details.")
+    assert checks(vault) == [(PLAIN, "private-link", True, n)]
+
+
+def test_the_same_note_is_owner_only_while_sharing_is_off(vault: Path) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(_SHARE_TOPICS.replace("enabled: true", "enabled: false"))
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "share topics/misc later")
+    append(vault, PLAIN, "See [[sam]] for the details.")
+    assert checks(vault) == []
+
+
+def test_a_scope_wider_than_the_ceiling_warns(vault: Path) -> None:
+    stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
+    assert (PRIYA, "federation-ceiling", False, None) in checks(vault)
 
 
 # ----- the commit, not the working tree ----------------------------------------------
@@ -280,15 +344,19 @@ def test_a_note_renamed_into_drafts_has_every_line_checked(vault: Path) -> None:
 
 def test_a_note_given_a_federation_scope_has_every_line_checked(vault: Path) -> None:
     stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
-    found = checks(vault)
+    found = [f for f in checks(vault) if f[1] != "federation-ceiling"]  # a people note's ceiling is none
     assert found and all(f[:3] == (PRIYA, "private-link", True) for f in found)
 
 
 def test_a_federation_scope_note_outside_the_kb_is_shared(vault: Path) -> None:
     """Ruling R23: a staged .md declaring federation_scope is checked wherever it lives."""
     stage(vault, "notes/outside.md", "---\nfederation_scope: org\n---\nSee [[sam]].\n")
-    assert checks(vault) == [("notes/outside.md", "private-link", True, 4)]
+    assert checks(vault) == [
+        ("notes/outside.md", "federation-ceiling", False, None),  # outside every shareable folder
+        ("notes/outside.md", "private-link", True, 4),
+    ]
     assert checks(vault, RUN) == [
+        ("notes/outside.md", "federation-ceiling", False, None),
         ("notes/outside.md", "privacy-widening", True, None),
         ("notes/outside.md", "private-link", True, 4),
     ]
@@ -450,6 +518,487 @@ def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> N
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
 
 
+# ----- moves out of a local-only path (#562) ---------------------------------------
+
+POSITIONS = "trading/positions.md"  # local-only through the fixture overlay's local_only_add
+
+
+@pytest.mark.parametrize("dst", ["knowledge-base/topics/misc/positions.md", "notes/positions.md"])
+def test_a_run_may_not_move_a_note_out_of_a_local_only_path(vault: Path, dst: str) -> None:
+    """In the privacy scope or outside it: once moved, repo sync would upload it."""
+    (vault / dst).parent.mkdir(parents=True, exist_ok=True)
+    git(vault, "mv", POSITIONS, dst)
+    assert checks(vault, RUN) == [(dst, "privacy-widening", True, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-widening]" in out and "local-only" in out
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_write_then_delete_move_out_of_a_local_only_path_is_blocked(vault: Path) -> None:
+    text = _read(vault, POSITIONS)
+    git(vault, "rm", "-q", POSITIONS)
+    stage(vault, "notes/positions.md", text + "\nOne more line.\n")
+    assert checks(vault, RUN) == [("notes/positions.md", "privacy-widening", True, None)]
+
+
+def test_a_run_may_not_move_any_file_out_of_a_local_only_path(vault: Path) -> None:
+    stage(vault, "trading/ledger.csv", "date,amount\n2026-01-02,10\n2026-01-03,20\n")
+    commit(vault)
+    (vault / "exports").mkdir()
+    git(vault, "mv", "trading/ledger.csv", "exports/ledger.csv")
+    assert checks(vault, RUN) == [("exports/ledger.csv", "privacy-widening", True, None)]
+
+
+def test_a_run_may_move_a_note_within_local_only_paths(vault: Path) -> None:
+    (vault / "trading/archive").mkdir()
+    git(vault, "mv", POSITIONS, "trading/archive/positions.md")
+    assert checks(vault, RUN) == []
+
+
+def _with_sync_only(vault: Path, entries: str) -> None:
+    text = _read(vault, "scout-config.yaml")
+    stage(vault, "scout-config.yaml", text + f"  sync_only: {entries}\n")
+    commit(vault, "owner sets sync_only")
+
+
+def test_a_run_may_move_a_local_only_note_to_a_path_outside_sync_only(vault: Path) -> None:
+    """Outside the upload allowlist the note stays home, so nothing leaves."""
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    git(vault, "mv", POSITIONS, "positions.md")
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_move_a_file_into_sync_only(vault: Path) -> None:
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    stage(vault, "inbox/idea.md", "# Idea\n\nA stand-in note that never syncs.\n")
+    commit(vault)
+    git(vault, "mv", "inbox/idea.md", "knowledge-base/topics/misc/idea.md")
+    assert checks(vault, RUN) == [("knowledge-base/topics/misc/idea.md", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_still_move_ordinary_notes(vault: Path) -> None:
+    git(vault, "mv", PLAIN, "knowledge-base/topics/misc/plain-renamed.md")
+    assert checks(vault, RUN) == []
+
+
+# ----- moves out of a path only Agnes keeps local-only (#596) -----------------------
+
+SCAN = "scans/scan.md"  # local-only on the host's list alone, never in the vault's config
+RENAMED = "knowledge-base/topics/misc/plain-renamed.md"
+
+
+AGNES = "https://agnes.example.com"
+
+
+def _linked(
+    vault: Path, host_entries: list[str] | None, *, fetched_days_ago: int = 0, cached_from: str = AGNES
+) -> None:
+    """The vault as ``repo link`` leaves it, with the host list cached (None: no cache)."""
+    from datetime import UTC, datetime, timedelta
+
+    from scout import repo_sync as rs
+
+    head = git(vault, "rev-parse", "HEAD").strip()
+    rs.save_state(vault, rs.LinkState(AGNES, f"{AGNES}/r.git", "", head, head))
+    if host_entries is not None:
+        when = datetime.now(UTC) - timedelta(days=fetched_days_ago)
+        rs.save_host_cache(vault, host_entries, agnes_url=cached_from, now=when)
+
+
+def _with_scan(vault: Path) -> None:
+    stage(vault, SCAN, "# Scan\n\nA stand-in for a file Agnes keeps local-only.\n")
+    commit(vault, "scan")
+
+
+def test_a_run_may_not_move_a_file_out_of_a_cached_host_local_only_path(vault: Path) -> None:
+    _with_scan(vault)
+    _linked(vault, ["Scans/"])  # folded like the host's: Scans/ covers scans/
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "privacy-widening", True, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-widening]" in out and "local-only" in out
+    assert "scans" not in out.lower()
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_fresh_cache_lets_ordinary_moves_through(vault: Path) -> None:
+    _linked(vault, ["Scans/"])
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == []
+
+
+def test_a_missing_host_cache_warns_on_a_run_move(vault: Path) -> None:
+    """The hook can't tell whether the source was on Agnes's list: it warns, never blocks."""
+    _with_scan(vault)
+    _linked(vault, None)
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "local-only-unchecked", False, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 0 and "[local-only-unchecked]" in out
+    # The run is told not to sync (that would upload the move); the owner is told what to do.
+    assert "must not run scoutctl repo sync" in out and "owner" in out
+    assert checks(vault) == []
+
+
+def test_a_stale_host_cache_still_blocks_its_entries_and_warns_on_the_rest(vault: Path) -> None:
+    _with_scan(vault)
+    _linked(vault, ["scans/"], fetched_days_ago=8)
+    git(vault, "mv", SCAN, "notes.md")
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == [
+        (RENAMED, "local-only-unchecked", False, None),
+        ("notes.md", "privacy-widening", True, None),
+    ]
+
+
+def test_a_missing_host_cache_does_not_warn_on_a_move_that_stays_home(vault: Path) -> None:
+    _linked(vault, None)
+    (vault / "trading/archive").mkdir()
+    git(vault, "mv", POSITIONS, "trading/archive/positions.md")
+    git(vault, "mv", "knowledge-base/topics/misc/plain.md", "trading/plain.md")
+    assert checks(vault, RUN) == []
+
+
+def test_a_move_out_of_a_config_local_only_path_blocks_without_a_cache(vault: Path) -> None:
+    _linked(vault, None)
+    git(vault, "mv", POSITIONS, "positions.md")
+    assert checks(vault, RUN) == [("positions.md", "privacy-widening", True, None)]
+
+
+@pytest.mark.parametrize("entries", [["elsewhere/"], ["*"], ["notes/"]])
+def test_the_cache_never_relaxes_a_move_out_of_a_config_local_only_path(vault: Path, entries: list[str]) -> None:
+    """The cache only adds blocks: the destination is judged by the vault's own rules.
+
+    A stale cache (an entry since removed in Agnes) or one a run wrote must not
+    let a ``local_only_add`` file move somewhere repo sync would upload it.
+    """
+    _linked(vault, entries)
+    (vault / "elsewhere").mkdir()
+    git(vault, "mv", POSITIONS, "elsewhere/positions.md")
+    assert ("elsewhere/positions.md", "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_cache_fetched_in_the_future_warns(vault: Path) -> None:
+    _linked(vault, ["Scans/"], fetched_days_ago=-3650)
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == [(RENAMED, "local-only-unchecked", False, None)]
+
+
+def test_a_cache_from_another_agnes_is_not_this_links_list(vault: Path) -> None:
+    """An older engine's unlink leaves the cache behind; a relink to another host must not use it."""
+    _with_scan(vault)
+    _linked(vault, ["Scans/"], cached_from="https://other.example.com")
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "local-only-unchecked", False, None)]
+
+
+def test_an_unlinked_vault_ignores_a_leftover_host_cache(vault: Path) -> None:
+    """No link, no upload: the moves judged are the config's, as before #596."""
+    from scout import repo_sync as rs
+
+    _with_scan(vault)
+    rs.save_host_cache(vault, ["scans/"], agnes_url=AGNES)
+    git(vault, "mv", SCAN, "notes.md")
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == []
+
+
+# ----- a run adding to a note that is already shared (#569) -----------------------
+
+SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
+_SHARE_SOURCES = (
+    "  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n'
+)
+_SOURCE_TEXT = (
+    "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\n"
+    "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n"
+)
+
+
+def _share(vault: Path, overlay: str) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(overlay)
+    git(vault, "add", "scout-config.yaml")
+
+
+def _shared_source(vault: Path) -> None:
+    """A meeting note shared with Priya by a folder default, committed by the owner."""
+    _share(vault, _SHARE_SOURCES)
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes with Priya")
+
+
+def test_a_run_may_not_add_a_pages_fact_to_a_shared_source_note(vault: Path) -> None:
+    """The label doesn't change, only the content: Priya would read what the page says."""
+    _shared_source(vault)
+    n = append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+    rc, out = hook(vault, {**RUN, "SCOUT_LINT_OVERRIDE": "x"})
+    assert rc == 1 and "[privacy-widening]" in out and "already shared" in out
+    # The owner may.
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    n = append(vault, PLAIN, "A new fact from another page.")
+    assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, n)]
+
+
+def test_a_run_may_not_reword_a_line_of_a_shared_note(vault: Path) -> None:
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, 9)]
+
+
+def test_a_run_may_remove_or_move_lines_of_a_shared_note(vault: Path) -> None:
+    """Nothing Priya couldn't already read."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("Priya walked through the rollout plan.\n\n", ""))
+    assert checks(vault, RUN) == []
+    stage(
+        vault,
+        SOURCE,
+        _SOURCE_TEXT.replace(
+            "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n",
+            "The pilot starts next week.\n\nPriya walked through the rollout plan.\n",
+        ),
+    )
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_write_a_new_note_into_a_share(vault: Path) -> None:
+    """A new note gets its folder's share from the owner's default; only adding to a shared one is refused."""
+    _share(vault, _SHARE_SOURCES)
+    commit(vault, "share source notes with Priya")
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_reshare_a_note_by_dropping_its_federation_scope_none(vault: Path) -> None:
+    """Declaring ``none`` and appending narrows; dropping the line again shares the fact with Priya."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nfederation_scope: none\n", 1))
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == []
+    commit(vault, "run: narrow and append")
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("federation_scope: none\n", "", 1))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_move_a_note_into_a_shared_folder(vault: Path) -> None:
+    """#586: the declared scope doesn't change, the folder default shares it."""
+    _share(vault, _SHARE_TOPICS)
+    stage(vault, "knowledge-base/topics/other/rollout.md", "# Rollout\n\nThe pilot starts next week.\n")
+    commit(vault, "share topics/misc with Priya")
+    moved = "knowledge-base/topics/misc/rollout.md"
+    git(vault, "mv", "knowledge-base/topics/other/rollout.md", moved)
+    assert checks(vault, RUN) == [(moved, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
+    """``widget.md`` declares ``org``, but nothing is shared until federation is enabled."""
+    _share(vault, _SHARE_SOURCES.replace("enabled: true", "enabled: false"))
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes later")
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    append(vault, WIDGET, "A new fact.")
+    assert checks(vault, RUN) == []
+
+
+# ----- a run changing a non-note file in a share (#594) ---------------------------
+
+SHARED = "knowledge-base/topics/misc/"
+CSV = SHARED + "widget-metrics.csv"
+_CSV_TEXT = "week,signups,churn\n2026-10-26,40,2\n2026-11-02,52,3\n"
+# An .xlsx is a zip: NUL bytes in the first few, so it is binary whatever it holds.
+_XLSX = b"PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x00!\x00" + bytes(range(256)) * 4
+
+
+def stage_bytes(vault: Path, rel: str, data: bytes) -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    git(vault, "add", "--", rel)
+
+
+def _shared_files(vault: Path, files: dict[str, bytes], overlay: str = _SHARE_TOPICS) -> None:
+    """Non-note files under a folder shared with Priya, committed by the owner.
+
+    ``topics/``, not ``sources/``: the latter's ceiling shares only meetings and threads.
+    """
+    _share(vault, overlay)
+    for rel, data in files.items():
+        stage_bytes(vault, rel, data)
+    commit(vault, "share topics/misc with Priya")
+
+
+def test_a_run_may_not_append_a_row_to_a_shared_csv(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    n = append(vault, CSV, "2026-11-09,61,1")
+    assert checks(vault, RUN) == [(CSV, "privacy-widening", True, n)]
+    rc, out = hook(vault, {**RUN, "SCOUT_LINT_OVERRIDE": "x"})
+    assert rc == 1 and "[privacy-widening]" in out and "already shared" in out
+    # The owner may.
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_reword_a_row_of_a_shared_csv(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    stage(vault, CSV, _CSV_TEXT.replace("52,3", "52,30"))
+    assert checks(vault, RUN) == [(CSV, "privacy-widening", True, 3)]
+
+
+def test_a_run_may_remove_or_reorder_rows_of_a_shared_csv(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    stage(vault, CSV, _CSV_TEXT.replace("2026-10-26,40,2\n", ""))
+    assert checks(vault, RUN) == []
+    stage(vault, CSV, "week,signups,churn\n2026-11-02,52,3\n2026-10-26,40,2\n")
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_edit_a_shared_html_file(vault: Path) -> None:
+    rel = SHARED + "rollout.html"
+    html = "<html><body>\n<h1>Rollout</h1>\n<p>The pilot starts next week.</p>\n</body></html>\n"
+    _shared_files(vault, {rel: html.encode()})
+    stage(vault, rel, html.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == [(rel, "privacy-widening", True, 3)]
+
+
+def test_a_run_may_not_add_to_a_shared_file_without_an_extension(vault: Path) -> None:
+    rel = SHARED + "NOTES"
+    _shared_files(vault, {rel: b"Pilot notes\n\nThe pilot starts next week.\n"})
+    n = append(vault, rel, "The budget moves to next quarter.")
+    assert checks(vault, RUN) == [(rel, "privacy-widening", True, n)]
+
+
+def test_a_run_may_not_change_a_shared_binary_file(vault: Path) -> None:
+    """kb lint can't tell what a byte change adds, so any change counts, a shrink included."""
+    rel = SHARED + "widget-metrics.xlsx"
+    _shared_files(vault, {rel: _XLSX})
+    stage_bytes(vault, rel, _XLSX[:100] + b"\x07" + _XLSX[101:])
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(rel, "privacy-widening", True, None)]
+    assert "isn't UTF-8 text" in found[0].message
+    stage_bytes(vault, rel, _XLSX[:-10])
+    assert checks(vault, RUN) == [(rel, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_byte_change_lossy_decoding_hides_still_blocks(vault: Path) -> None:
+    """Two different bad bytes both decode to U+FFFD: the bytes are compared, not the lossy text."""
+    rel = SHARED + "export.txt"
+    _shared_files(vault, {rel: b"caf\xe9 au lait\n"})
+    stage_bytes(vault, rel, b"caf\xe8 au lait\n")
+    assert checks(vault, RUN) == [(rel, "privacy-widening", True, None)]
+
+
+def test_a_shared_files_match_under_a_share_compares_bytes_too(vault: Path) -> None:
+    """A ``shared_files`` glob puts the file in the privacy scope; the share's content check still reads bytes."""
+    rel = SHARED + "export.txt"
+    overlay = _SHARE_TOPICS + '  shared_files_add: ["knowledge-base/topics/misc/*.txt"]\n'
+    _shared_files(vault, {rel: b"caf\xe9 au lait\n"}, overlay)
+    stage_bytes(vault, rel, b"caf\xe8 au lait\n")
+    assert checks(vault, RUN) == [(rel, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_add_to_a_csv_while_sharing_is_off(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()}, _SHARE_TOPICS.replace("enabled: true", "enabled: false"))
+    append(vault, CSV, "2026-11-09,61,1")
+    stage_bytes(vault, SHARED + "new.xlsx", _XLSX)
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_move_a_csv_into_a_share(vault: Path) -> None:
+    """#586's effective-scope rule: the folder default shares the file it didn't share before."""
+    outside = "knowledge-base/topics/other/widget-metrics.csv"
+    _shared_files(vault, {outside: _CSV_TEXT.encode()})
+    git(vault, "mv", outside, CSV)
+    assert checks(vault, RUN) == [(CSV, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_move_a_csv_out_of_a_share(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    (vault / "knowledge-base/topics/other").mkdir(parents=True, exist_ok=True)
+    git(vault, "mv", CSV, "knowledge-base/topics/other/widget-metrics.csv")
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_write_a_new_text_file_into_a_share(vault: Path) -> None:
+    _shared_files(vault, {})
+    stage(vault, CSV, _CSV_TEXT)
+    assert checks(vault, RUN) == []
+
+
+def test_a_new_text_file_in_a_share_is_checked_for_private_notes_in_a_run(vault: Path) -> None:
+    """The widening guard can't see a new file's text, so its lines are checked as a new shared note's are."""
+    _shared_files(vault, {})
+    stage(vault, CSV, _CSV_TEXT + "2026-11-09,61,1,ask Sammy\n")
+    assert checks(vault, RUN) == [(CSV, "private-mention", True, 4)]
+    # Owner commits are unchanged: a non-note file outside shared_files isn't checked.
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_write_a_new_binary_file_into_a_share(vault: Path) -> None:
+    """It can't be checked for private notes, so it fails closed."""
+    _shared_files(vault, {})
+    rel = SHARED + "widget-metrics.xlsx"
+    stage_bytes(vault, rel, _XLSX)
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(rel, "privacy-widening", True, None)]
+    assert "isn't UTF-8 text" in found[0].message
+    assert checks(vault) == []
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "new_name"),
+    [("visibility: private", "rollout-plan.txt"), ("federation_scope: none", "rollout-plan")],
+)
+def test_a_run_may_not_share_a_note_by_renaming_it_to_a_non_note(vault: Path, frontmatter: str, new_name: str) -> None:
+    """The HEAD side is a note, so its frontmatter decides its share, not its folder default."""
+    note = SHARED + "rollout-plan.md"
+    _shared_files(vault, {note: f"---\n{frontmatter}\n---\n# Rollout plan\n\nThe pilot starts next week.\n".encode()})
+    git(vault, "mv", note, SHARED + new_name)
+    assert (SHARED + new_name, "privacy-widening", True, None) in checks(vault, RUN)
+    assert checks(vault) == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [(_CSV_TEXT, _CSV_TEXT.replace("\n", "\r\n")), (_CSV_TEXT, "﻿" + _CSV_TEXT)],
+    ids=["crlf", "bom"],
+)
+def test_a_line_ending_or_bom_change_to_a_shared_file_says_so(vault: Path, old: str, new: str) -> None:
+    """Nothing is added, but the file is rewritten: the message mustn't say a line was added."""
+    _shared_files(vault, {CSV: old.encode()})
+    stage_bytes(vault, CSV, new.encode())
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(CSV, "privacy-widening", True, None)]
+    assert "line endings" in found[0].message and "add to" not in found[0].message
+
+
+def test_a_row_added_with_a_line_ending_change_points_at_the_row(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    stage_bytes(vault, CSV, (_CSV_TEXT + "2026-11-09,61,1\n").replace("\n", "\r\n").encode())
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(CSV, "privacy-widening", True, 4)]
+    assert "already shared" in found[0].message
+
+
+def test_a_non_note_file_no_share_covers_is_ignored(vault: Path) -> None:
+    _shared_files(vault, {"knowledge-base/topics/other/widget-metrics.csv": _CSV_TEXT.encode()})
+    append(vault, "knowledge-base/topics/other/widget-metrics.csv", "2026-11-09,61,1,ask Sammy")
+    stage_bytes(vault, "knowledge-base/topics/other/new.xlsx", _XLSX)
+    assert checks(vault, RUN) == []
+
+
 # ----- kb lint --report -----------------------------------------------------------
 
 
@@ -562,7 +1111,8 @@ def test_widens(head: object, staged: object, widens: bool) -> None:
         ("", ()),
         ("- just\n- a list\n", ("privacy-overlay-unreadable",)),
         ("privacy: [unclosed\n", ("privacy-overlay-unreadable",)),
-        ("privacy:\n  federation:\n    enabled: true\n", ("federation-reserved",)),
+        ("privacy:\n  federation:\n    enabled: true\n", ()),
+        ("privacy:\n  federation: true\n", ("privacy-overlay-invalid",)),
     ],
 )
 def test_policy_from_config_text(text: str | None, warnings: tuple[str, ...]) -> None:
@@ -656,7 +1206,7 @@ def test_a_run_may_delete_lines(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
-def test_report_lists_a_stage_2_overlay_and_skips_missing_and_unreadable_files(vault: Path) -> None:
+def test_report_ignores_a_stage_2_overlay_and_skips_missing_and_unreadable_files(vault: Path) -> None:
     import os
 
     with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
@@ -671,7 +1221,7 @@ def test_report_lists_a_stage_2_overlay_and_skips_missing_and_unreadable_files(v
         rep = privacy_report(vault)
     finally:
         locked.chmod(0o644)
-    assert ("scout-config.yaml", "federation-reserved", "warn") in rep.problems
+    assert all(rel != "scout-config.yaml" for rel, _check, _sev in rep.problems)  # Stage 2 keys don't warn
     assert all(rel != "drafts/gone.md" for rel, _n in rep.unmarked)
     if os.geteuid() != 0:  # root reads a mode-000 file anyway
         assert ("drafts/locked.md", "file-unreadable", "error") in rep.problems

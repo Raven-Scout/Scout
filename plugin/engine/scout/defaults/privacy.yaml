@@ -33,6 +33,26 @@ surfaces:
 shared_files:
   - "drafts/**"
 
-# Stage 2 adds `federation_ceilings`, `federation_defaults` and
-# `federation.enabled` (§12.3). v1 ignores those keys in an overlay with a
-# `federation-reserved` warning, so nobody can believe they turned sharing on.
+# Stage 2: sharing with named people (#486 §12.3, amended by the Agnes Shared
+# Areas design, ruling 6). Every key below is for `agent:*` readers (other
+# people) only; a later `delegates:` section (#550) sits beside them.
+
+# Sharing is off until the owner's overlay turns it on (D9). While it is off,
+# every effective federation_scope is `none`.
+federation:
+  enabled: false
+
+# The widest federation_scope a note may have. Levels: none < people < org;
+# `people` admits `person:` principals only. First match wins; an entry with
+# `kinds` applies only to notes whose frontmatter `kind` is one of them; a note
+# no entry matches has ceiling `none`. The overlay can only narrow these.
+federation_ceilings:
+  - {glob: "knowledge-base/topics/**",            ceiling: org}
+  - {glob: "knowledge-base/projects/**",          ceiling: org}
+  - {glob: "knowledge-base/ontology/entities/**", ceiling: org}
+  - {glob: "knowledge-base/research-queue/**",    ceiling: org}
+  - {glob: "knowledge-base/sources/**", kinds: [meeting, thread], ceiling: people}
+
+# Scopes for notes with no `federation_scope:` key. First match wins. The
+# engine shares nothing; `scoutctl kb share` writes entries into the overlay.
+federation_defaults: []

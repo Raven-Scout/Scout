@@ -425,6 +425,11 @@ nonisolated extension ActionItemsParser {
         let snoozeSubBulletRe = try NSRegularExpression(
             pattern: #"^\s+-\s+snoozed-until:\s*(\d{4}-\d{2}-\d{2})(?:\s*\(from-kind:\s*([A-Za-z]+)\))?\s*$"#
         )
+        /// `/scout-plan` markers: `  - estimate: 45m (raw: 30m, kind: deep)`,
+        /// `  - block: 2026-09-30 10:00-10:45 (event: <id>)`, `  - actual: 1h (2026-09-30)`.
+        /// Folded into `task.plan` when `TaskPlan.merging` accepts the value;
+        /// otherwise the line stays a comment from "estimate" / "block" / "actual".
+        let planSubBulletRe = try NSRegularExpression(pattern: #"^\s+-\s+(estimate|block|actual):\s*(.*?)\s*$"#)
         /// `_(carried in from YYYY-MM-DD)_` annotation extended with an
         /// optional `, was <kind>` tail. A future consolidation pass can
         /// emit the tail so the target-day's renderer recovers the source
@@ -454,6 +459,11 @@ nonisolated extension ActionItemsParser {
         // testing `i % n` because several branches below advance `i` by more
         // than one and would step over the multiple.
         var linesUntilCancellationCheck = cancellationCheckInterval
+        // Whether a plan marker here still belongs to the last task. Like the
+        // engine's `plan_marks._mark_lines`, its sub-list ends at a blank or
+        // unindented line, and the next task line starts a new one. Comments
+        // keep binding to the last task past a blank line; markers do not.
+        var planMarkWindowOpen = false
 
         while i < lines.count {
             linesUntilCancellationCheck -= 1
@@ -471,6 +481,9 @@ nonisolated extension ActionItemsParser {
             // a table, a `<details>` tag or a heading.
             if detailWindowOpen, !stripped.isEmpty, !isIndented {
                 closeDetailWindow()
+            }
+            if stripped.isEmpty || !isIndented {
+                planMarkWindowOpen = false
             }
 
             // Inside a fence that opened in a detail, every line is verbatim
@@ -654,6 +667,7 @@ nonisolated extension ActionItemsParser {
                 detailWindowOpen = true
                 inDetailFence = false
                 detailContentIndent = 0
+                planMarkWindowOpen = true
                 i += 1; continue
             }
 
@@ -682,7 +696,8 @@ nonisolated extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: last.snoozedFromKind,
-                    fields: last.fields
+                    fields: last.fields,
+                    plan: last.plan
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -719,7 +734,8 @@ nonisolated extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: parsedKind ?? last.snoozedFromKind,
-                    fields: last.fields
+                    fields: last.fields,
+                    plan: last.plan
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -755,7 +771,8 @@ nonisolated extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: last.snoozedFromKind,
-                    fields: last.fields
+                    fields: last.fields,
+                    plan: last.plan
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -776,6 +793,25 @@ nonisolated extension ActionItemsParser {
                     )
                 }
                 i += 1; continue
+            }
+
+            // `/scout-plan` marker sub-bullet. Must precede subBulletCommentRe,
+            // which would otherwise read it as a comment from "estimate". A line
+            // `TaskPlan.merging` turns down (unparseable value, second line for
+            // a key) falls through to the comment path, as in the engine.
+            if inSection,
+               planMarkWindowOpen,
+               let last = currentTasks.last,
+               let pm = planSubBulletRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let nsLine = line as NSString
+                if let plan = last.plan.merging(
+                    key: nsLine.substring(with: pm.range(at: 1)),
+                    value: nsLine.substring(with: pm.range(at: 2)),
+                    commentsBefore: last.comments.count
+                ) {
+                    currentTasks[currentTasks.count - 1] = last.replacingPlan(plan)
+                    i += 1; continue
+                }
             }
 
             // Sub-bullet comment line attached to the last task: scoutctl
@@ -805,7 +841,8 @@ nonisolated extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: last.snoozedFromKind,
-                    fields: last.fields
+                    fields: last.fields,
+                    plan: last.plan
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -833,7 +870,8 @@ nonisolated extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: last.snoozedFromKind,
-                    fields: last.fields
+                    fields: last.fields,
+                    plan: last.plan
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue

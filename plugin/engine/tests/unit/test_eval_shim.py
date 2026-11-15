@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scout.agent_runtimes.gate_probe import DUMMY_KEY, PROBE_MODE
 from tests._waits import wait_until
 from tests.eval.harness.claude_shim import SHIM, build_command, session_plugin_root, settings, tool_hooks
 from tests.eval.harness.runner_env import build_env
@@ -206,6 +207,61 @@ def test_the_shim_refuses_to_run_without_its_eval_env(tmp_path: Path, missing: s
     assert proc.returncode == 2 and missing in proc.stderr
 
 
+PASSTHROUGH_CLAUDE = """#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["FAKE_ARGV"], "w").write(json.dumps({"argv": sys.argv[1:],
+    "config": os.environ.get("CLAUDE_CONFIG_DIR"), "base_url": os.environ.get("ANTHROPIC_BASE_URL")}))
+print("passthrough")
+"""
+
+
+PROBE_ARGV = ["--permission-mode", "auto", "--no-session-persistence", "-p", "Scout gate probe."]
+PROBE_ENV = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5555", "ANTHROPIC_API_KEY": DUMMY_KEY, "SCOUT_MODE": PROBE_MODE}
+
+
+@pytest.mark.parametrize(
+    ("argv", "extra"),
+    [
+        (["--version"], {}),
+        (PROBE_ARGV, PROBE_ENV),
+        (PROBE_ARGV, {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://[::1]:5555"}),
+        (PROBE_ARGV, {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://localhost:5555/"}),
+    ],
+)
+def test_a_call_without_name_goes_to_the_real_claude_unchanged(
+    tmp_path: Path, argv: list[str], extra: dict[str, str]
+) -> None:
+    """The runners' gate probe and `--version` are not eval sessions (spec 2026-11-13 §3.5)."""
+    proc, result = _run(tmp_path, [], argv=argv, fake_source=PASSTHROUGH_CLAUDE, extra_env=extra)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "passthrough"
+    seen = json.loads((tmp_path / "argv.json").read_text())
+    assert seen["argv"] == argv
+    assert seen["config"] is None  # not the sample's isolated config
+    assert not result.exists()  # the sample's result dir is never touched
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "https://api.example.com"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1:1@api.example.com"},  # userinfo, real host
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://user@127.0.0.1:5555"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "https://127.0.0.1:5555"},
+        {**PROBE_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1.example.com:5555"},
+        {**PROBE_ENV, "ANTHROPIC_API_KEY": "sk-ant-real"},
+        {**PROBE_ENV, "SCOUT_MODE": "morning-briefing"},
+        {},
+    ],
+)
+def test_a_nameless_call_that_isnt_the_probe_is_refused(tmp_path: Path, extra: dict[str, str]) -> None:
+    """Only --version or the gate probe itself passes through: never a session that could bill a key."""
+    env = {k: v for k, v in extra.items()}
+    proc, _ = _run(tmp_path, [], argv=PROBE_ARGV, fake_source=PASSTHROUGH_CLAUDE, extra_env=env)
+    assert proc.returncode == 2, extra
+    assert not (tmp_path / "argv.json").exists()
+
+
 def test_an_api_key_in_the_environment_never_reaches_claude(tmp_path: Path) -> None:
     proc, _ = _run(
         tmp_path,
@@ -225,6 +281,27 @@ def test_a_session_billed_to_an_api_key_is_killed(tmp_path: Path) -> None:
 
 def test_a_stream_that_does_not_start_with_init_is_killed(tmp_path: Path) -> None:
     proc, result = _run(tmp_path, [RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text())["reason"] == "no_init"
+
+
+TITLE = json.dumps({"type": "system", "subtype": "session_title_changed", "title": "scout-morning-consolidation"})
+
+
+def test_a_session_title_before_init_is_waited_past(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, _init(["claude_ai_Slack"]), RESULT])
+    assert proc.returncode == 0, proc.stderr
+    assert not (result / "aborted.json").exists()
+
+
+def test_a_session_title_does_not_excuse_a_bad_init(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, _init(["claude_ai_Slack"], source="ANTHROPIC_API_KEY"), RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text()) == {"reason": "api_key", "source": "ANTHROPIC_API_KEY"}
+
+
+def test_a_session_title_then_no_init_is_killed(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, RESULT])
     assert proc.returncode == 3
     assert json.loads((result / "aborted.json").read_text())["reason"] == "no_init"
 

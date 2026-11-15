@@ -41,6 +41,9 @@ struct ActionItemsDisplaySection: View {
                 SettingsRow(title: "Comment count", help: "List and Board: how many comments a task has, on collapsed cards.") {
                     SettingsToggle(isOn: service.binding(\.fields.comments))
                 }
+                SettingsRow(title: "Planned time", help: "List: the /scout-plan block, estimate and actual time on a card.") {
+                    SettingsToggle(isOn: service.binding(\.fields.plan))
+                }
                 SettingsRow(title: "Done range", help: "Topics, from the next update: how far back the Done list goes.") {
                     Picker("", selection: service.binding(\.topics.doneRange)) {
                         ForEach(DoneRange.allCases, id: \.self) { Text($0.label.capitalizedFirst).tag($0) }

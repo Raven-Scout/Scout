@@ -27,6 +27,7 @@ import yaml
 
 from scout.errors import ConfigError
 from scout.models import validate_model
+from scout.yaml_safe import load_yaml
 
 
 class SlotType(enum.Enum):
@@ -185,7 +186,7 @@ def load_schedule(
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = load_yaml(f)
     except FileNotFoundError as e:
         raise ConfigError(f"schedule yaml at {path} not found") from e
     except yaml.YAMLError as e:

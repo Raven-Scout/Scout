@@ -24,7 +24,7 @@ _UPDATE_MD = _REPO / "commands" / "scout-update.md"
 # monorepo _REPO is plugin/ and install.sh sits one level up, at the repo root.
 _INSTALL_SH = _REPO / "install.sh" if (_REPO / "install.sh").is_file() else _REPO.parent / "install.sh"
 
-_UPDATE_SNIPPET_RE = re.compile(r"python3 -c '([^']*installPath[^']*)'")
+_UPDATE_SNIPPET_RE = re.compile(r"python3 (?:-I )?-c '([^']*installPath[^']*)'")
 _INSTALL_SNIPPET_RE = re.compile(r"python -c '\n(.*?installPath.*?)\n' \"\$PLUGIN_ID\"", re.S)
 
 _ID = "scout@scout-plugin"
@@ -44,7 +44,7 @@ def _update_snippets() -> list[str]:
 
 def _run(snippet: str, payload: object, *args: str) -> str:
     done = subprocess.run(
-        [sys.executable, "-c", snippet, *args],
+        [sys.executable, "-I", "-c", snippet, *args],
         input=json.dumps(payload),
         capture_output=True,
         text=True,

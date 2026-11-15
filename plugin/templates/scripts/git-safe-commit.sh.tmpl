@@ -22,7 +22,7 @@
 # SCOUT_DATA_DIR overrides the vault path. A path that is gitignored, or that
 # neither exists nor is tracked, is skipped with a warning, so a step may name a
 # fixed set of paths it is allowed to touch. A deleted tracked file is committed
-# as a deletion.
+# as a deletion, and so is the old path of a `git mv`: name both paths of a move.
 #
 # Exit codes:
 #   0  committed
@@ -165,10 +165,18 @@ clear_stale_git_lock "$GIT_DIR_PATH/HEAD.lock"
 # Keep the paths git can stage; say why for the rest. (bash 3.2 with set -u
 # treats "${empty[@]}" as unbound, so every expansion below is length-guarded.)
 STAGE=()
+ADD=()
 for p in "$@"; do
   if git check-ignore -q -- "$p" 2>/dev/null; then
     echo "git-safe-commit: skipping '$p' — it is gitignored" >&2
   elif [ -e "$p" ] || [ -L "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+    STAGE+=("$p")
+    ADD+=("$p")
+  elif git cat-file -e "HEAD:$p" 2>/dev/null; then
+    # Gone from disk and index but still in HEAD: the old path of a `git mv` or
+    # `git rm`. `git add` would refuse it; the commit's pathspec records it.
+    # Skipping it would leave HEAD with both copies, and the lint would see a
+    # new file with no history, so a move could widen a note's label unblocked.
     STAGE+=("$p")
   else
     echo "git-safe-commit: skipping '$p' — no such path, and git does not track it" >&2
@@ -176,7 +184,9 @@ for p in "$@"; do
 done
 [ "${#STAGE[@]}" -gt 0 ] || die 4 "nothing to commit — none of the given paths can be staged"
 
-git add -- "${STAGE[@]}" || die 5 "git add failed"
+if [ "${#ADD[@]}" -gt 0 ]; then
+  git add -- "${ADD[@]}" || die 5 "git add failed"
+fi
 
 # Only the paths with staged changes: a peer's staged file is not ours to
 # count, and naming an unchanged untracked directory would fail the commit.

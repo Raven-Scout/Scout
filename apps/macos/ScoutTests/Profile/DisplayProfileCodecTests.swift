@@ -28,6 +28,7 @@ struct DisplayProfileCodecTests {
          profile { $0.sort = .alphabetical; $0.grouping = .none; $0.density = .compact }),
         (#"{"schema":1,"actionItems":{"fields":{"refs":false,"snooze":false,"comments":true}}}"#,
          profile { $0.fields = .init(refs: false, snooze: false, comments: true) }),
+        (#"{"schema":1,"actionItems":{"fields":{"plan":false}}}"#, profile { $0.fields.plan = false }),
         (#"{"schema":1.0,"actionItems":{"sort":"alphabetical"}}"#, profile { $0.sort = .alphabetical }),
     ]
 
@@ -47,8 +48,8 @@ struct DisplayProfileCodecTests {
         (#"{"schema":1,"sidebar":{"order":["kb"]}}"#, DisplayProfile(), [#"unknown key "sidebar""#]),
         (#"{"schema":1,"actionItems":{"foo":1,"sort":"alphabetical"}}"#, profile { $0.sort = .alphabetical },
          [#"unknown key "actionItems.foo""#]),
-        (#"{"schema":1,"actionItems":{"fields":{"plan":true}}}"#, DisplayProfile(),
-         [#"unknown key "actionItems.fields.plan""#]),
+        (#"{"schema":1,"actionItems":{"fields":{"plan":"no"}}}"#, DisplayProfile(),
+         [#""actionItems.fields.plan" is not true or false; using the default"#]),
         (#"{"schema":1,"actionItems":{"sort":"oldestFirst","density":"compact"}}"#, profile { $0.density = .compact },
          [#""actionItems.sort" has an unsupported value; using the default"#]),
         (#"{"schema":1,"actionItems":{"fields":{"refs":"no","snooze":0}}}"#, DisplayProfile(),

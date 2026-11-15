@@ -120,7 +120,7 @@ Fill the `## Synthesis` section:
 
 ### Step 3: Propagate
 
-a. **Decisions** → meeting home file Key Decisions + project files. Include `[[meeting-slug/YYYY-MM-DD]]` as source.
+a. **Decisions** → meeting home file Key Decisions + each project's decisions note (`knowledge-base/projects/<name>/knowledge/<name>-decisions.md`; the project page's Key decisions table shows only the top 7). Include `[[meeting-slug/YYYY-MM-DD]]` as source.
 b. **Action items** → daily action-items file with `Source: [[meeting-slug/YYYY-MM-DD]]`. Apply standard cross-check.
 c. **Running Themes** → update home file.
 d. **Session log** → add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, linking the meeting home file.

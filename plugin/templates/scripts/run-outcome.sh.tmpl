@@ -21,7 +21,9 @@
 #
 # <outcome> is given only for a deliberate skip (#401): skipped_lock (another
 # session held the vault lock), skipped_budget (the budget check said no),
-# skipped_redundant, or a Repository Writer Lease skip of a vault linked to
+# skipped_redundant, skipped_gates (the gate probe found claude not loading
+# Scout's privacy hooks), gates_unsafe_endpoint / gates_unsafe_launcher (the probe couldn't be
+# run safely; recorded as skipped_gates with that failure_class), or a Repository Writer Lease skip of a vault linked to
 # Agnes (R2): lease_held (Agnes holds the lease) or lease_unavailable (Agnes
 # couldn't grant it). A lease skip is recorded as outcome skipped_lease with the
 # reason as its failure_class. A runner records its skip before it exits, so a fired slot
@@ -72,21 +74,29 @@ GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # were labelled `unknown`. `limit.{0,20}resets` keys on the self-declared reset rather than
 # the wording, so a rewording ("weekly limit", "5-hour limit") still matches.
 RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit|session limit|hit your .{0,20}limit|limit.{0,20}resets'
-BUDGET_RE='Exceeded USD budget'
+# claude's own cap message, and the line `scoutctl budget record-attempt` writes when
+# claude-with-retry.sh withholds a retry because the run's budget is spent (#561).
+BUDGET_RE='Exceeded USD budget|budget spent.{0,8}no retry'
 
 # classify_failure <log_file> <exit_code> — name the failure class, so a streak
 # of failures reads as "three auth expiries and a network blip" rather than
 # "four runs produced nothing".
+#
+# Budget is judged first, on the last attempt's output only (after the retry
+# wrapper's last `=== Claude retry attempt` banner): a retry that hit the reduced
+# cap it was given, or was withheld for budget, still has the first attempt's
+# network error in the tail, but the budget is what ended the run.
 classify_failure() {
-    local log="$1" code="$2" tail_txt
+    local log="$1" code="$2" tail_txt last_txt
     [ "$code" -eq 0 ] && { echo "ok"; return; }
     [ -f "$log" ] || { echo "unknown"; return; }
     tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
-    if grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
+    last_txt="$(awk '/^=== Claude retry attempt /{buf=""; next} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$tail_txt" 2>/dev/null || true)"
+    if grep -qiE "$BUDGET_RE" <<<"$last_txt"; then echo "budget"
+    elif grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
     elif grep -qiE "$NETWORK_RE" <<<"$tail_txt"; then echo "network"
     elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"
     elif grep -qiE "$RATE_LIMIT_RE" <<<"$tail_txt"; then echo "rate_limited"
-    elif grep -qiE "$BUDGET_RE" <<<"$tail_txt"; then echo "budget"
     else echo "unknown"
     fi
 }
@@ -160,7 +170,8 @@ cmd_record() {
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     local lease_class=""
     case "$outcome" in
-        skipped_lock|skipped_budget|skipped_redundant) ;;
+        skipped_lock|skipped_budget|skipped_redundant|skipped_gates) ;;
+        gates_unsafe_endpoint|gates_unsafe_launcher) lease_class="$outcome"; outcome="skipped_gates"; code=0 ;;
         lease_held|lease_unavailable) lease_class="$outcome"; outcome="skipped_lease"; code=0 ;;
         *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;
     esac
@@ -182,7 +193,7 @@ cmd_record() {
     [ "$newest" = "-" ] && newest=""
 
     mkdir -p "$LOG_DIR"
-    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" \
+    python3 -I - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" \
         "$commits" "$newest" "$(run_trigger)" <<'PY' || true
 import json, os, re, sys
 (ledger, mode, code, started, finished, duration, klass, log, outcome, resets_at,

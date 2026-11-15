@@ -134,14 +134,9 @@ requires: calendar
 
 After scanning the calendar, update the knowledge base. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
-### Upcoming Meetings in Project Files
+### Upcoming Meetings on Project Pages
 
-For each active project in the KB, check if there are upcoming meetings related to that project. Update the "Upcoming Meetings" section of the project file with:
-- Meeting title, date/time
-- Attendees
-- Any known agenda items
-
-Remove past meetings from "Upcoming Meetings" sections — these should have been converted to notes/decisions/action items. If a past meeting is still listed as "upcoming," that's a staleness signal.
+For each active project, keep its upcoming meetings in the project page's **What's next** table (When · What · Who), not a section of their own. Remove past meetings: they should have become notes, decisions or action items. A past meeting still listed is a staleness signal.
 
 ### People Updates
 

@@ -73,6 +73,8 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
         var refs = true
         var snooze = true
         var comments = false
+        /// The `/scout-plan` chip (block, estimate, actual time) on list cards.
+        var plan = true
     }
 
     /// Topics view options. The Done toggle on the Topics screen reads and
@@ -98,6 +100,7 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
             .init(path: ["fields", "refs"], value: .bool(fields.refs)),
             .init(path: ["fields", "snooze"], value: .bool(fields.snooze)),
             .init(path: ["fields", "comments"], value: .bool(fields.comments)),
+            .init(path: ["fields", "plan"], value: .bool(fields.plan)),
             .init(path: ["topics", "doneRange"], value: .string(topics.doneRange.rawValue)),
         ]
     }
