@@ -137,7 +137,7 @@ class Finding:
     since: datetime | None
     summary: str
     fix: str
-    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config"
+    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config" | "state"
     # A failed run's own error line, verbatim (#445): what Claude Code or git said, not the class.
     detail: str | None = None
     # Absolute path of that run's log, when it is still on disk.
@@ -961,6 +961,81 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
+def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+    """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
+    (#550 V2c): its agent reads an older copy until one works.
+
+    Nothing for a vault that links no delegate. A failed sync is never a run failure;
+    this is where it shows. "No sync tried" covers what records nothing itself: a tick
+    that stopped, a sync that couldn't start, or one that died before it began.
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError as e:
+        if e.code == "state_unverified":
+            return [
+                Finding(
+                    id="delegate.state_unverified",
+                    severity="yellow",
+                    since=None,
+                    summary="The delegate mirror state's signature doesn't match (it wasn't written by Scout on "
+                    "this computer, or the signing key is gone), so no agent's mirror syncs",
+                    fix="Check each link and sign it again with: scoutctl delegate trust-state",
+                    source="state",
+                )
+            ]
+        return [
+            Finding(
+                id="delegate.state_unreadable",
+                severity="yellow",
+                since=None,
+                summary="The delegate mirror state (.scout-state/delegate-mirrors.json) can't be read, or wasn't "
+                "written by Scout on this computer, so no agent's mirror syncs",
+                fix="Fix or delete that file, then link each delegate again with: scoutctl delegate link",
+                source="config",
+            )
+        ]
+    from scout.delegate_mirror import needs_sync
+
+    now = now or datetime.now(UTC)
+    behind = set(needs_sync(vault, {k: v for k, v in links.items() if v.last_error is None}, now=now))
+    found = []
+    for key, link in sorted(links.items()):
+        if link.last_error is not None:
+            code = link.last_error.get("code", "unknown")
+            found.append(
+                Finding(
+                    id="delegate.sync_failed",
+                    severity="yellow",
+                    since=_parse_ts(link.last_error.get("first_at") or link.last_error.get("at")),
+                    summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
+                    f"{link.last_sync or 'when it was linked'}",
+                    fix=f"Retry now with: scoutctl delegate sync {key} (a manual sync skips the backoff)",
+                    source="state",
+                )
+            )
+            continue
+        tried = _parse_ts(link.last_attempt) or _parse_ts(link.last_sync) or _parse_ts(link.linked_at)
+        if key in behind and (tried is None or now - tried > timedelta(hours=1)):
+            found.append(
+                Finding(
+                    id="delegate.sync_stalled",
+                    severity="yellow",
+                    since=tried,
+                    summary=f"Delegate mirror {key} is behind the vault and no sync has tried for over an hour; "
+                    "is the schedule tick running?",
+                    fix="Sync now with: scoutctl delegate sync --all (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+    return found
+
+
 def config_findings(vault: Path) -> list[Finding]:
     """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits may be refused."""
     problem = config_load_problem(vault)
@@ -1612,6 +1687,10 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
     config = config_findings(vault)
+    delegates = delegate_findings(vault)
     return build_report(
-        found + sched + lanes + updates + engine + config, now=now, last_ok_at=_last_ok_at(rows), slots=slots
+        found + sched + lanes + updates + engine + config + delegates,
+        now=now,
+        last_ok_at=_last_ok_at(rows),
+        slots=slots,
     )

@@ -285,3 +285,12 @@ if [ -x "$SCOUTCTL_BIN" ] && "$SCOUTCTL_BIN" budget record-run "dreaming" --name
 elif [ -x "$COST_TRACKER" ]; then
     "$COST_TRACKER" "dreaming" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
 fi
+
+# Delegate mirrors (#550 V2c): push what this run changed to the owner's agents' mirrors.
+# Last, after the cost record, so the run's own bookkeeping never waits on a push. Only a vault
+# that links one has the state file, and `--if-moved` skips a mirror HEAD hasn't moved for.
+# A failure is recorded for run health and `scoutctl bootstrap doctor`; it never changes this
+# run's exit code.
+if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then
+    "$SCOUTCTL_BIN" delegate sync --all --if-moved >> "$LOG_FILE" 2>&1 || true
+fi
