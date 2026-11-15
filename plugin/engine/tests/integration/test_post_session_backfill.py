@@ -79,6 +79,15 @@ def test_backfill_adds_prefix_and_commits_once(vault: Path) -> None:
 
     after = _git(vault, "rev-list", "--count", "HEAD").strip()
     assert int(after) == int(before) + 1, "exactly one backfill commit expected"
+    # The backfill registers the new prefix in the id-map. On a fresh vault that
+    # file doesn't exist until the backfill writes it, and it must land in the
+    # same commit: an untracked id-map's status never changes, so a later run
+    # would never pick it up.
+    assert (vault / ".scout-state" / "id-map.json").exists()
+    assert _git(vault, "ls-files", "--", ".scout-state/id-map.json").strip(), "id-map.json must be committed"
+    assert not _git(vault, "status", "--porcelain", "--", "action-items", ".scout-state").strip(), (
+        "the backfill must leave nothing of its own uncommitted"
+    )
 
     r2 = subprocess.run([str(script), daily_path], env=env, capture_output=True, text=True)
     assert r2.returncode == 0, r2.stderr

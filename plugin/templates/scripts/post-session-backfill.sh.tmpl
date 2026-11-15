@@ -28,7 +28,11 @@ export SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-$SCOUT_DIR}"
 
 cd "$SCOUT_DIR" || { echo "post-session-backfill.sh: SCOUT_DIR not found ($SCOUT_DIR)" >&2; exit 0; }
 WATCH=(action-items)
-if [ -f .scout-state/id-map.json ] && ! git check-ignore -q .scout-state/id-map.json; then
+# Decide on the id-map by its ignore rule, not by whether it exists yet: on a
+# fresh vault the backfill below is what first writes it, and it must be
+# watched (and so committed) in that same run. An untracked file's status line
+# never changes, so a later run would never pick it up.
+if ! git check-ignore -q .scout-state/id-map.json; then
     WATCH+=(.scout-state/id-map.json)
 fi
 
