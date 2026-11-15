@@ -67,7 +67,6 @@ And the ones that don't:
 
 from __future__ import annotations
 
-import contextlib
 import gzip
 import posixpath
 import re
@@ -78,6 +77,21 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
+
+from scout import delegate_media
+
+# Parts and fields that name the tools and typefaces a document was made with, never its content: not read, so a
+# hidden note named after a vendor ("Microsoft", "Adobe") doesn't leave out every Office file.
+_TOOL_PART = re.compile(r"(?:^|/)(?:fontTable\.xml|theme/[^/]+\.xml)$", re.IGNORECASE)
+_TOOL_FIELDS = {
+    "docprops/app.xml": frozenset({"Application", "AppVersion", "Company", "Template"}),
+    "meta.xml": frozenset({"generator", "template"}),
+}
+# Elements whose attributes are typeface names (w:rFonts, a:latin, xl's <font><name val>, ODF font-face).
+_FONT_ELEMENTS = frozenset({"rFonts", "latin", "ea", "cs", "sym", "font", "name", "rFont", "font-face", "family"})
+_FONT_ATTRS = frozenset(
+    {"typeface", "panose", "pitchFamily", "charset", "font-family", "font-name", "font-family-generic"}
+)
 
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_MEMBERS = 2000
@@ -246,7 +260,8 @@ def _walk(
         if block:
             joined.append("\n")
         if leaves is not None:
-            leaves.extend(el.attrib.values())
+            font = local in _FONT_ELEMENTS
+            leaves.extend(v for k, v in el.attrib.items() if not font and _local(k) not in _FONT_ATTRS)
         if el.text:
             joined.append(el.text)
             if leaves is not None:
@@ -494,63 +509,6 @@ def looks_like(rel: str, data: bytes) -> bool:
     return check is None or check(data)
 
 
-_WINDOW = 64 * 1024
-
-
-def _png_metadata(data: bytes) -> list[bytes]:
-    """A PNG's text and EXIF chunks (zTXt inflated) and any bytes after its last chunk."""
-    out: list[bytes] = []
-    at = 8
-    while at + 12 <= len(data):
-        size, kind = struct.unpack_from(">L4s", data, at)
-        body = data[at + 8 : at + 8 + size]
-        if kind in (b"tEXt", b"iTXt", b"eXIf"):
-            out.append(body)
-        elif kind == b"zTXt":
-            d = zlib.decompressobj()
-            with contextlib.suppress(zlib.error):
-                out.append(d.decompress(body.split(b"\0", 1)[-1][1:], _WINDOW))
-        at += 12 + size
-        if kind == b"IEND":
-            break
-    out.append(data[at:])  # anything after IEND, or what didn't parse
-    return out
-
-
-def _jpeg_metadata(data: bytes) -> list[bytes]:
-    """A JPEG's application and comment segments (EXIF, XMP, IPTC) and any bytes after its end marker."""
-    out: list[bytes] = []
-    at = 2
-    while at + 4 <= len(data) and data[at] == 0xFF:
-        marker = data[at + 1]
-        if marker == 0xDA:  # start of scan: image data follows
-            break
-        (size,) = struct.unpack_from(">H", data, at + 2)
-        if 0xE0 <= marker <= 0xEF or marker == 0xFE:
-            out.append(data[at + 4 : at + 2 + size])
-        at += 2 + size
-    end = data.rfind(b"\xff\xd9")
-    out.append(data[end + 2 :] if end >= 0 else data[-_WINDOW:])
-    return out
-
-
-def media_metadata(rel: str, data: bytes) -> str:
-    """The text a label-only file carries besides its picture or sound: PNG text chunks, JPEG EXIF/XMP/comments,
-    bytes after the end of the image, and for other types (a PDF's info dictionary, a video's tags) the strings of
-    its first and last 64 KB. The image or sound data itself, and the middle of anything else, isn't read."""
-    ext = _ext(rel)
-    try:
-        if ext == ".png" and data.startswith(b"\x89PNG"):
-            pieces = _png_metadata(data)
-        elif ext in (".jpg", ".jpeg") and data.startswith(b"\xff\xd8"):
-            pieces = _jpeg_metadata(data)
-        else:
-            pieces = [data[:_WINDOW], data[-_WINDOW:]] if len(data) > 2 * _WINDOW else [data]
-    except struct.error:
-        pieces = [data[:_WINDOW], data[-_WINDOW:]]
-    return "\n".join(strings(p) for p in pieces)
-
-
 def unpack(data: bytes, ext: str) -> Unpacked:
     """Every reading of the Office container ``data`` (extension ``ext``), and why it can't be vouched for."""
     out = Unpacked(budget=MAX_UNPACKED_BYTES)
@@ -646,10 +604,17 @@ def _part(name: str, raw: bytes, odf: bool, out: Unpacked, depth: int = 0) -> No
         return
     text = _decode(raw)
     if text is None:
+        if ext in MEDIA_TYPES and _signed(name, raw):
+            # An image, a sound, a video or a font: its descriptive metadata, never a raw strings pass (compressed
+            # pixels would now and then spell a name). EMF and WMF draw text as records: their strings are text.
+            out.add(strings(raw) if ext in (".emf", ".wmf") else delegate_media.metadata(name, raw))
+            return
         out.add(strings(raw))
-        if not (_KNOWN_BINARY.match(name) or (ext in MEDIA_TYPES and _signed(name, raw))):
+        if not _KNOWN_BINARY.match(name):
             out.refuse("unscannable_part")
         return
+    if _TOOL_PART.search(name):
+        return  # fonts and themes: vendor and typeface names, no document text
     if odf and name == "META-INF/manifest.xml" and "encryption-data" in text:
         raise _Stop("encrypted")
     if not text.lstrip().startswith("<"):
@@ -668,5 +633,10 @@ def _part(name: str, raw: bytes, odf: bool, out: Unpacked, depth: int = 0) -> No
         out.add(_TAG.sub("\n", text))
         out.add(text)
         return
+    tool = _TOOL_FIELDS.get(name.lower())
+    if tool is not None:  # the tool's own name and version, the installer's company, the template file
+        for parent in list(root.iter()):
+            for child in [c for c in parent if _local(c.tag) in tool]:
+                parent.remove(child)
     for reading in xml_readings(root):
         out.add(reading)

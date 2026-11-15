@@ -146,7 +146,7 @@ import yaml
 
 import scout
 from scout import delegate_containers as containers
-from scout import paths
+from scout import delegate_media, paths
 from scout.kb.lint_config import any_match, glob_match
 from scout.kb.outbound import (
     _AFTER,
@@ -1188,7 +1188,7 @@ def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Poli
     if kind in ("binary", "mislabeled", "archive"):
         # A label-only file's metadata, and the contents of any zip a file is or hides: a name there leaves it
         # out whatever allow_unscanned says.
-        readings = [containers.media_metadata(rel, data)] if kind != "archive" else []
+        readings = [delegate_media.metadata(rel, data)] if kind != "archive" else []
         if containers.is_zip(data):
             readings += containers.unpack(data, posixpath.splitext(rel.lower())[1]).parts
         hit = _readings_name_hidden(readings, scan, rel)
@@ -1361,7 +1361,8 @@ def _matcher_source() -> str:
     from scout.kb import outbound, privacy, shared_reads
 
     h = hashlib.sha256()
-    for source in (outbound.__file__, privacy.__file__, shared_reads.__file__, containers.__file__, __file__):
+    sources = (outbound, privacy, shared_reads, containers, delegate_media)
+    for source in (*(m.__file__ for m in sources), __file__):
         with contextlib.suppress(OSError, TypeError):
             h.update(Path(str(source)).read_bytes())
     return h.hexdigest()

@@ -12,6 +12,7 @@ import zlib
 import pytest
 
 from scout import delegate_containers as dc
+from scout import delegate_media as media
 from scout import delegate_mirror as dm
 from scout.kb.outbound import note_from_text, terms_of
 
@@ -56,7 +57,8 @@ def test_a_clean_file_of_each_kind_names_nothing() -> None:
 def test_runs_split_inside_a_word_are_joined_and_metadata_is_one_field_a_line() -> None:
     got = _clean(of.docx(_runs(_r("Pri"), "<w:r><w:rPr><w:b/></w:rPr><w:t>ya</w:t></w:r>")))
     assert _named(got)
-    assert {"Alex", "Quarterly plan", "Example Co"} <= set(got.text.splitlines())
+    lines = set(got.text.splitlines())
+    assert {"Alex", "Quarterly plan"} <= lines and "Example Co" not in lines  # app.xml's Company is a tool field
 
 
 def test_attributes_comments_and_member_names_are_read() -> None:
@@ -353,13 +355,13 @@ def test_media_metadata_reads_text_chunks_comments_and_what_follows_the_image() 
 
     png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", b"\x00" * 13)
     text = png + chunk(b"tEXt", b"Author\x00Priya") + chunk(b"IDAT", b"Hidden pixels") + chunk(b"IEND", b"")
-    meta = dc.media_metadata("a.png", text)
+    meta = media.metadata("a.png", text)
     assert "Priya" in meta and "Hidden pixels" not in meta  # image data isn't read
     ztxt = png + chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"for Priya")) + chunk(b"IEND", b"")
-    assert "for Priya" in dc.media_metadata("a.png", ztxt)
-    assert "Priya" in dc.media_metadata("a.png", png + chunk(b"IEND", b"") + b"notes for Priya")
+    assert "for Priya" in media.metadata("a.png", ztxt)
+    assert "Priya" in media.metadata("a.png", png + chunk(b"IEND", b"") + b"notes for Priya")
     jpeg = b"\xff\xd8" + b"\xff\xfe" + struct.pack(">H", 10) + b"Priya x." + b"\xff\xda\x00\x02scan\xff\xd9"
-    assert "Priya" in dc.media_metadata("a.jpg", jpeg)
-    assert "Priya" in dc.media_metadata("a.jpg", b"\xff\xd8\xff\xda\x00\x02scan\xff\xd9 trailing Priya")
+    assert "Priya" in media.metadata("a.jpg", jpeg)
+    assert "Priya" in media.metadata("a.jpg", b"\xff\xd8\xff\xda\x00\x02scan\xff\xd9 trailing Priya")
     big = b"%PDF-1.7\n" + b"\x00" * 300_000 + b"<< /Author (Priya) >>"
-    assert "Priya" in dc.media_metadata("a.pdf", big) and dc.media_metadata("a.png", b"\x89PNG\x00") is not None
+    assert "Priya" in media.metadata("a.pdf", big) and media.metadata("a.png", b"\x89PNG\x00") is not None
