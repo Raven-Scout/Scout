@@ -91,15 +91,30 @@ _NOT_PROVIDER_SWITCHES = frozenset(
     }
 )
 _SWITCH_RE = re.compile(rb"CLAUDE_CODE_USE_[A-Z0-9_]+")
-# A settings env key that names an endpoint. *_BASE_URL is pointed at the fake; any other one can't be
-# neutralised from outside, so without the network sandbox the probe refuses rather than risk it.
-_ENDPOINT_KEY_RE = re.compile(r"(URL|ENDPOINT|HOST)$", re.IGNORECASE)
-_LOOPBACK_NO_PROXY = "127.0.0.1,localhost,::1"
+# A settings env key claude itself may read that names an endpoint (AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
+# CLOUD_ML_REGION's siblings, ANTHROPIC_*_URL …). *_BASE_URL is pointed at the fake; any other one can't be
+# neutralised from outside, so without the network sandbox the probe refuses rather than risk it. Other tools'
+# keys (DOCKER_HOST, GH_HOST, JIRA_URL, DATABASE_URL, OTEL_*) are none of claude's business and pass.
+_ENDPOINT_KEY_RE = re.compile(r"URL|ENDPOINT|HOST", re.IGNORECASE)
+_CLAUDE_READ_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "AWS_", "CLOUD_ML_", "VERTEX_")
+_PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+# Everything claude would reach besides the model: telemetry, error reports, the updater, claude.ai's MCP servers.
+_QUIET_ENV = {
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_LOGS_EXPORTER": "none",
+    "OTEL_TRACES_EXPORTER": "none",
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+}
+# No MCP servers at all (the user's, a project's, a plugin's): none of them decides whether hooks load.
+NO_MCP_FLAGS: tuple[str, ...] = ("--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}')
 # The probe's claude may reach the fake on loopback and nothing else (macOS; elsewhere the env layers above).
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 SANDBOX_PROFILE = (
-    "(version 1) (allow default) (deny network-outbound) "
-    '(allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket))'
+    '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*"))'
 )
 DUMMY_KEY = "sk-ant-scout-gate-probe-not-a-key"
 _SETTINGS_FILES = ("settings.json", "settings.local.json")
@@ -120,6 +135,7 @@ class ProbeResult:
     env_key: str
     config_sha256: str
     checked_at: str  # ISO-8601 UTC, with offset
+    unsafe: bool = False  # refused without trying: it couldn't be kept on this machine (CLI exit 4)
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -138,6 +154,7 @@ class ProbeResult:
             or not isinstance(flags, list)
             or not all(isinstance(f, str) for f in flags)
             or checked.tzinfo is None
+            or not isinstance(data["unsafe"], bool)
         ):
             raise ValueError("malformed gate-probe cache")
         return cls(
@@ -149,6 +166,7 @@ class ProbeResult:
             env_key=str(data["env_key"]),
             config_sha256=str(data["config_sha256"]),
             checked_at=str(data["checked_at"]),
+            unsafe=data["unsafe"],
         )
 
 
@@ -242,13 +260,45 @@ def settings_env_blocks(env: Mapping[str, str] | None = None) -> list[Mapping[st
     return blocks
 
 
-def _binary_switches(claude_bin: Path) -> set[str]:
-    """Every CLAUDE_CODE_USE_* name in the claude binary (or its script): new provider switches included."""
+def _scan(path: Path) -> set[str]:
     try:
-        with open(os.path.realpath(claude_bin), "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
             return {match.decode() for match in set(_SWITCH_RE.findall(m))}
     except (OSError, ValueError):
         return set()
+
+
+_SHIM_MAX = 64 * 1024
+_SHIM_PATH_RE = re.compile(r"""(?:\$basedir/|\$\{basedir\}/)?([~./\w@-]*/[\w@./-]+)""")
+
+
+def _shim_targets(script: Path) -> list[Path]:
+    """The files a small launcher script (an npm, mise or asdf shim) names: absolute, or relative to its folder."""
+    try:
+        if script.stat().st_size > _SHIM_MAX:
+            return []
+        text = script.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if not text.startswith("#!"):
+        return []
+    out: list[Path] = []
+    for raw in _SHIM_PATH_RE.findall(text.split("\n", 1)[-1]):
+        cand = Path(os.path.expanduser(raw))
+        cand = cand if cand.is_absolute() else script.parent / cand
+        if cand.is_file() and cand.resolve() != script.resolve():
+            out.append(cand.resolve())
+    return out
+
+
+def _binary_switches(claude_bin: Path) -> set[str]:
+    """Every CLAUDE_CODE_USE_* name in the claude binary, through a launcher script to what it runs if need be."""
+    real = Path(os.path.realpath(claude_bin))
+    found = _scan(real)
+    if not found:
+        for target in _shim_targets(real):
+            found |= _scan(target)
+    return found
 
 
 def provider_switches(claude_bin: Path | None, blocks: Sequence[Mapping[str, Any]]) -> set[str]:
@@ -269,7 +319,7 @@ def endpoint_keys(blocks: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[st
             key = str(raw)
             if key.endswith("_BASE_URL"):
                 base_urls.add(key)
-            elif _ENDPOINT_KEY_RE.search(key) and not key.startswith("OTEL_"):
+            elif key.upper().startswith(_CLAUDE_READ_PREFIXES) and _ENDPOINT_KEY_RE.search(key):
                 other.add(key)
     return base_urls, other
 
@@ -318,9 +368,15 @@ def probe_env(
     over a settings env, so no setting can send the probe to a billed provider.
     """
     env = {k: v for k, v in (os.environ if base is None else base).items() if k not in _CREDENTIAL_VARS}
-    env.update({k: "0" for k in switches})
+    # Every provider switch already in the environment too, not only the ones the settings and binary name.
+    in_env = {k for k in env if k.startswith("CLAUDE_CODE_USE_") and k not in _NOT_PROVIDER_SWITCHES}
+    env.update({k: "0" for k in {*switches, *in_env}})
     env.update({k: base_url for k in base_urls})
-    env.update(NO_PROXY=_LOOPBACK_NO_PROXY, no_proxy=_LOOPBACK_NO_PROXY)
+    # No proxy: a loopback proxy sits outside the sandbox and would carry everything past it. Empty, not removed,
+    # so a settings env can't set one (the process env wins); NO_PROXY=* sends any that survives nowhere.
+    env.update({k: "" for k in _PROXY_VARS})
+    env.update(NO_PROXY="*", no_proxy="*")
+    env.update(_QUIET_ENV)
     env.update(
         ANTHROPIC_BASE_URL=base_url,
         ANTHROPIC_API_KEY=DUMMY_KEY,
@@ -396,8 +452,8 @@ def probe(
     flags = tuple(flags)
     sha, key, cfg = hooks_sha256(plugin_root), env_key(), config_sha256(vault)
 
-    def result(ok: bool, reason: str, ver: str | None) -> ProbeResult:
-        return ProbeResult(ok, reason, ver, sha, flags, key, cfg, _now_iso())
+    def result(ok: bool, reason: str, ver: str | None, *, unsafe: bool = False) -> ProbeResult:
+        return ProbeResult(ok, reason, ver, sha, flags, key, cfg, _now_iso(), unsafe)
 
     resolved = shutil.which(str(claude_bin)) if os.path.sep not in str(claude_bin) else str(claude_bin)
     if not resolved or not Path(resolved).is_file():
@@ -419,6 +475,15 @@ def probe(
             "can't probe safely: a settings env names an endpoint the probe can't point at its local fake "
             f"({', '.join(sorted(other_endpoints))}) and there is no network sandbox here",
             version,
+            unsafe=True,
+        )
+    if not sandbox and not _binary_switches(Path(resolved)):
+        return result(
+            False,
+            f"can't probe safely: no provider switch could be read from {resolved} (a launcher the probe can't "
+            "follow?), so a new one couldn't be turned off, and there is no network sandbox here",
+            version,
+            unsafe=True,
         )
     network = "loopback-only sandbox" if sandbox else "provider switches off, base URLs at the fake"
 
@@ -434,7 +499,15 @@ def probe(
             with out_path.open("wb") as out:
                 try:
                     proc = subprocess.Popen(
-                        [*sandbox, resolved, *flags, "--no-session-persistence", "-p", "Scout gate probe."],
+                        [
+                            *sandbox,
+                            resolved,
+                            *flags,
+                            *NO_MCP_FLAGS,
+                            "--no-session-persistence",
+                            "-p",
+                            "Scout gate probe.",
+                        ],
                         cwd=fixture,
                         env=probe_env(base_url=base_url, vault=fixture, switches=switches, base_urls=base_urls),
                         stdin=subprocess.DEVNULL,

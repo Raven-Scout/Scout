@@ -149,7 +149,16 @@ fi
 # doesn't, or the probe can't tell, the run is skipped (spec 2026-11-13 §3.5).
 # A missing scoutctl skips the run too: the hooks run another scoutctl (the
 # plugin's), so a broken one here says nothing about whether claude loads them.
-if [ ! -x "$SCOUTCTL_BIN" ] || ! "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" >> "$LOG_FILE" 2>&1; then
+GATE_RC=127
+if [ -x "$SCOUTCTL_BIN" ]; then
+    GATE_RC=0
+    "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" >> "$LOG_FILE" 2>&1 || GATE_RC=$?
+fi
+if [ "$GATE_RC" -eq 4 ]; then
+    echo "=== Gate probe: Scout couldn't check its privacy hooks safely (a Claude setting names an endpoint the check can't keep on this machine) — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
+    scout_record_skip gates_unsafe
+    exit 0
+elif [ "$GATE_RC" -ne 0 ]; then
     echo "=== Gate probe failed, or scoutctl is missing at $SCOUTCTL_BIN: Scout's privacy hooks are not known to load in $CLAUDE_BIN — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
     scout_record_skip skipped_gates
     exit 0

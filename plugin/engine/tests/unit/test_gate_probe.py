@@ -23,8 +23,13 @@ from scout.cli import app
 # The stub posts the first request, then answers the scripted tool call the way a
 # session would: with the gate's deny, with the file's text (no hook), or not at all.
 _STUB = """#!{python}
+# Like a real claude, names its provider switches (the probe scans for them): CLAUDE_CODE_USE_BEDROCK
 import json, os, sys, time, urllib.request
 mode = {mode!r}
+if os.environ.get("STUB_ARGV_LOG"):
+    keep = ("ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTOUPDATER", "DISABLE_TELEMETRY", "NO_PROXY", "HTTPS_PROXY")
+    open(os.environ["STUB_ARGV_LOG"], "w").write(json.dumps({{"argv": sys.argv[1:],
+        "env": {{k: os.environ.get(k) for k in keep}}}}))
 if "--version" in sys.argv:
     if os.environ.get("STUB_VERSION_LOG"):
         open(os.environ["STUB_VERSION_LOG"], "a").write("v\\n")
@@ -459,7 +464,7 @@ def test_base_urls_in_a_settings_env_point_at_the_fake(_isolated_claude_config: 
     assert (
         env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9" and env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9"
     )
-    assert "127.0.0.1" in env["NO_PROXY"] and "127.0.0.1" in env["no_proxy"]
+    assert env["NO_PROXY"] == "*" and env["no_proxy"] == "*"
 
 
 def test_managed_settings_envs_are_read(tmp_path: Path) -> None:
@@ -470,20 +475,25 @@ def test_managed_settings_envs_are_read(tmp_path: Path) -> None:
     import plistlib
 
     (tmp_path / "mdm" / "com.anthropic.claudecode.plist").write_bytes(
-        plistlib.dumps({"env": {"ACME_GATEWAY_URL": "https://gw.example"}})
+        plistlib.dumps({"env": {"ANTHROPIC_GATEWAY_URL": "https://gw.example"}})
     )
     blocks = gate_probe.settings_env_blocks()
     assert {"CLAUDE_CODE_USE_MANTLE": "1"} in blocks
-    assert gate_probe.endpoint_keys(blocks)[1] == {"ACME_GATEWAY_URL"}
+    assert gate_probe.endpoint_keys(blocks)[1] == {"ANTHROPIC_GATEWAY_URL"}
 
 
 def test_an_endpoint_that_cant_be_neutralised_refuses_without_a_sandbox(
     tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ACME_LLM_ENDPOINT": "https://x"}}))
+    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_LLM_ENDPOINT": "https://x"}}))
     monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
     refused = gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
-    assert not refused.ok and "can't probe safely" in refused.reason and "ACME_LLM_ENDPOINT" in refused.reason
+    assert (
+        not refused.ok
+        and "can't probe safely" in refused.reason
+        and "ANTHROPIC_LLM_ENDPOINT" in refused.reason
+        and refused.unsafe
+    )
     # Behind the network sandbox the same setting is harmless: nothing can leave anyway.
     monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: ["env"])
     assert gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path)).ok
@@ -569,3 +579,200 @@ def test_every_claude_and_anthropic_variable_is_in_the_env_key_but_credentials()
     assert gate_probe.env_key({**base, "ANTHROPIC_MODEL": "m"}) != key
     assert gate_probe.env_key({**base, "PATH": "/usr/bin"}) == key
     assert gate_probe.env_key({**base, "CLAUDE_CODE_OAUTH_TOKEN": "t"}) == key  # a rotated token isn't a new config
+
+
+# --- round 3 of #635's review: proxies, MCP, process-env switches, shims, Linux refusals ----------------
+
+# A claude stand-in that does what the real one does with proxies and MCP servers: a settings env applies under
+# the process env (the process env wins), a proxy carries traffic unless NO_PROXY covers it, and the user's MCP
+# servers are contacted unless --strict-mcp-config. Then it answers the probe like a hooked claude.
+_NETWORK_STUB = """#!{python}
+# CLAUDE_CODE_USE_BEDROCK
+import json, os, socket, sys, urllib.request
+cfg = os.environ.get("CLAUDE_CONFIG_DIR", "")
+def load(name):
+    try:
+        return json.load(open(os.path.join(cfg, name)))
+    except Exception:
+        return {{}}
+env = {{**load("settings.json").get("env", {{}}), **os.environ}}
+session = "--version" not in sys.argv  # --version prints and exits, as the real one does
+for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+    proxy = env.get(var, "")
+    if session and proxy and env.get("NO_PROXY") != "*":
+        host, port = proxy.removeprefix("http://").split(":")
+        s = socket.create_connection((host, int(port)), timeout=3)
+        s.sendall(b"CONNECT api.example.com:443 HTTP/1.1\\r\\n\\r\\n")
+        s.close()
+if session and "--strict-mcp-config" not in sys.argv:
+    for server in load(".claude.json").get("mcpServers", {{}}).values():
+        try:
+            urllib.request.urlopen(urllib.request.Request(server["url"], data=b"{{}}", method="POST"), timeout=3)
+        except Exception:
+            pass
+"""
+
+
+def _network_stub(tmp_path: Path) -> Path:
+    from tests._gate_probe import HOOKED_CLAUDE_PRELUDE
+
+    stub = tmp_path / "claude-net"
+    stub.write_text(_NETWORK_STUB.format(python=sys.executable) + HOOKED_CLAUDE_PRELUDE)
+    stub.chmod(0o755)
+    return stub
+
+
+def _logging_server() -> tuple[Any, list[str], int]:
+    import socket
+    import threading
+
+    hits: list[str] = []
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(20)
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(2)
+                hits.append(conn.recv(200).split(b"\r\n", 1)[0].decode(errors="replace"))
+            except OSError:
+                hits.append("(no data)")
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return srv, hits, srv.getsockname()[1]
+
+
+@pytest.mark.parametrize("sandboxed", [False, True])
+def test_a_loopback_proxy_and_a_user_mcp_server_get_nothing(
+    tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch, sandboxed: bool
+) -> None:
+    if sandboxed and not (sys.platform == "darwin" and gate_probe.SANDBOX_EXEC.exists()):
+        pytest.skip("macOS sandbox only")
+    srv, hits, port = _logging_server()
+    url = f"http://127.0.0.1:{port}"
+    (_isolated_claude_config / "settings.json").write_text(
+        json.dumps({"env": {"HTTPS_PROXY": url, "HTTP_PROXY": url, "ALL_PROXY": url}})
+    )
+    (_isolated_claude_config / ".claude.json").write_text(json.dumps({"mcpServers": {"x": {"url": url + "/mcp"}}}))
+    if not sandboxed:
+        monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    stub = _network_stub(tmp_path)
+    try:
+        result = gate_probe.probe(stub, plugin_root=_plugin_root(tmp_path))
+    finally:
+        srv.close()
+    assert result.ok, result.reason
+    assert hits == []
+
+
+def test_the_network_stub_does_reach_a_proxy_and_mcp_without_the_probes_env(
+    tmp_path: Path, _isolated_claude_config: Path
+) -> None:
+    """The control: the stand-in above really would leak, so the zero above means something."""
+    import subprocess
+
+    srv, hits, port = _logging_server()
+    url = f"http://127.0.0.1:{port}"
+    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"HTTPS_PROXY": url}}))
+    (_isolated_claude_config / ".claude.json").write_text(json.dumps({"mcpServers": {"x": {"url": url + "/mcp"}}}))
+    stub = _network_stub(tmp_path)
+    env = {k: v for k, v in os.environ.items() if not k.upper().endswith("PROXY")}
+    subprocess.run([str(stub), "-p", "x"], env=env, capture_output=True, timeout=30)
+    srv.close()
+    assert len(hits) == 2  # the proxy's CONNECT and the MCP server's POST
+
+
+def test_the_probe_runs_with_no_mcp_servers_no_proxy_and_no_background_traffic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "argv.json"
+    monkeypatch.setenv("STUB_ARGV_LOG", str(log))
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    assert gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path)).ok
+    seen = json.loads(log.read_text())
+    argv = seen["argv"]
+    assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers": {}}' and "--strict-mcp-config" in argv
+    assert seen["env"] == {
+        "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_TELEMETRY": "1",
+        "NO_PROXY": "*",
+        "HTTPS_PROXY": "",
+    }
+
+
+def test_provider_switches_already_in_the_process_env_are_zeroed() -> None:
+    env = gate_probe.probe_env(
+        base_url="http://127.0.0.1:1",
+        vault=Path("/v"),
+        base={"CLAUDE_CODE_USE_NEWPROVIDER": "1", "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH": "1"},
+        switches=(),
+    )
+    assert env["CLAUDE_CODE_USE_NEWPROVIDER"] == "0"
+    assert env["CLAUDE_CODE_USE_NATIVE_FILE_SEARCH"] == "1"
+
+
+def test_a_launcher_script_is_followed_to_the_claude_it_runs(tmp_path: Path) -> None:
+    real = tmp_path / "lib" / "claude-real"
+    real.parent.mkdir()
+    real.write_bytes(b"\x00 CLAUDE_CODE_USE_FROMTHESHIM \x00")
+    shim = tmp_path / "bin" / "claude"
+    shim.parent.mkdir()
+    shim.write_text('#!/bin/sh\nbasedir=$(dirname "$0")\nexec "$basedir/../lib/claude-real" "$@"\n')
+    shim.chmod(0o755)
+    assert "CLAUDE_CODE_USE_FROMTHESHIM" in gate_probe.provider_switches(shim, [])
+
+
+def test_a_claude_whose_switches_cant_be_read_refuses_without_a_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opaque = tmp_path / "claude-opaque"
+    opaque.write_text(_STUB.format(python=sys.executable, mode="deny").replace("CLAUDE_CODE_USE_BEDROCK", "nothing"))
+    opaque.chmod(0o755)
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    refused = gate_probe.probe(opaque, plugin_root=_plugin_root(tmp_path))
+    assert not refused.ok and refused.unsafe and "no provider switch could be read" in refused.reason
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: ["env"])
+    assert gate_probe.probe(opaque, plugin_root=_plugin_root(tmp_path)).ok
+
+
+@pytest.mark.parametrize("key", ["DOCKER_HOST", "GH_HOST", "JIRA_URL", "DATABASE_URL", "OTEL_EXPORTER_OTLP_ENDPOINT"])
+def test_other_tools_endpoints_dont_refuse(key: str) -> None:
+    assert gate_probe.endpoint_keys([{key: "x"}])[1] == set()
+
+
+@pytest.mark.parametrize(
+    "key", ["AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "ANTHROPIC_LLM_ENDPOINT", "CLOUD_ML_ENDPOINT", "VERTEX_HOST"]
+)
+def test_endpoints_claude_reads_refuse_without_a_sandbox(key: str) -> None:
+    assert gate_probe.endpoint_keys([{key: "x"}])[1] == {key}
+
+
+def test_an_unsafe_refusal_exits_4(
+    tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_LLM_ENDPOINT": "https://x"}}))
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    vault, root = _vault(tmp_path), _plugin_root(tmp_path)
+    args = [
+        "gates",
+        "probe",
+        "--vault",
+        str(vault),
+        "--plugin-root",
+        str(root),
+        "--claude-bin",
+        str(_stub(tmp_path, "deny")),
+    ]
+    assert CliRunner().invoke(app, args).exit_code == 4
+
+
+def test_the_sandbox_has_no_unix_socket_allowance() -> None:
+    """No DNS (mDNSResponder) and no local daemon socket: claude needs neither once everything goes to the fake."""
+    assert "unix-socket" not in gate_probe.SANDBOX_PROFILE

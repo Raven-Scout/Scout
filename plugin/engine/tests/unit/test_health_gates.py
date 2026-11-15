@@ -63,6 +63,17 @@ def test_a_run_after_a_gates_skip_clears_the_finding(tmp_path: Path) -> None:
     assert "gates.not_loaded" not in _ids(health.evaluate(v, now=NOW))
 
 
+def test_an_unsafe_probe_skip_has_its_own_finding(tmp_path: Path) -> None:
+    """A probe that couldn't run safely isn't "hooks didn't load" (round 3 of #635's review)."""
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), outcome="skipped_gates", klass="gates_unsafe")])
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"gates.probe_unsafe": "red"}
+    (finding,) = report.findings
+    assert "couldn't check its privacy hooks safely" in finding.summary
+    assert "scoutctl gates probe" in finding.fix
+
+
 def test_other_skips_after_a_gates_skip_keep_the_finding(tmp_path: Path) -> None:
     v = _vault(tmp_path)
     _ledger(

@@ -108,9 +108,11 @@ def cli_gates_probe(
     """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
 
     Runs claude once against a local fake endpoint (no model, no spend, never your
-    credentials) in a throwaway fixture vault. The runners call this with --cached
-    before each run and skip the run (skipped_gates) on exit 3. See
-    scout/agent_runtimes/gate_probe.py and spec 2026-11-13 §3.5.
+    credentials) in a throwaway fixture vault. Exit 4 when it can't be run safely
+    (a setting names an endpoint it can't keep on this machine, and there's no
+    network sandbox). The runners call this with --cached before each run and skip
+    the run on any non-zero exit. See scout/agent_runtimes/gate_probe.py and spec
+    2026-11-13 §3.5.
     """
     import json
 
@@ -132,7 +134,7 @@ def cli_gates_probe(
         typer.echo(f"{'ok' if result.ok else 'REFUSED'}: {result.reason} (claude {result.claude_version or 'unknown'})")
     if not result.ok:
         typer.echo(f"[scout:gates] {result.reason}", err=True)
-        raise typer.Exit(3)
+        raise typer.Exit(4 if result.unsafe else 3)
 
 
 @hook_app.command("connector-log")

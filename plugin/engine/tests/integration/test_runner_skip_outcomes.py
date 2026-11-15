@@ -202,6 +202,22 @@ def test_a_failed_gate_probe_records_skipped_gates_and_never_launches(vault: Pat
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
+def test_a_probe_that_cant_run_safely_records_its_own_class(vault: Path, runner: str) -> None:
+    """Exit 4 (a setting the probe can't keep local, no sandbox) is a gates skip with class gates_unsafe."""
+    _script(
+        vault / "bin" / "scoutctl",
+        '#!/bin/bash\nif [ "$1" = gates ]; then echo "[scout:gates] can\'t probe safely" >&2; exit 4; fi\nexit 0\n',
+    )
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["failure_class"], row["exit_code"]) == ("skipped_gates", "gates_unsafe", 0)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
 @pytest.mark.parametrize("broken", ["missing", "not-executable"])
 def test_a_missing_scoutctl_skips_the_run_instead_of_running_ungated(vault: Path, runner: str, broken: str) -> None:
     """The hooks run the plugin's scoutctl, not this one, so a broken one here proves nothing (review of #635)."""

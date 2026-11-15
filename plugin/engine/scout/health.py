@@ -596,6 +596,25 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
     if not streak:
         return []
     log = _run_log(vault, streak[-1])
+    if streak[-1].failure_class == "gates_unsafe":
+        return [
+            Finding(
+                id="gates.probe_unsafe",
+                severity="red",
+                since=streak[0].finished_at,
+                summary=(
+                    f"The last {len(streak)} scheduled run(s) were skipped: Scout couldn't check its privacy hooks "
+                    "safely, because a Claude setting names an endpoint the check can't keep on this machine."
+                ),
+                fix=(
+                    "Run `scoutctl gates probe` to see which setting. Remove or rename it in your Claude settings' "
+                    "env, or run Scout where the check's network sandbox is available (macOS). Runs resume on "
+                    "their own once the probe passes."
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
     return [
         Finding(
             id="gates.not_loaded",

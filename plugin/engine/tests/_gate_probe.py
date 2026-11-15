@@ -9,6 +9,7 @@ endpoint's scripted Bash call with the kb-read-gate's deny and exits. Put
 """
 
 HOOKED_CLAUDE_PRELUDE = """
+# Like a real claude, names its provider switches (the probe scans for them): CLAUDE_CODE_USE_BEDROCK
 if "--name" not in sys.argv:
     import urllib.request
     if "--version" in sys.argv:
