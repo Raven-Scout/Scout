@@ -3921,17 +3921,18 @@ def self_update_run_cmd(
     """
     import datetime as _dt
     import json as _json
-    import sys as _sys
 
     from scout import paths as _paths
+    from scout._spawn import python_module_argv
     from scout.scripts.self_update_run import default_deps, run_lock, run_update, spawn_detached
 
     vault = _paths.data_dir()
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     log_name = f"self-update-{today}.log"
     if detach:
-        argv = [_sys.executable, "-m", "scout", "self-update", "run"]
-        argv += [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        # The heartbeat runs this with the vault as cwd; -P keeps vault files off the child's sys.path.
+        flags = [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        argv = python_module_argv("scout", "self-update", "run", *flags)
         pid = spawn_detached(argv, log_path=vault / ".scout-logs" / log_name)
         typer.echo(f"self-update: started in the background (pid {pid}); log: .scout-logs/{log_name}")
         return

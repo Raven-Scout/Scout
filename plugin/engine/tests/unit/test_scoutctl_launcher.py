@@ -131,7 +131,7 @@ def test_cache_path_skips_a_monorepo_clones_root_venv(tmp_path, venv_rel):
     _fake_python(clone / "engine" / ".venv", "ROOT_ENGINE_PY")
     _fake_python(clone / venv_rel, "PLUGIN_PY")
 
-    assert _run_isolated(cache_root, home) == "PLUGIN_PY -m scout.cli version"
+    assert _run_isolated(cache_root, home) == "PLUGIN_PY -P -m scout.cli version"
     assert not (clone / ".venv" / "calls").exists()
     assert not (clone / "engine" / ".venv" / "calls").exists()
 
@@ -148,7 +148,7 @@ def test_cache_path_ignores_a_monorepo_clone_with_only_a_root_venv(tmp_path):
     _fake_python(clone / ".venv", "ROOT_PY")
     sysbin = _fake_system_python3(tmp_path)
 
-    assert _run_isolated(cache_root, home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert _run_isolated(cache_root, home, extra_path=str(sysbin)) == "SYSTEM_PY -P -m scout.cli version"
     assert not (clone / ".venv" / "calls").exists()
 
 
@@ -168,7 +168,7 @@ def test_cache_path_still_uses_a_legacy_clones_root_venv(tmp_path):
     _fake_python(clone / ".venv", "ROOT_PY")
     _fake_python(clone / "plugin" / ".venv", "PLUGIN_PY")
 
-    assert _run_isolated(cache_root, home) == "ROOT_PY -m scout.cli version"
+    assert _run_isolated(cache_root, home) == "ROOT_PY -P -m scout.cli version"
 
 
 def test_launcher_inside_a_monorepo_clone_ignores_the_clone_root_venv(tmp_path):
@@ -181,7 +181,7 @@ def test_launcher_inside_a_monorepo_clone_ignores_the_clone_root_venv(tmp_path):
     _fake_python(clone / ".venv", "ROOT_PY")
     _fake_python(clone / "plugin" / ".venv", "PLUGIN_PY")
 
-    assert _run_isolated(clone / "plugin", home) == "PLUGIN_PY -m scout.cli version"
+    assert _run_isolated(clone / "plugin", home) == "PLUGIN_PY -P -m scout.cli version"
     assert not (clone / ".venv" / "calls").exists()
 
 
@@ -272,12 +272,13 @@ def test_falls_back_to_system_python3_when_no_venv(tmp_path):
 
 
 def _fake_python(venv: Path, tag: str, *, importable: bool = True) -> Path:
-    """A stub interpreter that logs each call's first argument to <venv>/calls.
+    """A stub interpreter that logs each call's first two arguments to <venv>/calls.
 
-    Probed (`-c`), an importable stub answers like a healthy venv: it prints
+    Probed (`-P -c`), an importable stub answers like a healthy venv: it prints
     the scout/cli.py it "resolved", which the launcher stamps into its cache.
-    Run (`-m`), it echoes its tag. A non-importable stub fails both the way a
-    venv whose editable source moved does.
+    A probe without -P fails, as it would if the cwd could shadow scout.
+    Run (`-P -m`), it echoes its tag and arguments. A non-importable stub fails
+    both the way a venv whose editable source moved does.
     """
     py = venv / "bin" / "python"
     py.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +291,7 @@ def _fake_python(venv: Path, tag: str, *, importable: bool = True) -> Path:
     else:
         probe = run = 'echo "No module named scout.cli" >&2; exit 1'
     py.write_text(
-        f'#!/bin/sh\nprintf "%s\\n" "$1" >>"{venv}/calls"\nif [ "$1" = "-c" ]; then {probe}; fi\n{run}\n',
+        f'#!/bin/sh\nprintf "%s\\n" "$1 $2" >>"{venv}/calls"\nif [ "$1 $2" = "-P -c" ]; then {probe}; fi\n{run}\n',
         encoding="utf-8",
     )
     py.chmod(0o755)
@@ -344,7 +345,7 @@ def test_uses_pointer_python_when_tree_has_no_venv(tmp_path):
     home = tmp_path / "home"
     py = _fake_python(tmp_path / "outside-venv", "POINTER_PY")
     _write_pointer(home, py)
-    assert _run_isolated(_plugin_tree(tmp_path), home) == "POINTER_PY -m scout.cli version"
+    assert _run_isolated(_plugin_tree(tmp_path), home) == "POINTER_PY -P -m scout.cli version"
 
 
 def test_uses_pointer_python_under_a_non_ascii_path(tmp_path):
@@ -359,7 +360,7 @@ def test_uses_pointer_python_under_a_non_ascii_path(tmp_path):
     py3 = sysbin / "python3"
     py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
     py3.chmod(0o755)
-    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "POINTER_PY -m scout.cli version"
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "POINTER_PY -P -m scout.cli version"
 
 
 def test_prefers_in_tree_venv_over_pointer(tmp_path):
@@ -368,7 +369,7 @@ def test_prefers_in_tree_venv_over_pointer(tmp_path):
     _write_pointer(home, _fake_python(tmp_path / "outside-venv", "POINTER_PY"))
     root = _plugin_tree(tmp_path)
     _fake_python(root / ".venv", "TREE_PY")
-    assert _run_isolated(root, home) == "TREE_PY -m scout.cli version"
+    assert _run_isolated(root, home) == "TREE_PY -P -m scout.cli version"
 
 
 def test_malformed_pointer_falls_through_to_system_python3(tmp_path):
@@ -380,7 +381,7 @@ def test_malformed_pointer_falls_through_to_system_python3(tmp_path):
     py3 = sysbin / "python3"
     py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
     py3.chmod(0o755)
-    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -P -m scout.cli version"
 
 
 def test_pointer_python_that_no_longer_exists_is_skipped(tmp_path):
@@ -391,7 +392,7 @@ def test_pointer_python_that_no_longer_exists_is_skipped(tmp_path):
     py3 = sysbin / "python3"
     py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
     py3.chmod(0o755)
-    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -P -m scout.cli version"
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +435,7 @@ def test_cached_python_that_cannot_import_cli_falls_through_to_pointer(tmp_path,
     moved_source = [tmp_path / "old-checkout" / "engine" / "scout" / "cli.py"] if stamped else []
     cache = _seed_cache(root, dead, *moved_source)
 
-    assert _run_isolated(root, home) == "POINTER_PY -m scout.cli version"
+    assert _run_isolated(root, home) == "POINTER_PY -P -m scout.cli version"
     # Re-resolved and re-stamped, so the next call takes the fast path to the pointer.
     assert cache.read_text().splitlines() == [str(pointer_py), str(tmp_path / "app-venv" / "src" / "scout" / "cli.py")]
 
@@ -446,7 +447,7 @@ def test_dead_in_tree_venv_falls_through_to_pointer(tmp_path):
     _write_pointer(home, _fake_python(tmp_path / "app-venv", "POINTER_PY"))
     root = _plugin_tree(tmp_path)
     _fake_python(root / ".venv", "TREE_PY", importable=False)
-    assert _run_isolated(root, home) == "POINTER_PY -m scout.cli version"
+    assert _run_isolated(root, home) == "POINTER_PY -P -m scout.cli version"
 
 
 def test_valid_cache_takes_the_fast_path_without_probing(tmp_path):
@@ -460,8 +461,8 @@ def test_valid_cache_takes_the_fast_path_without_probing(tmp_path):
     _write_pointer(home, cached)
     _seed_cache(root, cached, tmp_path / "elsewhere" / "src" / "scout" / "cli.py")
 
-    assert _run_isolated(root, home) == "CACHED_PY -m scout.cli version"
-    assert (tmp_path / "elsewhere" / "calls").read_text().splitlines() == ["-m"]
+    assert _run_isolated(root, home) == "CACHED_PY -P -m scout.cli version"
+    assert (tmp_path / "elsewhere" / "calls").read_text().splitlines() == ["-P -m"]
     assert not (root / ".venv" / "calls").exists()
 
 
@@ -472,7 +473,7 @@ def test_a_cache_naming_an_interpreter_that_isnt_a_candidate_is_never_run(tmp_pa
     _fake_python(root / ".venv", "TREE_PY")
     rogue = _fake_python(tmp_path / "rogue", "ROGUE_PY")
     cache = _seed_cache(root, rogue, tmp_path / "rogue" / "src" / "scout" / "cli.py")
-    assert _run_isolated(root, home) == "TREE_PY -m scout.cli version"
+    assert _run_isolated(root, home) == "TREE_PY -P -m scout.cli version"
     assert not (tmp_path / "rogue" / "calls").exists()
     assert cache.read_text().splitlines()[0] == str(root / ".venv" / "bin" / "python")  # re-probed and rewritten
 
@@ -485,7 +486,7 @@ def test_a_cache_whose_stamp_names_no_cli_is_never_run(tmp_path):
     hosts.write_text("x\n")
     _seed_cache(root, tree, hosts)  # an existing file, but not scout/cli.py
     _run_isolated(root, home)
-    assert (root / ".venv" / "calls").read_text().splitlines()[0] == "-c"  # it probed instead of trusting
+    assert (root / ".venv" / "calls").read_text().splitlines()[0] == "-P -c"  # it probed instead of trusting
 
 
 def test_a_pointer_naming_a_binary_that_isnt_a_venvs_python_is_ignored(tmp_path):
@@ -496,7 +497,7 @@ def test_a_pointer_naming_a_binary_that_isnt_a_venvs_python_is_ignored(tmp_path)
     fake.chmod(0o755)
     _write_pointer(home, fake)
     sysbin = _fake_system_python3(tmp_path)
-    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -P -m scout.cli version"
 
 
 def test_unusable_cache_is_deleted_when_nothing_resolves(tmp_path):
@@ -507,7 +508,7 @@ def test_unusable_cache_is_deleted_when_nothing_resolves(tmp_path):
     dead = _fake_python(tmp_path / "old-checkout" / ".venv", "DEAD_PY", importable=False)
     cache = _seed_cache(root, dead)
     sysbin = _fake_system_python3(tmp_path)
-    assert _run_isolated(root, home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert _run_isolated(root, home, extra_path=str(sysbin)) == "SYSTEM_PY -P -m scout.cli version"
     assert not cache.exists()
 
 
@@ -522,7 +523,7 @@ def test_probe_leaves_stdin_for_the_real_call(tmp_path):
     py.parent.mkdir(parents=True)
     # This probe drains stdin, as any interpreter that read it would.
     py.write_text(
-        f'#!/bin/sh\nif [ "$1" = "-c" ]; then cat >/dev/null; echo "{cli}"; exit 0; fi\necho "GOT $(cat)"\n',
+        f'#!/bin/sh\nif [ "$1 $2" = "-P -c" ]; then cat >/dev/null; echo "{cli}"; exit 0; fi\necho "GOT $(cat)"\n',
         encoding="utf-8",
     )
     py.chmod(0o755)
@@ -552,3 +553,57 @@ def test_probe_against_real_interpreters(tmp_path):
     assert cached_py == sys.executable
     assert stamp and all(Path(p).is_file() for p in stamp), stamp
     assert Path(stamp[0]).resolve() == (Path(scout.__file__).parent / "cli.py").resolve()
+
+
+# ---------------------------------------------------------------------------
+# The working directory never shadows the engine
+#
+# Hooks, the pre-commit hook and the heartbeat run the launcher with the vault
+# as cwd. `python -m` and `python -c` put the cwd first on sys.path, so without
+# -P a vault-root typer.py ran inside every such call.
+# ---------------------------------------------------------------------------
+
+
+def _shadowing_vault(tmp_path: Path) -> tuple[Path, Path]:
+    """A vault whose root holds typer.py, yaml.py and a scout/ package, each writing to the marker."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    marker = tmp_path / "shadowed"
+    body = f"open({str(marker)!r}, 'a').write(__name__ + '\\n')\nraise SystemExit(42)\n"
+    for name in ("typer.py", "yaml.py"):
+        (vault / name).write_text(body, encoding="utf-8")
+    (vault / "scout").mkdir()
+    (vault / "scout" / "__init__.py").write_text(body, encoding="utf-8")
+    return vault, marker
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["probe", "fast-path"])
+@pytest.mark.parametrize("argv", [["version"], ["hook", "kb-read-label"]], ids=["scout.cli", "scout.hooks"])
+def test_vault_root_modules_are_never_imported(tmp_path, cached, argv):
+    """Real interpreter, real launcher, cwd = the vault: no vault module runs,
+    whether the launcher probes a candidate or takes the cache's fast path."""
+    vault, marker = _shadowing_vault(tmp_path)
+    home = tmp_path / "home"
+    _write_pointer(home, Path(sys.executable))
+    root = _plugin_tree(tmp_path)
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "SCOUT_DATA_DIR": str(vault)}
+
+    def launch() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(root / "engine" / "bin" / "scoutctl"), *argv],
+            env=env,
+            cwd=vault,
+            input="{}",
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    out = launch()
+    if cached:
+        assert (root / ".scoutctl-py-cache").exists(), out
+        out = launch()
+    assert not marker.exists(), f"vault module imported: {marker.read_text()}"
+    assert out.returncode == 0, out
+    if argv == ["version"]:
+        assert out.stdout.strip() == scout.__version__

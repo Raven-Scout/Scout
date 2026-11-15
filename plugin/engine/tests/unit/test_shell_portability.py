@@ -97,7 +97,7 @@ def test_the_lint_rules(line, bad):
 # ---- the GitHub phase's cutoffs, run for real ---------------------------------
 
 _GITHUB = PLUGIN_ROOT / "phases" / "connectors" / "github.md"
-_CUTOFF = re.compile(r"\$\(python3 -c '[^']*time\.time\(\) - (\d+) \* 3600[^']*'\)")
+_CUTOFF = re.compile(r"\$\(python3 -I -c '[^']*time\.time\(\) - (\d+) \* 3600[^']*'\)")
 
 
 def _cutoffs() -> list[tuple[str, int]]:
