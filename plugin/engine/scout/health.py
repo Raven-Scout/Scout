@@ -128,7 +128,7 @@ class Finding:
     since: datetime | None
     summary: str
     fix: str
-    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config"
+    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config" | "state"
     # A failed run's own error line, verbatim (#445): what Claude Code or git said, not the class.
     detail: str | None = None
     # Absolute path of that run's log, when it is still on disk.
@@ -803,11 +803,13 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
-def delegate_findings(vault: Path) -> list[Finding]:
-    """Yellow for a delegate mirror whose last sync failed (#550 V2c): its agent reads an older copy until one works.
+def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+    """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
+    (#550 V2c): its agent reads an older copy until one works.
 
     Nothing for a vault that links no delegate. A failed sync is never a run failure;
-    this is where it shows.
+    this is where it shows. "No sync tried" covers what records nothing itself: a tick
+    that stopped, a sync that couldn't start, or one that died before it began.
     """
     if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
         return []
@@ -828,22 +830,39 @@ def delegate_findings(vault: Path) -> list[Finding]:
                 source="config",
             )
         ]
+    from scout.delegate_mirror import needs_sync
+
+    now = now or datetime.now(UTC)
+    behind = set(needs_sync(vault, {k: v for k, v in links.items() if v.last_error is None}, now=now))
     found = []
     for key, link in sorted(links.items()):
-        if link.last_error is None:
-            continue
-        code = link.last_error.get("code", "unknown")
-        found.append(
-            Finding(
-                id="delegate.sync_failed",
-                severity="yellow",
-                since=_parse_ts(link.last_error.get("at")),
-                summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
-                f"{link.last_sync or 'when it was linked'}",
-                fix=f"See why with: scoutctl delegate sync {key}",
-                source="events",
+        if link.last_error is not None:
+            code = link.last_error.get("code", "unknown")
+            found.append(
+                Finding(
+                    id="delegate.sync_failed",
+                    severity="yellow",
+                    since=_parse_ts(link.last_error.get("first_at") or link.last_error.get("at")),
+                    summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
+                    f"{link.last_sync or 'when it was linked'}",
+                    fix=f"See why with: scoutctl delegate sync {key}",
+                    source="state",
+                )
             )
-        )
+            continue
+        tried = _parse_ts(link.last_attempt) or _parse_ts(link.last_sync) or _parse_ts(link.linked_at)
+        if key in behind and (tried is None or now - tried > timedelta(hours=1)):
+            found.append(
+                Finding(
+                    id="delegate.sync_stalled",
+                    severity="yellow",
+                    since=tried,
+                    summary=f"Delegate mirror {key} is behind the vault and no sync has tried for over an hour; "
+                    "is the schedule tick running?",
+                    fix="Sync now with: scoutctl delegate sync --all (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
     return found
 
 

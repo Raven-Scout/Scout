@@ -718,10 +718,12 @@ def _spawn_delegate_sync(vault: Path, log_dir: Path) -> int:
     env["SCOUT_DATA_DIR"] = str(vault)
     env.pop("SCOUT_MODE", None)
     log_dir.mkdir(parents=True, exist_ok=True)
+    from scout.engine_spawn import engine_argv, neutral_cwd
+
     with (log_dir / _DELEGATE_LOG).open("a", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "scout", "delegate", "sync", "--all", "--if-moved"],
-            cwd=str(vault),
+            engine_argv("delegate", "sync", "--all", "--if-moved"),
+            cwd=neutral_cwd(),  # never the vault: no vault-root module may shadow the engine's
             env=env,
             start_new_session=True,
             stdin=subprocess.DEVNULL,

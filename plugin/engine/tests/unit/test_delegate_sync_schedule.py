@@ -6,6 +6,7 @@ test starts a real background process or touches a real scheduler.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -23,7 +24,16 @@ from scout.cli import app
 from scout.scripts import bootstrap_doctor, schedule_tick
 
 from .privacy_vault_helpers import git
-from .test_delegate_mirror import _bare, _commit, _link, vault  # noqa: F401 - the fixture
+from .test_delegate_mirror import (  # noqa: F401 - the fixtures
+    PRIYA,
+    _bare,
+    _commit,
+    _link,
+    _show,
+    github_link,
+    home,
+    vault,
+)
 
 runner = CliRunner()
 TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
@@ -123,8 +133,13 @@ def test_the_tick_starts_a_sync_only_when_due(vault: Path, tmp_path: Path) -> No
         started.append((v, logs))
         return 4242
 
-    schedule_tick._sync_delegates(vault=vault, log_dir=log_dir, spawn=spawn)
-    assert started == []  # nothing linked: one stat, no import
+    def never(*_a: object, **_k: object) -> bool:
+        raise AssertionError("a vault with no links must not reach the mirror code")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(dm, "due", never)
+        schedule_tick._sync_delegates(vault=vault, log_dir=log_dir, spawn=spawn)
+    assert started == []  # nothing linked: one stat
     _link(vault, "grok-personal", _bare(tmp_path, "grok"))
     _ignore_state(vault)
     schedule_tick._sync_delegates(vault=vault, log_dir=log_dir, spawn=spawn)
@@ -161,9 +176,9 @@ def test_the_tick_spawns_the_sync_detached_with_its_output_logged(
     vault_dir, logs = tmp_path / "v", tmp_path / "v" / ".scout-logs"
     vault_dir.mkdir()
     assert schedule_tick._spawn_delegate_sync(vault_dir, logs) == 99
-    assert seen["argv"][1:] == ["-m", "scout", "delegate", "sync", "--all", "--if-moved"]
+    assert seen["argv"][1:] == ["-P", "-m", "scout", "delegate", "sync", "--all", "--if-moved"]
     kw = seen["kw"]
-    assert kw["start_new_session"] is True and kw["cwd"] == str(vault_dir)
+    assert kw["start_new_session"] is True and kw["cwd"] != str(vault_dir) and not kw["cwd"].startswith(str(vault_dir))
     assert kw["env"]["SCOUT_DATA_DIR"] == str(vault_dir) and "SCOUT_MODE" not in kw["env"]
     assert kw["stderr"] is subprocess.STDOUT and (logs / schedule_tick._DELEGATE_LOG).exists()
 
@@ -237,6 +252,368 @@ def test_ages_read_in_minutes_hours_then_days() -> None:
 def test_every_runner_syncs_the_mirrors_when_it_finishes_and_never_fails_for_it(name: str) -> None:
     text = (TEMPLATES / name).read_text(encoding="utf-8")
     guard = 'if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then'
-    call = '    "$SCOUTCTL_BIN" delegate sync --all >> "$LOG_FILE" 2>&1 || true'
+    call = '    "$SCOUTCTL_BIN" delegate sync --all --if-moved >> "$LOG_FILE" 2>&1 || true'
     assert f"{guard}\n{call}\nfi\n" in text
-    assert text.index("connector-health-report") < text.index("delegate sync --all") < text.index("record-run")
+    # last: after the cost record, so the run's own bookkeeping never waits on a push; never in a trap
+    assert text.index("connector-health-report") < text.index("record-run") < text.index("delegate sync --all")
+    assert text.rstrip().endswith("fi")
+    assert not any(ln.lstrip().startswith("trap ") and "delegate" in ln for ln in text.splitlines())
+
+
+# ----- review of #636 (coordinator, 2026-11-14) ----------------------------------------------------
+
+
+def _scans(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the path of every text scan (the expensive part of a sync)."""
+    seen: list[str] = []
+    real = dm.Scanner.lines
+
+    def counting(self: dm.Scanner, text: str, rel: str = "") -> list[int]:
+        seen.append(rel)
+        return real(self, text, rel)
+
+    monkeypatch.setattr(dm.Scanner, "lines", counting)
+    return seen
+
+
+def _synced(vault: Path, tmp_path: Path, delegate: str = "grok-personal") -> Path:  # noqa: F811
+    bare = _bare(tmp_path, delegate)
+    _link(vault, delegate, bare)
+    _ignore_state(vault)
+    dm.sync(vault, delegate)
+    return bare
+
+
+def test_an_unchanged_vault_does_no_scan_on_the_runner_path(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+
+    def never(*_a: object, **_k: object) -> object:
+        raise AssertionError("an unchanged vault must not be planned")
+
+    monkeypatch.setattr(dm, "plan", never)
+    assert dm.sync_all(vault, only_moved=True) == ([], {})  # what the runners and the tick run
+
+
+def test_a_failing_mirror_is_retried_on_a_backoff_not_every_tick(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    bare = _synced(vault, tmp_path)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    _break_remote(vault, "grok-personal")  # fails at the push, after the whole build and check
+    with pytest.raises(rs.RepoSyncError):
+        dm.sync(vault, "grok-personal")
+    links = dm.load_links(vault)
+    now = datetime.now(UTC)
+    assert dm.needs_sync(vault, links, now=now) == []  # same HEAD, same config: wait
+    assert dm.needs_sync(vault, links, now=now + timedelta(minutes=59)) == []
+    assert dm.needs_sync(vault, links, now=now + timedelta(minutes=61)) == ["grok-personal"]
+    error = links["grok-personal"].last_error
+    assert error is not None
+    links["grok-personal"].last_error = {**error, "first_at": (now - timedelta(days=2)).isoformat()}
+    links["grok-personal"].last_attempt = (now - timedelta(hours=2)).isoformat()
+    assert dm.needs_sync(vault, links, now=now) == []  # failing for over a day: daily
+    links["grok-personal"].last_attempt = (now - timedelta(hours=25)).isoformat()
+    assert dm.needs_sync(vault, links, now=now) == ["grok-personal"]
+    links["grok-personal"].last_attempt = (now + timedelta(hours=1)).isoformat()
+    assert dm.needs_sync(vault, links, now=now) == ["grok-personal"]  # a clock that went back: try
+    links = dm.load_links(vault)
+    _commit(vault, "knowledge-base/topics/misc/other.md", "---\ntitle: Other\n---\n\nother\n", "other")
+    assert dm.needs_sync(vault, links, now=now) == ["grok-personal"]  # a new commit: at the next tick
+    del bare
+
+
+def test_a_config_edit_alone_makes_a_mirror_due(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _synced(vault, tmp_path)
+    assert dm.needs_sync(vault, dm.load_links(vault)) == []
+    config = vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + "# narrowed by hand\n", encoding="utf-8")
+    assert dm.needs_sync(vault, dm.load_links(vault)) == ["grok-personal"]  # uncommitted, HEAD unchanged
+
+
+def test_a_sync_rescans_only_what_changed(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+    scanned = _scans(monkeypatch)
+    new = "knowledge-base/topics/misc/new.md"
+    _commit(vault, new, "---\ntitle: New\n---\n\nnew\n", "one more note")
+    assert dm.sync(vault, "grok-personal").pushed
+    assert set(scanned) <= {new, "", "scout-config.yaml"} and new in scanned, scanned
+    scanned.clear()
+    assert dm.sync(vault, "grok-personal").unchanged
+    assert set(scanned) <= {"", "scout-config.yaml"}, scanned
+
+
+def test_a_new_hidden_note_rescans_everything_and_redacts_what_now_names_it(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mention = "knowledge-base/topics/misc/mention.md"
+    _commit(vault, mention, "---\ntitle: Mention\n---\n\nPlanning with Zephyr Orchard.\nKept.\n", "mention")
+    bare = _synced(vault, tmp_path)
+    assert "Zephyr Orchard" in _show(bare, mention)
+    scanned = _scans(monkeypatch)
+    _commit(
+        vault,
+        "knowledge-base/people/zephyr-orchard.md",
+        "---\nname: Zephyr Orchard\ntype: person\nvisibility: private\n---\n\nquiet\n",
+        "a private note",
+    )
+    dm.sync(vault, "grok-personal")
+    assert mention in scanned and len(set(scanned)) > 5  # the fingerprint changed: nothing reused
+    assert _show(bare, mention) == "---\ntitle: Mention\n---\n\nKept.\n"
+
+
+def test_check_tree_skips_only_blobs_it_checked_under_the_same_fingerprint(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+    link = dm.load_links(vault)["grok-personal"]
+    assert link.last_mirror and link.checked_fingerprint
+    head = rs._head(vault)
+    scanned = _scans(monkeypatch)
+    dm.check_tree(vault, link.last_mirror, "grok-personal", head, trusted=(link.last_mirror, "another"))
+    full = len(scanned)
+    scanned.clear()
+    fp = dm.check_tree(
+        vault, link.last_mirror, "grok-personal", head, trusted=(link.last_mirror, link.checked_fingerprint)
+    )
+    assert fp == link.checked_fingerprint and len(scanned) == 0 < full
+    current = dataclasses.replace(link, pending_mirror="abc")
+    monkeypatch.setattr(dm, "remote_head", lambda *_a: "abc")
+    adopted = dm._adopt_pending(vault, current)
+    assert adopted.last_mirror == "abc" and adopted.checked_fingerprint is None  # checked under an unknown one
+
+
+def test_a_memo_that_cant_be_used_falls_back_to_a_scan(vault: Path) -> None:  # noqa: F811
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        plain = dm.plan(vault, head, "grok-personal", blobs)[0]
+        rel = PRIYA
+        sha = rs._blob_at(vault, head, rel)
+        assert sha is not None
+        memo = dm.ScanMemo(vault / dm.SCAN_DIR / "x.json", plain.fingerprint, {rel: [sha.sha, "redact", "0" * 40, 1]})
+        reused = dm.plan(vault, head, "grok-personal", blobs, memo=memo)[0]
+    finally:
+        blobs.close()
+    assert [(f.path, f.data) for f in reused.files] == [(f.path, f.data) for f in plain.files]
+    assert memo.get("other", rel, sha.sha) is None and memo.get(plain.fingerprint, rel, "nope") is None
+    bad = vault / dm.SCAN_DIR / "bad.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("{not json", encoding="utf-8")
+    assert dm.ScanMemo.load(vault, "bad").files == {}
+
+
+def test_gh_and_git_give_up_instead_of_hanging(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    def slow(_args: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired("gh", dm.GH_TIMEOUT)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._ask_gh(slow, ["api", "user"], "o/r")
+    assert e.value.code == "remote_unverified" and "didn't answer" in e.value.message
+    seen: dict[str, object] = {}
+
+    def fake_run(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kw)
+        if args[0] == "git":
+            raise subprocess.TimeoutExpired(args, kw["timeout"])  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(dm.subprocess, "run", fake_run)
+    dm._gh(["api", "user"])
+    assert seen["timeout"] == dm.GH_TIMEOUT
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.remote_head(vault, "/some/mirror.git")
+    assert e.value.code == "remote_timeout" and seen["timeout"] == dm.GIT_TIMEOUT
+
+
+def test_repeated_failures_keep_since_when(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+
+    def unverified(*_a: object, **_k: object) -> None:
+        raise rs.RepoSyncError("remote_unverified", "refused: gh isn't signed in")
+
+    monkeypatch.setattr(dm, "check_remote", unverified)
+    for _ in range(2):
+        with pytest.raises(rs.RepoSyncError):
+            dm.sync(vault, "grok-personal")
+        time.sleep(1.1)
+    error = dm.load_links(vault)["grok-personal"].last_error
+    assert error is not None and error["first_at"] != error["at"]
+    [finding] = health.delegate_findings(vault)
+    assert finding.since == datetime.fromisoformat(error["first_at"].replace("Z", "+00:00"))
+    links = dm.load_links(vault)
+    links["grok-personal"].last_error = {**error, "code": "something_else"}
+    dm.save_links(vault, links)
+    with pytest.raises(rs.RepoSyncError):
+        dm.sync(vault, "grok-personal")
+    again = dm.load_links(vault)["grok-personal"].last_error
+    assert again is not None and again["first_at"] == again["at"]  # a new code starts a new since
+
+
+def test_an_unexpected_error_is_recorded_and_the_others_still_sync(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    _link(vault, "duet", _bare(tmp_path, "duet"))
+    real = dm._build_and_push
+
+    def flaky(v: Path, link: dm.DelegateLink, **kw: object) -> object:
+        if link.id == "grok-personal":
+            raise ValueError("a bug")
+        return real(v, link, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dm, "_build_and_push", flaky)
+    done, failed = dm.sync_all(vault)
+    assert [r.delegate for r in done] == ["duet"]
+    assert failed["grok-personal"].code == "internal" and "ValueError: a bug" in failed["grok-personal"].message
+    error = dm.load_links(vault)["grok-personal"].last_error
+    assert error is not None and error["code"] == "internal"
+
+
+def test_run_health_flags_a_mirror_no_sync_has_tried(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _synced(vault, tmp_path)
+    now = datetime.now(UTC)
+    assert health.delegate_findings(vault, now=now + timedelta(hours=3)) == []  # behind? no: nothing changed
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    assert health.delegate_findings(vault, now=now + timedelta(minutes=30)) == []
+    [finding] = health.delegate_findings(vault, now=now + timedelta(hours=2))
+    assert finding.id == "delegate.sync_stalled" and finding.severity == "yellow" and finding.source == "state"
+
+
+def test_a_sync_ignores_the_newer_state_files_for_an_older_link(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _synced(vault, tmp_path)
+    gi = vault / ".gitignore"
+    gi.write_text(
+        "".join(
+            ln + "\n"
+            for ln in gi.read_text(encoding="utf-8").splitlines()
+            if dm.TICK_REL not in ln and dm.SCAN_DIR not in ln
+        ),
+        encoding="utf-8",
+    )
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    result = dm.sync(vault, "grok-personal")
+    assert any("to .gitignore" in n for n in result.notes)
+    assert dm.TICK_REL in gi.read_text(encoding="utf-8") and dm.SCAN_DIR in gi.read_text(encoding="utf-8")
+
+
+def test_no_links_costs_no_git_and_a_future_tick_time_is_due(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_git(*_a: object) -> str:
+        raise AssertionError("no links: no git")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(dm, "_rev", no_git)
+        assert dm.needs_sync(vault, {}) == []
+        dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+        dm.save_links(vault, {})
+        assert dm.due(vault) is False
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    tick = vault / dm.TICK_REL
+    tick.touch()
+    future = time.time() + 3600
+    os.utime(tick, (future, future))
+    assert dm.due(vault) is True  # a tick time ahead of the clock doesn't stall the throttle
+
+
+def test_gh_missing_on_the_automatic_path_fails_closed(
+    github_link: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pushed: list[object] = []
+    monkeypatch.setattr(dm, "push", lambda *a, **_k: pushed.append(a))
+    _commit(github_link, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+
+    def missing(_args: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh")
+
+    done, failed = dm.sync_all(github_link, only_moved=True, gh=missing)
+    assert done == [] and failed["grok-personal"].code == "remote_unverified" and pushed == []
+    error = dm.load_links(github_link)["grok-personal"].last_error
+    assert error is not None and error["code"] == "remote_unverified"
+
+
+def test_the_engine_child_never_imports_from_the_vault(tmp_path: Path) -> None:
+    from scout.engine_spawn import engine_argv, neutral_cwd
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    marker = tmp_path / "PWNED"
+    (vault_dir / "typer.py").write_text(f"open({str(marker)!r}, 'w').write('x')\n", encoding="utf-8")
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault_dir)}
+    ok = subprocess.run(engine_argv("version"), cwd=vault_dir, env=env, capture_output=True, text=True, timeout=60)
+    assert ok.returncode == 0 and not marker.exists()
+    unsafe = [a for a in engine_argv("version") if a != "-P"]  # the old command, to prove the test can fail
+    subprocess.run(unsafe, cwd=vault_dir, env=env, capture_output=True, text=True, timeout=60)
+    assert marker.exists()
+    assert not neutral_cwd().startswith(str(vault_dir))
+
+
+def test_the_memo_reuses_left_out_and_redacted_files_as_they_were(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    named = "notes/Sammy plans.md"  # its path names a hidden note: left out
+    _commit(vault, named, "# Plans\n\nnothing private here\n", "named after")
+    bare = _synced(vault, tmp_path)
+    redacted = _show(bare, PRIYA)  # links [[sam]]: a redacted copy
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    assert memo.files[named][1] == "drop" and memo.files[PRIYA][1] == "redact"
+    scanned = _scans(monkeypatch)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    result = dm.sync(vault, "grok-personal")
+    assert PRIYA not in scanned and named not in scanned
+    assert named not in set(_bare_files(bare)) and _show(bare, PRIYA) == redacted and result.left_out >= 1
+
+
+def _bare_files(bare: Path) -> list[str]:
+    return subprocess.run(
+        ["git", "-C", str(bare), "ls-tree", "-r", "--name-only", "main"], check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+
+
+def test_the_shared_reads_ledger_feeds_both_fingerprints(vault: Path) -> None:  # noqa: F811
+    from scout.kb.privacy import load_policy
+    from scout.kb.shared_reads import LEDGER_DIR
+
+    policy = load_policy(vault)
+    before = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [])
+    ledger = vault / LEDGER_DIR
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / "2026-11.jsonl").write_text("{}\n", encoding="utf-8")
+    after = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [])
+    assert before[0] != after[0] and before[1] != after[1]
+    assert dm._stat_key(vault / "no-such-note.md") == "-"
+
+
+def test_an_unreadable_failure_time_retries(vault: Path) -> None:  # noqa: F811
+    link = dm.DelegateLink(
+        id="d", remote="/x.git", linked_at="2026-11-14T00:00:00Z", account_unshared=True, last_attempt="garbled"
+    )
+    head, inputs = dm._rev(vault, "HEAD"), dm.sync_inputs(vault)
+    link.last_error = {"code": "push_failed", "at": "garbled", "head": head or "", "inputs": inputs}
+    assert dm._retry_due(link, head, inputs, datetime.now(UTC)) is True

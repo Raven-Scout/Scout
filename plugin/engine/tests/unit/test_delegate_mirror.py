@@ -1588,7 +1588,8 @@ def test_remote_git_forces_certificate_checks_and_carries_the_token(
         == b"x-access-token:github_pat_STANDIN"
     )
     assert set(dm.remote_env(vault, "/some/local.git")) >= {"GIT_CONFIG_COUNT"}
-    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "1"  # no token off GitHub
+    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "3"  # TLS and stall limits, no token
+    assert pairs["http.lowSpeedLimit"] == "1000" and pairs["http.lowSpeedTime"] == "60"
 
 
 def test_push_passes_the_token_in_the_environment_not_the_arguments(
@@ -1608,7 +1609,7 @@ def test_push_passes_the_token_in_the_environment_not_the_arguments(
     assert len(seen) == 2
     for args, env in seen:
         assert not any("STANDIN" in a or "extraheader" in a for a in args)
-        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "3"
+        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "5"
     monkeypatch.setattr(dm.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, b"", b"boom"))
     with pytest.raises(rs.RepoSyncError) as e:
         dm.remote_head(vault, GITHUB)
