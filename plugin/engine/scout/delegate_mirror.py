@@ -36,11 +36,15 @@ case-folded.
     (:mod:`scout.delegate_containers`: body, headers, footers, comments and
     their authors, shared strings, slides and notes, ``docProps`` metadata,
     custom XML). It can't be redacted, so it is kept whole or left out whole:
-    left out when its text names a hidden file, or when it can't be vouched
-    for (too large or a zip bomb, encrypted, corrupt, holding macros or a
-    nested archive or embedded object);
+    left out when any of its text names a hidden file (even under
+    ``allow_unscanned``, and even when it is also refused for something
+    else), or when it can't be vouched for (too large or a zip bomb,
+    encrypted, corrupt, holding macros, a nested archive or embedded object,
+    or bytes outside its parts);
   - images, sound, video and PDFs (:data:`BINARY_TYPES`) are kept on their
-    label alone: a PDF's text isn't read;
+    label alone: a PDF's text isn't read. One whose bytes are an archive or
+    an Office file (a ``.docx`` renamed ``scan.png``) is left out as
+    ``mislabeled``;
   - archives (``.zip``, ``.gz``, ``.tar``, ``.7z``, ``.rar``…), old binary
     Office files (``.doc``/``.xls``/``.ppt``) and anything else that isn't
     text are left out.
