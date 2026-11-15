@@ -824,8 +824,8 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
                 id="delegate.state_unreadable",
                 severity="yellow",
                 since=None,
-                summary="The delegate mirror state (.scout-state/delegate-mirrors.json) can't be read, "
-                "so no agent's mirror syncs",
+                summary="The delegate mirror state (.scout-state/delegate-mirrors.json) can't be read, or wasn't "
+                "written by Scout on this computer, so no agent's mirror syncs",
                 fix="Fix or delete that file, then link each delegate again with: scoutctl delegate link",
                 source="config",
             )
@@ -845,7 +845,7 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
                     since=_parse_ts(link.last_error.get("first_at") or link.last_error.get("at")),
                     summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
                     f"{link.last_sync or 'when it was linked'}",
-                    fix=f"See why with: scoutctl delegate sync {key}",
+                    fix=f"Retry now with: scoutctl delegate sync {key} (a manual sync skips the backoff)",
                     source="state",
                 )
             )

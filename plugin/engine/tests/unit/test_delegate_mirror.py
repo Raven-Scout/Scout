@@ -55,6 +55,9 @@ def _commit(vault: Path, rel: str, text: str, subject: str) -> None:
 @pytest.fixture
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     clear_cache()
+    home = tmp_path / "home"  # the state-signing key and any secrets go here, never to the real home
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
     v = build_privacy_vault(tmp_path / "v").resolve()
     for key, value in git_env().items():
         if key.startswith("GIT_"):
@@ -710,7 +713,7 @@ def test_the_cli_refuses_an_unreadable_state(vault: Path) -> None:
     dm.state_path(vault).write_text("[]", encoding="utf-8")
     for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
         r = runner.invoke(app, argv)
-        assert r.exit_code == 2 and "can't be read" in r.output
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
 
 
 # ----- review of #632 (coordinator, 2026-11-13) ---------------------------------------------------
@@ -1059,7 +1062,7 @@ def _fake_keygen(path: Path, comment: str) -> None:
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     h = tmp_path / "home"
-    h.mkdir()
+    h.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(h))
     return h
 
@@ -1263,7 +1266,7 @@ def test_the_cli_key_command_and_an_unreadable_state(vault: Path, monkeypatch: p
     dm.state_path(vault).write_text("[]", encoding="utf-8")
     for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
         r = runner.invoke(app, argv)
-        assert r.exit_code == 2 and "can't be read" in r.output
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
 
 
 def test_the_cli_key_and_push_token_commands(vault: Path, tmp_path: Path, home: Path) -> None:

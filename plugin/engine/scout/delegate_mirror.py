@@ -99,6 +99,7 @@ import dataclasses
 import fcntl
 import functools
 import hashlib
+import hmac
 import json
 import os
 import posixpath
@@ -269,21 +270,82 @@ def state_path(vault: Path) -> Path:
     return vault / STATE_REL
 
 
+STATE_KEY = "state.key"  # in secrets_dir(): signs what Scout writes to .scout-state, so nothing else can forge it
+
+
+def _state_key(*, create: bool) -> bytes | None:
+    """This computer's key for :func:`_sign`, made on first use (0600, in the 0700 secrets folder)."""
+    path = secrets_dir() / STATE_KEY
+    try:
+        return bytes.fromhex(path.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        if not create:
+            return None
+    except (OSError, ValueError):
+        return None
+    _private_dir()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:  # another process made it first
+        return _state_key(create=False)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(os.urandom(32).hex() + "\n")
+    return _state_key(create=False)
+
+
+def _sign(key: bytes, kind: str, doc: Mapping[str, Any]) -> str:
+    body = json.dumps(doc, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hmac.new(key, kind.encode("utf-8") + b"\0" + body, hashlib.sha256).hexdigest()
+
+
+def _verified(kind: str, data: Any) -> dict[str, Any] | None:
+    """``data`` without its signature when this computer's Scout signed it as ``kind``, else None.
+
+    The link state and the scan memo live in the vault's ``.scout-state``, where a
+    run, a replayed commit or a hand edit can write. What the build trusts in them
+    (the last mirror and the fingerprint it passed under, the remote, the key file)
+    counts only when the signature, made with a key outside the vault, matches.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("mac"), str):
+        return None
+    key = _state_key(create=False)
+    body = {k: v for k, v in data.items() if k != "mac"}
+    if key is None or not hmac.compare_digest(data["mac"], _sign(key, kind, body)):
+        return None
+    return body
+
+
 def load_links(vault: Path) -> dict[str, DelegateLink]:
     path = state_path(vault)
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return {k: DelegateLink.from_json(v) for k, v in data["links"].items()}
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError) as e:
+        raise RepoSyncError("state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it") from e
+    body = _verified("links", data)
+    if body is None:
+        raise RepoSyncError(
+            "state_unverified",
+            f"refused: {STATE_REL} wasn't written by Scout on this computer (its signature doesn't match), so "
+            "nothing in it is trusted; delete it and link each delegate again",
+        )
+    try:
+        return {k: DelegateLink.from_json(v) for k, v in body["links"].items()}
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise RepoSyncError("state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it") from e
 
 
 def save_links(vault: Path, links: Mapping[str, DelegateLink]) -> None:
     path = state_path(vault)
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = {"schema_version": SCHEMA_VERSION, "links": {k: v.to_json() for k, v in sorted(links.items())}}
+    key = _state_key(create=True)
+    assert key is not None
+    doc: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "links": {k: v.to_json() for k, v in sorted(links.items())},
+    }
+    doc["mac"] = _sign(key, "links", doc)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
@@ -1037,7 +1099,8 @@ def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], 
     from scout.kb import outbound
 
     h = hashlib.sha256()
-    settings = [scout.__version__, outbound.MIN_TERM_CHARS, outbound.UNACCENT_MIN_CHARS, outbound.UNACCENT_MULTI_WORD]
+    settings = [scout.__version__, _matcher_source(), outbound.MIN_TERM_CHARS, outbound.UNACCENT_MIN_CHARS]
+    settings.append(outbound.UNACCENT_MULTI_WORD)
     h.update(json.dumps([*settings, MAX_PASSES, SCHEMA_VERSION]).encode())
     h.update(json.dumps(policy.to_json(), sort_keys=True, default=str).encode())
     by_path = {e.path: e for e in entries}
@@ -1050,6 +1113,19 @@ def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], 
     with contextlib.suppress(OSError):
         for f in sorted(ledger.iterdir()):
             h.update(f"l\0{f.name}\0{hashlib.sha256(f.read_bytes()).hexdigest()}\n".encode())
+    return h.hexdigest()
+
+
+@functools.cache
+def _matcher_source() -> str:
+    """A hash of the code a scan result depends on, once per process: a dev checkout changes it without a version
+    bump, and a memo made by other code must not be reused."""
+    from scout.kb import outbound, privacy, shared_reads
+
+    h = hashlib.sha256()
+    for source in (outbound.__file__, privacy.__file__, shared_reads.__file__, __file__):
+        with contextlib.suppress(OSError, TypeError):
+            h.update(Path(str(source)).read_bytes())
     return h.hexdigest()
 
 
@@ -1076,14 +1152,19 @@ class ScanMemo:
     seen: dict[str, list[Any]] = field(default_factory=dict)
     pending: dict[str, tuple[str, int]] = field(default_factory=dict)  # redactions waiting for their blob sha
 
+    delegate: str = ""
+
     @classmethod
     def load(cls, vault: Path, delegate: str) -> ScanMemo:
+        """The memo, or an empty one when it is missing, broken or not signed by this computer's Scout."""
         path = vault / SCAN_DIR / f"{delegate}.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(path, str(data["fingerprint"]), dict(data["files"]))
+            body = _verified(f"memo:{delegate}", json.loads(path.read_text(encoding="utf-8")))
+            if body is None:
+                return cls(path, delegate=delegate)
+            return cls(path, str(body["fingerprint"]), dict(body["files"]), delegate=delegate)
         except (OSError, ValueError, KeyError, TypeError):
-            return cls(path)
+            return cls(path, delegate=delegate)
 
     def get(self, fingerprint: str, rel: str, sha: str) -> list[Any] | None:
         hit = self.files.get(rel) if fingerprint == self.fingerprint else None
@@ -1099,7 +1180,10 @@ class ScanMemo:
         for rel, (sha, removed) in self.pending.items():
             if rel in the_plan.written:
                 self.seen[rel] = [sha, "redact", the_plan.written[rel], removed]
-        doc = {"fingerprint": the_plan.fingerprint, "files": dict(sorted(self.seen.items()))}
+        doc: dict[str, Any] = {"fingerprint": the_plan.fingerprint, "files": dict(sorted(self.seen.items()))}
+        key = _state_key(create=True)
+        assert key is not None
+        doc["mac"] = _sign(key, f"memo:{self.delegate}", doc)
         with contextlib.suppress(OSError):  # a memo that can't be written only costs a full scan next time
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
@@ -1204,8 +1288,12 @@ def _reuse(
         out.left_out += 1
         return None
     markdown = e.path.lower().endswith(".md")
+    if kind == "keep" and mirror_sha != e.sha:
+        return _Miss()
     try:
         data = blobs.read(mirror_sha) if (markdown or kind == "redact") else b""
+        if kind == "redact" and not _derives(data, blobs.read(e.sha)):
+            return _Miss()  # not this file with lines removed: never trusted
     except RepoSyncError:  # the redacted blob is gone (gc): scan again
         return _Miss()
     text = data.decode("utf-8", "replace") if markdown else None
@@ -1265,13 +1353,45 @@ def write_tree(vault: Path, the_plan: Plan) -> str:
     return _write_tree(vault, lines)
 
 
+def _derives(mirror: bytes, source: bytes) -> bool:
+    """Whether ``mirror`` is ``source`` with some lines removed (what redaction does), both UTF-8 text."""
+    try:
+        theirs, ours = mirror.decode("utf-8").split("\n"), iter(source.decode("utf-8").split("\n"))
+    except UnicodeDecodeError:
+        return False
+    return all(any(line == mine for mine in ours) for line in theirs)  # an ordered subsequence
+
+
+def _scalars(value: Any) -> set[str]:
+    """Every key and leaf value in a parsed YAML document, as strings."""
+    if isinstance(value, dict):
+        return {str(k) for k in value} | {s for v in value.values() for s in _scalars(v)}
+    if isinstance(value, list):
+        return {s for v in value for s in _scalars(v)}
+    return {str(value)}
+
+
+def _config_derives(mirror: bytes, source: bytes, delegate: str) -> bool:
+    """Whether the mirror's ``scout-config.yaml`` holds nothing that isn't in HEAD's (:func:`mirror_config` only
+    drops entries, and adds ``privacy.delegates.<delegate>.include_private``)."""
+    try:
+        theirs, ours = load_yaml(mirror.decode("utf-8")), load_yaml(source.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, yaml.YAMLError):
+        return False
+    added = {"privacy", "delegates", delegate, "include_private", "True"}
+    return isinstance(theirs, dict) and _scalars(theirs) <= _scalars(ours) | added
+
+
 def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tuple[str, str] | None = None) -> str:
     """Refuse when mirror commit ``rev`` holds anything ``delegate`` may not see. Shares nothing with the build.
 
     What ``HEAD`` shows the delegate and what may not be named are worked out
     again from ``HEAD``; the policy the clone will use is read from the tree's
     own ``scout-config.yaml``. Every path must be one ``HEAD`` shows the
-    delegate and must name no hidden file; every file must be visible under both
+    delegate and must name no hidden file; every file must be HEAD's blob at
+    that path, or (redacted) that blob with lines removed, or for the config
+    nothing HEAD's config doesn't hold, so no file can carry another file's
+    content; every file must be visible under both
     policies with the same label; every text file, the config included, must
     name no hidden file; a file that isn't text must be a known binary type;
     every symlink must point at a folder the tree holds. The generated files
@@ -1302,6 +1422,7 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
         theirs = policy_from_config_text(blobs.read(by_path[paths.VAULT_MARKER].sha).decode("utf-8", "replace"))
         folders = _folders([e.path for e in entries if e.mode != SYMLINK_MODE])
         tree_paths = {e.path for e in entries if e.path not in GENERATED}
+        at_head = {e.path: e for e in seen.entries}
         labels: list[Label] = []
         bad = 0
         for e in entries:
@@ -1311,6 +1432,23 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             if e.kind != "blob" or e.path not in allowed or seen.rules.refused(e.path) or scan.names(e.path):
                 bad += 1
                 continue
+            source = at_head[e.path]
+            if e.mode != source.mode:
+                bad += 1
+                continue
+            if e.sha != source.sha:  # a changed blob must come from HEAD's at this path
+                if e.mode == SYMLINK_MODE:
+                    bad += 1
+                    continue
+                at_source = blobs.read(source.sha)
+                derived = (
+                    _config_derives(data, at_source, delegate)
+                    if e.path == paths.VAULT_MARKER
+                    else _content(e.path, at_source)[0] == "text" and _derives(data, at_source)
+                )
+                if not derived:
+                    bad += 1
+                    continue
             if e.mode == SYMLINK_MODE:
                 target = _link_target(e, data)
                 bad += target is None or target not in folders
@@ -1550,7 +1688,7 @@ def link(
             key_file=old.key_file if old is not None and old.remote == remote else None,
         )
         result, updated = _build_and_push(vault, new, fresh=True, expect=current, gh=gh, record=record)
-        links[delegate] = updated
+        links[delegate] = dataclasses.replace(updated, last_inputs=sync_inputs(vault))  # else the first tick re-syncs
         if ignored:
             result.notes.append(f"added {STATE_REL} to .gitignore")
         save_links(vault, links)
@@ -1629,7 +1767,7 @@ def _record_failure(vault: Path, delegate: str, current: DelegateLink, code: str
     link = latest.get(delegate, current)
     now = _now()
     before = link.last_error or {}
-    first = (before.get("first_at") or before.get("at")) if before.get("code") == code else None
+    first = before.get("first_at") or before.get("at")  # failing since: the streak, whichever code each try gave
     error = {"code": code, "at": now, "first_at": first or now, "head": _rev(vault, "HEAD") or "", "inputs": inputs}
     save_links(vault, {**latest, delegate: dataclasses.replace(link, last_attempt=now, last_error=error)})
     _event(vault, "delegate_mirror.sync_failed", {"delegate": delegate, "code": code})

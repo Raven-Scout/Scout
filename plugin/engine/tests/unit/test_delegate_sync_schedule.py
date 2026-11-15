@@ -25,9 +25,12 @@ from scout.scripts import bootstrap_doctor, schedule_tick
 
 from .privacy_vault_helpers import git
 from .test_delegate_mirror import (  # noqa: F401 - the fixtures
+    INBOX_CANARY,
     PRIYA,
+    _all_blobs,
     _bare,
     _commit,
+    _commit_files,
     _link,
     _show,
     github_link,
@@ -464,7 +467,14 @@ def test_repeated_failures_keep_since_when(
     with pytest.raises(rs.RepoSyncError):
         dm.sync(vault, "grok-personal")
     again = dm.load_links(vault)["grok-personal"].last_error
-    assert again is not None and again["first_at"] == again["at"]  # a new code starts a new since
+    assert again is not None and again["first_at"] == error["first_at"]  # failing since: the whole streak
+    links = dm.load_links(vault)
+    links["grok-personal"].last_error = None
+    dm.save_links(vault, links)
+    with pytest.raises(rs.RepoSyncError):
+        dm.sync(vault, "grok-personal")
+    fresh = dm.load_links(vault)["grok-personal"].last_error
+    assert fresh is not None and fresh["first_at"] == fresh["at"]  # a new streak starts a new since
 
 
 def test_an_unexpected_error_is_recorded_and_the_others_still_sync(
@@ -617,3 +627,141 @@ def test_an_unreadable_failure_time_retries(vault: Path) -> None:  # noqa: F811
     head, inputs = dm._rev(vault, "HEAD"), dm.sync_inputs(vault)
     link.last_error = {"code": "push_failed", "at": "garbled", "head": head or "", "inputs": inputs}
     assert dm._retry_due(link, head, inputs, datetime.now(UTC)) is True
+
+
+# ----- re-review of #636 (coordinator, 2026-11-15): a planted memo or forged state never ships hidden content ---
+
+INBOX = ".scout-inbox/phone-notifications-2026-10-01.jsonl"
+NEW = "knowledge-base/topics/misc/new.md"
+
+
+def _blob(vault: Path, rel: str) -> str:  # noqa: F811
+    entry = rs._blob_at(vault, rs._head(vault), rel)
+    assert entry is not None
+    return entry.sha
+
+
+def _plant_memo(vault: Path, files: dict[str, list[object]]) -> None:  # noqa: F811
+    """Write the memo by hand, as anything that can write .scout-state could: unsigned."""
+    fingerprint = dm.ScanMemo.load(vault, "grok-personal").fingerprint
+    memo = vault / dm.SCAN_DIR / "grok-personal.json"
+    memo.write_text(json.dumps({"fingerprint": fingerprint, "files": files}), encoding="utf-8")
+
+
+def test_a_planted_memo_cant_redirect_a_file_to_the_inbox(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    bare = _synced(vault, tmp_path)
+    _commit(vault, NEW, "---\ntitle: New\n---\n\nnew\n", "new")
+    redirect = [_blob(vault, NEW), "redact", _blob(vault, INBOX), 1]
+    _plant_memo(vault, {NEW: redirect})
+    dm.sync(vault, "grok-personal")
+    assert _show(bare, NEW) == "---\ntitle: New\n---\n\nnew\n"
+    assert not any(INBOX_CANARY in text for text in _all_blobs(bare).values())
+
+
+def test_a_signed_memo_that_redirects_is_still_not_trusted(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    """Even a memo signed with this computer's key (a bug, or a key holder) can't put another blob at a path."""
+    bare = _synced(vault, tmp_path)
+    _commit(vault, NEW, "---\ntitle: New\n---\n\nnew\n", "new")
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        fingerprint = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    forged = dm.ScanMemo(memo.path, delegate="grok-personal")
+    forged.seen = {
+        NEW: [_blob(vault, NEW), "redact", _blob(vault, INBOX), 1],
+        PRIYA: [_blob(vault, PRIYA), "keep", _blob(vault, INBOX), 0],
+    }
+    forged.save(dm.Plan(delegate="grok-personal", fingerprint=fingerprint))
+    assert dm.ScanMemo.load(vault, "grok-personal").files  # it verifies
+    dm.sync(vault, "grok-personal")
+    assert not any(INBOX_CANARY in text for text in _all_blobs(bare).values())
+    assert "Sam" not in _show(bare, PRIYA) or "[[sam" not in _show(bare, PRIYA)
+
+
+def _swapped(vault: Path, swap: dict[str, str]) -> tuple[str, str]:  # noqa: F811
+    """A mirror commit of HEAD with some paths pointing at other blobs (by sha)."""
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    the_plan.files = [
+        dm.MirrorFile(f.path, f.mode, None, swap[f.path]) if f.path in swap else f for f in the_plan.files
+    ]
+    return git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip(), head
+
+
+def test_check_tree_refuses_a_blob_that_isnt_heads_at_that_path(vault: Path) -> None:  # noqa: F811
+    _commit_files(
+        vault,
+        {
+            NEW: b"---\ntitle: New\n---\n\nnew\nmore\n",
+            "docs/report.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00visible\n",
+            "trading/secret.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00TRADING-SECRET\n",
+        },
+        "files",
+    )
+
+    def blob(text: str) -> str:
+        return rs.git(vault, "hash-object", "-w", "--stdin", input=text).stdout.strip()
+
+    trimmed = blob("---\ntitle: New\n---\n\nmore\n")
+    reordered = blob("more\n---\ntitle: New\n---\n\nnew\n")
+    config = blob("privacy:\n  delegates:\n    grok-personal: {}\nx: y\n")
+    for swap, ok in (
+        ({NEW: trimmed}, True),  # lines removed, in order: what redaction makes
+        ({NEW: reordered}, False),
+        ({NEW: _blob(vault, INBOX)}, False),  # the reviewer's redirect
+        ({"docs/report.pdf": _blob(vault, "trading/secret.pdf")}, False),  # a binary to another binary
+        ({"scout-config.yaml": config}, False),  # a config holding what HEAD's doesn't
+    ):
+        commit, head = _swapped(vault, swap)
+        if ok:
+            dm.check_tree(vault, commit, "grok-personal", head)
+            continue
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", swap
+
+
+def test_a_forged_state_is_refused_so_a_newly_hidden_name_cant_stay(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    mention = "knowledge-base/topics/misc/mention.md"
+    _commit(vault, mention, "---\ntitle: Mention\n---\n\nPlanning with Zephyr Orchard.\nKept.\n", "mention")
+    bare = _synced(vault, tmp_path)
+    _commit(
+        vault,
+        "knowledge-base/people/zephyr-orchard.md",
+        "---\nname: Zephyr Orchard\ntype: person\nvisibility: private\n---\n\nquiet\n",
+        "a private note",
+    )
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        new_fp = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    state = json.loads(dm.state_path(vault).read_text(encoding="utf-8"))
+    state["links"]["grok-personal"]["checked_fingerprint"] = new_fp  # the reviewer's forgery
+    dm.state_path(vault).write_text(json.dumps(state), encoding="utf-8")
+    _plant_memo(vault, {mention: [_blob(vault, mention), "keep", _blob(vault, mention), 0]})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "state_unverified"
+    assert "Zephyr Orchard" in _show(bare, mention)  # nothing was pushed from the forged state
+    assert health.delegate_findings(vault)[0].id == "delegate.state_unreadable"
+
+
+def test_derivation_and_matcher_code_rules() -> None:
+    assert dm._derives(b"a\nc\n", b"a\nb\nc\n") and dm._derives(b"", b"x\n")
+    assert not dm._derives(b"c\na\n", b"a\nb\nc\n") and not dm._derives(b"a\nz\n", b"a\nb\n")
+    assert not dm._derives(b"\xff", b"\xff") and not dm._config_derives(b"\xff", b"a: 1\n", "d")
+    assert not dm._config_derives(b"[1, 2]\n", b"a: 1\n", "d")
+    assert dm._config_derives(b"privacy:\n  delegates:\n    d: {include_private: true}\n", b"a: 1\n", "d")
+    assert len(dm._matcher_source()) == 64
