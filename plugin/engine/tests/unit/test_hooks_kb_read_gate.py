@@ -173,6 +173,130 @@ def test_a_search_outside_the_vault_is_allowed(vault, tmp_path):
     assert _decision(vault, "Grep", {"pattern": "x", "path": str(elsewhere)}) is None
 
 
+# --- a run may not change the env that marks it a run, or its lock (#595) --------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u SCOUT_MODE -u SCOUT_READER git commit -m notes",
+        "SCOUT_MODE= SCOUT_READER=owner git commit -m notes",
+        "unset SCOUT_MODE; scripts/git-safe-commit.sh notes notes/a.md",
+        "env -i PATH=/usr/bin git commit -m notes",
+    ],
+)
+def test_run_denies_a_command_that_changes_its_run_env(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "SCOUT_MODE" in reason and "owner" in reason
+    assert "lock" not in reason and "PID" not in reason
+
+
+@pytest.mark.parametrize("command", ["nohup git commit -m x", "( git commit -m x & )", "osascript -e 'x'"])
+def test_run_denies_a_command_that_detaches(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "foreground" in reason
+
+
+@pytest.mark.parametrize("command", ['echo "$SCOUT_MODE ${SCOUT_READER:-}"', "printenv SCOUT_MODE", "env | grep SCOUT"])
+def test_run_may_read_its_run_env(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+@pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
+def test_owner_session_may_change_the_run_env(vault, env):
+    assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
+
+
+# --- a run may not skip or redirect git's hooks (#607) ---------------------------------
+
+
+def _events(vault: Path) -> list[dict]:
+    rows: list[dict] = []
+    for path in sorted((vault / ".scout-logs").glob("schedule-events-*.jsonl")):
+        rows += [json.loads(line) for line in path.read_text().splitlines()]
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("git commit --no-verify -m x", "--no-verify"),
+        ("git commit -n -m x", "-n"),
+        ("git push --no-verify", "--no-verify"),
+        ("git -c core.hooksPath=/dev/null commit -m x", "-c core.hooksPath"),
+        ("git --config-env=core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
+        ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
+        ("GIT_CONFIG_COUNT=1 git commit -m x", "GIT_CONFIG_*"),
+        ("git commit-tree abc -m x", "commit-tree"),
+        ("git update-ref refs/heads/main abc", "update-ref"),
+        ("rm .git/hooks/pre-commit", ".git/hooks"),
+    ],
+)
+def test_run_denies_a_hook_skip_names_the_form_and_records_an_event(vault, command, form):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert form in reason and "fix" in reason.lower() and "git-safe-commit.sh" in reason
+    assert "plain `git commit`" in reason, "the helper can't commit in an engine clone: the deny covers both places"
+    for word in ("lock", "PID", "process", "ancestry", "live", "host"):
+        assert word not in reason, f"the deny doesn't explain how a run is told apart: {word}"
+    (row,) = _events(vault)
+    assert row["kind"] == "kb_read_gate.hook_skip" and row["source"] == "hook:kb-read-gate"
+    assert row["payload"] == {"form": form, "mode": RUN["SCOUT_MODE"]}
+
+
+def test_the_event_never_carries_the_command(vault):
+    _denied(_decision(vault, "Bash", {"command": "git commit --no-verify -m 'private words about Priya'"}))
+    (row,) = _events(vault)
+    assert "Priya" not in json.dumps(row)
+
+
+def test_the_event_names_the_reader_when_the_run_has_no_mode(vault):
+    _denied(_decision(vault, "Bash", {"command": "git commit --no-verify"}, env={"SCOUT_READER": "autonomous"}))
+    assert _events(vault)[0]["payload"] == {"form": "--no-verify", "mode": "autonomous"}
+
+
+def test_the_deny_stands_when_the_event_cannot_be_written(vault):
+    (vault / ".scout-logs").write_text("a file where the log folder belongs\n")
+    reason = _denied(_decision(vault, "Bash", {"command": "git commit --no-verify"}))
+    assert "--no-verify" in reason
+
+
+def test_env_and_detach_denies_keep_their_messages_and_record_no_hook_skip(vault):
+    assert "SCOUT_MODE" in _denied(_decision(vault, "Bash", {"command": "unset SCOUT_MODE"}))
+    assert "foreground" in _denied(_decision(vault, "Bash", {"command": "nohup ls"}))
+    assert _events(vault) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git log -n 5",
+        "git show HEAD",
+        'git commit -m "why --no-verify is wrong"',
+        "git commit -F - <<'EOF'\ngit commit --no-verify\nEOF",
+        "grep -rn -- --no-verify phases/",
+        'git config user.email "alex@example.com"',
+        "scripts/git-safe-commit.sh 'x' notes/a.md",
+        "cat .git/hooks/pre-commit",
+        "cat < .git/config",
+        "python3 x.py < .git/hooks/pre-commit",
+        'grep core <<< ".git/config"',
+    ],
+)
+def test_run_allows_what_only_mentions_a_hook_skip(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+    assert _events(vault) == []
+
+
+@pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
+@pytest.mark.parametrize(
+    "command",
+    ["git commit --no-verify", "git -c core.hooksPath=/dev/null commit", "git commit-tree abc", "rm .git/hooks/x"],
+)
+def test_owner_session_may_skip_its_own_hooks(vault, env, command):
+    assert _decision(vault, "Bash", {"command": command}, env=env) is None
+    assert _events(vault) == []
+
+
 # --- owner and non-vault sessions -----------------------------------------------------
 
 
@@ -304,3 +428,191 @@ def test_run_grep_always_reaches_python(vault, tmp_path):
     payload = _payload("Grep", {"pattern": "Priya"}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u SCOUT_MODE git commit -m x",
+        "env -i git commit -m x",
+        "unset SCOUT_READER",
+        "nohup git commit -m x",
+        "git commit -m x &",
+        "(git commit -m x &)",
+        "setsid git commit",
+        "osascript -e x",
+        "open -a Terminal x.command",
+        "echo x | at now",
+        "tmux new -d x",
+        "ls notes\nnohup git commit -m x",
+        "ls notes\n\tsetsid git commit",
+    ],
+)
+def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word in the payload, so only the run-escape patterns can send it to Python (here: missing, so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_run_env_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+)
+def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_a_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
+    tool_input = {"command": "ls notes", "description": "Open the script at env; nohup & screen"}
+    payload = _payload("Bash", tool_input, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --no-verify -m x",
+        "git push --no-verify",
+        "git commit --no-veri -m x",
+        "git commit -n -m x",
+        "git commit -nm x",
+        "git commit -an -m x",
+        "git commit -m x -n",
+        'git commit -m "a; b" -n',
+        "git commit -m 'one;two' -n -- f.md",
+        'git commit -m "a | b" -n',
+        "git commit -m \"$(cat <<'EOF'\nfirst; second\nEOF\n)\" -n",
+        "git am -n a.patch",
+        'git am "a;b.patch" -n',
+        "git commit \\\n  -n -m x",
+        "git commit \\\n  --no-verify",
+        'git commit "-n" -m x',
+        "git-commit -n",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git -C notes -c core.hookspath=/dev/null commit -m x",
+        "git -c CORE.HOOKSPATH=/dev/null commit",
+        "git -c alias.c=commit c",
+        "git -c include.path=/tmp/x commit",
+        'git -c "$K=x" commit',
+        "git --config-env=core.hooksPath=D commit",
+        "git config core.hooksPath /dev/null",
+        "git config alias.c commit",
+        "git config include.path /tmp/x",
+        "GIT_CONFIG_COUNT=1 git commit",
+        "export GIT_CONFIG_GLOBAL=/tmp/x",
+        "git commit-tree abc",
+        "git update-ref refs/heads/main abc",
+        "git fast-import < stream",
+        "git filter-branch HEAD",
+        "git filter-repo --force",
+        "git hash-object -t commit -w f",
+        "git $sub -m x",
+        'git "$sub" -m x',
+        "echo x > .git/hooks/pre-commit",
+        "rm .git/hooks/pre-commit",
+        "echo x >> .git/config",
+        "cd .git/hooks && rm pre-commit",
+        "cd .git && rm hooks/pre-commit",
+        "ls notes\ngit commit --no-verify",
+    ],
+)
+def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word in the payload, so only the new patterns can send it to Python (here: missing, so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git log -n 5",
+        "git diff HEAD",
+        "git add notes/a.md",
+        "git commit -m x",
+        'git commit -m "non-urgent note"',
+        'git commit -m "a note" -q',
+        "git commit -q -m 'a; b' -- notes/a.md",
+        "git commit --amend --no-edit",
+        "git commit -F notes/msg.txt",
+        "git mv notes/a.md notes/b.md",
+        "git merge -n feature",
+        "git push origin main",
+        "git config user.email alex@example.com",
+        "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
+        "scripts/scoutctl kb search commit",
+        "ls notes -n",
+    ],
+)
+def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
+
+
+def test_a_hook_skip_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
+    tool_input = {"command": "ls notes", "description": "git commit --no-verify -c core.hooksPath commit-tree"}
+    payload = _payload("Bash", tool_input, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_a_hook_skip_is_denied_and_recorded_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "git commit --no-verify -m x"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    spec = json.loads(res.stdout)["hookSpecificOutput"]
+    assert spec["permissionDecision"] == "deny" and "--no-verify" in spec["permissionDecisionReason"]
+    assert _events(vault)[0]["payload"]["form"] == "--no-verify"
+
+
+def test_a_mention_of_a_hook_skip_is_allowed_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": 'git commit -m "why --no-verify is wrong"'}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
+    assert _events(vault) == []
+
+
+def test_an_owner_hook_skip_exits_in_the_shell(vault, tmp_path):
+    payload = _payload("Bash", {"command": "git commit --no-verify"}, vault).getvalue()
+    res = _sh({"SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_the_telegram_wrap_is_allowed_through_the_real_cli(vault):
+    wrap = "scoutctl notify telegram --body-file - <<'SCOUT_WRAP'\n<b>Done.</b> R&amp;D (open since Monday)\nSCOUT_WRAP"
+    payload = _payload("Bash", {"command": wrap}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "scoutctl delegate link duet --remote /tmp/m.git --confirm-account-unshared",
+        "scripts/scoutctl delegate key duet --rotate",
+        "~/scout-plugin/plugin/engine/bin/scoutctl delegate trust-state --confirm duet",
+        "python3 -P -m scout delegate unlink duet",
+        "bash -c 'scoutctl delegate unlink duet'",
+    ],
+)
+def test_run_denies_the_owners_delegate_commands(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "owner's" in reason and "delegate sync" in reason
+
+
+@pytest.mark.parametrize("command", ["scoutctl delegate sync --all --if-moved", "scoutctl delegate status"])
+def test_a_run_may_sync_and_list_delegate_mirrors(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None

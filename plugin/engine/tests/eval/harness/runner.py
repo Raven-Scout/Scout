@@ -26,6 +26,7 @@ from .checks import CheckResult
 from .checks.connector_rules import linear_delta, red_poll
 from .checks.daily import body_budget, context_note, no_collapse, waiting_format
 from .checks.demotion import demotion
+from .checks.kb_writing import KB_CHECKS
 from .checks.no_drop import no_drop
 from .checks.placement import placement
 from .checks.privacy_canary import (
@@ -38,6 +39,7 @@ from .checks.privacy_canary import (
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
 from .dates import render_dates
+from .kb_gate import score_kb, spec_for
 from .mcp_config import write_mcp_config
 from .metrics import SampleMetrics, ToolCall, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
@@ -323,16 +325,21 @@ def _score(
     calls_log: Path,
     transcript: Sequence[ToolCall] = (),
 ) -> tuple[CheckResult, ...]:
+    # The KB checks read the project's pages, never the daily file, so they score either way.
+    kb_names = [n for n in scenario.checks if n in KB_CHECKS]
+    kb = dict(zip(kb_names, score_kb(vault, spec_for(scenario), kb_names), strict=True)) if kb_names else {}
     today_file = vault / "action-items" / f"action-items-{today.isoformat()}.md"
     if today_file.is_file() and CARRY_BANNER in today_file.read_text(encoding="utf-8"):
         # The runner carried yesterday's file in verbatim and the session never rewrote it:
         # scoring that would credit the session with yesterday's placements and no drops.
         # A run that doesn't own the daily file (dreaming) is still scored on what it sent and ran.
         keep = {"privacy_hygiene"} | (set() if owner_surfaces_required(scenario.mode) else {"privacy_canary"})
-        if not keep & set(scenario.checks):
+        if not (keep | set(kb)) & set(scenario.checks):
             return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
         return tuple(
-            _score_one(name, scenario, vault, today, calls_log, transcript)
+            kb[name]
+            if name in kb
+            else _score_one(name, scenario, vault, today, calls_log, transcript)
             if name in keep
             else CheckResult(name, None, ("not_enriched",))
             for name in scenario.checks
@@ -359,7 +366,9 @@ def _score(
     }
     results = []
     for name in scenario.checks:
-        if name in simple:
+        if name in kb:
+            results.append(kb[name])
+        elif name in simple:
             results.append(simple[name]())
         elif name == "placement":
             results.append(placement(today_items, scenario.expected_placement))

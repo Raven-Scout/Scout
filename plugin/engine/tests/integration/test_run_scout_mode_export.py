@@ -89,11 +89,17 @@ UNSET_SENTINEL = "<unset>"
 
 
 def _render(tmpl: Path, scout_dir: Path) -> Path:
+    # A no-op engine: the gate probe passes (a missing scoutctl skips the run, spec 2026-11-13 §3.5),
+    # model resolve prints nothing (opus), and the connector-health roll-up does nothing.
+    noop = scout_dir / "bin" / "scoutctl"
+    noop.parent.mkdir(parents=True, exist_ok=True)
+    noop.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    noop.chmod(0o755)
     text = tmpl.read_text(encoding="utf-8")
     for placeholder, value in {
         "{{SCOUT_DIR}}": str(scout_dir),
         "{{CLAUDE_BIN}}": "/usr/bin/true",  # never reached — the retry wrapper is stubbed
-        "{{SCOUTCTL_BIN}}": "/nonexistent/scoutctl",  # the connector-health roll-up is skipped
+        "{{SCOUTCTL_BIN}}": str(noop),
         "{{INSTANCE_NAME_LOWER}}": "scout",
         "{{INSTANCE_NAME}}": "Scout",
         "{{MAX_BUDGET}}": "25",

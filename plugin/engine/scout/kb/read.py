@@ -66,7 +66,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -86,17 +86,20 @@ from scout.kb.privacy import (
     Policy,
     classify,
     decode_head,
+    holds_shared,
     label_from_facts,
     load_policy,
     normalize_rel,
     note_facts,
     read_head,
+    reads_any,
     visible_to,
 )
 from scout.kb.read_log import log_event
+from scout.kb.reader import delegate_id
 
 INDEX_FILENAME = "privacy-index.json"
-INDEX_VERSION = 3  # 3: entries may carry the graph's parsed frontmatter ("fm")
+INDEX_VERSION = 4  # 4: facts carry shared_source (#550); 3: entries may carry the graph's parsed frontmatter ("fm")
 SEARCH_BATCH = 500
 ENGINE_SCHEMA = Path(__file__).with_name("schema.yaml")
 _RACY_WINDOW_NS = 2_000_000_000
@@ -207,6 +210,7 @@ def _facts_json(facts: NoteFacts) -> dict[str, Any]:
         "warnings": list(facts.warnings),
         "declared_present": facts.declared_present,
         "kind": facts.kind,
+        "shared_source": facts.shared_source,
     }
 
 
@@ -221,20 +225,26 @@ def _facts_from_json(data: Any) -> NoteFacts | None:
     if not isinstance(data, dict) or set(data) != _FACT_KEYS:
         return None
     state, vis, declared, warnings = data["state"], data["visibility"], data["declared"], _str_tuple(data["warnings"])
-    present, kind = data["declared_present"], data["kind"]
+    present, kind, shared = data["declared_present"], data["kind"], data["shared_source"]
     if state not in _STATES or (vis is not None and vis not in VISIBILITIES) or warnings is None:
         return None
-    if not isinstance(present, bool) or not (kind is None or isinstance(kind, str)):
+    if not isinstance(present, bool) or not (kind is None or isinstance(kind, str)) or not isinstance(shared, bool):
         return None
     declared = _scope_from_json(declared)
     if declared is None:
         return None
     return NoteFacts(
-        state=state, visibility=vis, declared=declared, warnings=warnings, declared_present=present, kind=kind
+        state=state,
+        visibility=vis,
+        declared=declared,
+        warnings=warnings,
+        declared_present=present,
+        kind=kind,
+        shared_source=shared,
     )
 
 
-_FACT_KEYS = frozenset({"state", "visibility", "declared", "warnings", "declared_present", "kind"})
+_FACT_KEYS = frozenset({"state", "visibility", "declared", "warnings", "declared_present", "kind", "shared_source"})
 
 
 def _scope_from_json(value: Any) -> FederationScope | None:
@@ -346,6 +356,8 @@ def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = (), *, persis
             facts = _facts_from_json(entry.get("facts"))
             if facts is not None and same_policy:
                 label = _label_from_json(entry.get("label"), rel)
+                if label is not None:  # shared_source isn't stored in the label: it comes from the facts
+                    label = replace(label, shared_source=holds_shared(facts))
         if label is None:
             kept: dict[str, Any] = {}
             if facts is None:
@@ -538,14 +550,15 @@ def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[t
     when any of them matches. Plumbing (``local_only.always`` minus
     ``sync_allow``) is left out unless a glob names it explicitly (ruling R13).
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     root = vault.resolve()
-    labels = all_labels(root, load_policy(root), globs)
+    policy = load_policy(root)
+    labels = all_labels(root, policy, globs)
     return [
         (rel, label)
         for rel, label in sorted(labels.items())
-        if visible_to(label, reader) and (not globs or any(glob_match(g, rel) for g in globs))
+        if visible_to(label, reader, policy) and (not globs or any(glob_match(g, rel) for g in globs))
     ]
 
 
@@ -701,27 +714,37 @@ def read_file(vault: Path, reader: str, path: str) -> tuple[Label, bytes]:
 
     ``Denied`` for a reader that sees nothing (before anything is touched, so a
     denial never says whether the file exists); ``UsageError`` for a path
-    outside the vault, under ``.git/``, or that isn't a file.
+    outside the vault, under ``.git/``, or that isn't a file. A delegate gets
+    ``Denied`` for a path under ``.git/``, a missing or unreadable file and a
+    hidden one alike, so a denial never tells it which (#550 §4.1).
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         raise Denied(reader)
+    full = reader in FULL_READERS
     root = vault.resolve()
     try:
         rel = normalize_rel(root, path)
     except ValueError as e:
         raise UsageError(str(e)) from e
     if ".git" in rel.split("/"):
+        if not full:
+            raise Denied(reader)
         raise UsageError(f"not a vault file: {rel}")
     target = root / rel
     if not target.is_file():
+        if not full:
+            raise Denied(reader)
         raise UsageError(f"no such file: {rel}")
     try:
         data = target.read_bytes()
     except OSError as e:
+        if not full:
+            raise Denied(reader) from e
         raise UsageError(f"can't read {rel}: {e.strerror or e}") from e
     text = decode_head(data) if target.suffix.lower() == ".md" else None
-    label = classify(rel, text, load_policy(root))
-    if not visible_to(label, reader):
+    policy = load_policy(root)
+    label = classify(rel, text, policy)
+    if not visible_to(label, reader, policy):
         raise Denied(reader)
     return label, data
 
@@ -744,14 +767,17 @@ def load_graph(vault: Path, reader: str, kb_root: str | None = None, schema: str
 
     The schema defaults to the vault's ``knowledge-base/ontology/schema.yaml``,
     else the engine's. A reader that sees nothing gets an empty graph, and no
-    file is looked at.
+    file is looked at. A delegate may not name a KB root or a schema: either
+    would open a path of its choosing, outside the policy (``UsageError``).
     """
+    if delegate_id(reader) is not None and (kb_root is not None or schema is not None):
+        raise UsageError("--kb-root and --schema aren't available to a delegate reader")
     kb = Path(kb_root) if kb_root else vault / "knowledge-base"
     if schema is None:
         own = kb / "ontology" / "schema.yaml"
-        schema = str(own if reader in FULL_READERS and own.is_file() else ENGINE_SCHEMA)
+        schema = str(own if reads_any(reader) and own.is_file() else ENGINE_SCHEMA)
     store = None
-    if reader in FULL_READERS:
+    if reads_any(reader):
         root = vault.resolve()
         store = IndexStore(root, load_policy(root))
     try:
@@ -845,7 +871,7 @@ def resolve(vault: Path, reader: str, graph: KnowledgeGraph, name: str) -> list[
     people match of ``name_lookup``. Rows: ``path``, ``name`` (None for a plain
     note), ``match_strength``, ``matched_field``, ``label``.
     """
-    if reader not in FULL_READERS:
+    if not reads_any(reader):
         return []
     key = name.strip().lower()
     if not key:
