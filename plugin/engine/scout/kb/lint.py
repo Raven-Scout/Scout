@@ -309,6 +309,9 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
 
 _FM_ALIASES_RE = re.compile(r"^aliases:[ \t]*(.*?)\s*$")
 _FM_LIST_ITEM_RE = re.compile(r"^\s*-\s+(.*?)\s*$")
+# An inline list may carry a trailing ` # comment` after its closing bracket
+# (`aliases: [Sam Rivera]   # why`): YAML and Obsidian ignore it, so must we.
+_FM_INLINE_LIST_RE = re.compile(r"""^\[(.*?)\](?:\s+#.*)?$""")
 _FM_INLINE_ITEM_RE = re.compile(r"""\s*(?:"([^"]*)"|'([^']*)'|([^,]*))\s*(?:,|$)""")
 _FM_NON_NAMES = {"", "null", "~", "|", ">", "[]"}
 
@@ -357,8 +360,8 @@ def _frontmatter_aliases(path: Path) -> list[str]:
                 val = m.group(1)
                 if not val or val.startswith("#"):  # block list follows
                     in_block = True
-                elif val.startswith("[") and val.endswith("]"):  # inline list
-                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(val[1:-1]):
+                elif (flow := _FM_INLINE_LIST_RE.match(val)) is not None:  # inline list, optional ` # comment`
+                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(flow.group(1)):
                         names.append(dq or sq or bare.strip())
                 else:
                     names.append(_fm_scalar(val))
