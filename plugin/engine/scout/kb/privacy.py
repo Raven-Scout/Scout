@@ -16,7 +16,18 @@ note. ``federation_source`` names the step that decided the scope:
 ``disabled`` (the switch is off), ``frontmatter`` (the note's own key),
 ``default`` (a ``federation_defaults`` entry, or no entry and so ``none``), or
 ``ceiling`` (the ceiling cut the scope from either). Unknown overlay keys are
-ignored, so later sections (``delegates``, #550) are additive.
+ignored, so later sections are additive.
+
+Delegates (#550 §4.1, §4.5): ``delegates: {<id>: {include_private}}`` lists the
+owner's own agents that run off the laptop, read as ``delegate:<id>``. A listed
+delegate sees normal notes, private ones only with ``include_private: true``
+written exactly so (``yes``, ``on``, ``True`` or a quoted ``"true"`` count as
+false, with a warning), and never a local-only path; an unlisted one
+sees nothing. Labels don't change: what a delegate sees is derived from the
+label's ``visibility`` and ``local_only`` (:func:`visible_to`). Delegate keys
+never sit inside the ``federation*`` keys, nor federation keys inside
+``delegates``; policy-wide delegate switches are reserved for a sibling
+``delegation:`` section (none yet).
 
 ``classify(rel_path, text, policy)`` turns (path, frontmatter, policy) into a
 :class:`Label`. It is a pure function of its arguments so the Agnes indexer can
@@ -68,6 +79,10 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
   and one with bad ``kinds`` applies to every kind, and a non-boolean
   ``federation.enabled`` is false. An entry without a string ``glob`` matches
   nothing and is dropped.
+- ``privacy-overlay-invalid`` also covers ``delegates``: a non-mapping block,
+  an id that isn't ``[a-z0-9][a-z0-9-]{0,39}``, an entry that isn't a mapping
+  (each dropped), and an ``include_private`` that isn't written ``true`` or
+  ``false`` (kept as false).
 - ``privacy-sync-only-invalid``: ``sync_only`` has the wrong shape or an entry
   that can't name a vault path. It is kept as an empty list, which uploads
   nothing, and ``scoutctl repo`` refuses until it is fixed.
@@ -94,7 +109,8 @@ import yaml
 from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
-from scout.yaml_safe import load_yaml, load_yaml_key
+from scout.kb.reader import delegate_id, is_delegate_id
+from scout.yaml_safe import _KEY_TAGS, load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
 
@@ -103,7 +119,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 3  # 3: Stage 2 effective scope, ceiling, frontmatter kind (Agnes #6090 §4)
+CLASSIFIER_VERSION = 4  # 4: NoteFacts.shared_source, for delegates (#550); 3: Stage 2 (Agnes #6090 §4)
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -133,6 +149,11 @@ FederationSource = Literal["frontmatter", "default", "ceiling", "disabled"]
 FEDERATION_SOURCES: tuple[FederationSource, ...] = ("frontmatter", "default", "ceiling", "disabled")
 
 FULL_READERS = frozenset({"owner", "autonomous"})
+
+# Paths no delegate sees, include_private or not (Jordan, 2026-11-13): the phone-notification
+# inbox. Notes that cite someone's shared note (``source: shared:…``) are kept from delegates
+# by ``Label.shared_source`` instead.
+DELEGATE_NEVER = (".scout-inbox/**",)
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
@@ -178,6 +199,14 @@ class ScopeDefault:
 
 
 @dataclass(frozen=True)
+class DelegateRule:
+    """One ``delegates`` entry: the agent ``delegate:<id>`` and whether it sees private notes."""
+
+    id: str
+    include_private: bool = False
+
+
+@dataclass(frozen=True)
 class Policy:
     """The effective privacy policy (engine default + vault overlay).
 
@@ -195,6 +224,8 @@ class Policy:
 
     ``sync_only`` is None when the overlay has no such key, and a tuple
     (possibly empty) of globs or plain paths when it does.
+
+    ``delegates`` comes from the overlay alone, in its order.
     """
 
     local_only_always: tuple[str, ...]
@@ -210,6 +241,12 @@ class Policy:
     federation_defaults: tuple[ScopeDefault, ...] = ()
     warnings: tuple[str, ...] = ()
     sync_only: tuple[str, ...] | None = None
+    delegates: tuple[DelegateRule, ...] = ()
+
+    def delegate(self, reader: str) -> DelegateRule | None:
+        """The listed delegate a ``delegate:<id>`` reader is, else None."""
+        wanted = delegate_id(reader)
+        return next((d for d in self.delegates if d.id == wanted), None) if wanted else None
 
     def to_json(self) -> dict[str, Any]:
         """The policy in ``privacy.yaml``'s shape (``schema_version`` aside).
@@ -218,8 +255,8 @@ class Policy:
         included. Surface ids are sorted (they are sets). The overlay's
         ceilings stay a list of their own, ``federation_ceilings_overlay``,
         because a narrowing entry can't be folded into the engine's list.
-        ``sync_only`` appears only when it is set, so the engine default's
-        snapshot and every other vault's policy hash stay as they were.
+        ``sync_only`` and ``delegates`` appear only when set, so the engine
+        default's snapshot and every other vault's policy hash stay as they were.
         """
         out: dict[str, Any] = {
             "local_only": {
@@ -241,6 +278,8 @@ class Policy:
         }
         if self.sync_only is not None:
             out["sync_only"] = list(self.sync_only)
+        if self.delegates:
+            out["delegates"] = {d.id: {"include_private": d.include_private} for d in self.delegates}
         return out
 
 
@@ -255,6 +294,13 @@ class Label:
     written (it's an opaque host id), duplicates dropped in first-seen order.
     ``to_json`` renders a tuple as a list. ``ceiling`` and ``federation_source``
     are described in the module docstring.
+
+    ``shared_source`` is internal: the note may hold content someone shared with
+    the owner (its frontmatter ``source:`` claims ``shared:…``, or its
+    frontmatter can't be read, so that can't be ruled out). Only
+    :func:`visible_to` reads it, to keep such notes from delegates; it isn't in
+    ``to_json`` and doesn't take part in equality, so published labels and the
+    conformance corpus don't change.
     """
 
     path: str
@@ -267,6 +313,7 @@ class Label:
     local_only: bool = False
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
+    shared_source: bool = field(default=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -420,6 +467,73 @@ def _sync_only_entries(value: Any) -> tuple[str, ...] | None:
     return _dedup(entries)
 
 
+def _delegate_rules(value: Any, literal_true: frozenset[str] | None) -> tuple[tuple[DelegateRule, ...], bool]:
+    """``delegates`` entries and whether any part was malformed (bad parts are dropped, or kept narrower).
+
+    ``literal_true`` is the ids whose ``include_private`` the config text spells
+    exactly ``true`` (:func:`_literal_true_delegates`); a YAML 1.1 ``yes``, ``on``
+    or ``True`` loads as the same boolean but widens nothing, with a warning.
+    None (an overlay built in Python, such as the corpus's) trusts the boolean.
+    """
+    if not isinstance(value, Mapping):
+        return (), True
+    rules: list[DelegateRule] = []
+    bad = False
+    for key, entry in value.items():
+        if not isinstance(key, str) or not is_delegate_id(key) or not (entry is None or isinstance(entry, Mapping)):
+            bad = True
+            continue
+        include = (entry or {}).get("include_private", False)
+        if not isinstance(include, bool) or (include and literal_true is not None and key not in literal_true):
+            bad, include = True, False
+        rules.append(DelegateRule(id=key, include_private=include))
+    return tuple(rules), bad
+
+
+def _key(node: Any) -> str | None:
+    """A composed mapping key as the plain string loading builds, else None (``!!null privacy:`` isn't ``privacy``)."""
+    return node.value if isinstance(node, yaml.ScalarNode) and node.tag in _KEY_TAGS else None
+
+
+def _child(node: Any, key: str) -> Any:
+    """The value node of ``key`` in a composed YAML mapping (the last one, as loading keeps), else None."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    found = None
+    for k, v in node.value:
+        if _key(k) == key:
+            found = v
+    return found
+
+
+def _literal_true_delegates(text: str) -> frozenset[str]:
+    """Ids under ``privacy.delegates`` whose ``include_private`` is written exactly ``true`` (plain, unquoted).
+
+    From the composed node tree, before YAML 1.1 turns ``yes``/``on``/``True``
+    into the same boolean. A key counts only with a plain-string tag, at every
+    level, as :func:`scout.yaml_safe.load_yaml_key` does, so a ``!!null``
+    duplicate can't stand in for the key loading keeps. Empty when the text
+    doesn't compose (fail closed).
+    """
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return frozenset()
+    delegates = _child(_child(root, "privacy"), "delegates")
+    out: set[str] = set()
+    if isinstance(delegates, yaml.MappingNode):
+        for k, v in delegates.value:
+            ident = _key(k)
+            if ident is None:
+                continue
+            flag = _child(v, "include_private")
+            if isinstance(flag, yaml.ScalarNode) and flag.style is None and flag.value == "true":
+                out.add(ident)
+            else:
+                out.discard(ident)  # a later duplicate key wins, as when loading
+    return frozenset(out)
+
+
 def load_policy(vault: Path | None) -> Policy:
     """Engine default merged with ``<vault>/scout-config.yaml → privacy:``.
 
@@ -428,7 +542,7 @@ def load_policy(vault: Path | None) -> Policy:
     ``visibility_defaults`` (placed before the engine's, so the owner's entry
     wins), ``shared_files_add``, ``surfaces: {owner_only, shared}``,
     ``federation: {enabled}``, ``federation_ceilings`` (narrowing only),
-    ``federation_defaults`` and ``sync_only``. Other keys are ignored. See the
+    ``federation_defaults``, ``sync_only`` and ``delegates``. Other keys are ignored. See the
     module docstring for the warnings it records on ``Policy.warnings``.
     """
     base = _engine_default()
@@ -465,7 +579,7 @@ def policy_from_config_text(text: str | None) -> Policy:
         return _engine_default()
     if not isinstance(data, dict):
         return _unreadable_policy(None)
-    return policy_from_overlay(data.get("privacy"))
+    return policy_from_overlay(data.get("privacy"), literal_true=_literal_true_delegates(text))
 
 
 def _unreadable_policy(text: str | None) -> Policy:
@@ -488,7 +602,8 @@ def _narrowing_overlay(overlay: Any) -> Any:
     paths home; a ``private`` default (or a bad value, kept as ``private``) only
     adds private notes; ``surfaces.shared`` moves a surface to the class that gets
     checked. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
-    may go there), ``federation`` and ``federation_defaults``. A wrong shape passes
+    may go there), ``federation``, ``federation_defaults`` and ``delegates`` (a
+    delegate is a reader that sees more). A wrong shape passes
     through, for its warning.
     """
     if not isinstance(overlay, Mapping):
@@ -511,13 +626,13 @@ def _narrowing_overlay(overlay: Any) -> Any:
     return kept
 
 
-def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
+def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: frozenset[str] | None = None) -> Policy:
     """Engine default merged with a ``privacy:`` overlay mapping (no vault needed).
 
     ``None`` means the engine default. This is the merge :func:`load_policy`
     applies, exposed so the contract corpus (and the Agnes indexer's runner)
     can build a policy from a bare overlay. A non-mapping overlay is ignored
-    with ``privacy-overlay-invalid``.
+    with ``privacy-overlay-invalid``. ``literal_true``: see :func:`_delegate_rules`.
     """
     base = _engine_default()
     if overlay is None:
@@ -629,6 +744,12 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
             warnings.append("privacy-sync-only-invalid")
             sync_only = ()
 
+    delegates: tuple[DelegateRule, ...] = ()
+    if "delegates" in overlay:
+        delegates, bad = _delegate_rules(overlay["delegates"], literal_true)
+        if bad:
+            warnings.append("privacy-overlay-invalid")
+
     return Policy(
         local_only_always=base.local_only_always,
         local_only=local_only,
@@ -643,6 +764,7 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
         federation_defaults=scope_defaults,
         warnings=_dedup(warnings),
         sync_only=sync_only,
+        delegates=delegates,
     )
 
 
@@ -741,7 +863,8 @@ class NoteFacts:
     value overrides the folder defaults, so a note can keep itself out of a
     shared folder. ``kind`` is the frontmatter ``kind`` string, trimmed and
     lower-cased, or None. ``warnings`` are the text-only ones, in
-    :func:`classify`'s order.
+    :func:`classify`'s order. ``shared_source``: a frontmatter ``source:`` value
+    claims ``shared:…`` (the rule of :func:`scout.kb.shared_reads.is_shared_source`).
     """
 
     state: Literal["ok", "unparseable", "unreadable"] = "ok"
@@ -750,6 +873,7 @@ class NoteFacts:
     warnings: tuple[str, ...] = ()
     declared_present: bool = False
     kind: str | None = None
+    shared_source: bool = False
 
 
 def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
@@ -780,13 +904,21 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
         else:
             declared = scope
     kind = fm.get("kind")
+    source = fm.get("source")
+    sources = [source] if isinstance(source, str) else source if isinstance(source, list) else []
     return NoteFacts(
         visibility=visibility,
         declared=declared,
         warnings=tuple(warnings),
         declared_present="federation_scope" in fm,
         kind=(kind.strip().lower() or None) if isinstance(kind, str) else None,
+        shared_source=any(isinstance(v, str) and v.strip().casefold().startswith("shared:") for v in sources),
     )
+
+
+def holds_shared(facts: NoteFacts) -> bool:
+    """``Label.shared_source`` for these facts: a ``shared:`` source, or unreadable frontmatter (fail closed)."""
+    return facts.shared_source or facts.state != "ok"
 
 
 def _level(level: CeilingLevel) -> int:
@@ -862,6 +994,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
             local_only=local_only,
             shared_file=shared_by_path,
             warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
+            shared_source=True,
         )
 
     visibility: Visibility
@@ -900,6 +1033,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         local_only=local_only,
         shared_file=shared_by_path or declared != "none" or scope != "none",
         warnings=_dedup(warnings),
+        shared_source=holds_shared(facts),
     )
 
 
@@ -1022,18 +1156,38 @@ def normalize_rel(vault: Path, path: str | Path) -> str:
     return "/".join(parts)
 
 
-def visible_to(label: Label, reader: str) -> bool:
-    """Whether ``reader`` may see the labelled file at all (spec §4.1).
+def reads_any(reader: str) -> bool:
+    """Whether ``reader`` may see any file: ``owner``, ``autonomous`` or a ``delegate:<id>``.
+
+    For the early exits that touch nothing for a reader that sees nothing. A
+    delegate the policy doesn't list still passes here and is then shown
+    nothing by :func:`visible_to`.
+    """
+    return reader in FULL_READERS or delegate_id(reader) is not None
+
+
+def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
+    """Whether ``reader`` may see the labelled file at all (spec §4.1; #550 §4.1).
 
     ``owner`` and ``autonomous`` see every file (labelled); every
-    ``agent:<principal>`` reader sees nothing. Any other reader id is denied
-    (fail-closed). That stays so in Stage 2: another person reads a shared note
-    only through Agnes's shared reader, which applies the effective
+    ``agent:<principal>`` reader sees nothing. A ``delegate:<id>`` listed in
+    ``policy`` sees a file that isn't local-only, and a private one only with
+    ``include_private``; never a path in :data:`DELEGATE_NEVER` (the phone
+    inbox) or a note that may hold someone else's shared content
+    (``Label.shared_source``), include_private or not (Jordan, 2026-11-13). An
+    unlisted delegate, or any delegate when no policy is given, sees nothing.
+    Any other reader id is denied (fail-closed). The agent rule stays so in
+    Stage 2: another person reads a shared note only
+    through Agnes's shared reader, which applies the effective
     ``federation_scope`` from the synced labels (Agnes #6090 §5.2); the laptop
     engine never serves another person.
     """
-    del label  # the laptop never serves another person, whatever the label says
-    return reader in FULL_READERS
+    if reader in FULL_READERS:
+        return True
+    rule = policy.delegate(reader) if policy is not None else None
+    if rule is None or label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path):
+        return False
+    return label.visibility == "normal" or rule.include_private
 
 
 def surface_class(policy: Policy, surface: str) -> SurfaceClass:

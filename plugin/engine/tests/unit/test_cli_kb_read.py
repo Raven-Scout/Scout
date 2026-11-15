@@ -592,6 +592,7 @@ def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, mon
         "warnings": [],
         "declared_present": False,
         "kind": None,
+        "shared_source": False,
     }
     stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
     for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
@@ -900,6 +901,7 @@ _GOOD_FACTS: dict[str, object] = {
     "warnings": [],
     "declared_present": True,
     "kind": "meeting",
+    "shared_source": False,
 }
 
 
@@ -918,6 +920,7 @@ def test_facts_round_trip_through_the_index() -> None:
         {"warnings": "none"},
         {"declared_present": "yes"},
         {"kind": 3},
+        {"shared_source": "no"},
         {"declared": 3},
         {"declared": [3]},
     ],

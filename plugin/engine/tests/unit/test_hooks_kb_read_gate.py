@@ -596,3 +596,23 @@ def test_the_telegram_wrap_is_allowed_through_the_real_cli(vault):
     payload = _payload("Bash", {"command": wrap}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "scoutctl delegate link duet --remote /tmp/m.git --confirm-account-unshared",
+        "scripts/scoutctl delegate key duet --rotate",
+        "~/scout-plugin/plugin/engine/bin/scoutctl delegate trust-state --confirm duet",
+        "python3 -P -m scout delegate unlink duet",
+        "bash -c 'scoutctl delegate unlink duet'",
+    ],
+)
+def test_run_denies_the_owners_delegate_commands(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "owner's" in reason and "delegate sync" in reason
+
+
+@pytest.mark.parametrize("command", ["scoutctl delegate sync --all --if-moved", "scoutctl delegate status"])
+def test_a_run_may_sync_and_list_delegate_mirrors(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None

@@ -169,7 +169,7 @@ def test_labels_do_not_depend_on_the_key() -> None:
     text = "---\nvisibility: normal\n---\nBody.\n"
     plain, scoped = policy_from_overlay({}), policy_from_overlay({"sync_only": ["notes/**"]})
     assert classify(HOME, text, plain) == classify(HOME, text, scoped)
-    assert CLASSIFIER_VERSION == 3
+    assert CLASSIFIER_VERSION == 4  # sync_only never bumped it; 4 is #550's NoteFacts.shared_source
 
 
 # ----- link: what goes up ------------------------------------------------------------------
