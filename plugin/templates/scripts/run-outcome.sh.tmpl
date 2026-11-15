@@ -193,7 +193,7 @@ cmd_record() {
     [ "$newest" = "-" ] && newest=""
 
     mkdir -p "$LOG_DIR"
-    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" \
+    python3 -I - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" \
         "$commits" "$newest" "$(run_trigger)" <<'PY' || true
 import json, os, re, sys
 (ledger, mode, code, started, finished, duration, klass, log, outcome, resets_at,
