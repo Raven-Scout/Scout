@@ -24,9 +24,15 @@ def test_home_is_isolated() -> None:
 
 
 def test_no_scout_env_leaks() -> None:
-    # SCOUT_LOCALTIME is the fixture's own: it hides the host's timezone.
-    leaked = sorted(k for k in os.environ if k.startswith("SCOUT_") and k != "SCOUT_LOCALTIME")
+    # The fixture's own: SCOUT_LOCALTIME hides the host's timezone, SCOUT_RUN_SANDBOX=off keeps the runners'
+    # write sandbox off for tests that stand in a no-op engine.
+    ours = {"SCOUT_LOCALTIME", "SCOUT_RUN_SANDBOX"}
+    leaked = sorted(k for k in os.environ if k.startswith("SCOUT_") and k not in ours)
     assert leaked == [], f"SCOUT_* env vars leaked into the test env: {leaked}"
+
+
+def test_the_runners_write_sandbox_is_off_in_tests() -> None:
+    assert os.environ["SCOUT_RUN_SANDBOX"] == "off"
 
 
 def test_host_timezone_is_isolated() -> None:
