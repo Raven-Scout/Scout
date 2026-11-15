@@ -22,7 +22,8 @@
 # <outcome> is given only for a deliberate skip (#401): skipped_lock (another
 # session held the vault lock), skipped_budget (the budget check said no),
 # skipped_redundant, skipped_gates (the gate probe found claude not loading
-# Scout's privacy hooks), gates_unsafe_endpoint / gates_unsafe_launcher (the probe couldn't be
+# Scout's privacy hooks), skipped_sandbox (the write sandbox expected here couldn't be set up),
+# gates_unsafe_endpoint / gates_unsafe_launcher (the probe couldn't be
 # run safely; recorded as skipped_gates with that failure_class), or a Repository Writer Lease skip of a vault linked to
 # Agnes (R2): lease_held (Agnes holds the lease) or lease_unavailable (Agnes
 # couldn't grant it). A lease skip is recorded as outcome skipped_lease with the
@@ -170,7 +171,7 @@ cmd_record() {
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     local lease_class=""
     case "$outcome" in
-        skipped_lock|skipped_budget|skipped_redundant|skipped_gates) ;;
+        skipped_lock|skipped_budget|skipped_redundant|skipped_gates|skipped_sandbox) ;;
         gates_unsafe_endpoint|gates_unsafe_launcher) lease_class="$outcome"; outcome="skipped_gates"; code=0 ;;
         lease_held|lease_unavailable) lease_class="$outcome"; outcome="skipped_lease"; code=0 ;;
         *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;
@@ -217,6 +218,11 @@ if runner in ("scout", "dreaming", "research"):
     row["runner"] = runner
 if resets_at:
     row["resets_at"] = int(resets_at)
+# Whether the session ran inside the write sandbox (Phase 1c): enforced, unavailable, off, conflict or
+# failed, as the runner set it; left out for rows from older runners.
+sandbox = os.environ.get("SCOUT_SANDBOX_STATUS", "")
+if sandbox in ("enforced", "unavailable", "off", "conflict", "failed"):
+    row["sandbox"] = sandbox
 # The model the runner passed to claude (scoutctl model resolve), so health and
 # eval can attribute a run's cost; left out for rows from older runners.
 model = os.environ.get("SCOUT_MODEL", "").strip().lower()

@@ -131,7 +131,9 @@ def vault(tmp_path: Path) -> Path:
 
 
 def _clean_env() -> dict[str, str]:
-    return {k: v for k, v in git_env().items() if not k.startswith("SCOUT_")}
+    env = {k: v for k, v in git_env().items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
+    return env
 
 
 def _run(vault: Path, runner: str, route: str) -> subprocess.CompletedProcess[str]:

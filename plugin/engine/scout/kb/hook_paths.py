@@ -41,6 +41,7 @@ whether removing or moving a path (``rm -rf .claude``) takes a protected file wi
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -58,6 +59,8 @@ ENGINE = "Scout's engine"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
+# The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
+SANDBOX_SWITCH_NAME = "run-sandbox.json"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
 
@@ -93,6 +96,13 @@ RUNNER_FILES: tuple[str, ...] = (
     "scripts/session-lane-liveness.py",
     "scripts/kb-shard-log.py",
 )
+
+
+@dataclass(frozen=True)
+class Spec:
+    path: str  # as built: absolute, ``~`` expanded by the caller's HOME, symlinks not resolved, case kept
+    form: str
+    tree: bool  # a directory and everything under it, else this one file
 
 
 @dataclass(frozen=True)
@@ -183,6 +193,19 @@ def _precommit_engine(vault: Path, hooks: Path | None) -> Path | None:
     return None
 
 
+def _pointer_venv(pointer: Path) -> Path | None:
+    """The venv the engine pointer names (its ``"python"``, ``<venv>/bin/python``): the launcher may run it."""
+    try:
+        data = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    python = data.get("python") if isinstance(data, dict) else None
+    if not isinstance(python, str) or not python.startswith("/"):
+        return None
+    venv = Path(python).parent.parent
+    return venv if (venv / "pyvenv.cfg").is_file() else None
+
+
 def engine_roots(env: Mapping[str, str]) -> list[Path]:
     """The engine the hooks run and everything that picks it (see the module doc)."""
     import scout
@@ -192,7 +215,15 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     if env.get("CLAUDE_PLUGIN_ROOT"):
         roots.append(Path(env["CLAUDE_PLUGIN_ROOT"]))
     home = Path(env.get("HOME") or Path.home())
-    roots.append(home / ".local" / "state" / "scout" / "engine.json")
+    state = home / ".local" / "state" / "scout"
+    pointer = state / "engine.json"
+    roots.append(pointer)
+    venv = _pointer_venv(pointer)
+    if venv is not None:
+        roots.append(venv)
+    # The owner's switch for the scheduled runs' write sandbox (scout.sandbox, Phase 1c): a run that could write
+    # it could turn the sandbox off for the next run.
+    roots.append(state / SANDBOX_SWITCH_NAME)
     return roots
 
 
@@ -214,12 +245,25 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
 
 
 def _build_roots(vault: Path | None, env: Mapping[str, str]) -> list[Root]:
-    home = Path(env.get("HOME") or Path.home())
     roots: list[Root] = []
+    for spec in protected_specs(vault, env):
+        for key in {canon(spec.path, env), spelled(spec.path, env)}:
+            roots.append(Root(key, spec.form, spec.tree))
+    return roots
+
+
+def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Spec]:
+    """Every protected path as written here (``~`` unexpanded, not resolved, not case-folded), with its form.
+
+    :func:`protected_roots` is these, normalised for matching. The scheduled runs' OS write sandbox
+    (:mod:`scout.sandbox.profile`, Phase 1c) is generated from the same list, so the two layers never drift.
+    """
+    env = os.environ if env is None else env
+    home = Path(env.get("HOME") or Path.home())
+    roots: list[Spec] = []
 
     def add(path: Path | str, form: str, *, tree: bool) -> None:
-        for key in {canon(path, env), spelled(path, env)}:
-            roots.append(Root(key, form, tree))
+        roots.append(Spec(str(path), form, tree))
 
     if vault is not None:
         add(vault / ".git", GIT_DIR, tree=False)

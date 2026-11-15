@@ -108,6 +108,10 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     # Claude Code's own config dir overrides HOME for ~/.claude.json and settings.
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("SCOUT_LOCALTIME", str(home / "no-localtime"))
+    # The runners' OS write sandbox (spec 2026-11-15) is off by default in tests: most runner tests stand in a
+    # no-op engine (/usr/bin/true) for scoutctl, which can't print a profile. The sandbox's own tests
+    # (test_run_sandbox_*) delete this to turn it on.
+    monkeypatch.setenv("SCOUT_RUN_SANDBOX", "off")
 
 
 _REFUSING_LAUNCHCTL = """#!/bin/sh

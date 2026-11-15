@@ -166,6 +166,47 @@ elif [ "$GATE_RC" -ne 0 ]; then
     exit 0
 fi
 
+# Write sandbox (Phase 1c, spec 2026-11-15): the session, and every process it
+# starts, runs under a sandbox-exec profile that denies writes to what decides
+# whether Scout's gates run (the vault's git hooks and config, agent settings,
+# the engine, these runner scripts …), so no shell trick or hook timeout can
+# switch them off. `scoutctl sandbox profile` builds it here, outside the
+# sandbox, from the engine's protected-path list, self-tests it, and prints it;
+# claude-with-retry gets it by value. Its exit code is the status: 0 sandboxed;
+# 6 no OS sandbox here, 7 turned off (`scoutctl sandbox off`), 8 Claude Code's
+# own Bash sandbox is on (they can't nest): the run goes ahead as before and run
+# health says so; anything else (3, or no scoutctl) skips the run, because a
+# sandbox expected here couldn't be set up.
+SANDBOX_RC=127
+SCOUT_SANDBOX_PROFILE=""
+# SCOUT_RUN_SANDBOX=off (tests, the eval harness) is the switch scoutctl reads too; a run can't set it for
+# a later run (launchd refuses setenv from inside the sandbox, and its plists are protected).
+case "$(printf '%s' "${SCOUT_RUN_SANDBOX:-}" | tr '[:upper:]' '[:lower:]')" in
+    0|off|false|no) SANDBOX_RC=7 ;;
+esac
+if [ "$SANDBOX_RC" -ne 7 ] && [ -x "$SCOUTCTL_BIN" ]; then
+    SANDBOX_RC=0
+    SCOUT_SANDBOX_PROFILE="$("$SCOUTCTL_BIN" sandbox profile --vault "$SCOUT_DIR" 2>>"$LOG_FILE")" || SANDBOX_RC=$?
+fi
+case "$SANDBOX_RC" in
+    0) SCOUT_SANDBOX_STATUS=enforced ;;
+    6) SCOUT_SANDBOX_STATUS=unavailable ;;
+    7) SCOUT_SANDBOX_STATUS=off ;;
+    8) SCOUT_SANDBOX_STATUS=conflict ;;
+    *) SCOUT_SANDBOX_STATUS=failed ;;
+esac
+if [ "$SCOUT_SANDBOX_STATUS" = enforced ] && [ -z "$SCOUT_SANDBOX_PROFILE" ]; then
+    SCOUT_SANDBOX_STATUS=failed
+fi
+[ "$SCOUT_SANDBOX_STATUS" = enforced ] || SCOUT_SANDBOX_PROFILE=""
+export SCOUT_SANDBOX_STATUS
+if [ "$SCOUT_SANDBOX_STATUS" = failed ]; then
+    echo "=== Write sandbox: couldn't be set up here (exit $SANDBOX_RC; see scoutctl sandbox status) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_sandbox
+    exit 0
+fi
+echo "=== write sandbox: $SCOUT_SANDBOX_STATUS ===" >> "$LOG_FILE"
+
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —
 # resolved by the engine (scout/models.py). A resolver failure never blocks the
@@ -190,7 +231,7 @@ START_TIME=$(date +%s)
 # With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
 # and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
+cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
     "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \

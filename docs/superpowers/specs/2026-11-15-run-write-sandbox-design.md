@@ -1,6 +1,6 @@
 # Phase 1c: an OS-level write sandbox around each scheduled run
 
-Status: **draft for Jordan's review** (2026-11-15). Part of the runtime-agnostic
+Status: **approved by Jordan 2026-11-15** (every §12 recommendation, plus Q8); built in the same PR, as-built notes in §13. Part of the runtime-agnostic
 hardening (spec `2026-11-13-runtime-agnostic-design.md`, PR #634; Phase 1a #635,
 Phase 1b #637). Built on #637's branch: `scout/kb/hook_paths.py` is the protected-path
 list for both layers.
@@ -121,10 +121,11 @@ run-*.sh  (outside: lock, budget, gate probe, model)
   `sandbox_apply: Operation not permitted` (exit 71), tested. So nothing inside a run
   can start its own Seatbelt sandbox. That includes Claude Code's Bash sandbox
   (`sandbox.enabled`), which the eval shim turns on (§8).
-- **Compose with the probe, don't nest.** The probe's single profile becomes
-  *write rules + loopback-only network*. The probe then also proves claude starts,
-  loads hooks and finishes under the write rules, on this machine and this claude
-  version, before any real run. The profile's hash joins the probe's cache key.
+- **Compose with the probe, don't nest (follow-up).** The probe's single profile could become
+  *write rules + loopback-only network*. The probe would then also prove claude starts,
+  loads hooks and finishes under the write rules before any real run. Deferred (§13):
+  until then, a claude version that breaks under the rules fails its run, which health
+  reports as `runs.failing`.
 
 ## 5. The profile
 
@@ -266,10 +267,10 @@ can write that file and so could switch the sandbox off for the next run. The sw
 | Profile built, self-test passed | 0 | runs sandboxed | `sandbox: enforced` | nothing |
 | macOS, `sandbox-exec` present but the build or self-test fails | 3 | **skip** | `skipped_sandbox` | red `sandbox.failed` (with the reason from the log) |
 | No OS sandbox here (Linux in this PR, macOS with no `sandbox-exec`) | 6 | runs as today | `sandbox: unavailable` | yellow `runs.unsandboxed` (Q1) |
-| Owner turned it off | 7 | runs as today | `sandbox: off` | note `runs.unsandboxed` (says how to turn it back on) |
+| Owner turned it off | 7 | runs as today | `sandbox: off` | nothing (doctor shows a note; §13) |
 | Claude Code's own Bash sandbox is on in the effective settings (can't nest) | 8 | runs as today, Claude's sandbox only | `sandbox: conflict` | yellow `runs.unsandboxed` (Q2) |
 | scoutctl missing | 127 | **skip** (same rule as #635) | `skipped_sandbox` | red |
-| claude itself breaks under the rules (a future version needs a new path) | (run) | the composed probe fails first | `skipped_gates` | red `gates.not_loaded` with the probe's reason |
+| claude itself breaks under the rules (a future version needs a new path) | (run) | the run fails | `failed` | `runs.failing` (the composed probe would catch it first; follow-up) |
 
 The eval harness sets `SCOUT_RUN_SANDBOX=off`, because its sessions run under Claude
 Code's Bash sandbox with `failIfUnavailable`.
@@ -345,7 +346,7 @@ Affected tests only. CI is the gate.
 5. Health `sandbox.failed` / `runs.unsandboxed`; doctor line; the `launchctl list` fix.
 6. The eval harness and its tests set `SCOUT_RUN_SANDBOX=off`; CHANGELOG.
 
-## 12. Open questions for Jordan (my recommendation first)
+## 12. Decisions (Jordan, 2026-11-15; each the recommendation)
 
 - **Q1 No OS sandbox on this platform:** run as today with yellow health *(rec.)*, or
   skip the run?
@@ -364,3 +365,52 @@ Affected tests only. CI is the gate.
   it at the next manual upgrade either way.)
 - **Q7 `~/.claude.json`:** keep it write-denied (scheduled runs don't persist Claude
   Code's per-project state; tested harmless) *(rec.)*?
+- **Q8 `~/.scout-secrets` (#636's review):** deny reads of the contents and every write,
+  for `~/.scout-secrets` and `$SCOUT_SECRETS_DIR` (what `scout.linear_activity.secrets_dir()`
+  resolves). Metadata (`stat`, `test -s`) and listing the folder stay allowed, and so do
+  reads of `telegram-bot-token` and `telegram-chat-id`, because the Telegram wrap is sent
+  from inside the session (18 of the last 50 runs). *Alternative, not taken:* deny
+  everything now and accept failed Telegram wraps until a send-only Telegram broker
+  exists. The broker is Phase 1d, next to the commit broker. Nothing else in the secrets
+  dir is read in-session (linear-api-key is pre-session only, the Slack token belongs to
+  the tick, and the Agnes token and delegate keys had 0 in-session uses). Follow-up:
+  `notify_telegram` and `delegate_mirror` hard-code `~/.scout-secrets` instead of using
+  the override-aware helper.
+
+All of Q1–Q8 were answered with the recommendation.
+
+## 13. As built (differences from the sections above, found while building)
+
+- **Regex carve-outs for git's per-process temp files.** Partial commits (`git commit
+  <paths>`, which is what `git-safe-commit.sh` does) write `next-index-<pid>.lock`, and
+  stash writes `index.stash.<pid>`. Exact names can't cover those, so two regexes do,
+  digits only, because SBPL regexes match case-insensitively (§5.4). The kernel test's
+  git matrix found both.
+- **A read allow must use the deny's own operation.** A `file-read*` allow doesn't
+  override a `file-read-data` deny, so the Telegram files and the folder listing are
+  allowed with `file-read-data`. The kernel test found this; the model now treats reads
+  as `file-read-data` only.
+- **Dedup keeps the last copy** of a repeated rule. With last-match-wins, that copy is
+  the one that decides. The first version kept the first copy and lost the re-deny of a
+  `core.hooksPath` inside `refs/`; a unit test pins this.
+- **`/dev/*` is never denied.** `GIT_CONFIG_GLOBAL=/dev/null` (the eval harness sets it)
+  made `hook_paths` protect `/dev/null`.
+- **The runner reads `SCOUT_RUN_SANDBOX=off` itself**, without asking the engine. Runner
+  tests use `/usr/bin/true` as a no-op engine, which can't print a profile. The test
+  suite's autouse fixture sets it, and the sandbox's own tests clear it. An engine that
+  exits 0 with no profile still skips the run (`skipped_sandbox`).
+- **`off` isn't a health finding.** The owner chose it, and the doctor reports it. Health
+  reports `failed` (red) and `unavailable`/`conflict` (yellow) only.
+- **The probe composition is a follow-up**, not in this PR (§4).
+- **Replay result** (50 newest scheduled runs, 3,928 tool calls, read-only, counts only):
+  2,285 write targets and 410 reads in scope. Denied: **0 writes, 0 secret reads.**
+  147 path literals inside inline programs (`python3 -c`, heredocs) fall under a deny, all
+  of them runner scripts the programs read or run. The kernel allows reads and execution,
+  so they're not writes. 63 paths built at run time couldn't be resolved statically.
+- **Tested against the kernel** (macOS 26.5.2): the model matches `sandbox-exec` on 29
+  write targets and 4 secret reads. 20 attacks left every protected file unchanged. The
+  git matrix (commit, checkout, switch, restore, stash, reset, mv, rm, tag, push, fetch,
+  merge, cherry-pick, gc) works with the pre-commit hook running. `git-safe-commit.sh`
+  commits. Real claude 2.1.318 finished a session against FakeAnthropic, writing a note,
+  committing and writing its transcript; its protected writes were refused and
+  `~/.claude.json` was left as it was.

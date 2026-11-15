@@ -107,6 +107,7 @@ def _run_slot(vault: Path) -> None:
     runner = _render(TEMPLATES / "run-scout.sh.tmpl", vault / "run-scout.sh", vault)
     fake_bin = vault.parent / "fakebin"
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     result = subprocess.run(
         [str(runner)],
         env={**env, "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}", "SCOUT_FORCE_MODE": SLOT},

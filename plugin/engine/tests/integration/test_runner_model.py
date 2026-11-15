@@ -90,6 +90,7 @@ def _stub_scoutctl(tmp_path: Path, *, answer: str | None) -> tuple[Path, Path]:
 
 def _run(script: Path, slot_key: str, **extra_env: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     env["SCOUT_FORCE_MODE"] = slot_key
     env.update(extra_env)
     return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)

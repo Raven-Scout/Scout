@@ -183,6 +183,10 @@ def _check_launchd_jobs() -> tuple[list[str], list[str]]:
         proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False, timeout=5)
     except (subprocess.SubprocessError, FileNotFoundError):
         return [], ["launchctl unavailable — skipped job registration check"]
+    if proc.returncode != 0:
+        # Not "no jobs": `launchctl list` itself was refused (inside a scheduled run's write sandbox, which denies
+        # launchd job creation, spec 2026-11-15) or failed. Saying the jobs are missing would be a false alarm.
+        return [], [f"launchctl list failed (exit {proc.returncode}) — skipped job registration check"]
     errors = [
         f"launchd: {label} not registered"
         for label in ("com.scout.schedule-tick", "com.scout.heartbeat")
@@ -390,6 +394,33 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
             'to the output of `command -v claude` (or to "" to auto-detect), then run /scout-update.'
         ], []
     return [], []
+
+
+def _check_run_sandbox(*, vault: Path, home: Path | None = None) -> tuple[list[str], list[str]]:
+    """Whether the next scheduled run would run in the write sandbox (spec 2026-11-15 §8): (warnings, notes).
+
+    Builds and self-tests the profile (one short sandbox-exec), never starts claude. Inside a sandboxed run
+    the self-test can't nest, so the runner's own status is reported instead.
+    """
+    import os
+
+    from scout.sandbox import launch
+
+    if os.environ.get("SCOUT_SANDBOX_STATUS") == "enforced":
+        return [], ["run sandbox: enforced (this session runs inside it)"]
+    try:
+        env = dict(os.environ) if home is None else {**os.environ, "HOME": str(home)}
+        result = launch.prepare(vault, env)
+    except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+        return [f"run sandbox: couldn't check ({e}); see `scoutctl sandbox status`"], []
+    line = f"run sandbox: {result.status} ({result.reason})"
+    if result.status == "failed":
+        return [f"{line}. Scheduled runs are skipped until `scoutctl sandbox status` says enforced."], []
+    if result.status == "conflict":
+        return [f"{line}. Scheduled runs go ahead under Claude Code's sandbox only."], []
+    if result.status == "off":
+        return [], [f"{line}; turn it back on with `scoutctl sandbox on`"]
+    return [], [line]
 
 
 def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
@@ -802,6 +833,10 @@ def run_doctor(
         probe_warnings, probe_notes = _check_gate_probe(vault=vault)
         warnings.extend(probe_warnings)
         notes.extend(probe_notes)
+        # Whether those runs are kept from writing what decides which gates run (OS write sandbox, Phase 1c).
+        sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
+        warnings.extend(sandbox_warnings)
+        notes.extend(sandbox_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:
             auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)
