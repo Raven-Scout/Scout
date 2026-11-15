@@ -447,11 +447,6 @@ def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, 
     return "\n".join(out), bodies
 
 
-def _drop_heredoc_bodies(command: str) -> str:
-    """``command`` without its here-documents' bodies, which are text and not commands."""
-    return _HD_MARK.sub("EOF", _split_heredocs(command)[0])
-
-
 def _close(s: str, i: int, kind: str) -> int:
     """The index of what closes a ``kind`` (``)``, a backtick or ``"``) opened just before ``i``, else ``len(s)``.
 
@@ -559,12 +554,6 @@ def _substitutions(s: str, *, quotes: bool = True) -> list[tuple[int, int, int, 
     return spans
 
 
-def _segments(command: str) -> list[str]:
-    """``command`` split at ``;``, ``&&``, ``||``, ``|``, newlines and subshell or substitution
-    boundaries, outside quotes."""
-    return [segment for segment, _ in _segments_with_ops(command)]
-
-
 def _segments_with_ops(command: str) -> list[tuple[str, str]]:
     """Each segment of ``command`` (see :func:`_segments`) with the operator before it ("" for the first)."""
     masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
@@ -575,12 +564,6 @@ def _segments_with_ops(command: str) -> list[tuple[str, str]]:
         at, op = m.end(), m[0]
     out.append((command[at:], op))
     return out
-
-
-def _split_redirects(segment: str) -> tuple[str, list[str]]:
-    """``segment`` without its unquoted redirects, and the files they write: an input redirect only reads."""
-    clean, writes, _reads, _strings = _redirects(segment)
-    return clean, writes
 
 
 def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
@@ -872,6 +855,7 @@ _PROGRAM_WRITES = re.compile(
         |spawn|execFile|write|open|mkdtemp)Sync\b|\b(?:writeFile|appendFile|copyFile|createWriteStream)\b|\bchild_process\b
     |\bFile\.(?:write|delete|unlink|rename|symlink|link|chmod|truncate|new)\b|\bIO\.(?:write|popen)\b
     |\bFileUtils\b|\bDir\.(?:mkdir|rmdir|delete|unlink)\b|%x[({\[]
+    |\bDeno\.(?:write\w*|remove|rename|symlink|link|truncate\w*|chmod\w*|copyFile\w*|create\w*|open\w*|run|Command)\b
     |\b(?:system|exec|qx|shell_exec|passthru|proc_open|popen|file_put_contents|fopen|unlink|rename|symlink|link
         |copy|tempnam|chmod|truncate)\s*[({]
     |\b(?:unlink|rename|symlink|link|truncate|chmod)\s+[$"'@]
@@ -1372,7 +1356,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     inner = [_run_escape(command[a:b], depth + 1, split=False) for _s, _e, a, b in spans]
     rebuilt, at, shift = [], 0, 0
     for (start, end, a, b), found in zip(spans, inner, strict=True):
-        known = _known_output(command[a:b]) if command[start] not in "<>" else None
+        # A process substitution becomes the pipe the shell hands over (its own command is judged above).
+        known = _known_output(command[a:b]) if command[start] not in "<>" else "/dev/fd/63"
         rebuilt += [command[at:start], known or SUBST]
         results.append((start - shift, found))
         shift += (end - start) - len(known or SUBST)
