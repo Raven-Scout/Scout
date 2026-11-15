@@ -4632,14 +4632,35 @@ def _register_delegate() -> None:
         typer.echo(f"stored at {push_token_path(vault)}")
 
     @delegate_app.command("trust-state")
-    def cli_delegate_trust_state(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
-        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only)."""
+    def cli_delegate_trust_state(
+        confirm: list[str] = typer.Option(  # noqa: B008
+            [], "--confirm", help="A delegate id whose link you checked (once per link), instead of the prompt."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only).
+
+        Each delegate and its remote are shown and must be confirmed: at a
+        terminal by typing the delegate id, otherwise with --confirm <id> per link.
+        """
+        import sys as _sys
+
         from scout import paths as _paths
         from scout.delegate_mirror import trust_state
         from scout.repo_sync import RepoSyncError
 
+        confirmed = set(confirm)
+
+        def ask(delegate: str, remote: str) -> bool:
+            if confirmed:
+                return delegate in confirmed
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{delegate} -> {remote}")
+            return typer.prompt(f"Type {delegate} to trust this link", default="", show_default=False) == delegate
+
         try:
-            result = trust_state(_paths.data_dir())
+            result = trust_state(_paths.data_dir(), confirm=ask)
         except RepoSyncError as e:
             _fail(e, as_json)
         _say(result, as_json)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -957,7 +958,15 @@ def test_trust_state_checks_each_link_and_signs_it_again(github_link: Path) -> N
     with pytest.raises(rs.RepoSyncError) as e:
         dm.trust_state(github_link, env={"SCOUT_MODE": "briefing"}, gh=gh)
     assert e.value.code == "headless_refused"
-    result = dm.trust_state(github_link, gh=gh)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.trust_state(github_link, gh=gh)  # no confirmation: nothing is signed
+    assert e.value.code == "not_confirmed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.trust_state(github_link, gh=gh, confirm=lambda d, r: False)
+    assert e.value.code == "not_confirmed" and "--confirm grok-personal" in e.value.message
+    seen: list[tuple[str, str]] = []
+    result = dm.trust_state(github_link, gh=gh, confirm=lambda d, r: seen.append((d, r)) is None)
+    assert seen == [("grok-personal", GITHUB)]
     link = dm.load_links(github_link)["grok-personal"]
     assert (link.deploy_key_id, link.stale_key_ids) == (100, [150])  # 151 isn't this delegate's
     assert link.last_vault is None and link.checked_fingerprint is None and link.key_file is None
@@ -1006,7 +1015,9 @@ def test_remote_identity_and_mirror_ownership_edges(vault: Path, tmp_path: Path)
     git(vault, "update-ref", "-d", dm.mirror_ref("grok-personal"))
     git(vault, "-c", "gc.reflogExpire=now", "reflog", "expire", "--all", "--expire=now")
     git(vault, "-c", "gc.pruneExpire=now", "gc", "-q", "--prune=now")
-    assert dm._mirror_owner(vault, str(bare), head) == "grok-personal"  # fetched: it wasn't here any more
+    assert dm._mirror_owner(vault, str(bare), head) == ("grok-personal", dm._vault_mark(vault))  # read remotely
+    in_vault = subprocess.run(["git", "-C", str(vault), "cat-file", "-e", head], capture_output=True)
+    assert in_vault.returncode != 0 and not (vault / ".git" / "FETCH_HEAD").exists()  # fetched elsewhere
     blob = rs.git(vault, "hash-object", "-w", "--stdin", input="{not json").stdout.strip()
     tree = rs._write_tree(vault, [f"100644 {blob}\t{dm.MANIFEST_PATH}"])
     odd = git(vault, "commit-tree", tree, "-m", "x").strip()
@@ -1088,3 +1099,81 @@ def test_known_residual_a_key_holder_can_keep_a_newly_hidden_name_on_main(
     memo.save(dm.Plan(delegate="grok-personal", fingerprint=new_fp))
     dm.sync(vault, "grok-personal")
     assert "Zephyr Orchard" in _show(bare, mention)  # the residual; an honest sync redacts it (tested above)
+
+
+# ----- after review-636's fourth pass: a mirror is bound to its vault too --------------------------------
+
+
+def _second_vault(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:  # noqa: F811
+    """A copy of the fixture vault at another path: another vault on this computer with the same delegates."""
+    other = tmp_path / "vault-b"
+    shutil.copytree(vault, other, symlinks=True)
+    for rel in (dm.STATE_REL, f"{dm.SCAN_DIR}"):
+        target = other / rel
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+    monkeypatch.setenv(rs.TEST_VAULT_ENV, str(other.resolve()))
+    return other.resolve()
+
+
+def test_one_vaults_mirror_cant_overwrite_another_vaults_for_the_same_delegate(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok-a"))
+    other = _second_vault(vault, tmp_path, monkeypatch)
+    theirs = _bare(tmp_path, "grok-b")
+    _link(other, "grok-personal", theirs)
+    assert dm._vault_mark(vault) != dm._vault_mark(other)
+    monkeypatch.setenv(rs.TEST_VAULT_ENV, str(vault))
+    before = _main(theirs)
+    _forge(vault, "grok-personal", remote=str(theirs), last_mirror=before)  # lease matches; same delegate id
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "remote_unbound" and "another vault" in e.value.message and _main(theirs) == before
+    with pytest.raises(rs.RepoSyncError) as e:  # nor by re-trusting the state, even confirmed
+        dm.trust_state(vault, confirm=lambda d, r: True)
+    assert e.value.code == "remote_unbound" and _main(theirs) == before
+
+
+def test_a_mirror_from_before_the_vault_mark_needs_replace_remote(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare = _bare(tmp_path, "grok")
+    real = dm.Plan.manifest
+
+    def legacy(self: dm.Plan) -> bytes:
+        doc = json.loads(real(self))
+        del doc["vault"]
+        return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    with pytest.MonkeyPatch.context() as mp:  # an older engine's mirror: no vault in its manifest
+        mp.setattr(dm.Plan, "manifest", legacy)
+        mp.setattr(dm, "check_tree", lambda *_a, **_k: "fp")
+        _link(vault, "grok-personal", bare)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "remote_unbound" and "--replace-remote" in e.value.message
+    _link(vault, "grok-personal", bare, replace_remote=True)  # the owner starts it over
+    assert json.loads(_show(bare, dm.MANIFEST_PATH))["vault"] == dm._vault_mark(vault)
+    assert dm.sync(vault, "grok-personal").unchanged
+
+
+def test_the_trust_state_cli_needs_each_link_confirmed(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    (dm.secrets_dir() / dm.STATE_KEY).unlink()
+    env = {"SCOUT_DATA_DIR": str(vault)}
+    out = runner.invoke(app, ["delegate", "trust-state"], env=env)  # not a terminal, nothing confirmed
+    assert out.exit_code == 2 and "wasn't confirmed" in out.output
+    out = runner.invoke(app, ["delegate", "trust-state", "--confirm", "duet"], env=env)
+    assert out.exit_code == 2 and "grok-personal" in out.output
+    out = runner.invoke(app, ["delegate", "trust-state", "--confirm", "grok-personal"], env=env)
+    assert out.exit_code == 0 and "holds grok-personal's mirror" in out.output
+    assert dm.load_links(vault)["grok-personal"].last_mirror

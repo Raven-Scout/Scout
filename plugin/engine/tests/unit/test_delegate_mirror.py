@@ -1431,6 +1431,7 @@ def test_check_tree_refuses_generated_files_the_tree_does_not_imply(
 
 
 def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
     the_plan, _ = _planned(vault)
     good = json.loads(the_plan.manifest())
     paths = {f.path for f in the_plan.files}
@@ -1438,7 +1439,7 @@ def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None
     def canonical(doc: object) -> bytes:
         return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode()
 
-    assert dm._manifest_ok(canonical(good), "grok-personal", paths)
+    assert dm._manifest_ok(canonical(good), "grok-personal", paths, mark)
     for bad in (
         b"not json",
         canonical([]),
@@ -1448,7 +1449,7 @@ def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None
         canonical({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}),
         canonical({**good, "redacted_lines": ["x"]}),
     ):
-        assert not dm._manifest_ok(bad, "grok-personal", paths), bad
+        assert not dm._manifest_ok(bad, "grok-personal", paths, mark), bad
 
 
 # ----- final review of #632 (coordinator, 2026-11-14) ---------------------------------------------
@@ -1500,13 +1501,14 @@ def test_a_sync_that_drops_most_files_says_so(vault: Path) -> None:
 
 
 def test_the_manifest_must_be_the_exact_bytes_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
     the_plan, _ = _planned(vault)
     good = the_plan.manifest()
     paths = {f.path for f in the_plan.files}
-    assert dm._manifest_ok(good, "grok-personal", paths)
+    assert dm._manifest_ok(good, "grok-personal", paths, mark)
     dup = good.replace(b'  "delegate": "grok-personal"', b'  "delegate": "Sam Lee",\n  "delegate": "grok-personal"', 1)
     assert dup != good and json.loads(dup)["delegate"] == "grok-personal"
-    assert not dm._manifest_ok(dup, "grok-personal", paths)
+    assert not dm._manifest_ok(dup, "grok-personal", paths, mark)
     assert not dm._manifest_ok(json.dumps(json.loads(good)).encode(), "grok-personal", paths)  # not canonical
 
 

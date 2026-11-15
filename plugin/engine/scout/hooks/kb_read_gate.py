@@ -145,6 +145,14 @@ def _deny_detach() -> str:
     )
 
 
+def _deny_delegate_write() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't link, unlink or re-trust the owner's agents' mirrors, or change their deploy "
+        "keys (`scoutctl delegate link|unlink|key|trust-state`): those are the owner's, at the keyboard. "
+        "`scoutctl delegate sync` and `status` are fine. If a mirror needs one of these, say so in the run notes."
+    )
+
+
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
@@ -193,11 +201,13 @@ def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) 
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
-        from scout.kb.live_run import run_escape
+        from scout.kb.live_run import DELEGATE_FORM, run_escape
 
         escape = run_escape(command)
         if escape == "env":
             return _deny_run_env()
+        if escape == DELEGATE_FORM:
+            return _deny_delegate_write()
         if escape == "detach":
             return _deny_detach()
         if escape is not None:

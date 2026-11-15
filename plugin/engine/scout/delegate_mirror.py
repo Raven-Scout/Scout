@@ -274,9 +274,29 @@ def state_path(vault: Path) -> Path:
 STATE_KEY = "state.key"  # in secrets_dir(): signs what Scout writes to .scout-state, so nothing else can forge it
 
 
+VAULT_SALT = "vault.salt"  # in secrets_dir(): makes each vault's mark (_vault_mark) unguessable from its path
+
+
 def _state_key(*, create: bool) -> bytes | None:
     """This computer's key for :func:`_sign`, made on first use (0600, in the 0700 secrets folder)."""
-    path = secrets_dir() / STATE_KEY
+    return _secret(STATE_KEY, create=create)
+
+
+def _vault_mark(vault: Path) -> str:
+    """Which vault a mirror is of, as its manifest records it: this computer's salt and the vault's real path.
+
+    A run can read the salt but can't move the vault, so it can't make one vault's
+    mark match another's; a delegate can't confirm a guessed path without the salt.
+    A vault that moves gets a new mark: its mirrors are re-linked with --replace-remote.
+    """
+    salt = _secret(VAULT_SALT, create=True)
+    assert salt is not None
+    return hashlib.sha256(salt + b"\0" + str(vault.resolve()).encode("utf-8")).hexdigest()[:32]
+
+
+def _secret(name: str, *, create: bool) -> bytes | None:
+    """A random 32-byte secret in the secrets folder, made on first use (0600, O_EXCL)."""
+    path = secrets_dir() / name
     try:
         return bytes.fromhex(path.read_text(encoding="utf-8").strip())
     except FileNotFoundError:
@@ -288,10 +308,10 @@ def _state_key(*, create: bool) -> bytes | None:
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:  # another process made it first
-        return _state_key(create=False)
+        return _secret(name, create=False)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(os.urandom(32).hex() + "\n")
-    return _state_key(create=False)
+    return _secret(name, create=False)
 
 
 def _sign(key: bytes, kind: str, doc: Mapping[str, Any]) -> str:
@@ -650,17 +670,27 @@ def _same_remote(a: str, b: str) -> bool:
     return a == b
 
 
-def _mirror_owner(vault: Path, remote: str, commit: str) -> str | None:
-    """The delegate the manifest in mirror commit ``commit`` names (fetched from ``remote`` if it isn't here)."""
-    if git(vault, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
-        _remote_git(vault, remote, "fetch", "--no-tags", "--quiet", remote, REMOTE_BRANCH, check=False)
-    shown = git(vault, "show", f"{commit}:{MANIFEST_PATH}", check=False)
+def _mirror_owner(vault: Path, remote: str, commit: str) -> tuple[str, str] | None:
+    """(delegate, vault mark) the manifest in mirror commit ``commit`` names, or None when it holds none.
+
+    A commit that isn't in the vault is fetched into a throwaway bare repository,
+    never the vault's own object store: a remote's main is untrusted until this says whose it is.
+    """
+    if git(vault, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode == 0:
+        shown = git(vault, "show", f"{commit}:{MANIFEST_PATH}", check=False)
+    else:
+        with tempfile.TemporaryDirectory(prefix="scout-mirror-check-") as tmp:
+            git(Path(tmp), "init", "-q", "--bare")
+            _remote_git(
+                vault, remote, f"--git-dir={tmp}", "fetch", "--no-tags", "--quiet", remote, REMOTE_BRANCH, check=False
+            )
+            shown = git(Path(tmp), "show", f"{commit}:{MANIFEST_PATH}", check=False)
     try:
         doc = json.loads(shown.stdout) if shown.returncode == 0 else None
     except ValueError:
         return None
-    named = doc.get("delegate") if isinstance(doc, dict) else None
-    return named if isinstance(named, str) else None
+    named, mark = (doc.get("delegate"), doc.get("vault")) if isinstance(doc, dict) else (None, None)
+    return (named, mark if isinstance(mark, str) else "") if isinstance(named, str) else None
 
 
 def bind_remote(
@@ -673,9 +703,11 @@ def bind_remote(
     push, or a key deletion, at another repository:
 
     - no other link may use the same remote;
-    - the remote's main must hold a mirror manifest naming this delegate. At
-      ``mode="link"`` an empty remote, or one that isn't a Scout mirror
-      (``--replace-remote``), is allowed, but never another delegate's;
+    - the remote's main must hold a mirror manifest naming this delegate and
+      this vault (:func:`_vault_mark`). At ``mode="link"`` an empty remote, or
+      one that isn't a Scout mirror, is allowed; at ``mode="replace"`` (link
+      with ``--replace-remote``, the owner at the keyboard) also this delegate's
+      mirror from another vault or an older engine; never another delegate's;
     - for ``mode="push"`` with a deploy key on record, the GitHub repository
       must have a key titled for this delegate.
     """
@@ -687,14 +719,23 @@ def bind_remote(
             )
     head = remote_head(vault, link.remote)
     owner = _mirror_owner(vault, link.remote, head) if head is not None else None
-    if owner == link.id or (mode == "link" and owner is None):
-        pass
-    else:
-        found = f"{owner}'s mirror" if owner else ("empty" if head is None else "not a Scout delegate mirror")
+    ours = owner == (link.id, _vault_mark(vault))
+    if not (
+        ours
+        or (mode in ("link", "replace") and owner is None)
+        or (mode == "replace" and owner is not None and owner[0] == link.id)
+    ):
+        if owner is None:
+            found = "empty" if head is None else "not a Scout delegate mirror"
+        elif owner[0] != link.id:
+            found = f"{owner[0]}'s mirror"
+        else:
+            found = f"{link.id}'s mirror of another vault, or from before mirrors recorded their vault"
         raise RepoSyncError(
             "remote_unbound",
-            f"refused: {link.remote} is {found}, not {link.id}'s; nothing was pushed or deleted. If the link "
-            f"state is wrong, check it with: scoutctl delegate trust-state",
+            f"refused: {link.remote} is {found}, not this vault's {link.id} mirror; nothing was pushed or deleted. "
+            f"If it is this vault's (moved, or linked before), start it over with: scoutctl delegate link {link.id} "
+            f"--remote {link.remote} --replace-remote --confirm-account-unshared",
         )
     repo = github_repo(link.remote)
     if mode == "push" and repo is not None and link.deploy_key_id is not None:
@@ -997,6 +1038,7 @@ class Plan:
     hidden_paths: set[str] = field(default_factory=set)
     mirror_policy: Policy | None = None
     fingerprint: str = ""  # what the scan depended on (:func:`scan_fingerprint`)
+    vault: str = ""  # the vault's mark (:func:`_vault_mark`), recorded in the manifest
     written: dict[str, str] = field(default_factory=dict)  # path -> blob sha of each new (redacted) blob
 
     def manifest(self) -> bytes:
@@ -1005,6 +1047,7 @@ class Plan:
             "generator": "scoutctl delegate sync",
             "engine_version": scout.__version__,
             "delegate": self.delegate,
+            "vault": self.vault,
             "files": len(self.files),
             "withheld_files": self.withheld + self.left_out,
             "redacted_lines": dict(sorted(self.redacted.items())),
@@ -1029,11 +1072,11 @@ def policy_document(policy: Policy, labels: Sequence[Label]) -> bytes:
 
 
 _MANIFEST_KEYS = frozenset(
-    {"schema_version", "generator", "engine_version", "delegate", "files", "withheld_files", "redacted_lines"}
+    {"schema_version", "generator", "engine_version", "delegate", "vault", "files", "withheld_files", "redacted_lines"}
 )
 
 
-def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str]) -> bool:
+def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str], vault: str = "") -> bool:
     """Whether ``data`` is a manifest :meth:`Plan.manifest` could have written: constants, counts, tree paths."""
     try:
         doc = json.loads(data)
@@ -1045,8 +1088,8 @@ def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str]) -> bool:
         return False  # only the bytes Plan.manifest writes: no duplicate key can carry a first value
     counts = [doc["files"], doc["withheld_files"], *doc["redacted_lines"].values()]
     return (
-        (doc["schema_version"], doc["generator"], doc["engine_version"], doc["delegate"])
-        == (SCHEMA_VERSION, "scoutctl delegate sync", scout.__version__, delegate)
+        (doc["schema_version"], doc["generator"], doc["engine_version"], doc["delegate"], doc["vault"])
+        == (SCHEMA_VERSION, "scoutctl delegate sync", scout.__version__, delegate, vault)
         and set(doc["redacted_lines"]) <= tree_paths
         and all(type(n) is int and n >= 0 for n in counts)
     )
@@ -1271,7 +1314,7 @@ def plan(
     """
     seen = visibility(vault, head, delegate, blobs)
     policy, rules = seen.policy, seen.rules
-    out = Plan(delegate=delegate, hidden_paths=set(seen.hidden))
+    out = Plan(delegate=delegate, hidden_paths=set(seen.hidden), vault=_vault_mark(vault))
     out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden)
     scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
@@ -1551,7 +1594,7 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             elif e.path != paths.VAULT_MARKER and not _same_label(ours, mirrored):
                 bad += 1
         bad += blobs.read(by_path[POLICY_PATH].sha) != policy_document(theirs, labels)
-        bad += not _manifest_ok(blobs.read(by_path[MANIFEST_PATH].sha), delegate, tree_paths)
+        bad += not _manifest_ok(blobs.read(by_path[MANIFEST_PATH].sha), delegate, tree_paths, _vault_mark(vault))
         if bad:
             raise RepoSyncError(
                 "delegate_mirror_unsafe",
@@ -1618,6 +1661,7 @@ def _build_and_push(
     gh: GhRunner,
     record: Callable[[DelegateLink], None],
     links: Mapping[str, DelegateLink] | None = None,
+    replace: bool = False,
 ) -> tuple[Result, DelegateLink]:
     head = _head(vault)
     memo = ScanMemo.load(vault, link.id)
@@ -1653,7 +1697,8 @@ def _build_and_push(
     # The remote must be this delegate's own mirror before anything is built on it: the link state is no proof,
     # since whatever can read the signing key can sign a forged one.
     check_remote(link.remote, vault=vault, gh=gh)
-    bound = bind_remote(vault, link, links or {}, gh=gh, mode="link" if fresh else "push")
+    mode = ("replace" if replace else "link") if fresh else "push"
+    bound = bind_remote(vault, link, links or {}, gh=gh, mode=mode)
     if bound != expect:
         raise RepoSyncError(
             "mirror_diverged", f"refused: {link.remote}'s main moved since the last mirror; nothing was pushed"
@@ -1781,7 +1826,9 @@ def link(
             stale_key_ids=list(old.stale_key_ids) if old is not None and old.remote == remote else [],
             key_file=old.key_file if old is not None and old.remote == remote else None,
         )
-        result, updated = _build_and_push(vault, new, fresh=True, expect=current, gh=gh, record=record, links=links)
+        result, updated = _build_and_push(
+            vault, new, fresh=True, expect=current, gh=gh, record=record, links=links, replace=replace_remote
+        )
         links[delegate] = dataclasses.replace(updated, last_inputs=sync_inputs(vault))  # else the first tick re-syncs
         if ignored:
             result.notes.append(f"added {STATE_REL} to .gitignore")
@@ -2294,7 +2341,13 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
     return result
 
 
-def trust_state(vault: Path, *, env: Mapping[str, str] | None = None, gh: GhRunner = _gh) -> Result:
+def trust_state(
+    vault: Path,
+    *,
+    confirm: Callable[[str, str], bool] | None = None,
+    env: Mapping[str, str] | None = None,
+    gh: GhRunner = _gh,
+) -> Result:
     """Check each link in a state file whose signature doesn't verify, and sign it again. The owner only.
 
     For when the signing key was lost or the file was edited. Nothing in the
@@ -2304,8 +2357,10 @@ def trust_state(vault: Path, *, env: Mapping[str, str] | None = None, gh: GhRunn
     the deploy keys are read back from GitHub by title (the one on record is
     kept only if GitHub shows it as this delegate's; any other key titled for
     this delegate is kept on record as an old key, so it is deleted next time).
-    Sync times, fingerprints, the key file and the scan memos are reset. If any
-    link fails, nothing is written.
+    Sync times, fingerprints, the key file and the scan memos are reset. Each
+    ``delegate → remote`` must also be confirmed by the owner (``confirm``; the
+    CLI asks at a terminal or takes ``--confirm <id>``). If any link fails or
+    isn't confirmed, nothing is written.
     """
     env = os.environ if env is None else env
     vault = vault.resolve()
@@ -2322,13 +2377,20 @@ def trust_state(vault: Path, *, env: Mapping[str, str] | None = None, gh: GhRunn
             raise RepoSyncError(
                 "state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it"
             ) from e
-        checked: dict[str, DelegateLink] = {}
-        for key, link in sorted(claimed.items()):
+        for key, link in claimed.items():  # the file's own shape first, before any link is checked or confirmed
             _check_id(key)
             if link.id != key:
                 raise RepoSyncError("state_unreadable", f"refused: the link under {key!r} names {link.id!r}")
+        checked: dict[str, DelegateLink] = {}
+        for key, link in sorted(claimed.items()):
             check_remote(link.remote, vault=vault, gh=gh)
             head = bind_remote(vault, link, claimed, gh=gh, mode="keys")
+            if confirm is None or not confirm(key, link.remote):
+                raise RepoSyncError(
+                    "not_confirmed",
+                    f"refused: {key} -> {link.remote} wasn't confirmed, so nothing was signed; confirm each link "
+                    f"(at a terminal, or with --confirm {key})",
+                )
             deploy, stale = _keys_on_github(link, gh)
             if head is not None and git(vault, "cat-file", "-e", f"{head}^{{commit}}", check=False).returncode == 0:
                 git(vault, "update-ref", mirror_ref(key), head)
