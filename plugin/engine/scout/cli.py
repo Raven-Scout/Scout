@@ -3836,17 +3836,18 @@ def self_update_run_cmd(
     """
     import datetime as _dt
     import json as _json
-    import sys as _sys
 
     from scout import paths as _paths
+    from scout._spawn import python_module_argv
     from scout.scripts.self_update_run import default_deps, run_lock, run_update, spawn_detached
 
     vault = _paths.data_dir()
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     log_name = f"self-update-{today}.log"
     if detach:
-        argv = [_sys.executable, "-m", "scout", "self-update", "run"]
-        argv += [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        # The heartbeat runs this with the vault as cwd; -P keeps vault files off the child's sys.path.
+        flags = [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        argv = python_module_argv("scout", "self-update", "run", *flags)
         pid = spawn_detached(argv, log_path=vault / ".scout-logs" / log_name)
         typer.echo(f"self-update: started in the background (pid {pid}); log: .scout-logs/{log_name}")
         return
@@ -4484,17 +4485,29 @@ def _register_delegate() -> None:
     def cli_delegate_sync(
         delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
         all_: bool = typer.Option(False, "--all", help="Every linked delegate; one failing doesn't stop the rest."),
+        if_moved: bool = typer.Option(
+            False,
+            "--if-moved",
+            help="With --all: only delegates whose mirror may be behind (HEAD moved, or the last sync failed).",
+        ),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
-        """Push a new mirror commit when the vault's HEAD changed what the delegate may see."""
+        """Push a new mirror commit when the vault's HEAD changed what the delegate may see.
+
+        Scheduled runs call `sync --all` when they finish, and the schedule tick
+        calls `sync --all --if-moved` at most every 15 minutes. A failure is
+        recorded for run health and doctor, never failing the run.
+        """
         import json as _json
 
         from scout import paths as _paths
         from scout.delegate_mirror import sync, sync_all
         from scout.repo_sync import RepoSyncError
 
-        if (delegate is None) == (not all_):
-            typer.echo("scoutctl delegate sync: name one delegate, or pass --all", err=True)
+        if (delegate is None) == (not all_) or (if_moved and not all_):
+            typer.echo(
+                "scoutctl delegate sync: name one delegate, or pass --all (and --if-moved only with --all)", err=True
+            )
             raise typer.Exit(2)
         if delegate is not None:
             try:
@@ -4504,7 +4517,7 @@ def _register_delegate() -> None:
             _say(result, as_json)
             return
         try:
-            done, failed = sync_all(_paths.data_dir())
+            done, failed = sync_all(_paths.data_dir(), only_moved=if_moved)
         except RepoSyncError as e:
             _fail(e, as_json)
         if as_json:
@@ -4617,6 +4630,40 @@ def _register_delegate() -> None:
         except OSError as e:
             _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), False)
         typer.echo(f"stored at {push_token_path(vault)}")
+
+    @delegate_app.command("trust-state")
+    def cli_delegate_trust_state(
+        confirm: list[str] = typer.Option(  # noqa: B008
+            [], "--confirm", help="A delegate id whose link you checked (once per link), instead of the prompt."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only).
+
+        Each delegate and its remote are shown and must be confirmed: at a
+        terminal by typing the delegate id, otherwise with --confirm <id> per link.
+        """
+        import sys as _sys
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import trust_state
+        from scout.repo_sync import RepoSyncError
+
+        confirmed = set(confirm)
+
+        def ask(delegate: str, remote: str) -> bool:
+            if confirmed:
+                return delegate in confirmed
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{delegate} -> {remote}")
+            return typer.prompt(f"Type {delegate} to trust this link", default="", show_default=False) == delegate
+
+        try:
+            result = trust_state(_paths.data_dir(), confirm=ask)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
 
     @delegate_app.command("unlink")
     def cli_delegate_unlink(

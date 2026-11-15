@@ -56,6 +56,9 @@ def _commit(vault: Path, rel: str, text: str, subject: str) -> None:
 @pytest.fixture
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     clear_cache()
+    home = tmp_path / "home"  # the state-signing key and any secrets go here, never to the real home
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
     v = build_privacy_vault(tmp_path / "v").resolve()
     for key, value in git_env().items():
         if key.startswith("GIT_"):
@@ -72,6 +75,8 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f"Notes from Priya's shared plan. {PROVENANCE_CANARY}\n",
         encoding="utf-8",
     )
+    with (v / ".gitignore").open("a", encoding="utf-8") as gi:
+        gi.write(".scout-logs/\n")  # as templates/.gitignore.tmpl has it: run-health events stay out of commits
     git(v, "add", "-A")
     git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "list delegates")
     privacy_migrate.accept(v)
@@ -709,7 +714,7 @@ def test_the_cli_refuses_an_unreadable_state(vault: Path) -> None:
     dm.state_path(vault).write_text("[]", encoding="utf-8")
     for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
         r = runner.invoke(app, argv)
-        assert r.exit_code == 2 and "can't be read" in r.output
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
 
 
 # ----- review of #632 (coordinator, 2026-11-13) ---------------------------------------------------
@@ -838,7 +843,8 @@ def test_the_github_check_runs_before_the_push(vault: Path, monkeypatch: pytest.
         return gh(args)
 
     result = dm.link(vault, "grok-personal", remote, account_unshared=True, gh=watched)
-    assert result.pushed and events == ["gh", "gh", "gh", "gh", "push"]  # link's check, the push's, then the push
+    # link's check, the build's (before anything is built on the remote), the push's, then the push
+    assert result.pushed and events == ["gh"] * 6 + ["push"]
     events.clear()
     with pytest.raises(rs.RepoSyncError) as e:
         dm.link(vault, "duet", remote, account_unshared=True, gh=GitHubRepo(visibility="internal"))
@@ -1011,6 +1017,7 @@ class FakeGh:
     ) -> None:
         self.calls: list[list[str]] = []
         self.keys: dict[int, str] = {}
+        self.titles: dict[int, str] = {}  # key id -> title; a key added outside the fake defaults to ours
         self.read_only = read_only
         self.create_ok = create_ok
         self.delete_ok = delete_ok
@@ -1026,6 +1033,7 @@ class FakeGh:
         if a[:2] == ["api", "-X"] and a[2] == "POST":
             new = 100 + len(self.keys)
             self.keys[new] = next(x[4:] for x in a if x.startswith("key="))
+            self.titles[new] = next(x[6:] for x in a if x.startswith("title="))
             return subprocess.CompletedProcess(["gh"], 0, f"{new}\t{self.read_only}\n", "")
         if a[:2] == ["api", "-X"] and a[2] == "DELETE":
             if not self.delete_ok:
@@ -1040,7 +1048,17 @@ class FakeGh:
         if a[:2] == ["api", "--paginate"] and a[2].endswith("/keys"):
             if not self.can_list:
                 return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
-            return subprocess.CompletedProcess(["gh"], 0, "".join(f"{k}\n" for k in self.keys), "")
+            rows = {
+                ".[].id": [f"{k}" for k in self.keys],
+                ".[].title": [self._title(k) for k in self.keys],
+                ".[] | [.id, .title] | @tsv": [f"{k}\t{self._title(k)}" for k in self.keys],
+            }[a[-1]]
+            return subprocess.CompletedProcess(["gh"], 0, "".join(f"{r}\n" for r in rows), "")
+        if a[0] == "api" and "/keys/" in a[1] and a[-1] == ".title":
+            key_id = int(a[1].rsplit("/", 1)[1])
+            if self.delete_404 or key_id not in self.keys:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(["gh"], 0, self._title(key_id) + "\n", "")
         if a[:2] == ["api", "user"]:
             return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
         if a[-1].endswith("@tsv"):
@@ -1048,6 +1066,9 @@ class FakeGh:
         if any(x.endswith("/collaborators") for x in a):
             return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
         raise AssertionError(f"unexpected gh call {a}")
+
+
+FakeGh._title = lambda self, k: self.titles.get(k, "scout-delegate-grok-personal")  # type: ignore[attr-defined]
 
 
 def _fake_keygen(path: Path, comment: str) -> None:
@@ -1058,15 +1079,21 @@ def _fake_keygen(path: Path, comment: str) -> None:
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     h = tmp_path / "home"
-    h.mkdir()
+    h.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(h))
     return h
 
 
 @pytest.fixture
-def github_link(vault: Path, tmp_path: Path, home: Path) -> Path:
-    """A link pushed to a local bare repository, then pointed at a GitHub URL as if it lived there."""
-    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+def github_link(vault: Path, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A link pushed to a local bare repository, then pointed at a GitHub URL as if it lived there.
+
+    Asking the GitHub URL for its main reads the local bare repository instead, so no test reaches the network.
+    """
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    real = dm.remote_head
+    monkeypatch.setattr(dm, "remote_head", lambda v, r: real(v, str(bare) if r == GITHUB else r))
     links = dm.load_links(vault)
     links["grok-personal"] = dataclasses.replace(links["grok-personal"], remote=GITHUB)
     dm.save_links(vault, links)
@@ -1122,12 +1149,16 @@ def test_a_key_needs_a_github_mirror_and_the_owner(vault: Path, tmp_path: Path, 
 
 
 def test_unlink_revokes_the_key_and_keeps_the_link_when_it_cannot(github_link: Path) -> None:
-    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    added = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=added, keygen=_fake_keygen)
+    stubborn = FakeGh(delete_ok=False)
+    stubborn.keys, stubborn.titles = dict(added.keys), dict(added.titles)  # the key is live on GitHub
     with pytest.raises(rs.RepoSyncError) as e:
-        dm.unlink(github_link, "grok-personal", gh=FakeGh(delete_ok=False))
+        dm.unlink(github_link, "grok-personal", gh=stubborn)
     assert e.value.code == "key_revoke_failed"
     assert "grok-personal" in dm.load_links(github_link)
-    gh = FakeGh()
+    gh = stubborn
+    gh.delete_ok = True
     result = dm.unlink(github_link, "grok-personal", gh=gh)
     assert ["api", "-X", "DELETE", "repos/someone/grok-mirror/keys/100"] in gh.calls
     assert "revoked the agent's deploy key" in result.notes
@@ -1262,7 +1293,7 @@ def test_the_cli_key_command_and_an_unreadable_state(vault: Path, monkeypatch: p
     dm.state_path(vault).write_text("[]", encoding="utf-8")
     for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
         r = runner.invoke(app, argv)
-        assert r.exit_code == 2 and "can't be read" in r.output
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
 
 
 def test_the_cli_key_and_push_token_commands(vault: Path, tmp_path: Path, home: Path) -> None:
@@ -1401,6 +1432,7 @@ def test_check_tree_refuses_generated_files_the_tree_does_not_imply(
 
 
 def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
     the_plan, _ = _planned(vault)
     good = json.loads(the_plan.manifest())
     paths = {f.path for f in the_plan.files}
@@ -1408,7 +1440,7 @@ def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None
     def canonical(doc: object) -> bytes:
         return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode()
 
-    assert dm._manifest_ok(canonical(good), "grok-personal", paths)
+    assert dm._manifest_ok(canonical(good), "grok-personal", paths, mark)
     for bad in (
         b"not json",
         canonical([]),
@@ -1418,7 +1450,7 @@ def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None
         canonical({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}),
         canonical({**good, "redacted_lines": ["x"]}),
     ):
-        assert not dm._manifest_ok(bad, "grok-personal", paths), bad
+        assert not dm._manifest_ok(bad, "grok-personal", paths, mark), bad
 
 
 # ----- final review of #632 (coordinator, 2026-11-14) ---------------------------------------------
@@ -1470,13 +1502,14 @@ def test_a_sync_that_drops_most_files_says_so(vault: Path) -> None:
 
 
 def test_the_manifest_must_be_the_exact_bytes_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
     the_plan, _ = _planned(vault)
     good = the_plan.manifest()
     paths = {f.path for f in the_plan.files}
-    assert dm._manifest_ok(good, "grok-personal", paths)
+    assert dm._manifest_ok(good, "grok-personal", paths, mark)
     dup = good.replace(b'  "delegate": "grok-personal"', b'  "delegate": "Sam Lee",\n  "delegate": "grok-personal"', 1)
     assert dup != good and json.loads(dup)["delegate"] == "grok-personal"
-    assert not dm._manifest_ok(dup, "grok-personal", paths)
+    assert not dm._manifest_ok(dup, "grok-personal", paths, mark)
     assert not dm._manifest_ok(json.dumps(json.loads(good)).encode(), "grok-personal", paths)  # not canonical
 
 
@@ -1587,7 +1620,8 @@ def test_remote_git_forces_certificate_checks_and_carries_the_token(
         == b"x-access-token:github_pat_STANDIN"
     )
     assert set(dm.remote_env(vault, "/some/local.git")) >= {"GIT_CONFIG_COUNT"}
-    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "1"  # no token off GitHub
+    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "3"  # TLS and stall limits, no token
+    assert pairs["http.lowSpeedLimit"] == "1000" and pairs["http.lowSpeedTime"] == "60"
 
 
 def test_push_passes_the_token_in_the_environment_not_the_arguments(
@@ -1607,7 +1641,7 @@ def test_push_passes_the_token_in_the_environment_not_the_arguments(
     assert len(seen) == 2
     for args, env in seen:
         assert not any("STANDIN" in a or "extraheader" in a for a in args)
-        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "3"
+        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "5"
     monkeypatch.setattr(dm.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, b"", b"boom"))
     with pytest.raises(rs.RepoSyncError) as e:
         dm.remote_head(vault, GITHUB)
@@ -1659,15 +1693,24 @@ def test_the_key_file_is_recorded_and_a_known_hosts_pin_written(github_link: Pat
     assert known.read_text(encoding="utf-8") == dm.GITHUB_KNOWN_HOSTS + "\n"
     assert dm.GITHUB_KNOWN_HOSTS.startswith("github.com ssh-ed25519 ")
     assert any("StrictHostKeyChecking=yes" in n and "UserKnownHostsFile" in n for n in result.notes)
-    # the vault moved: its path no longer gives the key file, but the link still names it
-    moved = tmp_path / "elsewhere-key"
+    # the vault moved: its path no longer gives the key file, but the link still names it in the secrets folder
+    moved = key.with_name("0123456789abcdef-grok-personal")
     for suffix in ("", ".pub", ".known_hosts"):
         Path(str(key) + suffix).rename(str(moved) + suffix)
+    outside = tmp_path / "id_ed25519"  # a key file recorded anywhere else is never deleted
+    outside.write_text("the owner's own key\n", encoding="utf-8")
     links = dm.load_links(github_link)
-    links["grok-personal"] = dataclasses.replace(link, key_file=str(moved))
+    for recorded in (str(outside), str(moved)):
+        links["grok-personal"] = dataclasses.replace(link, key_file=recorded)
+        assert [
+            p
+            for p in dm._key_files(github_link, "grok-personal", links["grok-personal"])
+            if p.name.startswith(Path(recorded).name)
+        ] == ([] if recorded == str(outside) else [Path(recorded + s) for s in ("", ".pub", ".known_hosts")])
     dm.save_links(github_link, links)
     dm.unlink(github_link, "grok-personal", gh=FakeGh())
     assert not any(Path(str(moved) + suffix).exists() for suffix in ("", ".pub", ".known_hosts"))
+    assert outside.exists()
 
 
 def test_the_rewrite_check_reads_the_config_the_push_uses(
