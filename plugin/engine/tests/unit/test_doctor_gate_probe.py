@@ -17,7 +17,7 @@ def _cache(vault: Path, **over: object) -> None:
         "flags": ["--permission-mode", "auto"],
         "env_key": "CLAUDE_CODE_SIMPLE=;CLAUDE_CONFIG_DIR=",
         "config_sha256": "def",
-        "unsafe": False,
+        "unsafe": "",
         "checked_at": "2026-11-13T21:29:05+00:00",
         **over,
     }

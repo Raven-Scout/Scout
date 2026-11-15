@@ -590,13 +590,35 @@ def _trailing_gates_skips(rows: list[OutcomeRow]) -> list[OutcomeRow]:
     return streak[::-1]
 
 
+# Why the gate probe refused to run (failure_class of a gates_unsafe_* skip): (the cause, what to do).
+_UNSAFE_ADVICE = {
+    "gates_unsafe_endpoint": (
+        "a Claude setting names an endpoint the check can't keep on this machine",
+        "Run `scoutctl gates probe` to see which setting, and remove or rename it in your Claude settings' env, "
+        "or run Scout where the check's network sandbox is available (macOS).",
+    ),
+    "gates_unsafe_launcher": (
+        "the `claude` the runners call is a launcher script (a mise, asdf or similar shim) the check can't see "
+        "through, so it can't turn off every provider",
+        "Point Scout at the real claude binary: set connectors.inputs.claude_bin in scout-config.yaml to it "
+        "(for mise: `mise which claude`), then run /scout-update; or run Scout where the check's network "
+        "sandbox is available (macOS).",
+    ),
+    "": (
+        "the check couldn't be kept on this machine",
+        "Run `scoutctl gates probe` to see why.",
+    ),
+}
+
+
 def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
     """Runs skipped because claude didn't load Scout's privacy hooks (spec 2026-11-13 §3.5)."""
     streak = _trailing_gates_skips(rows)
     if not streak:
         return []
     log = _run_log(vault, streak[-1])
-    if streak[-1].failure_class == "gates_unsafe":
+    if streak[-1].failure_class.startswith("gates_unsafe"):
+        cause, fix = _UNSAFE_ADVICE.get(streak[-1].failure_class, _UNSAFE_ADVICE[""])
         return [
             Finding(
                 id="gates.probe_unsafe",
@@ -604,13 +626,9 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 since=streak[0].finished_at,
                 summary=(
                     f"The last {len(streak)} scheduled run(s) were skipped: Scout couldn't check its privacy hooks "
-                    "safely, because a Claude setting names an endpoint the check can't keep on this machine."
+                    f"safely, because {cause}."
                 ),
-                fix=(
-                    "Run `scoutctl gates probe` to see which setting. Remove or rename it in your Claude settings' "
-                    "env, or run Scout where the check's network sandbox is available (macOS). Runs resume on "
-                    "their own once the probe passes."
-                ),
+                fix=f"{fix} Runs resume on their own once `scoutctl gates probe` passes.",
                 source="ledger",
                 log=str(log) if log else None,
             )

@@ -113,9 +113,11 @@ if [ -x "$SCOUTCTL_BIN" ]; then
     GATE_RC=0
     "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" >> "$LOG_FILE" 2>&1 || GATE_RC=$?
 fi
-if [ "$GATE_RC" -eq 4 ]; then
-    echo "=== Gate probe: Scout couldn't check its privacy hooks safely (a Claude setting names an endpoint the check can't keep on this machine) — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
-    scout_record_skip gates_unsafe
+if [ "$GATE_RC" -eq 4 ] || [ "$GATE_RC" -eq 5 ]; then
+    GATE_CAUSE=endpoint
+    [ "$GATE_RC" -eq 5 ] && GATE_CAUSE=launcher
+    echo "=== Gate probe: Scout couldn't check its privacy hooks safely here ($GATE_CAUSE; see scoutctl gates probe) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip "gates_unsafe_$GATE_CAUSE"
     exit 0
 elif [ "$GATE_RC" -ne 0 ]; then
     echo "=== Gate probe failed, or scoutctl is missing at $SCOUTCTL_BIN: Scout's privacy hooks are not known to load in $CLAUDE_BIN — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"

@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from scout import health
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
@@ -63,15 +65,24 @@ def test_a_run_after_a_gates_skip_clears_the_finding(tmp_path: Path) -> None:
     assert "gates.not_loaded" not in _ids(health.evaluate(v, now=NOW))
 
 
-def test_an_unsafe_probe_skip_has_its_own_finding(tmp_path: Path) -> None:
-    """A probe that couldn't run safely isn't "hooks didn't load" (round 3 of #635's review)."""
+@pytest.mark.parametrize(
+    ("klass", "in_summary", "in_fix"),
+    [
+        ("gates_unsafe_endpoint", "names an endpoint", "remove or rename it"),
+        ("gates_unsafe_launcher", "launcher script", "connectors.inputs.claude_bin"),
+    ],
+)
+def test_an_unsafe_probe_skip_has_its_own_finding_and_advice(
+    tmp_path: Path, klass: str, in_summary: str, in_fix: str
+) -> None:
+    """A probe that couldn't run safely isn't "hooks didn't load", and each cause gets its own advice."""
     v = _vault(tmp_path)
-    _ledger(v, [_row(NOW - timedelta(hours=1), outcome="skipped_gates", klass="gates_unsafe")])
+    _ledger(v, [_row(NOW - timedelta(hours=1), outcome="skipped_gates", klass=klass)])
     report = health.evaluate(v, now=NOW)
     assert _ids(report) == {"gates.probe_unsafe": "red"}
     (finding,) = report.findings
-    assert "couldn't check its privacy hooks safely" in finding.summary
-    assert "scoutctl gates probe" in finding.fix
+    assert "couldn't check its privacy hooks safely" in finding.summary and in_summary in finding.summary
+    assert in_fix in finding.fix and "scoutctl gates probe" in finding.fix
 
 
 def test_other_skips_after_a_gates_skip_keep_the_finding(tmp_path: Path) -> None:

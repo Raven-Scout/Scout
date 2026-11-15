@@ -486,16 +486,16 @@ def test_an_endpoint_that_cant_be_neutralised_refuses_without_a_sandbox(
     tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_LLM_ENDPOINT": "https://x"}}))
-    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: [])
     refused = gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path))
     assert (
         not refused.ok
         and "can't probe safely" in refused.reason
         and "ANTHROPIC_LLM_ENDPOINT" in refused.reason
-        and refused.unsafe
+        and refused.unsafe == "endpoint"
     )
     # Behind the network sandbox the same setting is harmless: nothing can leave anyway.
-    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: ["env"])
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: ["env"])
     assert gate_probe.probe(_stub(tmp_path, "deny"), plugin_root=_plugin_root(tmp_path)).ok
 
 
@@ -508,25 +508,29 @@ def test_the_sandbox_lets_loopback_through_and_nothing_else(tmp_path: Path) -> N
     import socket
     import subprocess
 
-    server = socket.socket()
-    server.bind(("127.0.0.1", 0))
-    server.listen(1)
-    port = server.getsockname()[1]
+    server, other = socket.socket(), socket.socket()
+    for s in (server, other):
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+    port, other_port = server.getsockname()[1], other.getsockname()[1]
     script = (
         "import socket, sys\n"
         f"socket.create_connection(('127.0.0.1', {port}), timeout=3).close()\n"
-        "try:\n"
-        "    socket.create_connection(('1.1.1.1', 443), timeout=3)\n"
-        "    sys.exit('egress allowed')\n"
-        "except OSError:\n"
-        "    print('egress blocked')\n"
+        f"for host, p in (('1.1.1.1', 443), ('127.0.0.1', {other_port})):\n"
+        "    try:\n"
+        "        socket.create_connection((host, p), timeout=3)\n"
+        "        sys.exit(f'allowed {host}:{p}')\n"
+        "    except OSError:\n"
+        "        print(f'blocked {host}')\n"
     )
     out = subprocess.run(
-        [*gate_probe.sandbox_prefix(), sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        [*gate_probe.sandbox_prefix(port), sys.executable, "-c", script], capture_output=True, text=True, timeout=30
     )
     server.close()
-    assert out.returncode == 0, out.stderr
-    assert "egress blocked" in out.stdout
+    other.close()
+    assert out.returncode == 0, out.stderr + out.stdout
+    assert "blocked 1.1.1.1" in out.stdout  # the internet
+    assert "blocked 127.0.0.1" in out.stdout  # another local service, such as a forwarding daemon
 
 
 @pytest.mark.skipif(sys.platform != "darwin" or not gate_probe.SANDBOX_EXEC.exists(), reason="macOS sandbox only")
@@ -661,7 +665,7 @@ def test_a_loopback_proxy_and_a_user_mcp_server_get_nothing(
     )
     (_isolated_claude_config / ".claude.json").write_text(json.dumps({"mcpServers": {"x": {"url": url + "/mcp"}}}))
     if not sandboxed:
-        monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+        monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: [])
     stub = _network_stub(tmp_path)
     try:
         result = gate_probe.probe(stub, plugin_root=_plugin_root(tmp_path))
@@ -735,10 +739,10 @@ def test_a_claude_whose_switches_cant_be_read_refuses_without_a_sandbox(
     opaque = tmp_path / "claude-opaque"
     opaque.write_text(_STUB.format(python=sys.executable, mode="deny").replace("CLAUDE_CODE_USE_BEDROCK", "nothing"))
     opaque.chmod(0o755)
-    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: [])
     refused = gate_probe.probe(opaque, plugin_root=_plugin_root(tmp_path))
-    assert not refused.ok and refused.unsafe and "no provider switch could be read" in refused.reason
-    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: ["env"])
+    assert not refused.ok and refused.unsafe == "launcher" and "no provider switch could be read" in refused.reason
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: ["env"])
     assert gate_probe.probe(opaque, plugin_root=_plugin_root(tmp_path)).ok
 
 
@@ -758,7 +762,7 @@ def test_an_unsafe_refusal_exits_4(
     tmp_path: Path, _isolated_claude_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (_isolated_claude_config / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_LLM_ENDPOINT": "https://x"}}))
-    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda: [])
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: [])
     vault, root = _vault(tmp_path), _plugin_root(tmp_path)
     args = [
         "gates",
@@ -773,6 +777,19 @@ def test_an_unsafe_refusal_exits_4(
     assert CliRunner().invoke(app, args).exit_code == 4
 
 
+def test_a_launcher_the_probe_cant_see_through_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mise/asdf shim on Linux: its own cause and exit code, so health can give the right advice."""
+    opaque = tmp_path / "claude-opaque"
+    opaque.write_text(_STUB.format(python=sys.executable, mode="deny").replace("CLAUDE_CODE_USE_BEDROCK", "nothing"))
+    opaque.chmod(0o755)
+    monkeypatch.setattr(gate_probe, "sandbox_prefix", lambda *_: [])
+    vault, root = _vault(tmp_path), _plugin_root(tmp_path)
+    args = ["gates", "probe", "--vault", str(vault), "--plugin-root", str(root), "--claude-bin", str(opaque)]
+    assert CliRunner().invoke(app, args).exit_code == 5
+
+
 def test_the_sandbox_has_no_unix_socket_allowance() -> None:
     """No DNS (mDNSResponder) and no local daemon socket: claude needs neither once everything goes to the fake."""
-    assert "unix-socket" not in gate_probe.SANDBOX_PROFILE
+    profile = gate_probe.sandbox_profile(4321)
+    assert "unix-socket" not in profile
+    assert '"localhost:4321"' in profile and "localhost:*" not in profile  # only the fake's own port

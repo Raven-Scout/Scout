@@ -113,10 +113,9 @@ _QUIET_ENV = {
 NO_MCP_FLAGS: tuple[str, ...] = ("--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}')
 # The probe's claude may reach the fake on loopback and nothing else (macOS; elsewhere the env layers above).
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
-SANDBOX_PROFILE = (
-    '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*"))'
-)
 DUMMY_KEY = "sk-ant-scout-gate-probe-not-a-key"
+# What a refused-as-unsafe probe exits with, by cause (the runners record each as its own skip class).
+UNSAFE_EXIT = {"endpoint": 4, "launcher": 5}
 _SETTINGS_FILES = ("settings.json", "settings.local.json")
 # The project settings keys that decide whether and which hooks load; only these go into the probe's fixture,
 # so a project hook, statusLine or apiKeyHelper never runs from the probe.
@@ -135,7 +134,9 @@ class ProbeResult:
     env_key: str
     config_sha256: str
     checked_at: str  # ISO-8601 UTC, with offset
-    unsafe: bool = False  # refused without trying: it couldn't be kept on this machine (CLI exit 4)
+    # Refused without trying, because it couldn't be kept on this machine: "endpoint" (a setting names one it can't
+    # point at the fake; CLI exit 4) or "launcher" (no provider switch readable through the launcher; exit 5).
+    unsafe: str = ""
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -154,7 +155,8 @@ class ProbeResult:
             or not isinstance(flags, list)
             or not all(isinstance(f, str) for f in flags)
             or checked.tzinfo is None
-            or not isinstance(data["unsafe"], bool)
+            or data["unsafe"] not in UNSAFE_EXIT
+            and data["unsafe"] != ""
         ):
             raise ValueError("malformed gate-probe cache")
         return cls(
@@ -324,10 +326,17 @@ def endpoint_keys(blocks: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[st
     return base_urls, other
 
 
-def sandbox_prefix() -> list[str]:
-    """The command prefix that limits the probe's claude to loopback, or [] where there is none (not macOS)."""
+def sandbox_profile(port: int) -> str:
+    """Outbound network to the fake's own port on loopback and nothing else: no DNS, no other local service."""
+    return (
+        f'(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:{port}"))'
+    )
+
+
+def sandbox_prefix(port: int) -> list[str]:
+    """The command prefix that limits the probe's claude to the fake on ``port``, or [] where there is none."""
     if sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK):
-        return [str(SANDBOX_EXEC), "-p", SANDBOX_PROFILE]
+        return [str(SANDBOX_EXEC), "-p", sandbox_profile(port)]
     return []
 
 
@@ -452,7 +461,7 @@ def probe(
     flags = tuple(flags)
     sha, key, cfg = hooks_sha256(plugin_root), env_key(), config_sha256(vault)
 
-    def result(ok: bool, reason: str, ver: str | None, *, unsafe: bool = False) -> ProbeResult:
+    def result(ok: bool, reason: str, ver: str | None, *, unsafe: str = "") -> ProbeResult:
         return ProbeResult(ok, reason, ver, sha, flags, key, cfg, _now_iso(), unsafe)
 
     resolved = shutil.which(str(claude_bin)) if os.path.sep not in str(claude_bin) else str(claude_bin)
@@ -465,33 +474,34 @@ def probe(
 
     # No request may leave the machine: a loopback-only sandbox where there is one (macOS), and in any case every
     # provider switch off and every base URL a settings env names pointed at the fake (the process env wins).
-    sandbox = sandbox_prefix()
-    blocks = settings_env_blocks()
-    switches = provider_switches(Path(resolved), blocks)
-    base_urls, other_endpoints = endpoint_keys(blocks)
-    if not sandbox and other_endpoints:
-        return result(
-            False,
-            "can't probe safely: a settings env names an endpoint the probe can't point at its local fake "
-            f"({', '.join(sorted(other_endpoints))}) and there is no network sandbox here",
-            version,
-            unsafe=True,
-        )
-    if not sandbox and not _binary_switches(Path(resolved)):
-        return result(
-            False,
-            f"can't probe safely: no provider switch could be read from {resolved} (a launcher the probe can't "
-            "follow?), so a new one couldn't be turned off, and there is no network sandbox here",
-            version,
-            unsafe=True,
-        )
-    network = "loopback-only sandbox" if sandbox else "provider switches off, base URLs at the fake"
-
     fake = FakeAnthropic([ScriptedTurn("Bash", {"command": PROBE_COMMAND})])
     try:
         base_url = fake.start()
     except OSError as e:
         return result(False, f"could not start the probe's local endpoint: {e}", version)
+    sandbox = sandbox_prefix(int(base_url.rsplit(":", 1)[1]))
+    blocks = settings_env_blocks()
+    switches = provider_switches(Path(resolved), blocks)
+    base_urls, other_endpoints = endpoint_keys(blocks)
+    if not sandbox and other_endpoints:
+        fake.stop()
+        return result(
+            False,
+            "can't probe safely: a settings env names an endpoint the probe can't point at its local fake "
+            f"({', '.join(sorted(other_endpoints))}) and there is no network sandbox here",
+            version,
+            unsafe="endpoint",
+        )
+    if not sandbox and not _binary_switches(Path(resolved)):
+        fake.stop()
+        return result(
+            False,
+            f"can't probe safely: no provider switch could be read from {resolved} (a launcher the probe can't "
+            "follow?), so a new one couldn't be turned off, and there is no network sandbox here",
+            version,
+            unsafe="launcher",
+        )
+    network = "loopback-only sandbox" if sandbox else "provider switches off, base URLs at the fake"
     try:
         with tempfile.TemporaryDirectory(prefix=TMP_PREFIX) as tmp:
             fixture = _fixture_vault(Path(tmp), vault)
