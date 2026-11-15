@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **`kb lint` reads an inline `aliases:` list that has a trailing comment** (`engine/scout/kb/lint.py`). `aliases: [Sam Rivera]   # why` was read as the single alias `[Sam Rivera]`, brackets included, so every link to `[[Sam Rivera]]` was reported as `dangling-link` although YAML and Obsidian both resolve it. The inline-list branch now accepts a ` # comment` after the closing bracket; quoted items that contain ` #` are unaffected. On one mature vault this removed 57 of 70 targets that kb lint called dangling but the vault resolved.
+- **`scoutctl kb validate` exits 3 when the graph has errors** (#554; `engine/scout/kb/read.py`). It printed its findings and returned 0 unconditionally, so a vault preflight that renders the knowledge graph's health row from the exit code showed a broken graph as clean. The parser shim (v0.18.6) had dropped the vault parser's exit-3 contract, and `test_parser_shim.py` pinned 0 on both sides, so nothing caught it. Known gaps are accepted backlog and still exit 0. `test_validate_exit_code_is_the_contract` now owns the exit code on a clean and a broken graph.
 
 ## [0.18.13] - 2026-11-15
 
