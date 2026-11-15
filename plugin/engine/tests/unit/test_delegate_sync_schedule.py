@@ -566,20 +566,21 @@ def test_gh_missing_on_the_automatic_path_fails_closed(
     assert error is not None and error["code"] == "remote_unverified"
 
 
-def test_the_engine_child_never_imports_from_the_vault(tmp_path: Path) -> None:
-    from scout.engine_spawn import engine_argv, neutral_cwd
+def test_the_tick_child_never_imports_from_the_vault(tmp_path: Path) -> None:
+    """The tick's argv (scout._spawn, #638) keeps a vault-root module from shadowing the engine's."""
+    from scout._spawn import python_module_argv
 
     vault_dir = tmp_path / "vault"
     vault_dir.mkdir()
     marker = tmp_path / "PWNED"
     (vault_dir / "typer.py").write_text(f"open({str(marker)!r}, 'w').write('x')\n", encoding="utf-8")
     env = {**os.environ, "SCOUT_DATA_DIR": str(vault_dir)}
-    ok = subprocess.run(engine_argv("version"), cwd=vault_dir, env=env, capture_output=True, text=True, timeout=60)
+    argv = python_module_argv("scout", "version")
+    ok = subprocess.run(argv, cwd=vault_dir, env=env, capture_output=True, text=True, timeout=60)
     assert ok.returncode == 0 and not marker.exists()
-    unsafe = [a for a in engine_argv("version") if a != "-P"]  # the old command, to prove the test can fail
+    unsafe = [a for a in argv if a != "-P"]  # the old command, to prove the test can fail
     subprocess.run(unsafe, cwd=vault_dir, env=env, capture_output=True, text=True, timeout=60)
     assert marker.exists()
-    assert not neutral_cwd().startswith(str(vault_dir))
 
 
 def test_the_memo_reuses_left_out_and_redacted_files_as_they_were(
