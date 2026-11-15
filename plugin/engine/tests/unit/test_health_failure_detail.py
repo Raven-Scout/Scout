@@ -213,6 +213,8 @@ def test_to_dict_emits_the_new_keys(tmp_path):
         ("rate_limited", "RATE_LIMIT_RE", "You've hit your session limit · resets 2:10pm (Europe/Prague)"),
         ("rate_limited", "RATE_LIMIT_RE", "API Error: 429 Too Many Requests"),
         ("rate_limited", "RATE_LIMIT_RE", 'API Error: 529 {"type":"overloaded_error"}'),
+        ("budget", "BUDGET_RE", "Error: Exceeded USD budget (16.6)"),
+        ("budget", "BUDGET_RE", "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap"),
     ],
 )
 def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, var, line):

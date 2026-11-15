@@ -91,7 +91,9 @@ def test_base_checkout_is_a_clean_detached_worktree_reused_by_commit(tmp_path: P
 def _plugin_copy_with_marker(tmp_path: Path) -> Checkout:
     """A stand-in base: a copy of plugin/ whose run-modes phase says something head's doesn't."""
     root = tmp_path / "other"
-    shutil.copytree(PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests"))
+    shutil.copytree(
+        PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests", ".coverage*")
+    )
     phase = root / "plugin" / "phases" / "core" / "00-run-modes.md"
     phase.write_text(phase.read_text() + "\nBASE-ARM-MARKER\n")
     return Checkout(label="base", root=root, commit="0" * 40, pythonpath=root / "plugin" / "engine")
@@ -222,10 +224,22 @@ def test_compare_refuses_an_unknown_base_and_a_big_plan(
     assert "--many" in capsys.readouterr().err
 
 
-def test_compare_stops_launching_after_an_aborted_sample(
+def test_compare_keeps_going_past_a_sample_that_hit_a_run_limit(
     tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
+    _compare(fake, cache_root, tmp_path, "--reps", "2")
+    out = capsys.readouterr().out
+    assert "hit a run limit (error_max_budget_usd)" in out and "stopped after" not in out
+    assert len(list((tmp_path / "results").iterdir())) == 4  # every planned sample ran
+    assert "within limits" in out
+    assert _cached(cache_root) == []  # a truncated base sample is never cached
+
+
+def test_compare_stops_launching_after_a_harness_failure(
+    tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_during_execution")
     assert _compare(fake, cache_root, tmp_path, "--reps", "2") == 2
     out = capsys.readouterr().out
     assert "stopped after an aborted sample" in out

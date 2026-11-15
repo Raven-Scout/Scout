@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -93,6 +94,18 @@ MAPPING: list[tuple[list[str], list[str]]] = [
     ),
     (["name_lookup", "--token", "Sam"], ["name-lookup", "--token", "Sam", "--threshold", "0.7"]),
     (["name_lookup", "--token", "Sam", "--threshold", "0.5"], ["name-lookup", "--token", "Sam", "--threshold", "0.5"]),
+    (
+        ["name_lookup", "--token", "Acme", "--lookup-type", "any"],
+        ["name-lookup", "--token", "Acme", "--threshold", "0.7", "--lookup-type", "any"],
+    ),
+    (
+        ["name_lookup", "--token", "Acme", "--lookup-type", "person,organization"],
+        ["name-lookup", "--token", "Acme", "--threshold", "0.7", "--lookup-type", "person,organization"],
+    ),
+    (
+        ["traverse", "--name", "priya", "--rel-types", "works_with,works_on"],
+        ["traverse", "--name", "priya", "--rels", "works_with,works_on"],
+    ),
     (["export"], ["export"]),
     (["stats"], ["stats"]),
     (["validate"], ["validate"]),
@@ -119,6 +132,26 @@ def test_shim_passes_reader_and_environment_through(vault: Path, tmp_path: Path)
     got = json.loads(record.read_text(encoding="utf-8"))
     assert got["argv"][-2:] == ["--reader", "autonomous"]
     assert got["reader"] == "autonomous"
+
+
+def test_shim_falls_back_to_the_vaults_own_scoutctl(tmp_path: Path) -> None:
+    """No scoutctl on PATH: the vault's scripts/scoutctl wrapper runs instead."""
+    own = build_privacy_vault(tmp_path / "own")
+    shutil.copyfile(SHIM, _rendered(own))
+    record = tmp_path / "argv.json"
+    _fake_scoutctl(own / "scripts", record)
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    result = _run_shim(own, ["stats"], str(empty))
+    assert result.returncode == 0, result.stderr
+    got = json.loads(record.read_text(encoding="utf-8"))
+    assert got["argv"][:2] == ["kb", "stats"]
+    # scoutctl on PATH still wins over the vault's copy.
+    path_record = tmp_path / "path-argv.json"
+    _fake_scoutctl(tmp_path / "bin", path_record)
+    record.unlink()
+    assert _run_shim(own, ["stats"], str(tmp_path / "bin")).returncode == 0
+    assert path_record.exists() and not record.exists()
 
 
 def test_shim_explicit_paths_are_passed(vault: Path, tmp_path: Path) -> None:
@@ -286,7 +319,12 @@ def test_python_api_matches_the_pre_shim_class(
     assert graph.entity("sam")["_label"]["visibility"] == "private"
     assert all("_label" in e for e in graph.entities.values())
     old = _load_module(LEGACY, "vault_parser_pre_shim").KnowledgeGraph(schema_path=schema, kb_root=kb_root).load()
-    assert _strip_labels(_api_results(graph)) == _api_results(old)
+    new = _strip_labels(_api_results(graph))
+    # Deliberate additions since the pre-shim parser: each candidate's `type`, and
+    # validate() reporting the malformed note it used to drop silently.
+    new["name_lookup"] = [[{k: v for k, v in c.items() if k != "type"} for c in cs] for cs in new["name_lookup"]]
+    new["validate"] = [e for e in new["validate"] if not e["message"].startswith("YAML parse failure")]
+    assert new == _api_results(old)
 
 
 def test_python_api_gives_an_agent_nothing(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,10 +405,24 @@ def _strip_labels(value: Any) -> Any:
     return value
 
 
+_SEARCHED = re.compile(r"(?:, type=[^,]+| — searched: [^.]+|, searched: [^)]+)")
+
+
 def _normalise(command: str, out: str) -> Any:
+    """``out`` without labels, and without what the engine adds on purpose: name_lookup's
+    candidate type and search scope (and its PEOPLE-only hint), validate's parse failures."""
     if command in ("export", "entity") and out.lstrip().startswith("{"):
         return _strip_labels(json.loads(out))
-    return out.replace("[private] ", "")
+    out = out.replace("[private] ", "")
+    if command == "name_lookup":
+        out = "".join(line for line in out.splitlines(True) if "Searched PEOPLE only" not in line)
+        out = _SEARCHED.sub("", out)
+    if command == "validate":
+        kept = [line for line in out.splitlines() if "YAML parse failure" not in line]
+        errors = sum(1 for line in kept if line.startswith("  ["))
+        kept = [f"{errors} validation error(s) found." if "validation error(s) found" in ln else ln for ln in kept]
+        out = "\n".join(kept) + "\n"
+    return out
 
 
 @pytest.mark.parametrize("args", PARITY, ids=lambda a: " ".join(a))

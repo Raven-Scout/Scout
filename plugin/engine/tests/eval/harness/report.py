@@ -29,6 +29,7 @@ METRICS: list[tuple[str, Callable[[SampleResult, SampleMetrics], float | None]]]
     ("reads outside the vault", lambda r, m: outside_reads(m.calls, [str(r.result_dir / "vault"), PLUGIN_ROOT])),
     ("unstubbed connector calls", lambda r, m: r.unstubbed),
     ("permission denials", lambda r, m: len(m.denials)),
+    ("API retries", lambda r, m: m.api_retries),
 ]
 
 

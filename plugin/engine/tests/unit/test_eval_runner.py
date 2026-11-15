@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from tests._gate_probe import HOOKED_CLAUDE_PRELUDE
 from tests._waits import wait_until
 from tests.eval.harness.plan import PlanRefused, session_plan
 from tests.eval.harness.runner import run_sample
 from tests.eval.harness.scenario import SCENARIOS_DIR, load_scenario
+from tests.eval.harness.verdicts import hit_limit
 
 MONDAY = date(2026, 10, 12)
 
@@ -129,8 +131,12 @@ def test_plan_uses_opus_only_when_asked(busy) -> None:
     assert session_plan([busy], reps=1, opus=True, many=False).model == "opus"
 
 
-FAKE_CLAUDE = """#!/usr/bin/env python3
+FAKE_CLAUDE = (
+    """#!/usr/bin/env python3
 import glob, json, os, sys, time
+"""
+    + HOOKED_CLAUDE_PRELUDE
+    + """
 if os.environ.get("EVAL_FAKE_ENRICH"):  # rewrite today's file the way a session would: drop the carry banner
     path = sorted(glob.glob("action-items/action-items-*.md"))[-1]
     lines = [ln for ln in open(path) if "Mechanical carry-forward" not in ln]
@@ -147,11 +153,15 @@ print(json.dumps({"type": "assistant", "message": {"id": "m1", "content": [
     {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": os.getcwd() + "/SKILL.md"}}]}}), flush=True)
 result = {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
 print(json.dumps({"type": "user", "message": {"content": [result]}}))
+api_error = os.environ.get("EVAL_FAKE_API_ERROR", "")
+for attempt in (1, 2) if api_error else ():  # claude retries, then gives up on the API
+    print(json.dumps({"type": "system", "subtype": "api_retry", "attempt": attempt, "max_retries": 2}))
 subtype = os.environ.get("EVAL_FAKE_SUBTYPE", "success")
-print(json.dumps({"type": "result", "subtype": subtype, "is_error": subtype != "success", "num_turns": 1,
-                  "duration_ms": 1000, "total_cost_usd": 0.01, "result": "Nothing to do.",
-                  "usage": {"input_tokens": 1, "output_tokens": 1}}))
+print(json.dumps({"type": "result", "subtype": subtype, "is_error": subtype != "success" or bool(api_error),
+                  "num_turns": 1, "duration_ms": 1000, "total_cost_usd": 0 if api_error else 0.01,
+                  "result": api_error or "Nothing to do.", "usage": {"input_tokens": 1, "output_tokens": 1}}))
 """
+)
 
 
 def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,6 +185,25 @@ def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypa
     assert {c["name"] for c in saved} == set(busy.checks)
     assert json.loads((result.result_dir / "metrics.json").read_text())["tool_call_count"] == 1
     assert (result.result_dir / "vault" / "action-items" / f"action-items-{today.isoformat()}.md").exists()
+
+
+def test_a_session_that_lost_the_api_is_a_harness_failure_not_a_score(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claude ends such a run with subtype "success" and is_error: scored, it read as a clean pass
+    of every check it never attempted (four of six privacy-canary samples on 2026-10-25, #84)."""
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
+    monkeypatch.setenv("EVAL_FAKE_API_ERROR", "API Error: Can't reach the API server (ENOTFOUND)")
+    result = run_sample(
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
+    )
+    assert result.aborted == {
+        "reason": "api_error",
+        "detail": "API Error: Can't reach the API server (ENOTFOUND)",
+        "api_retries": 2,
+    }
+    assert result.checks == ()
+    assert not hit_limit(result)  # blocks the verdict and stops the compare, unlike a run limit
 
 
 def test_a_leaking_session_is_aborted_and_not_scored(tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch) -> None:

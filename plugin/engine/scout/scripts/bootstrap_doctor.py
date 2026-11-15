@@ -6,6 +6,7 @@ diagnostic via `scoutctl bootstrap doctor`. Never mutates the vault.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import plistlib
@@ -14,15 +15,17 @@ import shlex
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
 import yaml
 
+from scout.config import config_load_problem
 from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
 from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
+from scout.yaml_safe import load_yaml, yaml_problem
 
 
 class Severity(Enum):
@@ -389,6 +392,27 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
+    """The last gate probe the runners ran (spec 2026-11-13 §3.5): (warnings, notes). Reads the cache only.
+
+    A failed probe means scheduled runs are being skipped because claude doesn't load
+    Scout's privacy hooks. No cache (no run since the probe shipped) says nothing.
+    """
+    from scout.agent_runtimes.gate_probe import read_cache
+
+    cached = read_cache(vault)
+    if cached is None:
+        return [], []
+    version = cached.claude_version or "an unknown version"
+    if not cached.ok:
+        return [
+            f"gate probe failed ({cached.checked_at}, claude {version}): {cached.reason}. Scheduled runs are "
+            "skipped until it passes. Run `scoutctl gates probe` to re-check; update Scout, or pin Claude Code "
+            "to the last version that passed."
+        ], []
+    return [], [f"gate probe passed for claude {version} at {cached.checked_at}: Scout's privacy hooks load."]
+
+
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
     """How scheduled runs sign in to Claude (#267), as (warnings, notes).
 
@@ -483,13 +507,19 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
     """One warning per problem in connectors.custom.yaml, or in a custom connector's input
-    stored in scout-config.yaml (#344); that connector is skipped until fixed."""
-    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues
+    stored in scout-config.yaml (#344); that connector is skipped until fixed. And one
+    when the tool gate blocks every MCP tool because of the file (#564)."""
+    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues, tool_gate_problem
 
     custom = load(vault)
     warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
+    if problem := tool_gate_problem(vault):
+        warnings.append(
+            f"{problem}, so Scout can't tell whether a connector there restricts its tools "
+            "and may block every MCP tool in this vault's sessions until it is fixed"
+        )
     try:
-        cfg = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
         inputs = cfg["connectors"]["inputs"]
     except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
         inputs = None  # a missing or malformed scout-config.yaml is not this check's to report
@@ -508,6 +538,170 @@ def _check_heartbeat_config(*, vault: Path) -> list[str]:
     from scout.scripts.heartbeat import load_config_with_issues
 
     return load_config_with_issues(vault / "scout-config.yaml")[1]
+
+
+PRIVACY_WINDOW = timedelta(days=7)
+
+
+UNCHECKED_EVENT = "privacy.check_unavailable"
+
+
+def privacy_audit_counts(vault: Path, *, now: datetime) -> tuple[int, int]:
+    """``(blocked or denied, unchecked commits)`` in ``.scout-logs/kb-reads.jsonl`` over the last 7 days.
+
+    #453, spec §7.4 and §8.3. A row is *blocked or denied* when it is
+    ``blocked`` or denied at least one path, and an *unchecked commit* when its
+    ``event`` is ``privacy.check_unavailable`` (the owner committed while the
+    privacy check couldn't run). Unreadable or malformed rows are skipped; a
+    timestamp without a zone is taken as UTC.
+    """
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    cutoff = now - PRIVACY_WINDOW
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    blocked = unchecked = 0
+    try:
+        with log.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:  # streamed: the log only grows
+                # Cheap pre-filter on the sorted-key rows: nothing to count → skip unparsed.
+                if '"blocked": true' not in line and '"paths_denied": 0,' in line and UNCHECKED_EVENT not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    ts = datetime.fromisoformat(row["ts"])
+                    hit = row.get("blocked") is True or int(row.get("paths_denied") or 0) > 0
+                    gap = row.get("event") == UNCHECKED_EVENT
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                if ts < cutoff:
+                    continue
+                blocked += hit
+                unchecked += gap
+    except OSError:
+        return 0, 0
+    return blocked, unchecked
+
+
+def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
+    """Every row :func:`privacy_audit_counts` counts, of both kinds."""
+    return sum(privacy_audit_counts(vault, now=now))
+
+
+def _check_kb_lint_config(*, vault: Path) -> list[str]:
+    """A lint config mistake falls back to report, which enforces nothing and fails
+    nothing: this is where the owner hears about it, since runs commit unattended."""
+    from scout.kb.lint import config_problems
+    from scout.kb.lint_config import load_lint_config
+
+    try:
+        return [f"kb-lint: {problem}" for problem in config_problems(vault, load_lint_config(vault))]
+    except Exception as e:  # noqa: BLE001 - the doctor reports it; the hook fails open on the same error
+        return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
+
+
+def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
+    blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
+    out: list[str] = []
+    if blocked:
+        out.append(
+            f"privacy: {blocked} blocked outbound check(s) or denied read(s) in the last 7 days "
+            "(.scout-logs/kb-reads.jsonl) — a run reached for a shared surface with private content; "
+            "the content was held back, but check what the runs were trying to send"
+        )
+    if unchecked:
+        out.append(
+            f"privacy: {unchecked} commit(s) in the last 7 days were made while the privacy check could not run "
+            "(.scout-logs/kb-reads.jsonl) — they were NOT checked for private links in shared files; fix what "
+            "this doctor reports about scoutctl, then review drafts/ and other shared files"
+        )
+    return out
+
+
+def _check_repo_sync_host_cache(*, vault: Path, now: datetime | None) -> list[str]:
+    """A linked vault whose cached Agnes Local-Only list is missing or stale (#596).
+
+    The commit hook checks a run's moves against that cache, offline; without a
+    current one it can only warn. Each linked run refreshes it when it takes the
+    lease, so a stale one means runs aren't reaching Agnes. ``repo sync`` still
+    refuses such a move against the list it fetches.
+    """
+    from scout.repo_sync import RepoSyncError, host_cache_problem, load_host_cache, load_state
+
+    try:
+        state = load_state(vault)
+    except RepoSyncError:
+        return []  # repo sync refuses this state, so it uploads nothing
+    if state is None:
+        return []
+    problem = host_cache_problem(load_host_cache(vault, agnes_url=state.agnes_url), now=now)
+    if problem is None:
+        return []
+    return [
+        f"repo sync: {problem}, so the commit hook can't block a scheduled run's move out of a path only Agnes "
+        "keeps local-only (it warns instead). Scheduled runs refresh it when they take the Agnes lease, so check "
+        "their logs for a lease or Agnes error; scoutctl repo sync refreshes it too"
+    ]
+
+
+def _age(delta: timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 0)} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return f"{minutes // (24 * 60)} days"
+
+
+def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[str], list[str]]:
+    """Each delegate mirror's age, as (warnings, notes) (#550 V2c). Nothing for a vault that links none.
+
+    Warns on a failed last sync, a push that didn't finish, and a mirror behind
+    HEAD that no sync has tried for an hour (the schedule tick tries every 15 min).
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return [], []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError, git
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError as e:
+        return [f"delegate mirrors: {e.message}"], []
+    now = now or datetime.now(UTC)
+    head = git(vault, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip() or None
+
+    def when(stamp: str | None) -> datetime | None:
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")) if stamp else None
+        except ValueError:
+            return None
+
+    warnings: list[str] = []
+    notes: list[str] = []
+    for key, link in sorted(links.items()):
+        synced = when(link.last_sync)
+        notes.append(
+            f"delegate mirror {key}: last synced {_age(now - synced)} ago"
+            if synced
+            else f"delegate mirror {key}: never synced"
+        )
+        if link.last_error is not None:
+            warnings.append(
+                f"delegate mirror {key}: the last sync failed ({link.last_error.get('code', 'unknown')}); "
+                f"see why with: scoutctl delegate sync {key}"
+            )
+        elif link.pending_mirror is not None:
+            warnings.append(f"delegate mirror {key}: a push didn't finish; the next sync checks the remote")
+        else:
+            tried = when(link.last_attempt) or synced
+            if head is not None and link.last_vault != head and (tried is None or now - tried > timedelta(hours=1)):
+                warnings.append(
+                    f"delegate mirror {key}: behind HEAD, and no sync has tried for over an hour; is the schedule "
+                    "tick running? (scoutctl delegate sync --all syncs now)"
+                )
+    return warnings, notes
 
 
 def run_doctor(
@@ -534,25 +728,25 @@ def run_doctor(
     if not schedule_path.exists():
         errors.append(f"missing schedule.yaml at {schedule_path}")
     else:
+        schedule_text = schedule_path.read_text(encoding="utf-8")
         try:
-            yaml.safe_load(schedule_path.read_text(encoding="utf-8"))
+            load_yaml(schedule_text)
         except yaml.YAMLError as e:
-            errors.append(f"schedule.yaml invalid: {e}")
+            errors.append(f"schedule.yaml invalid: {yaml_problem(e, schedule_text)}")
 
     # scout-config.yaml must record version stamps.
     config_path = vault / "scout-config.yaml"
     if not config_path.exists():
         errors.append(f"missing scout-config.yaml at {config_path}")
+    elif problem := config_load_problem(vault):
+        errors.append(f"scout-config.yaml invalid: {problem}")
     else:
-        try:
-            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            plugin = cfg.get("plugin") or {}
-            if not plugin.get("version_at_last_setup"):
-                errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
-            if not plugin.get("version_at_last_update"):
-                errors.append("scout-config.yaml: plugin.version_at_last_update missing")
-        except yaml.YAMLError as e:
-            errors.append(f"scout-config.yaml invalid: {e}")
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        plugin = cfg.get("plugin") or {}
+        if not plugin.get("version_at_last_setup"):
+            errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
+        if not plugin.get("version_at_last_update"):
+            errors.append("scout-config.yaml: plugin.version_at_last_update missing")
 
     # Cat-1 files must exist with non-zero content.
     for rel in _REQUIRED_CAT1_FILES:
@@ -627,6 +821,12 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_privacy_audit(vault=vault, now=now))
+    warnings.extend(_check_kb_lint_config(vault=vault))
+    warnings.extend(_check_repo_sync_host_cache(vault=vault, now=now))
+    delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
+    warnings.extend(delegate_warnings)
+    notes.extend(delegate_notes)
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)
@@ -660,6 +860,10 @@ def run_doctor(
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
         errors.extend(claude_errors)
         warnings.extend(claude_warnings)
+        # Whether that claude loads Scout's privacy hooks, from the runners' last gate probe.
+        probe_warnings, probe_notes = _check_gate_probe(vault=vault)
+        warnings.extend(probe_warnings)
+        notes.extend(probe_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:
             auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)

@@ -130,8 +130,10 @@ def _sessions(vault: Path) -> int:
 def test_a_weekly_limit_holds_every_slot_until_its_date(vault: Path, lifts: datetime) -> None:
     _run_slot(vault)  # the session runs and fails on the weekly limit
 
-    (tracked,) = _jsonl(vault / ".scout-logs" / "usage-tracker.jsonl")
-    assert tracked["type"] == "rate_limit"
+    # The rate-limit row, beside the runner's cost row (scoutctl budget record-run).
+    tracker_rows = _jsonl(vault / ".scout-logs" / "usage-tracker.jsonl")
+    (tracked,) = [r for r in tracker_rows if r.get("type") == "rate_limit"]
+    assert [r["source"] for r in tracker_rows if r is not tracked] == ["runner"]
     assert tracked["resets_at"] == health.iso_z(lifts)
     (failed,) = _jsonl(vault / ".scout-logs" / "run-outcomes.jsonl")
     assert (failed["outcome"], failed["failure_class"]) == ("failed", "rate_limited")
@@ -162,10 +164,13 @@ def test_the_slot_after_the_reset_runs_again(vault: Path, lifts: datetime) -> No
     """The pause ends on its own: once the reset has passed, the gate lets a session start."""
     _run_slot(vault)
     tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
-    (row,) = _jsonl(tracker)
+    rows = _jsonl(tracker)
     past = datetime.now(UTC) - timedelta(days=4)
-    row.update(ts=health.iso_z(past - timedelta(hours=1)), resets_at=health.iso_z(past))
-    tracker.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    for row in rows:  # the rate-limit row and the runner's cost row, both moved 4 days back
+        row["ts"] = health.iso_z(past - timedelta(hours=1))
+        if row.get("type") == "rate_limit":
+            row["resets_at"] = health.iso_z(past)
+    tracker.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
     _run_slot(vault)
 

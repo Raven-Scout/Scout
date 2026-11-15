@@ -95,6 +95,7 @@ struct MainWindowView: View {
             .environmentObject(appState.actionItemsWriterBox)
             .environmentObject(appState.actionItemsEnvState)
             .environment(\.openKBNote, StableAction { [appState] in appState.requestOpenKBNote($0) })
+            .environmentObject(appState.displayProfileService)
         case .schedules:
             SchedulesView()
                 .environmentObject(appState.scheduleEditService)

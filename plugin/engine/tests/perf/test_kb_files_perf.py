@@ -12,7 +12,8 @@ timings: in process, and the commands as processes (`scoutctl kb files`,
 `scoutctl kb query --type task`) net of a baseline measured in the same test, a
 process that only imports `scout.cli` (ruling R14: the budget excludes
 interpreter start-up and imports). Each is the best of three runs, so one stall
-on a loaded runner doesn't fail it.
+on a loaded runner doesn't fail it. On GitHub's macOS runners the commands get
+twice the budget (see ``CLI_BUDGET_S``).
 """
 
 from __future__ import annotations
@@ -34,6 +35,16 @@ pytestmark = pytest.mark.perf
 
 FILES = 3000
 WARM_BUDGET_S = 0.300
+# GitHub's macOS runners vary about 2x from job to job: the commands, net of
+# the baseline, took 302-321 ms in the four jobs that failed on 2026-11-06
+# (#600) and 158-233 ms in others, against 105-120 ms on a dev Mac. Each is a
+# best of three, so a slow job is slow throughout, and more runs can't help.
+# The import baseline doesn't tell slow jobs from fast ones (70-135 ms vs
+# 62-98 ms), so a ratio to it can't either. Twice the budget clears the slow
+# floor with 1.9x to spare and fails a 3x regression on a slow job (~930 ms).
+# A fast job can miss one, but the Ubuntu legs keep the spec's 300 ms and
+# failed every injected 3x and 5x slowdown (PR #608), and so do dev machines.
+CLI_BUDGET_S = WARM_BUDGET_S * (2 if os.environ.get("RUNNER_OS") == "macOS" else 1)
 SCHEMA = (
     "entity_types:\n"
     "  person: {properties: {required: [name, type]}}\n"
@@ -106,6 +117,21 @@ def test_warm_kb_files_and_query_within_budget(tmp_path: Path, monkeypatch: pyte
         kb_read.query_rows(graph, {"type": "task"}, visibility=None)
 
     query()  # cold: fills the per-process frontmatter cache
+
+    # pathlib's relative_to costs ~0.1 ms a call on 3.12 (it builds every parent
+    # of the base): once per walked file is most of a warm query's budget.
+    relative: list[str] = []
+    real_relative_to = Path.relative_to
+
+    def relative_spy(self: Path, *a: Any, **k: Any) -> Any:
+        relative.append(str(self))
+        return real_relative_to(self, *a, **k)
+
+    monkeypatch.setattr(Path, "relative_to", relative_spy)
+    query()
+    monkeypatch.undo()
+    assert len(relative) < 10, f"a warm query called Path.relative_to {len(relative)} times (once per file?)"
+
     query_s = _best_of(query)
     print(f"\nwarm kb files: {files_s * 1000:.0f} ms, warm kb query: {query_s * 1000:.0f} ms")
     assert files_s < WARM_BUDGET_S, f"warm kb files took {files_s:.3f}s"
@@ -130,7 +156,7 @@ def test_warm_cli_kb_files_and_query_within_budget(tmp_path: Path) -> None:
     files_s, query_s = _proc_s(files), _proc_s(query)
     print(
         f"\nbaseline {baseline * 1000:.0f} ms; scoutctl kb files {files_s * 1000:.0f} ms, "
-        f"kb query {query_s * 1000:.0f} ms"
+        f"kb query {query_s * 1000:.0f} ms (budget {CLI_BUDGET_S * 1000:.0f} ms each, net)"
     )
-    assert files_s - baseline < WARM_BUDGET_S, f"kb files: {files_s:.3f}s vs baseline {baseline:.3f}s"
-    assert query_s - baseline < WARM_BUDGET_S, f"kb query: {query_s:.3f}s vs baseline {baseline:.3f}s"
+    assert files_s - baseline < CLI_BUDGET_S, f"kb files: {files_s:.3f}s vs baseline {baseline:.3f}s"
+    assert query_s - baseline < CLI_BUDGET_S, f"kb query: {query_s:.3f}s vs baseline {baseline:.3f}s"

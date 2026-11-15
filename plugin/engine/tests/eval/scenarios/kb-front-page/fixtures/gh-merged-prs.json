@@ -1,0 +1,20 @@
+[
+  {
+    "number": 57,
+    "title": "Stream CSV exports in chunks",
+    "url": "https://github.com/example-org/api/pull/57",
+    "repository": {
+      "nameWithOwner": "example-org/api",
+      "name": "api"
+    },
+    "author": {
+      "login": "alex-example"
+    },
+    "state": "MERGED",
+    "isDraft": false,
+    "mergedAt": "{{d-1}}T13:20:00Z",
+    "closedAt": "{{d-1}}T13:20:00Z",
+    "updatedAt": "{{d-1}}T13:20:00Z",
+    "createdAt": "{{d-6}}T09:00:00Z"
+  }
+]

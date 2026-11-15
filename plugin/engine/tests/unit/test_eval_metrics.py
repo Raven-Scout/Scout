@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.eval.harness.metrics import (
+    ToolCall,
     conforms,
     longest_search_run,
     metrics_from_dict,
@@ -21,7 +22,7 @@ from tests.eval.harness.metrics import (
 
 GOLDEN = Path(__file__).resolve().parents[1] / "eval" / "golden" / "stream-basic.jsonl"
 VAULT = "/tmp/eval/vault"
-NEW_FIELDS = {"cache_creation_tokens", "brain_tokens", "brain_token_turns"}
+NEW_FIELDS = {"cache_creation_tokens", "brain_tokens", "brain_token_turns", "api_retries", "api_error"}
 
 
 @pytest.fixture(scope="module")
@@ -154,3 +155,50 @@ def test_metrics_stored_before_the_brain_fields_still_load() -> None:
     old = {k: v for k, v in asdict(parse_stream([])).items() if k not in NEW_FIELDS}
     loaded = metrics_from_dict(old)
     assert (loaded.cache_creation_tokens, loaded.brain_tokens, loaded.brain_token_turns) == (None, None, None)
+    assert (loaded.api_retries, loaded.api_error) == (None, None)
+
+
+def test_a_session_that_gave_up_on_the_api_says_so() -> None:
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "mcp_servers": []}),
+        *(json.dumps({"type": "system", "subtype": "api_retry", "attempt": n, "max_retries": 10}) for n in (1, 2, 3)),
+        json.dumps({"type": "assistant", "message": {"id": "s1", "model": "<synthetic>",
+                    "content": [{"type": "text", "text": "API Error: Can't reach the API server"}]}}),
+        json.dumps({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1,
+                    "total_cost_usd": 0, "result": "API Error: Can't reach the API server"}),
+    ]  # fmt: skip
+    m = parse_stream(lines)
+    assert m.result_subtype == "success"  # what claude reports, so the subtype alone can't tell
+    assert (m.api_retries, m.api_error) == (3, "API Error: Can't reach the API server")
+
+
+def test_a_clean_session_has_no_api_error(m) -> None:
+    assert (m.api_retries, m.api_error) == (0, None)
+
+
+# --- calls a Scout PreToolUse gate denied ------------------------------------------
+
+
+def _any_use(msg: str, tid: str, name: str) -> str:
+    block = {"type": "tool_use", "id": tid, "name": name, "input": {}}
+    return json.dumps({"type": "assistant", "message": {"id": msg, "content": [block]}})
+
+
+def test_a_gate_denial_is_recorded_on_the_call() -> None:
+    lines = [
+        _any_use("m1", "t1", "Bash"),
+        _result("t1", "[scout:kb-read-gate] Scheduled runs don't read knowledge-base/ ...", error=True),
+        _any_use("m2", "t2", "mcp__claude_ai_Slack__slack_send_message"),
+        _result("t2", [{"type": "text", "text": "[scout:outbound-gate] Not sent: ..."}], error=True),
+        _any_use("m3", "t3", "Bash"),
+        _result("t3", "exit 1: [scout:kb-read-gate] quoted in a failing command's output", error=False),
+        _any_use("m4", "t4", "Bash"),
+        _result("t4", "command not found", error=True),
+    ]
+    calls = parse_stream(lines).calls
+    assert [c.gate for c in calls] == ["kb-read-gate", "outbound-gate", None, None]
+
+
+def test_a_stored_call_without_a_gate_field_loads() -> None:
+    stored = {"seq": 1, "name": "Bash", "input": {}, "is_error": False, "position": 0.5}
+    assert ToolCall(**stored).gate is None

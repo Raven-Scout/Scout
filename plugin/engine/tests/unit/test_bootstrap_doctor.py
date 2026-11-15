@@ -907,3 +907,169 @@ def test_runner_claude_bin_skipped_without_runner(tmp_path):
     from scout.scripts.bootstrap_doctor import _check_runner_claude_bin
 
     assert _check_runner_claude_bin(vault=tmp_path) == ([], [])
+
+
+# ---------- privacy: blocked outbound checks and denied reads (#453, spec §7.4) ----------
+
+
+def _kb_read(ts: str, *, blocked: bool = False, denied: int = 0) -> str:
+    row = {
+        "ts": ts,
+        "reader": "autonomous",
+        "command": "check-outbound",
+        "surface": "slack",
+        "args_hash": "0" * 64,
+        "paths_returned": 0,
+        "paths_denied": denied,
+        "private_paths": 0,
+        "blocked": blocked,
+        "scout_mode": "morning-briefing",
+    }
+    return json.dumps(row) + "\n"
+
+
+def test_doctor_counts_blocked_and_denied_kb_reads_of_the_last_7_days(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    _populate_minimal_vault(tmp_path)
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    (logs / "kb-reads.jsonl").write_text(
+        _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)
+        + _kb_read((now - timedelta(days=2)).isoformat(), denied=3)
+        + _kb_read((now - timedelta(days=3)).isoformat())  # neither: not counted
+        + _kb_read((now - timedelta(days=9)).isoformat(), blocked=True)  # too old
+        + "not json\n"
+    )
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.YELLOW
+    (line,) = [w for w in report.warnings if "privacy" in w]
+    assert "2 " in line and "7 days" in line and "kb-reads.jsonl" in line
+
+
+def test_doctor_says_nothing_without_blocked_reads(tmp_path):
+    from datetime import UTC, datetime
+
+    _populate_minimal_vault(tmp_path)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    (logs / "kb-reads.jsonl").write_text(_kb_read(now.isoformat()))
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.GREEN
+    assert not [w for w in report.warnings if "privacy" in w]
+
+
+def test_doctor_privacy_count_takes_naive_times_as_utc(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_blocked_count
+
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    now = datetime(2026, 10, 21, 12, 0)  # naive
+    (logs / "kb-reads.jsonl").write_text(
+        _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)  # naive row
+        + _kb_read((now - timedelta(days=2)).replace(tzinfo=UTC).isoformat(), denied=1)
+        + _kb_read((now - timedelta(days=8)).isoformat(), blocked=True)
+    )
+    assert privacy_blocked_count(tmp_path, now=now) == 2
+    assert privacy_blocked_count(tmp_path / "nowhere", now=now) == 0
+
+
+def _kb_lint_warnings(vault: Path, block: str) -> list[str]:
+    _populate_minimal_vault(vault)
+    config = vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + block, encoding="utf-8")
+    report = run_doctor(vault=vault, check_jobs=False)
+    return [w for w in report.warnings if w.startswith("kb-lint:")]
+
+
+def test_doctor_names_a_kb_lint_config_mistake(tmp_path):
+    block = "kb_lint:\n  path_modes:\n    - {glob: 'knowledge-base/**', mode: Block, checks: [megaline]}\n"
+    warnings = _kb_lint_warnings(tmp_path, block)
+    assert any("mode 'Block'" in w for w in warnings) and any("unknown check 'megaline'" in w for w in warnings)
+
+
+def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
+    from scout.kb.git_io import git
+
+    block = "kb_lint:\n  path_modes:\n    - {glob: 'Knowledge-Base/**', mode: block}\n"
+    assert _kb_lint_warnings(tmp_path, block) == []  # not a git checkout: no file list to check against
+    git(tmp_path, "init", "-q")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    (line,) = [w for w in report.warnings if w.startswith("kb-lint:")]
+    assert "'Knowledge-Base/**' matches no file kb-lint checks" in line
+
+
+def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
+    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
+
+
+def test_doctor_says_when_the_kb_lint_config_cant_be_read(tmp_path):
+    (line,) = _kb_lint_warnings(tmp_path, "kb_lint:\n  max_line_chars: lots\n")
+    assert "can't be read (ValueError)" in line
+
+
+def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_audit_counts
+
+    _populate_minimal_vault(tmp_path)
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    # The shell template's row, as it prints it, and an old one.
+    row = (
+        '{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
+        '"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
+        '"scout_mode": null, "surface": null, "ts": "%s"}\n'
+    )
+    (logs / "kb-reads.jsonl").write_text(
+        row % (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + row % (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)
+    )
+    assert privacy_audit_counts(tmp_path, now=now) == (1, 1)
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.YELLOW
+    (line,) = [w for w in report.warnings if "privacy check could not run" in w]
+    assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line
+
+
+# ---------- repo sync: the cached host Local-Only list (#596) ----------
+
+
+def _repo_sync_warnings(vault: Path, *, cache_age_days: int | None, linked: bool = True) -> list[str]:
+    from datetime import UTC, datetime, timedelta
+
+    from scout import repo_sync as rs
+
+    _populate_minimal_vault(vault)
+    now = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+    if linked:
+        rs.save_state(vault, rs.LinkState("https://agnes.example.com", "https://agnes.example.com/r.git", "", "a", "b"))
+    if cache_age_days is not None:
+        rs.save_host_cache(
+            vault, ["raw/"], agnes_url="https://agnes.example.com", now=now - timedelta(days=cache_age_days)
+        )
+    report = run_doctor(vault=vault, check_jobs=False, now=now)
+    return [w for w in report.warnings if w.startswith("repo sync:")]
+
+
+def test_doctor_flags_a_linked_vault_without_the_host_cache(tmp_path):
+    (line,) = _repo_sync_warnings(tmp_path, cache_age_days=None)
+    assert "isn't cached" in line and "scoutctl repo sync" in line
+
+
+def test_doctor_flags_a_stale_host_cache(tmp_path):
+    (line,) = _repo_sync_warnings(tmp_path, cache_age_days=9)
+    assert "9 days" in line and "scoutctl repo sync" in line and "raw" not in line
+
+
+def test_doctor_is_quiet_on_a_fresh_cache_or_an_unlinked_vault(tmp_path):
+    assert _repo_sync_warnings(tmp_path / "fresh", cache_age_days=1) == []
+    assert _repo_sync_warnings(tmp_path / "unlinked", cache_age_days=None, linked=False) == []

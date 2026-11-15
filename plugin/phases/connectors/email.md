@@ -14,7 +14,7 @@ Check sent mail since the last run. Outbound emails are strong evidence that act
 
 Use `gmail_search_messages` with `from:{{USER_EMAIL}}` and date filters to find emails sent since the last run. For each sent email:
 
-- **Recipient(s)**: Who was it sent to? Cross-reference with `people.md`.
+- **Recipient(s)**: Who was it sent to? Cross-reference with `people.md` (`scripts/scoutctl kb name-lookup <name>`).
 - **Subject/Topic**: What was it about?
 - **Implications for action items**:
   - A reply to someone's request = that request is likely handled

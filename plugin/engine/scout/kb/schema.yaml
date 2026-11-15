@@ -61,9 +61,11 @@ entity_types:
     #              quarterly:cycle-start, daily
     # surface_window DSL: T-0 morning | T-1 day | T-7d | T-2d through T-0
     # completion_evidence: linear_project_update | slack_post | gmail_confirmation | manual
+    # observed_author / last_completed_by: who does it (a name, email, GitHub or Slack
+    # handle). When it isn't the vault owner, a due cadence is a 🟢 watch, not their 🔴.
     properties:
       required: [name, type, cadence, surface_window, active_from, status]
-      optional: [active_until, completion_evidence, completion_query, last_completed_date, priority, domain, sources]
+      optional: [active_until, completion_evidence, completion_query, last_completed_date, observed_author, last_completed_by, priority, domain, sources]
     relationships:
       - feeds
       - confirmed_on

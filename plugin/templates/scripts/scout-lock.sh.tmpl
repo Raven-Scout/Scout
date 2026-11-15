@@ -7,11 +7,16 @@
 #   SCOUT_DIR  LOG_DIR  LOG_FILE  LOCK_FILE  MODE  RUN_START
 #   RUNNER_KIND   scout | dreaming | research
 # and then calls, in order:
-#   scout_lock_acquire          0 = the lock is ours (released on EXIT);
+#   scout_lock_acquire          0 = the lock is ours (released on EXIT), with
+#                               the run marker beside it (#595);
 #                               1 = it stayed busy for the whole wait
 #   scout_redundant_wait_guard  0 = run; 1 = a session of this kind just did
 #                               this run's work, so skip it (#218)
 #   scout_record_skip <outcome> record a deliberate skip in the run ledger
+#   scout_lease_acquire         0 = run: the Repository Writer Lease is ours
+#                               (released on EXIT), or the vault isn't linked to
+#                               Agnes; 1 = skip, SCOUT_LEASE_SKIP says why
+#                               (lease_held | lease_unavailable)
 #
 # Env knobs:
 #   SCOUT_LOCK_WAIT_SECS=1800       how long a busy lock is waited for
@@ -27,6 +32,7 @@
 #                                   Default: enforce for dreaming and research,
 #                                   warn for scout (briefing and consolidation
 #                                   are different work).
+#   SCOUT_LEASE_RENEW_SECS=300      how often the keepalive renews the lease
 
 # scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
 # custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this file
@@ -68,6 +74,14 @@ LOCK_GUARD="$LOCK_FILE.takeover"
 # (bootstrap_lock.py), and health.py reads its mtime as the time it was taken.
 LOCK_PROGRESS="$LOCK_FILE.progress"
 LOCK_OWNER="$LOCK_FILE.owner"
+# The run marker: "<pid> <mode>" while a scheduled run holds the lock (#595).
+# The commit hook knows a run's commits from the process table (this runner,
+# claude-with-retry.sh and the claude session: engine/scout/kb/live_run.py). The
+# marker names the mode, and keeps a run counted as live after its holder dies
+# without releasing, until the next holder clears it. A run that deletes or
+# rewrites it or the lock is logged to failures.log by _scout_release_lock.
+LOCK_RUN="$LOCK_FILE.run"
+SCOUT_RUN_MARKED=0
 # A guard older than this was left by a process that died inside the guarded
 # section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
 LOCK_GUARD_ABANDONED_SECS=30
@@ -241,7 +255,7 @@ _scout_awake_now() {
     # sleeps: CLOCK_UPTIME_RAW on macOS, CLOCK_MONOTONIC on Linux (both exclude
     # suspend). Without python3, wall time -- the clock name keeps the two
     # from ever being subtracted from each other.
-    python3 -c 'import time; c = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC); print("awake", int(time.clock_gettime(c)))' 2>/dev/null \
+    python3 -I -c 'import time; c = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC); print("awake", int(time.clock_gettime(c)))' 2>/dev/null \
         || echo "wall $(date +%s)"
 }
 
@@ -307,17 +321,37 @@ _scout_take_guard() {
     ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null
 }
 
+_scout_on_exit() {
+    _scout_lease_release
+    _scout_release_lock
+}
+
+_scout_tampered() {
+    # A trace for a lock or marker someone else changed during this run (#595).
+    echo "=== Session lock tampered with: $1 ===" >> "$LOG_FILE"
+    echo "Session lock tampered with during $MODE (PID $$): $1 at $(date)" >> "$LOG_DIR/failures.log"
+}
+
 _scout_release_lock() {
     # If the lock was reaped and taken over while we ran, it is not ours to remove.
-    if [ "$(_scout_lock_pid)" = "$$" ]; then
-        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER"
+    # A reap KILLs the holder after TERM, so a trap that runs still finds its lock.
+    local held marker
+    held=$(_scout_lock_pid)
+    if [ "$held" = "$$" ]; then
+        if [ "$SCOUT_RUN_MARKED" = 1 ]; then
+            marker=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
+            [ "$marker" = "$$ $MODE" ] || _scout_tampered "the run marker was removed or rewritten (it read '${marker:-nothing}')"
+        fi
+        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER" "$LOCK_RUN"
         rm -f "$LOCK_FILE"
+    else
+        _scout_tampered "the session lock was removed or replaced (it read '${held:-nothing}')"
     fi
 }
 
 # One try at the lock: 0 if it is now ours, 1 if someone else holds it.
 _scout_lock_try() {
-    local _lock_attempt lock_mtime lock_age
+    local _lock_attempt lock_mtime lock_age stale_mode
     # Two attempts: recover a dead or wedged holder at most once, then retry the
     # atomic create. Any other conflict means another session holds the lock.
     for _lock_attempt in 1 2; do
@@ -361,7 +395,7 @@ _scout_lock_try() {
                     echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
                     echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
                 elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
-                    rm -f "$LOCK_PROGRESS"
+                    rm -f "$LOCK_PROGRESS" "$LOCK_RUN"
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -373,6 +407,11 @@ _scout_lock_try() {
                 break   # another process is already recovering it
             fi
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                # A runner releases its lock on EXIT; only a crash or a kill
+                # leaves it behind, so record which (#595).
+                stale_mode=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
+                echo "Session PID $LOCK_PID (${stale_mode:-no run marker}) died without releasing the session lock (a crash, or killed) -- found by $MODE at $(date)" >> "$LOG_DIR/failures.log"
+                rm -f "$LOCK_RUN"
                 rm -f "$LOCK_FILE"
             fi
             rm -f "$LOCK_GUARD"
@@ -400,9 +439,16 @@ scout_lock_acquire() {
         if [ "$left" -gt "$LOCK_POLL_SECS" ]; then left="$LOCK_POLL_SECS"; fi
         sleep "$left"
     done
-    trap _scout_release_lock EXIT
+    trap _scout_on_exit EXIT
     # Where this run logs, so waiters can see it progress. Best effort.
     { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
+    # The run marker, written whole (tmp + mv) so the hook never reads half of it.
+    if { printf '%s %s\n' "$$" "$MODE" > "$LOCK_RUN.$$" && mv -f "$LOCK_RUN.$$" "$LOCK_RUN"; } 2>/dev/null; then
+        SCOUT_RUN_MARKED=1
+    else
+        rm -f "$LOCK_RUN.$$" 2>/dev/null || true
+        echo "=== Could not write the run marker $LOCK_RUN (the commit hook still knows this run; its mode reads 'scheduled') ===" >> "$LOG_FILE"
+    fi
     if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
         SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
         echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"
@@ -418,7 +464,7 @@ _scout_witness() {
     local window="${SCOUT_REDUNDANT_WINDOW_MIN:-60}"
     case "$window" in ''|*[!0-9]*) window=60 ;; esac
     command -v python3 >/dev/null 2>&1 || return 0
-    python3 - "$LOG_DIR/run-outcomes.jsonl" "$RUNNER_KIND" "$(date +%s)" "$window" <<'PY' 2>/dev/null || true
+    python3 -I - "$LOG_DIR/run-outcomes.jsonl" "$RUNNER_KIND" "$(date +%s)" "$window" <<'PY' 2>/dev/null || true
 import json, sys
 ledger, kind, now, window = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 best = None
@@ -469,4 +515,67 @@ scout_redundant_wait_guard() {
     fi
     echo "=== Note: a $RUNNER_KIND run (slot $w_slot, log $w_log) finished ok ${ago}s ago — running anyway ===" >> "$LOG_FILE"
     return 0
+}
+
+# The Repository Writer Lease (Agnes R2; spec "Scout in Agnes" §5, §8.8). A
+# vault linked to an Agnes Personal Knowledge Repository (scoutctl repo link)
+# is written by one place at a time: this computer or a run in Agnes. So a run
+# takes the lease after the session lock and before it writes anything, a
+# keepalive renews it while the run lives, and the EXIT trap gives it back
+# before the session lock. When Agnes holds it (an Agnes-hosted run) the run is
+# skipped as lease_held; when Agnes can't grant it (unreachable, an expired PAT,
+# a broken engine) it is skipped as lease_unavailable, since a run that can't
+# take the lease can't know whether Agnes is writing. An unlinked vault makes
+# no lease call at all.
+#
+# The lease token never passes through this shell: scoutctl keeps it in a 0600
+# file outside the vault, keyed by the run id, which is all this shell knows.
+# A runner killed before its trap runs leaves the keepalive, which releases the
+# lease once the runner's PID is gone; if both die, the next run here releases
+# it from that file, and Agnes ends it at its TTL in any case.
+SCOUT_LEASE_RUN_ID=""
+SCOUT_LEASE_KEEPALIVE_PID=""
+SCOUT_LEASE_SKIP=""
+
+scout_lease_acquire() {
+    local rc=0 run_id
+    [ -f "$SCOUT_DIR/.scout-state/repo-sync.json" ] || return 0
+    run_id="$RUNNER_KIND-$MODE-$(date +%Y%m%dT%H%M%S)-$$"
+    if [ ! -x "${SCOUTCTL_BIN:-}" ]; then
+        echo "=== This vault is linked to Agnes, but scoutctl is missing at ${SCOUTCTL_BIN:-?}: can't take the repository lease — skipping (lease_unavailable) ===" >> "$LOG_FILE"
+        SCOUT_LEASE_SKIP=lease_unavailable
+        return 1
+    fi
+    "$SCOUTCTL_BIN" repo lease acquire --run-id "$run_id" --what "$MODE" --pid "$$" >> "$LOG_FILE" 2>&1 || rc=$?
+    case "$rc" in
+        0)
+            SCOUT_LEASE_RUN_ID="$run_id"
+            "$SCOUTCTL_BIN" repo lease keepalive --run-id "$run_id" --parent-pid "$$" </dev/null >> "$LOG_FILE" 2>&1 &
+            SCOUT_LEASE_KEEPALIVE_PID=$!
+            return 0
+            ;;
+        5)
+            return 0
+            ;;
+        3)
+            echo "=== Agnes holds the repository lease — skipping this run (lease_held) ===" >> "$LOG_FILE"
+            SCOUT_LEASE_SKIP=lease_held
+            ;;
+        *)
+            echo "=== Couldn't take the repository lease from Agnes (scoutctl exit $rc) — skipping this run (lease_unavailable) ===" >> "$LOG_FILE"
+            SCOUT_LEASE_SKIP=lease_unavailable
+            ;;
+    esac
+    return 1
+}
+
+_scout_lease_release() {
+    [ -n "$SCOUT_LEASE_RUN_ID" ] || return 0
+    "$SCOUTCTL_BIN" repo lease release --run-id "$SCOUT_LEASE_RUN_ID" >> "$LOG_FILE" 2>&1 || true
+    SCOUT_LEASE_RUN_ID=""
+    if [ -n "$SCOUT_LEASE_KEEPALIVE_PID" ]; then
+        kill "$SCOUT_LEASE_KEEPALIVE_PID" 2>/dev/null || true
+        wait "$SCOUT_LEASE_KEEPALIVE_PID" 2>/dev/null || true
+        SCOUT_LEASE_KEEPALIVE_PID=""
+    fi
 }

@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "channel": "C0123456789",
+      "user": "U0123456782",
+      "user_name": "Sam",
+      "ts": "1700000000.000400",
+      "date": "{{today}}T06:20:00Z",
+      "text": "Heads up: the rate limit change in example-org/widgets#12 blocks the general availability cutover. Nothing ships to customers until it merges.",
+      "permalink": "https://acme-co.slack.com/archives/C0123456789/p1700000000000400"
+    },
+    {
+      "channel": "C0123456789",
+      "user": "U0123456780",
+      "user_name": "Priya",
+      "ts": "1700000000.000500",
+      "date": "{{today}}T06:45:00Z",
+      "text": "@alex we moved the launch review to {{wd+2}}. Can you bring the rollout plan for the catalog?",
+      "permalink": "https://acme-co.slack.com/archives/C0123456789/p1700000000000500"
+    }
+  ]
+}

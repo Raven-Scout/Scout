@@ -20,6 +20,7 @@ import fcntl
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -449,6 +450,98 @@ def test_a_deleted_tracked_file_is_committed_as_a_deletion(repo: Path, helper: P
     assert result.returncode == 0, result.stderr
     assert "a.md" not in _git(repo, "ls-files").split()
     assert _committed(repo) == {"a.md"}
+
+
+def _tree(repo: Path) -> set[str]:
+    return set(_git(repo, "ls-tree", "-r", "--name-only", "HEAD").split())
+
+
+def test_a_git_mv_naming_both_paths_commits_the_whole_move(repo: Path, helper: Path, path_env: str) -> None:
+    (repo / "other.md").write_text("a peer's half-written work\n", encoding="utf-8")
+    _git(repo, "add", "other.md")
+    (repo / "docs").mkdir()
+    _git(repo, "mv", "a.md", "docs/a.md")
+
+    result = _run(helper, path_env, "move", "a.md", "docs/a.md")
+
+    assert result.returncode == 0, result.stderr
+    assert "skipping" not in result.stderr
+    assert {"docs/a.md", "other.md"} <= _tree(repo) and "a.md" not in _tree(repo)
+    # The peer's staged file neither rode along nor got lost, and nothing of the move is left staged.
+    assert _git(repo, "status", "--porcelain").splitlines() == ["M  other.md"]
+
+
+def test_a_git_rm_path_is_committed_as_a_deletion(repo: Path, helper: Path, path_env: str) -> None:
+    _git(repo, "rm", "-q", "a.md")
+
+    result = _run(helper, path_env, "drop", "a.md")
+
+    assert result.returncode == 0, result.stderr
+    assert "a.md" not in _tree(repo)
+
+
+def test_a_move_cannot_widen_a_note_that_is_private_by_its_path(repo: Path, helper: Path, path_env: str) -> None:
+    """Skipping the old path made a move look like a new file, which the widening check can't compare."""
+    scoutctl = Path(sys.executable).with_name("scoutctl")
+    secret = "knowledge-base/projects/widgets/secret.md"
+    plain = "knowledge-base/projects/widgets/plain.md"
+    for rel in (secret, plain):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("# A note\n", encoding="utf-8")
+    (repo / "scout-config.yaml").write_text(
+        f'privacy:\n  visibility_defaults:\n    - {{glob: "{secret}", visibility: private}}\n', encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "notes")
+    _script(repo / ".git" / "hooks" / "pre-commit", f'#!/bin/sh\nexec "{scoutctl}" kb lint --staged\n')
+    docs = "knowledge-base/projects/widgets/documents"
+    (repo / docs).mkdir()
+
+    _git(repo, "mv", plain, f"{docs}/plain.md")
+    moved = _run(helper, path_env, "move", plain, f"{docs}/plain.md", SCOUT_MODE="dreaming-nightly")
+    assert moved.returncode == 0, moved.stderr
+    assert plain not in _tree(repo) and f"{docs}/plain.md" in _tree(repo)
+
+    before = _head(repo)
+    _git(repo, "mv", secret, f"{docs}/secret.md")
+    blocked = _run(helper, path_env, "move", secret, f"{docs}/secret.md", SCOUT_MODE="dreaming-nightly")
+    assert blocked.returncode == 5
+    assert "privacy-widening" in blocked.stdout + blocked.stderr
+    assert _head(repo) == before
+
+
+def test_a_scheduled_commit_can_not_add_a_pages_fact_to_a_shared_source_note(
+    repo: Path, helper: Path, path_env: str
+) -> None:
+    """#569: the note's label doesn't change, only its content, so the label checks let it through."""
+    scoutctl = Path(sys.executable).with_name("scoutctl")
+    source = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
+    page = "knowledge-base/projects/widget/widget.md"
+    for rel, text in (
+        (source, "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\nThe pilot starts next week.\n"),
+        (page, "# Widget\n\nThe widget budget moves to next quarter.\n"),
+    ):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    (repo / "scout-config.yaml").write_text(
+        "privacy:\n  federation:\n    enabled: true\n  federation_defaults:\n"
+        '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "notes")
+    _script(repo / ".git" / "hooks" / "pre-commit", f'#!/bin/sh\nexec "{scoutctl}" kb lint --staged\n')
+
+    before = _head(repo)
+    with (repo / source).open("a", encoding="utf-8") as fh:
+        fh.write("\nThe widget budget moves to next quarter ([[widget]]).\n")
+    blocked = _run(helper, path_env, "consolidation: widget budget", source, SCOUT_MODE="consolidation")
+    assert blocked.returncode == 5
+    assert "privacy-widening" in blocked.stdout + blocked.stderr
+    assert _head(repo) == before
+
+    owner = _run(helper, path_env, "owner: widget budget", source)
+    assert owner.returncode == 0, owner.stderr
 
 
 def test_scout_data_dir_overrides_the_installed_vault_path(tmp_path: Path, helper: Path, path_env: str) -> None:

@@ -45,6 +45,15 @@ Bidirectional Telegram (a return-bridge for inbound replies as feedback signals)
 is v0.7+ territory per the event-architecture spec. v0.4 ships the outbound
 stub.
 
+**Target classification (#453, spec §8.4).** A positive chat id is a private
+chat with the owner (``telegram_private_chat``, owner-only): it sends as
+always, vault or not. Any other target (a group or channel, id below zero, or
+an ``@channel`` name) is ``telegram_group_chat``, a shared surface: the body
+goes through ``check_outbound`` first, and a hit drops the message with a
+``privacy.outbound_blocked`` event and a blocked line in
+``.scout-logs/kb-reads.jsonl`` (exit 4, line numbers only). With no vault to
+check against, a group send is refused.
+
 **Dry-run semantics.** ``--dry-run`` still reads the secrets so a missing
 install fails fast (operator wants to verify, not stub past). It then echoes
 what would be POSTed and returns an Event with ``dry_run=True`` instead of
@@ -55,6 +64,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import html
 import json
 import os
 import re
@@ -68,10 +78,10 @@ from typing import Any
 import requests
 
 from scout import paths
-from scout.action_items.render import safe_href
 from scout.errors import ConfigError, ScoutError
-from scout.events import Event
+from scout.events import Event, append_event
 from scout.ids import new_ulid
+from scout.links import safe_href
 from scout.redact import redact_secrets
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -96,6 +106,18 @@ class DuplicateSendError(ScoutError):
         super().__init__(f"byte-identical message sent at {sent_at} (id {original_id})")
         self.original_id = original_id
         self.sent_at = sent_at
+
+
+class OutboundBlockedError(ScoutError):
+    """The target is a group or channel and the message may not go there (#453, spec §8.4)."""
+
+    exit_code = 4
+
+
+# Output classes (spec §4.2): a private chat with the owner is owner-only, a
+# group or channel is shared.
+PRIVATE_CHAT = "telegram_private_chat"
+GROUP_CHAT = "telegram_group_chat"
 
 
 def secrets_dir() -> Path:
@@ -186,6 +208,83 @@ def _read_secret(name: str) -> str:
     if not value:
         raise ConfigError(f"Secret file is empty: {path}.")
     return value
+
+
+# ----- target classification (#453) ------------------------------------------
+
+
+def target_surface(chat_id: str) -> str:
+    """The surface a chat id names: a positive id is a private chat with a user
+    (``telegram_private_chat``); anything else is ``telegram_group_chat`` —
+    a group or channel (id below zero), an ``@channel`` name, or an id that
+    doesn't parse (fail closed)."""
+    try:
+        return PRIVATE_CHAT if int(chat_id.strip()) > 0 else GROUP_CHAT
+    except ValueError:
+        return GROUP_CHAT
+
+
+def _guard_vault() -> Path | None:
+    """The vault whose private notes a shared send is checked against, or None when there is none."""
+    try:
+        vault = paths.data_dir()
+    except Exception:  # noqa: BLE001 - no vault: the caller fails closed
+        return None
+    return vault if (vault / paths.VAULT_MARKER).is_file() else None
+
+
+def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
+    """Refuse a body that names a private note (spec §8.4); records the block, never the content.
+
+    Raises :class:`OutboundBlockedError` on a hit, and when no vault can be
+    found to check against.
+    """
+    from scout.kb.outbound import check_outbound
+    from scout.kb.read_log import log_event
+    from scout.kb.reader import resolve_reader
+    from scout.kb.shared_reads import SharedReadsUnreadable
+
+    vault = _guard_vault()
+    if vault is None:
+        raise OutboundBlockedError(
+            "refused — the target is a group or channel, and no Scout vault was found to check the message "
+            "against (run inside the vault, or set SCOUT_DATA_DIR)"
+        )
+    try:
+        found = set(check_outbound(vault, body, surface))
+        if parse_mode == "html":
+            # What Telegram shows: tags stripped, entities decoded (`Sam<b></b>my`, `&#83;ammy`).
+            found |= set(check_outbound(vault, html.unescape(_TAG_RE.sub("", body)), surface))
+    except SharedReadsUnreadable as e:
+        raise OutboundBlockedError(f"refused — the target is a group or channel, and the check can't run: {e}") from e
+    lines = sorted(found)
+    if not lines:
+        return
+    try:
+        append_event(
+            paths.logs_dir(vault),
+            kind="privacy.outbound_blocked",
+            source="cli:notify_telegram",
+            payload={"surface": surface, "channel": "telegram", "lines": lines},
+        )
+    except OSError:
+        pass  # the message is dropped either way
+    log_event(
+        vault,
+        reader=resolve_reader(None, os.environ),
+        command="notify telegram",
+        surface=surface,
+        args=[surface],
+        returned=0,
+        denied=0,
+        private_paths=0,
+        blocked=True,
+    )
+    where = ("lines " if len(lines) > 1 else "line ") + ", ".join(str(n) for n in lines)
+    raise OutboundBlockedError(
+        f"refused — {where} of the message name a private note, and the target is a group or channel; "
+        "the message was dropped"
+    )
 
 
 # ----- body splitting ------------------------------------------------------
@@ -336,18 +435,28 @@ def _next_chunk(
     def outside_markup(i: int) -> bool:  # a space inside `<a href=…>` is not a word boundary
         return _safe_html_cut(remaining, i) == i
 
+    def overflow_of(cut: int) -> int:
+        return len(prefix) + cut + len(_closers(_open_tags_after(remaining[:cut], stack))) - limit
+
     while True:
         cut, consumed = _find_cut(remaining[:budget], ok=outside_markup)
         if not consumed:
-            # Hard cut. 0 means the chunk starts with a tag or entity longer
-            # than the budget: cut it anyway. Telegram refuses that chunk and
-            # the plain-text fallback sends it, where an over-long chunk
-            # would be refused for good.
-            cut = _safe_html_cut(remaining, cut) or cut
+            # Hard cut. 0 means the window cuts through the tag or entity
+            # ``remaining`` starts with (the budget can shrink below it for
+            # tags later in the window). Take that markup alone when it fits:
+            # the piece is then markup only and an opened tag is carried to
+            # the next chunk. When even that does not fit, cut through it.
+            # Telegram refuses that chunk and the plain-text fallback sends
+            # it, where an over-long chunk would be refused for good.
+            safe = _safe_html_cut(remaining, cut)
+            if not safe:
+                m = _TAG_RE.match(remaining) or _ENTITY_RE.match(remaining)
+                safe = m.end() if m and overflow_of(m.end()) <= 0 else cut
+            cut = safe
         piece = remaining[:cut]
         after = _open_tags_after(piece, stack)
         closers = _closers(after)
-        overflow = len(prefix) + len(piece) + len(closers) - limit
+        overflow = overflow_of(cut)
         if overflow <= 0:
             break
         # Ends: at budget 1 the piece is one character and opens no tag, so
@@ -409,7 +518,7 @@ def _drop_unsafe_links(body: str) -> tuple[str, int]:
     A body can carry text Scout did not write (Slack, GitHub, mail), and
     Telegram keeps ``tg://`` deep links live (join a chat, add a proxy). The
     scheme rule is the action-items dashboard's
-    (:func:`~scout.action_items.render.safe_href`).
+    (:func:`~scout.links.safe_href`).
 
     Fails closed: every ``<a>`` tag is read on its own, and one that is not
     exactly ``<a href=…>`` (another attribute, a second href, a ``data-href``)
@@ -569,6 +678,9 @@ def send(
     Raises:
         ValueError: empty body, unknown tier or unknown parse mode.
         ConfigError: missing secret files (exit code 10).
+        OutboundBlockedError: the chat is a group or channel and the body
+            names a private note, or there is no vault to check it against
+            (exit code 4). Nothing is sent.
         DuplicateSendError: a byte-identical body went to this chat inside
             ``DUPLICATE_WINDOW`` and ``allow_duplicate`` is false (exit code 3).
         requests.RequestException: HTTP-layer failure during a real send.
@@ -584,6 +696,9 @@ def send(
 
     token = _read_secret("telegram-bot-token")
     chat_id = _read_secret("telegram-chat-id")
+    surface = target_surface(chat_id)
+    if surface != PRIVATE_CHAT:
+        _check_shared(body, surface, parse_mode)  # a dry run too: it shows what would be sent
 
     now = now or datetime.now(UTC)
     ts = _iso(now)
@@ -700,6 +815,9 @@ def main(argv: list[str] | None = None) -> int:
     except DuplicateSendError as e:
         print(f"notify-telegram: refused — {e}")
         return DuplicateSendError.exit_code
+    except OutboundBlockedError as e:
+        print(f"notify-telegram: {e}")
+        return OutboundBlockedError.exit_code
     except ValueError as e:
         print(f"notify-telegram: {e}")
         return 1

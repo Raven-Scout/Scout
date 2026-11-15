@@ -1,8 +1,8 @@
 # Telegram outbound — operator setup
 
 Telegram outbound lets a Scout session push notifications to your phone, in a
-Telegram chat. Once set up, it carries the session-wrap message in place of the
-Slack DM (see §7).
+Telegram chat. Once set up, it carries the session-wrap message too, alongside
+the Slack DM unless you choose one channel (see §7).
 It is **outbound only by design** in v0.4: Scout sends; you receive. There is
 no return-bridge yet (inbound replies as feedback signals are v0.7+ territory
 per the event-architecture spec).
@@ -173,11 +173,27 @@ SKILL.md then gains a **Telegram Notification** section and RESEARCH.md a
 **Step 4d: Telegram Notification**. Dreaming has no section of its own and
 follows SKILL.md.
 
-**Telegram replaces the Slack DM.** With both Slack and Telegram enabled, the
-wrap goes to Telegram only, and the Slack sections say so. A run summary can
-carry personal content, and Telegram is the channel you set up for yourself.
-Slack scans are unaffected. If a send fails, the session says so in its final
-message and does not fall back to Slack.
+**Telegram is added to the Slack DM, not swapped for it.** With both Slack and
+Telegram enabled, every wrap goes to both. To keep the wrap on one channel, set
+`notify.wrap_channels` in your vault's `scout-config.yaml`, then run
+`/scout-update`:
+
+```yaml
+notify:
+  wrap_channels: [telegram]   # or [slack]; leave it out for both
+```
+
+Only `slack` and `telegram` are accepted; anything else, or an empty list,
+makes `/scout-update` stop with an error instead of silently dropping the wrap.
+Leaving a channel out removes only its notification section: Slack scans are
+unaffected.
+
+**Privacy still applies to each channel on its own.** Slack is a shared
+surface, so the Slack DM goes through `scoutctl kb check-outbound` and never
+names a `[private]` item. This Telegram chat is owner-only, so it may. With
+both on, private items reach Telegram and the daily file, never Slack. If a
+Telegram send fails, the session says so in its final message and does not
+resend that message on Slack.
 
 The section tells the session to pipe the wrap in through stdin, in HTML mode:
 
@@ -271,7 +287,7 @@ chunk (about 2000 characters of nesting): Scout stops carrying them over.
 | `Missing secret: .../telegram-chat-id`                           | Step 4 not done.                                                             |
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
-| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an or an unescaped `<`/`&`. The chunk was sent as plain text. |
+| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported or unclosed tag, or an unescaped `<`/`&`. The chunk was sent as plain text. |
 | `warning: dropped N link(s) whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |

@@ -92,6 +92,18 @@ struct ActionItemsParserTests {
         #expect(ActionItemsParser.indentLevelFor("\t  ") == 2)
     }
 
+    /// The phases write `## 💡 Today's Focus`; older files (and runs that read
+    /// a conflicting phase line) wrote 🎯. Both are the focus section.
+    @Test(arguments: ["💡", "🎯"])
+    func todaysFocusHeadingIsFocusEitherWay(emoji: String) throws {
+        let text = "# T\n\n## \(emoji) Today's Focus\n\n1. Ship the fix.\n\n## 🔴 Urgent\n\n- [ ] [#AB12] **Task**\n"
+        let url = URL(fileURLWithPath: "/tmp/action-items-2026-06-06.md")
+        let doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
+        let focus = try #require(doc.sections.first { $0.kind == .focus })
+        #expect(focus.bullets == ["1. Ship the fix."])
+        #expect(doc.sections.filter { $0.kind == .neutral }.isEmpty)
+    }
+
     @Test func nestedTasksParsedWithIndentLevel() throws {
         // Synthetic doc that mirrors the offsite-trip nesting pattern in the
         // real action-items files (1 tab for child, 2 tabs for grand-child).

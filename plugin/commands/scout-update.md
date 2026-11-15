@@ -25,7 +25,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -55,7 +55,7 @@ grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/de
 Scout's plugin lives in `Raven-Scout/Scout` under `plugin/`. That repo is the former `Raven-Scout/scout-plugin`, renamed when the app moved in; GitHub redirects the old name, so a marketplace that still says `Raven-Scout/scout-plugin` is fine. A `scout-plugin` marketplace pointing at any other repo makes Step 0.5's refresh "succeed" while pulling nothing of Scout's, so the vault would be upgraded against the wrong templates. Check before refreshing:
 
 ```bash
-python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
+python3 -I - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
 import json, os, re, sys
 try:
     entry = json.load(open(sys.argv[1], encoding="utf-8")).get("scout-plugin")
@@ -112,7 +112,7 @@ else
   # registered, so the resolver below would hand back the old plugin. update switches it,
   # once for every scope Scout is installed in (update alone only touches user scope).
   SCOPES="$(claude plugin list --json 2>/dev/null \
-    | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
+    | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
     || echo user)"
   for scope in $SCOPES; do
     claude plugin update scout@scout-plugin --scope "$scope" || echo "PLUGIN_UPDATE_FAILED:$scope"
@@ -134,7 +134,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -159,7 +159,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -220,7 +220,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -248,7 +248,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -274,14 +274,14 @@ Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
   To resolve a sidecar, first make `X.md` the version the user wants. For a sidecar with conflict markers that can be `mv X.md.proposed-merge X.md` and removing the markers, since the merge already holds the vault's version. For a sidecar without markers (the plugin's whole version), don't `mv` it unless the user wants to replace their brain with the plugin's: review `diff X.md X.md.proposed-merge` and copy in the parts they want. Then run `"$SCOUTCTL" bootstrap resolve X.md`. That records the plugin's version as the merge base, so later edits to `X.md` (a dreaming run applying a proposal, say) merge cleanly with the next plugin change, and it removes the sidecar. It refuses while conflict markers remain. Deleting the sidecar without `resolve` means "decide later": the next upgrade proposes the same change again.
 - If exit 2: list every `error:` line. Suggest `scoutctl bootstrap doctor` for a clean read of the current state.
 
-Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`); none of them blocks a later upgrade:
+Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`, `docs/kb-page-standard.md`); none of them blocks a later upgrade:
 
-- `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews every added line for personal details first. Not for `parser.py`: the vault grows it on purpose, so its edits are vault content and `--patch` leaves it out.
+- `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews every added line for personal details first. Not for `parser.py` or `docs/kb-page-standard.md`: the vault grows or tailors them on purpose, so their edits are vault content and `--patch` leaves them out.
 - `conflict`: the edit and the plugin's update overlap, or (if the line says "could not merge") git could not run. The user's version is still running; the update is parked at `.scout-state/drift/<file>.plugin` with a conflict-marked draft at `<file>.merge`.
   - To keep both: merge by hand into `<file>`, then run `scoutctl bootstrap drift --resolve <file>`. It refuses until the update's lines are in the file.
   - To take the plugin's version: `cp .scout-state/drift/<file>.plugin <file>`.
   - To keep only the user's version: `--resolve <file> --drop-update`. Confirm this with the user first: it drops the plugin's fix.
-  - A `parser.py` conflict with no recorded base ("no record of the last render") can't be checked, so plain `--resolve` refuses it; after merging by hand, settle it with `--resolve <file> --drop-update`.
+  - A `parser.py` or `docs/kb-page-standard.md` conflict with no recorded base ("no record of the last render") can't be checked, so plain `--resolve` refuses it; after merging by hand, settle it with `--resolve <file> --drop-update`. For the page standard this is the usual case on a vault that wrote its own before the plugin shipped one: compare it with `.scout-state/drift/docs/kb-page-standard.md.plugin`, take what the user wants, then settle it.
 - `error`: the file couldn't be read or written (permissions, a locked file). It was left untouched and everything else upgraded. Report the reason shown.
 - `replaced` (with a `backup:` path): this was the vault's first upgrade with no record of the last render, and the file matched no release, so the plugin's version was installed and the vault's copy parked at `.scout-state/drift/<file>.vault`. `scoutctl bootstrap drift --diff` shows what the copy had; dismiss it with `scoutctl bootstrap drift --resolve <file>`, or copy it back over `<file>` to keep its edit (later upgrades then protect it).
 
@@ -291,6 +291,8 @@ If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKI
   `~/Scout/connector-probes.local.yaml` (custom probes) are user files, never
   templated, so upgrades leave them untouched — and every upgrade re-renders the
   custom connectors' sections from the current templates.
+
+  That means a new tool never reaches a `restrict_tools` allowlist on its own. Run `"$SCOUTCTL" connectors custom list`. If a connector reads Agnes and has `restrict_tools: true`, tell the user: *colleagues can share notes with you through Agnes. Your Scout can read them only if this connector lists the three read-only tools for it; what it reads stays private to you.* Ask first, and on a yes run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'` (`SCOUTCTL` as set in the block above). Also tell them the connector must sign in with their Agnes personal access token: Agnes doesn't offer shared notes to a connector signed in through its OAuth flow (`/mcp`). Skip this step if nothing is restricted or the user says no; ask again on a later update only if they raise it.
 
 ## Step 3b: Per-note privacy — legacy markers and local-only trading paths
 
@@ -306,7 +308,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -324,6 +326,21 @@ When the user has answered every note and path above (or all three lists were em
 
 Run these writes only while the user is here answering. A scheduled run, the app or a self-update gets this report on stderr from `bootstrap upgrade` and changes nothing; `--set-private` and `--local-only` refuse them.
 
+## Step 3c: Wrap channels (Slack and Telegram)
+
+Read `~/Scout/scout-config.yaml`. Skip this step unless `connectors.enabled` lists both `slack` and `telegram`.
+
+- If there is no `notify.wrap_channels`, tell the user once: every run's wrap notification now goes to both channels, a Slack DM (non-private items only) and their private Telegram chat. In 0.18.3, Telegram replaced the Slack DM instead. Ask whether to keep both, or to send the wrap only to Telegram (as in 0.18.3) or only to Slack. For a one-channel answer, add this block with the Edit tool, keeping everything else in the file, and then run Step 2's `bootstrap upgrade` again so the brain files drop the other channel's section:
+
+  ```yaml
+  notify:
+    wrap_channels: [telegram]   # or [slack]
+  ```
+
+- If `notify.wrap_channels` is set, say which channels get the wrap and move on.
+
+If Step 2's upgrade failed with a `notify.wrap_channels` error, the value is misspelt or empty. Only `slack` and `telegram` are accepted. Fix it with the user, then re-run the upgrade.
+
 ## Step 4: Offer the tools Scout doesn't read yet
 
 ```bash
@@ -334,7 +351,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }

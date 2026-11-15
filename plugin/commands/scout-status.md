@@ -73,11 +73,12 @@ The "Last briefing / consolidation / dreaming / research" lines come from `slots
 find "SCOUT_DIR/knowledge-base" -type f -name "*.md" | sort
 ```
 
-For each file found, read it and look for a line matching either:
-- `**Last verified:**`
-- `**Last updated:**`
+For each file found, read it and take its date from the first of:
+- the frontmatter `last_verified:` or `last_updated:` key (the newer of the two)
+- a `**Last verified:**` line (older files)
+- a `**Last updated:**` line (older files)
 
-Extract the date from that line. Compare it to today's date to determine staleness.
+Extract the date. Compare it to today's date to determine staleness.
 
 Staleness thresholds (apply per-file based on its content — if no priority signal is obvious, default to medium):
 
@@ -141,7 +142,7 @@ Then verify three properties of `SCOUTCTL_BIN`:
 
 1. **Exists** — `[ -e "$SCOUTCTL_BIN" ]`. If not, flag as a broken plist.
 2. **Executable** — `[ -x "$SCOUTCTL_BIN" ]`. If not, flag.
-3. **Not under a TCC-protected dir** (after resolving symlinks). Resolve with `RESOLVED=$(readlink -f "$SCOUTCTL_BIN" 2>/dev/null || python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$SCOUTCTL_BIN")`. Then check:
+3. **Not under a TCC-protected dir** (after resolving symlinks). Resolve with `RESOLVED=$(readlink -f "$SCOUTCTL_BIN" 2>/dev/null || python3 -I -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$SCOUTCTL_BIN")`. Then check:
    ```bash
    case "$RESOLVED" in
        "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Downloads/"*) flag ;;

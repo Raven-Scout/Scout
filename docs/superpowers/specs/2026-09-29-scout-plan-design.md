@@ -59,6 +59,7 @@ The command only ever edits or deletes events it created: the event id must be r
 - All verbs take `--by-id` / `--subject` and the optional daily-file path, like `snooze`.
 - A line is a marker only when its value parses (`- block: waiting on Priya` is left alone), and the scan for a task stops at the next task line, so a parent never touches a child task's markers.
 - The comment lister (`_common.list_comment_lines`) and the HTML renderer still count the markers as comments, exactly as the Mac and iOS apps do. `delete-comment` and `edit-comment` address comments by the index the apps show, so the engine, the Mac app and iOS must start skipping the markers in the same release (see Out of scope).
+  Superseded by `docs/superpowers/specs/2026-10-27-action-items-plan-chip-design.md`: the renderer and the Mac app now skip the markers, and `--index` keeps counting them, so no release has to switch all clients at once.
 - `planning show` and `planning calibration` read the vault from `SCOUT_DATA_DIR`; the command sets it to the vault it works in.
 - The manifest advertises `planning_v1`.
 

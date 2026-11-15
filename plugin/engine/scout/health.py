@@ -14,11 +14,13 @@ import os
 import platform
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from itertools import takewhile
 from pathlib import Path
 
+from scout.config import config_load_problem
 from scout.engine_checkout import WORKTREES_HINT, checkout_state
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
@@ -28,11 +30,24 @@ from scout.update_outcomes import UpdateOutcome
 from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
-SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"})
+SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease", "skipped_gates"})
+# A run skipped because the gate probe found claude not loading Scout's hooks (spec 2026-11-13 §3.5).
+GATES_SKIP = "skipped_gates"
+# A vault linked to Agnes skips a run it can't take the Repository Writer Lease
+# for (R2): failure_class lease_held (Agnes holds it) or lease_unavailable.
+LEASE_SKIP = "skipped_lease"
+LEASE_UNAVAILABLE_RED = 3
 
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
 LOCK_SKIP_WINDOW = timedelta(hours=24)
+# Runs that fail, succeed, then fail again never form a trailing streak, so
+# runs.failing clears on every success between them. This many failed runs in
+# the window, with a success after the first of them, is a pattern of its own.
+RECURRING_FINDING_ID = "runs.recurring"
+# Two days, not one: failures about twice a day can leave one inside any 24 h.
+RECURRING_FAILURE_THRESHOLD = 3
+RECURRING_FAILURE_WINDOW = timedelta(hours=48)
 # A Claude usage limit that named its reset: runs wait for it (#424).
 PAUSED_FINDING_ID = "runs.paused"
 
@@ -77,6 +92,8 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"hit your .{0,20}limit|limit.{0,20}resets", re.IGNORECASE),
         re.compile(r"API Error: 429|too many requests|overloaded", re.IGNORECASE),
     ),
+    # claude's cap message, or the engine's line when the retry wrapper withheld a retry (#561).
+    "budget": (re.compile(r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),
 }
 FAILURE_LINE_MAX = 300
 
@@ -113,7 +130,7 @@ class Finding:
     since: datetime | None
     summary: str
     fix: str
-    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token"
+    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config" | "state"
     # A failed run's own error line, verbatim (#445): what Claude Code or git said, not the class.
     detail: str | None = None
     # Absolute path of that run's log, when it is still on disk.
@@ -395,6 +412,63 @@ def _window_text(row: OutcomeRow) -> str:
     return f" {row.commits_in_window} commit(s) in that run's window{newest}."
 
 
+_RECURRING_FIX = {
+    "budget": (
+        "These runs reached the per-session cap (claude --max-budget-usd, set by connectors.inputs.max_budget "
+        "in scout-config.yaml). Compare what the runs cost with that cap, then raise it or move those slots "
+        "to a cheaper model (the slot's model: in .scout-state/schedule.yaml)."
+    ),
+}
+
+
+def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> Finding | None:
+    """Failed runs in the last 48 h with a success between them, which the trailing streak can't show.
+
+    A vault whose runs fail about twice a day reads green after every success
+    under runs.failing alone. This names how many failed, of how many ran, and
+    the failure classes, so the pattern stays visible between failures.
+
+    Only runs up to the last success count: a trailing streak is reported by
+    runs.failing, auth.expired or runs.paused, and counting it here would add a
+    doctor fix next to a pause, or advice for an older class next to a login
+    that has expired. A single streak that has already ended isn't a pattern
+    either, so a success must fall between the first and last failure counted.
+    """
+    cutoff = now - RECURRING_FAILURE_WINDOW
+    recent = [r for r in rows if r.outcome not in SKIP_OUTCOMES and r.finished_at >= cutoff]
+    oks = [r.finished_at for r in recent if r.outcome == "ok"]
+    if not oks:
+        return None
+    settled = [r for r in recent if r.finished_at <= max(oks)]
+    failed = [r for r in settled if r.outcome == "failed"]
+    if len(failed) < RECURRING_FAILURE_THRESHOLD:
+        return None
+    first, last = failed[0].finished_at, failed[-1].finished_at
+    if not any(r.outcome == "ok" and first < r.finished_at < last for r in settled):
+        return None  # one streak that has ended: nothing recurs
+    classes = Counter(r.failure_class for r in failed).most_common()
+    class_text = ", ".join(f"{klass} ×{n}" for klass, n in classes)
+    slots = ", ".join(sorted({r.slot for r in failed}))
+    newest = failed[-1]
+    log = _run_log(vault, newest)
+    log_hint = f": .scout-logs/{newest.log}" if newest.log else ""
+    return Finding(
+        id=RECURRING_FINDING_ID,
+        severity="yellow",
+        since=first,
+        summary=(
+            f"{len(failed)} of the last {len(settled)} scheduled runs failed in the past 48 h, "
+            f"with successes in between ({class_text}). Failed slots: {slots}."
+        ),
+        fix=_RECURRING_FIX.get(
+            classes[0][0], f"Run scoutctl bootstrap doctor and read the newest failed log{log_hint}"
+        ),
+        source="ledger",
+        detail=failure_line(log, newest.failure_class) if log else None,
+        log=str(log) if log else None,
+    )
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -466,7 +540,13 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                 )
             )
 
+    recurring = recurring_failures(rows, vault=vault, now=now)
+    if recurring is not None:
+        findings.append(recurring)
+
     cutoff = now - LOCK_SKIP_WINDOW
+    findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
+    findings.extend(gates_findings(rows, vault=vault))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -476,6 +556,139 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                 since=None,
                 summary=f"{len(lock_skips)} runs skipped in the last 24 h because another session held the vault lock.",
                 fix="A long-running session is holding the vault lock; check .scout-logs/ for a run that took hours.",
+                source="ledger",
+            )
+        )
+    return findings
+
+
+def _trailing_lease_unavailable(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The newest run-or-lease-skip rows that skipped as lease_unavailable, oldest first.
+
+    Lock, budget and redundancy skips are passed over: they say nothing about
+    whether Agnes answers. Any run, or a lease_held skip, ends the streak.
+    """
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != LEASE_SKIP:
+            continue
+        if r.outcome != LEASE_SKIP or r.failure_class != "lease_unavailable":
+            break
+        streak.append(r)
+    return streak[::-1]
+
+
+def _trailing_gates_skips(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The newest gate-probe skips, oldest first, passing over other skips; any run ends the streak."""
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != GATES_SKIP:
+            continue
+        if r.outcome != GATES_SKIP:
+            break
+        streak.append(r)
+    return streak[::-1]
+
+
+# Why the gate probe refused to run (failure_class of a gates_unsafe_* skip): (the cause, what to do).
+_UNSAFE_ADVICE = {
+    "gates_unsafe_endpoint": (
+        "a Claude setting names an endpoint the check can't keep on this machine",
+        "Run `scoutctl gates probe` to see which setting, and remove or rename it in your Claude settings' env, "
+        "or run Scout where the check's network sandbox is available (macOS).",
+    ),
+    "gates_unsafe_launcher": (
+        "the `claude` the runners call is a launcher script (a mise, asdf or similar shim) the check can't see "
+        "through, so it can't turn off every provider",
+        "Point Scout at the real claude binary: set connectors.inputs.claude_bin in scout-config.yaml to it "
+        "(for mise: `mise which claude`), then run /scout-update; or run Scout where the check's network "
+        "sandbox is available (macOS).",
+    ),
+    "": (
+        "the check couldn't be kept on this machine",
+        "Run `scoutctl gates probe` to see why.",
+    ),
+}
+
+
+def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """Runs skipped because claude didn't load Scout's privacy hooks (spec 2026-11-13 §3.5)."""
+    streak = _trailing_gates_skips(rows)
+    if not streak:
+        return []
+    log = _run_log(vault, streak[-1])
+    if streak[-1].failure_class.startswith("gates_unsafe"):
+        cause, fix = _UNSAFE_ADVICE.get(streak[-1].failure_class, _UNSAFE_ADVICE[""])
+        return [
+            Finding(
+                id="gates.probe_unsafe",
+                severity="red",
+                since=streak[0].finished_at,
+                summary=(
+                    f"The last {len(streak)} scheduled run(s) were skipped: Scout couldn't check its privacy hooks "
+                    f"safely, because {cause}."
+                ),
+                fix=f"{fix} Runs resume on their own once `scoutctl gates probe` passes.",
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    return [
+        Finding(
+            id="gates.not_loaded",
+            severity="red",
+            since=streak[0].finished_at,
+            summary=(
+                f"The last {len(streak)} scheduled run(s) were skipped: the claude the runners use didn't load "
+                "Scout's privacy hooks (for example in bare mode), so no run may read the vault."
+            ),
+            fix=(
+                "Run `scoutctl gates probe` to see why. Update Scout (a newer plugin may know this Claude Code "
+                "version), or pin Claude Code to the last version whose probe passed. Runs resume on their own "
+                "once the probe passes."
+            ),
+            source="ledger",
+            log=str(log) if log else None,
+        )
+    ]
+
+
+def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:
+    """Runs a linked vault skipped over the Repository Writer Lease (Agnes R2)."""
+    findings: list[Finding] = []
+    streak = _trailing_lease_unavailable(rows)
+    if streak:
+        log = _run_log(vault, streak[-1])
+        findings.append(
+            Finding(
+                id="lease.unavailable",
+                severity="red" if len(streak) >= LEASE_UNAVAILABLE_RED else "yellow",
+                since=streak[0].finished_at,
+                summary=(
+                    f"The last {len(streak)} scheduled run(s) were skipped: Agnes couldn't grant the repository "
+                    "writer lease, so Scout didn't write the vault."
+                ),
+                fix=(
+                    "Check the network and the Agnes login: scoutctl repo lease status. Runs resume on their own "
+                    "once Agnes answers; scoutctl repo unlink returns to lease-free runs."
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        )
+    held = [r for r in rows if r.outcome == LEASE_SKIP and r.failure_class == "lease_held" and r.finished_at >= cutoff]
+    if held:
+        slots = ", ".join(sorted({r.slot for r in held}))
+        findings.append(
+            Finding(
+                id="lease.held",
+                severity="note",
+                since=None,
+                summary=(
+                    f"{len(held)} run(s) skipped in the last 24 h because Agnes held the repository writer lease "
+                    f"(an Agnes-hosted run): {slots}."
+                ),
+                fix="Nothing to fix if Agnes runs that work. To stop the overlap, give each slot one place to run.",
                 source="ledger",
             )
         )
@@ -666,6 +879,99 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return schedule, datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
     except (ConfigError, OSError):
         return None
+
+
+def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+    """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
+    (#550 V2c): its agent reads an older copy until one works.
+
+    Nothing for a vault that links no delegate. A failed sync is never a run failure;
+    this is where it shows. "No sync tried" covers what records nothing itself: a tick
+    that stopped, a sync that couldn't start, or one that died before it began.
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError as e:
+        if e.code == "state_unverified":
+            return [
+                Finding(
+                    id="delegate.state_unverified",
+                    severity="yellow",
+                    since=None,
+                    summary="The delegate mirror state's signature doesn't match (it wasn't written by Scout on "
+                    "this computer, or the signing key is gone), so no agent's mirror syncs",
+                    fix="Check each link and sign it again with: scoutctl delegate trust-state",
+                    source="state",
+                )
+            ]
+        return [
+            Finding(
+                id="delegate.state_unreadable",
+                severity="yellow",
+                since=None,
+                summary="The delegate mirror state (.scout-state/delegate-mirrors.json) can't be read, or wasn't "
+                "written by Scout on this computer, so no agent's mirror syncs",
+                fix="Fix or delete that file, then link each delegate again with: scoutctl delegate link",
+                source="config",
+            )
+        ]
+    from scout.delegate_mirror import needs_sync
+
+    now = now or datetime.now(UTC)
+    behind = set(needs_sync(vault, {k: v for k, v in links.items() if v.last_error is None}, now=now))
+    found = []
+    for key, link in sorted(links.items()):
+        if link.last_error is not None:
+            code = link.last_error.get("code", "unknown")
+            found.append(
+                Finding(
+                    id="delegate.sync_failed",
+                    severity="yellow",
+                    since=_parse_ts(link.last_error.get("first_at") or link.last_error.get("at")),
+                    summary=f"Delegate mirror {key} failed to sync ({code}); its agent still reads the copy from "
+                    f"{link.last_sync or 'when it was linked'}",
+                    fix=f"Retry now with: scoutctl delegate sync {key} (a manual sync skips the backoff)",
+                    source="state",
+                )
+            )
+            continue
+        tried = _parse_ts(link.last_attempt) or _parse_ts(link.last_sync) or _parse_ts(link.linked_at)
+        if key in behind and (tried is None or now - tried > timedelta(hours=1)):
+            found.append(
+                Finding(
+                    id="delegate.sync_stalled",
+                    severity="yellow",
+                    since=tried,
+                    summary=f"Delegate mirror {key} is behind the vault and no sync has tried for over an hour; "
+                    "is the schedule tick running?",
+                    fix="Sync now with: scoutctl delegate sync --all (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+    return found
+
+
+def config_findings(vault: Path) -> list[Finding]:
+    """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits may be refused."""
+    problem = config_load_problem(vault)
+    if problem is None:
+        return []
+    return [
+        Finding(
+            id="config.unreadable",
+            severity="red",
+            since=None,
+            summary=f"scout-config.yaml doesn't load ({problem}), so runs use the default settings "
+            "and their commits may be refused",
+            fix="Fix that line in scout-config.yaml, then check it with: scoutctl bootstrap doctor",
+            source="config",
+        )
+    ]
 
 
 def schedule_findings(
@@ -1300,4 +1606,11 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     )
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
-    return build_report(found + sched + lanes + updates + engine, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
+    config = config_findings(vault)
+    delegates = delegate_findings(vault)
+    return build_report(
+        found + sched + lanes + updates + engine + config + delegates,
+        now=now,
+        last_ok_at=_last_ok_at(rows),
+        slots=slots,
+    )

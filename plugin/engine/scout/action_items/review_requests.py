@@ -11,7 +11,8 @@ each one before it commits.
 A request is accounted for when today's file has it
 
 - in a task's line or sub-lines (the ``- Refs:`` line, usually), as
-  ``owner/repo#N`` or as the PR URL, in any section except 🎯 Today's Focus,
+  ``owner/repo#N`` or as the PR URL, in any section except 💡 Today's Focus
+  (🎯 in older files),
   🪵 Run notes, 📥 Inbox, 🧹 Loose ends and 📋 Scout Digest; or
 - in a skip line with a reason, normally in the run notes:
   ``- Skipped review request owner/repo#N — <reason>``;
@@ -21,16 +22,16 @@ or when the user dismissed its URL (``action-items/dismissed.md``).
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from scout.action_items.parser import parse_lines
+from scout.action_items.prefetched import PrefetchCheckError, load_context
 
 # Sections whose lines say something about a PR without making it a task.
-_NOT_PLACEMENT = ("🎯", "🪵", "📥", "🧹", "📋")
+_NOT_PLACEMENT = ("💡", "🎯", "🪵", "📥", "🧹", "📋")
 _PR_URL = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>\d+)")
 _SKIP_LINE = re.compile(
     r"^\s*[-*]\s+Skipped review request\s+`?(?P<target>[^\s`]+)`?\s+(?:—|–|--?)\s*(?P<reason>.*)$",
@@ -93,20 +94,9 @@ def _entry(raw: object, index: int) -> ReviewRequest:
 def load_review_requests(context: Path, *, today: str) -> list[ReviewRequest]:
     """The review requests in ``context``, which must have been written ``today`` (YYYY-MM-DD)."""
     try:
-        data = json.loads(context.read_text(encoding="utf-8"))
-    except FileNotFoundError as e:
-        raise ReviewCheckError(f"{context} not found; run `scoutctl pre-session data` first") from e
-    except (OSError, json.JSONDecodeError) as e:
-        raise ReviewCheckError(f"{context} is not valid JSON: {e}") from e
-    if not isinstance(data, dict):
-        raise ReviewCheckError(f"{context} is not a JSON object")
-    generated = str(data.get("generated_at") or "")
-    if not generated:
-        raise ReviewCheckError(f"{context} has no generated_at")
-    if generated[:10] != today:
-        raise ReviewCheckError(
-            f"{context} is from {generated[:10]}, not {today}; run `scoutctl pre-session data` first"
-        )
+        data = load_context(context, today=today)
+    except PrefetchCheckError as e:
+        raise ReviewCheckError(str(e)) from e
     raw = data.get("pr_review_requested", [])
     if not isinstance(raw, list):
         raise ReviewCheckError(f"{context}: pr_review_requested is not a list")
