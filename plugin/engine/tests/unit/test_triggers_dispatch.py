@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scout.triggers.config import Action, ActionKind, Trigger
 from scout.triggers.dispatcher import FireOutcome, dispatch, log_fire
 from scout.triggers.sources.base import ConnectorEvent
@@ -133,11 +135,21 @@ def test_run_skill_spawn_failure_is_an_error(fake_data_dir: Path):
     assert "run-scout.sh" in outcome.detail["error"]
 
 
-def test_run_skill_honors_custom_runner(fake_data_dir: Path):
+def test_run_skill_honors_another_scout_runner(fake_data_dir: Path):
     spawned: list[tuple[list[str], dict]] = []
-    trigger = _trigger(ActionKind.RUN_SKILL, {"skill": "scout-dream", "runner": "custom-runner.sh"})
+    trigger = _trigger(ActionKind.RUN_SKILL, {"skill": "scout-dream", "runner": "run-dreaming.sh"})
     dispatch(trigger, _event(), vault=fake_data_dir, spawn=lambda cmd, env: spawned.append((cmd, env)) or 1)
-    assert spawned[0][0][0].endswith("custom-runner.sh")
+    assert spawned[0][0][0].endswith("run-dreaming.sh")
+
+
+@pytest.mark.parametrize("runner", ["custom-runner.sh", "scripts/x.sh", "../run-scout.sh", "/bin/sh"])
+def test_run_skill_refuses_any_other_runner(fake_data_dir: Path, runner: str):
+    """The runner is started outside any run's sandbox, and triggers.yaml is in the vault (review of #642)."""
+    spawned: list[list[str]] = []
+    trigger = _trigger(ActionKind.RUN_SKILL, {"skill": "scout-dream", "runner": runner})
+    outcome = dispatch(trigger, _event(), vault=fake_data_dir, spawn=lambda cmd, env: spawned.append(cmd) or 1)
+    assert spawned == []
+    assert outcome.status == "error"
 
 
 # ----- interactive ------------------------------------------------------------------

@@ -229,6 +229,8 @@ fi
 # the runner said the run is sandboxed, so it never goes ahead unsandboxed.
 SANDBOX=()
 SANDBOX_PROFILE="${SCOUT_SANDBOX_PROFILE:-}"
+# A scheduled run never updates claude itself: the install it would rewrite is what the next run starts.
+export DISABLE_AUTOUPDATER=1
 unset SCOUT_SANDBOX_PROFILE
 if [ -n "$SANDBOX_PROFILE" ]; then
     SANDBOX=(/usr/bin/sandbox-exec -p "$SANDBOX_PROFILE")

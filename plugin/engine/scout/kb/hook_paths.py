@@ -50,8 +50,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -69,6 +71,8 @@ HARD_LINK = "a hard-linked file"
 # The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
 SANDBOX_SWITCH_NAME = "run-sandbox.json"
 SECRETS = "Scout's secrets"
+SCHEDULE = "Scout's schedule"
+PROGRAMS = "programs the runners run"
 DELEGATE_STATE = "Scout's delegate state"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
@@ -222,6 +226,9 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
 
     package = Path(scout.__file__).resolve().parent
     roots = [package, package.parents[1], Path(sys.prefix)]  # scout/, the plugin (<plugin>/engine/scout), the venv
+    # The interpreter the venv was made from: its stdlib is what every hook imports (review of #642).
+    for base in {sys.base_prefix, sys.base_exec_prefix} - {sys.prefix}:
+        roots.append(Path(base))
     if env.get("CLAUDE_PLUGIN_ROOT"):
         roots.append(Path(env["CLAUDE_PLUGIN_ROOT"]))
     home = Path(env.get("HOME") or Path.home())
@@ -239,6 +246,7 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
 
 _ENV_KEYS = (
     "HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT", "SCOUT_SECRETS_DIR",
+    "GIT_CONFIG_SYSTEM", "PATH", "SCOUT_CLAUDE_BIN",
 )  # fmt: skip
 _ROOTS_CACHE: dict[tuple[str, ...], list[Root]] = {}
 
@@ -332,7 +340,105 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
     add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
     for secrets in secrets_dirs(env):
         add(secrets, SECRETS, tree=True)
+    if vault is not None:
+        # The tick starts each slot's runner, and the trigger engine each trigger's, outside any run (#642 review).
+        for name in SCHEDULE_FILES:
+            add(vault / ".scout-state" / name, SCHEDULE, tree=False)
+    for path, tree in git_config_files(env):
+        add(path, USER_GIT_CONFIG, tree=tree)
+    for path in runner_programs(env, home):
+        add(path, PROGRAMS, tree=True)
     return roots
+
+
+# The vault files that choose what the tick and the trigger engine start (scout.schedule, scout.triggers.config).
+SCHEDULE_FILES = ("schedule.yaml", "triggers.yaml")
+_GIT_TIMEOUT_S = 3
+
+
+def _git_binaries(env: Mapping[str, str]) -> list[str]:
+    """Every distinct ``git`` on PATH (Homebrew's and Apple's read different system configs), plus /usr/bin/git."""
+    seen: dict[str, str] = {}
+    for d in [*str(env.get("PATH", "")).split(os.pathsep), "/usr/bin"]:
+        cand = os.path.join(d, "git") if d else ""
+        if cand and os.path.isabs(cand) and os.access(cand, os.X_OK):
+            seen.setdefault(os.path.realpath(cand), cand)
+    return list(seen.values())
+
+
+_ORIGIN = re.compile(r"^file:(.+?)\t")
+_MISSING = re.compile(r"unable to read config file '([^']+)'")
+
+
+def git_config_files(env: Mapping[str, str]) -> list[tuple[str, bool]]:
+    """(path, tree) for git config a run's git reads besides the vault's and ~/.gitconfig: each git's system
+    config (``git config --system --show-origin``, named even when the file doesn't exist yet), ``$GIT_CONFIG_SYSTEM``,
+    and every ``include.path``/``includeIf.*.path`` the global and system configs name. Review of #642."""
+    out: list[tuple[str, bool]] = []
+    if env.get("GIT_CONFIG_SYSTEM"):
+        out.append((env["GIT_CONFIG_SYSTEM"], False))
+    run_env = {k: v for k, v in env.items() if k not in ("GIT_CONFIG_NOSYSTEM", "GIT_DIR", "GIT_CONFIG_COUNT")}
+    for git in _git_binaries(env):
+        for scope in ("--system", "--global"):
+            try:
+                proc = subprocess.run(
+                    [git, "config", scope, "--show-origin", "--includes", "--list"],
+                    capture_output=True, text=True, timeout=_GIT_TIMEOUT_S, check=False,
+                    stdin=subprocess.DEVNULL, env=run_env,
+                )  # fmt: skip
+            except (OSError, subprocess.SubprocessError):
+                continue
+            files = {m[1] for line in proc.stdout.splitlines() if (m := _ORIGIN.match(line))}
+            files |= set(_MISSING.findall(proc.stderr))
+            for f in sorted(files):
+                if f and f != os.devnull and (f, False) not in out:
+                    out.append((f, False))
+    return out
+
+
+def runner_programs(env: Mapping[str, str], home: Path) -> list[str]:
+    """Trees the runners and the gate probe run programs from, outside the sandbox, that the user can write: the
+    claude install the runner's claude resolves to (with its side-by-side versions) and a user-writable Homebrew
+    prefix's bin/sbin/etc/lib/opt/Cellar. Review of #642. The PATH folders themselves are :func:`path_dirs`."""
+    out: list[str] = []
+
+    def keep(path: str) -> None:
+        real = os.path.realpath(path)
+        if real not in out and real not in ("/", os.path.realpath(home)):
+            out.append(real)
+
+    claude = env.get("SCOUT_CLAUDE_BIN") or shutil.which("claude", path=env.get("PATH")) or ""
+    if claude and os.path.isabs(claude):
+        real = os.path.realpath(claude)
+        holder = os.path.dirname(real)
+        # ~/.local/share/claude/versions/<v>: the native installer keeps every version side by side.
+        keep(os.path.dirname(holder) if os.path.basename(holder) == "versions" else holder)
+    for prefix in ("/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"):
+        if os.path.isdir(prefix) and os.access(prefix, os.W_OK):
+            for sub in ("bin", "sbin", "etc", "lib", "opt", "Cellar", "Caskroom", "Library"):
+                if os.path.isdir(os.path.join(prefix, sub)):
+                    keep(os.path.join(prefix, sub))
+    return out
+
+
+def path_dirs(env: Mapping[str, str]) -> list[str]:
+    """Every user-writable folder on PATH (``~/.local/bin``, Homebrew's bin …): a new ``date`` or ``git`` there is
+    what the next runner starts. Only the folder's own entries count, not what's below them (a tool's store under
+    ``~/Library/pnpm`` stays writable), which the OS sandbox can say and the hook's tree list can't, so this is
+    the sandbox's alone (scout.sandbox.profile)."""
+    out: list[str] = []
+    for d in str(env.get("PATH", "")).split(os.pathsep):
+        if d and os.path.isabs(d) and os.path.isdir(d) and os.access(d, os.W_OK) and not _transient(d):
+            real = os.path.realpath(d)
+            if real not in out:
+                out.append(real)
+    return out
+
+
+def _transient(d: str) -> bool:
+    """A PATH entry under a temp dir (a test's or a shim's): not something a later run would start."""
+    real = os.path.realpath(d)
+    return any(real.startswith(os.path.realpath(t) + "/") for t in {tempfile.gettempdir(), "/private/tmp", "/tmp"})
 
 
 def _git_form(rest: str) -> str:

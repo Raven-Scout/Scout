@@ -215,6 +215,11 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
             parent = os.path.dirname(parent)
     rules += [Rule("deny", "file-write-unlink", "literal", a) for a in ancestors]
     rules += [Rule("deny", "file-write*", "subpath", p) for p in SPAWN_WRITE_TREES]
+    # 5. the PATH the runners start programs from: no new or changed entry (a `date` that runs before any
+    # sandbox), and the folder can't be swapped. Its own entries only: a tool's store below stays writable.
+    for path_dir in hook_paths.path_dirs(env):
+        rules.append(Rule("deny", "file-write*", "regex", f"^{_rx_escape(path_dir)}/[^/]+$"))
+        rules.append(Rule("deny", "file-write-unlink", "literal", path_dir))
     # Drop repeats, keeping each rule's LAST copy: with last-match-wins only that one decides (a protected root
     # denied again after a carve-out must stay after it).
     seen: set[Rule] = set()

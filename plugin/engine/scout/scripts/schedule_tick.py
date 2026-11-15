@@ -548,7 +548,9 @@ def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
             f"Edit ~/Scout/.scout-state/schedule.yaml and set runtime: local, "
             f"or delete the slot."
         )
-    runner_path = vault / slot.runner
+    from scout.schedule import check_runner
+
+    runner_path = vault / check_runner(slot.runner, f"slot {slot_key}")  # again: a Slot can be built in code
     env = os.environ.copy()
     env["SCOUT_FORCE_MODE"] = slot_key
     env["SCOUT_DATA_DIR"] = str(vault)
