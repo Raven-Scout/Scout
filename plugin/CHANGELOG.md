@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The post-session prefix backfill commits only its own edits** (#516; `templates/scripts/post-session-backfill.sh.tmpl`). It staged all of `action-items/` whenever that folder was dirty, so a session that died mid-rewrite and left a truncated daily file had the truncation committed under `chore(action-items): backfill stable [#XXXX] prefixes`, and the next day's `materialize` carried it forward. The script now snapshots the dirty set before and after `backfill-prefixes` and stages only the paths whose status the backfill changed. Files already dirty before it ran are left alone and named on stderr; if the backfill only touched such a file, nothing is committed that cycle and the next clean run picks the prefixes up. Reaches a vault with `/scout-update`.
+
 ## [0.18.13] - 2026-11-15
 
 ### Added
