@@ -5,7 +5,7 @@
       "err_sample": "stand-in failure from mcp:claude_ai_Slack: request timed out after 30s",
       "level": "CRITICAL",
       "name": "Slack",
-      "reason": "0 successful calls in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT"
+      "reason": "14 failed call(s) in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT"
     },
     {
       "connector_key": "mcp:claude_ai_Linear",
