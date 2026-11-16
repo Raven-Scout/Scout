@@ -258,6 +258,26 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
             "oauth_expired",
             id="cloudflare-then-real-401",
         ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "API Error: Unable to connect to API (ECONNRESET)\n",
+            "network",
+            id="cloudflare-then-econnreset",
+        ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "Error: something unrelated broke\n",
+            "network",
+            id="cloudflare-then-unknown",
+        ),
+        pytest.param(
+            "Research summary: the vendor site returned Attention Required! | Cloudflare\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="quoted-cloudflare-then-real-401",
+        ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.

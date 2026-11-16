@@ -77,7 +77,7 @@ _AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + 
 # "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare", which the
 # auth pattern above matches, but no credential was rejected: telling the user to log in
 # again would be wrong. Same string as run-outcome.sh.tmpl's EDGE_CHALLENGE_RE.
-_EDGE_CHALLENGE_RE = re.compile(r"Attention Required! \| Cloudflare")
+_EDGE_CHALLENGE_RE = re.compile(r"API Error: 403 Attention Required! \| Cloudflare")
 
 _AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)"
 
@@ -346,8 +346,9 @@ def _log_auth_finding(vault: Path) -> Finding | None:
         latest = max(candidates, key=lambda p: p.stat().st_mtime)
     except OSError:
         return None
-    tail = _tail_text(latest)
-    if not _AUTH_FAILURE_RE.search(tail) or _EDGE_CHALLENGE_RE.search(tail):
+    # The challenge line is the CLI's auth wording too; drop it, so a real 401 on a retry still counts.
+    tail = "\n".join(ln for ln in _tail_text(latest).splitlines() if not _EDGE_CHALLENGE_RE.search(ln))
+    if not _AUTH_FAILURE_RE.search(tail):
         return None
     return Finding(
         id="auth.expired",
