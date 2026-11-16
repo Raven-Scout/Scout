@@ -307,10 +307,8 @@ struct SchedulesView: View {
     }
 
     private func saveNewDraft(_ slot: Slot) async {
-        var combined = service.slots
-        combined.append(slot)
         do {
-            let change = try await service.save(allSlots: combined, actionName: "Add Slot")
+            let change = try await service.update(actionName: "Add Slot") { $0 + [slot] }
             newDraftSlot = nil
             selectedSlotKey = slot.key
             registerUndo(change)
@@ -330,12 +328,10 @@ struct SchedulesView: View {
     }
 
     private func saveExistingSlot(_ saved: Slot, original: Slot) async {
-        var updated = service.slots
-        if let idx = updated.firstIndex(where: { $0.key == original.key }) {
-            updated[idx] = saved
-        }
         do {
-            registerUndo(try await service.save(allSlots: updated, actionName: "Edit Slot"))
+            registerUndo(try await service.update(actionName: "Edit Slot") { slots in
+                slots.map { $0.key == original.key ? saved : $0 }
+            })
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription

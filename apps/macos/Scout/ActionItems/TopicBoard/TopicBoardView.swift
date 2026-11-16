@@ -137,7 +137,7 @@ struct TopicBoardView: View {
             do {
                 let result = try await writer.submit(op)
                 reloadBoardFiles()
-                if result.undoUnavailable { vaultUndo.noteNotUndoable(op.actionName) }
+                if let why = result.undoUnavailable { vaultUndo.noteNotUndoable(op.actionName, why) }
                 if let change = result.change {
                     vaultUndo.register(
                         .restoring(change) { change, direction in try await writer.restore(change, direction) },

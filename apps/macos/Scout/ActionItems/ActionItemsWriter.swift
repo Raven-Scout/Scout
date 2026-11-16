@@ -89,6 +89,31 @@ enum WriteOp: Sendable {
         }
     }
 
+    /// Whether the changed lines are this op's own: the checkbox line holds
+    /// the task's tag (or text), the inserted line is this snooze marker or
+    /// this comment, the deleted line holds the selected text. Closes the
+    /// cases a line count alone can't: a run editing a line at the same
+    /// moment as an op that changed nothing, or as one of the same shape.
+    func isOwnText(_ delta: LineDelta) -> Bool {
+        func has(_ lines: [String], _ needle: String) -> Bool {
+            lines.contains { $0.localizedCaseInsensitiveContains(needle) }
+        }
+        let task = shortPrefix.map { "[#\($0)]" } ?? subject
+        switch self {
+        case .markDone, .reopen:
+            return has(delta.removedLines, task) && has(delta.addedLines, task)
+        case .snooze(_, _, let until, _):
+            return has(delta.addedLines, "snoozed-until: \(ActionItemsDay.stem(for: until))")
+        case .addComment(_, _, let text, _):
+            return has(delta.addedLines, text)
+        case .editComment(_, _, _, let text):
+            return has(delta.addedLines, text) && !has(delta.removedLines, text)
+        case .deleteComment(_, _, let selector):
+            if case .text(let text) = selector { return has(delta.removedLines, text) }
+            return true
+        }
+    }
+
     var shortPrefix: String? {
         switch self {
         case .addComment(_, let p, _, _),
@@ -191,9 +216,8 @@ struct WriteResult: Sendable {
     /// The day file's bytes before and after, for undo. nil when the op
     /// changed nothing, or the file couldn't be read back.
     var change: VaultChange? = nil
-    /// The write changed the file, but not only in the op's own line (a run
-    /// wrote the day at the same moment), so it has no byte undo.
-    var undoUnavailable = false
+    /// Set when the write changed the file but has no undo, saying why.
+    var undoUnavailable: UndoUnavailable? = nil
 }
 
 /// Serializes action-item mutations through `scoutctl action-items <op>`.
@@ -326,24 +350,27 @@ actor ActionItemsWriter {
         // wrote the day while scoutctl ran would otherwise be in the pair, and
         // undo would drop its edit along with ours.
         let after = try? FileSnapshot.capture(dailyFile)
-        let change = Self.undoableChange(op: op, before: before, after: after)
+        let (change, unavailable) = Self.undoCapture(op: op, before: before, after: after)
 
         let slug = Self.slugify(op.subject)
         let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
 
-        return WriteResult(stderr: stderr, change: change,
-                           undoUnavailable: change == nil && before?.data != after?.data)
+        return WriteResult(stderr: stderr, change: change, undoUnavailable: unavailable)
     }
 
-    /// The byte-undoable change for `op`, or nil when the files couldn't be
-    /// read or the change isn't the op's expected line edit.
-    static func undoableChange(op: WriteOp, before: FileSnapshot?, after: FileSnapshot?) -> VaultChange? {
-        guard let before, let after, before.exists, let expected = op.expectedLineDelta,
-              let change = VaultChange(actionName: op.actionName, before: [before], after: [after]),
-              change.files.allSatisfy({ $0.lineDelta == expected })
-        else { return nil }
-        return change
+    /// The byte-undoable change for `op`, or why there is none. (nil, nil)
+    /// when nothing changed.
+    static func undoCapture(op: WriteOp, before: FileSnapshot?, after: FileSnapshot?)
+        -> (change: VaultChange?, unavailable: UndoUnavailable?)
+    {
+        guard let before, let after else { return (nil, .unreadable) }
+        guard let change = VaultChange(actionName: op.actionName, before: [before], after: [after]) else {
+            return (nil, nil)
+        }
+        guard let expected = op.expectedLineDelta else { return (nil, .multiLineText) }
+        let own = before.exists && change.files.allSatisfy { $0.lineDelta == expected && op.isOwnText($0.lineDelta) }
+        return own ? (change, nil) : (nil, .mixedEdit)
     }
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last

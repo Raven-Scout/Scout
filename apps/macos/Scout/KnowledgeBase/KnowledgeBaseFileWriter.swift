@@ -179,10 +179,15 @@ actor KnowledgeBaseFileWriter {
         let onDisk: Data?
         do { onDisk = try FileSnapshot.capture(fileURL).data }
         catch { throw KBWriterError.conflict(file: fileURL.lastPathComponent) }
-        if let onDisk, baselineContents.map({ Data($0.utf8) }) != onDisk {
+        if let onDisk, !Self.bytes(onDisk, match: baselineContents) {
             throw KBWriterError.conflict(file: fileURL.lastPathComponent)
         }
-        let written = Data(contents.utf8)
+        // Keep a UTF-8 byte-order mark the file had: the editor's text was
+        // decoded without it.
+        var written = Data(contents.utf8)
+        if let onDisk, onDisk.starts(with: Self.utf8BOM), !written.starts(with: Self.utf8BOM) {
+            written = Self.utf8BOM + written
+        }
         do {
             try VaultWrite.replace(fileURL, expecting: onDisk, with: written)
         } catch VaultWriteError.stale {
@@ -282,6 +287,18 @@ actor KnowledgeBaseFileWriter {
     }
 
     // MARK: - pure helpers
+
+    static let utf8BOM = Data([0xEF, 0xBB, 0xBF])
+
+    /// Whether `disk` holds exactly the text the editor loaded. Byte-exact
+    /// (`String ==` would equate NFC and NFD spellings), except for a UTF-8
+    /// byte-order mark: decoding drops it, so a note starting with one would
+    /// otherwise never match its own text and could never be saved.
+    static func bytes(_ disk: Data, match baseline: String?) -> Bool {
+        guard let baseline else { return false }
+        let text = Data(baseline.utf8)
+        return disk == text || (disk.starts(with: utf8BOM) && disk.dropFirst(utf8BOM.count) == text)
+    }
 
     /// Validate and normalize a user-entered file name. Rejects empty names and
     /// path separators (no creating files outside the chosen directory). Adds a

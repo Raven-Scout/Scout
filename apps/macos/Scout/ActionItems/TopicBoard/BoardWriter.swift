@@ -54,14 +54,16 @@ enum BoardWriteOp: Sendable, Equatable {
         }
     }
 
-    /// Whether a before/after line change is exactly what this op does to an
-    /// existing file: dismiss appends one line; a rename changes, adds or
-    /// removes one. Anything else also holds another writer's edit. A file
-    /// the op created is fine: Scout runs never write either file.
+    /// Whether a before/after line change is this op's own. Dismiss appends
+    /// exactly one line holding the key. A rename may also prune lines for
+    /// topics that no longer exist, so any change to `topic-names.md` is
+    /// accepted: only the app's `rename-topic` writes that file, never a run.
     func isOwnChange(_ delta: LineDelta) -> Bool {
         switch self {
-        case .dismiss: delta == LineDelta(removed: 0, added: 1)
-        case .renameTopic: delta.removed <= 1 && delta.added <= 1
+        case .dismiss(let key):
+            delta == LineDelta(removed: 0, added: 1) && delta.addedLines.contains { $0.contains(key) }
+        case .renameTopic:
+            true
         }
     }
 
@@ -109,8 +111,8 @@ actor BoardWriter {
         /// nil when nothing changed, the file couldn't be read, or the change
         /// wasn't only this op's (see `undoUnavailable`).
         var change: VaultChange?
-        /// The file changed by more than this op's line: no byte undo.
-        var undoUnavailable = false
+        /// Set when the write changed the file but has no undo, saying why.
+        var undoUnavailable: UndoUnavailable? = nil
     }
 
     /// Run `op`, and return how the touched file changed, for undo.
@@ -165,7 +167,9 @@ actor BoardWriter {
         let own = captured.flatMap { change in
             change.files.allSatisfy { !$0.before.exists || op.isOwnChange($0.lineDelta) } ? change : nil
         }
-        let result = Result(change: own, undoUnavailable: captured != nil && own == nil)
+        let unavailable: UndoUnavailable? = (before == nil || after == nil) ? .unreadable
+            : (captured != nil && own == nil) ? .mixedEdit : nil
+        let result = Result(change: own, undoUnavailable: unavailable)
         guard let path = Self.relativePath(of: file, in: scoutDirectory) else {
             Self.log.debug("Not committing \(file.path, privacy: .public): outside \(self.scoutDirectory.path, privacy: .public)")
             return result

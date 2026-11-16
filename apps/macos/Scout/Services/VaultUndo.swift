@@ -66,11 +66,22 @@ final class VaultUndoController: ObservableObject {
     /// A write landed but can't be undone; the overlay says so briefly.
     @Published var notice: String?
 
-    /// Say that `actionName` worked but has no undo, because the file changed
-    /// by more than that write at the same moment (a run wrote it too).
-    func noteNotUndoable(_ actionName: String) {
+    /// Say that `actionName` worked but has no undo, and why.
+    func noteNotUndoable(_ actionName: String, _ why: UndoUnavailable) {
         latest = nil
-        notice = "\(WriteFeedbackOverlay.doneLine(for: actionName)). Undo isn't available: a Scout run changed the same file at the same moment."
+        notice = Self.notice(for: actionName, why)
+    }
+
+    static func notice(for actionName: String, _ why: UndoUnavailable) -> String {
+        let done = WriteFeedbackOverlay.doneLine(for: actionName)
+        switch why {
+        case .unreadable:
+            return "\(done). Scout couldn't read the file around the change, so it can't be undone."
+        case .multiLineText:
+            return "\(done). Undo isn't available for multi-line comments."
+        case .mixedEdit:
+            return "\(done). Undo isn't available: the file also changed in another way at the same moment, probably in a Scout run."
+        }
     }
 
     struct Registered: Equatable {

@@ -79,26 +79,62 @@ nonisolated enum VaultWriteError: Error, Equatable, Sendable {
 }
 
 nonisolated enum VaultWrite {
-    /// Write `data` to `url` atomically (temp file in the same directory, then
-    /// rename), or remove the file when `data` is nil. Creates the parent
-    /// directory when needed.
+    /// Write `data` to `url` atomically (a temporary file in the same
+    /// directory, then rename(2)), or remove the file when `data` is nil.
+    /// Creates the parent directory when needed.
+    ///
+    /// A symlink is written through to its target, and the target keeps its
+    /// permissions: the temporary file is created with them, so the content
+    /// is never readable under looser ones. Removing (`nil`) removes the path
+    /// itself, like `rm`: a symlink goes, its target stays — the same thing
+    /// the knowledge-base delete does, which is what undo of a create or a
+    /// rename reverses.
     static func write(_ data: Data?, to url: URL) throws {
         let fm = FileManager.default
         do {
             guard let data else {
-                if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
+                if (try? fm.attributesOfItem(atPath: url.path)) != nil { try fm.removeItem(at: url) }
                 return
             }
-            // Write through a symlink to its target, and keep the target's
-            // permissions: the atomic rename would otherwise swap in a new
-            // regular file with default ones.
             let target = url.resolvingSymlinksInPath()
-            let mode = (try? fm.attributesOfItem(atPath: target.path))?[.posixPermissions]
-            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: target, options: .atomic)
-            if let mode { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: target.path) }
+            let mode = ((try? fm.attributesOfItem(atPath: target.path))?[.posixPermissions] as? NSNumber)?.uint16Value
+            let dir = target.deletingLastPathComponent()
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let tmp = dir.appendingPathComponent(".\(target.lastPathComponent).scout-\(UUID().uuidString).tmp")
+            try writeNew(data, to: tmp, mode: mode)
+            guard rename(tmp.path, target.path) == 0 else {
+                let code = errno
+                try? fm.removeItem(at: tmp)
+                throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            }
+        } catch let error as VaultWriteError {
+            throw error
         } catch {
             throw VaultWriteError.writeFailed(file: url.lastPathComponent, reason: error.localizedDescription)
+        }
+    }
+
+    /// Create `url` (which must not exist) holding `data`, with `mode`, or
+    /// the default 0644 for a new file.
+    private static func writeNew(_ data: Data, to url: URL, mode: UInt16?) throws {
+        let perms = mode_t(mode ?? 0o644)
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, perms)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(fd) }
+        do {
+            // The umask may have dropped bits the original had.
+            if let mode, fchmod(fd, mode_t(mode)) != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            try data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                var offset = 0
+                while offset < buf.count {
+                    let n = Darwin.write(fd, buf.baseAddress! + offset, buf.count - offset)
+                    guard n > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                    offset += n
+                }
+            }
+        } catch {
+            unlink(url.path)
+            throw error
         }
     }
 
@@ -180,14 +216,33 @@ nonisolated struct FileDelta: Equatable, Sendable {
     let lineDelta: LineDelta
 }
 
+/// Why a write that landed has no undo. Each reads differently to the owner.
+nonisolated enum UndoUnavailable: Equatable, Sendable {
+    /// The file couldn't be read before or after the change.
+    case unreadable
+    /// The op has no one-line shape to check (a multi-line comment).
+    case multiLineText
+    /// The file changed by more than this write: someone else wrote it at
+    /// the same moment, probably a Scout run.
+    case mixedEdit
+}
+
 nonisolated struct LineDelta: Equatable, Sendable {
     let removed: Int
     let added: Int
+    /// The lines themselves (decoded as UTF-8), for checking that the change
+    /// is the op's own. Not part of `==`.
+    let removedLines: [String]
+    let addedLines: [String]
 
     init(removed: Int, added: Int) {
         self.removed = removed
         self.added = added
+        self.removedLines = []
+        self.addedLines = []
     }
+
+    static func == (a: LineDelta, b: LineDelta) -> Bool { a.removed == b.removed && a.added == b.added }
 
     init(before: Data?, after: Data?) {
         // Lines keep their terminator, so "" → "x\n" is one line added and
@@ -207,7 +262,10 @@ nonisolated struct LineDelta: Equatable, Sendable {
         let p = zip(b, a).prefix { $0 == $1 }.count
         let room = min(b.count, a.count) - p
         let s = zip(b.reversed(), a.reversed()).prefix(room).prefix { $0 == $1 }.count
-        self.init(removed: b.count - p - s, added: a.count - p - s)
+        removed = b.count - p - s
+        added = a.count - p - s
+        removedLines = b[p..<(b.count - s)].map { String(decoding: $0, as: UTF8.self) }
+        addedLines = a[p..<(a.count - s)].map { String(decoding: $0, as: UTF8.self) }
     }
 }
 

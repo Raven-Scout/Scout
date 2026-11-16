@@ -122,6 +122,17 @@ final class ScheduleEditService: ObservableObject {
         try await serialized { try await self.performSave(allSlots: allSlots, actionName: actionName) }
     }
 
+    /// Save `transform` applied to the slots as they are when this write's
+    /// turn comes, not when it was asked for: a second save queued behind a
+    /// first then builds on the first's result instead of writing stale slots
+    /// over it.
+    @discardableResult
+    func update(actionName: String, _ transform: @escaping @MainActor ([Slot]) -> [Slot]) async throws -> VaultChange? {
+        try await serialized {
+            try await self.performSave(allSlots: transform(self.slots), actionName: actionName)
+        }
+    }
+
     /// Tail of the write chain: each write awaits the previous one.
     private var writeTail: Task<Void, Never>?
 

@@ -513,8 +513,8 @@ struct ActionItemsView: View {
                 vaultUndo.register(step, with: undoManager) { [docService] in
                     await docService.reparseCurrent()
                 }
-            } else if result.undoUnavailable {
-                vaultUndo.noteNotUndoable(op.actionName)
+            } else if let why = result.undoUnavailable {
+                vaultUndo.noteNotUndoable(op.actionName, why)
             }
         } catch let err as ActionItemsWriterError {
             // Whatever happened, show what's in the file now (C10).
