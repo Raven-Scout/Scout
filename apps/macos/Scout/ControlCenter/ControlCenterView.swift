@@ -443,8 +443,10 @@ struct SignalsRailCard: View {
                 id: "connectors",
                 severity: .warn,
                 tag: "CONNECTORS",
-                body: Problem.connectorRosterMissing(details: nil).title + ". "
-                    + (Problem.connectorRosterMissing(details: nil).impact ?? "")
+                body: {
+                    let p = Problem.connectorRosterMissing(details: nil)
+                    return [p.title + ".", p.impact, p.fix].compactMap { $0 }.joined(separator: " ")
+                }()
             ))
         }
 

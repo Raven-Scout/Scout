@@ -50,7 +50,6 @@ struct ConnectorHealthRailCard: View {
     private func rosterFallbackBanner(reason: String) -> some View {
         // Same words as the Signals card; the raw reason is behind Details.
         ProblemView(problem: .connectorRosterMissing(details: reason))
-        .accessibilityLabel("Connector roster fallback warning: \(reason)")
     }
 
     // MARK: - Grid

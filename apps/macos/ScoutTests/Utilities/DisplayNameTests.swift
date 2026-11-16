@@ -161,6 +161,7 @@ struct DisplayNameTests {
         #expect(OnMissPolicy.skip.explanation.contains("Runs late if the Mac wakes within the catch-up window"))
         #expect(OnMissPolicy.fire.explanation.contains("Runs late if the Mac wakes within the catch-up window"))
         #expect(OnMissPolicy.collapse.explanation.contains("only the latest one runs"))
+        #expect(OnMissPolicy.collapse.explanation.contains("that also use Latest only"))
         for p in OnMissPolicy.allCases { #expect(!p.explanation.isEmpty) }
         let slot = Slot(key: "dreaming-evening", type: .dreaming, runner: "run-dreaming.sh",
                         firesAtLocal: "21:00", weekdays: ["Mon"], missedWindowHours: 2,
@@ -376,7 +377,7 @@ struct PlainLanguageSurfaceTests {
             "scoutctl schedule init", "Dreaming-generated SKILL.md", "single-fire-per-tick",
             "Removes this slot from schedule.yaml", "No upcoming runs returned by scoutctl",
             "Text(run.status.rawValue)", "Text(policy.rawValue", "type.rawValue.capitalized",
-            "latest.status.rawValue", "next evening run", "type /mcp in a Claude Code session), then wait",
+            "latest.status.rawValue", "next evening run", "Connector roster fallback warning", "Budget limit reached", "type /mcp in a Claude Code session), then wait",
         ]
         let files = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         var hits: [String] = []

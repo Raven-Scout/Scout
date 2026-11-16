@@ -134,7 +134,7 @@ nonisolated enum DisplayName {
         case .collapse:
             return PlainExplanation(
                 title: "Latest only",
-                why: "If several schedules of this kind were missed, only the latest one runs, and only within the catch-up window.")
+                why: "If several schedules of this kind that also use Latest only were missed, only the latest one runs, and only within the catch-up window.")
         }
     }
 
