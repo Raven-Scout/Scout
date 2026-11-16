@@ -320,15 +320,20 @@ def _state_key(*, create: bool) -> bytes | None:
     return _secret(STATE_KEY, create=create)
 
 
-def _vault_mark(vault: Path) -> str:
+def _vault_mark(vault: Path, *, create: bool = False) -> str:
     """Which vault a mirror is of, as its manifest records it: this computer's salt and the vault's real path.
 
     A run can read the salt but can't move the vault, so it can't make one vault's
     mark match another's; a delegate can't confirm a guessed path without the salt.
     A vault that moves gets a new mark: its mirrors are re-linked with --replace-remote.
+
+    Only a build that will push makes the salt (``create=True``, in
+    :func:`_build_and_push`); everything else reads it, so a preview writes
+    nothing. No salt yet means no mark yet: ``""``, which no manifest matches.
     """
-    salt = _secret(VAULT_SALT, create=True)
-    assert salt is not None
+    salt = _secret(VAULT_SALT, create=create)
+    if salt is None:
+        return ""
     return hashlib.sha256(salt + b"\0" + str(vault.resolve()).encode("utf-8")).hexdigest()[:32]
 
 
@@ -1821,6 +1826,7 @@ def _build_and_push(
     replace: bool = False,
 ) -> tuple[Result, DelegateLink]:
     head = _head(vault)
+    _vault_mark(vault, create=True)  # the first push makes this computer's salt; nothing before it does
     memo = ScanMemo.load(vault, link.id)
     blobs = BlobReader(vault)
     try:
