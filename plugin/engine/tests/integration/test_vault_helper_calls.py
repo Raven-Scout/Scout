@@ -134,21 +134,24 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    # Before the session the runner runs the gate probe (spec 2026-11-13 §3.5), asks
-    # the engine for the run's model and takes the integrity check's start state
-    # (spec 2026-11-15 §13); after it, the integrity check, the connector-health
-    # roll-up and the run's cost. All against this vault.
+    # Before the session the runner runs the gate probe (spec 2026-11-13 §3.5), resolves
+    # and checks the run's agent runtime (spec 2026-11-13 §8.2), asks the engine for the
+    # run's model and takes the integrity check's start state (spec 2026-11-15 §13); the
+    # session itself starts through `agent-runtime exec`; after it, the integrity check,
+    # the connector-health roll-up and the run's cost. All against this vault.
     lines = calls.read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
-    assert lines[1:5] == [
+    assert lines[1] == f"{vault} agent-runtime resolve --slot {slot}"
+    assert lines[2].startswith(f"{vault} agent-runtime check --slot {slot} --runtime claude-code --bin ")
+    assert lines[3:7] == [
         f"{vault} model resolve --slot {slot}",
         f"{vault} sandbox snapshot --vault {vault}",
         f"{vault} sandbox verify --vault {vault} --label {slot}",
         f"{vault} connector-health-report",
     ]
     run_type = {"dreaming-nightly": "dreaming", "research": "research"}.get(slot, slot)
-    assert len(lines) == 6 and lines[5].startswith(f"{vault} budget record-run {run_type} --name scout-{slot}-")
-    assert lines[5].endswith(f"--cap 25 --exit-code {exit_code}")
+    assert len(lines) == 8 and lines[7].startswith(f"{vault} budget record-run {run_type} --name scout-{slot}-")
+    assert lines[7].endswith(f"--cap 25 --exit-code {exit_code}")
     assert "connector-health: 2 sessions in window" in _runner_log(vault)
 
 

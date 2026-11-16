@@ -2383,15 +2383,29 @@ def _register_model() -> None:
     @model_app.command("resolve")
     def cli_model_resolve(
         slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        runtime: str | None = typer.Option(
+            None, "--runtime", help="The run's agent runtime, when not claude-code (spec 2026-11-13 §8.7)."
+        ),
         as_json: bool = typer.Option(False, "--json", help='Emit {"model", "source"}.'),
     ) -> None:
-        """Print the model for one run: SCOUT_MODEL, else the slot's model, else models.default, else opus."""
+        """Print the model for one run: SCOUT_MODEL, else the slot's model, else models.default, else opus.
+
+        With --runtime other than claude-code: SCOUT_MODEL, the slot's model, agent_runtimes.<id>.model, then
+        that runtime's default; models.default is Claude Code's only.
+        """
         import json as _json
 
+        from scout.agent_runtimes.resolve import resolve_model_for
         from scout.models import resolve_model
 
         try:
-            resolved = resolve_model(slot_key=slot)
+            if runtime and runtime != "claude-code":
+                resolved = resolve_model_for(None, slot, runtime)
+            else:
+                resolved = resolve_model(slot_key=slot)
+        except KeyError as e:
+            typer.echo(f"error: {e.args[0]}", err=True)
+            raise typer.Exit(1) from e
         except ConfigError as e:
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
@@ -2599,7 +2613,15 @@ def _register_agent_runtime() -> None:
         except ConfigError as e:
             typer.echo(f"[scout:agent-runtime] check_failed: {e}", err=True)
             raise typer.Exit(_check.EXIT_REFUSE) from e
-        adapter = _adapter(rid)
+        # An unknown runtime is a refusal (3), never a usage error (2): the runners read 2 as "this engine
+        # has no agent-runtime command" and launch claude directly, as before.
+        from scout.agent_runtimes import registry as _registry
+
+        try:
+            adapter = _registry.get(rid)
+        except KeyError as e:
+            typer.echo(f"[scout:agent-runtime] check_failed: {e.args[0]}", err=True)
+            raise typer.Exit(_check.EXIT_REFUSE) from e
         reader = _os.environ.get("SCOUT_READER") or ("owner" if interactive else "autonomous")
         report = _check.evaluate(
             vault,

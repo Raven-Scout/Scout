@@ -31,12 +31,22 @@ from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
 SKIP_OUTCOMES = frozenset(
-    {"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease", "skipped_gates", "skipped_sandbox"}
+    {
+        "skipped_lock",
+        "skipped_budget",
+        "skipped_redundant",
+        "skipped_lease",
+        "skipped_gates",
+        "skipped_sandbox",
+        "skipped_runtime",
+    }
 )
 # A run skipped because the gate probe found claude not loading Scout's hooks (spec 2026-11-13 §3.5).
 GATES_SKIP = "skipped_gates"
 # A run skipped because the write sandbox expected on this machine couldn't be set up (spec 2026-11-15 §8).
 SANDBOX_SKIP = "skipped_sandbox"
+# A run skipped because `scoutctl agent-runtime check` refused its agent runtime (spec 2026-11-13 §8.3).
+RUNTIME_SKIP = "skipped_runtime"
 # A vault linked to Agnes skips a run it can't take the Repository Writer Lease
 # for (R2): failure_class lease_held (Agnes holds it) or lease_unavailable.
 LEASE_SKIP = "skipped_lease"
@@ -573,6 +583,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
     findings.extend(gates_findings(rows, vault=vault))
+    findings.extend(runtime_findings(rows, vault=vault))
     findings.extend(sandbox_findings(rows, vault=vault))
     findings.extend(integrity_findings(rows, vault=vault, now=now))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
@@ -674,6 +685,39 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 "Run `scoutctl gates probe` to see why. Update Scout (a newer plugin may know this Claude Code "
                 "version), or pin Claude Code to the last version whose probe passed. Runs resume on their own "
                 "once the probe passes."
+            ),
+            source="ledger",
+            log=str(log) if log else None,
+        )
+    ]
+
+
+def runtime_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """Runs skipped because their agent runtime was refused (spec 2026-11-13 §8.3 rule 5: agent_runtime.refused)."""
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != RUNTIME_SKIP:
+            continue
+        if r.outcome != RUNTIME_SKIP:
+            break
+        streak.append(r)
+    if not streak:
+        return []
+    streak.reverse()
+    log = _run_log(vault, streak[-1])
+    return [
+        Finding(
+            id="agent_runtime.refused",
+            severity="red",
+            since=streak[0].finished_at,
+            summary=(
+                f"The last {len(streak)} scheduled run(s) were skipped: Scout refused the agent runtime they were "
+                "set to use here (its privacy gates aren't proven, its provider isn't consented, or the check "
+                "couldn't run). Scout never falls back to another runtime on its own."
+            ),
+            fix=(
+                "Run `scoutctl agent-runtime check --slot <slot>` to see why. Fix that, or set the slot back to "
+                "claude-code (`agent_runtime:` in .scout-state/schedule.yaml, or SCOUT_AGENT_RUNTIME)."
             ),
             source="ledger",
             log=str(log) if log else None,

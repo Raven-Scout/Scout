@@ -195,11 +195,62 @@ export SCOUT_READER=autonomous
 # owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
+# The agent CLI for this run (spec 2026-11-13 §8.2): SCOUT_AGENT_RUNTIME, else the slot's
+# `agent_runtime:` in .scout-state/schedule.yaml, else scout-config's agent_runtimes.default,
+# else claude-code, resolved by the engine (scout/agent_runtimes/resolve.py). A resolver failure
+# falls back to claude-code, the default, as model resolve falls back to opus. A refused runtime
+# never falls back: `agent-runtime check` says why, and the run is skipped (skipped_runtime), or
+# skipped_budget when the runtime is past its daily token ceiling. For claude-code the check is
+# the gate probe above and nothing more. An engine without the command (exit 2) launches claude
+# directly, as before.
+SCOUT_AGENT_RUNTIME="$("$SCOUTCTL_BIN" agent-runtime resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
+# Anything but one runtime id (lower-case letters, digits, dashes) is a failed resolve.
+case "$SCOUT_AGENT_RUNTIME" in
+    *[!a-z0-9-]*) echo "=== agent runtime resolve gave no runtime id: $SCOUT_AGENT_RUNTIME ===" >> "$LOG_FILE"; SCOUT_AGENT_RUNTIME="" ;;
+esac
+if [ -z "$SCOUT_AGENT_RUNTIME" ]; then
+    echo "=== agent runtime resolve failed — running on claude-code ===" >> "$LOG_FILE"
+    SCOUT_AGENT_RUNTIME=claude-code
+fi
+# Exported so the session's hooks and the run's ledger rows can name it.
+export SCOUT_AGENT_RUNTIME
+# The CLI the run starts: this runner's claude for claude-code; any other runtime finds its own.
+AGENT_BIN_ARGS=()
+if [ "$SCOUT_AGENT_RUNTIME" = claude-code ]; then
+    AGENT_BIN_ARGS=(--bin "$CLAUDE_BIN")
+fi
+AGENT_EXEC=1
+AGENT_RC=0
+"$SCOUTCTL_BIN" agent-runtime check --slot "$MODE" --runtime "$SCOUT_AGENT_RUNTIME" ${AGENT_BIN_ARGS[@]+"${AGENT_BIN_ARGS[@]}"} >> "$LOG_FILE" 2>&1 || AGENT_RC=$?
+if [ "$AGENT_RC" -eq 2 ] && [ "$SCOUT_AGENT_RUNTIME" = claude-code ]; then
+    echo "=== agent runtime: this engine has no agent-runtime command — launching claude directly ===" >> "$LOG_FILE"
+    AGENT_EXEC=0
+elif [ "$AGENT_RC" -eq 4 ]; then
+    echo "=== agent runtime $SCOUT_AGENT_RUNTIME: past its daily token ceiling — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_budget
+    exit 0
+elif [ "$AGENT_RC" -ne 0 ]; then
+    echo "=== agent runtime $SCOUT_AGENT_RUNTIME refused here (exit $AGENT_RC; see above, or scoutctl agent-runtime check) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_runtime
+    exit 0
+fi
+echo "=== agent runtime: $SCOUT_AGENT_RUNTIME ===" >> "$LOG_FILE"
+
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —
 # resolved by the engine (scout/models.py). A resolver failure never blocks the
 # run: it goes ahead on opus, the default, and the reason lands in this log.
-SCOUT_MODEL="$("$SCOUTCTL_BIN" model resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
+# Another runtime's model comes from its own settings (agent_runtimes.<id>.model), never models.default.
+MODEL_RUNTIME_ARGS=()
+if [ "$SCOUT_AGENT_RUNTIME" != claude-code ]; then
+    MODEL_RUNTIME_ARGS=(--runtime "$SCOUT_AGENT_RUNTIME")
+fi
+SCOUT_MODEL="$("$SCOUTCTL_BIN" model resolve --slot "$MODE" ${MODEL_RUNTIME_ARGS[@]+"${MODEL_RUNTIME_ARGS[@]}"} 2>>"$LOG_FILE" || true)"
+if [ -z "$SCOUT_MODEL" ] && [ "$SCOUT_AGENT_RUNTIME" != claude-code ]; then
+    echo "=== model resolve failed for $SCOUT_AGENT_RUNTIME — skipping this run (opus is Claude Code's) ===" >> "$LOG_FILE"
+    scout_record_skip skipped_runtime
+    exit 0
+fi
 if [ -z "$SCOUT_MODEL" ]; then
     echo "=== model resolve failed — running on opus ===" >> "$LOG_FILE"
     SCOUT_MODEL=opus
@@ -227,16 +278,31 @@ START_TIME=$(date +%s)
 # With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
 # and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=research SCOUT_RUN_STARTED="$START_TIME" \
-    "$SCOUT_DIR/scripts/claude-with-retry.sh" \
-    "$LOG_FILE" \
-    "$CLAUDE_BIN" \
-    --permission-mode auto \
-    --model "$SCOUT_MODEL" \
-    --max-budget-usd {{MAX_BUDGET}} \
-    --name "$RUN_NAME" \
-    -p "$PROMPT" \
-    || EXIT_CODE=$?
+if [ "$AGENT_EXEC" -eq 1 ]; then
+    # Through `scoutctl agent-runtime exec`, which replaces itself with the runtime's CLI, inside the
+    # same sandbox. For claude-code that CLI is claude with the else branch's argv, word for word
+    # (tests/unit/test_agent_runtime_cli.py). SCOUT_AGENT_BIN is only for the wrapper's messages.
+    cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=research SCOUT_RUN_STARTED="$START_TIME" SCOUT_AGENT_BIN="$CLAUDE_BIN" \
+        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$LOG_FILE" \
+        "$SCOUTCTL_BIN" agent-runtime exec --runtime "$SCOUT_AGENT_RUNTIME" ${AGENT_BIN_ARGS[@]+"${AGENT_BIN_ARGS[@]}"} \
+        --model "$SCOUT_MODEL" \
+        --max-budget-usd {{MAX_BUDGET}} \
+        --name "$RUN_NAME" \
+        -p "$PROMPT" \
+        || EXIT_CODE=$?
+else
+    cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=research SCOUT_RUN_STARTED="$START_TIME" \
+        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$LOG_FILE" \
+        "$CLAUDE_BIN" \
+        --permission-mode auto \
+        --model "$SCOUT_MODEL" \
+        --max-budget-usd {{MAX_BUDGET}} \
+        --name "$RUN_NAME" \
+        -p "$PROMPT" \
+        || EXIT_CODE=$?
+fi
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 

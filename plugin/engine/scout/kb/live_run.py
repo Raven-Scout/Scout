@@ -199,10 +199,30 @@ def _runs_script(command: str, script: str) -> bool:
     return _SHELL_RE.search(first) is not None and _starts_word(rest.lstrip(), script)
 
 
+# Claude Code's run argv words (#595), kept here too so liveness never depends on the registry importing.
+_CLAUDE_MARKERS: tuple[str, ...] = ("--name", "-p", "--max-budget-usd")
+
+
+def marker_sets() -> tuple[tuple[str, ...], ...]:
+    """Each registered agent runtime's run argv words (spec 2026-11-13 §8.5, Liveness); Claude Code's always."""
+    sets: list[tuple[str, ...]] = [_CLAUDE_MARKERS]
+    try:
+        from scout.agent_runtimes import registry
+
+        for rid in registry.ids():
+            words = tuple(registry.get(rid).process_markers().argv_words)
+            if words and words not in sets:
+                sets.append(words)
+    except Exception:  # noqa: BLE001 - a broken adapter must not blind liveness to Claude runs
+        pass
+    return tuple(sets)
+
+
 def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None) -> set[int]:
     """The live processes of a scheduled run of ``vault`` (see the module doc)."""
     roots = _vault_paths(vault)
     wrappers = {f"{r}/scripts/claude-with-retry.sh" for r in roots}
+    markers = marker_sets()
     out: set[int] = set()
     for p in table.values():
         if p.stat.startswith("Z"):
@@ -212,7 +232,7 @@ def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None)
             out.add(p.pid)
         elif any(_runs_script(cmd, w) for w in wrappers):
             out.add(p.pid)
-        elif "--name" in cmd and "-p" in cmd and "--max-budget-usd" in cmd and any(r in cmd for r in roots):
+        elif any(all(w in cmd for w in words) for words in markers) and any(r in cmd for r in roots):
             out.add(p.pid)
     return out
 
