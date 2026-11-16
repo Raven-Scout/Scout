@@ -73,7 +73,7 @@ AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API
 # dies on a real 401 is still oauth_expired. The retry wrapper's TRANSIENT_PATTERNS
 # carries the same string.
 EDGE_CHALLENGE_RE='API Error: 403 Attention Required! \| Cloudflare'
-NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
+NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response|FailedToOpenSocket'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to
 # retry, this one labels the failure. Claude Code's own quota message ("You've hit your

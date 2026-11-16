@@ -203,6 +203,24 @@ def test_the_policy_json_names_delegates_only_when_set() -> None:
     assert data["delegates"] == {"duet": {"include_private": True}, "grok": {"include_private": False}}
 
 
+def test_allow_unscanned_parses_as_globs_and_a_bad_one_ships_nothing() -> None:
+    policy = policy_from_overlay(
+        {
+            "delegates": {
+                "grok": {"allow_unscanned": ["attachments/*.zip", "attachments/*.zip"]},
+                "str": {"allow_unscanned": "attachments/*.zip"},
+                "mixed": {"allow_unscanned": ["ok/*.zip", 3]},
+                "blank": {"allow_unscanned": [" "]},
+            }
+        }
+    )
+    got = {d.id: d.allow_unscanned for d in policy.delegates}
+    assert got == {"grok": ("attachments/*.zip",), "str": (), "mixed": (), "blank": ()}
+    assert "privacy-overlay-invalid" in policy.warnings
+    assert policy.to_json()["delegates"]["grok"] == {"include_private": False, "allow_unscanned": ["attachments/*.zip"]}
+    assert policy.to_json()["delegates"]["str"] == {"include_private": False}  # absent when empty: hashes unchanged
+
+
 def test_an_unreadable_config_lists_no_delegates() -> None:
     # A delegate widens what a reader sees, so it never applies from a file that doesn't load.
     text = "user: [unclosed\nprivacy:\n  delegates:\n    duet:\n      include_private: true\n"
