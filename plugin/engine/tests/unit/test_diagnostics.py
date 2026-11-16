@@ -1,13 +1,17 @@
 """`scoutctl diagnostics`: a bug-report bundle that never carries vault content (app audit card C11).
 
-The canary test builds a synthetic vault whose notes, folder names, owner,
-delegates, custom connectors, transcripts, run logs and secrets each carry a
-unique string, makes every engine section that can quote them do so, and
-asserts none of those strings reaches the report.
+The canary tests build a synthetic vault where every kind of owner content
+carries a unique string: note names and bodies, folders (a dot-folder
+included), the owner, delegates, custom connectors, transcripts, run logs,
+secrets, a custom slot key, odd run-ledger values and a self-update's error
+text. They then make every section that could quote them do so. The injected
+sandbox and runtime stubs return raw text, so the report's own scrubbing is
+what's tested. Finally they assert none of the strings reaches the report.
 """
 
 from __future__ import annotations
 
+import getpass
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +30,7 @@ CANARIES = {
     "note_name": "Zephyrine Canarywood",
     "note_name_nospace": "canarynote-kx2",
     "folder": "Project Quillfeather",
+    "dot_folder_note": "Canarytrash Merger",
     "owner_name": "Ottoline Canarysmith",
     "owner_email": "ottoline.canary@example.com",
     "delegate": "canarydelegate",
@@ -34,14 +39,42 @@ CANARIES = {
     "run_log": "CANARYRUNLOGpp4",
     "token": "sk-ant-oat01-CANARYTOKENabcdefghijklmnopqrstuvwxyz0123456789",
     "github_token": "ghp_CANARYabcdefghijklmnopqrstuvwxyz012345",
+    "slot_key": "canaryslot-acmecorp",
+    "failure_class": "canaryclass Jane Private",
+    "sandbox_value": "canarysandboxvalue",
+    "integrity_value": "canaryintegrityvalue",
+    "update_detail": "CANARYUPDATEdetail77",
+    "exception": "CANARYEXCEPTIONx9",
+    "missing_folder": "Old Canaryproject",
+    "missing_file": "Kickoff Canarynotes",
+    "home_document": "Acme Canarycontract",
+    "encoded_folder": "Canaryenc Folder",
+    "query_token": "canaryquerytoken123",
 }
+# Words of the multi-word canaries, which must not leak on their own either.
+CANARY_WORDS = (
+    "Zephyrine",
+    "Canarywood",
+    "Quillfeather",
+    "Canarytrash",
+    "Ottoline",
+    "Canarysmith",
+    "Canaryproject",
+    "Canarynotes",
+    "Canarycontract",
+    "Canaryenc",
+)
 
 
 def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
-    home = tmp_path / "home"
+    home = tmp_path / "canaryhome-user"
     vault = home / "Scout"
     (vault / ".scout-state" / "last-assembled").mkdir(parents=True)
-    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n")
+    (vault / ".scout-state" / "schedule.yaml").write_text(
+        "schema_version: 1\nslots:\n"
+        f"  {CANARIES['slot_key']}:\n    type: briefing\n    weekdays: [mon]\n    fires_at_local: '07:00'\n"
+        "    on_miss: fire\n    runner: run-scout.sh\n    missed_window_hours: 4\n    cooldown_minutes: 0\n"
+    )
     for name in ("SKILL", "DREAMING", "RESEARCH"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
@@ -58,7 +91,7 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
         (vault / rel).parent.mkdir(parents=True, exist_ok=True)
         (vault / rel).write_text("# engine file\n")
 
-    # Notes: a name with spaces, a name without, a folder, and a body.
+    # Notes: a name with spaces, a name without, a folder, a body, and a note in a dot-folder.
     people = vault / "knowledge-base" / "people"
     people.mkdir(parents=True)
     (people / f"{CANARIES['note_name']}.md").write_text(f"# {CANARIES['note_name']}\n{CANARIES['note_body']}\n")
@@ -66,12 +99,14 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
     project = vault / "knowledge-base" / CANARIES["folder"]
     project.mkdir()
     (project / "kickoff.md").write_text(f"{CANARIES['note_body']}\n")
+    (vault / ".trash").mkdir()
+    (vault / ".trash" / f"{CANARIES['dot_folder_note']}.md").write_text(f"{CANARIES['note_body']}\n")
 
-    # A custom connector the doctor will complain about by name.
+    # A custom connector the doctor complains about by name.
     (vault / "connectors.custom.yaml").write_text(
         f"schema_version: 1\nconnectors:\n  {CANARIES['custom_connector']}:\n    bogus: true\n"
     )
-    # A delegate mirror state file the doctor refuses to trust.
+    # A delegate mirror state file whose signature doesn't verify.
     (vault / ".scout-state" / "delegate-mirrors.json").write_text(
         json.dumps({"links": {CANARIES["delegate"]: {"remote": "git@github.com:someone/private.git"}}})
     )
@@ -84,7 +119,7 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
     (home / ".scout-secrets").mkdir()
     (home / ".scout-secrets" / "claude-oauth-token").write_text(CANARIES["token"] + "\n")
 
-    # A failed run whose log names its error with vault content in it: the doctor quotes that line.
+    # Failed runs whose log names its error with vault content in it: the doctor quotes that line.
     logs = vault / ".scout-logs"
     logs.mkdir()
     log_name = "scout-2026-11-16_08-00.log"
@@ -93,7 +128,7 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
         f"Failed to authenticate. API Error: 401 {CANARIES['run_log']} {CANARIES['token']}\n"
     )
     started = int(NOW.timestamp()) - 3600
-    rows = [
+    rows: list[dict] = [
         {
             "slot": "morning-briefing",
             "mode": "morning-briefing",
@@ -108,46 +143,119 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
         }
         for i in range(3, -1, -1)
     ]
+    # An older run of the custom slot whose free-form fields hold content.
+    rows.insert(
+        0,
+        {
+            "slot": CANARIES["slot_key"],
+            "mode": CANARIES["slot_key"],
+            "started_at": started - 86400 * 5,
+            "finished_at": started - 86400 * 5 + 60,
+            "exit_code": 1,
+            "outcome": "failed",
+            "failure_class": CANARIES["failure_class"],
+            "log": None,
+            "sandbox": CANARIES["sandbox_value"],
+            "integrity": CANARIES["integrity_value"],
+        },
+    )
     (logs / "run-outcomes.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    # A failed self-update whose error text the doctor quotes in its summary.
+    (logs / "update-outcomes.jsonl").write_text(
+        json.dumps(
+            {
+                "at": started,
+                "from": "0.18.0",
+                "target": "0.18.14",
+                "managed_by": "scout-app",
+                "result": "failed",
+                "step": "fetch",
+                "detail": f"fetch failed: {CANARIES['update_detail']} in {vault}/{CANARIES['missing_folder']}",
+                "log": None,
+            }
+        )
+        + "\n"
+    )
     return vault, home
 
 
-def _leaky_sandbox(vault: Path, ctx: ScrubContext) -> dict:
-    """Stands in for the real sandbox check, with a reason that quotes vault content."""
+def _raw_sandbox(vault: Path) -> dict:
+    """Stands in for the real sandbox check. Returns raw text: build_report must scrub it."""
+    home = vault.parent
     reason = (
-        f"can't write {vault}/knowledge-base/people/{CANARIES['note_name']}.md for {CANARIES['owner_email']}"
-        f" or {vault}/knowledge-base/{CANARIES['folder']}/kickoff.md"
+        f"can't write {vault}/knowledge-base/people/{CANARIES['note_name']}.md for {CANARIES['owner_email']},"
+        f" {vault}/knowledge-base/{CANARIES['folder']}/kickoff.md,"
+        f" {vault}/.trash/{CANARIES['dot_folder_note']}.md,"
+        f" {vault}/{CANARIES['missing_folder']}/{CANARIES['missing_file']}.txt"
     )
-    return {"status": "failed", "reason": scrub(reason, ctx)}
+    return {"status": "failed", "reason": reason, "home_doc": f"{home}/Documents/{CANARIES['home_document']}.pdf"}
 
 
-def _leaky_runtime(vault: Path, ctx: ScrubContext) -> dict:
-    reason = f"token {CANARIES['token']} {CANARIES['github_token']} refused for {CANARIES['delegate']}"
-    return {"runtime": "claude-code", "allowed": False, "code": "check_failed", "reason": scrub(reason, ctx)}
+def _raw_runtime(vault: Path) -> dict:
+    encoded = CANARIES["encoded_folder"].replace(" ", "%20")
+    return {
+        "runtime": "claude-code",
+        "reason": f"token {CANARIES['token']} {CANARIES['github_token']} refused for {CANARIES['delegate']}"
+        f" via {CANARIES['custom_connector']}",
+        "url": f"https://example.com/x?access_token={CANARIES['query_token']}",
+        "file": f"file://{vault}/{encoded}/x.txt",
+        "user": getpass.getuser(),
+    }
+
+
+def _raising_runtime(vault: Path) -> dict:
+    raise RuntimeError(f"boom {CANARIES['exception']} {vault}/{CANARIES['note_name']}.md")
 
 
 def _assert_no_canary(text: str) -> None:
     for kind, canary in CANARIES.items():
         assert canary not in text, f"{kind} canary leaked: {canary!r}"
-    # The parts of multi-word canaries must not leak on their own either.
-    for word in ("Zephyrine", "Canarywood", "Quillfeather", "Ottoline", "Canarysmith"):
+    for word in CANARY_WORDS:
         assert word not in text, f"{word!r} leaked"
+    assert getpass.getuser() not in text, "the login name leaked"
 
 
 def test_report_never_carries_vault_content(tmp_path: Path) -> None:
     vault, home = _synthetic_vault(tmp_path)
-    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_leaky_sandbox, runtime=_leaky_runtime)
+    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_raw_sandbox, runtime=_raw_runtime)
     text = json.dumps(report)
     _assert_no_canary(text)
     assert str(home) not in text
     # It is still a useful report: the doctor ran, the failing runs show, structure is kept.
-    assert report["doctor"]["severity"] in {"yellow", "red"}
-    assert report["doctor"]["run_health"]["findings"], "the failing runs should produce a finding"
-    assert any(f["has_detail"] for f in report["doctor"]["run_health"]["findings"])
-    assert all("detail" not in f and "log" not in f for f in report["doctor"]["run_health"]["findings"])
-    assert [r["outcome"] for r in report["recent_runs"]] == ["failed"] * 4
-    assert report["recent_runs"][0]["slot"] == "morning-briefing"
+    doctor = report["doctor"]
+    assert doctor["severity"] in {"yellow", "red"}
+    findings = doctor["run_health"]["findings"]
+    assert any(f["has_detail"] for f in findings)
+    assert all("detail" not in f and "log" not in f for f in findings)
+    assert any(f["id"].startswith("update.") for f in findings), "the self-update detail vector wasn't exercised"
     assert report["sandbox"]["reason"].startswith("can't write <vault>/<path>")
+    assert report["sandbox"]["home_doc"] == "~/<path>"
+    assert report["runtime"]["url"] == "<url>"
+    assert report["runtime"]["file"] == "<vault>/<path>"
+
+
+def test_ledger_and_slot_fields_are_allowlisted(tmp_path: Path) -> None:
+    vault, home = _synthetic_vault(tmp_path)
+    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_raw_sandbox, runtime=_raw_runtime)
+    custom = report["recent_runs"][-1]
+    assert custom["slot"] == "custom-1"
+    assert custom["mode"] == "custom-1"
+    assert custom["failure_class"] == diagnostics.OTHER
+    assert custom["sandbox"] == diagnostics.OTHER
+    assert custom["integrity"] == diagnostics.OTHER
+    assert custom["outcome"] == "failed"
+    assert [r["slot"] for r in report["recent_runs"][:-1]] == ["morning-briefing"] * 4
+    assert report["vault"]["custom_slots"] == 1
+    slot_keys = {s["key"] for s in report["doctor"]["run_health"]["slots"]}
+    assert CANARIES["slot_key"] not in slot_keys
+    assert slot_keys <= {"custom-1", diagnostics.OTHER} | diagnostics._DEFAULT_SLOTS
+
+
+def test_failed_section_names_only_the_exception_type(tmp_path: Path) -> None:
+    vault, home = _synthetic_vault(tmp_path)
+    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_raw_sandbox, runtime=_raising_runtime)
+    assert report["runtime"] == {"unavailable": "RuntimeError"}
+    _assert_no_canary(json.dumps(report))
 
 
 def test_cli_report_never_carries_vault_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,6 +269,25 @@ def test_cli_report_never_carries_vault_content(tmp_path: Path, monkeypatch: pyt
     assert report["schema"] == diagnostics.SCHEMA_VERSION
     _assert_no_canary(result.output)
     assert str(home) not in result.output
+    assert str(Path.home()) not in result.output, "the real home leaked when $HOME pointed elsewhere"
+
+
+def test_runtime_section_starts_nothing_and_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No gate probe, no `claude --version`: the export reads the probe cache only."""
+    vault, home = _synthetic_vault(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    import subprocess
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError(f"diagnostics started a process: {args!r}")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    before = sorted(p.relative_to(vault) for p in vault.rglob("*"))
+    section = diagnostics._runtime_section(vault)
+    assert section["runtime"] == "claude-code"
+    assert section["gate_probe"] is None
+    assert sorted(p.relative_to(vault) for p in vault.rglob("*")) == before
 
 
 def test_text_form_never_carries_vault_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,7 +309,9 @@ def test_missing_vault_still_reports(tmp_path: Path) -> None:
 
 
 def _ctx(tmp_path: Path, *names: str) -> ScrubContext:
-    ctx = ScrubContext(vault=tmp_path / "Scout", home=tmp_path)
+    ctx = ScrubContext()
+    ctx.add_path(tmp_path / "Scout", "<vault>")
+    ctx.add_path(tmp_path, "~")
     for n in names:
         ctx.add(n, "<name>")
     return ctx.finish()
@@ -194,18 +323,39 @@ def _ctx(tmp_path: Path, *names: str) -> ScrubContext:
         # Scout's own folders and engine files stay readable.
         ("{v}/.scout-logs/scout-2026-11-16_08-00.log", "<vault>/.scout-logs/scout-2026-11-16_08-00.log"),
         ("missing {v}/.scout-state/schedule.yaml", "missing <vault>/.scout-state/schedule.yaml"),
+        ("kept {v}/.scout-logs/a.log and more", "kept <vault>/.scout-logs/a.log and more"),
         ("cat-1 file missing: scripts/heartbeat.sh", "cat-1 file missing: scripts/heartbeat.sh"),
         ("{v}/SKILL.md is stale", "<vault>/SKILL.md is stale"),
-        # A note's path is not.
+        ("{v}/knowledge-base/ontology/parser.py", "<vault>/knowledge-base/ontology/parser.py"),
+        # A note's path is not, spaces and all, to the end of the path.
         ("{v}/knowledge-base/people/Alex.md", "<vault>/<path>"),
+        ("open {v}/Old Project/Kickoff Notes.txt", "open <vault>/<path>"),
+        ("'{v}/Old Project/x.txt' failed", "'<vault>/<path>' failed"),
+        # Other dot-folders are the owner's.
+        ("{v}/.trash/Secret Merger.md", "<vault>/<path>"),
+        ("{v}/.claude/projects/-Users-jane-Vault/a.jsonl", "<vault>/<path>"),
         ("see notes/alex.md", "see <note>.md"),
         ("linked from [[Some Note]]", "linked from [[<note>]]"),
-        # Home, emails, URLs, tokens.
-        ("{h}/Library/Caches", "~/Library/Caches"),
+        ("note 'Board Meeting Prep' has no title", "note '<quoted>' has no title"),
+        ("it's Alex's", "it's Alex's"),
+        # Home, other users, encoded folders, file URLs, percent-encoding.
+        ("{h}/Library/Caches/com.scout.Scout/x.json", "~/Library/Caches/com.scout.Scout/x.json"),
+        ("{h}/Library/Caches/Other App/x.json", "~/<path>"),
+        ("{h}/Library/Application Support/Scout/engine x", "~/Library/Application Support/Scout/engine x"),
+        ("{h}/Documents/Acme Contract.pdf", "~/<path>"),
+        ("/Users/jane/My Vault/x.txt", "/Users/<user>/<path>"),
+        ("/Users/jane/.local/bin/claude", "/Users/<user>/.local/bin/claude"),
+        ("-Users-jane-Vault", "-Users-<user>-Vault"),
+        ("file:///Users/jane/My%20Vault/x.txt", "/Users/<user>/<path>"),
+        ("{v}\\/Old Project\\/x.txt", "<vault>/<path>"),
+        # Emails, URLs, remotes, tokens.
         ("ask alex@example.com", "ask <email>"),
         ("pushed to https://example.com/private/repo", "pushed to <url>"),
         ("see https://github.com/Raven-Scout/Scout/issues/1", "see https://github.com/Raven-Scout/Scout/issues/1"),
+        ("https://github.com/Raven-Scout/Scout/issues?access_token=abc", "https://github.com/Raven-Scout/Scout/issues"),
+        ("push to git@github.com:jane/acme-notes.git failed", "push to <email>:<repo> failed"),
         ("key sk-ant-api03-abcdef", "key <redacted>"),
+        ("api_key=AbC123xyz789", "api_key=<redacted>"),
         ("Bearer abc.def", "Bearer <redacted>"),
         ("id 0123456789abcdef0123456789abcdef", "id <redacted>"),
     ],
@@ -216,11 +366,27 @@ def test_scrub_rules(tmp_path: Path, raw: str, expected: str) -> None:
     assert scrub(raw, ctx) == expected
 
 
-def test_scrub_names_are_whole_words(tmp_path: Path) -> None:
-    ctx = _ctx(tmp_path, "run", "Acme Deal")
-    # "run" is hidden as a word, never inside another word.
-    assert scrub("runs failed: run Acme Deal", ctx) == "runs failed: <name> <name>"
-    assert scrub("rerun", ctx) == "rerun"
+def test_scrub_is_idempotent(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, "Acme Deal")
+    once = scrub(f"open {tmp_path}/Scout/Old Project/x.txt for Acme Deal at {tmp_path}/Documents/x", ctx)
+    assert scrub(once, ctx) == once
+
+
+def test_scrub_names(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, "Acme Deal", "notes", "Riverbend")
+    # Distinctive names go anywhere, as whole words.
+    assert scrub("runs failed for Acme Deal and Riverbend", ctx) == "runs failed for <name> and <name>"
+    # A plain short word is hidden only as a path segment, so ordinary text survives.
+    assert scrub("release notes", ctx) == "release notes"
+    assert scrub("in notes/x and x/notes", ctx) == "in <name>/x and x/<name>"
+    assert scrub("see notes/alex.md", ctx) == "see <note>.md"
+
+
+def test_scrub_matches_names_in_any_unicode_form(tmp_path: Path) -> None:
+    import unicodedata
+
+    ctx = _ctx(tmp_path, "Zoë Quill")
+    assert scrub("linked " + unicodedata.normalize("NFD", "Zoë Quill"), ctx) == "linked <name>"
 
 
 def test_scrub_truncates_long_strings(tmp_path: Path) -> None:

@@ -33,9 +33,35 @@ enum HelpWindow {
     static let diagnostics = "diagnostics"
 }
 
+extension Notification.Name {
+    /// Scroll an open Settings view to its Engine section.
+    static let scoutShowEngineSettings = Notification.Name("scout.showEngineSettings")
+}
+
+/// Scroll targets inside Settings.
+enum SettingsAnchor {
+    static let engine = "settings-engine"
+}
+
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
+    /// Set when Engine Settings… opens a Settings window that hasn't appeared yet.
+    private static var engineSettingsRequested = false
+
+    /// Open Settings at its Engine section.
+    static func showEngineSettings(_ openSettings: OpenSettingsAction) {
+        engineSettingsRequested = true
+        openSettings()
+        NotificationCenter.default.post(name: .scoutShowEngineSettings, object: nil)
+    }
+
+    /// Whether Engine Settings… asked for the Engine section; reading it clears it.
+    static func takeEngineSettingsRequest() -> Bool {
+        defer { engineSettingsRequested = false }
+        return engineSettingsRequested
+    }
+
     /// `<vault>/.scout-logs` when it exists, else the vault itself.
     static func logsFolder(vault: URL, fileManager: FileManager = .default) -> URL {
         let logs = vault.appendingPathComponent(".scout-logs", isDirectory: true)
@@ -66,7 +92,7 @@ struct HelpCommands: View {
         Divider()
         Section("Troubleshooting") {
             link(.troubleshooting)
-            Button("Engine Settings…") { openSettings() }
+            Button("Engine Settings…") { HelpActions.showEngineSettings(openSettings) }
             link(.reportIssue)
         }
     }

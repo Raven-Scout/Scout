@@ -77,8 +77,9 @@ nonisolated struct AppDiagnosticsInfo: Equatable, Sendable {
 }
 
 /// Gathers a `DiagnosticsBundle`. Everything it reads is injected, so tests
-/// drive it with a synthetic vault and a scripted runner.
-struct DiagnosticsCollector {
+/// drive it with a synthetic vault and a scripted runner. Nonisolated: the
+/// log store, the install log and the scrubbing run off the main thread.
+nonisolated struct DiagnosticsCollector: Sendable {
     var app: AppDiagnosticsInfo
     var engineState: EngineState
     var doctor: DoctorReport?
@@ -93,18 +94,21 @@ struct DiagnosticsCollector {
     var scrubber: DiagnosticsScrubber
     var now: Date = Date()
 
+    static let engineSectionTitle = "Engine diagnostics"
     static let recentRunCount = 20
     static let appLogLimit = 200
     static let installLogLimit = 60
 
     func collect() async -> DiagnosticsBundle {
         let engineText = await engineDiagnostics()
+        let logText = await Task.detached { [self] in logSection() }.value
+        // Everything but the engine's JSON is plain text, scrubbed line by line.
         let sections = [
             DiagnosticsBundle.Section(title: "App", about: "Scout.app's version, build and this Mac's macOS version.",
                                       body: appSection()),
             DiagnosticsBundle.Section(title: "Engine", about: "Which engine the app found, and its version.",
                                       body: engineSection()),
-            DiagnosticsBundle.Section(title: "Engine diagnostics",
+            DiagnosticsBundle.Section(title: Self.engineSectionTitle,
                                       about: "scoutctl diagnostics: doctor, run health, sandbox and runtime status, recent run outcomes.",
                                       body: engineText),
             DiagnosticsBundle.Section(title: "Recent runs (as the app sees them)",
@@ -112,12 +116,13 @@ struct DiagnosticsCollector {
                                       body: runsSection()),
             DiagnosticsBundle.Section(title: "App log",
                                       about: "Scout.app's own log lines from this launch.",
-                                      body: logSection()),
+                                      body: logText),
         ]
         return DiagnosticsBundle(
             createdAt: now,
-            sections: sections.map {
-                .init(title: $0.title, about: $0.about, body: scrubber.scrubLines($0.body))
+            sections: sections.map { section in
+                let body = section.title == Self.engineSectionTitle ? section.body : scrubber.scrubLines(section.body)
+                return .init(title: section.title, about: section.about, body: body)
             }
         )
     }
@@ -159,15 +164,16 @@ struct DiagnosticsCollector {
         }
     }
 
-    /// `scoutctl diagnostics --json`, already redacted by the engine. An
-    /// engine that predates the command gets the doctor's structural fields
-    /// only (severity and finding ids), never its free text.
+    /// `scoutctl diagnostics --json`, redacted by the engine and then scrubbed
+    /// again here value by value (`DiagnosticsScrubber.scrubJSON`). An engine
+    /// that predates the command gets the doctor's structural fields only
+    /// (severity and finding ids), never its free text.
     func engineDiagnostics() async -> String {
         guard let scoutctl = engineState.scoutctl else { return "No engine to ask." }
         if let result = try? await runner.run(executable: scoutctl, arguments: ["diagnostics", "--json"],
                                               environment: environment, workingDirectory: nil),
            result.exitCode == 0,
-           let text = Self.normalizedJSON(result.stdout) {
+           let text = scrubber.scrubJSON(result.stdout) {
             return text
         }
         var lines = ["This engine has no `scoutctl diagnostics` (engines after 0.18.14 have it); showing the doctor's summary."]
@@ -180,17 +186,7 @@ struct DiagnosticsCollector {
         } else {
             lines.append("Doctor: not run yet")
         }
-        return lines.joined(separator: "\n")
-    }
-
-    /// Re-encode the engine's JSON so escapes (`\/`, `\u0041`) can't hide a path
-    /// or a name from the scrubber: pretty, sorted keys, unescaped slashes.
-    static func normalizedJSON(_ data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              let out = try? JSONSerialization.data(withJSONObject: object,
-                                                    options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        else { return nil }
-        return String(data: out, encoding: .utf8)
+        return scrubber.scrubLines(lines.joined(separator: "\n"))
     }
 
     func runsSection() -> String {
@@ -211,28 +207,42 @@ struct DiagnosticsCollector {
         if lines.isEmpty { lines = ["No log lines from this launch."] }
         if let installLog, let text = try? String(contentsOf: installLog, encoding: .utf8) {
             lines.append("")
-            lines.append("-- engine install log (last \(Self.installLogLimit) lines) --")
-            lines.append(contentsOf: text.split(separator: "\n").suffix(Self.installLogLimit).map(String.init))
+            lines.append("-- engine install log (last \(Self.installLogLimit) steps; messages withheld) --")
+            lines.append(contentsOf: text.split(separator: "\n").compactMap { Self.installLogLine(String($0)) }
+                .suffix(Self.installLogLimit))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// An install-log line (`<date> <step> <status> <free text>`, `EngineInstaller.report`) cut to
+    /// its date, step and status keyword. The free text, and a status's own message
+    /// (`failed("…")`), can quote anything a bootstrap printed, so they never leave. nil for
+    /// a line that isn't one.
+    static func installLogLine(_ line: String) -> String? {
+        let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        guard parts.count >= 3, ISO8601DateFormatter().date(from: String(parts[0])) != nil,
+              InstallStep(rawValue: String(parts[1])) != nil else { return nil }
+        let keyword = parts[2].prefix { $0.isLetter }
+        guard ["pending", "running", "done", "skipped", "failed"].contains(String(keyword)) else { return nil }
+        return "\(parts[0]) \(parts[1]) \(keyword)"
     }
 
     /// Log categories known to log only structure (paths, connector ids,
     /// errors). Any other category, including one added later, shows its
     /// timestamp, level and category with the message withheld, because
     /// it might quote a note (KBPrivacy classifies note content).
-    nonisolated static let structuralLogCategories: Set<String> = [
+    static let structuralLogCategories: Set<String> = [
         "FileWatcher", "ConnectorHealth", "DisplayProfile", "BoardWriter",
     ]
 
     /// One log line, with the message withheld unless its category is structural.
-    nonisolated static func logLine(date: Date, level: String, category: String, message: String) -> String {
+    static func logLine(date: Date, level: String, category: String, message: String) -> String {
         let body = structuralLogCategories.contains(category) ? message : "<message withheld: this category can quote notes>"
         return "\(DiagnosticsBundle.stamp(date)) \(level) [\(category)] \(body)"
     }
 
     /// This process's own unified-log entries for Scout's subsystem.
-    nonisolated static func appLogLines(subsystem: String = "com.scout.Scout") -> [String] {
+    static func appLogLines(subsystem: String = "com.scout.Scout") -> [String] {
         guard let store = try? OSLogStore(scope: .currentProcessIdentifier) else { return [] }
         let start = store.position(timeIntervalSinceLatestBoot: 0)
         let predicate = NSPredicate(format: "subsystem == %@", subsystem)

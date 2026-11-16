@@ -18,8 +18,12 @@ struct DoctorPresentation: Equatable {
     let headline: String
     let tone: Tone
     let groups: [Group]
+    /// Whether the doctor can run for this engine state (mirrors `EngineHealthService.refresh()`).
+    let canRun: Bool
 
     init(state: EngineState, doctor: DoctorReport?, lastError: String?) {
+        let isBroken: Bool = { if case .broken = state { return true }; return false }()
+        canRun = state.scoutctl != nil && (!state.gatesTabs || state.isManaged) && !isBroken
         if case .notInstalled = state {
             headline = "Scout's engine isn't installed yet"
             tone = .warn
@@ -109,14 +113,16 @@ struct DoctorView: View {
             .accessibilityElement(children: .combine)
             Spacer()
             if running { ProgressView().controlSize(.small) }
-            Button("Run Again") { Task { await run() } }.disabled(running)
+            Button("Run Again") { Task { await run() } }
+                .disabled(running || !presentation.canRun)
+                .help(presentation.canRun ? "Run the doctor again" : "Set up or repair the engine in Settings first")
         }
         .padding(20)
     }
 
     private var footer: some View {
         HStack {
-            Button("Engine Settings…") { openSettings() }
+            Button("Engine Settings…") { HelpActions.showEngineSettings(openSettings) }
             Spacer()
             Button("Export Diagnostics…") { openWindow(id: HelpWindow.diagnostics) }
         }
@@ -128,7 +134,7 @@ struct DoctorView: View {
             Text(group.title.uppercased())
                 .font(DS.sans(11, weight: .semibold)).foregroundStyle(color(group.tone))
                 .accessibilityAddTraits(.isHeader)
-            ForEach(group.items, id: \.self) { item in
+            ForEach(Array(group.items.enumerated()), id: \.offset) { _, item in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.text).font(DS.sans(13)).foregroundStyle(DS.Ink.p1).textSelection(.enabled)
                     if let fix = item.fix {

@@ -33,6 +33,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -76,6 +77,7 @@ struct SettingsView: View {
                             if appState.beginOnboarding() != nil { showingSetup = true }
                         })
                 }
+                .id(SettingsAnchor.engine)
 
                 section(label: "Action Items") {
                     ActionItemsDisplaySection()
@@ -240,6 +242,14 @@ struct SettingsView: View {
                 ClaudeLauncher.resolveClaudePath(override: "")
             }.value
             detectedClaudePath = detected
+        }
+        // Help ▸ Engine Settings… (audit C11): open at the Engine section.
+        .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
+            withAnimation { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
+        .onAppear {
+            if HelpActions.takeEngineSettingsRequest() { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
         }
     }
 

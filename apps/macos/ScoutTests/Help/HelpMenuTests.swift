@@ -82,6 +82,19 @@ struct DoctorPresentationTests {
         #expect(runs.items[1].fix == nil)
     }
 
+    @Test func runAgain_onlyWhenTheDoctorCanRun() {
+        #expect(DoctorPresentation(state: .notInstalled, doctor: nil, lastError: nil).canRun == false)
+        #expect(DoctorPresentation(state: .broken(install, reason: "x"), doctor: nil, lastError: nil).canRun == false)
+        #expect(DoctorPresentation(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: nil).canRun)
+        #expect(DoctorPresentation(state: .external(install, .devCheckout), doctor: nil, lastError: nil).canRun)
+    }
+
+    @Test func duplicateFindingTexts_areAllShown() {
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: ["same", "same"])
+        let p = DoctorPresentation(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil)
+        #expect(p.groups.first?.items.count == 2)
+    }
+
     @Test func healthy_saysSo() {
         let rh = RunHealth(severity: .green, evaluatedAt: "x", lastOkAt: nil, findings: [], slots: [])
         let p = DoctorPresentation(state: .managed(install, vaultBootstrapped: true),
