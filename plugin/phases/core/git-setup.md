@@ -48,7 +48,7 @@ All GitHub operations use the `gh` CLI, which is authenticated and has full acce
 
 The engine checkout scheduled runs execute is `"engine_root"` in `~/.local/state/scout/engine.json`; read it there, never assume a path. On a developer's machine it is an editable install: whatever its working tree holds runs in the next scheduled run, unreviewed, and a checkout off `main` or a release tag blocks upgrades. **In it, never run `git checkout`, `git switch`, `git stash`, `git reset` or `git pull`, never create a branch, and never edit, write or delete a file.** Reading is fine.
 
-Make any engine or plugin change in a fresh clone of `origin/main`, with `NAME` a short kebab-case name for the change:
+**In a scheduled run inside the write sandbox (`SCOUT_SANDBOX_STATUS` is `enforced`), don't start one:** the sandbox refuses every repository's `.git/config` and `.git/hooks/`, so the clone below fails. Instead, describe the change you would make and why in the wrap notification, for {{USER_NAME}} to make. Elsewhere (an owner session, or a run without the sandbox), make any engine or plugin change in a fresh clone of `origin/main`, with `NAME` a short kebab-case name for the change:
 
 ```bash
 ROOT="$(python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("~/.local/state/scout/engine.json")))["engine_root"])')"

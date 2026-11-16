@@ -527,7 +527,11 @@ All of Q1–Q8 were answered with the recommendation.
 
 Residuals and decisions this round leaves open:
 
-- **Open, for Jordan: engine-change clones.** `phases/core/git-setup.md` tells a run to
+- **Decided (Jordan, 2026-11-15): (a), strict.** `phases/core/git-setup.md` now tells a
+  run inside the sandbox not to start the clone, and to describe the change it would make
+  in the wrap notification instead; owner sessions keep the clone flow. No eval seed:
+  this is a capability the sandbox removes, not a judgement the eval can score. What
+  was asked: **engine-change clones.** `phases/core/git-setup.md` told a run to
   make any engine change in a fresh clone, `git clone … ~/.scout-worktrees/$NAME`, then
   `switch -c`, commit and `push -u`. The new any-repo rules refuse that clone's
   `.git/config` and hook samples, so the clone fails (2 `git clone` calls in the 50
@@ -536,9 +540,7 @@ Residuals and decisions this round leaves open:
   `~/.scout-worktrees/` from the any-repo rules, accepting that a later owner command in
   such a clone runs whatever hooks the run put there; (c) carve out only the clone's
   `.git/config` there, with `git clone --template=` in the phase so no hooks dir is
-  written. Until Jordan picks one, the PR ships (a): with the sandbox on by default, a
-  run that starts an engine-change clone gets a failed `git clone`, and the phase's own
-  rule (name the clone's path if the push fails) puts that in the wrap.
+  written.
 - **`git branch -m`** renames the branch, then exits 128, because git always moves the
   branch's config section in `.git/config` and no setting stops that. 0 of the 50 runs
   used it.
