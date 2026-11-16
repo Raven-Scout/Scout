@@ -17,6 +17,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 - **The Control Center takes run statuses from the run ledger.** A run the ledger records shows the ledger's outcome, matched by its log file name. Safety skips (privacy checks, write protection, agent runtime, writer lease) and redundant skips now show as skips instead of "running" and then "orphaned". `RunStatus` gains `skippedGates`, `skippedSandbox`, `skippedRuntime`, `skippedLease` and `skippedRedundant`. Runs with no ledger row keep their log-derived status: older engines, or a run still going.
 - **`DoctorReport` decodes the doctor's `notes`.**
 
+## [0.18.15] - 2026-11-16
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

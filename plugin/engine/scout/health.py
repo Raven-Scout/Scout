@@ -618,6 +618,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     findings.extend(runtime_findings(rows, vault=vault))
     findings.extend(sandbox_findings(rows, vault=vault))
     findings.extend(integrity_findings(rows, vault=vault, now=now))
+    findings.extend(broker_findings(rows, vault=vault))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -886,6 +887,78 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
             )
         ]
     return []
+
+
+def broker_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """The newest sandboxed run had no broker, or a queued request couldn't be applied (spec 2026-11-16 §6)."""
+    from scout.sandbox import broker
+
+    findings: list[Finding] = []
+    last = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    status = broker.read_status(vault)
+    at = status.get("at") if status is not None else None
+    fresh = isinstance(at, int) and last is not None and at >= last.started_at.timestamp() - 60  # this run's own
+    if (
+        last is not None
+        and last.sandbox == "enforced"
+        and fresh
+        and status is not None
+        and status["status"] == "unavailable"
+    ):
+        findings.append(
+            Finding(
+                id="runs.broker_unavailable",
+                severity="yellow",
+                since=last.finished_at,
+                summary=(
+                    "The last scheduled run ran without its commit and Telegram broker, so its sandbox still let it "
+                    "write the vault's git dir and read the Telegram token: "
+                    f"{status.get('reason') or 'no reason given'}."
+                ),
+                fix=(
+                    "If the reason names an old git-safe-commit.sh, run /scout-update. Otherwise read the run log's "
+                    "`broker:` lines; the next run tries again on its own."
+                ),
+                source="state",
+            )
+        )
+    problem = broker.queue_problem(vault)
+    if problem is not None:
+        findings.append(
+            Finding(
+                id="broker.queue_unsafe",
+                severity="red",
+                since=None,
+                summary=(
+                    "The run brokers' queue (.scout-state/broker-queue/) holds something other than plain folders "
+                    f"({problem}), so queued commits and Telegram messages aren't applied. Scout doesn't make that."
+                ),
+                fix=(
+                    "Look at .scout-state/broker-queue/ and replace what isn't a plain folder; then read the newest "
+                    "run's session to see what made it."
+                ),
+                source="state",
+            )
+        )
+    failed = broker.failed_entries(vault)
+    if failed:
+        findings.append(
+            Finding(
+                id="broker.queue_failed",
+                severity="yellow",
+                since=None,
+                summary=(
+                    f"{len(failed)} commit or Telegram request(s) a run queued couldn't be applied after the session "
+                    "(refused, older than 24 h, or out of retries)."
+                ),
+                fix=(
+                    "Look in .scout-state/broker-queue/failed/: commit the paths yourself or delete the entry. The "
+                    "event log's broker.queue_failed rows say why each one failed."
+                ),
+                source="state",
+            )
+        )
+    return findings
 
 
 def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:
