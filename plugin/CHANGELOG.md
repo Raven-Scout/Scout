@@ -54,6 +54,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
     - `cost_kind` is `reported` when Claude Code's own cost was read, and `priced` when it was priced from usage rows; a runtime that reports tokens only will write `unpriced`.
     - The older `cost_source` keeps its meaning.
     - A row without these keys is Claude Code's.
+    - **The runner's row also carries the run's tokens** (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts with each message counted once. The daily token ceiling and its `auto` formula count these. Before, they read token fields no row had, so the ceiling counted 0. Attempt rows carry none, so a retried run isn't counted twice.
 
 ## [0.18.14] - 2026-11-16
 

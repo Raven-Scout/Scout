@@ -286,12 +286,14 @@ def _ts(hours_ago: float) -> str:
 def test_tokens_used_counts_this_runtimes_last_24_hours(vault: Path) -> None:
     _rows(
         vault,
-        {"ts": _ts(1), "agent_runtime": "d", "tokens": 400},
-        {"ts": _ts(2), "agent_runtime": "d", "input_tokens": 100, "output_tokens": 50},
-        {"ts": _ts(30), "agent_runtime": "d", "tokens": 9999},
-        {"ts": _ts(1), "agent_runtime": "other", "tokens": 9999},
-        {"ts": _ts(1), "tokens": 7},  # no key: claude-code
-        {"ts": _ts(1), "agent_runtime": "d", "tokens": True},
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 400},
+        {"source": "runner", "ts": _ts(2), "agent_runtime": "d", "input_tokens": 100, "output_tokens": 50},
+        {"source": "runner", "ts": _ts(30), "agent_runtime": "d", "tokens": 9999},
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "other", "tokens": 9999},
+        {"source": "runner", "ts": _ts(1), "tokens": 7},  # no key: claude-code
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": True},
+        {"source": "session-tokens", "ts": _ts(1), "agent_runtime": "d", "tokens": 9999},  # the runner row counts it
+        {"source": "attempt", "ts": _ts(1), "agent_runtime": "d", "input_tokens": 9999},
     )
     assert limits.tokens_used(vault, "d", now=NOW) == 550
     assert limits.tokens_used(vault, "claude-code", now=NOW) == 7
@@ -301,9 +303,9 @@ def test_tokens_used_counts_this_runtimes_last_24_hours(vault: Path) -> None:
 def test_the_token_ceiling_skips_as_budget(vault: Path) -> None:
     limits.set_owner_limit(vault, "d", max_tokens_per_day="500")  # the owner may set any ceiling
     dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
-    _rows(vault, {"ts": _ts(1), "agent_runtime": "d", "tokens": 499})
+    _rows(vault, {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 499})
     assert _check(vault, dummy) is None
-    _rows(vault, {"ts": _ts(1), "agent_runtime": "d", "tokens": 500})
+    _rows(vault, {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 500})
     r = _check(vault, dummy)
     assert r is not None and r.code == "token_ceiling"
     assert r.exit_code == rt_check.EXIT_BUDGET
@@ -384,10 +386,10 @@ def test_formula_uses_the_runtimes_own_rows_after_a_week(vault: Path) -> None:
     with registered(DummyRuntime("d")):
         _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
         boot = [_boot(5, "dreaming", 50)]
-        young = [{"ts": _ts(24 * 3), "agent_runtime": "d", "type": "dreaming", "tokens": 9_000_000}]
+        young = [{"source": "runner", "ts": _ts(24 * 3), "agent_runtime": "d", "type": "dreaming", "tokens": 9_000_000}]
         _rows(vault, *boot, *young)
         assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 2 * 50 * 1_000_000  # still bootstrap
-        old = [{"ts": _ts(24 * 8), "agent_runtime": "d", "type": "dreaming", "tokens": 7_000_000}]
+        old = [{"source": "runner", "ts": _ts(24 * 8), "agent_runtime": "d", "type": "dreaming", "tokens": 7_000_000}]
         _rows(vault, *boot, *young, *old)
         # Own rows: p90 of [7M, 9M] = 9M; 2 * 9M = 18M.
         assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 18_000_000

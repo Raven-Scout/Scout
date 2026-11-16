@@ -424,7 +424,7 @@ def test_legacy_rows_default_to_claude_code(env, monkeypatch):
     assert "agent_runtime" not in row and "provider" not in row
     tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
     with tracker.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": row["ts"], "tokens": 7}) + "\n")
+        f.write(json.dumps({"source": "runner", "ts": row["ts"], "tokens": 7}) + "\n")
     assert limits.tokens_used(vault, "claude-code", now=STARTED + timedelta(hours=1)) == 7
 
 
@@ -436,3 +436,54 @@ def test_an_unsafe_runtime_value_is_left_out(env, monkeypatch, value):
 
 def test_an_unknown_runtime_is_named_without_a_provider(monkeypatch):
     assert run_cost.runtime_keys({"SCOUT_AGENT_RUNTIME": "antigravity"}) == {"agent_runtime": "antigravity"}
+
+
+# -- the runner's row carries the run's real tokens, so the daily token ceiling can trip (review on #654) ------
+
+
+def test_the_runner_row_carries_the_runs_tokens_each_message_once(env, monkeypatch):
+    vault, projects = env
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", "claude-code")
+    # Attempt 1 died before its cost-state; attempt 2 finished. msg_a's usage is repeated per content block.
+    _transcript(projects, vault, "a1", name=NAME, cost=None, usage=[("msg_a", TOKENS), ("msg_a", TOKENS)])
+    _transcript(projects, vault, "a2", name=NAME, cost=6.5, usage=[("msg_b", TOKENS_2)])
+    run_cost.record_attempt("research", name=NAME, started=STARTED, cap=20.0, exit_code=1, vault=vault)
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault)
+    assert (row["input_tokens"], row["output_tokens"]) == (1200 + 300, 800 + 2500)
+    assert (row["cache_read_tokens"], row["cache_creation_tokens"]) == (90000 + 120000, 0)
+    assert row["tokens"] == 1500 + 3300 + 210000
+    # Only the runner's row carries tokens: the attempt row never makes the run count twice.
+    attempt_rows = [r for r in _tracker_rows(vault) if r.get("source") == "attempt"]
+    assert attempt_rows and all("tokens" not in r and "input_tokens" not in r for r in attempt_rows)
+
+
+def test_a_run_without_usage_rows_writes_no_tokens(env):
+    vault, projects = env
+    _transcript(projects, vault, "a1", name=NAME, cost=4.0)
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault)
+    assert "tokens" not in row
+
+
+def test_real_token_rows_trip_the_daily_ceiling(env, monkeypatch, tmp_path):
+    """End to end: transcript usage -> the runner's row -> tokens_used -> agent-runtime check refuses (exit 4)."""
+    from scout.agent_runtimes import check as rt_check
+    from scout.agent_runtimes import limits
+    from scout.agent_runtimes.base import TIER_F_REQUIRES
+    from tests._agent_runtimes import DummyRuntime, registered
+
+    vault, projects = env
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", "dummy")
+    now = datetime.now(UTC)
+    started = now - timedelta(minutes=30)
+    _transcript(projects, vault, "a1", name=NAME, cost=6.5, usage=[("msg_a", TOKENS)], mtime=now)
+    dummy = DummyRuntime("dummy", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
+    with registered(dummy):
+        row, _ = run_cost.record("dreaming", name=NAME, started=started, cap=20.0, exit_code=0, vault=vault, now=now)
+        assert (row["agent_runtime"], row["tokens"]) == ("dummy", 92000)
+        assert limits.tokens_used(vault, "dummy") == 92000
+        limits.set_owner_limit(vault, "dummy", max_tokens_per_day="92001")
+        assert rt_check.check(vault, dummy, reader="autonomous", mode="dreaming", interactive=False) is None
+        limits.set_owner_limit(vault, "dummy", max_tokens_per_day="92000")
+        r = rt_check.check(vault, dummy, reader="autonomous", mode="dreaming", interactive=False)
+        assert r is not None and r.code == "token_ceiling" and r.exit_code == rt_check.EXIT_BUDGET

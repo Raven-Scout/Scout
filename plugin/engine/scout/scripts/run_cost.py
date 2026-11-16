@@ -36,7 +36,7 @@ import math
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -104,10 +104,34 @@ def _cost_kind(priced_by: str | None) -> str | None:
 
 
 @dataclass(frozen=True)
+class TokenCount:
+    """A transcript's tokens, each message counted once. ``total`` is everything the model processed."""
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_creation: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.input + self.output + self.cache_read + self.cache_creation
+
+    def __add__(self, other: TokenCount) -> TokenCount:
+        return TokenCount(
+            self.input + other.input,
+            self.output + other.output,
+            self.cache_read + other.cache_read,
+            self.cache_creation + other.cache_creation,
+        )
+
+
+@dataclass(frozen=True)
 class AttemptCost:
     session_id: str  # the transcript's file stem, Claude Code's session id
     usd: float
     priced_by: str | None  # PRICED_BY_CLAUDE, PRICED_BY_USAGE, or None: nothing to price
+    # What the attempt's usage rows add up to, each message once (for the token ceiling; not part of equality).
+    tokens: TokenCount | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -117,6 +141,17 @@ class RunCost:
     measured: int  # of those, the ones with claude's cost-state row
     estimated: int = 0  # the ones priced from their usage rows instead
     sessions: tuple[AttemptCost, ...] = ()
+
+    @property
+    def tokens(self) -> TokenCount | None:
+        """The run's tokens over every attempt that had usage rows, or None when none did."""
+        counted = [s.tokens for s in self.sessions if s.tokens is not None]
+        if not counted:
+            return None
+        total = TokenCount()
+        for t in counted:
+            total = total + t
+        return total
 
     @property
     def priced(self) -> bool:
@@ -175,12 +210,12 @@ def _title_and_cost(path: Path) -> tuple[str | None, float | None]:
     return title, cost
 
 
-def _usage_cost(path: Path) -> float:
-    """What a transcript's usage rows cost, each message counted once.
+def _usage_turns(path: Path) -> list[dict]:
+    """A transcript's usage rows, each message once.
 
     Claude Code writes one row per content block, each repeating its message's
     usage, so rows are deduped by ``message.id`` (the last row of a message wins).
-    It is a floor: subagent turns live in their own transcripts and aren't read.
+    Subagent turns live in their own transcripts and aren't read.
     """
     turns: dict[str, dict] = {}
     try:
@@ -198,8 +233,33 @@ def _usage_cost(path: Path) -> float:
                 key = message.get("id")
                 turns[key if isinstance(key, str) and key else f"line-{len(turns)}"] = row
     except OSError:
-        return 0.0
-    return _compute_cost_usd(list(turns.values()))
+        return []
+    return list(turns.values())
+
+
+def _usage_cost(path: Path) -> float:
+    """What a transcript's usage rows cost, each message counted once. A floor (see ``_usage_turns``)."""
+    turns = _usage_turns(path)
+    return _compute_cost_usd(turns) if turns else 0.0
+
+
+def _int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _tokens(turns: list[dict]) -> TokenCount | None:
+    if not turns:
+        return None
+    total = TokenCount()
+    for row in turns:
+        usage = row["message"]["usage"]
+        total = total + TokenCount(
+            _int(usage.get("input_tokens")),
+            _int(usage.get("output_tokens")),
+            _int(usage.get("cache_read_input_tokens")),
+            _int(usage.get("cache_creation_input_tokens")),
+        )
+    return total
 
 
 def measure(vault: Path, name: str, *, started: datetime, home: Path | None = None) -> RunCost:
@@ -220,14 +280,16 @@ def measure(vault: Path, name: str, *, started: datetime, home: Path | None = No
             title, cost = _title_and_cost(path)
             if title != name:
                 continue
+            turns = _usage_turns(path)
+            tokens = _tokens(turns)
             if cost is not None:
-                sessions.append(AttemptCost(path.stem, round(cost, 4), PRICED_BY_CLAUDE))
+                sessions.append(AttemptCost(path.stem, round(cost, 4), PRICED_BY_CLAUDE, tokens))
                 continue
-            estimate = _usage_cost(path)
+            estimate = _compute_cost_usd(turns) if turns else 0.0
             if estimate > 0:
-                sessions.append(AttemptCost(path.stem, round(estimate, 4), PRICED_BY_USAGE))
+                sessions.append(AttemptCost(path.stem, round(estimate, 4), PRICED_BY_USAGE, tokens))
             else:
-                sessions.append(AttemptCost(path.stem, 0.0, None))
+                sessions.append(AttemptCost(path.stem, 0.0, None, tokens))
     return RunCost(
         usd=round(sum(s.usd for s in sessions), 4),
         attempts=len(sessions),
@@ -262,6 +324,14 @@ def tracker_row(
     if model and _MODEL_RE.match(model):
         row["model"] = model
     row.update(runtime_keys())
+    # The run's tokens, every attempt included (the daily token ceiling and its formula count these; only the
+    # runner's row carries them, so attempts aren't counted twice). ``tokens`` is everything the model processed.
+    if (tokens := cost.tokens) is not None:
+        row["tokens"] = tokens.total
+        row["input_tokens"] = tokens.input
+        row["output_tokens"] = tokens.output
+        row["cache_read_tokens"] = tokens.cache_read
+        row["cache_creation_tokens"] = tokens.cache_creation
     if cost.estimated:
         row["cost_kind"] = COST_KIND_PRICED
     elif cost.measured:
@@ -418,6 +488,7 @@ __all__ = [
     "COST_KIND_PRICED",
     "COST_KIND_REPORTED",
     "COST_KIND_UNPRICED",
+    "TokenCount",
     "runtime_keys",
     "COST_SOURCE_TRANSCRIPT",
     "EXIT_NO_RETRY",

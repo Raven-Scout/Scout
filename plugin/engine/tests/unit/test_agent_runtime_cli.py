@@ -296,7 +296,7 @@ def test_check_exit_codes(vault: Path) -> None:
         (vault / ".scout-logs").mkdir()
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         (vault / ".scout-logs" / "usage-tracker.jsonl").write_text(
-            json.dumps({"ts": ts, "agent_runtime": "dummy", "tokens": 11}) + "\n", encoding="utf-8"
+            json.dumps({"source": "runner", "ts": ts, "agent_runtime": "dummy", "tokens": 11}) + "\n", encoding="utf-8"
         )
         code, out, _ = _cli("agent-runtime", "check", "--runtime", "dummy")
         assert code == 4 and "token_ceiling" in out

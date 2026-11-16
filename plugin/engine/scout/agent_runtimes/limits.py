@@ -27,9 +27,10 @@ Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, me
    A value that would loosen a limit, turn one on, or go below its floor is ignored, and says so in
    ``agent-runtime show``, the run's log and ``scoutctl bootstrap doctor``.
 
-The ceiling counts the usage tracker's rows for that runtime (``agent_runtime``, a
-missing key meaning ``claude-code``) over the last 24 hours, summing their
-``tokens`` (or ``input_tokens`` + ``output_tokens``). A run that would start past it
+The ceiling counts the usage tracker's **runner rows** for that runtime (``agent_runtime``, a
+missing key meaning ``claude-code``) over the last 24 hours, summing their ``tokens``: every token
+the model processed in the run, each message once, which ``budget record-run`` measures from the
+run's transcripts (only the runner's row carries them, so attempts aren't counted twice). A run that would start past it
 is skipped as ``skipped_budget``, like a USD overrun.
 
 **The default ceiling** (``auto``) is Phase 0's formula (spec §8.6; the Phase 0
@@ -397,6 +398,10 @@ def limits_for(
 
 
 def _row_tokens(row: dict[str, Any]) -> int:
+    """A runner row's tokens (``budget record-run`` writes ``tokens``, every attempt included). Other rows (the
+    session's own, attempt rows) are 0: the runner's row already counts them."""
+    if row.get("source") != "runner":
+        return 0
     total = row.get("tokens")
     if isinstance(total, int) and not isinstance(total, bool) and total > 0:
         return total
