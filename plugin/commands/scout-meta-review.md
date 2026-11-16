@@ -26,7 +26,7 @@ Check whether Scout sessions are actually running and completing:
 for type in scout dreaming research; do
   echo "=== $type ==="
   ls -1 <SCOUT_DIR>/.scout-logs/${type}-*.log 2>/dev/null | while read f; do
-    mod=$(python3 -c 'import os, sys, time; print(time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(sys.argv[1]))))' "$f")
+    mod=$(python3 -I -c 'import os, sys, time; print(time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(sys.argv[1]))))' "$f")
     echo "$mod $(basename "$f")"
   done | sort -r | head -20
 done

@@ -366,3 +366,30 @@ def test_dump_keeping_comments_keeps_a_comment_after_a_significant_tail(text: st
 
     assert result.count(comment) == 1
     assert yaml.safe_load(result) == data
+
+
+# --- Nested rebuild (#584) ----------------------------------------------------------
+
+
+def test_dump_keeping_comments_rewrites_a_nested_value_that_only_compares_equal() -> None:
+    """`1 == True` in Python, but a reader that wants a bool reads `1` as off. A sibling's
+    change must not leave `enabled: 1` in place when `True` is wanted."""
+    text = 'privacy:  # mine\n  federation:\n    enabled: 1\n  sync_only:\n    - "notes/**"  # kept\n'
+    data = {"privacy": {"federation": {"enabled": True}, "sync_only": ["notes/**"], "new": 1}}
+
+    result = _dump_keeping_comments(text, data)
+
+    assert yaml.safe_load(result)["privacy"]["federation"]["enabled"] is True
+    assert '    - "notes/**"  # kept\n' in result
+
+
+def test_dump_keeping_comments_keeps_the_order_of_a_nested_mapping_with_non_string_keys() -> None:
+    """`split_blocks` names keys by `str()`, so YAML 1.1's `on:` (the key True) can't be matched;
+    that mapping is re-dumped whole, in order, rather than having `on` moved to its end."""
+    text = "a:\n  on: 1\n  x: 2\n  y: 3\n"
+    data = {"a": {True: 1, "x": 5, "y": 3}}
+
+    result = _dump_keeping_comments(text, data)
+
+    assert list(yaml.safe_load(result)["a"]) == [True, "x", "y"]
+    assert yaml.safe_load(result) == data

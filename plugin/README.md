@@ -3,7 +3,7 @@
 > **The autonomous daily briefing that cross-checks all your work tools — so nothing falls through the cracks, and you can trust what it surfaces.**
 
 <p align="center">
-  <img src="docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
+  <img src="../docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
 </p>
 
 Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you — every item tagged by how many sources confirm it. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
@@ -59,7 +59,7 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 | You need | Why | How |
 |---|---|---|
-| **A Mac on macOS 13+** (Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the [Mac app](https://github.com/Raven-Scout/Scout) is macOS-only | — |
+| **A Mac** (the [Mac app](https://github.com/Raven-Scout/Scout) needs macOS 15.7 or later; Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the Mac app is macOS-only | — |
 | **A paid Claude plan** — Max recommended | Every scheduled run is a Claude Code session on Opus (~$2.50–$5 each, ~8 runs on a weekday) | [claude.com/pricing](https://claude.com/pricing) |
 | **Claude Code, installed and signed in** | Scout runs as headless `claude -p` sessions under your login | [Install Claude Code](https://docs.claude.com/claude-code), then run `claude` once in Terminal to sign in |
 | **Your tools connected on claude.ai** | Scout reads Slack, Gmail, Calendar, Linear, Granola, Drive through claude.ai connectors | [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — turn on the ones you use |
@@ -335,6 +335,16 @@ Everything else stays on this computer, a new folder included, and isn't named o
 **One writer at a time.** Agnes lets one place write the repository at a time, this computer or a run in Agnes, through its **Repository Writer Lease**. Once the vault is linked, every scheduled run takes the lease before it writes anything, renews it every five minutes while it runs, and gives it back when it ends, on an error too. If Agnes holds it (an Agnes-hosted run), the run is skipped and recorded as `lease_held`. If Agnes can't be reached, the run is skipped as `lease_unavailable`: a run that can't take the lease can't tell whether Agnes is writing. Both show in `scoutctl health` (`lease.held`, `lease.unavailable`) next to the other run outcomes. Link and sync push under the lease too: a `scoutctl repo sync` during a scheduled run uses that run's lease rather than asking for another, because Agnes ends the old lease when the same holder asks again. The lease token lives in `~/.scout-secrets/agnes-knowledge-repo/<vault id>.lease.json` (mode 600), never in the vault or on a command line. `scoutctl repo lease status` says who holds it. A run killed before it gives the lease back has it released by its keepalive or the next run, and Agnes ends it after 20 minutes in any case. An unlinked vault never asks for the lease.
 
 **Link refuses** until `/scout-update` has walked you through the privacy step, while `scout-config.yaml` can't be read, and while a root-level file or a folder that looks like trading or brokerage data (`TRADING.md`, `portfolio.csv`, `brokerage/`) would sync: make it local-only (`scoutctl bootstrap privacy-migrate --local-only '<path>'`) or confirm it once with `--confirm-sync '<path>'`. Sync re-checks the last two every time.
+
+**Sync refuses a file moved out of a path Agnes keeps local-only.** When a commit since the last sync moves a file from a Local-Only Path you set in Agnes (not one from `privacy.local_only_add`, which you may move out of) to a path that uploads, `scoutctl repo sync` stops before it changes anything and names the new path. If it should upload, run `scoutctl repo sync --confirm-sync '<new path>'`; that counts for that sync only. If not, add the new path to `privacy.local_only_add`. The commit hook blocks a scheduled run's move out of such a path too. It runs offline, so it uses a copy of Agnes's list in `.scout-state/repo-sync-host.json`, which link, sync and every scheduled run (when it takes the lease) refresh. If that copy is missing or more than a week old, the hook only warns, and `scoutctl bootstrap doctor` says so.
+
+**A sync can stop anywhere and be run again.** What came from Agnes stays on both sides, and what this computer already pushed isn't copied back over later work here.
+
+**Sharing changes need a commit.** After `scoutctl kb share` or `kb unshare`, commit `scout-config.yaml`, then run `scoutctl repo sync`. Link and sync refuse while the file's sharing settings differ from the last commit, and nothing is pushed, so a share you have and a share you're changing can't get mixed up.
+
+**Other uncommitted `scout-config.yaml` edits can only make a mirror stricter.** Until you commit the file, the stricter of its privacy settings and the last commit's applies, and the sync says so: what either keeps home stays home, and what either marks private is private. While they differ, an entry that opens up part of a private folder can lose to that folder, so a file can be stricter than either version says. A file only the uncommitted settings would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it.
+
+**A dropped commit gets a warning.** If a `git reset` or rebase drops commits that brought a file here from Agnes, the sync names each file it takes off Agnes's current files and how to read it from the repository's history, which keeps it.
 
 ### Reading what colleagues share with you
 

@@ -1,0 +1,11 @@
+# Added to the fixture vault's scout-config.yaml (tests/eval/harness/build.py), with the kb-lint
+# pre-commit hook: #597's front-page lock, the block its PR gives the maintainer to apply after
+# release, so the gate tests the config a live vault runs. Keep it in step with FRONT_PAGE_LOCK
+# in tests/unit/test_kb_lint_front_pages.py (tests/unit/test_eval_kb_gate.py checks that).
+kb_lint:
+  path_modes:
+    - glob: "knowledge-base/projects/*/{folder}.md"
+      mode: block
+      exclude: ["knowledge-base/projects/archived/**"]
+      checks: [size, page-narration, page-sections, page-bullet]
+    - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}

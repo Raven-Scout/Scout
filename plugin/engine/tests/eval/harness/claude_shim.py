@@ -41,6 +41,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .runner_env import SECRETS
 
@@ -148,6 +149,16 @@ def build_command(
     return cmd, prompt
 
 
+# System events claude may print before init that carry no model output, tool call or billing: the
+# guard waits past them for init. Anything else first still aborts (no_init).
+PRE_INIT_EVENTS = frozenset({("system", "session_title_changed")})
+
+
+def pre_init(event: dict[str, Any]) -> bool:
+    """A known harmless event claude prints before its init (claude 2.1.3xx titles the session first)."""
+    return (event.get("type"), event.get("subtype")) in PRE_INIT_EVENTS
+
+
 def guard_init(event: dict[str, Any], allowed: set[str]) -> dict[str, Any] | None:
     """Why an init event must abort the session, or None when it is safe."""
     if event.get("type") != "system" or event.get("subtype") != "init":
@@ -176,7 +187,51 @@ def _kill_group(pid: int) -> None:
         pass
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _is_gate_probe(env: dict[str, str]) -> bool:
+    """The runners' gate probe: plain http to a loopback host (no userinfo), its dummy key and its mode."""
+    from scout.agent_runtimes.gate_probe import DUMMY_KEY, PROBE_MODE
+
+    try:
+        url = urlsplit(env.get("ANTHROPIC_BASE_URL", ""))
+        host = url.hostname
+    except ValueError:
+        return False
+    return (
+        url.scheme == "http"
+        and host in _LOOPBACK_HOSTS
+        and url.username is None
+        and url.password is None
+        and env.get("ANTHROPIC_API_KEY") == DUMMY_KEY
+        and env.get("SCOUT_MODE") == PROBE_MODE
+    )
+
+
+def _passthrough(runner_argv: list[str], env: dict[str, str]) -> int | None:
+    """Hand a call that isn't a run session to the real claude unchanged; None for a session.
+
+    The runners always pass ``--name``. Calls without it are the runners' gate probe
+    (``scoutctl gates probe``, spec 2026-11-13 §3.5: a session against a fake model on
+    127.0.0.1) and ``--version``. They must test the claude the sessions use and never
+    write this sample's result dir. Anything else without ``--name`` is refused, so a
+    nameless call can't reach a real endpoint and bill a key past the session guards.
+    """
+    if "--name" in runner_argv:
+        return None
+    real = env.get("SCOUT_EVAL_REAL_CLAUDE")
+    if not real or not (runner_argv == ["--version"] or _is_gate_probe(env)):
+        print("claude-shim: not an eval session (no --name) and not the gate probe; refusing", file=sys.stderr)
+        return EXIT_ENV
+    os.execvpe(real, [real, *runner_argv], env)
+    return EXIT_ENV  # unreachable: execvpe replaces this process
+
+
 def run(runner_argv: list[str], env: dict[str, str]) -> int:
+    passed = _passthrough(runner_argv, env)
+    if passed is not None:
+        return passed
     missing = [k for k in REQUIRED_ENV if not env.get(k)]
     if missing:
         print(f"claude-shim: not an eval run, missing {', '.join(missing)}", file=sys.stderr)
@@ -262,7 +317,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not checked:  # the first event must be a clean init, or nothing runs
+                if not checked:  # the first event past PRE_INIT_EVENTS must be a clean init, or nothing runs
+                    if pre_init(event):
+                        continue
                     checked = True
                     why = guard_init(event, allowed)
                     if why:

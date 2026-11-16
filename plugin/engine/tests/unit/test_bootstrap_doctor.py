@@ -1038,3 +1038,38 @@ def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
     assert report.severity is Severity.YELLOW
     (line,) = [w for w in report.warnings if "privacy check could not run" in w]
     assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line
+
+
+# ---------- repo sync: the cached host Local-Only list (#596) ----------
+
+
+def _repo_sync_warnings(vault: Path, *, cache_age_days: int | None, linked: bool = True) -> list[str]:
+    from datetime import UTC, datetime, timedelta
+
+    from scout import repo_sync as rs
+
+    _populate_minimal_vault(vault)
+    now = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+    if linked:
+        rs.save_state(vault, rs.LinkState("https://agnes.example.com", "https://agnes.example.com/r.git", "", "a", "b"))
+    if cache_age_days is not None:
+        rs.save_host_cache(
+            vault, ["raw/"], agnes_url="https://agnes.example.com", now=now - timedelta(days=cache_age_days)
+        )
+    report = run_doctor(vault=vault, check_jobs=False, now=now)
+    return [w for w in report.warnings if w.startswith("repo sync:")]
+
+
+def test_doctor_flags_a_linked_vault_without_the_host_cache(tmp_path):
+    (line,) = _repo_sync_warnings(tmp_path, cache_age_days=None)
+    assert "isn't cached" in line and "scoutctl repo sync" in line
+
+
+def test_doctor_flags_a_stale_host_cache(tmp_path):
+    (line,) = _repo_sync_warnings(tmp_path, cache_age_days=9)
+    assert "9 days" in line and "scoutctl repo sync" in line and "raw" not in line
+
+
+def test_doctor_is_quiet_on_a_fresh_cache_or_an_unlinked_vault(tmp_path):
+    assert _repo_sync_warnings(tmp_path / "fresh", cache_age_days=1) == []
+    assert _repo_sync_warnings(tmp_path / "unlinked", cache_age_days=None, linked=False) == []

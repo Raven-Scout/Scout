@@ -71,4 +71,7 @@ that scores it (`engine/tests/eval/harness/checks/`), or say in the PR why not.
 This is a nudge (the PR template asks), not a gate. Model-backed runs are local
 only, on your own Claude login: `scripts/eval.sh run|compare|compare-models` (spec:
 `docs/superpowers/specs/2026-10-12-eval-harness-design.md`). CI runs the
-harness's tier-0 tests and never starts a model.
+harness's tier-0 tests and never starts a model. `scripts/eval.sh kb-gate` (one
+session of `scenarios/kb-front-page/`) is the KB-writing release gate: the
+maintainer runs it before merging a release PR. A change to how runs write
+project pages should keep `tests/unit/test_eval_kb_gate.py`'s golden cases honest.

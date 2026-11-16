@@ -309,6 +309,9 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
 
 _FM_ALIASES_RE = re.compile(r"^aliases:[ \t]*(.*?)\s*$")
 _FM_LIST_ITEM_RE = re.compile(r"^\s*-\s+(.*?)\s*$")
+# An inline list may carry a trailing ` # comment` after its closing bracket
+# (`aliases: [Sam Rivera]   # why`): YAML and Obsidian ignore it, so must we.
+_FM_INLINE_LIST_RE = re.compile(r"""^\[(.*?)\](?:\s+#.*)?$""")
 _FM_INLINE_ITEM_RE = re.compile(r"""\s*(?:"([^"]*)"|'([^']*)'|([^,]*))\s*(?:,|$)""")
 _FM_NON_NAMES = {"", "null", "~", "|", ">", "[]"}
 
@@ -357,8 +360,8 @@ def _frontmatter_aliases(path: Path) -> list[str]:
                 val = m.group(1)
                 if not val or val.startswith("#"):  # block list follows
                     in_block = True
-                elif val.startswith("[") and val.endswith("]"):  # inline list
-                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(val[1:-1]):
+                elif (flow := _FM_INLINE_LIST_RE.match(val)) is not None:  # inline list, optional ` # comment`
+                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(flow.group(1)):
                         names.append(dq or sq or bare.strip())
                 else:
                     names.append(_fm_scalar(val))
@@ -825,6 +828,64 @@ def is_scheduled(env: Mapping[str, str]) -> bool:
     return _is_scheduled(env)
 
 
+def _with_live_run(repo: Path, env: Mapping[str, str], out: TextIO) -> Mapping[str, str]:
+    """``env``, or a scheduled run's when the commit comes from a live run whatever ``env`` says (#595).
+
+    A run can unset or blank ``SCOUT_MODE`` for one ``git commit``, but not the
+    processes it runs in (:mod:`scout.kb.live_run`): a commit whose ancestry
+    passes through the run, or one detached from it while it is live, is
+    checked as the run's, and the event ``kb_lint.scheduled_by_process`` leaves
+    a trace. The owner's commit from their own terminal or app during a run
+    keeps the owner's rules, with a one-line notice. A run that died leaving
+    its lock counts until that lock is cleared, so its line says how: it can only
+    reach an owner, or a run that has already killed its own parents, and the
+    event is written first.
+    """
+    if is_scheduled(env):
+        return env
+    from scout.kb.live_run import commit_source_now
+
+    root = main_root(repo)
+    src = commit_source_now(root)
+    if src is None:
+        return env
+    if not src.runs:
+        if src.dead_holder:
+            _say(
+                out,
+                f"kb-lint: a scheduled run ({src.mode}) died and left its session lock; this commit comes from your "
+                "own session, so your rules apply. The next run clears it, or delete .scout-logs/.scout-session.lock.",
+            )
+        else:
+            _say(
+                out,
+                "kb-lint: a scheduled run is in progress; this commit comes from your own session, "
+                "so your rules apply.",
+            )
+        return env
+    if src.dead_holder:
+        _say(
+            out,
+            f"kb-lint: a scheduled run ({src.mode}) died and left its session lock, so this commit gets the "
+            "scheduled-run checks. If it is your own, the next run clears it, or delete "
+            ".scout-logs/.scout-session.lock and commit again.",
+        )
+    else:
+        _say(out, f"kb-lint: this commit comes from a scheduled run ({src.mode}), so the scheduled-run checks apply.")
+    try:
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(root),
+            kind="kb_lint.scheduled_by_process",
+            source="hook:kb-lint",
+            payload={"mode": src.mode, "by": src.by},
+        )
+    except Exception:  # noqa: BLE001, S110 - the verdict stands without the event
+        pass
+    return {**env, "SCOUT_MODE": src.mode, "SCOUT_READER": "autonomous"}
+
+
 def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
     """A scheduled run's refusal when the privacy checker errored (spec §8.3).
 
@@ -910,6 +971,7 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
+    env = _with_live_run(repo, env, out)
     # The privacy pass runs first and on its own: its verdict stands whatever
     # happens below. If it can't run, a scheduled run's commit is refused and
     # the owner's goes on with a warning and an audit row (spec §8.3; Jordan,
