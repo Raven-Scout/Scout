@@ -211,6 +211,8 @@ unstage_ours() {
 INDEX_BEFORE=""
 if [ "${#ADD[@]}" -gt 0 ]; then
   INDEX_BEFORE="$(git ls-files -s -- "${ADD[@]}" 2>/dev/null || true)"
+  # Stopped mid-commit (the run broker's drain stopped by its watchdog): take back what we staged first.
+  trap 'unstage_ours; exit 143' TERM INT
   git add -- "${ADD[@]}" || {
     unstage_ours
     die 5 "git add failed"
@@ -231,4 +233,5 @@ git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
   unstage_ours
   die 5 "git commit failed"
 }
+trap - TERM INT  # committed: nothing of ours is left staged to take back
 echo "git-safe-commit: committed $(git rev-parse --short HEAD) (${#COMMIT[@]} path(s))" >&2

@@ -299,7 +299,13 @@ Everything else, such as an invented id, a closed run's later entries or no id, 
 (`UNREGISTERED_PER_HOUR`). An entry that doesn't get that slot fails at once instead of waiting, so
 it can't fill the hours other runs' wraps need.
 
-**A stopped drain stops its commit.** The helper and its hook run in their own process group. When
+A run's record also holds its broker's pid and folder. Every drain first closes any open run whose
+broker is gone, for example after a wrapper killed with SIGKILL never ran its own drain. Closing keeps
+the credit for what that run already queued, so closing early loses nothing, and a later run can't
+borrow the dead run's allowance.
+
+**A stopped drain stops its commit.** The helper traps TERM and unstages what it staged, so a
+commit the watchdog stops leaves nothing in the index. The helper and its hook run in their own process group. When
 the wrapper's watchdog sends SIGTERM to the drain, the drain stops that group (SIGTERM, then SIGKILL
 after 2 s) before exiting, so nothing outlives the run's lock. The helper also puts back any index
 entry the owner had staged for a path before it unstages its own.

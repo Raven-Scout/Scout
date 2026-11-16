@@ -157,6 +157,27 @@ def test_a_refused_commit_leaves_what_the_owner_staged_as_it_was(vault: Vault, s
     assert vault.git("ls-files", "-s", "notes/seed.md") == staged
 
 
+def test_a_helper_stopped_mid_commit_leaves_nothing_staged(vault: Vault) -> None:
+    import signal
+
+    hook = vault.path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho $$ > .scout-logs/hook.pid\nsleep 120\n")
+    (vault.path / "notes" / "t.md").write_text("x\n")
+    env = {k: v for k, v in vault.env.items() if k != "SCOUT_RUN_BROKER"}
+    proc = subprocess.Popen(
+        ["/bin/bash", str(vault.path / "scripts" / "git-safe-commit.sh"), "notes: t", "notes/t.md"],
+        cwd=vault.path, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )  # fmt: skip
+    pid_file = vault.path / ".scout-logs" / "hook.pid"
+    deadline = time.monotonic() + 60
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert vault.git("diff", "--cached", "--name-only").strip() == "notes/t.md"  # staged, hook running
+    os.killpg(proc.pid, signal.SIGTERM)  # what the drain does to the helper's group
+    assert proc.wait(timeout=20) != 0
+    assert vault.git("diff", "--cached", "--name-only").strip() == ""
+
+
 def test_a_stopped_drain_stops_the_commit_it_was_running(vault: Vault) -> None:
     import signal
 

@@ -467,6 +467,26 @@ def test_a_closed_run_keeps_its_allowance_only_for_what_it_left_queued(vault: Pa
     assert len(bodies) == 2 and result.failed == 1  # the two written after share one unvouched slot
 
 
+def test_a_run_whose_broker_is_gone_is_closed_and_keeps_only_what_it_queued(vault: Path, tmp_path: Path) -> None:
+    import subprocess as sp
+
+    dead = sp.Popen(["/usr/bin/true"])
+    dead.wait()  # a broker whose wrapper was killed: its process is gone
+    gone, alive = "scout-broker.gone", "scout-broker.alive"
+    broker.register_run(os.environ, gone, pid=dead.pid, folder=tmp_path / gone)
+    (tmp_path / alive).mkdir()
+    broker.register_run(os.environ, alive, pid=os.getpid(), folder=tmp_path / alive)
+    broker.enqueue(vault, "telegram", {**_tg("queued before"), "run": gone, "rid": "01BEFORE"}, now=NOW)
+    assert broker.close_stale_runs(os.environ, vault) == [gone]
+    broker.enqueue(vault, "telegram", {**_tg("borrowed a"), "run": gone, "rid": "01BORROW1"}, now=NOW)
+    broker.enqueue(vault, "telegram", {**_tg("borrowed b"), "run": gone, "rid": "01BORROW2"}, now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender, clock=lambda: NOW))
+    assert "queued before" in [c["body"] for c in sender.calls]
+    assert len(sender.calls) == 2 and result.failed == 1  # the later two share one unvouched slot
+    assert broker._read_record(os.environ, alive)["open"] is True  # a live run stays open
+
+
 def test_a_message_the_broker_already_sent_is_not_sent_again_from_the_queue(vault: Path) -> None:
     sender = Sender()
     live = broker.Broker(vault, _env(), sender=sender, run_id="scout-broker.r2")

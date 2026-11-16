@@ -415,8 +415,16 @@ def _run_record(env: Mapping[str, str], run: str) -> Path:
     return owner_dir(env) / RUNS_DIR_NAME / f"{run}.json"
 
 
-def register_run(env: Mapping[str, str], run: str, *, now: datetime | None = None) -> None:
-    """Record ``run`` as open (the live broker, as it starts). Prunes records past their lifetime."""
+def register_run(
+    env: Mapping[str, str],
+    run: str,
+    *,
+    pid: int | None = None,
+    folder: Path | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Record ``run`` as open (the live broker, as it starts, with its pid and folder). Prunes records past their
+    lifetime."""
     now = now or datetime.now(UTC)
     d = owner_dir(env) / RUNS_DIR_NAME
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -424,7 +432,35 @@ def register_run(env: Mapping[str, str], run: str, *, now: datetime | None = Non
         with contextlib.suppress(OSError, ValueError):
             if now - datetime.fromtimestamp(old.lstat().st_mtime, UTC) > 2 * RUN_RECORD_KEEP:
                 old.unlink()
-    _write_record(env, run, {"at": now.isoformat(), "open": True, "rids": []})
+    record: dict[str, Any] = {"at": now.isoformat(), "open": True, "rids": []}
+    if pid is not None:
+        record["pid"] = pid
+    if folder is not None:
+        record["dir"] = str(folder)
+    _write_record(env, run, record)
+
+
+def close_stale_runs(env: Mapping[str, str], vault: Path) -> list[str]:
+    """Close every open run whose broker is gone (its process, or its folder): a wrapper killed with SIGKILL never
+    ran its own drain. Like :func:`close_run`, what the run still has queued keeps its allowance. Returns the runs
+    closed."""
+    closed: list[str] = []
+    for path in sorted((owner_dir(env) / RUNS_DIR_NAME).glob("scout-broker.*.json")):
+        run = path.name.removesuffix(".json")
+        record = _read_record(env, run)
+        if record is None or record.get("open") is not True:
+            continue
+        pid, folder = record.get("pid"), record.get("dir")
+        gone = (isinstance(pid, int) and not _alive(pid)) or (isinstance(folder, str) and not Path(folder).is_dir())
+        if not gone:
+            continue
+        try:
+            left = [e for e in _queued(vault, "telegram") if e.get("run") == run]
+        except (QueueUnsafe, OSError):
+            left = []
+        close_run(env, run, [e["rid"] for e in left if isinstance(e.get("rid"), str)])
+        closed.append(run)
+    return closed
 
 
 def close_run(env: Mapping[str, str], run: str, rids: Sequence[str]) -> None:
@@ -620,7 +656,7 @@ def serve(vault: Path, broker_dir: Path, *, parent: int | None = None, broker: B
     os.environ["SCOUT_DATA_DIR"] = str(vault)  # notify_telegram's duplicate guard finds the vault by it
     broker = broker or Broker.for_vault(vault, run_id=broker_dir.name)
     if broker.run_id and _RUN_ID.match(broker.run_id):
-        register_run(broker.env, broker.run_id)
+        register_run(broker.env, broker.run_id, pid=os.getpid(), folder=broker_dir)
     sweep_stale(broker_dir.parent, keep=broker_dir.name)
     with contextlib.suppress(Exception):  # warm the protected-path list, so the first commit isn't the slow one
         hook_paths.protected_roots(vault, broker.env)
@@ -1007,6 +1043,8 @@ def drain(
     requests of its still queued keep its allowance for later drains, and nothing queued after gets any.
     """
     env = dict(os.environ if env is None else env)
+    with contextlib.suppress(OSError):
+        close_stale_runs(env, vault)  # before any entry is credited
     try:
         return _drain(vault, env=env, broker=broker, deadline_s=deadline_s)
     finally:
