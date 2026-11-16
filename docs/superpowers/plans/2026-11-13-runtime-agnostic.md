@@ -69,10 +69,10 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 - New config key names: slot `agent_runtime`, config `agent_runtimes.default`,
   env `SCOUT_AGENT_RUNTIME`, runtime ids `claude-code`, `antigravity`,
   `codex`, `gemini`. Never reuse `Slot.runtime` (spec §8.1).
-- Ledger keys `agent_runtime`, `provider`, and a cost-kind key ∈ `{reported, priced, unpriced}`.
-  Absent means Claude Code (spec §8.6). The cost-kind key can't be
-  `cost_source`, which usage-tracker rows already use (`"transcript"`);
-  Task 1.6 names it.
+- Ledger keys `agent_runtime`, `provider`, and `cost_kind` ∈ `{reported, priced, unpriced}`.
+  Absent means Claude Code (spec §8.6). The cost-kind key is `cost_kind`
+  (Task 1.6, #654), because `cost_source` is already used by usage-tracker
+  rows (`"transcript"`).
 - `privacy.providers` defaults to `[anthropic]`. Local-only paths are
   denied to every non-Anthropic run, consent or not (spec §8.4).
 - No paid API spend, no API keys in tests or CI, no model in CI. Model-backed
