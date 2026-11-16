@@ -18,13 +18,21 @@ final class ScoutUsageService: ObservableObject {
     private let scoutctl: URL
     private let runner: any ProcessRunner
     private let argumentsPrefix: [String]
+    private let now: @Sendable () -> Date
+    private var rolloverTask: Task<Void, Never>?
 
     static let arguments = ["budget", "usage", "--json"]
 
-    init(scoutctl: URL, runner: any ProcessRunner, argumentsPrefix: [String] = []) {
+    init(
+        scoutctl: URL,
+        runner: any ProcessRunner,
+        argumentsPrefix: [String] = [],
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.scoutctl = scoutctl
         self.runner = runner
         self.argumentsPrefix = argumentsPrefix
+        self.now = now
     }
 
     /// Re-read the summary. A failure keeps the last good summary (the card
@@ -39,16 +47,50 @@ final class ScoutUsageService: ObservableObject {
                 workingDirectory: nil
             )
             guard result.exitCode == 0 else {
-                let stderr = String(data: result.stderr, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                lastError = stderr.isEmpty ? "Scout's engine couldn't report usage (exit \(result.exitCode))." : stderr
+                let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+                lastError = Self.failureMessage(exitCode: result.exitCode, stderr: stderr)
                 return
             }
             summary = try Self.decode(result.stdout)
             lastError = nil
+            scheduleRollover()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Re-read when the summary's "today" ends, so the card and the status
+    /// bar don't keep showing yesterday's figures as today's after midnight.
+    private func scheduleRollover() {
+        rolloverTask?.cancel()
+        guard let end = summary?.today.endDate, let delay = Self.rolloverDelay(until: end, now: now()) else {
+            return
+        }
+        rolloverTask = Task { [weak self] in
+            // ContinuousClock keeps counting while the Mac sleeps.
+            try? await Task.sleep(for: .seconds(delay), clock: .continuous)
+            guard !Task.isCancelled else { return }
+            await self?.refresh()
+        }
+    }
+
+    /// Seconds until just after *end*, or nil when it has already passed (a
+    /// summary whose day is over by this clock schedules nothing, so a clock
+    /// that disagrees with the engine's can't loop).
+    nonisolated static func rolloverDelay(until end: Date, now: Date) -> TimeInterval? {
+        let remaining = end.timeIntervalSince(now)
+        return remaining > 0 ? remaining + 1 : nil
+    }
+
+    /// What the card says when `scoutctl budget usage` fails. An engine older
+    /// than the command exits 2 with typer's usage text, which means nothing
+    /// to a reader, so that case asks for a newer engine instead.
+    nonisolated static func failureMessage(exitCode: Int32, stderr: String) -> String {
+        let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if exitCode == 2 || text.contains("No such command") {
+            return "it needs a newer Scout engine (this one has no `scoutctl budget usage`)."
+        }
+        return text.isEmpty ? "Scout's engine couldn't report usage (exit \(exitCode))." : text
     }
 
     nonisolated static func decode(_ data: Data) throws -> UsageSummary {

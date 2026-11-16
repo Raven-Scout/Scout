@@ -16,15 +16,19 @@ gives it the engine's figures instead, from ``.scout-logs/usage-tracker.jsonl``:
   usage, so rows are deduped by ``message.id`` (the last row of a message wins),
   as :func:`scout.scripts.run_cost._usage_cost` does. Cache reads and cache
   writes are kept apart from input and output.
-- **Cost.** :func:`scout.scripts.budget_check._window_cost` over the period's
-  rows: the figure the budget gate uses, each session counted once.
+- **Cost.** The same runs as the tokens: the period's runner rows, plus the
+  ``attempt`` rows whose session a runner row lists, counted by
+  :func:`scout.scripts.budget_check.window_cost_of_rows` (the budget gate's rule,
+  each session once). An attempt of a run still retrying, and ``session`` or
+  ``session-tokens`` rows, are left out, so the cost and its ``cost_kind``
+  always describe the same runs.
 - **How the cost was found** (``cost_kind``): each runner row's ``cost_kind``
   when it carries one (Phase 1 D2: ``reported``, ``priced``, ``unpriced``), else
-  derived the same way: ``cost_source: "transcript"`` with every attempt measured
-  is ``reported`` (Claude Code's own cost-state), with any estimated attempt
-  ``priced``, and no ``cost_source`` is ``unpriced`` (the row's $0 is not a
-  measurement). The period's kind is ``none`` (no runs), one of those three when
-  every run agrees (``priced`` when the rest are ``reported``), else ``partial``.
+  derived by D2's rule: ``cost_source: "transcript"`` with any estimated attempt
+  is ``priced``, otherwise ``reported`` (Claude Code's own cost-state), and no
+  ``cost_source`` is ``unpriced`` (the row's figure is not a measurement). The
+  period's kind is ``none`` (no runs), one of those three when every run agrees
+  (``priced`` when the rest are ``reported``), else ``partial``.
 
 The JSON shape is a contract with the app (``tests/fixtures/contract/usage-summary.json``).
 """
@@ -161,17 +165,29 @@ def _row_sessions(row: dict) -> list[str]:
     return [s for s in listed if _SESSION_ID_RE.match(s)]
 
 
+def _run_rows(period: _Period) -> list[tuple[datetime, dict]]:
+    """The period's finished runs: runner rows, and the attempt rows they list."""
+    runner = [(ts, row) for ts, row in period.rows if row.get("source") == "runner"]
+    listed = {sid for _ts, row in runner for sid in _row_sessions(row)}
+    attempts = [
+        (ts, row)
+        for ts, row in period.rows
+        if row.get("source") == SOURCE_ATTEMPT and any(sid in listed for sid in _row_sessions(row))
+    ]
+    return runner + attempts
+
+
 def _summarize_period(period: _Period, dirs: list[Path]) -> dict[str, Any]:
     runner_rows = [row for _ts, row in period.rows if row.get("source") == "runner"]
     kinds = [row_cost_kind(row) for row in runner_rows]
 
+    # Tokens come from the sessions finished runs list; an attempt row only
+    # counts once its runner row lists it, so it adds no session of its own.
     sessions: list[str] = []
     runs_with_tokens = 0
     files: list[Path] = []
     seen: set[str] = set()
-    for _ts, row in period.rows:
-        if row.get("source") not in ("runner", SOURCE_ATTEMPT):
-            continue
+    for row in runner_rows:
         found_any = False
         for sid in _row_sessions(row):
             if sid in seen:
@@ -183,7 +199,7 @@ def _summarize_period(period: _Period, dirs: list[Path]) -> dict[str, Any]:
                 sessions.append(sid)
                 files.extend(transcripts)
                 found_any = True
-        if row.get("source") == "runner" and found_any:
+        if found_any:
             runs_with_tokens += 1
 
     tokens = Tokens()
@@ -197,7 +213,7 @@ def _summarize_period(period: _Period, dirs: list[Path]) -> dict[str, Any]:
         "runs_with_tokens": runs_with_tokens,
         "sessions": len(sessions),
         "tokens": tokens.as_dict(),
-        "cost_usd": round(budget_check._window_cost(period.rows), 4),
+        "cost_usd": round(budget_check.window_cost_of_rows(_run_rows(period)), 4),
         "cost_kind": _period_kind(kinds),
         "priced_runs": sum(1 for k in kinds if k != "unpriced"),
     }
@@ -218,7 +234,7 @@ def summarize(vault: Path | None = None, *, now: datetime | None = None, home: P
     week = _Period(week_start, week_end)
     tracker = paths.logs_dir(target) / TRACKER_FILENAME
     for row in budget_check.iter_tracker_rows(tracker):
-        ts = budget_check._row_ts(row)
+        ts = budget_check.row_ts(row)
         if ts is None:
             continue
         for period in (today, week):

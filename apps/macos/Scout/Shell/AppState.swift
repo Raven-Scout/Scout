@@ -413,13 +413,13 @@ final class AppState: ObservableObject {
         sessionIndex.start()
         displayProfile.startWatching()
 
-        // A finished run adds a runner row to the usage tracker, so re-read
-        // Scout's usage whenever the set of finished runs changes.
-        logs.$runs
-            .map { runs in runs.filter { $0.status != .running }.map(\.id).joined(separator: "|") }
-            .removeDuplicates()
+        // A finished run adds a runner row to the usage tracker, and the
+        // tracker service re-reads the file on every change to it, so re-read
+        // Scout's usage then. (Keying on the run log missed a runner row that
+        // landed after the log said the run was done.)
+        tracker.$entries
             .dropFirst()
-            .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
             .sink { _ in Task { await usage.refresh() } }
             .store(in: &cancellables)
 

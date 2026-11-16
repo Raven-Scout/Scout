@@ -96,6 +96,11 @@ extension SessionLogService {
     /// so a dev build or a second vault rewrote the installed app's cache on
     /// every launch and each then re-parsed every log. Entries self-validate
     /// (name + size + mtime), so sharing never gave wrong data, only misses.
+    ///
+    /// It is not counts only: each entry keeps the log's parsed fields,
+    /// including up to 200 characters of every error line it matched
+    /// (`DetectedError.snippet`). Like the logs themselves, it stays in the
+    /// owner's own caches directory and the path never names the vault.
     nonisolated static func defaultParseCacheURL(
         scoutDirectory: URL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier

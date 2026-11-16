@@ -119,7 +119,7 @@ def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: 
 
     Any error (an unreadable schedule or tracker) gives FLOOR, so the ceiling stays on.
     """
-    from scout.scripts.budget_check import _row_ts, iter_tracker_rows
+    from scout.scripts.budget_check import iter_tracker_rows, row_ts
 
     try:
         kinds = _runtime_slot_kinds(data_dir, runtime_id)
@@ -133,7 +133,7 @@ def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: 
             for row in iter_tracker_rows(tracker):
                 if not isinstance(row, dict):
                     continue
-                ts = _row_ts(row)
+                ts = row_ts(row)
                 if ts is None or ts < since:
                     continue
                 kind = kind_of(row.get("type"))
@@ -383,7 +383,7 @@ def _row_tokens(row: dict[str, Any]) -> int:
 
 def tokens_used(data_dir: Path | None, runtime_id: str, *, now: datetime | None = None) -> int:
     """Tokens the usage tracker records for *runtime_id* in the last 24 hours."""
-    from scout.scripts.budget_check import _row_ts, iter_tracker_rows
+    from scout.scripts.budget_check import iter_tracker_rows, row_ts
 
     tracker = paths.logs_dir(data_dir) / "usage-tracker.jsonl"
     if not tracker.exists():
@@ -393,7 +393,7 @@ def tokens_used(data_dir: Path | None, runtime_id: str, *, now: datetime | None 
     for row in iter_tracker_rows(tracker):
         if not isinstance(row, dict) or (row.get("agent_runtime") or "claude-code") != runtime_id:
             continue
-        ts = _row_ts(row)
+        ts = row_ts(row)
         if ts is None or ts < since:
             continue
         total += _row_tokens(row)

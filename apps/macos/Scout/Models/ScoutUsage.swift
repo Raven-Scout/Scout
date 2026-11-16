@@ -36,6 +36,9 @@ nonisolated struct UsageTokens: Codable, Equatable, Sendable {
 
 /// One period (today, or this week) of Scout's own scheduled runs.
 nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
+    /// The period's bounds in the vault's timezone, ISO 8601 with an offset.
+    let start: String
+    let end: String
     let runs: Int
     let runsWithTokens: Int
     let sessions: Int
@@ -45,13 +48,16 @@ nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
     let pricedRuns: Int
 
     enum CodingKeys: String, CodingKey {
-        case runs
+        case start, end, runs
         case runsWithTokens = "runs_with_tokens"
         case sessions, tokens
         case costUSD = "cost_usd"
         case costKind = "cost_kind"
         case pricedRuns = "priced_runs"
     }
+
+    /// When the period ends; nil if the engine's `end` doesn't parse.
+    var endDate: Date? { ISO8601DateFormatter().date(from: end) }
 }
 
 /// The `scoutctl budget usage --json` payload (engine:

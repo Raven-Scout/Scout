@@ -235,6 +235,73 @@ def test_runs_and_cost_come_from_the_tracker(vault: Path, home: Path) -> None:
     assert week["cost_kind"] == "partial"  # Monday's legacy $0 row is not a measurement
 
 
+def _tracker(vault: Path, *rows: str) -> None:
+    (vault / ".scout-logs" / "usage-tracker.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_the_cost_counts_only_the_runs_its_kind_describes(fake_data_dir: Path, home: Path) -> None:
+    """An attempt of a run still retrying and a session's own rows are not a finished run's cost."""
+    _tracker(
+        fake_data_dir,
+        _row(
+            NOW - timedelta(hours=3),
+            source="runner",
+            budget_spent=2.0,
+            cost_source="transcript",
+            measured_attempts=1,
+            attempts=1,
+            sessions=[SID_MORNING],
+        ),
+        _row(NOW - timedelta(hours=1), source="attempt", budget_spent=0.5, cost_source="usage", session_id=SID_RETRY_1),
+        _row(NOW - timedelta(hours=1), source="session-tokens", budget_spent=7.5, session_id=SID_INTERACTIVE),
+        _row(NOW - timedelta(hours=1), source="session", budget_spent=1.0, session_id=SID_ELSEWHERE),
+    )
+    today = us.summarize(fake_data_dir, now=NOW, home=home)["today"]
+    assert (today["cost_usd"], today["cost_kind"], today["runs"]) == (2.0, "reported", 1)
+
+
+def test_spend_with_no_finished_run_is_not_shown_as_cost(fake_data_dir: Path, home: Path) -> None:
+    """With only attempt and session rows the kind is none, so the cost must be 0 too, not a figure the card hides."""
+    proj = _project_dir(home, fake_data_dir)
+    _transcript(proj / f"{SID_RETRY_1}.jsonl", [("msg_c", _usage(5, 5, 1_000, 0), 2)])
+    _tracker(
+        fake_data_dir,
+        _row(NOW - timedelta(hours=1), source="attempt", budget_spent=0.5, cost_source="usage", session_id=SID_RETRY_1),
+        _row(NOW - timedelta(hours=1), source="session-tokens", budget_spent=7.5, session_id=SID_INTERACTIVE),
+    )
+    today = us.summarize(fake_data_dir, now=NOW, home=home)["today"]
+    assert (today["cost_usd"], today["cost_kind"], today["runs"]) == (0, "none", 0)
+    # Nor its tokens: the attempt's run hasn't finished.
+    assert (today["sessions"], today["tokens"]["input"]) == (0, 0)
+
+
+def test_a_finished_runs_own_attempt_rows_are_not_counted_twice(fake_data_dir: Path, home: Path) -> None:
+    _tracker(
+        fake_data_dir,
+        _row(
+            NOW - timedelta(hours=2),
+            source="attempt",
+            budget_spent=0.4,
+            cost_source="usage",
+            session_id=SID_RETRY_1,
+            run_started="2026-04-29T16:00:00Z",
+        ),
+        _row(
+            NOW - timedelta(hours=1),
+            source="runner",
+            budget_spent=1.1,
+            cost_source="transcript",
+            measured_attempts=1,
+            estimated_attempts=1,
+            attempts=2,
+            sessions=[SID_RETRY_1, SID_RETRY_2],
+            run_started="2026-04-29T16:00:00Z",
+        ),
+    )
+    today = us.summarize(fake_data_dir, now=NOW, home=home)["today"]
+    assert (today["cost_usd"], today["cost_kind"]) == (1.1, "priced")
+
+
 @pytest.mark.parametrize(
     ("row", "kind"),
     [

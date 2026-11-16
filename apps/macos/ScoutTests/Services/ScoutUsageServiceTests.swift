@@ -73,15 +73,15 @@ struct ScoutUsageSummaryTests {
 
     @Test func anUnpricedOrEmptyDayNeverShowsAMeasuredZero() {
         let zero = UsageTokens(input: 0, output: 0, cacheRead: 0, cacheCreation: 0)
-        let unpriced = UsagePeriod(runs: 3, runsWithTokens: 0, sessions: 0, tokens: zero,
+        let unpriced = UsagePeriod(start: "", end: "", runs: 3, runsWithTokens: 0, sessions: 0, tokens: zero,
                                    costUSD: 0, costKind: .unpriced, pricedRuns: 0)
         #expect(UsageFormat.cost(unpriced) == "cost unknown (no run reported one)")
         #expect(UsageFormat.shortCost(unpriced) == "unknown")
-        let none = UsagePeriod(runs: 0, runsWithTokens: 0, sessions: 0, tokens: zero,
+        let none = UsagePeriod(start: "", end: "", runs: 0, runsWithTokens: 0, sessions: 0, tokens: zero,
                                costUSD: 0, costKind: .none, pricedRuns: 0)
         #expect(UsageFormat.cost(none) == "no runs yet")
         #expect(UsageFormat.coverage(none) == "no scheduled runs finished yet")
-        let reported = UsagePeriod(runs: 1, runsWithTokens: 1, sessions: 1, tokens: zero,
+        let reported = UsagePeriod(start: "", end: "", runs: 1, runsWithTokens: 1, sessions: 1, tokens: zero,
                                    costUSD: 0, costKind: .reported, pricedRuns: 1)
         #expect(UsageFormat.cost(reported) == "$0.00 (Claude Code's figure)")
         #expect(UsageFormat.coverage(reported) == "1 run finished")
@@ -102,6 +102,19 @@ struct ScoutUsageSummaryTests {
         json = json.replacingOccurrences(of: "\"cost_kind\": \"priced\"", with: "\"cost_kind\": \"guessed\"")
         let summary = try ScoutUsageService.decode(Data(json.utf8))
         #expect(summary.today.costKind == .partial)
+    }
+
+    @Test func todayEndsAtTheVaultsMidnight() throws {
+        let summary = try ScoutUsageService.decode(try fixtureData())
+        let end = try #require(summary.today.endDate)
+        // 2026-04-30T00:00:00-04:00
+        #expect(end == Date(timeIntervalSince1970: 1_777_521_600))
+        let threePM = end.addingTimeInterval(-9 * 3600)
+        let delay = try #require(ScoutUsageService.rolloverDelay(until: end, now: threePM))
+        #expect(abs(delay - (9 * 3600 + 1)) < 0.01)
+        // A day already over by this clock schedules nothing, so it can't loop.
+        #expect(ScoutUsageService.rolloverDelay(until: end, now: end) == nil)
+        #expect(ScoutUsageService.rolloverDelay(until: end, now: end.addingTimeInterval(60)) == nil)
     }
 
     @Test func aNewerSchemaIsRefused() throws {
@@ -134,7 +147,17 @@ struct ScoutUsageServiceTests {
         await svc.refresh()
         await svc.refresh()
         #expect(svc.summary?.today.runs == 2)
-        #expect(svc.lastError == "No such command 'usage'.")
+        #expect(svc.lastError == "it needs a newer Scout engine (this one has no `scoutctl budget usage`).")
+    }
+
+    @Test func anEngineErrorIsShownAsTheEngineWroteIt() async {
+        let runner = StubUsageRunner([
+            ProcessResult(exitCode: 1, stdout: Data(), stderr: Data("tracker unreadable\n".utf8)),
+        ])
+        let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
+        await svc.refresh()
+        #expect(svc.lastError == "tracker unreadable")
+        #expect(ScoutUsageService.failureMessage(exitCode: 1, stderr: "") == "Scout's engine couldn't report usage (exit 1).")
     }
 
     @Test func undecodableOutputIsAnError() async {
