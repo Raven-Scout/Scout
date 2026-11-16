@@ -90,6 +90,20 @@ struct MarkdownBodyBlockTests {
         ])
     }
 
+    /// One branch indents by 2 spaces, the next by 4: each child is one level down.
+    @Test func branchesWithDifferentIndentsNestPerParent() {
+        let body = "- [ ] A\n  - [ ] A1\n- [ ] B\n    - [ ] B1\n      - [ ] B1a"
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .tasks([
+                MarkdownTask(checked: false, text: "A", depth: 0),
+                MarkdownTask(checked: false, text: "A1", depth: 1),
+                MarkdownTask(checked: false, text: "B", depth: 0),
+                MarkdownTask(checked: false, text: "B1", depth: 1),
+                MarkdownTask(checked: false, text: "B1a", depth: 2),
+            ]),
+        ])
+    }
+
     @Test func aCheckboxWithNoTextIsNotATask() {
         #expect(MarkdownBodyBlock.blocks(from: "- [ ]   ") == [.prose("- [ ]")])
     }

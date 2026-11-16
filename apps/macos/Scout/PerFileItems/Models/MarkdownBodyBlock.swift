@@ -105,12 +105,17 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         return MarkdownTask(checked: ns.substring(with: m.range(at: 2)) != " ", text: text, depth: indent)
     }
 
-    /// Turn indent widths into nesting levels by rank within the list, so a list
-    /// indented by 2 spaces, 4 spaces or tabs nests one level per step either way.
+    /// Turn indent widths into nesting levels: a task is one level under the
+    /// nearest earlier task indented less than it, so a list indented by 2
+    /// spaces, 4 spaces or tabs nests one level per step, even when branches
+    /// of the same list use different widths.
     private static func nested(_ tasks: [MarkdownTask]) -> [MarkdownTask] {
-        let widths = Array(Set(tasks.map(\.depth))).sorted()
+        var open: [Int] = []  // indent widths of the current ancestors
         return tasks.map { t in
-            MarkdownTask(checked: t.checked, text: t.text, depth: widths.firstIndex(of: t.depth) ?? 0)
+            while let last = open.last, last >= t.depth { open.removeLast() }
+            let level = open.count
+            open.append(t.depth)
+            return MarkdownTask(checked: t.checked, text: t.text, depth: level)
         }
     }
 
