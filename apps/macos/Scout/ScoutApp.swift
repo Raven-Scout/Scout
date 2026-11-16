@@ -76,6 +76,7 @@ struct ScoutApp: App {
             DoctorView(health: appState.engineHealth)
         }
         .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
         .restorationBehavior(.disabled)
 
         Window("Export Diagnostics", id: HelpWindow.diagnostics) {
@@ -83,6 +84,7 @@ struct ScoutApp: App {
                 .environmentObject(appState)
         }
         .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
         .restorationBehavior(.disabled)
     }
 }
