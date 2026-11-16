@@ -19,7 +19,7 @@ missing key meaning ``claude-code``) over the last 24 hours, summing their
 is skipped as ``skipped_budget``, like a USD overrun.
 
 **The default ceiling** (``auto``) is Phase 0's formula (spec §8.6; the Phase 0
-findings, #650 §3), pending Jordan's OK, so every constant is a module constant::
+findings, #650 §3), approved by Jordan on 2026-11-16. Every constant is a module constant::
 
     ceiling = max(FLOOR, H * sum over this runtime's slots s of T(kind of s))
 
