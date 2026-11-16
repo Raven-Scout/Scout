@@ -87,6 +87,8 @@ final class VaultUndoController: ObservableObject {
     }
 
     private static let log = Logger(subsystem: "com.scout.Scout", category: "VaultUndo")
+    /// The most recent undo or redo in flight; tests await it.
+    private(set) var lastRun: Task<Void, Never>?
     private weak var latestRegisteredToken: Token?
     /// Recent tokens, held strongly so their actions stay undoable whether or
     /// not the undo manager retains its targets. Bounded: each token carries
@@ -122,7 +124,7 @@ final class VaultUndoController: ObservableObject {
             manager.undo()
         } else {
             manager?.removeAllActions(withTarget: token)
-            Task { await run(token, .undo, manager: nil) }
+            lastRun = Task { await run(token, .undo, manager: nil) }
         }
     }
 
@@ -135,7 +137,7 @@ final class VaultUndoController: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, let manager else { return }
                 self.registerRedo(token, manager)
-                Task { await self.run(token, .undo, manager: manager) }
+                self.lastRun = Task { await self.run(token, .undo, manager: manager) }
             }
         }
         manager.setActionName(token.step.actionName)
@@ -146,7 +148,7 @@ final class VaultUndoController: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, let manager else { return }
                 self.registerUndo(token, manager)
-                Task { await self.run(token, .redo, manager: manager) }
+                self.lastRun = Task { await self.run(token, .redo, manager: manager) }
             }
         }
         manager.setActionName(token.step.actionName)
