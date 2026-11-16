@@ -506,6 +506,37 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
 
 
+def test_finalize_attaches_the_install_manifest(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    assert r.run("finalize", "v0.15.0").returncode == 0
+    assert "scout-release.json" in next(c for c in r.calls() if c.startswith("gh release create"))
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
+
+
+def test_an_rc_manifest_names_the_rc_tag_and_the_version_it_carries(tmp_path):
+    r = make_repo(tmp_path)
+    assert r.run("prepare", "0.15.0").returncode == 0
+    assert r.run("rc", "v0.15.0-rc.1").returncode == 0
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0-rc.1"}
+    # A prerelease never becomes /releases/latest, so an rc's manifest can't answer an installer.
+    create = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "scout-release.json" in create
+    assert "--prerelease" in create and "--latest=false" in create
+
+
+def test_a_dry_run_builds_the_install_manifest_and_publishes_nothing(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert not [c for c in r.calls() if c.startswith("gh release create")]
+    built = r.root / ".release" / "v0.15.0" / "apps" / "macos" / "build" / "release" / "scout-release.json"
+    assert json.loads(built.read_text()) == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
+
+
 def test_refuses_before_the_release_pr_merged(tmp_path):
     r = make_repo(tmp_path)
     done = r.run("finalize", "v0.15.0")

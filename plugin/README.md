@@ -87,6 +87,8 @@ curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh |
 
 `scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it, and keeps the engine the vault already records as its manager (a dev checkout, say).
 
+The installer also downloads one small public file from GitHub Releases to tell you if a newer Scout is out; GitHub's download count of that file is how the project counts installs ([what that means for your privacy](../PRIVACY.md#the-installers-version-check)). To skip it, end the one-liner with `| SCOUT_NO_RELEASE_CHECK=1 bash`.
+
 ### 2. Add the Mac app later (optional)
 
 Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.

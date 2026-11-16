@@ -7,6 +7,9 @@
 # Flags: --check  (verify preconditions only; make no changes)
 # Anything else goes to `scoutctl setup`, e.g. headless:
 #   curl -fsSL …/install.sh | bash -s -- --yes --name "Alex" --email alex@example.com
+# Environment: SCOUT_NO_RELEASE_CHECK=1 (or DO_NOT_TRACK=1) skips the release check below, which
+# downloads one public file from GitHub Releases. Set it on bash, not curl:
+#   curl -fsSL …/install.sh | SCOUT_NO_RELEASE_CHECK=1 bash
 set -euo pipefail
 
 MARKETPLACE="Raven-Scout/Scout"
@@ -172,6 +175,61 @@ bash "$ROOT/scripts/install-venv.sh" \
 "$ROOT/.venv/bin/scoutctl" --help >/dev/null 2>&1 \
   || fail "engine installed but scoutctl does not run. Retry with:
        bash \"$ROOT/scripts/install-venv.sh\""
+
+# --- release check ---
+# Download the latest release's scout-release.json and compare its version with the plugin just
+# installed, so a marketplace that hasn't caught up shows here rather than as a silently old Scout.
+# GitHub counts downloads of each release file; that public total is how the project counts
+# installer runs (PRIVACY.md, "The installer's version check"). It is a plain GET of a public
+# file: -q ignores ~/.curlrc, so no user agent, header, cookie or retry setting from it rides
+# along, and there is no query string. Proxies set in the environment (https_proxy, …) still
+# apply. Best effort: one try, 5 seconds at most, and a failure never stops the install.
+# SCOUT_NO_RELEASE_CHECK=1 or DO_NOT_TRACK=1 skips it.
+release_check() {
+  local url="${SCOUT_RELEASE_MANIFEST_URL:-https://github.com/$MARKETPLACE/releases/latest/download/scout-release.json}"
+  local manifest verdict installed latest
+  [ -z "${SCOUT_NO_RELEASE_CHECK:-}" ] || return 0
+  case "${DO_NOT_TRACK:-}" in 1 | true | yes) return 0 ;; esac
+  have curl || return 0
+  manifest="$(curl -q -fsSL --proto-redir =https --connect-timeout 3 --max-time 5 --max-filesize 65536 \
+    "$url" 2>/dev/null)" || {
+    echo "note: could not reach GitHub Releases to check for a newer Scout; continuing."
+    return 0
+  }
+  # Prints "<current|behind|ahead> <installed> <latest>", or nothing when either side is unreadable.
+  # Only plain version strings get through, so nothing from the network reaches the terminal as is.
+  verdict="$(printf '%s' "$manifest" | uv run --no-project --quiet python -I -c '
+import json, re, sys
+try:
+    latest = json.load(sys.stdin).get("version")
+    installed = json.load(open(sys.argv[1], encoding="utf-8")).get("version")
+except Exception:
+    sys.exit(0)
+release = re.compile(r"(\d{1,6})\.(\d{1,6})\.(\d{1,6})")
+plugin = re.compile(r"(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-[0-9A-Za-z.]{1,40})?")
+if not (isinstance(latest, str) and release.fullmatch(latest)):
+    sys.exit(0)
+if not (isinstance(installed, str) and plugin.fullmatch(installed)):
+    sys.exit(0)
+have = tuple(map(int, plugin.fullmatch(installed).groups()))
+want = tuple(map(int, release.fullmatch(latest).groups()))
+print("behind" if want > have else "ahead" if have > want else "current", installed, latest)
+' "$ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)"
+  read -r verdict installed latest <<<"$verdict" || true
+  case "$verdict" in
+    current) echo "Scout $installed is the latest release." ;;
+    behind)
+      cat >&2 <<EOF
+warning: this installed Scout $installed, but the latest release is $latest.
+         The plugin marketplace can take a few minutes to catch up with a new release.
+         Setup continues with $installed. To move to $latest later, run /scout-update
+         in Claude Code, or re-run this installer.
+EOF
+      ;;
+    # ahead: a release candidate or a local checkout newer than the latest release. Nothing to say.
+  esac
+}
+release_check
 
 echo
 echo "✅ Scout plugin + engine installed."

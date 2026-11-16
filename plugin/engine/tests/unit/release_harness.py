@@ -62,6 +62,7 @@ _STUB = dedent(
           "pr create") echo "https://github.com/Raven-Scout/Scout/pull/999" ;;
           "release create")
             [ -n "${FAKE_GH_EXIT:-}" ] && exit "$FAKE_GH_EXIT"
+            for a in "$@"; do case "$a" in *scout-release.json) cp "$a" "$FAKE_LOG.manifest" ;; esac; done
             prerelease=""
             for a in "$@"; do [ "$a" = "--prerelease" ] && prerelease=1; done
             [ -n "$prerelease" ] || echo "$3" > "$FAKE_LOG.latest" ;;

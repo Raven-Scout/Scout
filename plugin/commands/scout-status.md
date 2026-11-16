@@ -213,6 +213,23 @@ Of the output, the first line is the JSON report and the last line is `exit=N`. 
 
 The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each finding has `id`, `severity` (`yellow`, `red` or `note`), `since`, `summary` and `fix`. Ignore `note` findings everywhere: they are informational and never change the headline. Each slot has `key`, `type`, `last_fire` and `last_outcome` (`{outcome, finished_at, failure_class}` or null). Keep the whole report for Step 4.
 
+### 3h. Brain-file edits (applied rules)
+
+Dreaming runs may edit Scout's own instructions (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
+
+Read git:
+
+```bash
+git -C "SCOUT_DIR" log --since="7 days ago" --no-merges --date=format:'%Y-%m-%d %H:%M' \
+    --pretty=format:'@@%h|%ad|%s' --numstat -- SKILL.md DREAMING.md RESEARCH.md
+```
+
+Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines.
+
+Split the commits by subject. A **self-edit** is a commit whose subject starts with a run prefix, optionally after a slot name and a hyphen: `dreaming [`, `research [`, `briefing [`, `consolidation [` or `work [` (so `dreaming [21:0x]: …` and `morning-briefing [08:0x]: …` both count). Every other commit that touched the three files is **other**: plugin upgrades, hand-made grafts, `bootstrap resolve` follow-ups and the owner's own edits. Keep both lists; only the self-edits get rows.
+
+No commits in the window means no brain-file edits in 7 days. A git error means the history is unavailable: say so rather than showing an empty table.
+
 ---
 
 ## Step 4: Compose and Display the Dashboard
@@ -432,6 +449,23 @@ A `conflict` means the user is running their own version of a plugin-owned file 
 
 ---
 
+### Brain-File Edits (last 7 days)
+
+From 3h. One row per self-edit, newest first, at most 10 (say how many were left out). Every row shows the subject, cut to its first clause:
+
+```
+  2026-10-25 18:44  a1b2c3d  DREAMING.md +4/-0  dreaming [18:4x]: Step 2a-shrink cuts tables with their header
+  2026-10-25 06:48  e4f5a6b  SKILL.md +24/-9 · DREAMING.md +17/-4 · RESEARCH.md +14/-1  dreaming [06:4x]: wrap goes to Telegram
+```
+
+Then, when the other list is not empty, one line: `  +N other brain-file commits (upgrades or by hand).`
+
+When at least one self-edit is listed, end with: `These edits may not be in the plugin yet: "$SCOUTCTL" phases backport lists what is owed (read-only).` Resolve `$SCOUTCTL` as in 3f.
+
+If there were no self-edits and no other commits: `  No brain-file edits in the last 7 days.` If there were only other commits, show just the `+N other` line.
+
+---
+
 ### Knowledge Graph Health
 
 Run the ontology parser to check the knowledge graph:
@@ -484,4 +518,4 @@ End the dashboard with a one-line summary:
 Scout is healthy. / Scout needs attention — Z KB files stale, X proposals pending.
 ```
 
-Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes.
+Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes. Brain-file edits alone never make it "needs attention": they are a record, not a fault.
