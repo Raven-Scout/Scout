@@ -21,6 +21,8 @@ struct SidebarView: View {
     /// True when the engine needs the user's attention (spec §5) — draws a
     /// small warning dot on the Settings row.
     var settingsAttention: Bool = false
+    /// True when run health is red — draws the warning dot on the Health row.
+    var healthAttention: Bool = false
     /// True while the engine gates the tabs (spec §5): every row but Settings
     /// has nothing to show, so it renders dimmed — still clickable (it lands
     /// on the engine gate). Settings stays live and undimmed.
@@ -30,6 +32,7 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 4) {
             groupLabel("Scout")
             row(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
+            row(.health,        label: "Health",         system: "heart.text.square", attention: healthAttention)
             row(.sessions,      label: "Sessions",       system: "rectangle.stack.badge.person.crop", badge: sessionsBadge)
             row(.actionItems,   label: "Action Items",   system: "checklist")
             row(.schedules,     label: "Schedules",      system: "calendar.badge.clock")

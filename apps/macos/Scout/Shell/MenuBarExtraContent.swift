@@ -267,6 +267,8 @@ struct MenuBarExtraContent: View {
             return ("Last run skipped", "Budget limit reached", DS.Status.warn)
         case .skippedConcurrency:
             return ("Last run skipped", "Another session was running", DS.Status.warn)
+        case .skippedGates, .skippedSandbox, .skippedRuntime, .skippedLease, .skippedRedundant:
+            return ("Last run skipped", RunOutcomeDisplay.status(latest.status), DS.Status.warn)
         case .scheduled, .success:
             return ("Ready", "Last: \(latest.displayName) · \(latest.status.rawValue)", DS.Status.ok)
         }

@@ -65,6 +65,9 @@ final class AppState: ObservableObject {
     // Engine discovery (spec §4.4)
     let engineLayout: EngineLayout
     let engineHealth: EngineHealthService
+    /// The run ledger (`scoutctl runs --json`): the Health page, and the
+    /// Control Center's run statuses for runs the ledger records.
+    let runLedgerService: RunLedgerService
 
     // Engine install + upgrade (spec §5)
     /// The engine this build ships; nil only when the resource is missing
@@ -160,6 +163,15 @@ final class AppState: ObservableObject {
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             initialState: configuration.initialEngineState
+        )
+
+        let runLedger = RunLedgerService(
+            scoutctl: scoutctlResolved.executable,
+            argumentsPrefix: scoutctlResolved.argsPrefix,
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
+            fileEvents: events
         )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
@@ -335,6 +347,7 @@ final class AppState: ObservableObject {
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
+        self.runLedgerService = runLedger
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
         self.resolveClaude = configuration.resolveClaude
@@ -364,6 +377,20 @@ final class AppState: ObservableObject {
         // Items check follow the engine state. Every refresh publishes (no
         // de-duplication): the switch flag reads the disk, which can change
         // while the state value doesn't.
+        // The Health row's attention dot follows run health.
+        runLedger.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // Runs the ledger records take its status (a safety skip is a skip,
+        // not a run that hung); the rest keep their log-derived status.
+        runLedger.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak logs] state in
+                guard case .loaded(let ledger) = state else { return }
+                logs?.applyLedger(ledger.entriesByLog)
+            }
+            .store(in: &cancellables)
         engineHealth.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
@@ -410,7 +437,9 @@ final class AppState: ObservableObject {
             _ = try? await tokens.loadInitial()
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
+            await runLedger.refresh()
             await MainActor.run {
+                runLedger.start()
                 sched.start()
                 power.start()
                 // Load proposals at launch so the sidebar badge is populated

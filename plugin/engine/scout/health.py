@@ -152,6 +152,16 @@ class OutcomeRow:
     sandbox_source: str | None = None
     # The post-run integrity check: clean | restored | unrestored | error | unchecked; None for older runners.
     integrity: str | None = None
+    # Wall-clock length, and length in awake time (time the host slept doesn't count); None for older runners.
+    duration_s: int | None = None
+    awake_s: int | None = None
+    # The agent runtime that ran the session (spec 2026-11-13 §8.2), e.g. "claude-code".
+    agent_runtime: str | None = None
+    # The model the runner passed to the agent (scoutctl model resolve).
+    model: str | None = None
+    # Which runner wrote the row (scout | dreaming | research) and what started it (schedule | heartbeat | manual).
+    runner: str | None = None
+    trigger: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,7 +290,29 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
         sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
         integrity=str(obj["integrity"]) if isinstance(obj.get("integrity"), str) else None,
+        duration_s=_opt_nonneg(obj.get("duration_s")),
+        awake_s=_opt_nonneg(obj.get("awake_s")),
+        agent_runtime=_opt_token(obj.get("agent_runtime"), _RUNTIME_RE),
+        model=_opt_token(obj.get("model"), _MODEL_RE),
+        runner=obj["runner"] if obj.get("runner") in _RUNNERS else None,
+        trigger=obj["trigger"] if obj.get("trigger") in _TRIGGERS else None,
     )
+
+
+# The same shapes run-outcome.sh writes, so a hand-edited row can't carry free text into a client.
+_RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
+_RUNNERS = frozenset({"scout", "dreaming", "research"})
+_TRIGGERS = frozenset({"schedule", "heartbeat", "manual"})
+
+
+def _opt_nonneg(value: object) -> int | None:
+    n = _opt_int(value) if not isinstance(value, bool) else None
+    return n if n is not None and n >= 0 else None
+
+
+def _opt_token(value: object, pattern: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
 
 
 def read_outcomes(vault: Path) -> list[OutcomeRow]:

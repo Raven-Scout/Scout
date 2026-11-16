@@ -39,6 +39,15 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case skippedBudget
     case skippedConcurrency
     case rateLimited
+    /// Skips the run ledger names (`run-outcomes.jsonl` → `scoutctl runs --json`):
+    /// the privacy-check probe didn't pass, the write sandbox couldn't be set up,
+    /// the agent runtime was refused, another writer held the repository lease,
+    /// or an earlier run already covered the slot.
+    case skippedGates
+    case skippedSandbox
+    case skippedRuntime
+    case skippedLease
+    case skippedRedundant
 }
 
 extension RunType {

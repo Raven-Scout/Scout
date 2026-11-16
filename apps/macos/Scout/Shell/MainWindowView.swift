@@ -24,6 +24,7 @@ struct MainWindowView: View {
                         researchBadge: appState.researchDocumentService.activeCount,
                         settingsBadge: updates.availableCount,
                         settingsAttention: appState.engineHealth.needsAttention,
+                        healthAttention: appState.runLedgerService.needsAttention,
                         tabsGated: appState.engineHealth.state.gatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
@@ -83,6 +84,11 @@ struct MainWindowView: View {
         switch selection {
         case .controlCenter:
             ControlCenterView()
+        case .health:
+            HealthView(openSettings: { appState.requestedSidebar = .settings },
+                       logsDirectory: appState.scoutDirectory.appendingPathComponent(".scout-logs"))
+                .environmentObject(appState.runLedgerService)
+                .environmentObject(appState.engineHealth)
         case .sessions:
             SessionsView()
                 .environmentObject(appState.sessionIndexService)
@@ -125,12 +131,13 @@ struct MainWindowView: View {
 /// `nonisolated`: a plain value the pure gate/dimming rules
 /// (`showsOnboarding`, `SidebarView.isDimmed`) compare off the main actor.
 nonisolated enum SidebarItem: Hashable, CaseIterable {
-    case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
+    case controlCenter, health, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
         switch self {
         case .controlCenter: return "control"
+        case .health:        return "health"
         case .sessions:      return "sessions"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"

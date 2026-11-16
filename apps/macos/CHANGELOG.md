@@ -6,6 +6,17 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **A Health page that reads the run ledger** (UI audit card C8; `Scout/Health/*`, `Shell/MainWindowView.swift`, `Shell/SidebarView.swift`, `Shell/AppState.swift`). A new sidebar row, Health, gets a warning dot when run health is red. The page reads `scoutctl runs --json` at launch, whenever `.scout-logs/run-outcomes.jsonl` changes, and every 5 minutes.
+  - **Findings.** Every run-health finding is grouped as "Needs fixing" or "Worth a look". Each shows the run's own error line, "How to fix" and Show log. Notes and the doctor's informational lines go under a collapsed "Everything else".
+  - **Recent runs.** The last two weeks of runs, in plain words: "Skipped: privacy checks didn't load", "Stopped: took too long", "Paused: usage limit" (with when it resets). Each run shows its length (awake time), agent and model. A line is added when a run went without write protection or Scout had to put a protected file back. "Needs attention" hides routine runs and skips.
+  - **Older engines.** An engine without `scoutctl runs` gets an "update the engine" notice instead of an error.
+  - All the wording lives in `Health/RunOutcomeDisplay.swift`, copied from the plain-language pass (C4) so that card can absorb it.
+
+### Changed
+- **The Control Center takes run statuses from the run ledger.** A run the ledger records shows the ledger's outcome, matched by its log file name. Safety skips (privacy checks, write protection, agent runtime, writer lease) and redundant skips now show as skips instead of "running" and then "orphaned". `RunStatus` gains `skippedGates`, `skippedSandbox`, `skippedRuntime`, `skippedLease` and `skippedRedundant`. Runs with no ledger row keep their log-derived status: older engines, or a run still going.
+- **`DoctorReport` decodes the doctor's `notes`.**
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

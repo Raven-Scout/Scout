@@ -88,6 +88,18 @@ first.** The two have different languages, test runners, and release flows.
   then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
   update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
   — all in one commit. `connector-alerts.log` is for people; neither side parses it.
+- **The run ledger has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/run-ledger.json`, the output of
+  `scoutctl runs --json` (`scout/run_ledger.py`; recent `run-outcomes.jsonl`
+  rows plus the run-health report, versioned by `schema_version`), which the
+  app's Health panel reads (`RunLedger.parse`). Generate it the same way, from
+  `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_ledger_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/run-ledger.json` and update the pins in
+  `apps/macos/ScoutTests/Health/RunLedgerContractTests.swift` — all in one
+  commit. A new ledger field or outcome goes into the test's vault builder, not
+  the JSON.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

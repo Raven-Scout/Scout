@@ -101,6 +101,8 @@ struct RunRow: View {
         case .rateLimited:        return "hourglass"
         case .skippedBudget:      return "pause.circle"
         case .skippedConcurrency: return "lock.circle"
+        case .skippedGates, .skippedSandbox, .skippedRuntime: return "shield.slash"
+        case .skippedLease, .skippedRedundant: return "forward.circle"
         case .scheduled:          return "clock"
         }
     }
