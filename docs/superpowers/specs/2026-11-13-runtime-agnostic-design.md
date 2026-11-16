@@ -1049,21 +1049,28 @@ excluded from non-Anthropic runs.
   - The doctor warns when a slot's 90th-percentile Claude run length is
     longer than its timeout.
   - The ceiling's default is derived from what the owner's Claude Code runs
-    typically use (Phase 0 findings §3); the owner can change it:
+    typically use (Phase 0 findings §3); the owner can change it.
+    **Approved by Jordan on 2026-11-16** as built in #649, behind
+    `max_tokens_per_day: auto`:
 
     ```
-    ceiling(runtime) = max(10M, 2 × Σ over the runtime's slots of runs_per_day(slot) × T(slot))
-    T(slot) = p90 USD per run for that slot kind, last 14 days of priced Claude rows × 1.0M tokens/USD
-              → after 7 days of the runtime's own rows: p90 of its own total_tokens per run
+    ceiling(runtime) = max(10M, 2 × Σ over the runtime's slots of T(kind of slot))
+    T(kind) = p90 USD per run of that slot kind, last 14 days of Claude's measured runs × 1.0M tokens/USD
+              → after 7 days of the runtime's own rows: p90 of its own tokens per run
     ```
 
+    - Each schedule slot fires once a day (`fires_at_local`), so a slot
+      counts one run a day. That is Phase 0's `runs_per_day(slot)` term.
+    - A slot kind with no measured runs uses the p90 over all kinds.
     - The headroom of 2 lets one runaway run through and stops the second.
     - 1.0M tokens per USD is an estimate (±25%) at Opus list prices. It only
       matters for the first week, before the runtime has its own history.
-    - An owner with no Claude history gets the 10M floor.
-    - With Jordan's ledgers, one research slot at 2 runs a day gets about
-      17M tokens a day, and one dreaming slot at 3 runs a day about 36M.
-    - The ceiling counts each CLI's `total_tokens`.
+    - An owner with no Claude history gets the 10M floor. Any error reading
+      the schedule or the tracker also gives the floor, so the ceiling stays
+      on.
+    - With Jordan's ledgers, one research slot gets about 10M tokens a day
+      (the floor; the formula gives 8.4M), and one dreaming slot about 12M.
+    - The ceiling counts each CLI's own token total.
   - A run that would start past the ceiling is skipped as
     `skipped_budget`, like a USD overrun today.
   - On a subscription the danger is a runaway run using up the plan's 5-hour

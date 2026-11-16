@@ -348,7 +348,10 @@ Done when:
 merged:
 - #647: Tasks 1.1–1.3;
 - #649: Task 1.4's engine side, Task 1.7, and the Q6 timeout and ceiling
-  plumbing;
+  plumbing. The default ceiling (`max_tokens_per_day: auto`) is Phase 0's
+  formula, which Jordan approved as built on 2026-11-16. Still to add: the
+  90-minute default for a research slot, and the doctor warning when a
+  slot's p90 Claude run length is above its timeout (spec §8.6);
 - #651: Task 1.4's runner side and Task 1.5.
 
 Tasks 1.6, 1.8 and 1.9 haven't started. Two calls made during the build are
