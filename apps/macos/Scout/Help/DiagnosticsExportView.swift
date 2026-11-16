@@ -14,9 +14,10 @@ struct DiagnosticsExportView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Export Diagnostics").font(DS.sans(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
-                Text("Check what's below, then save it and attach the file to a bug report. Nothing is sent anywhere. It never includes note text, note or folder names, secrets, tokens, transcripts or run logs.")
+                Text("Check what's below, then save it and attach the file to a bug report. Nothing is sent anywhere. Scout leaves out note text, note and folder names, secrets, tokens, transcripts and run logs.")
                     .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
+                DiagnosticsReviewNotice()
             }
             .padding(20)
             Divider()
@@ -73,6 +74,8 @@ struct DiagnosticsExportView: View {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([savedTo]) }
             } else if let saveError {
                 Text(saveError).font(DS.sans(12)).foregroundStyle(DS.Status.err).lineLimit(2)
+            } else {
+                Text(DiagnosticsReviewNotice.short).font(DS.sans(12)).foregroundStyle(DS.Status.warn)
             }
             Spacer()
             Button("Collect Again") { Task { await collect() } }.disabled(bundle == nil)
@@ -134,5 +137,26 @@ extension AppState {
             now: now
         )
         return await collector.collect()
+    }
+}
+
+/// The reminder that a scrub can't catch everything (app audit C11 review): shown above the
+/// preview, with a short form beside Save. Same sentence as the plugin README's FAQ.
+struct DiagnosticsReviewNotice: View {
+    static let text = "Scout hid the names and paths it could recognise. Read it through before attaching it to a public issue: it may still contain something only you'd recognise."
+    static let short = "Read it through before you attach it."
+
+    var body: some View {
+        Label {
+            Text(Self.text)
+                .font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "eye").foregroundStyle(DS.Status.warn)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Accent.wash, in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 @testable import Scout
 
 /// App audit C11: the Help menu's links and actions, and what Run Doctor… shows.
+@MainActor
 @Suite("Help menu")
 struct HelpMenuTests {
     @Test func everyLink_isTheProjectsOwnHTTPSURL() {
@@ -34,6 +35,12 @@ struct HelpMenuTests {
         #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(1)), "taken once")
         HelpActions.recordEngineSettingsRequest(at: now)
         #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(60)), "a later ⌘, opens at the top")
+    }
+
+    @Test func reviewNotice_rendersAndIsInTheSavedFile() {
+        ViewHost.render(DiagnosticsReviewNotice(), size: CGSize(width: 700, height: 120))
+        #expect(DiagnosticsReviewNotice.text.contains("Read it through before attaching it to a public issue"))
+        #expect(DiagnosticsBundle.header.contains("Read it through before attaching it to a public issue"))
     }
 
     @Test func windowIDs_areDistinct() {

@@ -26,7 +26,9 @@ nonisolated struct DiagnosticsBundle: Equatable, Sendable {
     static let header = """
     Scout diagnostics
     Attach this file to a bug report. It holds versions, health checks, recent run outcomes and the app's own log.
-    It holds none of your notes: no note text, note or folder names, secrets, tokens, transcripts or run logs.
+    Scout leaves out note text, note and folder names, secrets, tokens, transcripts and run logs, and hid the names
+    and paths it could recognise. Read it through before attaching it to a public issue: it may still contain
+    something only you'd recognise.
     """
 
     var text: String {
