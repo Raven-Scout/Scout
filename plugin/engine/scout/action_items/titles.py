@@ -10,13 +10,19 @@ paragraphs per bullet.
 
 What is checked, in today's file:
 
-- every open top-level task whose title is **new or changed** since the newest
-  earlier daily file: it must be at most :data:`TITLE_MAX` characters;
-- the :data:`LEGACY_PER_RUN` longest **carried** titles over the limit in
-  🔴 Urgent, so the list people read first converges a few at a time. Other
-  carried titles are left alone: rewording an item with no news restarts its
-  60-day stale clock (*Stale Items Auto-Archive*), so they get shortened when a
-  run next touches them for a real reason;
+- every open top-level task whose title is **new or changed**: it must be at
+  most :data:`TITLE_MAX` characters. A title is *carried* when it matches the
+  same tag's title in the most recent earlier daily file, or in today's file as
+  last committed (so a title the owner edited and committed today isn't the
+  run's to answer for);
+- the :data:`LEGACY_PER_RUN` longest carried titles over the limit in 🔴
+  Urgent, so the list people read first converges a few at a time. They are
+  picked from the *baseline* (today's file as last committed, else the most
+  recent earlier file), never from the file being checked: once a run shortens
+  them, re-running the check must not name the next few, or one run would end
+  up rewriting every long 🔴 title. Every rewording restarts that item's
+  60-day stale clock (*Stale Items Auto-Archive*), which is why the rest wait
+  until a run touches the item for a real reason;
 - ``## 💡 Today's Focus``: at most :data:`FOCUS_MAX_BULLETS` bullets, each at
   most :data:`FOCUS_MAX_CHARS` characters.
 
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,25 +117,39 @@ def _focus_bullets(lines: Sequence[str]) -> list[str]:
     ]
 
 
-def judge(lines: Sequence[str], *, earlier: Sequence[str] = ()) -> TitleCheck:
+def judge(lines: Sequence[str], *, earlier: Sequence[str] = (), committed: Sequence[str] = ()) -> TitleCheck:
     """Check today's ``lines`` against the title and focus limits.
 
-    ``earlier`` is the newest earlier daily file: a title it already had under
-    the same tag is *carried*, anything else is new or changed.
+    ``earlier`` is the most recent earlier daily file and ``committed`` today's
+    file as last committed (empty when it has never been committed). A title
+    either one already had under the same tag is *carried*; anything else is
+    new or changed. The 🔴 quota comes from ``committed`` when there is one,
+    else from ``earlier``, so it can't move while a run re-checks.
     """
-    before = {tag: title for tag, (_section, title) in _titles(earlier).items()}
+    before = _titles(earlier)
+    at_commit = _titles(committed)
+    base = at_commit if committed else before
+    # The quota: the longest over-limit 🔴 titles in the baseline, by their baseline length.
+    quota = {
+        tag
+        for tag, _title in sorted(
+            ((tag, title) for tag, (section, title) in base.items() if section == _RED and len(title) > TITLE_MAX),
+            key=lambda t: (-len(t[1]), t[0]),
+        )[:LEGACY_PER_RUN]
+    }
     findings: list[TitleFinding] = []
-    legacy_red: list[TitleFinding] = []
+    named_red: list[TitleFinding] = []
     long_carried = 0
     current = _titles(lines)
-    for tag, (section, title) in current.items():
+    for tag, (_section, title) in current.items():
         n = len(title)
         if n <= TITLE_MAX:
             continue
-        if before.get(tag) != title:
+        carried = title in (before.get(tag, ("", ""))[1], at_commit.get(tag, ("", ""))[1])
+        if not carried:
             findings.append(TitleFinding(f"[#{tag}]", f"title is {n} characters, over {TITLE_MAX}", tag=tag, chars=n))
-        elif section == _RED:
-            legacy_red.append(
+        elif tag in quota:
+            named_red.append(
                 TitleFinding(
                     f"[#{tag}]",
                     f"carried 🔴 title is {n} characters, over {TITLE_MAX}",
@@ -139,9 +160,8 @@ def judge(lines: Sequence[str], *, earlier: Sequence[str] = ()) -> TitleCheck:
             )
         else:
             long_carried += 1
-    legacy_red.sort(key=lambda f: -(f.chars or 0))
-    findings += legacy_red[:LEGACY_PER_RUN]
-    long_carried += len(legacy_red[LEGACY_PER_RUN:])
+    named_red.sort(key=lambda f: (-(f.chars or 0), f.tag or ""))
+    findings += named_red
 
     bullets = _focus_bullets(lines)
     if len(bullets) > FOCUS_MAX_BULLETS:
@@ -168,8 +188,28 @@ def _earlier_lines(data_dir: Path, day: _dt.date) -> list[str]:
         return []
 
 
+def _committed_lines(daily: Path) -> list[str]:
+    """Today's file as last committed, or nothing (not committed yet, no git, not a repo)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(daily.parent), "show", f"HEAD:./{daily.name}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return unfenced(out.stdout.splitlines()) if out.returncode == 0 else []
+
+
 def check_titles(*, data_dir: Path | None = None, today: str) -> TitleCheck:
     """Check today's file. Raises ``PrefetchCheckError`` when it doesn't exist yet."""
     lines = daily_lines(data_dir, today)
     day = _dt.date.fromisoformat(today)
-    return judge(lines, earlier=_earlier_lines(paths.data_dir(data_dir), day))
+    daily = paths.action_items_daily_path(data_dir, date=day)
+    return judge(
+        lines,
+        earlier=_earlier_lines(paths.data_dir(data_dir), day),
+        committed=_committed_lines(daily),
+    )

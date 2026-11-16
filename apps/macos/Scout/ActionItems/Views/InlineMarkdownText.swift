@@ -232,7 +232,10 @@ struct InlineMarkdownText: View {
         let matches = wikilinkRe.matches(in: s, range: whole).reversed()
         for m in matches where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
             let target = ns.substring(with: m.range(at: 1))
-            let label  = m.range(at: 2).location == NSNotFound ? target : ns.substring(with: m.range(at: 2))
+            // An alias written inside a table cell escapes its own pipes too (`a\|b`).
+            let label  = m.range(at: 2).location == NSNotFound
+                ? target
+                : ns.substring(with: m.range(at: 2)).replacingOccurrences(of: "\\|", with: "|")
             let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? target
             let replacement = "[\(label)](scout-wiki://\(encoded))"
             result = (result as NSString).replacingCharacters(in: m.range, with: replacement)

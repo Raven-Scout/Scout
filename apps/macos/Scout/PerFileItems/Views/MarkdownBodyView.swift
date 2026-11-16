@@ -45,7 +45,7 @@ struct MarkdownBodyView: View {
             ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: task.checked ? "checkmark.square.fill" : "square")
-                        .font(.system(size: 11))
+                        .font(DS.sans(11))
                         .foregroundStyle(task.checked ? DS.Status.ok : DS.Ink.p3)
                         .accessibilityHidden(true)
                     InlineMarkdownText(task.text)

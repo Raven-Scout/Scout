@@ -24,7 +24,7 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
     private static let headingRe = try! NSRegularExpression(pattern: #"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$"#)
     /// `- [ ] text`, `* [x] text`, `1. [X] text`, at any indent.
     private static let taskRe = try! NSRegularExpression(
-        pattern: #"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]+(.*)$"#
+        pattern: #"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]+(\S.*)$"#
     )
 
     static func blocks(from rawBody: String) -> [MarkdownBodyBlock] {
@@ -42,7 +42,7 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
             proseBuffer.removeAll(keepingCapacity: true)
         }
         func flushTasks() {
-            if !taskBuffer.isEmpty { blocks.append(.tasks(taskBuffer)) }
+            if !taskBuffer.isEmpty { blocks.append(.tasks(nested(taskBuffer))) }
             taskBuffer.removeAll(keepingCapacity: true)
         }
 
@@ -99,10 +99,19 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         guard let m = taskRe.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else {
             return nil
         }
-        // Two spaces or one tab per level, as Obsidian indents nested lists.
-        let indent = ns.substring(with: m.range(at: 1)).reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
+        // `depth` holds the indent width (a tab counts 4) until `nested` ranks it.
+        let indent = ns.substring(with: m.range(at: 1)).reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
         let text = ns.substring(with: m.range(at: 3)).trimmingCharacters(in: .whitespaces)
-        return MarkdownTask(checked: ns.substring(with: m.range(at: 2)) != " ", text: text, depth: indent / 2)
+        return MarkdownTask(checked: ns.substring(with: m.range(at: 2)) != " ", text: text, depth: indent)
+    }
+
+    /// Turn indent widths into nesting levels by rank within the list, so a list
+    /// indented by 2 spaces, 4 spaces or tabs nests one level per step either way.
+    private static func nested(_ tasks: [MarkdownTask]) -> [MarkdownTask] {
+        let widths = Array(Set(tasks.map(\.depth))).sorted()
+        return tasks.map { t in
+            MarkdownTask(checked: t.checked, text: t.text, depth: widths.firstIndex(of: t.depth) ?? 0)
+        }
     }
 
     private static func paragraphs(in text: String) -> [String] {

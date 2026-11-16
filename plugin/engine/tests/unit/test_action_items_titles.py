@@ -122,10 +122,48 @@ def test_carried_red_titles_are_named_longest_first_and_capped_per_run() -> None
     assert result.long_carried == 2
 
 
-def test_a_task_moved_into_red_with_its_title_unchanged_counts_as_carried() -> None:
+def test_the_quota_comes_from_the_baseline_section_not_todays() -> None:
+    # Moved into 🔴 this run with its title unchanged: carried, but not in the baseline's 🔴 quota.
     earlier = _lines(yellow=_task("QMIG", LONG))
     result = judge(_lines(red=_task("QMIG", LONG)), earlier=earlier)
-    assert [f.carried for f in result.findings] == [True]
+    assert result.passed and result.long_carried == 1
+
+
+def _reds(n: int, shortened: int = 0) -> str:
+    """n long 🔴 tasks, R0 shortest … R(n-1) longest; the `shortened` longest have short titles."""
+    return "".join(_task(f"R{i}", SHORT if i >= n - shortened else LONG + " " + "x" * i) for i in range(n))
+
+
+def test_re_running_after_shortening_the_named_titles_passes() -> None:
+    # The finding that motivated this: the quota re-picked from today's file named 5, then 5 more,
+    # then 2, so one run rewrote every long 🔴 title (and restarted every one's stale clock).
+    earlier = _lines(red=_reds(12))
+    first = judge(_lines(red=_reds(12)), earlier=earlier)
+    assert [f.tag for f in first.findings] == ["R11", "R10", "R9", "R8", "R7"]
+    again = judge(_lines(red=_reds(12, shortened=LEGACY_PER_RUN)), earlier=earlier)
+    assert again.passed and again.long_carried == 12 - LEGACY_PER_RUN
+
+
+def test_a_named_title_shortened_but_still_long_is_named_as_changed() -> None:
+    earlier = _lines(red=_task("QMIG", LONG + " and more"))
+    result = judge(_lines(red=_task("QMIG", LONG)), earlier=earlier)
+    assert [(f.tag, f.carried) for f in result.findings] == [("QMIG", False)]
+
+
+def test_a_later_run_the_same_day_takes_the_next_titles_from_the_committed_file() -> None:
+    yesterday = _lines(red=_reds(7))
+    morning = _lines(red=_reds(7, shortened=LEGACY_PER_RUN))  # committed by the morning run
+    result = judge(morning, earlier=yesterday, committed=morning)
+    assert [f.tag for f in result.findings] == ["R1", "R0"]
+    assert result.long_carried == 0
+
+
+def test_a_title_edited_and_committed_today_counts_as_carried() -> None:
+    edited = LONG + " (as the owner wrote it)"
+    yesterday = _lines(yellow=_task("QMIG", LONG))
+    committed = _lines(yellow=_task("QMIG", edited))
+    result = judge(_lines(yellow=_task("QMIG", edited)), earlier=yesterday, committed=committed)
+    assert result.passed and result.long_carried == 1
 
 
 def test_nested_and_closed_rows_are_not_checked() -> None:
@@ -183,6 +221,25 @@ def test_the_newest_earlier_file_is_the_baseline(vault: Path) -> None:
 
 def test_without_an_earlier_file_every_title_is_new(vault: Path) -> None:
     _file(vault, TODAY, yellow=_task("QMIG", LONG))
+    assert [f.tag for f in check_titles(today=TODAY.isoformat()).findings] == ["QMIG"]
+
+
+def test_today_as_last_committed_is_read_from_git(vault: Path) -> None:
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(vault), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "alex@example.com")
+    git("config", "user.name", "Alex")
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("QMIG", LONG))
+    edited = LONG + " (edited)"
+    _file(vault, TODAY, yellow=_task("QMIG", edited))
+    git("add", "-A")
+    git("commit", "-q", "-m", "owner edit")
+    assert check_titles(today=TODAY.isoformat()).passed
+    _file(vault, TODAY, yellow=_task("QMIG", edited + " again"))
     assert [f.tag for f in check_titles(today=TODAY.isoformat()).findings] == ["QMIG"]
 
 

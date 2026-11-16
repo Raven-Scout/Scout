@@ -48,7 +48,7 @@ struct KBStatsView: View {
         if let summary = stats.setAsideSummary {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Image(systemName: "archivebox").font(.system(size: 12)).foregroundStyle(DS.Ink.p3)
+                    Image(systemName: "archivebox").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                         .accessibilityHidden(true)
                     Text(summary).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 }

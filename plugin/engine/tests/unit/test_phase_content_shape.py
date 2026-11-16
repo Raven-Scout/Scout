@@ -21,6 +21,7 @@ PLUGIN = Path(__file__).resolve().parents[3]
 ACTION_ITEMS = PLUGIN / "phases" / "core" / "action-items.md"
 WISHLIST = PLUGIN / "phases" / "modes" / "wishlist.md"
 STATUS = PLUGIN / "commands" / "scout-status.md"
+RUN_MODES = PLUGIN / "phases" / "core" / "00-run-modes.md"
 
 
 def _text(path: Path) -> str:
@@ -31,7 +32,9 @@ def test_action_items_phase_states_the_title_limit_the_check_enforces() -> None:
     text = _text(ACTION_ITEMS)
     assert f"at most {TITLE_MAX} characters" in text
     assert f"≤ {TITLE_MAX} chars" in text  # the file-format template
-    assert f"the {LEGACY_PER_RUN} longest carried 🔴 titles" in text
+    assert f"this run's {LEGACY_PER_RUN} longest carried 🔴 titles" in text
+    assert "or today's file as last committed" in text
+    assert "`check-titles` (*Clean Title, Prose Body, Refs Block*)" in _text(RUN_MODES)
     assert f"over {FOCUS_MAX_BULLETS} bullets" in text and f"over {FOCUS_MAX_CHARS} characters" in text
 
 
@@ -39,7 +42,7 @@ def test_action_items_phase_runs_check_titles_before_commit() -> None:
     text = _text(ACTION_ITEMS)
     assert "scripts/scoutctl action-items check-titles --data-dir {{SCOUT_DIR}}` until it exits 0" in text
     # Carried titles are left alone: a rewording with no news would restart the stale clock.
-    assert "Leave other carried titles until a run touches the item for a real reason" in text
+    assert "A rewording restarts the item's stale clock, so leave other carried titles until a run touches" in text
 
 
 def test_check_titles_is_a_real_subcommand() -> None:
@@ -74,6 +77,8 @@ def test_wishlist_phase_no_longer_appends_dated_notes_to_the_card() -> None:
 
 def test_scout_status_sets_archives_and_receipts_aside() -> None:
     text = _text(STATUS)
-    assert "folder named `archive` or `archived`" in text
+    assert "folder named exactly `archive` or `archived`" in text
+    assert "relative to `knowledge-base/`" in text
+    assert "not its `progress/` folder" in text
     assert "`receipt`, `receipts`, `invoice` or `invoices`" in text
     assert "Not counted:    A archived, R receipts" in text

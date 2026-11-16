@@ -73,9 +73,9 @@ The "Last briefing / consolidation / dreaming / research" lines come from `slots
 find "SCOUT_DIR/knowledge-base" -type f -name "*.md" | sort
 ```
 
-Set two kinds of file aside before checking: they are not live notes, and counting them hides the notes that need work.
-- **Archived:** any file under a folder named `archive` or `archived`, at any depth.
-- **Receipts:** a receipt or invoice, i.e. its frontmatter `type:` or a word in its path (folder or file name) is `receipt`, `receipts`, `invoice` or `invoices`.
+Set two kinds of file aside before checking: they are not live notes, and counting them hides the notes that need work. Paths here are relative to `knowledge-base/`, and matching ignores case. The words of a name are its parts split at every character that isn't a letter or a digit (`2026-03-invoice` → `2026`, `03`, `invoice`).
+- **Archived:** any file under a folder named exactly `archive` or `archived`, at any depth.
+- **Receipts:** otherwise, a file under a folder named exactly `receipt`, `receipts`, `invoice` or `invoices`, or whose file name (without `.md`) or frontmatter `type:` has one of those four as a word.
 
 Count each kind, and don't check its files for staleness. Check every other file as below.
 
@@ -111,7 +111,7 @@ Count how many Pending and Approved proposals exist.
 
 ### 3d. Wishlist
 
-Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists). Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
+Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists), not its `progress/` folder, which holds each item's progress log. Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
 
 Collect the active items: `status: open` (new) and `status: in-progress`. Exclude `done` and `dropped`.
 

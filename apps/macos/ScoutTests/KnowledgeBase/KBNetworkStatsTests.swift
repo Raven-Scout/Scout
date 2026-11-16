@@ -193,6 +193,9 @@ struct KBNoteKindTests {
         // Whole words only: these merely contain the letters.
         ("knowledge-base/projects/receiptless-checkout.md", .live),
         ("knowledge-base/projects/archiver.md", .live),
+        // Folders match whole: a folder that merely has the word in it is not a receipts folder.
+        ("knowledge-base/projects/receipt-scanner/overview.md", .live),
+        ("knowledge-base/archived-ideas/overview.md", .live),
     ])
     func byPath(_ path: String, _ kind: KBNoteKind) {
         #expect(KBNoteKind.of(path) == kind)

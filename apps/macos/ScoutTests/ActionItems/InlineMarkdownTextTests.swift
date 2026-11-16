@@ -68,6 +68,12 @@ struct InlineMarkdownTextTests {
         #expect(r.links == ["scout-wiki://docs%2Fwishlist%2Fprogress%2Fitem"])
     }
 
+    @Test func anEscapedPipeInsideTheAliasIsUnescaped() {
+        let r = wikilinks(#"[[notes/n\|a\|b]]"#)
+        #expect(r.plain == "a|b")
+        #expect(r.links == ["scout-wiki://notes%2Fn"])
+    }
+
     @Test func aWikilinkInsideACodeSpanStaysLiteralCode() {
         let r = wikilinks("Write `[[people/alex|Alex]]` to link a person, like [[people/priya|Priya]].")
         #expect(r.plain == "Write [[people/alex|Alex]] to link a person, like Priya.")

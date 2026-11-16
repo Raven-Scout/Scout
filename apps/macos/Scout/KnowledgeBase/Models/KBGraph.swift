@@ -60,20 +60,26 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
 /// receipts and invoices. Those are set aside and counted on their own.
 nonisolated enum KBNoteKind: String, Equatable, CaseIterable {
     case live
-    /// Anything under a folder named `archive` or `archived`, at any depth.
+    /// Anything under a folder named exactly `archive` or `archived`, at any depth.
     case archived
-    /// A receipt or invoice: its frontmatter `type:` or a word of its path
-    /// (a folder or the file name) is receipt(s) or invoice(s).
+    /// A receipt or invoice: under a folder named exactly receipt(s) or
+    /// invoice(s), or with one of those as a word of its file name or of its
+    /// frontmatter `type:`.
     case receipt
 
     private static let receiptWords: Set<String> = ["receipt", "receipts", "invoice", "invoices"]
 
+    /// The same rule `/scout-status` applies (plugin `commands/scout-status.md`,
+    /// KB Health): folders relative to `knowledge-base/` match whole, names and
+    /// types by word, case ignored.
     static func of(_ relPath: String, type: String? = nil) -> KBNoteKind {
-        let components = relPath.lowercased().split(separator: "/").map(String.init)
-        if components.dropLast().contains(where: { $0 == "archive" || $0 == "archived" }) { return .archived }
+        var components = relPath.lowercased().split(separator: "/").map(String.init)
+        if components.first == "knowledge-base" { components.removeFirst() }
+        let folders = components.dropLast()
+        if folders.contains(where: { $0 == "archive" || $0 == "archived" }) { return .archived }
+        if folders.contains(where: receiptWords.contains) { return .receipt }
         let stem = components.last.map { ($0 as NSString).deletingPathExtension } ?? ""
-        let pathWords = (components.dropLast() + [stem]).flatMap(words)
-        if pathWords.contains(where: receiptWords.contains) { return .receipt }
+        if words(stem).contains(where: receiptWords.contains) { return .receipt }
         if let type, words(type.lowercased()).contains(where: receiptWords.contains) { return .receipt }
         return .live
     }

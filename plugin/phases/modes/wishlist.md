@@ -85,7 +85,7 @@ Two of four sub-tasks done; the template exists, the index link is next.
 
 **For items skipped as ambiguous:** leave the item untouched (`status: open`) for {{USER_NAME}} to clarify. Optionally log which item was skipped and why in the session summary.
 
-**For a brand-new wishlist item:** create `docs/wishlist/<YYYY-MM-DD>-<slug>.md` with the frontmatter schema above (`status: open`). Commit a progress note with the item it belongs to.
+**For a brand-new wishlist item:** create `docs/wishlist/<YYYY-MM-DD>-<slug>.md` with the frontmatter schema above (`status: open`). It has no progress note until a run first logs work on it.
 
 ***
 

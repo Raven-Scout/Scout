@@ -65,16 +65,33 @@ struct MarkdownBodyBlockTests {
     }
 
     @Test func nestedTasksCarryTheirDepth() {
-        let body = "- [ ] Parent\n  - [x] Child\n\t- [ ] Tab child\n    - [ ] Grandchild\n1. [ ] Numbered"
+        let body = "- [ ] Parent\n  - [x] Child\n    - [ ] Grandchild\n1. [ ] Numbered"
         #expect(MarkdownBodyBlock.blocks(from: body) == [
             .tasks([
                 MarkdownTask(checked: false, text: "Parent", depth: 0),
                 MarkdownTask(checked: true, text: "Child", depth: 1),
-                MarkdownTask(checked: false, text: "Tab child", depth: 1),
                 MarkdownTask(checked: false, text: "Grandchild", depth: 2),
                 MarkdownTask(checked: false, text: "Numbered", depth: 0),
             ]),
         ])
+    }
+
+    /// Depth is the rank of the indent within the list, so 2 spaces, 4 spaces
+    /// and tabs each nest one level per step.
+    @Test(arguments: ["  ", "    ", "\t"])
+    func everyIndentStyleNestsOneLevelPerStep(_ step: String) {
+        let body = "- [ ] A\n\(step)- [ ] B\n\(step)\(step)- [ ] C"
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .tasks([
+                MarkdownTask(checked: false, text: "A", depth: 0),
+                MarkdownTask(checked: false, text: "B", depth: 1),
+                MarkdownTask(checked: false, text: "C", depth: 2),
+            ]),
+        ])
+    }
+
+    @Test func aCheckboxWithNoTextIsNotATask() {
+        #expect(MarkdownBodyBlock.blocks(from: "- [ ]   ") == [.prose("- [ ]")])
     }
 
     @Test func aBlankLineInsideAListKeepsItTogetherAndProseEndsIt() {
