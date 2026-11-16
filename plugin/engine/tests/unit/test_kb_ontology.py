@@ -18,6 +18,7 @@ def test_knowledge_graph_loads_fixture() -> None:
     g = KnowledgeGraph(
         schema_path=str(FIXTURE_DIR / "schema.yaml"),
         kb_root=str(FIXTURE_DIR),
+        vault=FIXTURE_DIR.parent,
     )
     g.load()
     results = g.query(type="person", name="Alex")
@@ -34,6 +35,7 @@ def test_knowledge_graph_query_unknown_type_returns_empty() -> None:
     g = KnowledgeGraph(
         schema_path=str(FIXTURE_DIR / "schema.yaml"),
         kb_root=str(FIXTURE_DIR),
+        vault=FIXTURE_DIR.parent,
     )
     g.load()
     assert g.query(type="nonexistent") == []
@@ -48,6 +50,7 @@ def test_knowledge_graph_validate_returns_structured_errors() -> None:
     g = KnowledgeGraph(
         schema_path=str(FIXTURE_DIR / "schema.yaml"),
         kb_root=str(FIXTURE_DIR),
+        vault=FIXTURE_DIR.parent,
     )
     g.load()
     errors = g.validate()
@@ -153,7 +156,7 @@ def _graph(tmp_path: Path) -> KnowledgeGraph:
     schema = tmp_path / "schema.yaml"
     if not schema.exists():
         schema.write_text(_SCHEMA)
-    return KnowledgeGraph(schema_path=str(schema), kb_root=str(tmp_path / "kb"))
+    return KnowledgeGraph(schema_path=str(schema), kb_root=str(tmp_path / "kb"), vault=tmp_path)
 
 
 @pytest.fixture

@@ -95,6 +95,7 @@ struct MainWindowView: View {
             .environmentObject(appState.actionItemsWriterBox)
             .environmentObject(appState.actionItemsEnvState)
             .environment(\.openKBNote, StableAction { [appState] in appState.requestOpenKBNote($0) })
+            .environmentObject(appState.displayProfileService)
         case .schedules:
             SchedulesView()
                 .environmentObject(appState.scheduleEditService)
@@ -112,7 +113,7 @@ struct MainWindowView: View {
                 .environmentObject(appState.researchDocumentService)
                 .environmentObject(appState.perFileWriterBox)
         case .knowledgeBase:
-            KnowledgeBaseView(pendingNote: $appState.pendingKBNote)
+            KnowledgeBaseView(pendingNote: $appState.pendingKBNote, privacy: appState.knowledgeBasePrivacy)
                 .environmentObject(appState.knowledgeBaseService)
                 .environmentObject(appState.knowledgeBaseWriterBox)
         case .settings:

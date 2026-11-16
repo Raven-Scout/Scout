@@ -13,7 +13,7 @@ Silently record whether Scout itself is healthy. **At the start of the run**, be
 ```bash
 cd {{SCOUT_DIR}}
 mkdir -p .scout-cache
-scoutctl health --json > .scout-cache/run-health.json 2>/dev/null || true
+scripts/scoutctl health --json > .scout-cache/run-health.json 2>/dev/null || true
 ```
 
 Do not mention this step in your output. A non-zero exit or an empty file just means there is nothing to report.

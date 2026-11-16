@@ -130,7 +130,8 @@ def test_connector_health_report_budget(fake_data_dir: Path, monkeypatch: pytest
 def test_ledger_bounds_hold_at_scale(tmp_path: Path) -> None:
     """A runaway day stops at the cap; a new day prunes past retention."""
     row = json.dumps({"ts": "2026-09-30T12:00:00Z", "session_id": "loop", "err": "x" * 200}) + "\n"
-    day = tmp_path / "connector-calls-2026-09-30.jsonl"
+    # A future day: the first append prunes against the real clock, so a fixed past date would age out.
+    day = tmp_path / "connector-calls-2099-01-01.jsonl"
     cap = 1024 * 1024
     written = sum(connector_calls.append_rows(day, [row] * 500, max_bytes=cap) for _ in range(20))
     assert day.stat().st_size <= cap + 512  # the cap, plus its one marker row

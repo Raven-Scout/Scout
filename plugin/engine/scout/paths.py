@@ -12,6 +12,8 @@ from pathlib import Path
 from scout.errors import DataDirError
 
 DEFAULT_DATA_DIR_NAME = "Scout"
+# The file that makes a folder a Scout vault: bootstrap writes it first, and every vault has one.
+VAULT_MARKER = "scout-config.yaml"
 
 
 def resolve_path(p: str | Path) -> Path:
@@ -19,13 +21,37 @@ def resolve_path(p: str | Path) -> Path:
     return Path(p).expanduser().resolve()
 
 
-def data_dir(explicit: str | Path | None = None) -> Path:
+def vault_containing(start: str | Path) -> Path | None:
+    """The nearest folder at or above ``start`` that holds a ``scout-config.yaml``, else None."""
+    try:
+        here = resolve_path(start)
+    except (OSError, RuntimeError):
+        return None
+    for folder in (here, *here.parents):
+        if (folder / VAULT_MARKER).is_file():
+            return folder
+    return None
+
+
+def _cwd() -> Path | None:
+    try:
+        return Path.cwd()
+    except OSError:  # the working directory was deleted
+        return None
+
+
+def data_dir(explicit: str | Path | None = None, *, cwd: str | Path | None = None) -> Path:
     """Resolve the Scout data directory.
 
     Precedence:
       1. Explicit argument
       2. $SCOUT_DATA_DIR env var
-      3. ~/Scout
+      3. The vault containing ``cwd`` (default: the process's working directory)
+      4. ~/Scout
+
+    Step 3 lets a session started inside a vault that isn't ~/Scout (a sandbox,
+    a second vault) find it without SCOUT_DATA_DIR. The scheduled runners all
+    export SCOUT_DATA_DIR, so they never reach it.
 
     Does NOT validate that the dir exists — callers use require_data_dir().
     """
@@ -35,6 +61,11 @@ def data_dir(explicit: str | Path | None = None) -> Path:
     env = os.environ.get("SCOUT_DATA_DIR")
     if env:
         return resolve_path(env)
+
+    start = cwd if cwd is not None else _cwd()
+    found = vault_containing(start) if start is not None and str(start) else None
+    if found is not None:
+        return found
 
     return resolve_path(Path.home() / DEFAULT_DATA_DIR_NAME)
 

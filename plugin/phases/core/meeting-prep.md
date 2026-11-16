@@ -12,10 +12,10 @@ After querying all connectors and before writing action items, generate prep fil
 
 ### Step 1: Match calendar events to meeting folders
 
-Read `meetings/meetings.md` for the list of tracked meetings. For each meeting on today's calendar:
+Read the list of tracked meetings with `scripts/scoutctl kb read knowledge-base/meetings/meetings.md`. For each meeting on today's calendar:
 1. Normalize the event title (lowercase, strip whitespace)
 2. Match against `calendar_match` patterns in each meeting's home file frontmatter
-3. If matched and no dated file (`meetings/<slug>/YYYY-MM-DD.md`) exists yet, create it
+3. If matched and no dated file (`meetings/<slug>/YYYY-MM-DD.md`) exists yet, create it (`scripts/scoutctl kb files --glob 'knowledge-base/meetings/<slug>/*.md'` lists them)
 
 ### Step 2: Generate prep content
 
@@ -30,7 +30,7 @@ For each matched meeting, create the dated session file:
 ## Prep
 
 ### Since Last Session ([date])
-[Query project files, Linear, Slack, GitHub for changes since last meeting. Read the most recent dated session file.]
+[Query project files, Linear, Slack, GitHub for changes since last meeting. Read the most recent dated session file with `scripts/scoutctl kb read <path>`.]
 
 ### Open Action Items from Last Session
 [Carry forward uncompleted items from last session's Synthesis]
@@ -120,7 +120,7 @@ Fill the `## Synthesis` section:
 
 ### Step 3: Propagate
 
-a. **Decisions** → meeting home file Key Decisions + project files. Include `[[meeting-slug/YYYY-MM-DD]]` as source.
+a. **Decisions** → meeting home file Key Decisions + each project's decisions note (`knowledge-base/projects/<name>/knowledge/<name>-decisions.md`; the project page's Key decisions table shows only the top 7). Include `[[meeting-slug/YYYY-MM-DD]]` as source.
 b. **Action items** → daily action-items file with `Source: [[meeting-slug/YYYY-MM-DD]]`. Apply standard cross-check.
 c. **Running Themes** → update home file.
 d. **Session log** → add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, linking the meeting home file.

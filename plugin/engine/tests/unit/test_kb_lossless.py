@@ -59,3 +59,16 @@ def test_url_prefix_is_not_a_false_match(kb_repo) -> None:
     assert lossless_check(kb_repo.root, "HEAD", "knowledge-base/a.md") == [
         "https://github.com/example-org/widget/pull/12"
     ]
+
+
+def test_a_token_kept_only_in_an_archive_copy_is_reported(kb_repo) -> None:
+    """A restructure's verbatim copy holds every token, so it can't count as the token surviving."""
+    page = "knowledge-base/projects/acme-pilot/acme-pilot.md"
+    kb_repo.stage(page, OLD)
+    kb_repo.commit()
+    kb_repo.write(page, "# Acme\nOwner [[people|Alex]], `#ACMEPIN`, [[topics/widget/retrieval]].\n")
+    kb_repo.write("knowledge-base/projects/acme-pilot/archive/acme-pilot-2026-03-14-pre-restructure.md", OLD)
+    assert lossless_check(kb_repo.root, "HEAD", page) == [
+        "PROJ-123",
+        "https://github.com/example-org/widget/pull/12",
+    ]

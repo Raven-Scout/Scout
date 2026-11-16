@@ -20,7 +20,10 @@
 # archive with `git archive --add-virtual-file` (git >= 2.39): same name
 # ("scout-plugin" — the app's foreign-source check keys on it), same
 # owner/metadata, exactly one plugin "scout" with source "./" and version =
-# plugin.json's. Nothing extra is checked in under plugin/.
+# plugin.json's. When the repo commits that manifest as
+# plugin/.claude-plugin/marketplace.json (it does, for hosts that read a
+# vX.Y.Z checkout), the archive carries the committed file instead, and the
+# script fails unless it equals the generated one.
 #
 # Deterministic: the payload is the COMMITTED plugin/ tree at HEAD — no pinned
 # repo or commit, no sibling checkout, no network. Uncommitted or untracked
@@ -86,9 +89,6 @@ fi
 # so the same commit always yields the same bytes.
 ROOT_MP_JSON="$(git -C "$TOP" show "HEAD:$ROOT_MARKETPLACE" 2>/dev/null)" \
   || fail "HEAD has no $ROOT_MARKETPLACE in $TOP: the bundled engine's directory-marketplace manifest is generated from it, and without one \`claude plugin marketplace add\` refuses the unpacked engine"
-if git -C "$TOP" cat-file -e "HEAD:plugin/$BUNDLED_MARKETPLACE" 2>/dev/null; then
-  fail "plugin/$BUNDLED_MARKETPLACE is committed, but the bundle generates that file from the root $ROOT_MARKETPLACE; remove plugin/$BUNDLED_MARKETPLACE"
-fi
 GEN_MARKETPLACE='
 import json, sys
 version = sys.argv[1]
@@ -109,6 +109,18 @@ print(json.dumps({k: ([entry] if k == "plugins" else v) for k, v in root.items()
 '
 MARKETPLACE_JSON="$(python3 -c "$GEN_MARKETPLACE" "$VERSION" <<<"$ROOT_MP_JSON" 2>&1)" \
   || fail "HEAD:$ROOT_MARKETPLACE ${MARKETPLACE_JSON##*$'\n'}"
+
+# The repo may commit that same manifest as plugin/.claude-plugin/marketplace.json,
+# so plugin/ is a marketplace root in any checkout too (hosts that serve a
+# vX.Y.Z tree, not a bundle, read it there). Then the archive carries the
+# committed file, which must be exactly the generated one; nothing is added.
+ADD_VIRTUAL=1
+if COMMITTED_MP="$(git -C "$TOP" show "HEAD:plugin/$BUNDLED_MARKETPLACE" 2>/dev/null)"; then
+  python3 -c 'import json, sys; sys.exit(json.loads(sys.argv[1]) != json.loads(sys.argv[2]))' \
+      "$COMMITTED_MP" "$MARKETPLACE_JSON" 2>/dev/null \
+    || fail "plugin/$BUNDLED_MARKETPLACE is committed but differs from the manifest generated from $ROOT_MARKETPLACE (the root one with only scout, sourced \"./\", at plugin.json's version); regenerate it from the root"
+  ADD_VIRTUAL=0
+fi
 
 # --no-optional-locks: a plain `git status` takes index.lock and rewrites
 # .git/index to persist refreshed stat info for racily-clean files, even
@@ -137,14 +149,18 @@ ARCHIVE_HELP="$(git -C "$TOP" archive -h 2>&1 || true)"   # `-h` exits 129
 if [[ "$ARCHIVE_HELP" == *--mtime* ]]; then
   MTIME_ARGS=(--mtime="@$(git -C "$TOP" show -s --format=%ct "$COMMIT")")
 fi
-# Newer gits print the option as `--[no-]add-virtual-file`.
-[[ "$ARCHIVE_HELP" == *add-virtual-file* ]] \
-  || fail "$(git --version) has no \`git archive --add-virtual-file\` (git 2.39 or newer), which the bundle needs to add the generated $BUNDLED_MARKETPLACE; select a newer Xcode (xcode-select) or put a newer git first on PATH"
+VIRTUAL_ARGS=()
+if [[ "$ADD_VIRTUAL" == 1 ]]; then
+  # Newer gits print the option as `--[no-]add-virtual-file`.
+  [[ "$ARCHIVE_HELP" == *add-virtual-file* ]] \
+    || fail "$(git --version) has no \`git archive --add-virtual-file\` (git 2.39 or newer), which the bundle needs to add the generated $BUNDLED_MARKETPLACE; select a newer Xcode (xcode-select) or put a newer git first on PATH"
+  VIRTUAL_ARGS=(--add-virtual-file="$BUNDLED_MARKETPLACE:$MARKETPLACE_JSON"$'\n')
+fi
 
 TMP_TARBALL="$TARBALL.tmp.$$"; TMP_JSON="$RELEASE_JSON.tmp.$$"
 trap 'rm -f "$TMP_TARBALL" "$TMP_JSON"' EXIT
 git -C "$TOP" archive --format=tar.gz ${MTIME_ARGS[@]+"${MTIME_ARGS[@]}"} \
-  --add-virtual-file="$BUNDLED_MARKETPLACE:$MARKETPLACE_JSON"$'\n' \
+  ${VIRTUAL_ARGS[@]+"${VIRTUAL_ARGS[@]}"} \
   -o "$TMP_TARBALL" "$COMMIT:plugin"
 
 GOT="$(tar -xzOf "$TMP_TARBALL" .claude-plugin/plugin.json 2>/dev/null \

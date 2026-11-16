@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import pytest
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.ontology import KnowledgeGraph
 
-TEMPLATE_PARSER = Path(__file__).resolve().parents[3] / "templates" / "knowledge-base" / "ontology" / "parser.py"
+# The vault parser before it became a shim over scoutctl (#453), kept as the reference.
+LEGACY_PARSER = Path(__file__).resolve().parents[1] / "fixtures" / "vault-parser-pre-shim.py.txt"
 
 # The KEYS-FIRST arrangement from #239: a provenance banner whose separator
 # carries a `---` run, with `type:` below it.
@@ -67,8 +69,9 @@ def _schema(tmp_path: Path) -> Path:
 
 
 def _template_graph_class() -> type:
-    """The vault's `knowledge-base/ontology/parser.py`, which cannot import scout."""
-    spec = importlib.util.spec_from_file_location("vault_ontology_parser", TEMPLATE_PARSER)
+    """The vault's pre-shim `knowledge-base/ontology/parser.py`, which cannot import scout."""
+    loader = importlib.machinery.SourceFileLoader("vault_ontology_parser", str(LEGACY_PARSER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -82,7 +85,7 @@ GRAPH_CLASSES = pytest.mark.parametrize(
 
 @GRAPH_CLASSES
 def test_entity_with_a_dashed_comment_stays_in_the_graph(tmp_path: Path, graph_class: type) -> None:
-    kb = tmp_path / "kb"
+    kb = tmp_path / "knowledge-base"  # a vault layout: the engine finds the vault from it
     kb.mkdir()
     (kb / "example-suite.md").write_text(PROVENANCE_ENTITY)
     graph = graph_class(schema_path=str(_schema(tmp_path)), kb_root=str(kb)).load()

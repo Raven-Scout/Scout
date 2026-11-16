@@ -8,10 +8,15 @@
 #            uv downloads a managed CPython, so this works on Macs whose only
 #            python3 is Apple's 3.9. Falls back to `python3.1x -m venv` + pip
 #            (SCOUT_INSTALL_NO_UV=1 forces the fallback).
-# Extras:    $SCOUT_VENV_EXTRAS (default: dev). Scout.app passes `full`.
+# Extras:    $SCOUT_VENV_EXTRAS (default: none — the runtime dependencies
+#            only). Scout.app passes `full`. Developer tools (pytest, mypy,
+#            ruff…) are opt-in: pass --dev, or put `dev` in SCOUT_VENV_EXTRAS.
+#            Every install path that only RUNS Scout (install.sh, /scout-setup,
+#            /scout-update, the headless self-update, Scout.app) takes the lean
+#            default; contributors and CI build engine/.venv with `.[dev]`.
 # Python:    $SCOUT_PYTHON_VERSION (default: 3.12) — uv path only.
 #
-# Usage: [SCOUT_VENV_DIR=…] bash <plugin-root>/scripts/install-venv.sh
+# Usage: [SCOUT_VENV_DIR=…] bash <plugin-root>/scripts/install-venv.sh [--dev]
 # The plugin root is derived from this script's own location, so it works
 # whether the script lives under ~/.claude/plugins/…, ~/.local/share/scout/
 # engine/<v>/, or a hand-cloned ~/scout-plugin.
@@ -20,8 +25,27 @@ set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${SCOUT_VENV_DIR:-$PLUGIN_ROOT/.venv}"
-EXTRAS="${SCOUT_VENV_EXTRAS:-dev}"
+EXTRAS="${SCOUT_VENV_EXTRAS:-}"
 PY_VERSION="${SCOUT_PYTHON_VERSION:-3.12}"
+
+for arg in "$@"; do
+    case "$arg" in
+        --dev) EXTRAS="${EXTRAS:+$EXTRAS,}dev" ;;
+        -h|--help)
+            echo "usage: [SCOUT_VENV_DIR=…] [SCOUT_VENV_EXTRAS=…] bash $0 [--dev]"
+            echo "  --dev   also install the developer tools (the engine's [dev] extra)"
+            exit 0 ;;
+        *) echo "error: unknown argument: $arg (try --help)" >&2; exit 2 ;;
+    esac
+done
+
+# `engine` alone is the runtime install; `engine[a,b]` adds extras.
+SPEC="$PLUGIN_ROOT/engine"
+LABEL="scout-engine"
+if [ -n "$EXTRAS" ]; then
+    SPEC="${SPEC}[${EXTRAS}]"
+    LABEL="scout-engine[$EXTRAS]"
+fi
 
 if [ ! -d "$PLUGIN_ROOT/engine" ]; then
     echo "error: engine directory not found at $PLUGIN_ROOT/engine" >&2
@@ -78,14 +102,14 @@ mkdir -p "$(dirname "$VENV")"
 if [ -n "$UV" ]; then
     echo "using uv ($UV), python $PY_VERSION"
     "$UV" venv --python "$PY_VERSION" "$VENV"
-    echo "installing scout-engine[$EXTRAS] in editable mode..."
-    "$UV" pip install --python "$VENV/bin/python" --quiet -e "$PLUGIN_ROOT/engine[$EXTRAS]"
+    echo "installing $LABEL in editable mode..."
+    "$UV" pip install --python "$VENV/bin/python" --quiet -e "$SPEC"
 else
     echo "using $PYTHON ($("$PYTHON" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'))"
     "$PYTHON" -m venv "$VENV"
-    echo "installing scout-engine[$EXTRAS] in editable mode (this may take 30-60s)..."
+    echo "installing $LABEL in editable mode (this may take 30-60s)..."
     "$VENV/bin/pip" install --quiet --upgrade pip
-    "$VENV/bin/pip" install --quiet -e "$PLUGIN_ROOT/engine[$EXTRAS]"
+    "$VENV/bin/pip" install --quiet -e "$SPEC"
 fi
 
 if [ ! -x "$VENV/bin/scoutctl" ]; then

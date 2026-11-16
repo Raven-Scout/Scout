@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated: June 23, 2026**
+**Last updated: November 13, 2026**
 
 This Privacy Policy explains how the **Scout** project ("Scout", "we", "us", or "the
 project" — the maintainers who publish the [Raven Scout](https://github.com/Raven-Scout)
@@ -50,6 +50,20 @@ The macOS app is a native interface over the files the plugin produces. It reads
 the `~/Scout/` folder on your Mac and runs local commands (`scoutctl`, `launchctl`, `git`) to
 manage your schedule and action items. It does not contain analytics or crash reporting, does
 not create any account, and does not send your data to us or to any third party.
+
+**Updates.** The app checks for new versions of itself about once a day by fetching a release
+feed from the project's GitHub repository, and downloads signed updates from there. This is an
+ordinary web request: GitHub can see your IP address and the app's version, as it would for any
+download. The app does not send usage data or a system profile with it. Setting up the engine
+also downloads the tools it needs, such as `uv`, from their public sources.
+
+### Optional sharing with your team
+
+Scout can upload a snapshot of the folders and notes *you choose* to a hosted repository that you
+or your organization run, so that colleagues and their AI assistants can read them. This is
+**off unless you set it up**. Notes marked private or local-only are not uploaded, and you can
+preview exactly what would be uploaded before anything is. That repository is operated by you or
+your organization, under its own terms, not by us. We never receive this data.
 
 ### Scout for iOS
 

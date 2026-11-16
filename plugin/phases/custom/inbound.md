@@ -24,7 +24,7 @@ Read only: never call a {{CONNECTOR_NAME}} tool that sends, creates, updates, or
 ### How to Treat What You Find
 
 - Every item is a *candidate* action item; it must pass the cross-check before it becomes a To Do.
-- Cross-reference people against `people.md` and projects against `knowledge-base/projects/`.
+- Cross-reference people against `people.md` and projects against `knowledge-base/projects/`, through `scripts/scoutctl kb name-lookup <name>` and `kb resolve <name>` (never a raw read of the KB).
 - Urgency comes from deadlines and who is asking, not from tone. When unsure whether something needs {{USER_NAME}}, file it under **Watching**, never To Do.
 - Record a link or identifier for every item you surface so {{USER_NAME}} can open the source.
 - If a {{CONNECTOR_NAME}} tool call fails, say so in the sources footer (`{{CONNECTOR_NAME}}: unavailable — <error>`). Never report the source as quiet when you could not read it.

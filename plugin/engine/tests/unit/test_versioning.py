@@ -32,6 +32,12 @@ def _fake_plugin(tmp_path: Path, version: str = "1.2.3") -> Path:
         f'      "version": "{version}"\n    }}\n  ]\n}}\n',
         encoding="utf-8",
     )
+    (plugin / ".claude-plugin" / "marketplace.json").write_text(
+        f'{{\n  "name": "scout-plugin",\n  "plugins": [\n'
+        f'    {{\n      "name": "scout",\n      "source": "./",\n'
+        f'      "version": "{version}"\n    }}\n  ]\n}}\n',
+        encoding="utf-8",
+    )
     (plugin / "engine").mkdir()
     (plugin / "engine" / "pyproject.toml").write_text(
         f'[project]\nname = "scout-engine"\nversion = "{version}"\n', encoding="utf-8"
@@ -62,6 +68,7 @@ def test_read_versions_reads_marketplace_from_the_repo_root(tmp_path):
     assert versions == {
         "plugin.json": "1.2.3",
         "marketplace.json": "1.2.3",
+        "plugin-marketplace.json": "1.2.3",
         "pyproject.toml": "1.2.3",
         "__init__.py": "1.2.3",
         "MARKETING_VERSION": "1.2.3",
@@ -73,7 +80,17 @@ def test_set_version_writes_the_repo_root_marketplace(tmp_path):
     versioning.set_version(plugin_root, version="1.3.0")
     marketplace = (tmp_path / ".claude-plugin" / "marketplace.json").read_text()
     assert '"version": "1.3.0"' in marketplace
+    own = (tmp_path / "plugin" / ".claude-plugin" / "marketplace.json").read_text()
+    assert '"version": "1.3.0"' in own and '"source": "./"' in own
     assert versioning.assert_in_sync(plugin_root) == "1.3.0"
+
+
+def test_plugin_marketplace_drift_fails_check(tmp_path):
+    root = _fake_plugin(tmp_path, "1.2.3")
+    mk = tmp_path / "plugin" / ".claude-plugin" / "marketplace.json"
+    mk.write_text(mk.read_text().replace("1.2.3", "1.2.2"))
+    with pytest.raises(ValueError, match="version drift.*'plugin-marketplace.json': '1.2.2'"):
+        versioning.assert_in_sync(root)
 
 
 def test_read_versions_accepts_an_explicit_repo_root(tmp_path):
@@ -118,17 +135,18 @@ def test_set_version_accepts_an_explicit_repo_root(tmp_path):
     assert versioning.read_versions(plugin_root, repo_root=other_repo) == {
         "plugin.json": "1.3.0",
         "marketplace.json": "1.3.0",
+        "plugin-marketplace.json": "1.3.0",
         "pyproject.toml": "1.3.0",
         "__init__.py": "1.3.0",
         "MARKETING_VERSION": "1.3.0",
     }
 
 
-def test_read_versions_returns_all_five(tmp_path):
+def test_read_versions_returns_all_six(tmp_path):
     root = _fake_plugin(tmp_path, "1.2.3")
     versions = versioning.read_versions(root)
     assert set(versions.values()) == {"1.2.3"}
-    assert len(versions) == 5
+    assert len(versions) == 6
 
 
 def test_assert_in_sync_passes_when_equal(tmp_path):

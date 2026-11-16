@@ -13,8 +13,12 @@ Pure: it takes the two arms' samples and returns rows. The rules:
   today's file) is ``regression (head not evaluated)``: behaviour, not noise;
 - fewer than 2 evaluable samples on either arm: ``need N≥2``, never "no regression";
 - a metric (lower is better) is worse only when head's median is above base's max;
-- any aborted sample, or arms that ran different models or CLI versions, block
-  every verdict. A harness failure never reads as a regression.
+- a sample that hit a run limit (the session timeout, the runner timeout or the
+  budget cap) is left out of the checks and metrics, and only it: a slower or
+  costlier run is behaviour, so ``within limits`` is scored like a check (one
+  head miss is ``flaky on head``, two a regression);
+- any other aborted sample (a harness failure), or arms that ran different models
+  or CLI versions, block every verdict. A harness failure never reads as a regression.
 - ``across_models`` (``eval.sh compare-models``) inverts the model rule: each
   arm must run one model, and the two arms must differ — if they ran the same
   model the switch did not take, and the comparison would say nothing.
@@ -28,6 +32,15 @@ from statistics import median
 
 from .report import METRICS
 from .runner import SampleResult
+
+# Abort reasons that are the run's own limits, not harness failures: the sample counts
+# as "not within limits" and drops out of the checks and metrics, and the rest still score.
+LIMIT_REASONS = frozenset({"timeout", "runner_timeout", "error_max_budget_usd"})
+LIMITS_ROW = "within limits"
+
+
+def hit_limit(sample: SampleResult) -> bool:
+    return bool(sample.aborted) and sample.aborted.get("reason") in LIMIT_REASONS
 
 
 @dataclass(frozen=True)
@@ -82,7 +95,7 @@ def _spread(values: list[float]) -> tuple[float, float, float]:
 
 
 def _blocked(base: Sequence[SampleResult], head: Sequence[SampleResult], *, across_models: bool = False) -> str | None:
-    b_ab, h_ab = sum(1 for s in base if s.aborted), sum(1 for s in head if s.aborted)
+    b_ab, h_ab = (sum(1 for s in arm if s.aborted and not hit_limit(s)) for arm in (base, head))
     if b_ab or h_ab:
         return f"aborted samples (base {b_ab}, head {h_ab}): no verdict"
     if across_models:
@@ -119,10 +132,15 @@ def compare_arms(
         else:
             verdict = _verdict(bp, bn, hp, hn)
         rows.append(CheckRow(name, bp, bn, hp, hn, verdict, b_un + h_un))
+    if any(hit_limit(s) for s in [*base, *head]):
+        bp, hp = (sum(1 for s in arm if not hit_limit(s)) for arm in (base, head))
+        verdict = "blocked" if blocked else _verdict(bp, len(base), hp, len(head))
+        rows.append(CheckRow(LIMITS_ROW, bp, len(base), hp, len(head), verdict))
     metrics = []
+    scored_base, scored_head = ([s for s in arm if not hit_limit(s)] for arm in (base, head))
     for label, get in METRICS:
-        bv = [v for s in base if s.metrics is not None and (v := get(s, s.metrics)) is not None]
-        hv = [v for s in head if s.metrics is not None and (v := get(s, s.metrics)) is not None]
+        bv = [v for s in scored_base if s.metrics is not None and (v := get(s, s.metrics)) is not None]
+        hv = [v for s in scored_head if s.metrics is not None and (v := get(s, s.metrics)) is not None]
         if bv and hv:
             worse = not blocked and len(bv) >= 2 and len(hv) >= 2 and median(hv) > max(bv)
             metrics.append(MetricRow(label, _spread(bv), _spread(hv), worse))

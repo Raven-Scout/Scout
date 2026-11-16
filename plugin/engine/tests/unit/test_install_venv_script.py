@@ -67,9 +67,11 @@ def test_uses_uv_into_scout_venv_dir_with_requested_extras(tmp_path):
     assert f"ok: venv ready at {venv}" in proc.stdout
 
 
-def test_defaults_to_plugin_root_venv_and_dev_extras(tmp_path, monkeypatch):
-    """Default location is unchanged so /scout-update keeps working; run the
-    script from a COPY of the tree so the developer's real .venv is untouched."""
+def _run_copy(
+    tmp_path: Path, *args: str, extras: str | None = None
+) -> tuple[subprocess.CompletedProcess[str], Path, str]:
+    """Run the script from a COPY of the tree so the developer's real .venv is
+    untouched; return the process, the copied plugin root and the fake-uv log."""
     import shutil
 
     root = tmp_path / "plugin"
@@ -78,17 +80,56 @@ def test_defaults_to_plugin_root_venv_and_dev_extras(tmp_path, monkeypatch):
     shutil.copy(SCRIPT, root / "scripts" / "install-venv.sh")
     uv = _fake_uv(tmp_path)
     log = tmp_path / "uv.log"
+    env = {"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin", "SCOUT_UV": str(uv), "FAKE_UV_LOG": str(log)}
+    if extras is not None:
+        env["SCOUT_VENV_EXTRAS"] = extras
     proc = subprocess.run(
-        ["bash", str(root / "scripts" / "install-venv.sh")],
-        env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin", "SCOUT_UV": str(uv), "FAKE_UV_LOG": str(log)},
+        ["bash", str(root / "scripts" / "install-venv.sh"), *args],
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
     )
+    return proc, root, log.read_text() if log.exists() else ""
+
+
+def test_defaults_to_plugin_root_venv_and_runtime_only(tmp_path):
+    """Default location is unchanged so /scout-update keeps working, and the
+    default install is the runtime dependencies alone: no `[dev]` tools in a
+    venv that only runs Scout (install.sh, /scout-setup, self-update)."""
+    proc, root, log = _run_copy(tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert f"uv venv --python 3.12 {root}/.venv" in log.read_text()
-    assert f"-e {root}/engine[dev]" in log.read_text()
+    assert f"uv venv --python 3.12 {root}/.venv" in log
+    assert log.splitlines()[1].endswith(f"--quiet -e {root}/engine")
+    assert "[" not in log.splitlines()[1]
+    assert "installing scout-engine in editable mode" in proc.stdout
+
+
+def test_dev_flag_adds_the_dev_extra(tmp_path):
+    proc, root, log = _run_copy(tmp_path, "--dev")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert log.splitlines()[1].endswith(f"-e {root}/engine[dev]")
+
+
+def test_dev_flag_appends_to_requested_extras(tmp_path):
+    proc, root, log = _run_copy(tmp_path, "--dev", extras="full")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert log.splitlines()[1].endswith(f"-e {root}/engine[full,dev]")
+
+
+def test_dev_via_extras_env_still_works(tmp_path):
+    proc, root, log = _run_copy(tmp_path, extras="dev")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert log.splitlines()[1].endswith(f"-e {root}/engine[dev]")
+
+
+def test_unknown_argument_fails_before_touching_anything(tmp_path):
+    proc, root, log = _run_copy(tmp_path, "--bogus")
+    assert proc.returncode == 2
+    assert "unknown argument: --bogus" in proc.stderr
+    assert log == ""
+    assert not (root / ".venv").exists()
 
 
 def test_no_builder_leaves_an_existing_venv_untouched(tmp_path):

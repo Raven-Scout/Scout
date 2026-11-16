@@ -204,6 +204,36 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
     ("log_text", "klass"),
     [
         pytest.param("Error: Exceeded USD budget (20)\n", "budget", id="budget-cap"),
+        # claude-with-retry.sh withheld the retry for budget after a dropped connection (#561):
+        # the run spent its money, so it is a budget failure, not a network one.
+        pytest.param(
+            "API Error: Connection closed mid-response. The response above may be incomplete.\n"
+            "attempt cost: $25.00 (1 attempt(s) recorded); this run so far $25.00\n"
+            "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap\n"
+            "=== Budget spent — no retry (exit 1) ===\n",
+            "budget",
+            id="retry-withheld-for-budget",
+        ),
+        # The retry ran with what the run had left and hit that reduced cap; the first
+        # attempt's network error is still in the tail, but the last attempt is what ended the run.
+        pytest.param(
+            "API Error: Connection closed mid-response. The response above may be incomplete.\n"
+            "=== Transient API error detected — sleeping 60s before retry ===\n"
+            "=== Next attempt's budget: $16.60 ($25 less what this run's attempts spent) ===\n"
+            "=== Claude retry attempt 2/2 at Mon Nov  2 13:20:00 CET 2026 ===\n"
+            "Error: Exceeded USD budget (16.6)\n",
+            "budget",
+            id="retry-hit-its-reduced-cap",
+        ),
+        # A retry that died on the network again is still a network failure.
+        pytest.param(
+            "Error: something else\n"
+            "=== Claude retry attempt 2/2 at Mon Nov  2 13:20:00 CET 2026 ===\n"
+            "API Error: Connection closed mid-response.\n"
+            "=== Retry exhausted: 2 attempts, last exit 1 ===\n",
+            "network",
+            id="retry-died-on-the-network",
+        ),
         pytest.param("Failed to authenticate. API Error: 401\n", "oauth_expired", id="auth-401"),
         pytest.param("OAuth session expired, please log in again\n", "oauth_expired", id="oauth"),
         pytest.param(

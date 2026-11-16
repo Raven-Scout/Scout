@@ -16,9 +16,11 @@ Hook contract (Claude Code Stop hook stdin JSON):
   - ``session_id``: fallback used to derive the path under
     ``~/.claude/projects/<encoded-cwd>/<session_id>.jsonl``
 
-Short-circuits when ``SCOUT_MODE`` is unset (interactive sessions don't
-need tool-call accounting). Never raises — hooks must never block a
-session.
+Short-circuits for interactive sessions, which don't need tool-call
+accounting: ``SCOUT_MODE`` unset, and no run mode named in the prompt of a
+session inside a vault (``run_context``). Writes to $SCOUT_DATA_DIR, else
+the vault containing the payload's ``cwd``, else ~/Scout. Never raises —
+hooks must never block a session.
 """
 
 from __future__ import annotations
@@ -32,9 +34,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from scout import connector_calls, paths
+from scout import connector_calls
 from scout.config import today as config_today
 from scout.events import Event, now_iso
+from scout.hooks import run_context
 from scout.hooks.connector_log import _custom_bash_connectors, classify
 from scout.ids import new_ulid
 
@@ -271,27 +274,31 @@ def write_records(
 def run(*, stdin: IO[str] | None = None) -> Event | None:
     """Read one Stop-hook payload from stdin and replay its tool calls.
 
-    Returns ``None`` if SCOUT_MODE is unset (interactive session) or if the
+    Returns ``None`` for an interactive session (no SCOUT_MODE, and no run mode named
+    in the prompt of a session inside a vault; see ``run_context``) or if the
     transcript can't be found. Errors are swallowed — hooks must never raise.
     """
-    mode = os.environ.get("SCOUT_MODE")
-    if not mode:
-        return None
+    env_mode = os.environ.get("SCOUT_MODE")
 
     src = stdin if stdin is not None else sys.stdin
     try:
         payload = json.load(src)
     except Exception:
         return None
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not run_context.may_be_a_run(payload):
         return None
 
     transcript_path = _resolve_transcript_path(payload)
     if transcript_path is None:
         return None
 
+    ctx = run_context.resolve(payload, transcript_path)
+    mode = env_mode or ctx.mode
+    if not mode:
+        return None
+
     session_id = str(payload.get("session_id") or transcript_path.stem)
-    log_dir = paths.data_dir() / ".scout-logs"
+    log_dir = ctx.vault / ".scout-logs"
 
     records = extract_tool_calls(_iter_rows(transcript_path))
     count = write_records(records, mode=mode, session_id=session_id, log_dir=log_dir)

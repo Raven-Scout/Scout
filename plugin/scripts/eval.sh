@@ -4,6 +4,10 @@
 # plugin/engine/.venv (uv venv && uv pip install -e ".[dev]").
 #
 #   plugin/scripts/eval.sh build <dest> [--scenario NAME] [--today YYYY-MM-DD]
+#   plugin/scripts/eval.sh kb-gate [--max-growth BYTES] [--opus] [--report PATH]   # the KB-writing release gate:
+#       ONE consolidation session on your Claude login; exit 0 pass, 1 fail, 2 unscored. Never in CI.
+#   plugin/scripts/eval.sh kb-score <vault> [--max-growth BYTES]   # re-score a kept run; starts no session
+#   plugin/scripts/eval.sh run|compare|compare-models …   # see --help
 set -euo pipefail
 
 ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../engine" && pwd)"

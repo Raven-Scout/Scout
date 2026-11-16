@@ -12,6 +12,12 @@ struct SectionView: View {
     /// Builds every remaining row; offered only for a small remainder.
     var onShowAll: () -> Void = {}
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
+    /// Display options from the profile (#52). Defaults draw today's cards.
+    var density: ActionItemsDisplay.Density = .comfortable
+    var fields = ActionItemsDisplay.Fields()
+    /// Source kind of tasks merged into a "One list" section, so each card
+    /// keeps its priority stripe and snooze's `--from-kind`.
+    var kinds: [UUID: ActionSection.Kind] = [:]
 
     /// Per-archive windows. Local: archive rows are never selectable, so
     /// nothing outside this view needs to know how many are shown.
@@ -24,6 +30,9 @@ struct SectionView: View {
     /// so the whole header line toggles it: on macOS a DisclosureGroup label
     /// does not react to clicks, only its small arrow does.
     @State private var completedExpanded = false
+    /// Archive groups that are open, by group id (stable across reparses).
+    /// Held here for the same reason as `completedExpanded`.
+    @State private var openArchiveIDs: Set<UUID> = []
     @Environment(\.highlightedTaskID) private var highlightedTaskID
     @Environment(\.taskRowAppeared) private var taskRowAppeared
 
@@ -58,10 +67,12 @@ struct SectionView: View {
                     ForEach(window.visible(section.tasks)) { task in
                         TaskCardView(
                             task: task,
-                            kind: section.kind,
+                            kind: kinds[task.id] ?? section.kind,
                             displayedDate: displayedDate,
                             scoutDirectory: scoutDirectory,
                             selection: selection,
+                            density: density,
+                            fields: fields,
                             onOp: onOp
                         )
                         // A cross-ref chip scrolls here by id and outlines the
@@ -107,12 +118,18 @@ struct SectionView: View {
 
     private func archiveGroup(_ group: ActionSection.CollapsedGroup) -> some View {
         let groupWindow = archiveWindows[group.id] ?? TaskWindow()
-        return DisclosureGroup {
+        let isOpen = Binding(
+            get: { openArchiveIDs.contains(group.id) },
+            set: { open in
+                if open { openArchiveIDs.insert(group.id) } else { openArchiveIDs.remove(group.id) }
+            }
+        )
+        return DisclosureGroup(isExpanded: isOpen) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(groupWindow.visible(group.tasks)) { task in
                     TaskCardView(
                         task: task,
-                        kind: section.kind,
+                        kind: kinds[task.id] ?? section.kind,
                         displayedDate: displayedDate,
                         scoutDirectory: scoutDirectory,
                         // Deliberately not selectable. `ActionItemsView`
@@ -123,6 +140,8 @@ struct SectionView: View {
                         // copy isn't what the button means. Every other action
                         // on the card still works.
                         selection: nil,
+                        density: density,
+                        fields: fields,
                         onOp: onOp
                     )
                 }
@@ -145,18 +164,24 @@ struct SectionView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(.top, 6)
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
-                    .font(DS.sans(11))
-                    .foregroundStyle(DS.Ink.p4)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !group.tasks.isEmpty {
-                    Text("\(group.tasks.count)")
-                        .font(DS.mono(11, weight: .medium))
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isOpen.wrappedValue.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
+                        .font(DS.sans(11))
                         .foregroundStyle(DS.Ink.p4)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !group.tasks.isEmpty {
+                        Text("\(group.tasks.count)")
+                            .font(DS.mono(11, weight: .medium))
+                            .foregroundStyle(DS.Ink.p4)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plainHit)
         }
         .padding(.vertical, 4)
     }
@@ -293,6 +318,8 @@ struct SectionView: View {
                             selection: selection,
                             startsExpanded: true,
                             onCollapse: { openDoneIDs.remove(t.id) },
+                            density: density,
+                            fields: fields,
                             onOp: onOp
                         )
                     } else if selection != nil {

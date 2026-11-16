@@ -12,6 +12,8 @@ struct KnowledgeBaseView: View {
     /// A note another tab asked for (`AppState.requestOpenKBNote`), opened
     /// once the index is built, then cleared.
     var pendingNote: Binding<String?> = .constant(nil)
+    /// Privacy labels for the tree's lock badge (#453); nil shows no badges.
+    var privacy: KBPrivacyLabelService? = nil
 
     @State private var selectedPath: String? = nil
     @State private var expanded: Set<String> = []
@@ -153,7 +155,12 @@ struct KnowledgeBaseView: View {
                 emptyState(icon: "doc.text", title: "Empty knowledge base",
                            detail: "No notes yet. Use + to create the first one.")
             } else {
-                KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded)
+                if let privacy {
+                    KBBadgedTreeView(service: service, privacy: privacy,
+                                     selectedPath: $selectedPath, expanded: $expanded)
+                } else {
+                    KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded)
+                }
             }
         }
     }
@@ -311,6 +318,32 @@ struct KnowledgeBaseView: View {
         }
         walk(nodes)
         return result
+    }
+}
+
+/// The tree with privacy lock badges. Asks the engine for the labels of the
+/// files the tree shows: again after every reparse (an edit may change a label;
+/// unchanged files come from the stamp cache) and whenever a folder opens.
+private struct KBBadgedTreeView: View {
+    @ObservedObject var service: KnowledgeBaseService
+    @ObservedObject var privacy: KBPrivacyLabelService
+    @Binding var selectedPath: String?
+    @Binding var expanded: Set<String>
+    @State private var reparses = 0
+
+    private struct RefreshKey: Equatable {
+        let paths: [String]
+        let reparses: Int
+    }
+
+    var body: some View {
+        let visible = KBPrivacyLabelService.visibleFiles(in: service.tree, expanded: expanded)
+        KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded,
+                   privatePaths: privacy.privatePaths)
+            .onReceive(service.$tree) { _ in reparses &+= 1 }
+            .task(id: RefreshKey(paths: visible.map(\.relativePath), reparses: reparses)) {
+                await privacy.refresh(visible)
+            }
     }
 }
 

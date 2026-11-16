@@ -9,8 +9,12 @@ event-architecture vision spec.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from scout.ids import new_ulid
 
 
 @dataclass(frozen=True)
@@ -39,3 +43,21 @@ def now_iso() -> str:
     """ISO 8601 UTC string with millisecond precision and 'Z' suffix."""
     n = dt.datetime.now(tz=dt.UTC)
     return n.strftime("%Y-%m-%dT%H:%M:%S.") + f"{n.microsecond // 1000:03d}Z"
+
+
+EVENT_LOG_PREFIX = "schedule-events-"
+
+
+def append_event(log_dir: Path, *, kind: str, source: str, payload: dict[str, Any]) -> Event:
+    """Append one event row to ``<log_dir>/schedule-events-<UTC date>.jsonl`` and return it.
+
+    The same file and row shape the schedule tick writes (``schedule_tick._emit_event``),
+    for events raised outside the tick (``privacy.check_failed``,
+    ``privacy.outbound_blocked``). The file's date is the event's own UTC date.
+    """
+    ev = Event(id=new_ulid(), ts=now_iso(), kind=kind, source=source, payload=payload)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    row = {"id": ev.id, "ts": ev.ts, "kind": ev.kind, "source": ev.source, "payload": ev.payload}
+    with (log_dir / f"{EVENT_LOG_PREFIX}{ev.ts[:10]}.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    return ev

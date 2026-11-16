@@ -181,6 +181,14 @@ def test_vault_step_without_json_fails(tmp_path):
     assert row.result == "failed" and row.step == "vault" and "exited 70" in row.detail
 
 
+def test_vault_step_stderr_stays_out_of_the_row(tmp_path):
+    """The row's detail reaches pushes; stderr goes to the update log, and it can quote a user's file."""
+    deps, world, _ = make_deps(tmp_path)
+    world.overrides["bootstrap auto"] = Proc(70, "", "warning: a_private_value: [unclosed")
+    row = sur.run_update(deps, scheduled=True).row
+    assert row.step == "vault" and "exited 70" in row.detail and "a_private_value" not in row.detail
+
+
 def test_vault_json_after_progress_lines_is_parsed(tmp_path):
     deps, world, _ = make_deps(tmp_path)
     payload = json.dumps({"action": "upgrade", "conflicts": [], "mutated": False})

@@ -1,0 +1,534 @@
+"""restrict_tools: the custom-connector field, tool_gate(), and the PreToolUse hook that enforces it."""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+from scout import custom_connectors as cc
+from scout.hooks import mcp_tool_gate as gate_hook
+
+PLUGIN = Path(__file__).parent.parent.parent.parent
+T = "mcp__knowledge__"
+
+READER = {
+    "display_name": "Company knowledge",
+    "server": "knowledge",
+    "probe": f"{T}whoami",
+    "restrict_tools": True,
+    "lookup": {
+        "tools": [f"{T}knowledge_search", f"{T}document_read"],
+        "when": "Before researching a company topic, search the company knowledge base.",
+    },
+}
+
+
+def _parse(body: object) -> tuple[cc.CustomConnector | None, list[cc.Issue]]:
+    return cc.parse_connector("company_kb", body, reserved=set(), presets={})
+
+
+def _write(vault: Path, connectors: dict) -> None:
+    vault.mkdir(parents=True, exist_ok=True)
+    (vault / cc.CUSTOM_FILE).write_text(yaml.safe_dump({"schema_version": 1, "connectors": connectors}))
+
+
+# --- the field ----------------------------------------------------------------
+
+
+def test_restrict_tools_parses_and_defaults_off():
+    c, issues = _parse(READER)
+    assert issues == [] and c is not None and c.restrict_tools is True
+    c, issues = _parse({k: v for k, v in READER.items() if k != "restrict_tools"})
+    assert issues == [] and c is not None and c.restrict_tools is False
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None, ["true"]])
+def test_restrict_tools_must_be_a_bool(value):
+    c, issues = _parse({**READER, "restrict_tools": value})
+    if value is None:  # YAML null reads as absent
+        assert issues == [] and c is not None and c.restrict_tools is False
+        return
+    assert c is None
+    assert [i.path for i in issues] == ["connectors.company_kb.restrict_tools"]
+
+
+def test_restrict_tools_needs_an_mcp_server():
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "restrict_tools": True,
+        "lookup": {"tools": [{"bash": "tix show"}], "when": "Look up a ticket."},
+    }
+    c, issues = _parse(body)
+    assert c is None
+    assert "needs an MCP server" in issues[0].message
+
+
+def test_restrict_tools_survives_a_write_and_load_round_trip(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cc.write(vault, {"company_kb": READER})
+    loaded = cc.load(vault, plugin_root=PLUGIN)
+    assert loaded.issues == []
+    assert loaded.connectors["company_kb"].restrict_tools is True
+
+
+# --- tool_gate ------------------------------------------------------------------
+
+
+def test_gate_lists_probe_and_activity_tools_of_restricted_entries(tmp_path):
+    other = {
+        "display_name": "Mail",
+        "server": "suite",
+        "probe": "mcp__suite__list_folders",
+        "inbound": {"tools": ["mcp__suite__search"], "focus": "New mail."},
+    }
+    _write(tmp_path, {"company_kb": READER, "mail": other})
+    assert cc.tool_gate(tmp_path) == {
+        "knowledge": frozenset({f"{T}whoami", f"{T}knowledge_search", f"{T}document_read"})
+    }
+
+
+def test_no_file_or_no_restricted_entry_means_no_gate(tmp_path):
+    assert cc.tool_gate(tmp_path) == {}
+    _write(tmp_path, {"company_kb": {**READER, "restrict_tools": False}})
+    assert cc.tool_gate(tmp_path) == {}
+    _write(tmp_path, {"company_kb": {k: v for k, v in READER.items() if k != "restrict_tools"}})
+    assert cc.tool_gate(tmp_path) == {}
+
+
+def test_invalid_restricted_entry_stays_gated(tmp_path):
+    # `load` drops this entry (no display_name), but its restriction must not lift.
+    body = {k: v for k, v in READER.items() if k != "display_name"}
+    _write(tmp_path, {"company_kb": {**body, "restrict_tools": "yes"}})
+    assert cc.load(tmp_path, plugin_root=PLUGIN).connectors == {}
+    assert set(cc.tool_gate(tmp_path)) == {"knowledge"}
+
+
+def test_restricted_entry_naming_no_server_gates_everything(tmp_path):
+    _write(tmp_path, {"broken": {"restrict_tools": True, "probe": "not a tool"}})
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+def test_non_yaml_file_gates_every_server(tmp_path):
+    # Its layout could hide a restricted server from any reading short of a parse (#564).
+    (tmp_path / cc.CUSTOM_FILE).write_text(
+        "connectors:\n  company_kb:\n    server: knowledge\n    restrict_tools: true\n"
+        "    probe: mcp__knowledge__whoami\n    lookup: [unclosed\n"
+    )
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+# Each hides the restricted server from a line-by-line reading, with another server in plain sight.
+HIDDEN_RESTRICTED = [
+    pytest.param("  writer: {server: writer, restrict_tools: true}\n", "", id="flow-style"),
+    pytest.param('  writer:\n    "server": writer\n    restrict_tools: true\n', "", id="quoted-key"),
+    pytest.param("  writer:\n    server: *n\n    restrict_tools: true\n", "name: &n writer\n", id="alias"),
+]
+
+
+@pytest.mark.parametrize(("entry", "before"), HIDDEN_RESTRICTED)
+def test_a_syntax_error_gates_a_hidden_restricted_server(tmp_path, monkeypatch, entry, before):
+    (tmp_path / cc.CUSTOM_FILE).write_text(
+        f"schema_version: 1\n{before}connectors:\n  other:\n    server: other\n"
+        "    probe: mcp__other__ping\n" + entry + "  broken: [unclosed\n"
+    )
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    for tool in ("mcp__writer__write", "mcp__other__ping", "mcp__unrelated__list"):
+        out = gate_hook.run(stdin=_payload(tool))
+        assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny", tool
+
+
+@pytest.mark.parametrize(
+    ("text", "where"),
+    [
+        pytest.param("restrict_tools: true\nconnectors: [unclosed\n", "ParserError at line 3", id="syntax-error"),
+        pytest.param("restrict_tools: true\nwhen: 2026-13-45\n", "ValueError at line 2", id="value-error"),
+        pytest.param("- restrict_tools\n", "no connectors mapping", id="not-a-mapping"),
+        pytest.param(
+            "connectors:\n  broken:\n    restrict_tools: true\n", "'broken' names no MCP server", id="no-server"
+        ),
+    ],
+)
+def test_the_deny_reason_names_the_file_and_where(tmp_path, monkeypatch, text, where):
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__suite__search"))
+    assert out is not None
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert cc.CUSTOM_FILE in reason and where in reason and "\n" not in reason
+    assert "unclosed" not in reason and "2026-13-45" not in reason
+
+
+def test_the_deny_reason_on_an_unreadable_file(tmp_path, monkeypatch):
+    (tmp_path / cc.CUSTOM_FILE).write_bytes(b"\xff\xfe restrict_tools")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__suite__search"))
+    assert out is not None
+    assert (
+        f"{cc.CUSTOM_FILE} could not be read (UnicodeDecodeError)"
+        in (out["hookSpecificOutput"]["permissionDecisionReason"])
+    )
+
+
+def test_the_doctor_says_every_mcp_tool_is_blocked(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_custom_connectors
+
+    (tmp_path / cc.CUSTOM_FILE).write_text("restrict_tools: true\nconnectors: [unclosed\n")
+    warnings = _check_custom_connectors(vault=tmp_path)
+    (line,) = [w for w in warnings if "every MCP tool" in w]
+    assert line.startswith(f"{cc.CUSTOM_FILE} could not be read: ParserError at line 3")
+    _write(tmp_path, {"company_kb": READER})
+    assert not any("every MCP tool" in w for w in _check_custom_connectors(vault=tmp_path))
+
+
+@pytest.mark.parametrize("text", ["restrict_tools: true\n: : [", "- restrict_tools\n- x\n"])
+def test_unparseable_or_odd_shape_without_servers_gates_everything(tmp_path, text):
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+def test_unreadable_file_gates_everything(tmp_path):
+    (tmp_path / cc.CUSTOM_FILE).write_bytes(b"\xff\xfe restrict_tools")
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+# --- decide -----------------------------------------------------------------------
+
+GATE = {"knowledge": frozenset({f"{T}whoami", f"{T}knowledge_search"})}
+
+
+def test_listed_tool_and_other_servers_pass():
+    assert gate_hook.decide(f"{T}knowledge_search", GATE) is None
+    assert gate_hook.decide("mcp__suite__send_message", GATE) is None
+    assert gate_hook.decide("Bash", GATE) is None
+
+
+@pytest.mark.parametrize("tool", [f"{T}remember", f"{T}post_to_conversation", "mcp__Knowledge__remember"])
+def test_unlisted_tool_of_restricted_server_is_denied(tool):
+    reason = gate_hook.decide(tool, GATE)
+    assert reason is not None and tool in reason and f"{T}knowledge_search" in reason
+
+
+def test_gate_all_denies_every_mcp_tool():
+    assert gate_hook.decide("mcp__suite__search", {cc.GATE_ALL: frozenset()}) is not None
+    assert gate_hook.decide("Read", {cc.GATE_ALL: frozenset()}) is None
+
+
+# --- run / main -------------------------------------------------------------------
+
+
+@pytest.fixture
+def vault(tmp_path, monkeypatch):
+    v = tmp_path / "vault"
+    _write(v, {"company_kb": READER})
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(v))
+    monkeypatch.setenv("SCOUT_MODE", "research")
+    return v
+
+
+def _payload(tool: str) -> io.StringIO:
+    return io.StringIO(json.dumps({"tool_name": tool, "tool_input": {}, "session_id": "s1"}))
+
+
+def test_run_denies_an_unlisted_tool(vault):
+    out = gate_hook.run(stdin=_payload(f"{T}remember"))
+    assert out is not None
+    spec = out["hookSpecificOutput"]
+    assert spec["hookEventName"] == "PreToolUse" and spec["permissionDecision"] == "deny"
+
+
+def test_run_allows_a_listed_tool(vault):
+    assert gate_hook.run(stdin=_payload(f"{T}knowledge_search")) is None
+
+
+def test_run_gates_without_scout_mode(vault, monkeypatch):
+    # Gating never depends on whether the session is a run.
+    monkeypatch.delenv("SCOUT_MODE")
+    out = gate_hook.run(stdin=_payload(f"{T}remember"))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_session_outside_any_vault_is_not_gated(tmp_path, monkeypatch):
+    # No SCOUT_DATA_DIR and no vault above cwd: no ~/Scout fallback, nothing applies.
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    payload = {"tool_name": f"{T}remember", "cwd": str(tmp_path)}
+    assert gate_hook.run(stdin=io.StringIO(json.dumps(payload))) is None
+    monkeypatch.chdir(tmp_path)
+    assert gate_hook.run(stdin=_payload(f"{T}remember")) is None
+
+
+def _transcript(tmp_path: Path, prompt: str) -> Path:
+    t = tmp_path / "transcript.jsonl"
+    t.write_text(json.dumps({"message": {"role": "user", "content": prompt}}) + "\n")
+    return t
+
+
+@pytest.fixture
+def runnerless(tmp_path, monkeypatch):
+    """A vault session with no runner around it: no SCOUT_MODE, no SCOUT_DATA_DIR."""
+    v = tmp_path / "vault"
+    _write(v, {"company_kb": READER})
+    (v / "scout-config.yaml").write_text("user: {}\n")
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    return v
+
+
+def _vault_payload(vault: Path, tool: str, transcript: Path) -> io.StringIO:
+    payload = {"tool_name": tool, "cwd": str(vault / "knowledge-base"), "transcript_path": str(transcript)}
+    return io.StringIO(json.dumps(payload))
+
+
+def test_prompt_attributed_run_in_a_vault_is_gated(runnerless, tmp_path):
+    # A sandbox running the runner's prompt itself: the vault comes from cwd, the mode from the prompt.
+    t = _transcript(tmp_path, "You are Scout, running in RESEARCH mode.")
+    out = gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}knowledge_search", t)) is None
+
+
+def test_interactive_session_in_a_restrict_tools_vault_is_gated(runnerless, tmp_path):
+    # A prompt with no run-mode line (an interactive session, or a launcher that lost it) is gated all the same.
+    t = _transcript(tmp_path, "what's on my plate today?")
+    out = gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}knowledge_search", t)) is None
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"tool_name": 3}', '{"tool_name": "Read"}'])
+def test_run_ignores_non_mcp_or_malformed_payloads(vault, raw):
+    assert gate_hook.run(stdin=io.StringIO(raw)) is None
+
+
+def test_run_fails_closed_when_the_gate_errors(vault, monkeypatch):
+    def boom(_vault):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(gate_hook, "tool_gate", boom)
+    out = gate_hook.run(stdin=_payload("mcp__suite__search"))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_main_prints_the_decision(vault, monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", _payload(f"{T}remember"))
+    assert gate_hook.main() == 0
+    assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    monkeypatch.setattr("sys.stdin", _payload(f"{T}whoami"))
+    assert gate_hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+# --- hooks.json wiring --------------------------------------------------------------
+
+
+def _pre_tool_use_command() -> str:
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    (entry,) = [h for h in hooks if h.get("matcher") == "mcp__.*"]
+    (cmd,) = entry["hooks"]
+    return cmd["command"]
+
+
+def test_hooks_json_runs_the_gate_on_mcp_calls():
+    assert 'scoutctl" hook mcp-tool-gate' in _pre_tool_use_command()
+
+
+def test_hook_command_skips_python_outside_a_vault(tmp_path):
+    # No SCOUT_DATA_DIR and a cwd in no vault: the shell guard exits before exec — CLAUDE_PLUGIN_ROOT points nowhere.
+    env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
+    env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "missing")
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()], env=env, cwd=tmp_path, input="{}", capture_output=True, text=True
+    )
+    assert res.returncode == 0 and res.stdout == ""
+
+
+def test_hook_command_finds_the_vault_from_cwd_and_denies(runnerless, tmp_path):
+    sub = runnerless / "knowledge-base"
+    sub.mkdir()
+    t = _transcript(tmp_path, "an interactive question")
+    env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()],
+        env=env,
+        cwd=sub,
+        input=_vault_payload(runnerless, f"{T}remember", t).getvalue(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("custom_file", [None, "schema_version: 1\nconnectors: {}\n"])
+def test_hook_command_skips_python_when_no_connector_restricts(tmp_path, custom_file):
+    v = tmp_path / "vault"
+    v.mkdir()
+    if custom_file is not None:
+        (v / cc.CUSTOM_FILE).write_text(custom_file)
+    env = {**os.environ, "SCOUT_MODE": "research", "SCOUT_DATA_DIR": str(v)}
+    env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "missing")
+    res = subprocess.run(["sh", "-c", _pre_tool_use_command()], env=env, input="{}", capture_output=True, text=True)
+    assert res.returncode == 0 and res.stdout == ""
+
+
+def test_hook_command_denies_through_the_real_cli(vault):
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()],
+        env=env,
+        input=json.dumps({"tool_name": f"{T}remember"}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# --- a key spelled with YAML escapes (#590) ------------------------------------------
+# A double-quoted YAML key processes escapes, so the parsed key can be restrict_tools while the
+# file's text never says so. The gate goes by the parsed file, and the shell guard must start
+# Python for any file that might set the key.
+
+NOTES_ENTRY = (
+    "schema_version: 1\nconnectors:\n  notes_reader:\n    display_name: Notes reader\n"
+    "    server: notes\n    probe: mcp__notes__whoami\n{key}"
+    "    lookup:\n      tools: [mcp__notes__search]\n      when: Before answering, search the notes.\n"
+)
+KEY_SPELLINGS = [
+    pytest.param("    restrict_tools: true\n", id="plain"),
+    pytest.param('    "restrict_tools": true\n', id="double-quoted"),
+    pytest.param('    "restrict\\x5ftools": true\n', id="x5f"),
+    pytest.param('    "restrict\\u005ftools": true\n', id="u005f"),
+    pytest.param('    "restrict\\U0000005ftools": true\n', id="U0000005f"),
+]
+NOTES_GATE = {"notes": frozenset({"mcp__notes__whoami", "mcp__notes__search"})}
+
+
+@pytest.mark.parametrize("key", KEY_SPELLINGS)
+def test_the_gate_reads_the_parsed_key_however_it_is_spelled(tmp_path, monkeypatch, key):
+    (tmp_path / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    assert cc.load(tmp_path, plugin_root=PLUGIN).connectors["notes_reader"].restrict_tools is True
+    assert cc.tool_gate(tmp_path) == NOTES_GATE
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__notes__delete_note"))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("", id="no-key"),
+        # YAML's \_ is a no-break space, not an underscore: the parsed key isn't restrict_tools.
+        pytest.param('    "restrict\\_tools": true\n', id="nbsp-escape"),
+    ],
+)
+def test_no_parsed_key_means_no_gate(tmp_path, key):
+    (tmp_path / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    # `load` drops the nbsp entry for its unknown key; either way it isn't restricted.
+    loaded = cc.load(tmp_path, plugin_root=PLUGIN).connectors.get("notes_reader")
+    assert loaded is None or loaded.restrict_tools is False
+    assert cc.tool_gate(tmp_path) == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("# connector notes\n", id="comments-only"),
+        pytest.param("# C:\\tools\n", id="comment-with-backslash"),
+        pytest.param("schema_version: 1\n", id="schema-only"),
+        pytest.param("schema_version: 1\nconnectors:\n", id="bare-connectors"),
+        pytest.param('schema_version: 1\n# C:\\tools\n"connectors":\n', id="bare-connectors-with-backslash"),
+    ],
+)
+def test_a_file_with_no_connectors_means_no_gate(tmp_path, text):
+    # The guard starts Python for the backslash ones; with nothing to restrict, the gate stays off.
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    assert cc.tool_gate(tmp_path) == {} and cc.tool_gate_problem(tmp_path) is None
+
+
+def test_an_absent_file_means_no_gate(tmp_path):
+    assert cc.tool_gate(tmp_path) == {} and cc.tool_gate_problem(tmp_path) is None
+
+
+def test_a_syntax_error_gates_everything_without_the_literal_key(tmp_path):
+    # With no literal-text shortcut, every parse failure fails closed (#564's rule).
+    (tmp_path / cc.CUSTOM_FILE).write_text('connectors:\n  w:\n    "restrict\\x5ftools": true\n    x: [unclosed\n')
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+def _stub_plugin_root(tmp_path: Path) -> Path:
+    """A CLAUDE_PLUGIN_ROOT whose scoutctl only says it ran, to see whether the shell guard starts Python."""
+    stub = tmp_path / "stub-plugin" / "engine" / "bin" / "scoutctl"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("#!/bin/sh\necho ran\n")
+    stub.chmod(0o755)
+    return tmp_path / "stub-plugin"
+
+
+def _guard(tmp_path: Path, vault: Path) -> str:
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault), "CLAUDE_PLUGIN_ROOT": str(_stub_plugin_root(tmp_path))}
+    res = subprocess.run(["sh", "-c", _pre_tool_use_command()], env=env, input="{}", capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    return res.stdout
+
+
+@pytest.mark.parametrize("key", KEY_SPELLINGS)
+def test_hook_command_starts_python_for_every_spelling_of_the_key(tmp_path, key):
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    assert _guard(tmp_path, v) == "ran\n"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(NOTES_ENTRY.format(key="    restrict_tools: true\n").encode("utf-16"), id="utf-16"),
+        pytest.param(b"connectors: {}\n\x00\n", id="nul-byte"),
+    ],
+)
+def test_hook_command_starts_python_for_a_file_grep_cannot_read_as_text(tmp_path, content):
+    # Another encoding hides the key's bytes from grep; Python can't read the file either, so it gates everything.
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_bytes(content)
+    assert _guard(tmp_path, v) == "ran\n"
+
+
+@pytest.mark.parametrize("custom_file", [None, "", NOTES_ENTRY.format(key=""), "schema_version: 1\nconnectors: {}\n"])
+def test_hook_command_skips_python_for_a_file_that_cannot_set_the_key(tmp_path, custom_file):
+    v = tmp_path / "vault"
+    v.mkdir()
+    if custom_file is not None:
+        (v / cc.CUSTOM_FILE).write_text(custom_file)
+    assert _guard(tmp_path, v) == ""
+
+
+def test_hook_command_denies_an_escaped_key_through_the_real_cli(tmp_path):
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key='    "restrict\\x5ftools": true\n'))
+    env = {**os.environ, "SCOUT_DATA_DIR": str(v), "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()],
+        env=env,
+        input=json.dumps({"tool_name": "mcp__notes__delete_note"}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

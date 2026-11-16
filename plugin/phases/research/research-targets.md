@@ -10,7 +10,7 @@ requires: null
 
 ## Step 1a: Check the Research Queue
 
-Read every `*.md` file in `knowledge-base/research-queue/` (the thin `knowledge-base/research-queue.md` is now just the run log — see the end of this step). Each file is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings.
+Read every `*.md` file in `knowledge-base/research-queue/` (list them with `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'`, read each with `scripts/scoutctl kb read`; the thin `knowledge-base/research-queue.md` is now just the run log — see the end of this step). Each file is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings.
 
 `status: open` and `in-progress` are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
 
@@ -50,7 +50,9 @@ If the queue is empty (no `open`/`in-progress` items, or after completing them),
 4. Organizations with no industry/competitive context
 5. Technology topics related to active projects
 
-**Skip:** Entities that were researched in the last 7 days (check git log for `research:` commits).
+Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates.
+
+**Skip:** Entities that were researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits). **Never pick a `[private]` entity or queue item as a research target**: researching it puts its name into a web or connector query. A skipped private item is never mentioned on a shared surface.
 
 ## Step 1c: Pick 1-3 Research Targets
 

@@ -363,6 +363,7 @@ SECTION_STYLES = {
     "🟡": ("todo", "To do"),
     "🟢": ("watching", "Watching"),
     "💡": ("focus", "Today's focus"),
+    "🎯": ("focus", "Today's focus"),  # older files and runs
     "📅": ("meetings", "Today's meetings"),
     "✅": ("done", "Recently completed"),
     "📋": ("digest", "Scout digest"),

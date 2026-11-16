@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -54,7 +55,7 @@ def test_harness_shadows_every_signing_and_publishing_tool(tmp_path):
         assert found and found.startswith(str(tmp_path / "stubs")), tool
 
 
-def test_prepare_bumps_all_five_places_and_both_changelogs(tmp_path):
+def test_prepare_bumps_every_version_file_and_both_changelogs(tmp_path):
     r = make_repo(tmp_path)
     done = r.run("prepare", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode == 0, done.stderr
@@ -62,8 +63,14 @@ def test_prepare_bumps_all_five_places_and_both_changelogs(tmp_path):
     assert _git(r.root, "log", "-1", "--format=%s") == "release: v0.15.0"
     pbx = (r.root / "apps/macos/Scout.xcodeproj/project.pbxproj").read_text()
     assert pbx.count("MARKETING_VERSION = 0.15.0;") == 4
-    for rel in ("plugin/.claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    for rel in (
+        "plugin/.claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json",
+        "plugin/.claude-plugin/marketplace.json",
+    ):
         assert '"0.15.0"' in (r.root / rel).read_text()
+    # The release commit carries every bumped file: nothing is left modified after it.
+    assert _git(r.root, "status", "--porcelain", "--untracked-files=no") == ""
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
         text = (r.root / rel).read_text()
         assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
@@ -150,6 +157,40 @@ def test_the_eval_reminder_never_stops_a_release(tmp_path):
     pr = [c for c in r.calls() if c.startswith("gh pr create")]
     body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
     assert "- [ ] Eval (local, not a gate): ran `plugin/scripts/eval.sh` on my own Claude login" in body
+
+
+def _kb_gate_result(r, stamp, verdict):
+    """A kb-gate result dir as `eval.sh kb-gate` leaves it: its report beside the sample."""
+    d = r.root / ".eval-results" / f"kb-front-page-kb-gate-{stamp}-1"
+    d.mkdir(parents=True)
+    checkout = {"commit": "ab12cd34ef56" * 3 + "abcd", "branch": "main", "dirty": False}
+    report = {"gate": "kb-writing", "verdict": verdict, "passed": verdict == "pass", "sample": {"checkout": checkout}}
+    (d / "kb-gate-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def test_prepare_names_the_kb_writing_gate_and_the_release_pr_carries_it(tmp_path):
+    r = make_repo(tmp_path)
+    done = r.run("prepare", "patch")
+    assert done.returncode == 0, done.stderr  # a reminder: the gate needs a Claude login, so it never refuses
+    assert "→ KB-writing gate (a release gate, run locally): no local result yet." in done.stdout
+    assert "    plugin/scripts/eval.sh kb-gate" in done.stdout
+    pr = [c for c in r.calls() if c.startswith("gh pr create")]
+    body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
+    assert "- [ ] KB-writing gate (local, **a release gate**): `plugin/scripts/eval.sh kb-gate` passed (exit 0)" in body
+    assert body.index("KB-writing gate") < body.index("Eval (local, not a gate)")
+
+
+def test_prepare_reports_the_newest_kb_gate_verdict(tmp_path):
+    r = make_repo(tmp_path)
+    _kb_gate_result(r, "20200101-000000", "pass")
+    _kb_gate_result(r, "20200102-093000", "fail")
+    done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    newest = "KB-writing gate (a release gate, run locally): newest local result 2020-01-02 09:30, fail,"
+    assert f"{newest} on main @ {'ab12cd34ef56' * 3}abcd." in done.stdout
+    # It can't be this release's run, and says so: prepare made the release commit just before.
+    assert "That is NOT a run of this release" in done.stdout
+    assert "On release/v0.14.1, before merging the release PR" in done.stdout
 
 
 def test_prepare_names_the_headless_self_update_rehearsal(tmp_path):
@@ -405,6 +446,21 @@ def test_release_script_moves_the_branch_the_marketplace_pins():
     }
     script = (REAL_REPO / "scripts/release.sh").read_text(encoding="utf-8")
     assert re.search(r'(?m)^STABLE_BRANCH="stable"$', script)
+
+
+def test_the_plugin_subtree_is_its_own_marketplace_root():
+    """plugin/README.md: Agnes serves no files for a git-subdir source, so it reads plugin/ as a marketplace
+    root, whose "./" source is the plugin itself. It is the root manifest with only scout, sourced "./" —
+    byte for byte what apps/macos/scripts/bundle-engine.sh would generate."""
+    import json
+
+    root = json.loads((REAL_REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    own_text = (REAL_REPO / "plugin/.claude-plugin/marketplace.json").read_text(encoding="utf-8")
+    scout = [dict(p, source="./") for p in root["plugins"] if p["name"] == "scout"]
+    expected = {k: (scout if k == "plugins" else v) for k, v in root.items()}
+    assert json.loads(own_text) == expected
+    assert own_text == json.dumps(expected, indent=2) + "\n"
+    assert (REAL_REPO / "plugin" / ".claude-plugin" / "plugin.json").is_file()
 
 
 def test_finalize_targets_the_release_pr_merge_commit(tmp_path):

@@ -80,6 +80,22 @@ struct LeafSmokeTests {
             size: CGSize(width: 280, height: 160))
     }
 
+    @Test("a board card and the board render compact and with every field flipped")
+    func boardRendersDisplayOptions() {
+        let task = SmokeFixtures.task(
+            comments: SmokeFixtures.comments, deepLinks: SmokeFixtures.deepLinks,
+            snoozedUntil: SmokeFixtures.day.addingTimeInterval(86_400))
+        let flipped = ActionItemsDisplay.Fields(refs: false, snooze: false, comments: true)
+        ViewHost.render(
+            BoardCardView(task: task, kind: .todo, scoutDirectory: Self.vault, density: .compact, fields: flipped),
+            size: CGSize(width: 280, height: 160))
+        let sections = [SmokeFixtures.section(kind: .urgent), SmokeFixtures.section(kind: .todo)]
+        ViewHost.render(
+            BoardView(columns: ActionBoardColumn.columns(from: sections, sort: .alphabetical),
+                      scoutDirectory: Self.vault, density: .compact, fields: flipped),
+            size: CGSize(width: 1200, height: 700))
+    }
+
     @Test("the board renders populated and empty")
     func boardRenders() {
         let sections = [

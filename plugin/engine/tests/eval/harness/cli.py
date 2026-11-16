@@ -13,8 +13,12 @@ import subprocess
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .build import EVAL_ROOT, build_vault
+
+if TYPE_CHECKING:
+    from .scenario import Scenario
 
 SCENARIOS_DIR = EVAL_ROOT / "scenarios"
 REPO_ROOT = EVAL_ROOT.parents[3]
@@ -26,7 +30,12 @@ def _scenario_dir(name: str | None) -> Path | None:
     path = SCENARIOS_DIR / name
     if not path.is_dir():
         raise ValueError(f"unknown scenario {name!r} (looked in {SCENARIOS_DIR})")
-    return path
+    from .scenario import load_scenario
+
+    try:
+        return load_scenario(name).files  # a variant's overlays live in its files_from scenario
+    except (FileNotFoundError, KeyError):
+        return path
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -95,6 +104,101 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _kb_scenario(args: argparse.Namespace) -> Scenario:
+    """``--scenario`` with ``--max-growth`` applied. Raises ValueError or FileNotFoundError."""
+    import dataclasses
+
+    from .checks.kb_writing import KB_CHECKS
+    from .scenario import load_scenario
+
+    scenario = load_scenario(args.scenario)
+    if not set(KB_CHECKS) & set(scenario.checks):
+        raise ValueError(f"scenario {scenario.name!r} has no KB checks")
+    if args.max_growth is not None:
+        if args.max_growth < 0:
+            raise ValueError("--max-growth must be 0 or more bytes")
+        scenario = dataclasses.replace(scenario, max_front_page_growth=args.max_growth)
+    return scenario
+
+
+def _write_report(report: dict[str, Any], paths: list[Path]) -> None:
+    import json
+
+    text = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    print(text, end="")
+
+
+def _cmd_kb_gate(args: argparse.Namespace) -> int:
+    """The KB-writing release gate: ONE consolidation session, scored, with a JSON report.
+
+    Exit 0 pass, 1 fail, 2 when it couldn't decide (no login, an aborted session, an unscored check).
+    """
+    from .checks.kb_writing import KB_CHECKS
+    from .kb_gate import REPORT_NAME, checkout_state, exit_code, gate_report, spec_for
+    from .plan import DEFAULT_MODEL
+    from .runner import LoginRequired, run_sample
+
+    today = date.fromisoformat(args.today) if args.today else _utc_today()
+    try:
+        scenario = _kb_scenario(args)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    model = "opus" if args.opus else DEFAULT_MODEL
+    print(
+        f"Will start 1 session ({scenario.name} ×1, {scenario.mode}) on {model} via your Claude login: "
+        f"the KB-writing release gate (front page may grow {scenario.max_front_page_growth} bytes).",
+        file=sys.stderr,
+    )
+    if not args.yes:
+        print("Press Enter to start, Ctrl-C to cancel: ", end="", file=sys.stderr, flush=True)
+        input()
+    cli_version = args.cli_version or _cli_version(real_claude)
+    checkout = checkout_state(REPO_ROOT)  # before the run: what code it tests
+    try:
+        sample = run_sample(
+            scenario, today=today, rep=1, model=model, results_root=Path(args.results).resolve(),
+            real_claude=real_claude, arm="kb-gate", cli_version=cli_version,
+        )  # fmt: skip
+    except LoginRequired as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    checks = [c for c in sample.checks if c.name in KB_CHECKS]
+    meta = {k: sample.meta.get(k) for k in ("model", "resolved_model", "cli_version", "today", "started_at")}
+    report = gate_report(
+        sample.result_dir / "vault", spec_for(scenario), checks, scenario=scenario.name,
+        sample={"result_dir": str(sample.result_dir), **meta, "checkout": checkout, "aborted": sample.aborted},
+    )  # fmt: skip
+    _write_report(report, [sample.result_dir / REPORT_NAME] + ([Path(args.report)] if args.report else []))
+    return exit_code(report)
+
+
+def _cmd_kb_score(args: argparse.Namespace) -> int:
+    """Score a vault that already exists (a kept result dir's ``vault/``, say). Starts no session."""
+    from .kb_gate import exit_code, gate_report, score_kb, spec_for
+
+    vault = Path(args.vault).resolve()
+    if not (vault / ".git").is_dir():
+        print(f"eval: {vault} is not a vault built by the harness (no .git)", file=sys.stderr)
+        return 2
+    try:
+        scenario = _kb_scenario(args)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    spec = spec_for(scenario)
+    report = gate_report(vault, spec, score_kb(vault, spec), scenario=scenario.name)
+    _write_report(report, [Path(args.report)] if args.report else [])
+    return exit_code(report)
+
+
 CACHE_STALE_DAYS = 14
 
 
@@ -118,7 +222,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     from .report import format_comparison
     from .runner import LoginRequired, run_sample
     from .scenario import load_scenario
-    from .verdicts import compare_arms
+    from .verdicts import compare_arms, hit_limit
 
     today = date.fromisoformat(args.today) if args.today else _utc_today()
     model = "opus" if args.opus else DEFAULT_MODEL
@@ -191,8 +295,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     print(f"… {label}", flush=True)
                     sample = run_sample(s, rep=i + 1, arm=arm, checkout=checkout, **common)
                     (base_samples if arm == "base" else head_samples).append(sample)
+                    if sample.aborted and hit_limit(sample):
+                        # Only this sample is out: the rest still score, and "within limits" counts it.
+                        print(f"   hit a run limit ({sample.aborted.get('reason')}): left out of checks and metrics")
+                        continue  # never cached as a base sample
                     if sample.aborted:
-                        # The verdict is already blocked: don't spend more of the subscription.
+                        # A harness failure blocks the verdict: don't spend more of the subscription.
                         left = (missing - len(base_samples) + len(cached)) + (args.reps - len(head_samples))
                         print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}); "
                               f"{left} sample(s) never ran ==")  # fmt: skip
@@ -229,7 +337,7 @@ def _cmd_compare_models(args: argparse.Namespace) -> int:
     from .report import format_comparison
     from .runner import LoginRequired, run_sample
     from .scenario import load_scenario
-    from .verdicts import compare_arms
+    from .verdicts import compare_arms, hit_limit
 
     model_a, model_b = args.a.strip().lower(), args.b.strip().lower()
     for model in (model_a, model_b):
@@ -281,6 +389,9 @@ def _cmd_compare_models(args: argparse.Namespace) -> int:
                         real_claude=real_claude, arm=model, cli_version=cli_version,
                     )  # fmt: skip
                     arms[model].append(sample)
+                    if sample.aborted and hit_limit(sample):
+                        print(f"   hit a run limit ({sample.aborted.get('reason')}): left out of checks and metrics")
+                        continue
                     if sample.aborted:
                         print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}) ==")
                         cmp = compare_arms(arms[model_a], arms[model_b], across_models=True)
@@ -346,5 +457,25 @@ def main(argv: list[str] | None = None) -> int:
     cm.add_argument("--claude", help=argparse.SUPPRESS)  # a stand-in claude binary, for tests
     cm.add_argument("--cli-version", help=argparse.SUPPRESS)  # skip `claude --version`, for tests
     cm.set_defaults(func=_cmd_compare_models)
+    gate = sub.add_parser(
+        "kb-gate",
+        help="the KB-writing release gate: one consolidation session on your Claude login, scored, JSON report",
+    )
+    gate.add_argument("--scenario", default="kb-front-page", help="a scenario with KB checks (default kb-front-page)")
+    gate.add_argument("--max-growth", type=int, help="bytes the front page may grow (default: the scenario's)")
+    gate.add_argument("--report", help="also write the JSON report here (it always goes in the result dir)")
+    gate.add_argument("--opus", action="store_true", help="use Opus instead of the default Sonnet")
+    gate.add_argument("--yes", action="store_true", help="don't wait for Enter after printing the plan")
+    gate.add_argument("--today", help="render fixture dates as if today were YYYY-MM-DD (default: today, UTC)")
+    gate.add_argument("--results", default=str(REPO_ROOT / ".eval-results"), help="where result dirs go")
+    gate.add_argument("--claude", help=argparse.SUPPRESS)  # a stand-in claude binary, for tests
+    gate.add_argument("--cli-version", help=argparse.SUPPRESS)  # skip `claude --version`, for tests
+    gate.set_defaults(func=_cmd_kb_gate)
+    score = sub.add_parser("kb-score", help="score an existing vault against the KB-writing gate (starts no session)")
+    score.add_argument("vault", help="a vault the harness built, e.g. .eval-results/<dir>/vault")
+    score.add_argument("--scenario", default="kb-front-page", help="a scenario with KB checks (default kb-front-page)")
+    score.add_argument("--max-growth", type=int, help="bytes the front page may grow (default: the scenario's)")
+    score.add_argument("--report", help="also write the JSON report here")
+    score.set_defaults(func=_cmd_kb_score)
     args = parser.parse_args(argv)
     return int(args.func(args))

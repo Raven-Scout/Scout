@@ -98,12 +98,12 @@ def test_run_decodes_3_turn_mixed_model_fixture(tmp_path, monkeypatch):
     assert row["num_turns"] == 3
     assert row["duration_ms"] == 0
     assert row["error"] is None
-    # Per-turn cost:
-    #   Opus 1: (1000*15 + 500*75 + 100*1.5 + 200*18.75)/1e6 = 0.0564
-    #   Opus 2: (2000*15 + 1000*75 + 50*1.5 + 100*18.75)/1e6 = 0.10695
-    #   Sonnet:  (3000*3 + 1500*15 + 200*0.3 + 400*3.75)/1e6 = 0.03306
-    #   total = 0.19641
-    assert row["cost_usd"] == pytest.approx(0.19641, abs=1e-9)
+    # Per-turn cost (Opus 4.5 $5/$25, Sonnet 4.5 $3/$15; 5-minute cache writes at 1.25x):
+    #   Opus 1: (1000*5 + 500*25 + 100*0.5 + 200*6.25)/1e6 = 0.0188
+    #   Opus 2: (2000*5 + 1000*25 + 50*0.5 + 100*6.25)/1e6 = 0.03565
+    #   Sonnet: (3000*3 + 1500*15 + 200*0.3 + 400*3.75)/1e6 = 0.03306
+    #   total = 0.08751
+    assert row["cost_usd"] == pytest.approx(0.08751, abs=1e-9)
     # ts is UTC ISO with Z suffix at seconds precision.
     assert row["ts"].endswith("Z")
     assert "." not in row["ts"]  # seconds precision, no fractional
@@ -304,16 +304,16 @@ def test_mixed_model_cost_computed_per_turn_not_primary(tmp_path, monkeypatch):
     row = _read_one_row(tracker)
     # Primary = Opus (2 vs 1 turn count).
     assert row["primary_model"] == "claude-opus-4-5-20251015"
-    # Per-turn pricing:
-    #   Opus 1: (1*15 + 1*75)/1e6 = 9.0e-5
-    #   Opus 2: same = 9.0e-5
-    #   Haiku:  (1e6*0.8 + 1e6*4)/1e6 = 4.8
-    #   total ≈ 4.80018
-    expected = (15 + 75) / 1e6 * 2 + (1_000_000 * 0.8 + 1_000_000 * 4) / 1e6
+    # Per-turn pricing (an unpriced Haiku takes the Haiku family row, $1/$5):
+    #   Opus 1: (1*5 + 1*25)/1e6 = 3.0e-5
+    #   Opus 2: same = 3.0e-5
+    #   Haiku:  (1e6*1 + 1e6*5)/1e6 = 6.0
+    #   total ≈ 6.00006
+    expected = (5 + 25) / 1e6 * 2 + (1_000_000 * 1 + 1_000_000 * 5) / 1e6
     assert row["cost_usd"] == pytest.approx(expected, abs=1e-9)
     # If the implementation incorrectly used primary's pricing on Haiku:
-    #   Haiku-as-Opus: (1e6*15 + 1e6*75)/1e6 = 90 — way more.
-    assert row["cost_usd"] < 5.0
+    #   Haiku-as-Opus: (1e6*5 + 1e6*25)/1e6 = 30 — way more.
+    assert row["cost_usd"] < 7.0
 
 
 def test_unknown_model_recorded_in_error_field(tmp_path, monkeypatch):
@@ -354,9 +354,118 @@ def test_unknown_model_recorded_in_error_field(tmp_path, monkeypatch):
     run(stdin=io.StringIO(payload))
     row = _read_one_row(tracker)
     assert row["error"] == "unknown_model:gpt-4-turbo"
-    # Cost falls back to Opus pricing for the unknown turn.
-    expected = ((100 * 15 + 50 * 75) / 1e6) * 2
+    # Cost falls back to the Opus family row for the unknown turn (same rates as Opus 4.5).
+    expected = ((100 * 5 + 50 * 25) / 1e6) * 2
     assert row["cost_usd"] == pytest.approx(expected, abs=1e-9)
+
+
+# -- one turn per API message ------------------------------------------------
+
+
+def _assistant_row(msg_id: str | None, model: str, usage: dict, block: str = "text") -> str:
+    message: dict[str, object] = {"role": "assistant", "model": model, "content": [{"type": block}], "usage": usage}
+    if msg_id is not None:
+        message["id"] = msg_id
+    return json.dumps({"type": "assistant", "message": message})
+
+
+def test_rows_of_one_message_count_once(tmp_path, monkeypatch):
+    """Claude Code writes a row per content block, each repeating the message's usage."""
+    monkeypatch.setenv("SCOUT_MODE", "manual")
+    tracker = tmp_path / "session-tokens.jsonl"
+    monkeypatch.setenv("SESSION_TOKENS_TRACKER", str(tracker))
+
+    usage = {"input_tokens": 10, "output_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                _assistant_row("msg_a", "claude-opus-5", usage, "thinking"),
+                _assistant_row("msg_a", "claude-opus-5", usage, "text"),
+                _assistant_row("msg_a", "claude-opus-5", usage, "tool_use"),
+                _assistant_row("msg_b", "claude-opus-5", usage),
+                _assistant_row(None, "claude-opus-5", usage),  # no id: its own turn
+                _assistant_row(None, "claude-opus-5", usage),
+            ]
+        )
+    )
+    run(stdin=io.StringIO(_make_payload(tmp_path, transcript=str(transcript))))
+    row = _read_one_row(tracker)
+    assert row["num_turns"] == 4
+    assert row["input_tokens"] == 40
+    assert row["output_tokens"] == 4000
+    assert row["cost_usd"] == pytest.approx(4 * (10 * 5 + 1000 * 25) / 1e6, abs=1e-12)
+
+
+def test_one_hour_cache_writes_cost_twice_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCOUT_MODE", "manual")
+    tracker = tmp_path / "session-tokens.jsonl"
+    monkeypatch.setenv("SESSION_TOKENS_TRACKER", str(tracker))
+
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 1_000_000,
+        "cache_creation": {"ephemeral_1h_input_tokens": 600_000, "ephemeral_5m_input_tokens": 400_000},
+    }
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(_assistant_row("msg_a", "claude-sonnet-5", usage))
+    run(stdin=io.StringIO(_make_payload(tmp_path, transcript=str(transcript))))
+    # Sonnet 5 input $2: 600K at 2x ($4/M) + 400K at 1.25x ($2.50/M).
+    assert _read_one_row(tracker)["cost_usd"] == pytest.approx(0.6 * 4 + 0.4 * 2.5, abs=1e-12)
+
+
+def test_longest_model_prefix_wins():
+    from scout.hooks.session_tokens import _model_rates
+
+    assert _model_rates("claude-opus-5-5")["input"] == 4.00
+    assert _model_rates("claude-opus-5")["input"] == 5.00
+    assert _model_rates("claude-sonnet-5-5[1m]")["output"] == 10.00
+    assert _model_rates("claude-opus-4-20250514")["input"] == 15.00
+    assert _model_rates("claude-opus-9")["input"] == 5.00  # family row
+    assert _model_rates(None)["input"] == 5.00
+
+
+# -- pinned to claude's own figure on real runs --------------------------------
+#
+# tests/fixtures/usage-pinning/ holds three real research runs, anonymised:
+# only model, a synthetic message id, content-block types and usage survive,
+# plus the transcript's final `cost-state` row — claude's own totalCostUSD and
+# per-model token counts, written at process exit. The estimate must match it.
+
+PINNING = FIXTURES / "usage-pinning"
+
+
+@pytest.mark.parametrize(
+    ("name", "messages", "rows", "cost"),
+    [
+        ("opus-5-research", 34, 74, 4.4961095),
+        ("sonnet-5-research", 3, 8, 0.3443072),
+        ("haiku-4-5-research", 5, 12, 0.1154384),
+    ],
+)
+def test_estimate_matches_claudes_total_cost(tmp_path, monkeypatch, name, messages, rows, cost):
+    monkeypatch.setenv("SCOUT_MODE", "research")
+    tracker = tmp_path / "session-tokens.jsonl"
+    monkeypatch.setenv("SESSION_TOKENS_TRACKER", str(tracker))
+
+    transcript = PINNING / f"{name}.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines() if line.strip()]
+    assert sum(1 for r in lines if (r.get("message") or {}).get("usage")) == rows  # the duplicates are there
+    claude = next(r for r in lines if r.get("type") == "cost-state")
+    (usage,) = claude["modelUsage"].values()
+
+    run(stdin=io.StringIO(_make_payload(tmp_path, transcript=str(transcript))))
+    row = _read_one_row(tracker)
+
+    assert row["error"] is None
+    assert row["num_turns"] == messages
+    assert row["input_tokens"] == usage["inputTokens"]
+    assert row["output_tokens"] == usage["outputTokens"]
+    assert row["cache_read_input_tokens"] == usage["cacheReadInputTokens"]
+    assert row["cache_creation_input_tokens"] == usage["cacheCreationInputTokens"]
+    assert row["cost_usd"] == pytest.approx(claude["totalCostUSD"], abs=1e-6)
+    assert row["cost_usd"] == pytest.approx(cost, abs=1e-6)
 
 
 # -- defensive ---------------------------------------------------------------

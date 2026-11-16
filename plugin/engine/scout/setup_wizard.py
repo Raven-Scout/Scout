@@ -29,7 +29,7 @@ _DEFAULT_DAILY = f"${DEFAULT_DAILY_BUDGET_USD:g}"
 HEADLESS_FLAGS = (
     "--yes --name NAME --email EMAIL [--connectors a,b] [--slack-id ID] [--github-username U] "
     "[--github-repos owner/repo,…] [--max-budget 5.00] [--daily-budget USD] [--timezone ZONE] [--no-first-run] "
-    "[--no-auto-update]"
+    "[--no-auto-update] [--no-jobs]"
 )
 # needs_user_input name → (bootstrap auto flag, question)
 _INPUTS = {
@@ -147,6 +147,7 @@ class SetupOptions:
     claude_bin: str = ""
     yes: bool = False
     auto_update: bool | None = None  # None: ask (default yes) for install.sh / claude-code installs
+    no_jobs: bool = False  # passed to `bootstrap auto --no-jobs`: register no launchd/cron jobs
 
 
 @dataclass
@@ -678,6 +679,8 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", managed_by]
         if opts.claude_bin:
             upgrade_argv += ["--claude-bin", opts.claude_bin]
+        if opts.no_jobs:
+            upgrade_argv.append("--no-jobs")
         return deps.invoke([*upgrade_argv, *_auto_update_flag(opts.auto_update)])
     install_managed_by = opts.managed_by or "claude-code"
     try:
@@ -693,6 +696,8 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
     install_argv = auto_argv(answers, install_managed_by)
     if opts.claude_bin:
         install_argv += ["--claude-bin", opts.claude_bin]
+    if opts.no_jobs:
+        install_argv.append("--no-jobs")
     code = deps.invoke(install_argv)
     if code not in (0, 1):
         return code
@@ -717,6 +722,8 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
             deps.invoke(["schedule", "fire-now", slot])
         else:
             p.say("No briefing slot in your schedule; the first scheduled run will be the first briefing.")
+    elif opts.no_jobs:
+        p.say("No scheduled jobs were installed (--no-jobs); runs start only when you fire them.")
     else:
         p.say("Your first scheduled run fires at the next slot in .scout-state/schedule.yaml.")
     return code

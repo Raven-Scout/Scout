@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scout.kb.git_io import (
     StagedPath,
-    added_lines,
     changed_lines,
     head_files,
     head_size,
@@ -16,6 +17,11 @@ from scout.kb.git_io import (
     staged_text,
     tracked_files,
 )
+
+
+def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
+    """The added half of :func:`changed_lines` (the size/diary lint's input)."""
+    return changed_lines(repo, rel, head_rel)[0]
 
 
 def test_staged_paths_new_and_modified(kb_repo) -> None:

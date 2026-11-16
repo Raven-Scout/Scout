@@ -630,7 +630,7 @@ def render_health_md(
         "fires an alert in modes where it's required by `connectors.yaml`. This is the only way "
         "a connector that was NOT CALLED this run (no successes, no errors) can alert.",
         "- **Pattern #48:** if a connector has never logged a successful call across the entire "
-        "window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).",
+        "window, the alert is suppressed (it's unwired, not broken: run `/scout-connect` to wire it up).",
         "- **Pattern #54:** if a connector was healthy in any mode within the last 4h and the "
         "current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).",
         "- **Warning:** any connector with ≥3 calls this run and >50% errors.",
