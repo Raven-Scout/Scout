@@ -62,6 +62,9 @@ def build_env(
         PATH=":".join(dict.fromkeys(path)),
         SCOUT_FORCE_MODE=mode,
         SCOUT_RETRY_DISABLE="1",
+        # The session runs under Claude Code's own Bash sandbox (claude_shim), and a sandbox can't start inside
+        # the runners' write sandbox (spec 2026-11-15 §4), so eval runs go without the latter.
+        SCOUT_RUN_SANDBOX="off",
         TZ="UTC",
         SCOUT_USER_TIMEZONE="UTC",
         GIT_CONFIG_GLOBAL=os.devnull,

@@ -125,6 +125,56 @@ elif [ "$GATE_RC" -ne 0 ]; then
     exit 0
 fi
 
+# Write sandbox (Phase 1c, spec 2026-11-15): the session, and every process it
+# starts, runs under a sandbox-exec profile that denies writes to what decides
+# whether Scout's gates run (the vault's git hooks and config, agent settings,
+# the engine, these runner scripts …), so no shell trick or hook timeout can
+# switch them off. `scoutctl sandbox profile` builds it here, outside the
+# sandbox, from the engine's protected-path list, self-tests it, and prints it;
+# claude-with-retry gets it by value. Its exit code is the status: 0 sandboxed;
+# 6 no OS sandbox here, 7 turned off (`scoutctl sandbox off`), 8 Claude Code's
+# own Bash sandbox is on (they can't nest): the run goes ahead as before and run
+# health says so; anything else (3, or no scoutctl) skips the run, because a
+# sandbox expected here couldn't be set up.
+SANDBOX_RC=127
+SCOUT_SANDBOX_PROFILE=""
+# SCOUT_RUN_SANDBOX=off (tests, the eval harness) is the switch scoutctl reads too; a run can't set it for
+# a later run (launchd refuses setenv from inside the sandbox, and its plists are protected).
+case "$(printf '%s' "${SCOUT_RUN_SANDBOX:-}" | tr '[:upper:]' '[:lower:]')" in
+    0|off|false|no) SANDBOX_RC=7 ;;
+esac
+if [ "$SANDBOX_RC" -ne 7 ] && [ -x "$SCOUTCTL_BIN" ]; then
+    SANDBOX_RC=0
+    # SCOUT_CLAUDE_BIN: the claude this runner starts, whose install the profile protects even when it isn't on
+    # the scheduler's PATH (nvm, npm-global, connectors.inputs.claude_bin).
+    SCOUT_SANDBOX_PROFILE="$(SCOUT_CLAUDE_BIN="$CLAUDE_BIN" "$SCOUTCTL_BIN" sandbox profile --vault "$SCOUT_DIR" 2>>"$LOG_FILE")" || SANDBOX_RC=$?
+fi
+case "$SANDBOX_RC" in
+    0) SCOUT_SANDBOX_STATUS=enforced ;;
+    6) SCOUT_SANDBOX_STATUS=unavailable ;;
+    7) SCOUT_SANDBOX_STATUS=off ;;
+    8) SCOUT_SANDBOX_STATUS=conflict ;;
+    *) SCOUT_SANDBOX_STATUS=failed ;;
+esac
+if [ "$SCOUT_SANDBOX_STATUS" = enforced ] && [ -z "$SCOUT_SANDBOX_PROFILE" ]; then
+    SCOUT_SANDBOX_STATUS=failed
+fi
+[ "$SCOUT_SANDBOX_STATUS" = enforced ] || SCOUT_SANDBOX_PROFILE=""
+# Who turned it off, for the run-outcome row and the doctor: the environment
+# (SCOUT_RUN_SANDBOX, meant for tests and the eval harness) or the owner's switch file.
+SCOUT_SANDBOX_SOURCE=""
+if [ "$SCOUT_SANDBOX_STATUS" = off ]; then
+    SCOUT_SANDBOX_SOURCE=switch
+    [ -n "${SCOUT_RUN_SANDBOX:-}" ] && SCOUT_SANDBOX_SOURCE=env
+fi
+export SCOUT_SANDBOX_STATUS SCOUT_SANDBOX_SOURCE
+if [ "$SCOUT_SANDBOX_STATUS" = failed ]; then
+    echo "=== Write sandbox: couldn't be set up here (exit $SANDBOX_RC; see scoutctl sandbox status) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_sandbox
+    exit 0
+fi
+echo "=== write sandbox: $SCOUT_SANDBOX_STATUS ===" >> "$LOG_FILE"
+
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
 # session-tokens — see hooks/hooks.json) see it inside the claude child
 # process. When it is unset, session-tool-log deliberately writes nothing (so
@@ -161,6 +211,14 @@ echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
 # The session's --name. Every retry attempt gets the same one, so the cost step
 # below can find each attempt's transcript by it.
 RUN_NAME="{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)"
+# Integrity start state (spec 2026-11-15 §13): the protected tracked files (runner
+# scripts, agent settings, .scout-state/schedule.yaml …) as HEAD, the index and every
+# branch, tag and stash ref hold them now. Taken outside the sandbox and kept in this
+# shell's memory, never in a file, so nothing the session does can change it.
+SCOUT_INTEGRITY_START=""
+if [ -x "$SCOUTCTL_BIN" ]; then
+    SCOUT_INTEGRITY_START="$("$SCOUTCTL_BIN" sandbox snapshot --vault "$SCOUT_DIR" 2>>"$LOG_FILE" || true)"
+fi
 START_TIME=$(date +%s)
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
@@ -169,7 +227,7 @@ START_TIME=$(date +%s)
 # With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
 # and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE=research SCOUT_RUN_STARTED="$START_TIME" \
+cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=research SCOUT_RUN_STARTED="$START_TIME" \
     "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \
@@ -181,6 +239,31 @@ cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE=research SCOUT_RU
     || EXIT_CODE=$?
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
+
+# Post-run integrity check (spec 2026-11-15 §13), outside the sandbox and before any
+# post-session step: the sandbox keeps the session from writing a protected file, but
+# git may still commit a changed copy of one. `scoutctl sandbox verify` compares HEAD,
+# the index and every ref the run moved with the start state, puts any changed
+# protected file back in a new commit, and says so here; run-outcome records it and
+# run health turns red. It never changes this run's exit code.
+SCOUT_INTEGRITY=unchecked
+if [ -n "$SCOUT_INTEGRITY_START" ]; then
+    INTEGRITY_RC=0
+    SCOUT_INTEGRITY=error
+    printf '%s' "$SCOUT_INTEGRITY_START" | "$SCOUTCTL_BIN" sandbox verify --vault "$SCOUT_DIR" --label "$MODE" >> "$LOG_FILE" 2>&1 || INTEGRITY_RC=$?
+    case "$INTEGRITY_RC" in
+        0) SCOUT_INTEGRITY=clean ;;
+        10) SCOUT_INTEGRITY=restored ;;
+        11) SCOUT_INTEGRITY=unrestored ;;
+    esac
+elif [ -x "$SCOUTCTL_BIN" ]; then
+    # scoutctl is here but took no start snapshot: that's a check that couldn't run, and run health says so.
+    SCOUT_INTEGRITY=error
+    echo "=== integrity check: scoutctl took no start snapshot (see above) — not checked ===" >> "$LOG_FILE"
+else
+    echo "=== integrity check: no scoutctl, so no start snapshot — not checked ===" >> "$LOG_FILE"
+fi
+export SCOUT_INTEGRITY
 
 echo "=== {{INSTANCE_NAME}} Research run finished at $(date) (exit code: $EXIT_CODE, duration: ${DURATION}s) ===" >> "$LOG_FILE"
 

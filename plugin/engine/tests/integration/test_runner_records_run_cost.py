@@ -83,6 +83,7 @@ def _setup(tmp_path: Path, name: str, *, record_run_ok: bool) -> tuple[Path, Pat
 
 def _run(script: Path, slot_key: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     env["SCOUT_FORCE_MODE"] = slot_key
     return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
 

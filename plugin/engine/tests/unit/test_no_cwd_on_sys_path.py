@@ -62,3 +62,16 @@ def test_templates_commands_and_phases_never_run_bare_python_snippets():
     ]
     assert files
     assert _offenders(files, _BARE, skip_comments=True) == []
+
+
+# `python3 scripts/x.py` with no flag first: the script's folder goes on sys.path (review of #642).
+_BARE_SCRIPT = re.compile(r"\bpython3?(?:\.\d+)?\s+[\"']?[\w$./{}\"-]*\.py\b")
+
+
+def test_runner_templates_never_run_a_vault_script_bare():
+    """Runner and hook templates run outside the sandbox, and the plugin's hooks.json runs in every session, so a
+    vault script either starts gets -I."""
+    files = [p for p in (PLUGIN / "templates").rglob("*") if p.is_file() and p.suffix in {".tmpl", ".sh"}]
+    files += [p for p in (PLUGIN / "hooks").rglob("*") if p.is_file()]
+    assert files
+    assert _offenders(files, _BARE_SCRIPT, skip_comments=True) == []

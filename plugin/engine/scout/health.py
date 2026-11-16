@@ -30,9 +30,13 @@ from scout.update_outcomes import UpdateOutcome
 from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
-SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease", "skipped_gates"})
+SKIP_OUTCOMES = frozenset(
+    {"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease", "skipped_gates", "skipped_sandbox"}
+)
 # A run skipped because the gate probe found claude not loading Scout's hooks (spec 2026-11-13 §3.5).
 GATES_SKIP = "skipped_gates"
+# A run skipped because the write sandbox expected on this machine couldn't be set up (spec 2026-11-15 §8).
+SANDBOX_SKIP = "skipped_sandbox"
 # A vault linked to Agnes skips a run it can't take the Repository Writer Lease
 # for (R2): failure_class lease_held (Agnes holds it) or lease_unavailable.
 LEASE_SKIP = "skipped_lease"
@@ -41,6 +45,9 @@ LEASE_UNAVAILABLE_RED = 3
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
 LOCK_SKIP_WINDOW = timedelta(hours=24)
+# How long a run whose protected files the integrity check had to put back keeps health red (spec 2026-11-15 §13):
+# the restore fixed the vault, but the owner should look at what that run did.
+INTEGRITY_WINDOW = timedelta(days=7)
 # Runs that fail, succeed, then fail again never form a trailing streak, so
 # runs.failing clears on every success between them. This many failed runs in
 # the window, with a success after the first of them, is a pattern of its own.
@@ -128,6 +135,13 @@ class OutcomeRow:
     newest_commit: str | None
     # When a `rate_limited` run's usage limit lifts, as the log named it (#407).
     resets_at: datetime | None = None
+    # Whether the session ran in the write sandbox (Phase 1c): enforced | unavailable | off | conflict | failed;
+    # None for rows from runners that predate it.
+    sandbox: str | None = None
+    # When sandbox is "off": "env" (SCOUT_RUN_SANDBOX) or "switch" (scoutctl sandbox off).
+    sandbox_source: str | None = None
+    # The post-run integrity check: clean | restored | unrestored | error | unchecked; None for older runners.
+    integrity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +267,9 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         commits_in_window=_opt_int(obj.get("commits_in_window")),
         newest_commit=str(commit) if commit else None,
         resets_at=_opt_epoch(obj.get("resets_at")),
+        sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
+        sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
+        integrity=str(obj["integrity"]) if isinstance(obj.get("integrity"), str) else None,
     )
 
 
@@ -556,6 +573,8 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
     findings.extend(gates_findings(rows, vault=vault))
+    findings.extend(sandbox_findings(rows, vault=vault))
+    findings.extend(integrity_findings(rows, vault=vault, now=now))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -660,6 +679,137 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
             log=str(log) if log else None,
         )
     ]
+
+
+def _trailing_sandbox_skips(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The newest write-sandbox skips, oldest first, passing over other skips; any run ends the streak."""
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != SANDBOX_SKIP:
+            continue
+        if r.outcome != SANDBOX_SKIP:
+            break
+        streak.append(r)
+    return streak[::-1]
+
+
+# Why the newest run went without the write sandbox: (severity, what happened, what to do).
+_UNSANDBOXED = {
+    "unavailable": (
+        "yellow",
+        "there is no OS write sandbox for Scout on this machine yet (macOS only for now), so only the hook gates "
+        "kept it from changing what decides whether they run",
+        "Nothing to do on Linux until Scout ships its sandbox there. On macOS, check that /usr/bin/sandbox-exec "
+        "exists: `scoutctl sandbox status`.",
+    ),
+    "conflict": (
+        "yellow",
+        "Claude Code's own Bash sandbox is on in your Claude settings (sandbox.enabled), and Scout's write sandbox "
+        "can't run around it, so the run had Claude's sandbox only",
+        "Turn off sandbox.enabled in the Claude settings the runs use if you want Scout's write sandbox instead; "
+        "`scoutctl sandbox status` says which applies.",
+    ),
+}
+# "off" isn't here: the owner turned it off on purpose, and the doctor says so (bootstrap_doctor._check_run_sandbox).
+
+
+def sandbox_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """Runs skipped because the write sandbox couldn't be set up, or run without it (spec 2026-11-15 §8)."""
+    streak = _trailing_sandbox_skips(rows)
+    if streak:
+        log = _run_log(vault, streak[-1])
+        return [
+            Finding(
+                id="sandbox.failed",
+                severity="red",
+                since=streak[0].finished_at,
+                summary=(
+                    f"The last {len(streak)} scheduled run(s) were skipped: the write sandbox that keeps a run from "
+                    "switching off Scout's gates couldn't be set up on this machine."
+                ),
+                fix=(
+                    "Run `scoutctl sandbox status` to see why; the run log has the same line. Runs resume on their "
+                    "own once it says enforced. To run without it meanwhile: `scoutctl sandbox off`."
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    last = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    if last is not None and last.sandbox == "off" and last.sandbox_source == "env":
+        return [
+            Finding(
+                id="runs.sandbox_env_off",
+                severity="note",
+                since=last.finished_at,
+                summary=(
+                    "The last scheduled run ran without Scout's write sandbox: SCOUT_RUN_SANDBOX=off was set in the "
+                    "environment the scheduler started it with. That switch is meant for tests and the eval harness."
+                ),
+                fix=(
+                    "Remove SCOUT_RUN_SANDBOX from the environment your scheduled runs start with (the LaunchAgent "
+                    "or crontab, or the shell that starts the tick). `scoutctl sandbox off` is the owner's switch."
+                ),
+                source="ledger",
+            )
+        ]
+    if last is None or last.sandbox not in _UNSANDBOXED:
+        return []
+    severity, what, fix = _UNSANDBOXED[last.sandbox]
+    return [
+        Finding(
+            id="runs.unsandboxed",
+            severity=severity,
+            since=last.finished_at,
+            summary=f"The last scheduled run ran without Scout's write sandbox: {what}.",
+            fix=fix,
+            source="ledger",
+            log=None,
+        )
+    ]
+
+
+def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
+    """A run whose protected tracked files the post-run integrity check put back, or couldn't (spec 2026-11-15 §13)."""
+    recent = [r for r in rows if r.integrity in ("restored", "unrestored") and r.finished_at >= now - INTEGRITY_WINDOW]
+    if recent:
+        newest = recent[-1]
+        log = _run_log(vault, newest)
+        still = newest.integrity == "unrestored"
+        return [
+            Finding(
+                id="run.integrity_restored",
+                severity="red",
+                since=recent[0].finished_at,
+                summary=(
+                    f"{len(recent)} scheduled run(s) in the last {INTEGRITY_WINDOW.days} days changed a protected "
+                    "file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new "
+                    "commit" + ("; a tag or the stash still holds the change." if still else ".")
+                ),
+                fix=(
+                    "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and "
+                    "its session, to see what made it change them."
+                    + (" Then delete the tag or drop the stash entry it names." if still else "")
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    last = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    if last is not None and last.integrity == "error":
+        log = _run_log(vault, last)
+        return [
+            Finding(
+                id="run.integrity_unchecked",
+                severity="yellow",
+                since=last.finished_at,
+                summary="The post-run integrity check couldn't run after the last scheduled run.",
+                fix="The run log's `integrity check:` line says why; `git status` in the vault shows its state.",
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    return []
 
 
 def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:

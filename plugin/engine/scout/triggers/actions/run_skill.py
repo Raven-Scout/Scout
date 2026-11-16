@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from scout.schedule import check_runner
 from scout.triggers.config import Trigger
 from scout.triggers.sources.base import ConnectorEvent
 
@@ -69,7 +70,7 @@ def run(
 ) -> dict[str, Any]:
     spawn = spawn or _default_spawn
     skill = str(trigger.action.params["skill"])
-    runner = str(trigger.action.params.get("runner", DEFAULT_RUNNER))
+    runner = check_runner(trigger.action.params.get("runner", DEFAULT_RUNNER), f"trigger {trigger.id}")
 
     payload_path = write_event_payload(trigger, event, vault=vault)
 

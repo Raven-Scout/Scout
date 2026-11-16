@@ -138,6 +138,131 @@ def cli_gates_probe(
         raise typer.Exit(gate_probe.UNSAFE_EXIT.get(result.unsafe, 3))
 
 
+sandbox_app = typer.Typer(help="The scheduled runs' OS write sandbox (spec 2026-11-15, Phase 1c).")
+app.add_typer(sandbox_app, name="sandbox")
+
+
+@sandbox_app.command("profile")
+def cli_sandbox_profile(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+) -> None:
+    """Print the sandbox-exec profile for a scheduled run of this vault; the exit code is the status.
+
+    0 enforced (profile on stdout), 3 failed (a sandbox is expected here but couldn't be built or self-tested:
+    the runners skip the run), 6 unavailable on this platform, 7 turned off (`scoutctl sandbox off`), 8 Claude
+    Code's own Bash sandbox is on (they can't nest). The runners run the session sandboxed only on 0, go ahead
+    as today on 6/7/8, and skip on anything else. The reason goes to stderr as `[scout:sandbox] <status>: …`.
+    """
+    from scout import paths
+    from scout.sandbox import launch
+
+    result = launch.prepare(paths.data_dir(vault))
+    if result.profile:
+        typer.echo(result.profile, nl=False)
+    typer.echo(f"[scout:sandbox] {result.status}: {result.reason}", err=True)
+    raise typer.Exit(result.exit_code)
+
+
+@sandbox_app.command("status")
+def cli_sandbox_status(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the status as JSON."),
+) -> None:
+    """Say whether the next scheduled run would be sandboxed, and why (builds and self-tests the profile)."""
+    import json
+
+    from scout import paths
+    from scout.sandbox import launch
+
+    result = launch.prepare(paths.data_dir(vault))
+    if as_json:
+        typer.echo(json.dumps({"status": result.status, "reason": result.reason}))
+    else:
+        typer.echo(f"run sandbox: {result.status} ({result.reason})")
+
+
+@sandbox_app.command("off")
+def cli_sandbox_off() -> None:
+    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so."""
+    from scout.sandbox import launch
+
+    path = launch.set_switch(False)
+    typer.echo(f"run sandbox: off (wrote {path}); turn it back on with `scoutctl sandbox on`")
+
+
+@sandbox_app.command("on")
+def cli_sandbox_on() -> None:
+    """Run scheduled sessions inside the OS write sandbox (the default)."""
+    from scout.sandbox import launch
+
+    path = launch.set_switch(True)
+    typer.echo(f"run sandbox: on (wrote {path})")
+
+
+@sandbox_app.command("snapshot")
+def cli_sandbox_snapshot(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+) -> None:
+    """Print the start state the post-run integrity check compares against (JSON, one line).
+
+    The runners call it outside the sandbox before claude starts and keep the output in memory, then pipe it to
+    `scoutctl sandbox verify` after claude exits. Exit 12 (and nothing on stdout) when it can't be taken.
+    """
+    from scout import paths
+    from scout.sandbox import integrity
+
+    try:
+        snap = integrity.snapshot(paths.data_dir(vault))
+    except integrity.IntegrityError as e:
+        typer.echo(f"[scout:integrity] couldn't take the start snapshot: {e}", err=True)
+        raise typer.Exit(integrity.STATUS_EXIT["error"]) from None
+    typer.echo(integrity.dumps(snap))
+
+
+@sandbox_app.command("verify")
+def cli_sandbox_verify(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    label: str = typer.Option("scheduled", "--label", help="The run's mode, for the restoring commit's message."),
+) -> None:
+    """After a run: compare the vault's protected tracked files with the start snapshot on stdin, and put back
+    what the run changed in git.
+
+    Exit 0 clean, 10 restored (a new commit on each changed branch, and the index), 11 a tag or the stash still
+    holds a change (reported, not rewritten), 12 the check couldn't run. Paths go to stdout, never file content.
+    """
+    import sys
+
+    from scout import paths
+    from scout.sandbox import integrity
+
+    data_dir = paths.data_dir(vault)
+    try:
+        start = integrity.loads(sys.stdin.read())
+    except integrity.IntegrityError as e:
+        result = integrity.Result("error", reason=str(e))
+    else:
+        result = integrity.verify(data_dir, start, label=label)
+    for line in result.lines():
+        typer.echo(line)
+    raise typer.Exit(result.exit_code)
+
+
+@sandbox_app.command("replay")
+def cli_sandbox_replay(
+    transcripts: str = typer.Option(..., "--transcripts", help="A Claude Code project dir of session .jsonl files."),
+    vault: str = typer.Option(..., "--vault", help="The vault those sessions ran in (their paths resolve here)."),
+    limit: int = typer.Option(50, "--limit", help="How many of the newest scheduled-run sessions to read."),
+    as_json: bool = typer.Option(False, "--json", help="Print the counts as JSON."),
+) -> None:
+    """Read-only: which tool calls of past scheduled runs the sandbox would refuse. Prints counts and forms only."""
+    import json
+
+    from scout.sandbox import replay
+
+    report = replay.replay(Path(transcripts).expanduser(), Path(vault).expanduser(), limit=limit)
+    typer.echo(json.dumps(report, indent=2) if as_json else replay.format_report(report))
+
+
 @hook_app.command("connector-log")
 def hook_connector_log() -> None:
     """PostToolUse hook: log one JSONL row per tool call to .scout-logs/."""

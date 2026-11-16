@@ -181,8 +181,14 @@ def _check_launchd_jobs() -> tuple[list[str], list[str]]:
     """macOS: both scout LaunchAgents are loaded."""
     try:
         proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False, timeout=5)
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, OSError):
+        # OSError: not found, or refused to start (PermissionError inside a scheduled run's write sandbox, which
+        # denies executing launchctl, spec 2026-11-15 §3).
         return [], ["launchctl unavailable — skipped job registration check"]
+    if proc.returncode != 0:
+        # Not "no jobs": `launchctl list` itself was refused (inside a scheduled run's write sandbox, which denies
+        # launchd job creation, spec 2026-11-15) or failed. Saying the jobs are missing would be a false alarm.
+        return [], [f"launchctl list failed (exit {proc.returncode}) — skipped job registration check"]
     errors = [
         f"launchd: {label} not registered"
         for label in ("com.scout.schedule-tick", "com.scout.heartbeat")
@@ -390,6 +396,70 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
             'to the output of `command -v claude` (or to "" to auto-detect), then run /scout-update.'
         ], []
     return [], []
+
+
+def _check_run_sandbox(*, vault: Path, home: Path | None = None) -> tuple[list[str], list[str]]:
+    """Whether the next scheduled run would run in the write sandbox (spec 2026-11-15 §8): (warnings, notes).
+
+    Builds and self-tests the profile (one short sandbox-exec), never starts claude. Inside a sandboxed run
+    the self-test can't nest, so the runner's own status is reported instead. The switch is judged as the
+    scheduler sees it: ``SCOUT_RUN_SANDBOX`` in this shell is left out (scheduled runs don't inherit it), and
+    whether the last run had it off, and from where, comes from that run's run-outcome row.
+    """
+    import os
+
+    from scout import health
+    from scout.sandbox import launch
+
+    if os.environ.get("SCOUT_SANDBOX_STATUS") == "enforced":
+        return [], ["run sandbox: enforced (this session runs inside it)"]
+    warnings: list[str] = []
+    notes: list[str] = []
+    shell_switch = os.environ.get(launch.ENV_SWITCH, "").strip()
+    env = {k: v for k, v in os.environ.items() if k != launch.ENV_SWITCH}
+    if home is not None:
+        env["HOME"] = str(home)
+    status = "unknown"
+    if shell_switch.lower() in launch.OFF_VALUES:
+        # This shell (a test, the eval harness) runs without the sandbox; building and self-testing the profile here
+        # says nothing about the scheduler's runs, so only the owner's switch is reported.
+        on, source = launch.switch(env)
+        status = "on" if on else "off"
+        notes.append(
+            f"run sandbox: not checked here ({launch.ENV_SWITCH}={shell_switch} in this shell, which scheduled runs "
+            f"don't inherit); the owner's switch says {status} ({source})"
+        )
+    else:
+        try:
+            result = launch.prepare(vault, env)
+        except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+            return [f"run sandbox: couldn't check ({e}); see `scoutctl sandbox status`"], []
+        status = result.status
+        line = f"run sandbox: {result.status} ({result.reason})"
+        if result.status == "failed":
+            warnings.append(f"{line}. Scheduled runs are skipped until `scoutctl sandbox status` says enforced.")
+        elif result.status == "conflict":
+            warnings.append(f"{line}. Scheduled runs go ahead under Claude Code's sandbox only.")
+        elif result.status == "off":
+            notes.append(f"{line}; turn it back on with `scoutctl sandbox on`")
+        else:
+            notes.append(line)
+        if shell_switch:
+            notes.append(f"this shell has {launch.ENV_SWITCH}={shell_switch}, which scheduled runs don't inherit")
+    try:
+        rows = health.read_outcomes(vault)
+    except Exception:  # noqa: BLE001 - a bug here must not break the doctor
+        rows = []
+    last = next((r for r in reversed(rows) if r.outcome not in health.SKIP_OUTCOMES and r.sandbox), None)
+    if last is not None and last.sandbox == "off" and last.sandbox_source == "env":
+        warnings.append(
+            f"the last scheduled run ran without the write sandbox: {launch.ENV_SWITCH}=off was in the environment "
+            "the scheduler started it with. Remove it from the LaunchAgent, crontab or shell that starts the tick "
+            "(it is meant for tests and the eval harness)."
+        )
+    elif last is not None and last.sandbox == "off" and last.sandbox_source == "switch" and status != "off":
+        notes.append("the last scheduled run ran with the write sandbox turned off (`scoutctl sandbox off`)")
+    return warnings, notes
 
 
 def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
@@ -864,6 +934,10 @@ def run_doctor(
         probe_warnings, probe_notes = _check_gate_probe(vault=vault)
         warnings.extend(probe_warnings)
         notes.extend(probe_notes)
+        # Whether those runs are kept from writing what decides which gates run (OS write sandbox, Phase 1c).
+        sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
+        warnings.extend(sandbox_warnings)
+        notes.extend(sandbox_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:
             auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)

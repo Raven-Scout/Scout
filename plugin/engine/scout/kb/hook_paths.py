@@ -31,6 +31,8 @@ Protected (each with the form name a deny and the audit row use):
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
   ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
 - ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
+- ``ssh config``: ``~/.ssh`` (its config and keys decide what ``git push`` over ssh runs after a run; the OS
+  sandbox lets ssh itself add to ``known_hosts``);
 - ``Scout's secrets``: ``~/.scout-secrets`` and ``$SCOUT_SECRETS_DIR`` (also read-gated in runs: Read, Grep, Glob,
   and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS`);
 - ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json`` and ``.scout-state/delegate-scan/``.
@@ -47,10 +49,14 @@ whether removing or moving a path (``rm -rf .claude``) takes a protected file wi
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -65,7 +71,12 @@ ENGINE = "Scout's engine"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
+# The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
+SANDBOX_SWITCH_NAME = "run-sandbox.json"
 SECRETS = "Scout's secrets"
+SCHEDULE = "Scout's schedule"
+PROGRAMS = "programs the runners run"
+SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
@@ -167,14 +178,22 @@ def git_dirs(vault: Path) -> list[Path]:
     return dirs
 
 
-def git_hooks_dir(vault: Path) -> Path | None:
+def _remaining(deadline: float | None, cap: float) -> float:
+    """Seconds a git call may take: ``cap``, or what is left before ``deadline`` if that is less."""
+    return cap if deadline is None else min(cap, deadline - time.monotonic())
+
+
+def git_hooks_dir(vault: Path, *, deadline: float | None = None) -> Path | None:
     """Where git runs this vault's hooks from: ``core.hooksPath`` if set, else the git dir's ``hooks``."""
+    timeout = _remaining(deadline, _GIT_TIMEOUT_S)
+    if timeout <= 0:
+        return None
     try:
         out = subprocess.run(
             ["git", "-C", str(vault), "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=timeout,
             check=False,
             stdin=subprocess.DEVNULL,
         )
@@ -200,21 +219,51 @@ def _precommit_engine(vault: Path, hooks: Path | None) -> Path | None:
     return None
 
 
+def _pointer_venv(pointer: Path) -> Path | None:
+    """The venv the engine pointer names (its ``"python"``, ``<venv>/bin/python``): the launcher may run it."""
+    try:
+        data = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    python = data.get("python") if isinstance(data, dict) else None
+    if not isinstance(python, str) or not python.startswith("/"):
+        return None
+    venv = Path(python).parent.parent
+    return venv if (venv / "pyvenv.cfg").is_file() else None
+
+
 def engine_roots(env: Mapping[str, str]) -> list[Path]:
     """The engine the hooks run and everything that picks it (see the module doc)."""
     import scout
 
     package = Path(scout.__file__).resolve().parent
     roots = [package, package.parents[1], Path(sys.prefix)]  # scout/, the plugin (<plugin>/engine/scout), the venv
+    # The interpreter the venv was made from: its stdlib is what every hook imports (review of #642).
+    for base in {sys.base_prefix, sys.base_exec_prefix} - {sys.prefix}:
+        roots.append(Path(base))
     if env.get("CLAUDE_PLUGIN_ROOT"):
         roots.append(Path(env["CLAUDE_PLUGIN_ROOT"]))
     home = Path(env.get("HOME") or Path.home())
-    roots.append(home / ".local" / "state" / "scout" / "engine.json")
+    state = home / ".local" / "state" / "scout"
+    pointer = state / "engine.json"
+    roots.append(pointer)
+    venv = _pointer_venv(pointer)
+    if venv is not None:
+        roots.append(venv)
+    # The owner's switch for the scheduled runs' write sandbox (scout.sandbox, Phase 1c): a run that could write
+    # it could turn the sandbox off for the next run.
+    roots.append(state / SANDBOX_SWITCH_NAME)
     return roots
 
 
+# The whole roots build inside a hook (protected_roots): kb-read-gate's watchdog blocks the call at 8 s, so a few slow
+# gits must not use it all up. Past this, the hook skips the git calls it has left; the OS sandbox's profile is
+# built once per run with no deadline and keeps the full list (review of #642).
+HOOK_ROOTS_BUDGET_S = 4.0
+
 _ENV_KEYS = (
     "HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT", "SCOUT_SECRETS_DIR",
+    "GIT_CONFIG_SYSTEM", "PATH", "SCOUT_CLAUDE_BIN",
 )  # fmt: skip
 _ROOTS_CACHE: dict[tuple[str, ...], list[Root]] = {}
 
@@ -228,13 +277,13 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
     env = os.environ if env is None else env
     key = (str(vault), *(env.get(k, "") for k in _ENV_KEYS))
     if key not in _ROOTS_CACHE:
-        _ROOTS_CACHE[key] = _build_roots(vault, env)
+        _ROOTS_CACHE[key] = _build_roots(vault, env, deadline=time.monotonic() + HOOK_ROOTS_BUDGET_S)
     return _ROOTS_CACHE[key]
 
 
-def _build_roots(vault: Path | None, env: Mapping[str, str]) -> list[Root]:
+def _build_roots(vault: Path | None, env: Mapping[str, str], *, deadline: float | None = None) -> list[Root]:
     roots: list[Root] = []
-    for spec in protected_specs(vault, env):
+    for spec in protected_specs(vault, env, deadline=deadline):
         for key in {canon(spec.path, env), spelled(spec.path, env)}:
             roots.append(Root(key, spec.form, spec.tree))
     return roots
@@ -250,11 +299,15 @@ def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
     return dirs
 
 
-def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Spec]:
+def protected_specs(
+    vault: Path | None, env: Mapping[str, str] | None = None, *, deadline: float | None = None
+) -> list[Spec]:
     """Every protected path as written here (``~`` unexpanded, not resolved, not case-folded), with its form.
 
     :func:`protected_roots` is these, normalised for matching. The scheduled runs' OS write sandbox
-    (Phase 1c) is generated from the same list, so the two layers never drift.
+    (:mod:`scout.sandbox.profile`, Phase 1c) is generated from the same list, so the two layers never drift.
+    ``deadline`` (a :func:`time.monotonic` value) bounds the git calls: one past it is skipped (the hooks pass
+    :data:`HOOK_ROOTS_BUDGET_S`; the profile passes none).
     """
     env = os.environ if env is None else env
     home = Path(env.get("HOME") or Path.home())
@@ -267,7 +320,7 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
         add(vault / ".git", GIT_DIR, tree=False)
         for gitdir in git_dirs(vault):
             add(gitdir, GIT_DIR, tree=True)
-        hooks = git_hooks_dir(vault)
+        hooks = git_hooks_dir(vault, deadline=deadline)
         if hooks is not None:
             add(hooks, GIT_HOOKS, tree=True)
         for name in (".gitattributes", ".gitmodules", ".mcp.json"):
@@ -308,7 +361,126 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
     add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
     for secrets in secrets_dirs(env):
         add(secrets, SECRETS, tree=True)
+    add(ssh_dir(env), SSH_CONFIG, tree=True)
+    if vault is not None:
+        # The tick starts each slot's runner, and the trigger engine each trigger's, outside any run (#642 review).
+        for name in SCHEDULE_FILES:
+            add(vault / ".scout-state" / name, SCHEDULE, tree=False)
+    for path, tree in git_config_files(env, deadline=deadline, vault=vault):
+        add(path, USER_GIT_CONFIG, tree=tree)
+    for path in runner_programs(env, home):
+        add(path, PROGRAMS, tree=True)
     return roots
+
+
+# The vault files that choose what the tick and the trigger engine start (scout.schedule, scout.triggers.config).
+SCHEDULE_FILES = ("schedule.yaml", "triggers.yaml")
+_GIT_TIMEOUT_S = 3
+
+
+def _git_binaries(env: Mapping[str, str]) -> list[str]:
+    """Every distinct ``git`` on PATH (Homebrew's and Apple's read different system configs), plus /usr/bin/git."""
+    seen: dict[str, str] = {}
+    for d in [*str(env.get("PATH", "")).split(os.pathsep), "/usr/bin"]:
+        cand = os.path.join(d, "git") if d else ""
+        if cand and os.path.isabs(cand) and os.access(cand, os.X_OK):
+            seen.setdefault(os.path.realpath(cand), cand)
+    return list(seen.values())
+
+
+_ORIGIN = re.compile(r"^file:(.+?)\t")
+_MISSING = re.compile(r"unable to read config file '([^']+)'")
+
+
+def ssh_dir(env: Mapping[str, str]) -> Path:
+    return Path(env.get("HOME") or Path.home()) / ".ssh"
+
+
+def git_config_files(
+    env: Mapping[str, str], *, deadline: float | None = None, vault: Path | None = None
+) -> list[tuple[str, bool]]:
+    """(path, tree) for git config a run's git reads besides the vault's and ~/.gitconfig: each git's system
+    config (``git config --system --show-origin``, named even when the file doesn't exist yet), ``$GIT_CONFIG_SYSTEM``,
+    and every ``include.path``/``includeIf.*.path`` the global and system configs name. Review of #642.
+
+    With ``vault``, each git is asked again from inside it, so an ``includeIf "gitdir:…"`` that matches only the
+    vault names its file too."""
+    out: list[tuple[str, bool]] = []
+    if env.get("GIT_CONFIG_SYSTEM"):
+        out.append((env["GIT_CONFIG_SYSTEM"], False))
+    run_env = {k: v for k, v in env.items() if k not in ("GIT_CONFIG_NOSYSTEM", "GIT_DIR", "GIT_CONFIG_COUNT")}
+    places: list[Path | None] = [None, *([vault] if vault is not None and vault.is_dir() else [])]
+    for git in _git_binaries(env):
+        for cwd in places:
+            for scope in ("--system", "--global"):
+                timeout = _remaining(deadline, _GIT_TIMEOUT_S)
+                if timeout <= 0:
+                    return out  # out of time (a hook): the OS sandbox's profile still lists every git's config
+                try:
+                    proc = subprocess.run(
+                        [git, "config", scope, "--show-origin", "--includes", "--list"],
+                        capture_output=True, text=True, timeout=timeout, check=False,
+                        stdin=subprocess.DEVNULL, env=run_env, cwd=cwd,
+                    )  # fmt: skip
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                files = {m[1] for line in proc.stdout.splitlines() if (m := _ORIGIN.match(line))}
+                files |= set(_MISSING.findall(proc.stderr))
+                for f in sorted(files):
+                    if f and f != os.devnull and (f, False) not in out:
+                        out.append((f, False))
+    return out
+
+
+def runner_programs(env: Mapping[str, str], home: Path) -> list[str]:
+    """Trees the runners and the gate probe run programs from, outside the sandbox, that the user can write: the
+    claude install the runner's claude resolves to (with its side-by-side versions), ``~/.local/bin``, and a
+    user-writable Homebrew prefix's bin/sbin/etc/lib (its python site-packages included)/opt/Cellar. Review of #642.
+    The PATH folders themselves are :func:`path_dirs`."""
+    out: list[str] = []
+
+    def keep(path: str) -> None:
+        real = os.path.realpath(path)
+        if real not in out and real not in ("/", os.path.realpath(home)):
+            out.append(real)
+
+    # ~/.local/bin, where the native installer links `claude` (and pipx/uv put tools), whether or not it is on
+    # this PATH: the scheduler's PATH may differ from this one.
+    local_bin = home / ".local" / "bin"
+    if local_bin.is_dir():
+        keep(str(local_bin))
+    claude = env.get("SCOUT_CLAUDE_BIN") or shutil.which("claude", path=env.get("PATH")) or ""
+    if claude and os.path.isabs(claude):
+        real = os.path.realpath(claude)
+        holder = os.path.dirname(real)
+        # ~/.local/share/claude/versions/<v>: the native installer keeps every version side by side.
+        keep(os.path.dirname(holder) if os.path.basename(holder) == "versions" else holder)
+    for prefix in ("/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"):
+        if os.path.isdir(prefix) and os.access(prefix, os.W_OK):
+            for sub in ("bin", "sbin", "etc", "lib", "opt", "Cellar", "Caskroom", "Library"):
+                if os.path.isdir(os.path.join(prefix, sub)):
+                    keep(os.path.join(prefix, sub))
+    return out
+
+
+def path_dirs(env: Mapping[str, str]) -> list[str]:
+    """Every user-writable folder on PATH (``~/.local/bin``, Homebrew's bin …): a new ``date`` or ``git`` there is
+    what the next runner starts. Only the folder's own entries count, not what's below them (a tool's store under
+    ``~/Library/pnpm`` stays writable), which the OS sandbox can say and the hook's tree list can't, so this is
+    the sandbox's alone (scout.sandbox.profile)."""
+    out: list[str] = []
+    for d in str(env.get("PATH", "")).split(os.pathsep):
+        if d and os.path.isabs(d) and os.path.isdir(d) and os.access(d, os.W_OK) and not _transient(d):
+            real = os.path.realpath(d)
+            if real not in out:
+                out.append(real)
+    return out
+
+
+def _transient(d: str) -> bool:
+    """A PATH entry under a temp dir (a test's or a shim's): not something a later run would start."""
+    real = os.path.realpath(d)
+    return any(real.startswith(os.path.realpath(t) + "/") for t in {tempfile.gettempdir(), "/private/tmp", "/tmp"})
 
 
 def _git_form(rest: str) -> str:

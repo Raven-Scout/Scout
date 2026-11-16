@@ -824,7 +824,7 @@ def test_fire_now_runner_missing_emits_fire_failed(tmp_path, monkeypatch):
     sched = tmp_path / ".scout-state" / "schedule.yaml"
     sched.write_text(
         "schema_version: 1\nslots:\n  any-slot:\n"
-        "    type: briefing\n    runner: nonexistent-runner.sh\n    fires_at_local: '08:00'\n"
+        "    type: briefing\n    runner: run-dreaming.sh\n    fires_at_local: '08:00'\n"
         "    weekdays: [Mon]\n    missed_window_hours: 4\n    on_miss: fire\n    cooldown_minutes: 60\n"
     )
     from scout.scripts.schedule_tick import fire_now
