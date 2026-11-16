@@ -290,7 +290,7 @@ jobs:
           done <<< "$tracked"
           exit $status
 
-      # 7. The run ledger (`scoutctl runs --json`) the app's Health panel reads:
+      # 9. The run ledger (`scoutctl runs --json`) the app's Health panel reads:
       #    same rule as the doctor fixture.
       - name: Run ledger fixture is byte-identical across clients
         run: |
