@@ -6,6 +6,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **The usage card counts Scout's own runs, once each** (`Scout/ControlCenter/UsageRailCard.swift`, `Scout/Services/ScoutUsageService.swift`, `Scout/Models/ScoutUsage.swift`, `Scout/Shell/StatusBarView.swift`, `Scout/Shell/AppState.swift`). On a real vault the card showed about 270,000M tokens "today", rising by about 2,000M a minute, with $0 cost. It summed the vault's per-session token log on its own. It now shows the engine's figures (`scoutctl budget usage --json`): finished scheduled runs only, never your own Claude sessions, each message counted once. Input and output are shown apart from cache reads and writes, in K/M/B/T units, and the day and week follow the vault's timezone instead of New York's. The cost line says how the figure was found (Claude Code's figure, estimated, at least $X when some runs reported no cost, or unknown), so an unmeasured $0 no longer reads as a measurement. The status bar's cost cell ("runs today") uses the same figure. The "Quota: TBD (Phase 2)" placeholder is gone. It needs an engine with this release; with an older one the card says usage isn't available.
+- **The run-log parse cache is one file per build and vault** (`Scout/Services/SessionLogParseCache.swift`). It was one fixed `~/Library/Caches/Scout/session-parse-cache.json` for every build and vault, so a dev build or a second vault rewrote the installed app's cache and each re-parsed every log at launch. It now lives at `~/Library/Caches/Scout/parse-cache/<bundle id>/<vault key>.json`, the vault key a hash of the vault's path. The old file is no longer read; delete it if you like.
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

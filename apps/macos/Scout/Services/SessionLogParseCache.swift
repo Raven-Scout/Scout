@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Persistent parse cache for session run logs.
@@ -89,17 +90,55 @@ extension SessionLogService {
 
     /// Default cache location: the per-user caches directory, kept OUT of the
     /// logs directory so writing it never trips that directory's file watcher.
-    /// A single fixed file is fine — the cache self-validates per entry (name +
-    /// size + mtime), so a stale or shared file degrades to a cache miss, never
-    /// to wrong data.
-    nonisolated static func defaultParseCacheURL() -> URL? {
+    ///
+    /// One file per app build (bundle ID) and per vault. It used to be one fixed
+    /// `Caches/Scout/session-parse-cache.json` shared by every build and vault,
+    /// so a dev build or a second vault rewrote the installed app's cache on
+    /// every launch and each then re-parsed every log. Entries self-validate
+    /// (name + size + mtime), so sharing never gave wrong data, only misses.
+    nonisolated static func defaultParseCacheURL(
+        scoutDirectory: URL,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> URL? {
         let fm = FileManager.default
         guard let base = try? fm.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ) else { return nil }
-        let dir = base.appendingPathComponent("Scout", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("session-parse-cache.json")
+        let url = parseCacheURL(
+            cachesDirectory: base, scoutDirectory: scoutDirectory, bundleIdentifier: bundleIdentifier
+        )
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Pure path rule behind `defaultParseCacheURL`:
+    /// `<caches>/Scout/parse-cache/<bundle id>/<vault key>.json`. The vault key
+    /// is a hash of the standardized vault path, so a path never becomes a
+    /// file name and two spellings of one vault share a cache.
+    nonisolated static func parseCacheURL(
+        cachesDirectory: URL, scoutDirectory: URL, bundleIdentifier: String?
+    ) -> URL {
+        let bundle = sanitizedComponent(bundleIdentifier ?? "") ?? "unknown-bundle"
+        return cachesDirectory
+            .appendingPathComponent("Scout", isDirectory: true)
+            .appendingPathComponent("parse-cache", isDirectory: true)
+            .appendingPathComponent(bundle, isDirectory: true)
+            .appendingPathComponent("\(vaultKey(scoutDirectory)).json")
+    }
+
+    /// First 16 hex digits of the SHA-256 of the vault's standardized path.
+    nonisolated static func vaultKey(_ scoutDirectory: URL) -> String {
+        let path = scoutDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A bundle ID as one safe path component, or nil when nothing usable is left.
+    nonisolated private static func sanitizedComponent(_ raw: String) -> String? {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let cleaned = String(raw.map { allowed.contains($0) ? $0 : "-" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Load the cache, or an empty one if absent/unreadable/corrupt (any failure

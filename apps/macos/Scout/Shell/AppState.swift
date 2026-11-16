@@ -35,7 +35,8 @@ final class AppState: ObservableObject {
     /// wires a real `FileWatcher`; tests inject a fake so no vault is touched.
     let fileEvents: any FileSystemEventSource
     let trackerService: UsageTrackerService
-    let sessionTokensService: SessionTokensService
+    /// Scout's own scheduled-run usage (`scoutctl budget usage --json`).
+    let scoutUsageService: ScoutUsageService
     let connectorHealthService: ConnectorHealthService
     let sessionLogService: SessionLogService
     let scheduleService: ScheduleService
@@ -167,10 +168,6 @@ final class AppState: ObservableObject {
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
             fileEvents: events
         )
-        let tokens = SessionTokensService(
-            trackerURL: scoutDir.appendingPathComponent(".scout-logs/session-tokens.jsonl"),
-            fileEvents: events
-        )
         let connectorHealth = ConnectorHealthService(
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
             ackStoreURL: scoutDir.appendingPathComponent(".scout-cache/connector-alerts-acked.json"),
@@ -215,6 +212,11 @@ final class AppState: ObservableObject {
         // Model defaults go through `scoutctl model show/set-default` for the
         // same reason; a slot's own model is saved with the slot.
         let modelSettings = ModelSettingsService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
+        let usage = ScoutUsageService(
             scoutctl: scoutctlExe,
             runner: runner,
             argumentsPrefix: scoutctlArgsPrefix
@@ -304,7 +306,7 @@ final class AppState: ObservableObject {
         self.fileEvents = events
         self.gitService = git
         self.trackerService = tracker
-        self.sessionTokensService = tokens
+        self.scoutUsageService = usage
         self.connectorHealthService = connectorHealth
         self.sessionLogService = logs
         self.scheduleService = sched
@@ -360,6 +362,12 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // The status bar's cost cell and the usage card read the usage
+        // summary through AppState.
+        usage.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         // The onboarding gate, the unfinished-switch flag and the Action
         // Items check follow the engine state. Every refresh publishes (no
         // de-duplication): the switch flag reads the disk, which can change
@@ -405,11 +413,21 @@ final class AppState: ObservableObject {
         sessionIndex.start()
         displayProfile.startWatching()
 
+        // A finished run adds a runner row to the usage tracker, so re-read
+        // Scout's usage whenever the set of finished runs changes.
+        logs.$runs
+            .map { runs in runs.filter { $0.status != .running }.map(\.id).joined(separator: "|") }
+            .removeDuplicates()
+            .dropFirst()
+            .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
+            .sink { _ in Task { await usage.refresh() } }
+            .store(in: &cancellables)
+
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
-            _ = try? await tokens.loadInitial()
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
+            await usage.refresh()
             await MainActor.run {
                 sched.start()
                 power.start()
@@ -713,7 +731,8 @@ final class AppState: ObservableObject {
         /// the configuration so a test graph never reads the real home.
         var claudeSessionsDirectory: URL
         /// Where `SessionLogService` memoises parsed log bodies
-        /// (`~/Library/Caches/Scout/session-parse-cache.json` in production).
+        /// (`~/Library/Caches/Scout/parse-cache/<bundle id>/<vault key>.json` in
+        /// production, one per build and vault).
         /// Configured for the same reason as `claudeSessionsDirectory`: the
         /// service's own default is the per-user path, so a test graph that
         /// left this to the default rewrote the *running app's* cache with
@@ -778,7 +797,7 @@ final class AppState: ObservableObject {
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: vault),
-                parseCacheURL: SessionLogService.defaultParseCacheURL(),
+                parseCacheURL: SessionLogService.defaultParseCacheURL(scoutDirectory: vault),
                 engineLayout: layout,
                 initialEngineState: state,
                 startsBackgroundWork: true,
