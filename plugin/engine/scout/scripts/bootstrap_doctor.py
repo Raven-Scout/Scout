@@ -398,6 +398,86 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _scheduled_runtimes(*, vault: Path) -> tuple[dict[str, list[str]], list[str]]:
+    """The agent runtimes the schedule uses, each with its slot keys, plus notes (spec 2026-11-13 §8.9).
+
+    A slot runs on its own ``agent_runtime:``, else ``agent_runtimes.default``, else ``claude-code``
+    (``scout.agent_runtimes.resolve``). ``SCOUT_AGENT_RUNTIME`` in this shell is left out: scheduled runs
+    don't inherit it. Claude Code comes first. When the schedule or the config can't be read, the answer is
+    Claude Code alone, so the doctor checks what it checked before the loop; the schedule's own check
+    reports the error.
+    """
+    from scout.agent_runtimes import registry
+    from scout.agent_runtimes.resolve import default_runtime, slot_runtimes
+
+    try:
+        fallback = default_runtime(vault).runtime
+        used: dict[str, list[str]] = {}
+        for key, runtime in sorted(slot_runtimes(vault).items()):
+            used.setdefault(runtime or fallback, []).append(key)
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        return {registry.BUILTIN_DEFAULT: []}, [
+            f"could not read which agent runtimes the schedule uses ({e}); checked Claude Code only"
+        ]
+    if not used:
+        return {fallback: []}, []
+    order = sorted(used, key=lambda rid: (rid != registry.BUILTIN_DEFAULT, rid))
+    return {rid: used[rid] for rid in order}, []
+
+
+def _slot_list(slots: list[str]) -> str:
+    return ", ".join(repr(s) for s in slots) if slots else "(none)"
+
+
+def _check_runtime_bin(*, runtime: str, slots: list[str]) -> tuple[list[str], list[str]]:
+    """A non-Claude runtime's CLI must be installed where scheduled runs look: (errors, warnings).
+
+    Claude Code's check is ``_check_runner_claude_bin``, which reads the runner's ``CLAUDE_BIN``.
+    Without the CLI, ``scoutctl agent-runtime check`` refuses each run (``version_unverified``).
+    """
+    from scout.agent_runtimes import registry
+
+    adapter = registry.get(runtime)
+    name = adapter.display_name
+    fix = f"`scoutctl agent-runtime check --slot {slots[0]}`" if slots else "`scoutctl agent-runtime show`"
+    try:
+        found = adapter.locate(None)
+        version = adapter.version(found) if found is not None else None
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        return [], [f"could not look for the {name} CLI ({runtime}): {e}"]
+    if found is None:
+        return [
+            f"{name} ({runtime}) isn't installed, or isn't on the PATH scheduled runs see — the runs of slot(s) "
+            f"{_slot_list(slots)} on it are skipped. Fix: install it, then re-check with {fix}."
+        ], []
+    if version is None:
+        return [], [
+            f"{name} ({runtime}) at {found}: can't read its version, so the runs of slot(s) {_slot_list(slots)} "
+            f"on it are skipped. Re-check with {fix}."
+        ]
+    return [], []
+
+
+def _check_runtime_auth(*, runtime: str, slots: list[str]) -> tuple[list[str], list[str]]:
+    """How a non-Claude runtime signs in for scheduled runs: (warnings, notes). Claude Code's is ``_check_claude_auth``."""
+    from scout.agent_runtimes import registry
+
+    adapter = registry.get(runtime)
+    name = adapter.display_name
+    binary = adapter.locate(None)
+    if binary is None:
+        return [], []  # _check_runtime_bin reported it
+    auth = adapter.auth_status(binary)
+    if auth.signed_in is False:
+        return [
+            f"{name} isn't signed in for scheduled runs ({auth.mode}: {auth.detail}); the runs of slot(s) "
+            f"{_slot_list(slots)} on it fail until it is. Sign in to {name}, then start one of them to check."
+        ], []
+    if auth.signed_in is None:
+        return [], [f"{name} signs in by {auth.mode} ({auth.detail}); only a run can tell whether that still works"]
+    return [], [f"{name} signs in by {auth.mode} ({auth.detail})"]
+
+
 def _check_run_sandbox(*, vault: Path, home: Path | None = None) -> tuple[list[str], list[str]]:
     """Whether the next scheduled run would run in the write sandbox (spec 2026-11-15 §8): (warnings, notes).
 
@@ -1093,11 +1173,17 @@ def run_doctor(
         # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
         _, pointer_warnings = _check_engine_pointer(home=home, vault=vault)
         warnings.extend(pointer_warnings)
-        # The claude CLI the runners launch. Gated with the other host-runtime
-        # checks: it inspects this machine's binaries, not the vault's content.
-        claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
-        errors.extend(claude_errors)
-        warnings.extend(claude_warnings)
+        # The agent CLIs the runners launch, one per runtime the schedule uses (spec 2026-11-13 §8.9).
+        # Gated with the other host-runtime checks: they inspect this machine's binaries, not the vault's content.
+        runtimes, runtime_notes = _scheduled_runtimes(vault=vault)
+        notes.extend(runtime_notes)
+        for runtime_id, slots in runtimes.items():
+            if runtime_id == "claude-code":
+                bin_errors, bin_warnings = _check_runner_claude_bin(vault=vault)
+            else:
+                bin_errors, bin_warnings = _check_runtime_bin(runtime=runtime_id, slots=slots)
+            errors.extend(bin_errors)
+            warnings.extend(bin_warnings)
         # Whether that claude loads Scout's privacy hooks, from the runners' last gate probe.
         probe_warnings, probe_notes = _check_gate_probe(vault=vault)
         warnings.extend(probe_warnings)
@@ -1106,13 +1192,20 @@ def run_doctor(
         sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
         warnings.extend(sandbox_warnings)
         notes.extend(sandbox_notes)
-        # How those runs sign in: the interactive login or a stored long-lived token.
-        try:
-            auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)
-        except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
-            auth_warnings, auth_notes = [], [f"could not check how scheduled runs sign in to Claude: {e}"]
-        warnings.extend(auth_warnings)
-        notes.extend(auth_notes)
+        # How those runs sign in, per runtime. Claude Code: the interactive login or a stored long-lived token.
+        for runtime_id, slots in runtimes.items():
+            if runtime_id == "claude-code":
+                try:
+                    auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)
+                except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+                    auth_warnings, auth_notes = [], [f"could not check how scheduled runs sign in to Claude: {e}"]
+            else:
+                try:
+                    auth_warnings, auth_notes = _check_runtime_auth(runtime=runtime_id, slots=slots)
+                except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+                    auth_warnings, auth_notes = [], [f"could not check how scheduled runs sign in to {runtime_id}: {e}"]
+            warnings.extend(auth_warnings)
+            notes.extend(auth_notes)
 
     # Run health sits beside the install verdict, never inside it (D2).
     from scout import health
