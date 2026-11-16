@@ -12,6 +12,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ### Changed
 - **Knowledge Base health counts live notes only** (app UI audit card C12; `Scout/KnowledgeBase/Models/KBGraph.swift`, `Scout/KnowledgeBase/KnowledgeBaseService.swift`, `Scout/KnowledgeBase/Views/KBStatsView.swift`). On a mature vault, nearly all the dangling links came from one archived snapshot, and the orphans were receipts. Notes under a folder named exactly `archive` or `archived`, and receipts and invoices (a folder named exactly `receipt(s)` or `invoice(s)`, or that word in the file name or frontmatter `type:`; the rule `/scout-status` uses), are now left out of the health rows, the hubs, the degree figures, the clusters and the by-type counts, and listed on a `Not counted: N archived notes · M receipts` line. The note and connection totals still count every note.
 
+## [0.18.15] - 2026-11-16
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

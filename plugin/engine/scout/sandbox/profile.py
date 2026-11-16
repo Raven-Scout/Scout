@@ -109,7 +109,8 @@ SSH_WRITABLE: tuple[str, ...] = ("known_hosts", "known_hosts.old")
 
 # ~/.scout-secrets: no reads of the contents, no writes (#636's review). Metadata (stat, `test -s`) stays allowed.
 # The Telegram wrap is sent from inside the session (phases/connectors/telegram.md, 18 of the last 50 runs), so
-# its two files stay readable until a send-only broker exists (spec Q8).
+# its two files stay readable in this base profile. While the run's brokers are up, :func:`broker_rules` denies
+# them too (Phase 1d): the send-only broker sends the wrap.
 SECRETS_READABLE: tuple[str, ...] = hook_paths.TELEGRAM_SECRETS
 
 # The ways out of a sandbox (spec §3): a daemon or service that runs a command for its client, outside it.
@@ -305,13 +306,9 @@ def _quote(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def render(rules: Sequence[Rule], *, network: str = "") -> str:
-    """The SBPL text: ``(allow default)``, ``rules`` in order (runs of one action+op share a form), the spawn denies."""
-    lines = [
-        "(version 1)",
-        ";; Scout scheduled-run write sandbox (scout.sandbox.profile; spec 2026-11-15). Generated: don't edit.",
-        "(allow default)",
-    ]
+def render_rules(rules: Sequence[Rule]) -> list[str]:
+    """``rules`` as SBPL forms, in order; runs of one action+op share a form."""
+    lines: list[str] = []
     i = 0
     while i < len(rules):
         j = i
@@ -322,6 +319,17 @@ def render(rules: Sequence[Rule], *, network: str = "") -> str:
         )
         lines.append(f"({rules[i].action} {rules[i].op}\n{filters})")
         i = j
+    return lines
+
+
+def render(rules: Sequence[Rule], *, network: str = "") -> str:
+    """The SBPL text: ``(allow default)``, ``rules`` in order (runs of one action+op share a form), the spawn denies."""
+    lines = [
+        "(version 1)",
+        ";; Scout scheduled-run write sandbox (scout.sandbox.profile; spec 2026-11-15). Generated: don't edit.",
+        "(allow default)",
+        *render_rules(rules),
+    ]
     lines += [
         "(deny file-mount)",
         "(deny job-creation)",
@@ -339,6 +347,37 @@ def render(rules: Sequence[Rule], *, network: str = "") -> str:
 
 def build_profile(vault: Path | None, env: Mapping[str, str] | None = None, *, network: str = "") -> str:
     return render(build_rules(vault, env), network=network)
+
+
+def broker_rules(vault: Path, broker_dir: Path, env: Mapping[str, str] | None = None) -> list[Rule]:
+    """What a run's profile adds while its brokers run (Phase 1d, spec 2026-11-16 §5.4), to go after the rest.
+
+    The broker commits for the run, so every write in the vault's git dir(s) is denied, the 1c carve-outs
+    included; it sends the Telegram wrap, so every read in the secrets dirs is denied, the Telegram files and the
+    folder listing included; and the broker's own folder (its socket) can't be changed.
+    """
+    env = os.environ if env is None else env
+    rules: list[Rule] = []
+    for gitdir in [vault / ".git", *_git_dirs(vault)]:
+        for form in _forms(str(gitdir), env):
+            rules.append(Rule("deny", "file-write*", "subpath", form))
+    for d in secrets_dirs(env):
+        for form in _forms(str(d), env):
+            rules.append(Rule("deny", "file-read-data", "subpath", form))
+    for form in _forms(str(broker_dir), env):
+        rules.append(Rule("deny", "file-write*", "subpath", form))
+    out: list[Rule] = []
+    for rule in rules:
+        _check_path(rule.path)
+        if rule not in out:
+            out.append(rule)
+    return out
+
+
+def with_broker_rules(base: str, rules: Sequence[Rule]) -> str:
+    """``base`` (a profile :func:`render` made) with ``rules`` appended last, where they win."""
+    head = ";; Phase 1d (scout.sandbox.broker; spec 2026-11-16): the brokers commit and send for the run."
+    return base.rstrip("\n") + "\n" + "\n".join([head, *render_rules(rules)]) + "\n"
 
 
 # -- the model -----------------------------------------------------------------------------------------------------
