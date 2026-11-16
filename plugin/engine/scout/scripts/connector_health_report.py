@@ -37,6 +37,7 @@ from scout.connectors import Capability, Connector, ConnectorRegistry, load_regi
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
 from scout.schedule import SlotType
+from scout.sessions._atomic import atomic_write_text
 
 # Set for the length of one run(): the zone is read from the config once,
 # not once per rendered timestamp (11 config reads per report before #80).
@@ -64,6 +65,11 @@ DARK_GAP_THRESHOLD = 3
 # Pattern #54: if a connector logged a healthy run in ANY mode within this window,
 # a 0-call (not 0-error) current run is "alive but unused this mode", not an outage.
 CROSS_MODE_LIVENESS_WINDOW = timedelta(hours=4)
+
+# The macOS app's alert contract. `connector-alerts.log` is for people; the app
+# reads this file instead. See `render_alerts_state` for the format.
+ALERTS_STATE_FILENAME = "connector-alerts.json"
+ALERTS_STATE_SCHEMA_VERSION = 1
 
 
 # ----- data structures -----------------------------------------------------
@@ -668,6 +674,95 @@ def render_pending_alerts_md(
     return "\n".join(lines) + "\n"
 
 
+def _iso_z(t: datetime) -> str:
+    return t.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def read_prior_first_seen(path: Path) -> dict[tuple[str, str], str]:
+    """`(connector_key, level) -> first_seen` from the previous run's alert state.
+
+    A missing, unreadable, or foreign-schema file reads as "no prior alerts":
+    every current alert then starts a fresh streak. That costs at most one
+    re-shown (already acked) banner, never a hidden one.
+    """
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("schema_version") != ALERTS_STATE_SCHEMA_VERSION:
+        return {}
+    alerts = doc.get("alerts")
+    out: dict[tuple[str, str], str] = {}
+    for a in alerts if isinstance(alerts, list) else []:
+        if not isinstance(a, dict):
+            continue
+        key, level, first_seen = a.get("connector_key"), a.get("level"), a.get("first_seen")
+        if not (isinstance(key, str) and isinstance(level, str) and isinstance(first_seen, str)):
+            continue
+        try:
+            datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        out[(key, level)] = first_seen
+    return out
+
+
+def render_alerts_state(
+    alerts: list[Alert],
+    *,
+    now: datetime,
+    current_mode: str,
+    prior_first_seen: dict[tuple[str, str], str],
+) -> str:
+    """The alert state the macOS app reads: `.scout-logs/connector-alerts.json`.
+
+    Rewritten in full on every run, so it always holds exactly the alerts the
+    latest run raised (`"alerts": []` when it raised none)::
+
+        {
+          "schema_version": 1,
+          "generated_at": "2026-04-22T12:30:00Z",   # UTC, whole seconds
+          "mode": "morning-briefing",               # the run that raised them
+          "alerts": [
+            {
+              "connector_key": "mcp:claude_ai_Google_Drive",  # registry key
+              "level": "CRITICAL",                            # or "WARNING"
+              "name": "Google Drive",                         # display name
+              "reason": "...",                                # same text as the .log line
+              "ts": "2026-04-22T12:30:00Z",                   # this run
+              "first_seen": "2026-04-22T08:00:00Z"            # start of the streak
+            }
+          ]
+        }
+
+    `first_seen` is the `ts` of the first run in an unbroken streak of runs
+    raising the same `(connector_key, level)`: carried over from the previous
+    state while the alert persists, reset once a run clears it. The app keys
+    its acknowledgements on `connector_key|level|first_seen`, so acking an
+    alert hides it for the rest of its streak, not the next one.
+
+    The contract fixture is `tests/fixtures/contract/connector-alerts.json`.
+    """
+    ts = _iso_z(now)
+    doc = {
+        "schema_version": ALERTS_STATE_SCHEMA_VERSION,
+        "generated_at": ts,
+        "mode": current_mode,
+        "alerts": [
+            {
+                "connector_key": a.connector_key,
+                "level": a.level,
+                "name": a.name,
+                "reason": a.reason,
+                "ts": ts,
+                "first_seen": prior_first_seen.get((a.connector_key, a.level), ts),
+            }
+            for a in alerts
+        ],
+    }
+    return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
 def fire_macos_notification(alerts: list[Alert]) -> None:
     """Best-effort `osascript display notification` — swallow all exceptions."""
     if not alerts:
@@ -730,6 +825,7 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
     log_dir = paths.logs_dir(target_data)
     out_path = paths.kb_dir(target_data) / "connector-health.md"
     alerts_path = log_dir / "connector-alerts.log"
+    alerts_state_path = log_dir / ALERTS_STATE_FILENAME
     pending_path = paths.cache_dir(target_data) / "connector-alerts-pending.md"
 
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -791,6 +887,21 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
         ),
         encoding="utf-8",
     )
+
+    # The app's alert state: every run rewrites it, so alerts a run no longer
+    # raises leave the app's banner, and a persisting alert keeps first_seen.
+    try:
+        atomic_write_text(
+            alerts_state_path,
+            render_alerts_state(
+                alerts,
+                now=n,
+                current_mode=current_mode,
+                prior_first_seen=read_prior_first_seen(alerts_state_path),
+            ),
+        )
+    except OSError:
+        pass
 
     pending_path.parent.mkdir(parents=True, exist_ok=True)
     if alerts:

@@ -79,6 +79,15 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Fixtures/doctor-run-health.json` and update the pins in
   `apps/macos/ScoutTests/Engine/DoctorReportTests.swift` — all in one commit.
   `contract.yml` byte-compares the two copies.
+- **The connector alert state has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/connector-alerts.json`, the format of
+  `.scout-logs/connector-alerts.json` (documented on `render_alerts_state` in
+  `connector_health_report.py`), which the app's `ConnectorAlert.parseFile`
+  reads. Generate it the same way, from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_connector_alerts_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
+  update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
+  — all in one commit. `connector-alerts.log` is for people; neither side parses it.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

@@ -3,10 +3,10 @@ import Combine
 import OSLog
 import SwiftUI
 
-/// Loads `.scout-logs/connector-calls-*.jsonl` and `connector-alerts.log`
+/// Loads `.scout-logs/connector-calls-*.jsonl` and `connector-alerts.json`
 /// from the given logs directory and publishes:
 /// 1. A `ConnectorHealthMatrix` (connectors × recent sessions).
-/// 2. `activeAlerts`: non-acked `ConnectorAlert`s from the log.
+/// 2. `activeAlerts`: non-acked `ConnectorAlert`s from the latest run.
 ///
 /// The connector roster (`defaultConnectors`) is sourced from
 /// `connectors.snapshot.json`, the JSON projection of scout-plugin's
@@ -16,8 +16,9 @@ import SwiftUI
 /// can't be loaded, we fall back to a hardcoded list AND emit a noisy
 /// log/banner so the operator knows to regenerate.
 ///
-/// Shell scripts remain the source of truth for *which* alerts should fire
-/// (`connector-health-report.sh` owns the 14-day sustained-state logic).
+/// The engine remains the source of truth for *which* alerts should fire
+/// (`scout.scripts.connector_health_report` owns the 14-day sustained-state
+/// logic and rewrites `connector-alerts.json` on every run).
 /// This service does not re-implement that logic — it only reads and
 /// renders.
 @MainActor
@@ -203,7 +204,7 @@ final class ConnectorHealthService: ObservableObject {
         // 1. Matrix from all connector-calls-*.jsonl in logsDirectory within 14d window.
         let calls = await loadCallsWithinWindow()
         matrix = ConnectorHealthMatrix(calls: calls, connectors: connectors)
-        // 2. Alerts from connector-alerts.log.
+        // 2. Alerts from the engine's connector-alerts.json.
         let all = allAlertsFromLog()
         recomputeActiveAlerts(all: all)
         // 3. GC ack store against the live fingerprint set.
@@ -211,7 +212,7 @@ final class ConnectorHealthService: ObservableObject {
     }
 
     private func allAlertsFromLog() -> [ConnectorAlert] {
-        let url = logsDirectory.appendingPathComponent("connector-alerts.log")
+        let url = logsDirectory.appendingPathComponent(ConnectorAlert.fileName)
         return ConnectorAlert.parseFile(at: url)
     }
 
@@ -263,7 +264,7 @@ final class ConnectorHealthService: ObservableObject {
                 guard let self else { return }
                 let name = event.url.lastPathComponent
                 let relevant = name.hasPrefix("connector-calls-")
-                    || name == "connector-alerts.log"
+                    || name == ConnectorAlert.fileName
                 if relevant { await self.refresh() }
             }
         }
