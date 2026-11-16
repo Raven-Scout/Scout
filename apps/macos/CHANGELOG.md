@@ -9,6 +9,7 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ## [0.18.14] - 2026-11-16
 
 ### Fixed
+- **Connector alerts reach the banner again** (`Scout/Models/ConnectorAlert.swift`, `Scout/Services/ConnectorHealthService.swift`). The app parsed `.scout-logs/connector-alerts.log` as the pipe-delimited lines of the retired bash report; the engine's Python report writes a different line, so every alert was dropped and the banner and its acknowledgements never showed anything. The app now reads the engine's `.scout-logs/connector-alerts.json`, which holds the current alerts with a `first_seen` per alert, so an acknowledgement lasts for that alert's streak (runs that don't call the connector don't end it) and an alert a later run clears leaves the banner. A missing, torn or unknown-schema state file no longer prunes acknowledgements. It needs an engine with this release; an older one writes no such file, and the banner stays empty as before. The test fixture is now a byte copy of the engine's generated contract fixture.
 - **Control Center's session list reaches past its newest 30 runs** (`Scout/ControlCenter/RunWindow.swift`, `Scout/ControlCenter/SessionsListView.swift`). The list showed the first 30 runs that passed the filters and nothing else, so an older run could not be opened from the app. It now shows the same first 30, then "Show 30 more" and "Showing 30 of N" below them. Changing the search, the type filter or the day goes back to one page.
 
 ## [0.18.13] - 2026-11-15
