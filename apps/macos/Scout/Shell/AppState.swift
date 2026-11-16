@@ -65,6 +65,9 @@ final class AppState: ObservableObject {
     // Engine discovery (spec §4.4)
     let engineLayout: EngineLayout
     let engineHealth: EngineHealthService
+    /// Settings ▸ Engine ▸ Run protection (card C9): `scoutctl protection status`, the privacy-check
+    /// re-check and the owner's write-protection switch.
+    let runProtection: RunProtectionService
 
     // Engine install + upgrade (spec §5)
     /// The engine this build ships; nil only when the resource is missing
@@ -160,6 +163,17 @@ final class AppState: ObservableObject {
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             initialState: configuration.initialEngineState
+        )
+
+        // Asks the engine health for scoutctl each time, so it follows the engine that's found; none while setup gates the tabs.
+        let runProtection = RunProtectionService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
         )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
@@ -335,6 +349,7 @@ final class AppState: ObservableObject {
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
+        self.runProtection = runProtection
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
         self.resolveClaude = configuration.resolveClaude

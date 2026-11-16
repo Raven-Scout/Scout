@@ -184,9 +184,19 @@ def cli_sandbox_status(
 
 @sandbox_app.command("off")
 def cli_sandbox_off() -> None:
-    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so."""
-    from scout.sandbox import launch
+    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so.
 
+    The owner only: a scheduled or engine-launched run is refused (exit 2), as for `agent-runtime set-limit`.
+    """
+    import os
+
+    from scout.sandbox import launch
+    from scout.scripts.privacy_migrate import headless_reason
+
+    why = headless_reason(os.environ)
+    if why:
+        typer.echo(f"refused: {why}. Only the owner may turn the run sandbox off; nothing was changed.", err=True)
+        raise typer.Exit(2)
     path = launch.set_switch(False)
     typer.echo(f"run sandbox: off (wrote {path}); turn it back on with `scoutctl sandbox on`")
 
@@ -198,6 +208,25 @@ def cli_sandbox_on() -> None:
 
     path = launch.set_switch(True)
     typer.echo(f"run sandbox: on (wrote {path})")
+
+
+protection_app = typer.Typer(help="What protects scheduled runs: sandbox, privacy-check probe, integrity, limits.")
+app.add_typer(protection_app, name="protection")
+
+
+@protection_app.command("status")
+def cli_protection_status(
+    vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the summary as JSON (the app's contract)."),
+) -> None:
+    """Read-only: the write sandbox, the last privacy-check probe, the last run's integrity check, the broker,
+    and each slot's runtime and limits, with what needs fixing. Always exits 0; never starts claude."""
+    import json
+
+    from scout import paths, run_protection
+
+    data = run_protection.report(paths.data_dir(vault))
+    typer.echo(json.dumps(data, indent=2) if as_json else run_protection.format_text(data))
 
 
 @sandbox_app.command("snapshot")

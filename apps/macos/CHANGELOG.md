@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **A Run protection card in Settings ▸ Engine** (app UI audit card C9; `Scout/Shell/RunProtectionSection.swift`, `Scout/Engine/RunProtection{,Model,Service}.swift`). In plain words it shows whether scheduled runs get write protection (and why not), whether Scout's privacy checks load in the installed Claude Code and when that was last checked, what the last run's file check found (clean, or files Scout had to put back), whether the commit and message broker started, and which agent, model and time limit each scheduled slot runs with. Every problem comes with its fix and, where there is one, a button: Turn on, Check again (the privacy check is free: it talks to a local stand-in, never a model) or Show log. The owner's switch for write protection is here: "Turn off…" asks first and explains the risk, and nothing else in the app can reach it (the engine also refuses `sandbox off` from a scheduled run). The card reads `scoutctl protection status --json`; an engine without it says to update. The test fixture is a byte copy of the engine's generated contract fixture.
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

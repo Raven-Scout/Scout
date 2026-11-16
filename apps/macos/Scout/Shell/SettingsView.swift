@@ -74,6 +74,9 @@ struct SettingsView: View {
                         onSetUp: {
                             if appState.beginOnboarding() != nil { showingSetup = true }
                         })
+                    if !appState.engineHealth.state.gatesTabs {
+                        RunProtectionSection(service: appState.runProtection, vault: appState.scoutDirectory)
+                    }
                 }
 
                 section(label: "Action Items") {

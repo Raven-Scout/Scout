@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "evaluated_at": "2026-11-16T12:00:00Z",
+  "severity": "red",
+  "sandbox": {
+    "status": "off",
+    "reason": "turned off by the owner (scoutctl sandbox off)",
+    "switch": "off",
+    "switch_source": "owner"
+  },
+  "gate_probe": {
+    "status": "failed",
+    "reason": "claude ran, but Scout's kb-read-gate never fired",
+    "checked_at": "2026-11-16T11:00:00Z",
+    "claude_version": "2.9.0",
+    "unsafe": "",
+    "stale": false
+  },
+  "last_run": {
+    "slot": "morning-briefing",
+    "mode": "scout",
+    "finished_at": "2026-11-16T09:00:00Z",
+    "outcome": "ok",
+    "sandbox": "enforced",
+    "sandbox_source": null,
+    "integrity": "restored",
+    "log": ".scout-logs/scout-1794818880.log"
+  },
+  "broker": {
+    "status": "unavailable",
+    "reason": "git-safe-commit.sh predates the broker",
+    "recorded_at": "2026-11-16T08:48:00Z"
+  },
+  "slots": [
+    {
+      "key": "morning-briefing",
+      "type": "briefing",
+      "runtime": "claude-code",
+      "runtime_source": "builtin",
+      "model": "opus",
+      "model_source": "builtin",
+      "run_timeout_s": 7200,
+      "timeout_source": "owner",
+      "max_tokens_per_day": null,
+      "ceiling_source": "off",
+      "ignored": [],
+      "error": null
+    },
+    {
+      "key": "research-weekly",
+      "type": "research",
+      "runtime": "claude-code",
+      "runtime_source": "slot",
+      "model": "opus",
+      "model_source": "builtin",
+      "run_timeout_s": 7200,
+      "timeout_source": "owner",
+      "max_tokens_per_day": null,
+      "ceiling_source": "off",
+      "ignored": [],
+      "error": null
+    }
+  ],
+  "problems": [
+    {
+      "id": "run.integrity_restored",
+      "severity": "red",
+      "summary": "1 scheduled run(s) in the last 7 days changed a protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new commit.",
+      "fix": "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and its session, to see what made it change them.",
+      "action": "show_log",
+      "log": ".scout-logs/scout-1794818880.log"
+    },
+    {
+      "id": "gates.probe_failed",
+      "severity": "red",
+      "summary": "Scheduled runs are paused: the Claude Code they use didn't load Scout's privacy checks (claude ran, but Scout's kb-read-gate never fired).",
+      "fix": "Check again after updating Scout or Claude Code. Runs resume on their own once the check passes.",
+      "action": "check_gates",
+      "log": null
+    },
+    {
+      "id": "sandbox.off",
+      "severity": "yellow",
+      "summary": "You turned write protection off, so scheduled runs could change the files that decide which of Scout's checks run. Scout's privacy checks still run.",
+      "fix": "Turn it back on unless you are fixing something that needs it off.",
+      "action": "turn_on_sandbox",
+      "log": null
+    },
+    {
+      "id": "broker.unavailable",
+      "severity": "yellow",
+      "summary": "The last scheduled run ran without its commit and Telegram broker, so it could still write the vault's git history directly and read the Telegram token (git-safe-commit.sh predates the broker).",
+      "fix": "If the reason names an old git-safe-commit.sh, update Scout. Otherwise the run log's `broker:` lines say why; the next run tries again on its own.",
+      "action": null,
+      "log": null
+    }
+  ]
+}

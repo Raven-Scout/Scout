@@ -88,6 +88,13 @@ first.** The two have different languages, test runners, and release flows.
   then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
   update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
   — all in one commit. `connector-alerts.log` is for people; neither side parses it.
+- **The run protection summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/protection-status.json`, the output of
+  `scoutctl protection status --json`, which the app's Run protection card reads.
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_protection_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/protection-status.json` and update
+  the pins in `apps/macos/ScoutTests/Engine/RunProtectionTests.swift` — all in one commit.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame
