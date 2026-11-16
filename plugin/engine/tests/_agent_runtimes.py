@@ -32,8 +32,10 @@ class DummyRuntime:
         caps: frozenset[Capability] = frozenset(),
         binary: Path | None = None,
         version: str | None = "1.0.0",
+        caps_own_spend: bool = False,
     ) -> None:
         self.id = runtime_id
+        self.caps_own_spend = caps_own_spend
         self.provider = provider
         self.caps = caps
         self.binary = binary

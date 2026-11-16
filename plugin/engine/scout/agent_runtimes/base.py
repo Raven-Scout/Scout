@@ -184,6 +184,9 @@ class AgentRuntime(Protocol):
     id: str
     display_name: str
     provider: str  # "anthropic", "openai", "google", …
+    # The CLI enforces a spend cap itself (Claude Code's --max-budget-usd). A runtime that doesn't
+    # gets the run timeout and the daily token ceiling by default (spec §8.6, scout.agent_runtimes.limits).
+    caps_own_spend: bool
 
     def locate(self, hint: Path | None) -> Path | None: ...
     def version(self, binary: Path) -> str | None: ...

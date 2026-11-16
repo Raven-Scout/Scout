@@ -19,6 +19,7 @@ from scout import __version__
 from scout.errors import ConfigError, ScoutError
 
 if TYPE_CHECKING:
+    from scout.agent_runtimes.base import AgentRuntime
     from scout.repo_sync import AgnesHost
     from scout.scripts.bootstrap import BootstrapConfig
 
@@ -2457,6 +2458,316 @@ def _register_model() -> None:
 
 
 _register_model()
+
+
+def _register_agent_runtime() -> None:
+    """scoutctl agent-runtime {list,show,resolve,check,exec} — which agent CLI runs a session (spec 2026-11-13 §8).
+
+    The runners call `resolve --slot "$MODE"`, then `check`, then launch through
+    `exec` (by way of claude-with-retry.sh). Only `claude-code` is registered in
+    Phase 1, and `exec` launches it exactly as the runners did.
+    """
+    import json as _json
+    import os as _os
+
+    agent_runtime_app = typer.Typer(help="Which agent CLI (Claude Code, …) scheduled runs use.")
+    app.add_typer(agent_runtime_app, name="agent-runtime")
+
+    def _adapter(runtime_id: str) -> AgentRuntime:
+        from scout.agent_runtimes import registry
+
+        try:
+            return registry.get(runtime_id)
+        except KeyError as e:
+            typer.echo(f"error: {e.args[0]}", err=True)
+            raise typer.Exit(2) from e
+
+    @agent_runtime_app.command("list")
+    def cli_agent_runtime_list(
+        as_json: bool = typer.Option(False, "--json", help="Emit a JSON list."),
+    ) -> None:
+        """Every runtime this engine knows: id, name, provider, binary, version, provider consent."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent, registry
+
+        vault = _paths.data_dir()
+        rows = []
+        for rid in registry.ids():
+            adapter = registry.get(rid)
+            binary = adapter.locate(None)
+            try:
+                consented = consent.is_consented(vault, adapter.provider)
+            except Exception:  # noqa: BLE001 - shown as unknown, never as consented
+                consented = None
+            rows.append(
+                {
+                    "id": rid,
+                    "name": adapter.display_name,
+                    "provider": adapter.provider,
+                    "binary": str(binary) if binary else None,
+                    "version": adapter.version(binary) if binary else None,
+                    "consented": consented,
+                    "default_model": adapter.default_model(),
+                    "models": list(adapter.known_models()),
+                }
+            )
+        if as_json:
+            typer.echo(_json.dumps(rows))
+            return
+        for r in rows:
+            typer.echo(
+                f"{r['id']}\t{r['name']}\t{r['provider']}\t{r['version'] or 'not installed'}"
+                f"\t{'consented' if r['consented'] else 'not consented'}"
+            )
+
+    @agent_runtime_app.command("show")
+    def cli_agent_runtime_show(
+        slot: str | None = typer.Option(None, "--slot", help="A slot key: show what its run would use."),
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+    ) -> None:
+        """The runtime and model a run of --slot would use (or the default), where each comes from, and its limits."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import limits as _limits
+        from scout.agent_runtimes.resolve import resolve_model_for, resolve_runtime
+
+        vault = _paths.data_dir()
+        try:
+            rt = resolve_runtime(vault, slot)
+            model = resolve_model_for(vault, slot, rt.runtime)
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        lim = _limits.limits_for(vault, _adapter(rt.runtime), slot)
+        payload = {
+            "slot": slot,
+            "runtime": rt.runtime,
+            "runtime_source": rt.source,
+            "model": model.model,
+            "model_source": model.source,
+            "run_timeout_s": lim.run_timeout_s,
+            "timeout_source": lim.timeout_source,
+            "max_tokens_per_day": lim.max_tokens_per_day,
+            "ceiling_source": lim.ceiling_source,
+        }
+        if as_json:
+            typer.echo(_json.dumps(payload))
+            return
+        for key, value in payload.items():
+            typer.echo(f"{key}: {value}")
+
+    @agent_runtime_app.command("resolve")
+    def cli_agent_runtime_resolve(
+        slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        as_json: bool = typer.Option(False, "--json", help='Emit {"runtime", "source"}.'),
+    ) -> None:
+        """Print the runtime for one run: SCOUT_AGENT_RUNTIME, the slot's, agent_runtimes.default, else claude-code.
+
+        Exit 1 on a config error; the runners then fall back to claude-code, as model resolve falls back to opus.
+        """
+        from scout.agent_runtimes.resolve import resolve_runtime
+
+        try:
+            resolved = resolve_runtime(None, slot)
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps({"runtime": resolved.runtime, "source": resolved.source}))
+        else:
+            typer.echo(resolved.runtime)
+
+    @agent_runtime_app.command("check")
+    def cli_agent_runtime_check(
+        slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        runtime: str | None = typer.Option(None, "--runtime", help="Check this runtime (default: resolve --slot)."),
+        binary: str = typer.Option("", "--bin", help="The CLI the runner will start (default: the adapter finds it)."),
+        interactive: bool = typer.Option(False, "--interactive", help="For a skill's preamble, not a scheduled run."),
+        as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+    ) -> None:
+        """Exit 0 when the runtime may run Scout on this vault; 3 when refused; 4 when over its daily token ceiling.
+
+        The reason goes to stderr as `[scout:agent-runtime] <code>: <reason>`. A check that can't
+        run refuses (check_failed). There is no fallback to another runtime (spec §8.3).
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import check as _check
+        from scout.agent_runtimes.resolve import resolve_runtime
+
+        vault = _paths.data_dir()
+        try:
+            rid = runtime or resolve_runtime(vault, slot).runtime
+        except ConfigError as e:
+            typer.echo(f"[scout:agent-runtime] check_failed: {e}", err=True)
+            raise typer.Exit(_check.EXIT_REFUSE) from e
+        adapter = _adapter(rid)
+        reader = _os.environ.get("SCOUT_READER") or ("owner" if interactive else "autonomous")
+        report = _check.evaluate(
+            vault,
+            adapter,
+            reader=reader,
+            mode=_os.environ.get("SCOUT_MODE") or slot,
+            interactive=interactive,
+            binary=Path(binary) if binary else None,
+        )
+        if as_json:
+            refusal = report.refusal
+            typer.echo(
+                _json.dumps(
+                    {
+                        "runtime": report.runtime,
+                        "provider": report.provider,
+                        "binary": report.binary,
+                        "version": report.version,
+                        "tier": report.tier,
+                        "allowed": refusal is None,
+                        "code": refusal.code if refusal else None,
+                        "reason": refusal.reason if refusal else None,
+                    }
+                )
+            )
+        if report.refusal is not None:
+            typer.echo(f"[scout:agent-runtime] {report.refusal.code}: {report.refusal.reason}", err=True)
+            raise typer.Exit(report.refusal.exit_code)
+        if not as_json:
+            typer.echo(f"ok: {report.runtime} {report.version or ''} (Tier {report.tier or '-'})".rstrip())
+
+    @agent_runtime_app.command("exec")
+    def cli_agent_runtime_exec(
+        runtime: str = typer.Option(..., "--runtime", help="The runtime id (the runners pass $SCOUT_AGENT_RUNTIME)."),
+        binary: str = typer.Option("", "--bin", help="The CLI to start (default: the adapter finds it)."),
+        model: str = typer.Option(..., "--model", help="The run's model."),
+        budget_cap: str | None = typer.Option(None, "--max-budget-usd", help="The run's USD cap, passed as text."),
+        name: str = typer.Option(..., "--name", help="The run's name."),
+        prompt: str = typer.Option(..., "-p", help="The run's prompt."),
+        print_argv: bool = typer.Option(False, "--print-argv", hidden=True, help="Print the argv as JSON; don't run."),
+    ) -> None:
+        """Replace this process with the runtime's CLI, launched for one scheduled run.
+
+        The flag names are the retry wrapper's (it reads --name and rewrites --max-budget-usd).
+        For claude-code the CLI's argv is the runners' launch line, word for word. With a run
+        timeout (on by default only for runtimes that can't cap their own spend) this process
+        stays as the CLI's parent and stops it at the deadline (exit 124).
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import exec as _exec
+        from scout.agent_runtimes import limits as _limits
+
+        adapter = _adapter(runtime)
+        vault = _paths.data_dir()
+        req = _exec.build_request(
+            vault=vault,
+            model=model,
+            budget_cap=budget_cap,
+            run_name=name,
+            prompt=prompt,
+            binary=Path(binary) if binary else None,
+            env=_os.environ,
+        )
+        if print_argv:
+            typer.echo(_json.dumps(list(adapter.headless_argv(req).argv)))
+            return
+        try:
+            timeout_s = _limits.limits_for(vault, adapter, req.mode or None).run_timeout_s
+        except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
+            timeout_s = (
+                None if adapter.caps_own_spend else _limits.default_timeout_minutes(_limits.kind_of(req.mode)) * 60
+            )
+        try:
+            code = _exec.run(adapter, req, timeout_s=timeout_s)
+        except FileNotFoundError as e:
+            typer.echo(f"[scout:agent-runtime] can't start {adapter.display_name}: {e}", err=True)
+            raise typer.Exit(127) from e
+        except PermissionError as e:
+            typer.echo(f"[scout:agent-runtime] can't start {adapter.display_name}: {e}", err=True)
+            raise typer.Exit(126) from e
+        raise typer.Exit(int(code) if isinstance(code, int) else 0)
+
+
+_register_agent_runtime()
+
+
+def _register_privacy() -> None:
+    """scoutctl privacy {providers,consent-provider,revoke-provider} — model-provider consent (spec 2026-11-13 §8.4)."""
+    import json as _json
+    import os as _os
+
+    privacy_app = typer.Typer(help="Which model providers a run may send this vault's content to.")
+    app.add_typer(privacy_app, name="privacy")
+
+    @privacy_app.command("providers")
+    def cli_privacy_providers(
+        as_json: bool = typer.Option(False, "--json", help="Emit a JSON list of {provider, consented_at}."),
+    ) -> None:
+        """The providers runs on this vault may use: anthropic, plus each one the owner consented to."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        try:
+            rows = consent.consented(_paths.data_dir())
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps([{"provider": r.provider, "consented_at": r.consented_at} for r in rows]))
+            return
+        for r in rows:
+            typer.echo(f"{r.provider}\t{r.consented_at or 'default'}")
+
+    def _owner_only(verb: str) -> None:
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(_os.environ)
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may {verb} a provider; nothing was changed.", err=True)
+            raise typer.Exit(2)
+
+    @privacy_app.command("consent-provider")
+    def cli_privacy_consent_provider(
+        provider: str = typer.Argument(..., help="The provider id, e.g. openai, google, xai."),
+    ) -> None:
+        """Let runs on this vault send its content to PROVIDER. The owner only, never a run (exit 2).
+
+        Recorded with the time in ~/.local/state/scout/provider-consent.json, which runs can't write.
+        A `privacy.providers` list in scout-config.yaml, if you keep one, must name it too.
+        Local-only paths never go to a provider other than Anthropic, consent or not.
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        _owner_only("consent to")
+        vault = _paths.data_dir()
+        try:
+            at = consent.consent(vault, provider)
+            overlay = consent.overlay_providers(vault)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        name = provider.strip().lower()
+        if not at:
+            typer.echo(f"{name}: always allowed (Claude Code's provider)")
+            return
+        typer.echo(f"consented: {name} at {at}")
+        if overlay is not None and name not in overlay:
+            typer.echo(f"note: scout-config.yaml privacy.providers doesn't list {name}, so runs still may not use it.")
+
+    @privacy_app.command("revoke-provider")
+    def cli_privacy_revoke_provider(
+        provider: str = typer.Argument(..., help="The provider id to revoke."),
+    ) -> None:
+        """Stop runs on this vault from using PROVIDER. The owner only (exit 2)."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        _owner_only("revoke")
+        try:
+            removed = consent.revoke(_paths.data_dir(), provider)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{'revoked' if removed else 'not consented'}: {provider.strip().lower()}")
+
+
+_register_privacy()
 
 
 def _register_triggers() -> None:

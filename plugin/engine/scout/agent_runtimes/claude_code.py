@@ -81,6 +81,7 @@ class ClaudeCode:
     id = "claude-code"
     display_name = "Claude Code"
     provider = "anthropic"
+    caps_own_spend = True  # --max-budget-usd
 
     # -- the binary ---------------------------------------------------------
 
