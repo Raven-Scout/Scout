@@ -2,6 +2,10 @@ import AppKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    /// Opens a run by id; `ScoutApp` points it at `AppState.openRun(id:)`.
+    /// Static because the delegate adaptor builds this object itself.
+    @MainActor static var openRun: ((Run.ID) -> Void)?
+
     func applicationDidFinishLaunching(_: Notification) {
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(
@@ -24,5 +28,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+
+    /// Clicking a run notification opens that run in the Control Center.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let id = NotificationService.runID(from: response.notification.request.content.userInfo) {
+            Self.openRun?(id)
+        }
+        completionHandler()
     }
 }

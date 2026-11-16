@@ -238,25 +238,8 @@ struct SlotEditForm: View {
                     options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
                 )
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Runtime")
-                    .font(DS.sans(11, weight: .medium))
-                    .tracking(1)
-                    .textCase(.uppercase)
-                    .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
-                    selection: $draft.runtime,
-                    options: [
-                        ("Local", SlotRuntime.local),
-                        ("Remote (Plan 7)", SlotRuntime.remote),
-                    ],
-                    minSegmentWidth: 110
-                )
-                .disabled(true)
-                .opacity(0.5)
-                Text("Remote slot execution arrives in Plan 7 (Anthropic routines integration).")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            // No Runtime row: every slot runs locally, so there is nothing to
+            // choose. The disabled "Remote (Plan 7)" placeholder is gone (card C3).
         }
         .padding(.top, 4)
     }

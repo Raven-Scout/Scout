@@ -1,12 +1,14 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Combine
 
 @MainActor
 final class AppState: ObservableObject {
-    enum MenuBarStatus { case idle, running, lastFailed, budgetSkipped }
-
-    @Published var menuBarStatus: MenuBarStatus = .idle
+    /// What the menu-bar icon, the menu-bar panel and the status bar show
+    /// (card C3). Derived from the engine's health and the latest run by
+    /// `recomputeStatus()`; settable so view tests can pin a state.
+    @Published var status = ScoutStatus(kind: .checking, title: "Checking Scout…", detail: "Looking at the engine", tone: .neutral)
 
     /// Last "Run now" (fire-now) failure, surfaced to the UI. Set when a
     /// `scoutctl schedule fire-now` invocation throws or exits non-zero;
@@ -368,6 +370,19 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
             .store(in: &cancellables)
+        // The shared status follows the engine as well as the runs (card C3).
+        // `receive(on:)` hops past the willSet, so the service's properties
+        // already hold the new values when this reads them.
+        engineHealth.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.recomputeStatus() }
+            .store(in: &cancellables)
+        // The Control Center's Today column shows the real daily budget.
+        budgetSettings.$settings
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         sessionIndex.$needsYouCount
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -393,6 +408,7 @@ final class AppState: ObservableObject {
         lastGatesTabs = configuration.initialEngineState.gatesTabs
         syncOnboarding()
         refreshEngineSwitchState()
+        recomputeStatus()
 
         // Everything below spawns work that outlives the initializer — polling
         // timers, FSEvents subscriptions, launch-time loads and a `scoutctl`
@@ -411,6 +427,9 @@ final class AppState: ObservableObject {
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
             await MainActor.run {
+                // Runs already on disk at launch never notify; only runs
+                // that finish (or first appear) from here on do.
+                self?.runNotificationsArmed = true
                 sched.start()
                 power.start()
                 // Load proposals at launch so the sidebar badge is populated
@@ -420,8 +439,12 @@ final class AppState: ObservableObject {
                 wishlistDoc.load()
                 researchDoc.load()
             }
-            await self?.recomputeMenuStatus()
+            await self?.recomputeStatus()
             await self?.refreshUrgentActionCount()
+            // The real daily budget for the Control Center (card C3); a
+            // vault without one just leaves the budget off. Its own task, so
+            // the engine check below never waits on it.
+            Task { _ = try? await budgetSettings.load() }
 
             // Locate + doctor-check the engine concurrently with the Action
             // Items environment check below — a slow doctor (a real
@@ -1007,31 +1030,55 @@ final class AppState: ObservableObject {
         return home.appendingPathComponent("Scout")
     }
 
-    func recomputeMenuStatus() async {
-        let latest = sessionLogService.runs.first
-        let next: MenuBarStatus = switch latest?.status {
-        case .running: .running
-        case .failure, .timeout, .rateLimited: .lastFailed
-        case .skippedBudget: .budgetSkipped
-        default: .idle
-        }
-        menuBarStatus = next
+    /// Re-derive `status` from the engine's health and the latest run.
+    func recomputeStatus() {
+        let next = ScoutStatus.derive(engine: engineHealth.state, doctor: engineHealth.doctor,
+                                      doctorError: engineHealth.lastError,
+                                      latestRun: sessionLogService.runs.first)
+        if next != status { status = next }
     }
+
+    /// Open a run in the Control Center, from a notification click: front
+    /// the main window and let `ControlCenterView` open the run's detail.
+    func openRun(id: Run.ID) {
+        requestedSidebar = .controlCenter
+        pendingRunToOpen = id
+        NSApp.activate(ignoringOtherApps: true)
+        if let openMainWindow {
+            openMainWindow()
+        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
+            // No SwiftUI view has handed over its opener yet (the window
+            // started hidden and the panel was never opened). The run still
+            // opens the next time the window shows: `pendingRunToOpen` waits.
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// The SwiftUI `openWindow(id: "main")` action, handed over by the first
+    /// view that has one (the main window or the menu-bar panel), so a
+    /// notification click can reopen a closed window.
+    var openMainWindow: (() -> Void)?
+
+    /// False until the launch-time log load finishes, so runs already on
+    /// disk never notify.
+    private var runNotificationsArmed = false
 
     private func startNotificationWatch() {
         sessionLogService.$runs.sink { [weak self] runs in
             guard let self else { return }
             Task { @MainActor in
+                let defaults = UserDefaults.standard
+                let prefs = RunNotificationPolicy.Preferences(
+                    onFailure: defaults.object(forKey: RunNotificationPolicy.failureKey) as? Bool ?? true,
+                    onRateLimit: defaults.object(forKey: RunNotificationPolicy.rateLimitKey) as? Bool ?? true)
                 for r in runs {
-                    let prev = self.previousStatus[r.id]
-                    if prev == .running,
-                       r.status != .running,
-                       r.status != .success {
+                    if RunNotificationPolicy.shouldNotify(previous: self.previousStatus[r.id], run: r,
+                                                          armed: self.runNotificationsArmed, preferences: prefs) {
                         self.notificationService.notify(run: r)
                     }
                     self.previousStatus[r.id] = r.status
                 }
-                await self.recomputeMenuStatus()
+                self.recomputeStatus()
             }
         }.store(in: &cancellables)
     }

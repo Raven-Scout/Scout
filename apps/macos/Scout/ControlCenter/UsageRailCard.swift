@@ -50,11 +50,6 @@ struct UsageRailCard: View {
                 .font(DS.mono(11.5))
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.top, 2)
-
-            Text("Quota: TBD (Phase 2)")
-                .font(DS.mono(10.5))
-                .foregroundStyle(DS.Ink.p4.opacity(0.7))
-                .padding(.top, 10)
         }
         .editorialCard(padding: 16)
         .task(id: todayRunsKey) { await loadStats() }
