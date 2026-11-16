@@ -65,7 +65,7 @@ def test_the_launcher_routes_exactly_the_entrys_hooks_to_it():
     text = LAUNCHER.read_text()
     (case,) = re.findall(r'case "\$\{2:-\}" in\s+([^)]+)\)\s+MODULE=scout\.hooks', text)
     assert {name.strip() for name in case.split("|")} == set(HOOKS)
-    assert text.count('-m "$MODULE" "$@"') == 3 and "-m scout.cli" not in text
+    assert text.count('-P -m "$MODULE" "$@"') == 3 and "-m scout.cli" not in text
 
 
 def test_the_launcher_runs_a_hook_through_the_entry(vault):

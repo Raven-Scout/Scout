@@ -21,7 +21,7 @@ find ~/.claude/projects -name "*.jsonl" -mtime -1 2>/dev/null
 
 ```bash
 # Quick scan of recent user prompts with project context
-tail -50 ~/.claude/history.jsonl 2>/dev/null | python3 -c "
+tail -50 ~/.claude/history.jsonl 2>/dev/null | python3 -I -c "
 import sys, json
 for line in sys.stdin:
     try:

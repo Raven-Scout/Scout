@@ -9,7 +9,7 @@ the subcommand functions, not at module level.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -83,6 +83,59 @@ _register_planning()
 
 hook_app = typer.Typer(help="PostToolUse / lifecycle hook entry points (invoked by Claude Code).")
 app.add_typer(hook_app, name="hook")
+
+gates_app = typer.Typer(help="Checks that Scout's privacy gates are live before a scheduled run.")
+app.add_typer(gates_app, name="gates")
+
+
+@gates_app.command("probe")
+def cli_gates_probe(
+    claude_bin: str = typer.Option(
+        "", "--claude-bin", help="The claude the runners launch (default: as bootstrap finds it)."
+    ),
+    vault: str | None = typer.Option(
+        None, "--vault", help="Vault whose .scout-state caches the result (default: SCOUT_DATA_DIR / cwd)."
+    ),
+    cached: bool = typer.Option(
+        False, "--cached", help="Reuse a fresh matching pass from .scout-state/gate-probe.json."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+    plugin_root: str | None = typer.Option(None, "--plugin-root", hidden=True),
+    extra_flag: list[str] = typer.Option(
+        [], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."
+    ),
+) -> None:
+    """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
+
+    Runs claude once against a local fake endpoint (no model, no spend, never your
+    credentials) in a throwaway fixture vault. Where there's no network sandbox it
+    refuses instead of running: exit 4 when a setting names an endpoint it can't
+    keep on this machine, exit 5 when the claude launcher hides its provider
+    switches. The runners call this with --cached before each run and skip the run
+    on any non-zero exit. See scout/agent_runtimes/gate_probe.py and spec
+    2026-11-13 §3.5.
+    """
+    import json
+
+    from scout import paths
+    from scout.agent_runtimes import gate_probe
+    from scout.scripts.bootstrap import resolve_claude_bin
+
+    binary = Path(resolve_claude_bin(claude_bin))
+    root = Path(plugin_root) if plugin_root else gate_probe.default_plugin_root()
+    flags = (*gate_probe.PROBE_FLAGS, *extra_flag)
+    data_dir = paths.data_dir(vault)  # its .claude/settings*.json go into the probe, as they would into a run
+    if cached:
+        result = gate_probe.cached_probe(data_dir, binary, plugin_root=root, flags=flags)
+    else:
+        result = gate_probe.probe(binary, plugin_root=root, flags=flags, vault=data_dir)
+    if as_json:
+        typer.echo(json.dumps(result.to_json(), indent=2))
+    else:
+        typer.echo(f"{'ok' if result.ok else 'REFUSED'}: {result.reason} (claude {result.claude_version or 'unknown'})")
+    if not result.ok:
+        typer.echo(f"[scout:gates] {result.reason}", err=True)
+        raise typer.Exit(gate_probe.UNSAFE_EXIT.get(result.unsafe, 3))
 
 
 @hook_app.command("connector-log")
@@ -248,7 +301,9 @@ def kb_install_hook(
 def kb_classify(
     paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -258,31 +313,42 @@ def kb_classify(
     owner and autonomous readers get labels. An agent reader gets
     {"path": ..., "denied": true} for every path, without the file being looked
     at, so a denial says nothing about whether the file exists or what it is.
+    A delegate reader gets the label of each existing file it may see and the
+    same denial for every other path, missing ones included.
     """
     args = _kb_args("classify", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel, reads_any, visible_to
         from scout.kb.read import Output, UsageError
 
-        if who not in FULL_READERS:
+        if not reads_any(who):
             return Output(
                 data=[{"path": p, "denied": True} for p in paths],
                 lines=[f"{p}: denied" for p in paths],
                 denied=len(paths),
             )
         policy = load_policy(root)
-        labels = []
+        data: list[dict[str, object]] = []
+        lines: list[str] = []
+        shown = []
         for p in paths:
             try:
                 rel = normalize_rel(root, p)
             except ValueError as e:
                 raise UsageError(str(e)) from e
-            labels.append(label_file(root, rel, policy))
+            label = label_file(root, rel, policy)
+            hidden_kind = ".git" in rel.split("/") or not (root / rel).is_file()
+            if not visible_to(label, who, policy) or (who not in FULL_READERS and hidden_kind):
+                # a delegate: a hidden file, a missing one and anything under .git/ get the same denial
+                data.append({"path": p, "denied": True})
+                lines.append(f"{p}: denied")
+                continue
+            data.append(label.to_json())
+            shown.append(label)
+            lines.append(f"[private] {label.path}" if label.visibility == "private" else label.path)
         return Output(
-            data=[label.to_json() for label in labels],
-            lines=[f"[private] {label.path}" if label.visibility == "private" else label.path for label in labels],
-            labels=[label.to_json() for label in labels],
+            data=data, lines=lines, labels=[label.to_json() for label in shown], denied=len(paths) - len(shown)
         )
 
     _kb_run(args, reader, repo, as_json, body)
@@ -291,7 +357,9 @@ def kb_classify(
 @kb_app.command("policy")
 def kb_policy(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -499,7 +567,9 @@ def kb_unshare(
 @kb_app.command("shares")
 def kb_shares(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -538,7 +608,7 @@ def _scope_text(scope: object) -> str:
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
 
-_READER_HELP = "owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+_READER_HELP = "owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow."
 _KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
 _SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
 
@@ -567,9 +637,11 @@ def _kb_run(
 
     from scout.errors import KBError
     from scout.kb.read import Output, UsageError, audit, graph_vault
-    from scout.kb.reader import resolve_reader
+    from scout.kb.reader import delegate_id, resolve_reader
 
-    vault = graph_vault(_kb_repo(repo), None if repo else kb_root)
+    # A delegate never gets --kb-root's vault lookup: it would stat a path of its choosing.
+    delegate = delegate_id(resolve_reader(None, os.environ)) is not None
+    vault = graph_vault(_kb_repo(repo), None if repo or delegate else kb_root)
     try:
         who = resolve_reader(reader, os.environ)
     except typer.BadParameter:
@@ -3764,17 +3836,18 @@ def self_update_run_cmd(
     """
     import datetime as _dt
     import json as _json
-    import sys as _sys
 
     from scout import paths as _paths
+    from scout._spawn import python_module_argv
     from scout.scripts.self_update_run import default_deps, run_lock, run_update, spawn_detached
 
     vault = _paths.data_dir()
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     log_name = f"self-update-{today}.log"
     if detach:
-        argv = [_sys.executable, "-m", "scout", "self-update", "run"]
-        argv += [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        # The heartbeat runs this with the vault as cwd; -P keeps vault files off the child's sys.path.
+        flags = [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        argv = python_module_argv("scout", "self-update", "run", *flags)
         pid = spawn_detached(argv, log_path=vault / ".scout-logs" / log_name)
         typer.echo(f"self-update: started in the background (pid {pid}); log: .scout-logs/{log_name}")
         return
@@ -4321,7 +4394,373 @@ def _register_repo() -> None:
 _register_repo()
 
 
+def _register_delegate() -> None:
+    delegate_app = typer.Typer(
+        help="Mirrors for your own agents off this computer (#550): each delegate:<id> gets a filtered copy of "
+        "the vault in its own private repository."
+    )
+    app.add_typer(delegate_app, name="delegate")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _say(result: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_mirror import Result
+
+        assert isinstance(result, Result)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        r = result
+        if r.action in ("link", "sync", "preview"):
+            if r.unchanged:
+                typer.echo(f"{r.delegate}: up to date")
+            else:
+                verb = "would hold" if r.action == "preview" else "pushed a mirror commit with"
+                typer.echo(
+                    f"{r.delegate}: {verb} {r.files} file(s); {r.withheld} withheld"
+                    + (f", {r.left_out} left out after redaction" if r.left_out else "")
+                    + (
+                        f"; {r.redacted_lines} line(s) removed from {r.redacted_files} file(s)"
+                        if r.redacted_files
+                        else ""
+                    )
+                )
+        for note in r.notes:
+            typer.echo(note)
+
+    @delegate_app.command("link")
+    def cli_delegate_link(
+        delegate: str = typer.Argument(..., help="The delegate id, as listed under privacy.delegates."),
+        remote: str = typer.Option(
+            "", "--remote", help="Its private GitHub repository (https://github.com/<owner>/<repo>) or a local path."
+        ),
+        create_repo: str | None = typer.Option(
+            None, "--create-repo", help="Create this private GitHub repository (owner/name) with gh and use it."
+        ),
+        confirm_account_unshared: bool = typer.Option(
+            False,
+            "--confirm-account-unshared",
+            help="You confirm that only you use the agent's account: no team bot, shared handle or shared channel.",
+        ),
+        replace_remote: bool = typer.Option(
+            False, "--replace-remote", help="The remote has history: start it over with one mirror commit."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link a delegate to its own private repository and push its first mirror.
+
+        The mirror holds what scoutctl kb shows that delegate, with the lines that
+        name or link a note it can't see removed. Run scoutctl delegate preview first.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import link
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = link(
+                _paths.data_dir(),
+                delegate,
+                remote,
+                account_unshared=confirm_account_unshared,
+                replace_remote=replace_remote,
+                create_repo=create_repo,
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("sync")
+    def cli_delegate_sync(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every linked delegate; one failing doesn't stop the rest."),
+        if_moved: bool = typer.Option(
+            False,
+            "--if-moved",
+            help="With --all: only delegates whose mirror may be behind (HEAD moved, or the last sync failed).",
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Push a new mirror commit when the vault's HEAD changed what the delegate may see.
+
+        Scheduled runs call `sync --all` when they finish, and the schedule tick
+        calls `sync --all --if-moved` at most every 15 minutes. A failure is
+        recorded for run health and doctor, never failing the run.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import sync, sync_all
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_) or (if_moved and not all_):
+            typer.echo(
+                "scoutctl delegate sync: name one delegate, or pass --all (and --if-moved only with --all)", err=True
+            )
+            raise typer.Exit(2)
+        if delegate is not None:
+            try:
+                result = sync(_paths.data_dir(), delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say(result, as_json)
+            return
+        try:
+            done, failed = sync_all(_paths.data_dir(), only_moved=if_moved)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            doc = {
+                "ok": not failed,
+                "synced": [r.to_json() for r in done],
+                "failed": {k: {"code": err.code, "message": err.message} for k, err in failed.items()},
+            }
+            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
+        else:
+            for r in done:
+                _say(r, False)
+            for k, err in failed.items():
+                typer.echo(f"{k}: {err.message}", err=True)
+        if failed:
+            raise typer.Exit(2)
+
+    @delegate_app.command("preview")
+    def cli_delegate_preview(
+        delegate: str = typer.Argument(..., help="The delegate id, as listed under privacy.delegates."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show what a sync of HEAD would put in the delegate's mirror. Writes nothing; no network."""
+        from scout import paths as _paths
+        from scout.delegate_mirror import preview
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = preview(_paths.data_dir(), delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("status")
+    def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
+        """List the linked delegates: remote, last sync and the vault commit it mirrors."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import load_links
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            links = load_links(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            doc = {"ok": True, "links": [v.to_json() for _, v in sorted(links.items())]}
+            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
+            return
+        if not links:
+            typer.echo("no delegate mirrors on this computer")
+        for k, v in sorted(links.items()):
+            key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
+            if v.stale_key_ids:
+                key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
+            synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
+            typer.echo(f"{k}: {v.remote}; {key}; {synced}")
+
+    @delegate_app.command("key")
+    def cli_delegate_key(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        rotate: bool = typer.Option(False, "--rotate", help="Replace the agent's deploy key with a new one."),
+        revoke: bool = typer.Option(False, "--revoke", help="Delete the agent's deploy key: it can't fetch any more."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Give the agent a read-only deploy key on its mirror repository (or rotate or revoke it).
+
+        The private key is kept in ~/.scout-secrets/delegate-mirrors/ for you to
+        put in the agent's secret store; the command prints where, and how the
+        agent clones with it.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import deploy_key
+        from scout.repo_sync import RepoSyncError
+
+        if rotate and revoke:
+            typer.echo("scoutctl delegate key: pass --rotate or --revoke, not both", err=True)
+            raise typer.Exit(2)
+        try:
+            result = deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("push-token")
+    def cli_delegate_push_token(
+        token_file: Path | None = typer.Option(
+            None, "--token-file", help="A file holding the token. Default: ask for it."
+        ),
+    ) -> None:
+        """Store a GitHub token this computer pushes the mirrors with, instead of git's own login.
+
+        Make it fine-grained: contents read and write on the mirror repositories
+        only. It is kept in ~/.scout-secrets/delegate-mirrors/, never in the vault.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import push_token_path, save_push_token
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if token_file is not None:
+                token = token_file.expanduser().read_text(encoding="utf-8")
+            else:
+                token = typer.prompt("GitHub token for the delegate mirrors", hide_input=True)
+            save_push_token(vault, token)
+        except RepoSyncError as e:
+            _fail(e, False)
+        except OSError as e:
+            _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), False)
+        typer.echo(f"stored at {push_token_path(vault)}")
+
+    @delegate_app.command("trust-state")
+    def cli_delegate_trust_state(
+        confirm: list[str] = typer.Option(  # noqa: B008
+            [], "--confirm", help="A delegate id whose link you checked (once per link), instead of the prompt."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only).
+
+        Each delegate and its remote are shown and must be confirmed: at a
+        terminal by typing the delegate id, otherwise with --confirm <id> per link.
+        """
+        import sys as _sys
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import trust_state
+        from scout.repo_sync import RepoSyncError
+
+        confirmed = set(confirm)
+
+        def ask(delegate: str, remote: str) -> bool:
+            if confirmed:
+                return delegate in confirmed
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{delegate} -> {remote}")
+            return typer.prompt(f"Type {delegate} to trust this link", default="", show_default=False) == delegate
+
+        try:
+            result = trust_state(_paths.data_dir(), confirm=ask)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("unlink")
+    def cli_delegate_unlink(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Forget a delegate's mirror on this computer and revoke its deploy key. The repository stays."""
+        from scout import paths as _paths
+        from scout.delegate_mirror import unlink
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = unlink(_paths.data_dir(), delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+
+_register_delegate()
+
+
+# What a delegate checkout (SCOUT_READER=delegate:<id>, #550 §6.5) may run: reads only. A
+# delegate never writes the vault; it proposes through its inbox. This guards against an
+# accident, not an attack: it covers `scoutctl` only (not `python -m scout.scripts.*`), and
+# the boundary is that a delegate's copy can't push the vault. `action-items list` waits for
+# V2: the daily file links private notes, which only the delegate mirror redacts (#550 §4.4).
+_DELEGATE_COMMANDS = frozenset(
+    {
+        ("version",),
+        *(
+            ("kb", name)
+            for name in (
+                "files",
+                "search",
+                "read",
+                "resolve",
+                "query",
+                "related",
+                "traverse",
+                "path",
+                "name-lookup",
+                "delta",
+                "classify",
+                "policy",
+                "entity",
+                "export",
+                "stats",
+                "validate",
+            )
+        ),
+        ("pre-session", "data"),
+        ("bootstrap", "doctor"),
+        ("manifest", "show"),
+    }
+)
+_DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them
+
+
+def delegate_write_refusal(argv: list[str], env: Mapping[str, str]) -> str | None:
+    """Why a ``delegate:<id>`` reader may not run ``argv`` (the words after ``scoutctl``), else None.
+
+    None for any other reader. Only the commands in ``_DELEGATE_COMMANDS`` (and
+    the ``hook`` group) pass, and ``--help`` right after the command words
+    (``scoutctl kb share --help``), where it can't be another option's value;
+    anything else, a bare group included, is refused. ``-h`` isn't help here:
+    on some commands it is ``--hours``.
+    """
+    from scout.kb.reader import delegate_id, resolve_reader
+
+    reader = resolve_reader(None, env)
+    if delegate_id(reader) is None:
+        return None
+    words: list[str] = []
+    for arg in argv:
+        if arg.startswith("-"):
+            break
+        words.append(arg)
+    if argv[len(words) : len(words) + 1] == ["--help"]:
+        return None
+    if words and (words[0] in _DELEGATE_GROUPS or tuple(words[:1]) in _DELEGATE_COMMANDS):
+        return None
+    if tuple(words[:2]) in _DELEGATE_COMMANDS:
+        return None
+    command = " ".join(words[:2]) or "(no command)"
+    return (
+        f"scoutctl: `{command}` isn't available to {reader}: this is a delegate checkout, which only reads "
+        "the vault. Propose the change through the delegate's inbox instead, or run it on the owner's computer."
+    )
+
+
 def main() -> None:
+    import os
+
+    refusal = delegate_write_refusal(sys.argv[1:], os.environ)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        sys.exit(3)
     try:
         app()
     except ScoutError as e:
