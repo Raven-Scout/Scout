@@ -22,8 +22,15 @@ one (§12). The coordinator cuts implementation cards from the plan
 - Connector-heavy slots stay on Claude Code at first.
 - The site may carry a "planned" line now.
 
-Progress (2026-11-16). Only the Claude Code hardening has started. Nothing in
-the adapter phases (1 to 4) is built.
+Progress (2026-11-16). The Claude Code hardening has shipped. Phase 1 has
+started, and nothing in the adapter phases is built yet.
+
+- **In progress** (Jordan's go, 2026-11-16; cards cut by the coordinator):
+  - **Phase 1**, the runtime interface with Claude Code behind it.
+  - **Phase 0**, a spike per CLI.
+  - **Phase 1d**, the commit broker and the send-only Telegram broker.
+  - **Phase 6's first card**, the "planned" line on the site and in the
+    README.
 
 - **Phase 1a, the bare-mode guard: merged** as #635 (3b30ed1b, 2026-11-15).
   Two follow-ups also merged: #638 and #640 keep the vault's working
@@ -32,8 +39,8 @@ the adapter phases (1 to 4) is built.
   Its scope grew past this spec's first card; see §8.5 and §12.
 - **Phase 1c, an OS-level write sandbox for runs: merged** as #642
   (c4c3a018, 2026-11-16). This phase was added after the first draft (§12).
-- **Phase 1d, a commit broker and a send-only Telegram broker: planned**
-  (#642's follow-ups, §12).
+- **Phase 1d, a commit broker and a send-only Telegram broker: in
+  progress** (from #642's follow-ups, §12).
 - **Track B's delegate mirror (#550 V2): merged.** That covers the mirror
   (#632), the private repo and read-only key (#633), syncing after each run
   and every 15 minutes (#636), the Office-file scan (#639) and a
