@@ -8,11 +8,26 @@ enforced or the run refused.
 
 **Two tracks:**
 
-- **Track A** is Scout's own sessions on Codex, Google's CLI and maybe
-  Grok Build. Phases 0–4 and 6 belong to it, and this plan owns them.
+- **Track A** is Scout's own sessions on Antigravity CLI, then Codex CLI
+  and Gemini CLI (both preview). Grok Build is out (spec §14 Q1). Phases
+  0–4 and 6 belong to it, and this plan owns them.
 - **Track B** is Grokbot and Claude Duet consuming Scout through #550's
-  delegate mirror (#625, #632) plus `scoutctl`. Phase 5 tracks it, but
-  #550's plan owns it.
+  delegate mirror (#625; V2 merged as #632, #633, #636, #639, #643) plus
+  `scoutctl`. Phase 5 tracks it, but #550's plan owns it.
+
+**Jordan's answers (2026-11-16, spec §14)** set this plan's order and
+defaults:
+- Antigravity first; Codex and Gemini CLI as preview; Grok Build and Tier S
+  are out.
+- Approach A.
+- Opt-in provider consent, with local-only paths excluded from
+  non-Anthropic runs.
+- A timeout and a daily token ceiling, on by default.
+- An automatic re-check per new `agy` version on the owner's login.
+- Connector-heavy slots stay on Claude Code.
+- A "planned" line is allowed now.
+- First-release commands: `scout-ask`, `scout-work`, `scout-status` and the
+  launch skills.
 
 **Architecture:** A new engine package `scout/agent_runtimes/` holds one
 adapter per local CLI, behind a protocol with declared and verified
@@ -29,14 +44,14 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 
 **How the coordinator uses this plan:**
 
-- **Phase 1a** is detailed and can start now. It is urgent and independent
-  of the rest (spec §3.5).
+- **Phases 1a, 1b and 1c** have shipped (#635, #637, #642). **Phase 1d** is
+  a card from #642's follow-ups.
 - **Phase 1** is detailed and starts on Jordan's approval of the spec. It
   does not depend on the open questions.
-- **Phases 0 and 2–6** are card-level. Each needs Phase 0's answers, and gets
-  its own detailed plan (`…-phase-N.md`) when its card is cut. Writing
-  their task-level steps now would mean guessing hook payloads that Phase 0
-  exists to observe.
+- **Phases 0 and 2–6** are card-level. Jordan has answered §14. Each phase
+  needs Phase 0's facts, and gets its own detailed plan (`…-phase-N.md`)
+  when its card is cut. Writing their task-level steps now would mean
+  guessing hook payloads that Phase 0 exists to observe.
 
 ## Global Constraints
 
@@ -49,13 +64,16 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 - Resolve failure falls back to `claude-code`. Check failure (or "can't
   evaluate") skips the run with `scout_record_skip refused_runtime` (spec §8.2).
 - New config key names: slot `agent_runtime`, config `agent_runtimes.default`,
-  env `SCOUT_AGENT_RUNTIME`, runtime ids `claude-code`, `codex`,
-  `antigravity`, `gemini`, `grok`. Never reuse `Slot.runtime` (spec §8.1).
+  env `SCOUT_AGENT_RUNTIME`, runtime ids `claude-code`, `antigravity`,
+  `codex`, `gemini`. Never reuse `Slot.runtime` (spec §8.1).
 - Ledger keys `agent_runtime`, `provider`, `cost_source` ∈ `{reported, priced, unpriced}`.
   Absent means Claude Code (spec §8.6).
-- `privacy.providers` defaults to `[anthropic]` (spec §8.4).
+- `privacy.providers` defaults to `[anthropic]`. Local-only paths are
+  denied to every non-Anthropic run, consent or not (spec §8.4).
 - No paid API spend, no API keys in tests or CI, no model in CI. Model-backed
-  runs are local, on Jordan's login, with his OK per run (repo rule).
+  runs are local, on Jordan's login, with his OK per run (repo rule). The
+  only exception is the owner's own install re-proving a new `agy` version
+  automatically, on the owner's login (spec §8.3 rule 4).
 - Never run a test that does `bootstrap install` without `--no-jobs`, and
   never touch `~/Scout`, `~/scout-plugin` or the live launchd jobs.
 - Local tests: affected files only. CI is the gate. Before pushing engine
@@ -292,8 +310,20 @@ missing scoutctl.
 - **What:** the runners start the session inside an OS write sandbox (macOS:
   SBPL) generated from `hook_paths.protected_specs()`, the same list as
   #637, so the two layers can't drift.
-- **Status: in progress, draft #642** (`feat/run-write-sandbox`), built on
-  #637's `hook_paths` (now on main). Details, tests and acceptance are in #642.
+- **Status: merged as #642** (c4c3a018, 2026-11-16), built on #637's
+  `hook_paths`. Details, tests and acceptance are in #642.
+
+## Phase 1d — Commit broker and send-only Telegram broker (card; added 2026-11-16)
+
+- **Why:** from #642's follow-ups.
+  - The kernel can't see per-command git settings, so the run's commits
+    still rely on #607's shell gate. A broker outside the sandbox that
+    makes the commits removes that reliance.
+  - The sandbox still lets a run read the two Telegram files, because runs
+    send the wrap in-session. A send-only broker sends it for them, so the
+    sandbox can deny those files too.
+- **Scope, acceptance and tests:** cut with the card, by whoever picks it
+  up. It doesn't depend on Phase 1, and Phase 1 doesn't depend on it.
 
 ---
 
@@ -500,7 +530,7 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 ### Task 1.7: Provider consent
 
 **Files:**
-- Modify: `plugin/engine/scout/kb/privacy.py` (overlay key `privacy.providers`, default `["anthropic"]`; no label change, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, as #625 did)
+- Modify: `plugin/engine/scout/kb/privacy.py` (overlay key `privacy.providers`, default `["anthropic"]`; no label change, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, as #625 did). The local-only exclusion for non-Anthropic runs (spec §8.4) arrives in Phase 2, with the first such runtime
 - Modify: `plugin/engine/scout/cli.py` (`scoutctl privacy consent-provider <id>` / `revoke-provider <id>`, written through the overlay path `privacy-migrate --accept` uses (#510))
 - Test: `plugin/engine/tests/unit/test_privacy_providers.py`
 
@@ -542,12 +572,14 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 
 ## Phase 0 — Answers and facts (card; no product code)
 
-- **Inputs:** spec §14 questions to Jordan (the coordinator asks them).
-- **Spike per CLI** (throwaway, in a scratch dir, never merged). For Codex,
-  Antigravity, Gemini CLI if chosen, and Grok Build if chosen, observe and
-  record in spec §3 (replacing each **[unknown]**):
-  - Do PreToolUse hooks fire in the headless mode (`codex exec`, `agy -p`,
-    `gemini -p`, `grok -p`)?
+- **Inputs:** Jordan's §14 answers (2026-11-16).
+- **Spike per CLI** (throwaway, in a scratch dir, never merged). For
+  Antigravity, Codex and Gemini CLI, observe and record in spec §3
+  (replacing each **[unknown]**). Antigravity's spike needs a real model:
+  Jordan's AI Pro login, his OK per run. Codex's and Gemini CLI's use a fake
+  endpoint, or docs only where none works.
+  - Do PreToolUse hooks fire in the headless mode (`agy -p`, `codex exec`,
+    `gemini -p`)?
   - What is the exact hook stdin and reply JSON?
   - Does a crashing, hanging or garbage-printing hook block or allow?
   - Do `SCOUT_*` variables reach the hook and a shell child?
@@ -555,73 +587,108 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
   - Is a custom endpoint usable (for the fake model)?
   - What do each tool's names look like in the hook payload?
   - What are the vendor's consumer-plan data terms (spec §8.4)?
+  - For Antigravity: does a scripted prompt reliably make the canary read,
+    so the automatic re-check (spec §8.3 rule 4) can tell "denied" from
+    "never tried"?
+- **Also:** the formula for the default daily token ceiling, from Jordan's
+  Claude Code ledgers (spec §8.6).
 
   A spike that needs a real model uses Jordan's login only with his per-run OK.
 - **Done when:** spec §3 has no unknown that changes a tier, and the
   coordinator has a go per runtime.
 
-## Phase 2 — Codex CLI (cards; detailed plan after Phase 0)
+## Phase 2 — Antigravity CLI, the first runtime (cards; detailed plan after Phase 0)
+
+The first non-Claude runtime carries the shared pieces that Phases 3 and 4
+reuse.
+
+1. `antigravity` adapter: argv (`agy -p`, `--output-format stream-json`,
+   the run prompt); model validation; `classify_failure` (the plan's 5-hour
+   and weekly limits → `usage_limit(resets_at)`); `run_usage` from its token
+   events (`cost_source: unpriced`); process markers.
+2. Protocol additions: `hook_in`/`hook_out`/`gate_config`/`parse_events`.
+   Antigravity gate translation: `toolCall{name,args}` → `GatePayload`;
+   unknown tools are denied in a run. `agent-runtime install` writes
+   `~/.gemini/config/hooks.json` (a managed block) plus `--check`. The gate
+   denies writes to `.agents/`, `.gemini/`, `.codex/` and `.claude/` in the
+   vault, and every gate config path joins `hook_paths`.
+3. Privacy: provider consent applies (Task 1.7). Local-only paths are denied
+   to non-Anthropic runs by the read gate and left out by `scoutctl kb`
+   (spec §8.4).
+4. Budget: `run_timeout_minutes` (default 45) for every non-Claude slot; a
+   `budget.per_runtime.<id>.max_tokens_per_day` ceiling, on by default, with
+   Phase 0's formula; a skip past the ceiling is `skipped_budget` (spec
+   §8.6).
+5. Conformance, model-backed (no custom endpoint):
+   - `scoutctl agent-runtime probe antigravity`, a scripted canary read
+     that passes only on Scout's deny;
+   - run automatically by `check` before the first scheduled run on a
+     version that is neither in `verified.json` nor in the local cache. It
+     costs the owner's quota, never runs in CI, and refuses on fail or
+     "inconclusive";
+   - `verified.json` rows for Antigravity come from Jordan's runs, with his
+     OK per run.
+6. Normalised `RunEvent`s: eval `metrics.py` and the Stop-hook accounting
+   consume them; Claude's stays as it is.
+7. Neutral connector keys: `connectors.yaml` → regenerate
+   `connectors.snapshot.json` with `--no-also-write-app-fixture` → copy to
+   the app → aliases in `ConnectorKeyAlias.swift`. **One commit**;
+   `contract.yml` is the gate. Per-runtime connector detection (reads
+   `.agents/mcp_config.json`).
+8. Eval: `antigravity_shim.py` (isolated config, stub MCP servers, sandbox,
+   init guard); `eval.sh kb-gate --agent-runtime antigravity`;
+   `compare-runtimes`.
+9. App: onboarding "any supported runtime"; runtime picker in
+   `SlotEditForm`; model options from `agent-runtime models`; the
+   app-managed engine path when `claude` is absent.
+10. Generated skills under `plugin/runtimes/antigravity/`: the
+    `.agents/skills` tree (shared with Codex later), with a drift test.
+    First-release scope: `scout-ask`, `scout-work`, `scout-status` and the
+    four launch skills (spec §8.10).
+11. Acceptance: conformance at Tier F or L for a pinned version, by a
+    model-backed run; `kb-gate` + privacy scenario pass on Antigravity on
+    Jordan's AI Pro login (his OK per run); one dreaming or research slot
+    live for a week. Then add the `docs/runtimes.md` row.
+
+## Phase 3 — Codex CLI, preview (cards; after Phase 2)
 
 1. `codex` adapter: argv (`codex exec --json`, `approval_policy=never`,
    `sandbox_mode=workspace-write`, `developer_instructions` for the run
    prompt); model validation; `classify_failure`; `run_usage` from
    `turn.completed.usage` (`cost_source: unpriced`); process markers.
-2. Protocol additions: `hook_in`/`hook_out`/`gate_config`/`parse_events`.
-   Codex gate translation: Bash and `apply_patch` → `GatePayload`; unknown
-   tools are denied in a run. `agent-runtime install` writes `~/.codex/hooks.json`
-   (a managed block) plus `--check`. Gate denies writes to `.codex/`,
-   `.agents/` and `.claude/` in the vault.
+2. Codex gate translation: Bash and `apply_patch` → `GatePayload`.
+   `agent-runtime install` writes `~/.codex/hooks.json` (a managed block)
+   plus `--check`.
 3. Fake Responses-API server (sibling of `fake_anthropic.py`) and the Codex
    conformance suite. It writes `agent_runtimes/verified.json` (generated,
    never hand-edited).
-4. Normalised `RunEvent`s: eval `metrics.py` and the Stop-hook accounting
-   consume them; Claude's stays as it is.
-5. Neutral connector keys: `connectors.yaml` → regenerate
-   `connectors.snapshot.json` with `--no-also-write-app-fixture` → copy to
-   the app → aliases in `ConnectorKeyAlias.swift`. **One commit**;
-   `contract.yml` is the gate. Per-runtime connector detection.
-6. Eval: `codex_shim.py` (isolated `CODEX_HOME`, stub MCP servers, sandbox,
-   init guard); `eval.sh kb-gate --agent-runtime codex`;
-   `compare-runtimes`.
-7. App: onboarding "any supported runtime"; runtime picker in
-   `SlotEditForm`; model options from `agent-runtime models`; the
-   app-managed engine path when `claude` is absent.
-8. Generated skills/commands for Codex under `plugin/runtimes/codex/`
-   (`.agents/skills` tree shared with Antigravity), with a drift test.
-9. Acceptance: conformance at Tier F or L for a pinned version;
-   `kb-gate` + privacy scenario pass on Codex (Jordan's OK per run); one
-   slot (dreaming suggested) live for a week. Then add the
-   `docs/runtimes.md` row.
+4. Eval: `codex_shim.py` (isolated `CODEX_HOME`, stub MCP servers, sandbox,
+   init guard).
+5. Codex packaging under `plugin/runtimes/codex/`, reusing the
+   `.agents/skills` tree.
+6. Acceptance: conformance at Tier F or L for a pinned version. It ships
+   as **preview** (Jordan holds no ChatGPT plan). It becomes Supported when
+   someone who holds one runs `kb-gate` + the privacy scenario and a
+   maintainer confirms the results (spec §10).
 
-## Phase 3 — Google CLI (cards; after Phase 0 and Q5)
+## Phase 4 — Gemini CLI, preview (cards; after Phase 2)
 
-- `antigravity` adapter.
-  - Its conformance is model-backed only, because there is no custom
-    endpoint.
-  - Tighter version pinning.
-  - Packaging reuses the `.agents/skills` tree; hooks go in
-    `~/.gemini/config/hooks.json`.
-- Optionally a `gemini` adapter: fake-model conformance through
-  `GOOGLE_GEMINI_BASE_URL` if Phase 0 confirms it; an extension package; and
-  `hook_out` that always prints valid JSON (malformed output fails open).
-- Same acceptance bar as Codex.
+- `gemini` adapter: fake-model conformance through `GOOGLE_GEMINI_BASE_URL`
+  if Phase 0 confirms it; an extension package; and `hook_out` that always
+  prints valid JSON (malformed output fails open).
+- Acceptance as Codex: preview until someone with a Code Assist licence or
+  a paid key passes the live gate.
 
-## Phase 4 — Grok Build CLI, Track A (cards; only if Q1 says yes; Q10 decides Tier S)
-
-- Adapter and conformance.
-- It starts Tier D, because hooks fail open after a 5 s default timeout.
-  Tier D means it works in a clone of a #632 delegate mirror, as a delegate.
-- Tier S only if Q10 says build it: `scoutctl mcp serve` on the laptop over
-  the canonical vault as `autonomous` (shares code with #550 V5), plus
-  path-deny profiles for the KB, local-only paths and gate configs.
+*Grok Build (formerly Phase 4) is dropped (spec §14 Q1), and Tier S isn't
+built (Q10).*
 
 ## Phase 5 — Track B: Grokbot and Claude Duet (tracked here, owned by #550)
 
 - Grokbot (Grok Bot) and Claude Duet are off-laptop agents that consume
   Scout through #550's delegate path:
   - V1 reader, built in #625;
-  - V2a mirror, draft #632 (`scout/delegate_mirror.py`, `scoutctl delegate
-    link|sync|preview|status|unlink`);
+  - V2 mirror, merged (#632 `scout/delegate_mirror.py` and `scoutctl
+    delegate link|sync|preview|status|unlink`; #633, #636, #639, #643);
   - then V3 `delegate init`, V4 inbox, and V6 live.
   - Duet first reads its mirror through the GitHub connector; V5 MCP only
     if that's too weak (#550 Q3/Q9).
@@ -632,11 +699,14 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 
 ## Phase 6 — Marketing (cards, one per claim change)
 
-- Each PR changes the site, README or app copy for exactly one row moving
-  state in `docs/runtimes.md`, and links that row.
+- **First card, now (spec §14 Q8):** the "planned" line on the site and in
+  the root README, never the hero, per spec §13's wording. No dates.
+- Each later PR changes the site, README or app copy for exactly one row
+  moving state in `docs/runtimes.md`, and links that row.
 - Wording follows spec §13, including the "never" list.
 - No PR in Phases 1–5 touches `docs/index.html`, `README.md`'s pitch or
-  `plugin/README.md`'s requirements table.
+  `plugin/README.md`'s requirements table. The "planned" line is Phase 6's
+  own first card.
 
 ---
 
@@ -644,17 +714,17 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 
 - **Spec coverage:**
   - §8.2 → 1.1, 1.2, 1.4.
-  - §8.3 → 1.1, 1.4.
-  - §8.4 → 1.7.
+  - §8.3 → 1.1, 1.4; rule 4's model-backed re-check → Phase 2.5.
+  - §8.4 → 1.7; the local-only exclusion → Phase 2.3.
   - §8.5 liveness → 1.5; gate translation → Phase 2.2.
   - §8.6 → 1.6 and Phase 2.1/2.4.
   - §8.7 → 1.3, 1.4.
-  - §8.8 → Phase 2.5.
-  - §8.9 → 1.8 and Phase 2.7.
-  - §8.10 → Phase 2.8.
-  - §8.11 → Phase 2.7.
-  - §8.12 → Phases 4–5.
-  - §11 → 1a.1–1a.2 (seed of the conformance suite) and Phase 2.3.
+  - §8.8 → Phase 2.7.
+  - §8.9 → 1.8 and Phase 2.9.
+  - §8.10 → Phase 2.10.
+  - §8.11 → Phase 2.9.
+  - §8.12 → Phase 5.
+  - §11 → 1a.1–1a.2 (seed of the conformance suite), Phase 2.5 and Phase 3.3.
   - §13 → 1.8 (`docs/runtimes.md`) and Phase 6.
   - §3.5's bare-mode risk → Phase 1a.
 - **Deferred on purpose:** the protocol members without a Claude caller

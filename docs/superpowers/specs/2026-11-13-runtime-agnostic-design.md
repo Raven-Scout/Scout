@@ -1,11 +1,27 @@
 # Runtime-agnostic Scout: scheduled runs and skills on agent CLIs other than Claude Code — design
 
-Status: **draft for Jordan's review.** The open questions (§14) are still
-unanswered. Implementation starts per phase (§12) on Jordan's go. The
-coordinator cuts implementation cards from the plan
-(`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
+Status: **draft; Jordan answered every open question on 2026-11-16** (§14).
+The answers are folded into the sections they change. Implementation starts
+per phase (§12) on Jordan's go. The coordinator cuts implementation cards
+from the plan (`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
 
-Progress (2026-11-16). Only the Claude Code hardening has started; nothing in
+**Decisions in one line each (2026-11-16, details in §14):**
+
+- Track A order: **Antigravity CLI first**, then **Codex CLI** and **Gemini
+  CLI**. Codex and Gemini CLI are capped at "preview" until someone with
+  those plans passes the live gate. **Grok Build is out.** **Tier S is
+  not built.**
+- Approach A (§7).
+- Provider consent: opt in per provider; non-Anthropic runs never read
+  local-only paths.
+- Non-Claude slots get a 45-minute timeout and a daily token ceiling, both
+  on by default.
+- A new Antigravity version is re-proved automatically by a tiny scripted
+  model call on the owner's own login.
+- Connector-heavy slots stay on Claude Code at first.
+- The site may carry a "planned" line now.
+
+Progress (2026-11-16). Only the Claude Code hardening has started. Nothing in
 the adapter phases (1 to 4) is built.
 
 - **Phase 1a, the bare-mode guard: merged** as #635 (3b30ed1b, 2026-11-15).
@@ -13,8 +29,14 @@ the adapter phases (1 to 4) is built.
   directory off `sys.path` in Scout's Python processes.
 - **Phase 1b, the run write gate: merged** as #637 (f1f9dba6, 2026-11-16).
   Its scope grew past this spec's first card; see §8.5 and §12.
-- **Phase 1c, an OS-level write sandbox for runs: in progress,** as draft #642.
-  This phase was added after the first draft (§12).
+- **Phase 1c, an OS-level write sandbox for runs: merged** as #642
+  (c4c3a018, 2026-11-16). This phase was added after the first draft (§12).
+- **Phase 1d, a commit broker and a send-only Telegram broker: planned**
+  (#642's follow-ups, §12).
+- **Track B's delegate mirror (#550 V2): merged.** That covers the mirror
+  (#632), the private repo and read-only key (#633), syncing after each run
+  and every 15 minutes (#636), the Office-file scan (#639) and a
+  write-nothing preview (#643).
 
 Builds on, and cites as "privacy §n", "delegates §n", "models §n", "eval §n":
 
@@ -23,7 +45,8 @@ Builds on, and cites as "privacy §n", "delegates §n", "models §n", "eval §n"
   `delegate:<id>` reader (V1, built in #625), the per-delegate mirror (V2a,
   merged as #632: `scout/delegate_mirror.py` and `scoutctl delegate
   link|sync|preview|status|unlink`; V2b, the repository and read-only key,
-  merged as #633), and the inbox.
+  merged as #633; V2c, sync after each run and every 15 minutes, merged as
+  #636), and the inbox.
 - `2026-10-13-slot-model-selection-design.md` (#460, #461, #462).
 - `2026-10-12-eval-harness-design.md` and the KB-writing release gate (`eval.sh kb-gate`).
 - `2026-10-11-run-health-and-headless-updates-design.md` (auth, usage limits, self-update).
@@ -52,14 +75,15 @@ marketing copy.
 1. **Two tracks** (§3):
    - **Track A: Scout's own sessions on another CLI.** Scheduled runs and
      interactive skills, launched by Scout on the owner's Mac, as Claude Code
-     is today. The targets are:
-     - OpenAI **Codex CLI**;
-     - Google's CLI, which for consumer plans is now **Antigravity CLI**
-       (Gemini CLI moved those users there on 2026-06-18 and now needs a paid
-       key or a Code Assist licence);
-     - xAI's **Grok Build** CLI.
+     is today. The targets, in build order (Q5):
+     1. Google's **Antigravity CLI**. Gemini CLI moved consumer plans,
+        including Google AI Pro, there on 2026-06-18;
+     2. OpenAI **Codex CLI**, at "preview" until someone with a ChatGPT plan
+        passes the live gate;
+     3. Google's **Gemini CLI** for users with a Code Assist licence or a
+        paid key, also at "preview" until someone passes the live gate.
 
-     This spec designs Track A.
+     xAI's **Grok Build** CLI is out (Q1). This spec designs Track A.
    - **Track B: off-laptop agents consuming Scout.** These are **Grokbot**
      (xAI's Grok Bot) and **Claude Duet** (Anthropic's proactive agent,
      announced 2026-10-21, per Claude account). Both are settled as agent
@@ -67,7 +91,8 @@ marketing copy.
      #550. Neither has a CLI, API or hooks, and Scout never launches them.
      They read the vault through #550's delegate path:
      - the `delegate:<id>` reader (V1, built in #625);
-     - the per-delegate filtered mirror (V2a, draft #632);
+     - the per-delegate filtered mirror (V2, merged: #632, #633, #636,
+       #639, #643);
      - `scoutctl` inside the agent;
      - later the bootstrap (V3) and the inbox (V4).
 
@@ -78,7 +103,7 @@ marketing copy.
 1a. **Urgent, and independent of the rest.** Claude Code's docs say `--bare`
    will become the default for `-p`, and bare mode loads no hooks. Scout's
    gates would then silently stop running in scheduled runs. A guard ships
-   first, as Phase 1a (§3.5, §12).
+   first, as Phase 1a (§3.5, §12). Shipped as #635.
 2. **One adapter interface in the engine, Claude Code first behind it.**
    `scout/agent_runtimes/` holds one adapter per local CLI. Each adapter
    builds the command, normalises output into one event and usage model,
@@ -95,8 +120,9 @@ marketing copy.
      run on a real vault. It may still read a **delegate mirror** (#550 V2a,
      #632), which is safe without hooks because private and local-only
      content isn't in it.
-   - A new model provider (OpenAI, Google, xAI) sees vault content only after
-     the owner opts in, per provider (§8.4).
+   - A new model provider (Google, OpenAI) sees vault content only after
+     the owner opts in, per provider, and never sees local-only paths
+     (§8.4).
    - No existing gate is weakened to fit a runtime.
 4. **Per-slot choice of runtime**, next to the per-slot model (#460):
    - `agent_runtime:` on a slot, `agent_runtimes.default` in config, and
@@ -107,7 +133,7 @@ marketing copy.
 5. **Track B gets no runtime adapter.** "Support" for Grokbot and Claude Duet
    means #550's delegate path:
    - V1 reader (#625);
-   - V2a mirror (#632);
+   - V2 mirror (#632, #633, #636, #639, #643; merged);
    - V3 bootstrap;
    - V4 inbox;
    - later the V5 MCP server.
@@ -145,7 +171,9 @@ hand.
 | Custom endpoint | `model_providers.<id>.base_url`; the wire API must be the Responses API [docs] |
 | ACP | Not native; adapter `agentclientprotocol/codex-acp` [repo] |
 
-**For Scout:** a strong candidate for Tier F. The hook protocol is close to
+**For Scout:** Track A's second runtime (Q5). Its live gate waits for someone
+with a ChatGPT plan, because Jordan holds none, so it ships as "preview"
+(§13). A strong candidate for Tier F. The hook protocol is close to
 Claude Code's, deny is first-class, and gate config can live in `~/.codex`,
 outside the vault and outside a `workspace-write` sandbox. Two points need
 Phase 0:
@@ -155,8 +183,7 @@ Phase 0:
 
 Because every Codex read is a shell call, the read gate's Bash classifier
 (`scout.kb.raw_read`, already shared with the eval) does all the work.
-Codex's OS-level read deny could add a second, structural layer (§8.3, Tier
-S).
+Codex's OS-level read deny could add a second, structural layer (§8.3).
 
 ### 3.2 Google: Gemini CLI (`gemini`) and Antigravity CLI (`agy`)
 
@@ -169,7 +196,9 @@ transitioning Gemini CLI to Antigravity CLI"]:
   Vertex AI, and Gemini Code Assist Standard/Enterprise licences.
 
 Jordan's ask names "Gemini CLI". For a user without one of those, the
-Google target is in practice Antigravity CLI (Q5).
+Google target is in practice Antigravity CLI. That includes Jordan, whose
+Google AI Pro plan covers Antigravity and not Gemini CLI. **Decided (Q5):
+Antigravity first; Gemini CLI third, as preview.**
 
 | Question | Gemini CLI | Antigravity CLI |
 |---|---|---|
@@ -189,11 +218,15 @@ Google target is in practice Antigravity CLI (Q5).
 - **Antigravity** fits "the owner's own login, no API spend".
   - It has a deny-capable PreToolUse hook *and* path deny rules.
   - It is closed source and has no custom endpoint, so its conformance can
-    only be proven by model-backed runs on Jordan's login (§11.2).
+    only be proven by model-backed runs: on Jordan's login for a release,
+    and on the owner's login when their `agy` updates (§8.3 rule 4, §11.2).
+  - It is Track A's first runtime (Q5). Jordan can run its live gate on his
+    own plan, quota rather than money.
 - **Gemini CLI** is open and testable with a fake model.
   - For most users it needs a paid key or an employer's Code Assist
     licence. The first breaks the no-paid-API rule for Scout's own testing;
-    the second is the user's business.
+    the second is the user's business. So its live gate waits for a user
+    who holds one, and it ships as "preview" until then (§13).
   - A malformed hook reply fails open, so Scout's hook must always print
     valid JSON, including on its own errors. That is checkable, but it is the
     opposite of today's exit-2 default.
@@ -243,10 +276,10 @@ Track A.
   2026-05-15, MIT). API key only, so it is out under the no-paid-API rule.
   Nothing literally named "Grokbot" was found as a CLI.
 
-**For Scout:** Grok Build is a Track A candidate, but **fail-open hooks keep
-it out of Tier F** unless Phase 0 finds a fail-closed setting. Its
-path-deny rules may give a structural tier instead (§8.3, Tier S). Whether
-Track A should include it at all is Q1.
+**For Scout:** Grok Build is **out of Track A** (Q1, decided 2026-11-16).
+Its fail-open hooks would have kept it out of Tier F, and the structural
+Tier S it would have needed isn't being built (Q10). The facts above stay,
+in case it comes back. Grok Bot (Track B) is unaffected.
 
 ### 3.4 Claude Duet (Track B)
 
@@ -304,7 +337,7 @@ The 2026-10-21 launch is confirmed on Anthropic's own pages, which matches
 | Codex CLI | ChatGPT Plus or higher (Free/Go CLI access unverified) | none |
 | Antigravity CLI | Any Google account (weekly quota), Pro/Ultra for more | none |
 | Gemini CLI | A Code Assist Standard/Enterprise licence, or a paid API key / Vertex | none for Scout; **a paid key is the user's choice and is never used in Scout's own CI or tests** |
-| Grok Build CLI | SuperGrok or X Premium+ | none |
+| Grok Build CLI (out, Q1) | SuperGrok or X Premium+ | none |
 | Grok Bot (delegate) | A SuperGrok tier or an eligible Cursor plan | none |
 | Claude Duet (delegate) | US Pro, Max or Ultra, off the waitlist | none |
 
@@ -316,8 +349,8 @@ review) are recorded per provider in Phase 0, for the consent prompt in §8.4
 
 **Goals**
 
-- G1. A scheduled slot can run on Codex CLI or Google's CLI (Antigravity,
-  or Gemini CLI for users who have it) on the owner's Mac.
+- G1. A scheduled slot can run on Antigravity CLI, Codex CLI, or Gemini CLI
+  (for users who have it) on the owner's Mac.
   It uses the owner's own login or subscription and keeps the same lock,
   lease, retry, run-health, ledger and commit-hook behaviour.
 - G2. The interactive skills (`scout-ask`, `scout-work`, the launch skills, and
@@ -360,7 +393,10 @@ review) are recorded per provider in Phase 0, for the consent prompt in §8.4
   `scout/kb/*`). Adapters only translate.
 - **No paid API spend** (repo rule): each runtime uses the owner's own CLI
   login or subscription. Live tests on Jordan's accounts need his OK *per
-  run*. CI never starts a model. The conformance suite uses a scripted local
+  run*. One exception, decided by Jordan (Q11): the owner's own install
+  re-proves a CLI it can't probe for free with a tiny scripted model call,
+  without asking (§8.3 rule 4). That is part of running Scout, not a test.
+  CI never starts a model. The conformance suite uses a scripted local
   fake model, where the CLI allows a custom endpoint (§11.2).
 - **One version, one tag, one release** (root CLAUDE.md). Adapters ship inside
   the plugin and engine, and release with them.
@@ -384,7 +420,9 @@ Each coupling is classified as one of:
   Scout must refuse or confine (§8.3).
 
 Paths are relative to the repo root. Line numbers are as of `origin/main` at
-59483466.
+59483466. They predate #637 and #642, which changed `hooks.json`,
+`kb_read_gate.py`, the runner templates and `claude-with-retry.sh.tmpl`.
+Re-check a line number before citing it in a card.
 
 ### 6.1 Launching sessions
 
@@ -437,6 +475,8 @@ which hook fires and how a deny is returned, is Claude Code's.
 | Gate | Where | Blocks | Returned as | Without hooks |
 |---|---|---|---|---|
 | **kb-read-gate** (#453, #536; hook-skip #607 via #616) | `plugin/hooks/hooks.json:26-30`; `kb_read_gate.py:180-226, 272-279` | A run's shell/Grep/Glob read of `knowledge-base/` and `action-items/context/`; Bash that changes `SCOUT_MODE`/`SCOUT_READER` or runs `env -i`; detaching (#595); git calls that skip or redirect the commit hooks (#607) | JSON `permissionDecision: deny`; exit 2 when scoutctl can't run | **Partial.** `scoutctl kb` labels and filters what it serves, and the pre-commit widening guard refuses a run's widening commits. A raw `cat` of a private note is stopped only by this hook: **blocking** |
+| **kb-write-gate** (#637, Phase 1b) | `hooks.json`; one protected list in `plugin/engine/scout/kb/hook_paths.py` | A run's Write, Edit, MultiEdit and NotebookEdit into anything that decides whether Scout's checks run: git, agent config, the engine, runner scripts, startup files, secrets, delegate state. The shell gate judges a command's write targets against the same list | JSON deny; a watchdog denies before the hook timeout | **Partial:** the OS sandbox (next row) refuses those writes whatever the tool. The hook is defense in depth with clear messages, not the boundary |
+| **OS write sandbox and post-run integrity check** (#642, Phase 1c) | `plugin/engine/scout/sandbox/`, profile built from `hook_paths.protected_specs()`; the runners hand it to `claude-with-retry.sh` by value | Writes to the protected roots by any process the run starts; reads of `~/.scout-secrets` apart from the two Telegram files. After the session, outside the sandbox, the integrity check puts back any protected file the run changed in git | Kernel (macOS `sandbox-exec`) | **Portable in principle:** it wraps the run's whole process tree, whatever the CLI. Every adapter's launch must keep it |
 | **delegate-reader gate** (#625, #550 V1) | `hooks.json:36-40`; `kb_read_gate.py:255-269` | A Read by an `agent:*` reader of a KB note, or by a `delegate:<id>` reader of any vault file `scoutctl kb` wouldn't show it | JSON deny / exit 2 | **Partial.** `delegate_write_refusal` (`cli.py:4343-4410`) covers `scoutctl` only. On a delegate *mirror* the boundary is structural: the content isn't there (#550 §6) |
 | **outbound-gate** (#453) | `hooks.json:16-20`; `outbound_gate.py:145-161` | MCP write tools whose input names private content: denied in a run, warned for the owner | JSON deny / additionalContext; exit 2 fail-closed for runs | **Partial.** The phase rule asks for `scoutctl kb check-outbound` (`phases/core/privacy.md:18`), but that relies on the model. Engine-made sends enforce it in code (`notify_telegram.py:254-257`, `phase_backport.py:396`). **Blocking** for model-made connector writes |
 | **mcp-tool-gate** (`restrict_tools`, #590) | `hooks.json:6-10`; `mcp_tool_gate.py:93-96` | MCP tools a `restrict_tools` connector doesn't list, in every session | JSON deny | **blocking** (unless the runtime has its own per-server allowlist, §8.3) |
@@ -556,8 +596,8 @@ another CLI's, as `claude_shim.py` does for the eval).
 
 ### 8.1 Vocabulary
 
-- **Agent runtime**: a local agent CLI Scout launches (`claude-code`, `codex`,
-  `antigravity` (or `gemini`), maybe `grok`). New config key `agent_runtime`.
+- **Agent runtime**: a local agent CLI Scout launches (`claude-code`,
+  `antigravity`, `codex`, `gemini`). New config key `agent_runtime`.
 - **Slot runtime**: the existing `Slot.runtime: local | remote`, meaning where
   a slot runs. Unchanged.
 - **Delegate platform**: a hosted agent Scout doesn't launch (Grok Bot, Claude
@@ -671,9 +711,12 @@ passing test is treated as absent. The ones that matter:
     output.
   - That is *stricter* than Claude Code, never looser. Editing a note still
     works: the session reads it through `scoutctl kb read` and then edits it.
-- **Tier S (structural; to be proven in Phase 0, not assumed):** a runtime
-  with `path_deny` but no fail-closed hook (Grok Build's hooks fail open,
-  §3.3; Codex's OS read-deny could back up its hook, §3.1).
+- **Tier S (structural): not built** (Q10, decided 2026-11-16). It was
+  designed for Grok Build, which is out (Q1). It stays below on paper, so a
+  future runtime with fail-open hooks has a known path; until then such a
+  runtime is Tier D. The design was for a runtime with `path_deny` but no
+  fail-closed hook (Grok Build's hooks fail open, §3.3; Codex's OS
+  read-deny could back up its hook, §3.1).
   - The run gets `knowledge-base/`, `action-items/context/`, local-only
     paths and the gate configs as denied paths at the runtime level.
   - It reaches the KB only through Scout's MCP server (`scoutctl mcp serve`,
@@ -716,15 +759,29 @@ reason, when any of these hold:
 4. The installed binary's version hasn't passed the conformance probe
    (§11.2). A newer CLI isn't assumed to keep its hooks working.
    - **Where the CLI takes a custom endpoint** (Claude Code, Codex, maybe
-     Gemini CLI and Grok Build), the probe runs **locally and
+     Gemini CLI), the probe runs **locally and
      automatically** the first time a new version is seen.
      - It is the fake-model probe of Phase 1a, generalised. It is free,
        takes seconds, and is cached by version and gate-config hash.
      - So a CLI auto-update costs one probe, not a Scout release.
-   - **Where it doesn't** (Antigravity), only versions proven by a
-     model-backed run on Jordan's login, shipped in `verified.json`, pass.
-     A newer one is refused until re-proved. Q11 asks whether that's
-     acceptable, or whether such a runtime should pin its CLI version.
+   - **Where it doesn't** (Antigravity), the probe uses a real model
+     (decided, Q11):
+     - Before a release, Jordan's model-backed run proves a version and ships
+       it in `verified.json`, with his OK for that run.
+     - On the owner's Mac, when `agy` reports a version that is neither in
+       `verified.json` nor in the local probe cache, `check` runs
+       `scoutctl agent-runtime probe antigravity` before the first
+       scheduled run on it.
+       - The probe is a tiny scripted call on the owner's own login: a few
+         thousand tokens of plan quota, no API spend. It asks for the same
+         canary read as the fake-model probe, and passes only if Scout's
+         hook denied it.
+       - It runs without asking, as part of running Scout. A failed or
+         inconclusive probe (the model didn't make the call) refuses the run
+         and shows in the doctor. The owner can re-run it by hand.
+       - It never runs in CI.
+     - Any other CLI without a custom endpoint gets no adapter until someone
+       actually uses it (Jordan, Q11).
 5. The check can't run, or its inputs can't be read: refuse (fail closed). The
    refusal is a run-health event `agent_runtime.refused` with the reason, and
    it shows in the doctor.
@@ -747,7 +804,8 @@ Google; on Grok, to xAI. Their terms differ:
 §3 records what each vendor says. The privacy spec's readers don't model
 this, because it never had to.
 
-**Proposal (Jordan decides, Q4):**
+**Decided (Q4, 2026-11-16):** opt-in per provider, and local-only paths are
+excluded from non-Anthropic runs.
 
 - `privacy.providers` in the owner's overlay lists consented providers.
   The default is `[anthropic]`, which is today's behaviour.
@@ -756,11 +814,13 @@ this, because it never had to.
 - Until then `check` refuses that runtime for any session that reads the
   vault as `owner` or `autonomous`. A delegate mirror is already
   normal-notes-only, so it needs only the same consent.
-- Local-only paths (privacy §4.3: never leaves the laptop) stay readable by a
-  consented provider's laptop runs, exactly as they are by Anthropic's
-  today. Q4 asks whether Jordan wants them *excluded* for non-default
-  providers. If so, the read gate denies them to those runs, which needs
-  Tier F.
+- **Local-only paths** (privacy §4.3: never leaves the laptop) stay readable
+  by Anthropic runs, as today, and are **excluded from every other
+  provider's runs**:
+  - The read gate denies them to a run whose provider isn't `anthropic`.
+  - `scoutctl kb` leaves them out of what it serves such a run.
+  - This needs Tier F or L, which the canonical vault needs anyway.
+  - Consenting to a provider doesn't lift the exclusion.
 
 ### 8.5 Gates on another runtime
 
@@ -824,7 +884,7 @@ this, because it never had to.
     - **Scope: the hook gate is defense in depth with clear messages, not the
       security boundary.** It covers the file tools, and the shell commands
       whose target path can be read from the command's text. Everything else a
-      run's processes do belongs to Phase 1c (draft #642): a kernel sandbox
+      run's processes do belongs to Phase 1c (#642, merged): a kernel sandbox
       generated from `hook_paths.protected_specs()`. It denies writes to the
       protected roots, and reads of `~/.scout-secrets` apart from the two
       Telegram files. A post-run integrity check outside the sandbox judges
@@ -878,9 +938,18 @@ this, because it never had to.
   - a turn cap where the CLI has one.
 
   The daily budget check counts USD for priced rows. For unpriced runtimes it
-  adds an optional daily run count and token ceiling
-  (`budget.per_runtime.<id>.{max_runs_per_day, max_tokens_per_day}`), off by
-  default. Q6 asks whether Jordan wants a ceiling on by default.
+  adds a daily token ceiling, `budget.per_runtime.<id>.max_tokens_per_day`.
+  **Decided (Q6): the timeout and the token ceiling are both on by default.**
+  - The timeout's default is 45 minutes per run.
+  - The ceiling's default is derived from what the owner's Claude Code runs
+    typically use. Phase 0 sets the formula from Jordan's ledgers; the owner
+    can change it.
+  - A run that would start past the ceiling is skipped as
+    `skipped_budget`, like a USD overrun today.
+  - On a subscription the danger is a runaway run using up the plan's 5-hour
+    or weekly quota. That would also block the owner's own interactive use
+    of that CLI.
+  - `max_runs_per_day` stays available, off by default.
 - **Usage limits.** Each adapter's `classify_failure` parses its CLI's
   quota-exhausted message into `usage_limit(resets_at)`. The existing back-off
   (`budget_check.py:328-412`, `rate_limit_reset.py`) then applies per
@@ -898,13 +967,13 @@ Mirrors models §3:
   dreaming-night:
     type: dreaming
     runner: run-dreaming.sh
-    agent_runtime: codex      # optional; absent = inherit
-    model: gpt-5-codex        # validated by the slot's runtime
+    agent_runtime: antigravity  # optional; absent = inherit
+    model: <an agy model id>    # validated by the slot's runtime
 # scout-config.yaml
 agent_runtimes:
   default: claude-code
-  codex:       { model: <default model for codex>, binary: null }   # binary: auto-detect
-  antigravity: { model: <default model for agy>, binary: null }
+  antigravity: { model: <default model for agy>, binary: null }   # binary: auto-detect
+  codex:       { model: <default model for codex>, binary: null }
 ```
 
 - **Precedence:** `SCOUT_AGENT_RUNTIME`, then the slot's `agent_runtime`, then
@@ -925,9 +994,9 @@ agent_runtimes:
   The app uses `list` (installed, version, signed in, tier, consented) and
   `models --runtime X` (its picker options). That removes the hardcoded
   `ModelChoice.swift` lists over time.
-- **Mixed setups are the expected first use.** Connector-heavy slots
-  (briefing, consolidation) stay on Claude Code. KB-internal slots (dreaming)
-  and web-heavy ones (research) are the natural first moves to another
+- **Mixed setups are the expected first use** (decided, Q7). Connector-heavy
+  slots (briefing, consolidation) stay on Claude Code. KB-internal slots
+  (dreaming) and web-heavy ones (research) are the first moves to another
   runtime (§8.8).
 
 ### 8.8 Connectors
@@ -948,7 +1017,9 @@ owner's Claude account (§6.7), and no other CLI can use them.
   `required_in_types` connectors aren't available on its chosen runtime.
 - **Each provider is the owner's job, per runtime.** Scout documents how to add
   the standalone MCP servers (Slack, Linear, Google) to each CLI, but doesn't
-  bundle or host them.
+  bundle or host them. That documentation isn't needed for the first
+  release: the first non-Claude slots are ones that need no hosted
+  connectors (Q7).
 - **`restrict_tools`** applies on every runtime: by the hook where the
   runtime has `pre_tool_block`, else by the runtime's native per-server tool
   allowlist, else the runtime is refused for that vault (§8.3 rule 1).
@@ -993,8 +1064,13 @@ owner's Claude account (§6.7), and no other CLI can use them.
 
   It maps `$ARGUMENTS` and replaces `$CLAUDE_PLUGIN_ROOT` with the engine
   pointer (`scoutctl` on PATH). A test fails when a generated file drifts.
-  `scout-update` and `scout-connect` are runtime-specific, and each runtime
-  gets its own.
+- **First-release scope (decided, Q9).** On every non-Claude runtime:
+  `scout-ask`, `scout-work`, `scout-status` and the four launch skills
+  (`scout-briefing`, `scout-consolidation`, `scout-dream`,
+  `scout-research`). `scout-update` and `scout-connect` stay Claude-only
+  for now, because they're tied to Claude's plugin system and its
+  connectors. Each runtime gets its own version later. `scout-setup`,
+  `scout-plan` and `scout-meta-review` follow later too.
 - **How they get there and stay current.**
   - `scoutctl agent-runtime install <id>` does three things:
     - writes the gate config (above);
@@ -1056,10 +1132,12 @@ Covered by #550 and its PRs. This spec builds on them and doesn't redesign
 them:
 
 - the `delegate:<id>` reader (V1, built in #625);
-- the per-delegate filtered mirror (V2a, draft #632):
+- the per-delegate filtered mirror (V2, merged):
   `scout/delegate_mirror.py` and `scoutctl delegate
   link|sync|preview|status|unlink`, a redacted mirror pushed to a private
-  repo per delegate;
+  repo per delegate (#632). It has a read-only deploy key (#633) and syncs
+  after each run and every 15 minutes (#636). It scans inside Office files
+  and leaves archives out (#639), and its preview writes nothing (#643);
 - `scoutctl delegate init` writing `AGENTS.md`/`CLAUDE.md` (V3);
 - the inbox (V4);
 - an MCP server only if needed (V5).
@@ -1094,6 +1172,11 @@ This spec adds three things:
   - the privacy scenario passes, scored by `privacy_hygiene`;
   - a week of one real slot on Jordan's vault (dreaming suggested), with run
     health green and no `agent_runtime.refused` or gate-error events.
+- **A runtime Jordan holds no plan for** (Codex, Gemini CLI; Q5): only the
+  conformance suite is required to ship. It stays "preview" (§13) until
+  someone who holds that plan runs the `kb-gate` and the privacy scenario
+  and reports the results, and a maintainer confirms them. The week-long
+  live slot then runs on that person's vault, not Jordan's.
 - **Hosted platforms:** #550's own "done when" lines for V2–V4, plus V6 live
   on Jordan's delegate.
 
@@ -1144,13 +1227,13 @@ exists, else `verified.json`.
   a model-backed eval on Jordan's login, with his per-run OK. Its tier is
   capped at what that run proved.
   - This applies to Antigravity, which has no custom endpoint (§3.2).
-  - Re-proving it on every CLI update costs a model run each time, so for
-    Antigravity rule 4 (§8.3) pins a version range more tightly.
+  - Re-proving it on every CLI update costs a model run each time. On the
+    owner's Mac that run is automatic, on the owner's own login (§8.3 rule
+    4, Q11).
 - **Endpoints, per §3:**
   - Claude Code: `ANTHROPIC_BASE_URL`.
   - Codex: `model_providers.<id>.base_url`, Responses API only.
   - Gemini CLI: `GOOGLE_GEMINI_BASE_URL`, secondary evidence only.
-  - Grok Build: custom models in `~/.grok/config.toml`, keys unverified.
   - Antigravity: none.
 
 ### 11.3 Model-backed (local only, Jordan's login, per-run OK)
@@ -1170,25 +1253,31 @@ and per-PR checks are in the plan.
 
 | Phase | Ships | Done when | Effort (agent-days) |
 |---|---|---|---|
-| **0 Answers and facts** | Jordan answers §14. A throwaway spike per CLI checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Spec updated | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
+| **0 Facts** (Jordan answered §14 on 2026-11-16) | A throwaway spike per chosen CLI (Antigravity, Codex, Gemini CLI) checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Antigravity's spike needs a real model, so it runs on Jordan's login with his OK per run. Also sets the formula for the default token ceiling (§8.6). Spec updated | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
 | **1a Bare-mode guard (urgent, Claude Code only)** — *merged, #635* | **Prevention before launch,** because a bare session fires no hook that could detect it from inside. A free pre-launch probe runs `claude` with the run's own flags against a local fake Anthropic endpoint (`ANTHROPIC_BASE_URL`). A scripted tool call reads a fixture KB file, and the probe passes only if Scout's kb-read-gate denied it. Cached by Claude version + `hooks.json` hash + flags. The runners skip the run (`skipped_gates`) on a failed or unrunnable probe; health and doctor report `gates.not_loaded`. If Claude Code later ships an opt-out flag, the runners pass it too | Unit tests; the manual probe passes with today's flags and fails with `--bare` added | 2–3 |
 | **1b Claude run write gate (separate privacy fix)** — *merged, #637 (f1f9dba6)* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; four review rounds |
-| **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *in progress, draft #642* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so what the hooks can't see is still refused by the kernel: script files a run writes and runs, `tar -C`, `find -exec`, MCP servers' writes. An owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description. A later runtime adapter could reuse the same profile (see Q10) | Per #642 |
-| **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, doctor loop, vestigial-variable cleanup | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
-| **2 Codex CLI** | `codex` adapter; gate translation + generated config; fake-model conformance; provider consent; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; generated Codex commands/skills | Conformance at Tier F (or L) for a pinned version; `kb-gate` + privacy scenario pass on Codex; one slot live for a week | 8–12 |
-| **3 Google CLI** | `antigravity` adapter (or `gemini`, per Q5); skills/plugin packaging; conformance by model-backed runs only for Antigravity; eval shim | Same bar as Codex | 5–8 (+2–3 for a second, Gemini CLI adapter) |
-| **4 Grok Build CLI (Track A, if Q1 says yes)** | Adapter + conformance. Its hooks fail open (§3.3), so it starts Tier D (a delegate-mirror clone) and reaches Tier S only if the Tier S work is approved (Q10) | Same bar as Codex at whatever tier it proves | 4–8, plus Tier S (MCP server, path-deny profiles) 8–12 if wanted |
-| **5 Track B: Grokbot and Claude Duet** | #550's own track, owned there and only tracked here: V2a mirror (#632), then V2 sync hooks, V3 bootstrap, V4 inbox; Duet reads its mirror through the GitHub connector first, with V5 MCP only if needed | #550's "done when" lines; Grokbot and Duet each answer a scout-ask question from their mirror; V6 live | Per #550's plan, not estimated here |
-| **6 Marketing** | Copy changes per §13, one PR per claim change, each citing its evidence row | Claims match `docs/runtimes.md` | 1–2 per step |
+| **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *merged, #642 (c4c3a018)* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so a write the hooks can't see is still refused by the kernel. Reads of `~/.scout-secrets` are denied apart from the two Telegram files. A post-run integrity check, outside the sandbox, puts back protected files a run changed in git. The owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description | Done |
+| **1d Commit broker and send-only Telegram broker (Claude Code; added 2026-11-16)** — *planned* | From #642's follow-ups. A broker outside the sandbox makes the run's commits, so per-command git settings no longer matter. A send-only broker sends the Telegram wrap, so the run no longer needs to read the two Telegram files and the sandbox can deny them too | Per its own card | Per its card |
+| **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, provider consent (§8.4), doctor loop, vestigial-variable cleanup. Every adapter's launch keeps #642's sandbox | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
+| **2 Antigravity CLI (first runtime, Q5)** | `antigravity` adapter; gate translation + generated config (`~/.gemini/config/hooks.json`); the local-only exclusion for non-Anthropic runs (§8.4); the timeout and token ceiling on by default (§8.6); model-backed conformance, plus the automatic re-check on a new `agy` version (§8.3 rule 4); per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; the generated `.agents/skills` tree and the first-release commands (§8.10) | Conformance at Tier F (or L) for a pinned version, proved by a model-backed run; `kb-gate` + privacy scenario pass on Antigravity on Jordan's AI Pro login (his OK per run); one slot live for a week | 9–13 |
+| **3 Codex CLI (preview, Q5)** | `codex` adapter; gate translation + generated config; fake Responses-API server and fake-model conformance; eval shim; generated Codex packaging (shares the `.agents/skills` tree) | Conformance at Tier F (or L) for a pinned version. Ships as **preview**. It becomes Supported only when someone with a ChatGPT plan passes `kb-gate` + the privacy scenario (§10) | 5–8 |
+| **4 Gemini CLI (preview, Q5)** | `gemini` adapter; fake-model conformance through `GOOGLE_GEMINI_BASE_URL` if Phase 0 confirms it; an extension package; `hook_out` that always prints valid JSON (malformed output fails open) | As Codex: preview until someone with a Code Assist licence or a paid key passes the live gate | 2–4 |
+| ~~Grok Build CLI~~ | **Dropped (Q1).** Tier S, which it would have needed, isn't built (Q10) | — | — |
+| **5 Track B: Grokbot and Claude Duet** | #550's own track, owned there and only tracked here. Done: V1 reader (#625) and the V2 mirror (#632, #633, #636, #639, #643). Next: V3 bootstrap, V4 inbox. Duet reads its mirror through the GitHub connector first, with V5 MCP only if needed | #550's "done when" lines; Grokbot and Duet each answer a scout-ask question from their mirror; V6 live | Per #550's plan, not estimated here |
+| **6 Marketing** | The "planned" line now (Q8); then copy changes per §13, one PR per claim change, each citing its evidence row | Claims match `docs/runtimes.md` | 1–2 per step |
 
-Phases 1a and 1b didn't wait for this spec's approval of the rest, and have
-shipped; 1c doesn't wait for it either. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
-independent of each other once Phase 1 lands. Track B (Phase 5) runs on
-#550's own schedule, in parallel.
+Phases 1a, 1b and 1c didn't wait for this spec's approval of the rest, and
+have shipped. 1d doesn't wait for it either. Phase 1 doesn't depend on any
+open question. Phases 3 and 4 start once Phase 2 has landed the shared
+pieces (neutral connector keys, normalised events, the `.agents/skills`
+tree, the app picker), and are independent of each other. Track B (Phase 5)
+runs on #550's own schedule, in parallel.
 
-**Total, Track A recommended path** (1a, 1b, 1, Codex, Antigravity): about
-25–35 agent-days over 15–20 PRs, plus Jordan's review time and the
-per-runtime live weeks. Track B is estimated in #550.
+**Total, Track A** (1, Antigravity, Codex, Gemini CLI, after the shipped
+1a–1c): about 22–34 agent-days over 12–18 PRs. Add Jordan's review time and
+Antigravity's live week. Codex's and Gemini CLI's live weeks run on the
+vault of whoever first holds those plans. Phase 1d and Track B are
+estimated in their own card and in #550.
 
 ## 13. What the repo and site may claim, phase by phase
 
@@ -1207,9 +1296,9 @@ Every claim below must point at a row.
 
 | State | What may be said, and where |
 |---|---|
-| Nothing shipped (now, and through Phase 1) | No new claims. The site and README keep "for Claude Code". A "Roadmap" line saying "planned: Codex CLI, Google's Antigravity CLI" is allowed only if Jordan wants it (Q8), and must say *planned* |
+| Nothing shipped (now, and through Phase 1) | The site and README keep "for Claude Code". **A "planned" line is allowed now (Q8, decided)**, on the site and in the root README, never in the site hero. Suggested wording: "Planned: Google's Antigravity CLI, then OpenAI's Codex CLI and Google's Gemini CLI. Hosted agents such as Grok Bot and Claude Duet reading a filtered copy of your notes." It must say *planned* and name no dates. It goes in one Phase 6 PR |
 | Adapter merged on `main`, not released | Nothing outside `docs/runtimes.md` and the CHANGELOG's Unreleased section |
-| Released, conformance green, evals not yet passed | "Preview" in `plugin/README.md`'s runtime section and `docs/runtimes.md` only. No site hero, no root README pitch |
+| Released, conformance green, evals not yet passed | "Preview" in `plugin/README.md`'s runtime section and `docs/runtimes.md` only. No site hero, no root README pitch. Codex and Gemini CLI stay here until someone who holds those plans passes the live gate (Q5, §10) |
 | Released + conformance + `kb-gate` + privacy scenario passed on that runtime | **"Supported"**: site, README and app onboarding may say "Runs on Claude Code, Codex CLI …". Each wording names what is supported (scheduled runs, interactive skills, or both) and the tier, if it isn't F |
 | Tier D only (a CLI without proven gates) | "Works with X for read-only questions over a filtered copy of your notes." Never "runs Scout" |
 | Track B (Grokbot, Claude Duet) after #550 V3–V4 ship and V6 is live | "Your Grok Bot / Claude Duet agent can read your Scout notes (normal notes only) and propose updates." Never "runs your briefings" |
@@ -1221,52 +1310,59 @@ Never, at any phase:
 - a vendor's logo without that vendor's brand guidelines being checked;
 - any wording that implies an affiliation with or endorsement by a vendor.
 
-## 14. Open questions for Jordan
+## 14. Open questions: answered by Jordan, 2026-11-16
 
-1. **Grok Build in Track A?** Grokbot is settled as the off-laptop Grok Bot
-   (Track B). Should Track A *also* add xAI's Grok Build CLI as a runtime
-   for Scout's own sessions? Its hooks fail open, so it would be Tier D
-   until Q10 is answered.
-2. *(Settled: Claude Duet is Anthropic's agent, Track B via #550. No
-   question left.)*
-3. **Approach:** A (engine adapters, shell runners exec through `scoutctl`), as
-   recommended in §7?
-4. **Providers (§8.4):** opt-in per provider with `[anthropic]` as the
-   default? And should local-only paths be excluded from non-Anthropic runs?
-5. **Google's CLI:** your ask says Gemini CLI, but Google moved consumer
-   plans to **Antigravity CLI** (§3.2). Gemini CLI now needs a paid key or a
-   Code Assist licence. Target Antigravity (recommended), Gemini CLI, or
-   both? And the order: Codex first (as in this spec), or Google first?
-   Which subscriptions do you already hold (§3.6), and which account may
-   live tests use?
-6. **Budget on subscription runtimes (§8.6):** timeout plus an optional daily
-   run/token ceiling, off by default, or on by default with which numbers?
-7. **Connectors (§8.8):** is "connector-heavy slots stay on Claude Code" the
-   right first use, or do you want Slack/Gmail/Linear on Codex/Antigravity early
-   (standalone MCP servers you add to each CLI)?
-8. **Marketing before shipping (§13):** may the site carry a "planned" line
-   now, or nothing until something is Supported?
-9. **Interactive scope:** which commands must work on every runtime in the
-   first release (proposal: `scout-ask`, `scout-work`, `scout-status` and the
-   launch skills; `scout-update`/`scout-connect` per runtime later)?
-10. **Tier S (§8.3):** worth building, so that a runtime with fail-open hooks
-    but path-deny rules (Grok Build) can run scheduled slots? Or is such a
-    runtime delegate-only until its vendor fixes the hooks? (Context, not an
-    answer: Phase 1c's OS write sandbox, draft #642, applies to the run's
-    whole process tree whatever the CLI. If it lands, it covers the
-    write-deny half of Tier S, but not the read side or hooks that fail
-    open.)
-11. **CLIs Scout can't probe for free (Antigravity, §8.3 rule 4):** each new
-    CLI version is refused until a model-backed run on your login re-proves
-    it. Accept that, ask users to pin the CLI version, or skip such
-    runtimes for scheduled runs?
+Each question is kept short, followed by Jordan's answer and where it
+landed.
+
+1. **Grok Build in Track A?** **No: out for now.** Grok Bot (Track B) is
+   unaffected. → §2, §3.3, §12 (Phase 4 dropped).
+2. *(Settled before: Claude Duet is Anthropic's agent, Track B via #550.)*
+3. **Approach?** **A:** engine adapters, with the shell runners launching
+   through `scoutctl agent-runtime exec`. → §7, §8.2.
+4. **Providers?** **Opt in per provider**, with `[anthropic]` as the
+   default, **and local-only paths are excluded from non-Anthropic runs**.
+   Consent doesn't lift the exclusion. → §2, §8.4.
+5. **Google's CLI, and the order?** **Google first.** Jordan's Google AI Pro
+   plan covers Antigravity CLI, not Gemini CLI. Gemini CLI stopped serving
+   Pro, Ultra and free individual accounts on 2026-06-18, so the first
+   runtime is **Antigravity**. **Codex** comes next, then **Gemini CLI**.
+   Jordan holds no ChatGPT plan and no Code Assist licence or paid Gemini
+   key. So Codex and Gemini CLI ship as **preview**, with free fake-model
+   conformance only. Each becomes Supported once someone who holds that
+   plan passes the live gate. Live tests for Antigravity use Jordan's AI
+   Pro login, with his OK per run. → §2, §3, §10, §12, §13.
+6. **Budget on subscription runtimes?** **On by default:** a 45-minute
+   timeout per run, plus a daily token ceiling per runtime. The ceiling is
+   derived from the owner's typical Claude Code usage (formula set in
+   Phase 0), and the owner can change it. → §8.6.
+7. **Connectors?** **Yes:** connector-heavy slots (briefing, consolidation)
+   stay on Claude Code at first. The first non-Claude slots are dreaming or
+   research. → §8.7, §8.8.
+8. **A "planned" line before shipping?** **Yes.** It must say *planned*,
+   carry no dates, and stay out of the site hero. → §13, §12 Phase 6.
+9. **Commands in the first release?** **The proposal:** `scout-ask`,
+   `scout-work`, `scout-status` and the launch skills. `scout-update` and
+   `scout-connect` stay Claude-only for now. → §8.10.
+10. **Tier S?** **Not built.** Its only motivating runtime, Grok Build, is
+    out. It stays on paper, and a runtime with fail-open hooks is Tier D
+    until its vendor fixes them. → §8.3, §12.
+11. **CLIs Scout can't probe for free?** In general, **wait**: such a CLI
+    gets no adapter until someone actually uses it. **Antigravity is the
+    exception**, because Jordan uses it. A new `agy` version is re-proved
+    **automatically** by a tiny scripted model call on the owner's own
+    login, a few thousand tokens of quota, before the first scheduled run
+    on it. A failed or inconclusive probe refuses the run. → §5, §8.3
+    rule 4, §11.2.
 
 ## 15. Calls made in this spec (check while reading)
 
 - Two tracks:
   - A, Scout's own sessions on another CLI, designed here;
-  - B, Grokbot and Duet through #550's delegate path (#625, #632),
-    referenced and not redesigned. See §2 and §8.12.
+  - B, Grokbot and Duet through #550's delegate path (#625, and the V2
+    mirror, merged), referenced and not redesigned. See §2 and §8.12.
+- Track A's order is Antigravity, then Codex and Gemini CLI as preview;
+  Grok Build is out (Q1, Q5).
 - New key `agent_runtime`, because `Slot.runtime` is taken (§8.1, §8.7).
 - Approach A; the wrapper keeps the name `claude-with-retry.sh` for liveness
   (§7, §8.2).
@@ -1275,20 +1371,23 @@ Never, at any phase:
 - Tier L denies raw KB reads in favour of `scoutctl kb read`: stricter than
   Claude, never looser (§8.3).
 - No fallback from a refused runtime to Claude Code (§8.3).
-- Provider consent, defaulting to Anthropic only (§8.4).
-- No price catalogue for other vendors; `cost_source: unpriced` plus run
-  timeouts (§8.6).
+- Provider consent, defaulting to Anthropic only; local-only paths never go
+  to another provider (§8.4).
+- No price catalogue for other vendors; `cost_source: unpriced`, plus a run
+  timeout and a daily token ceiling, both on by default (§8.6).
+- A CLI without a custom endpoint is re-proved on the owner's login,
+  automatically, per new version (§8.3 rule 4).
 - `agent_runtime` stays out of the schedule snapshot for now (§8.7).
 - Neutral connector keys in Phase 2, a contract change (§8.8).
 - Connector drafting stays Claude-only in v1 (§8.8).
 - Commands are generated per runtime from `plugin/commands/` (§8.10).
 - `docs/runtimes.md` is the evidence table every claim cites (§13).
-- Google's target is Antigravity CLI unless Jordan says Gemini CLI (§3.2,
-  Q5).
+- Google's first target is Antigravity CLI; Gemini CLI follows as preview
+  (§3.2, Q5).
 - The Claude bare-mode guard ships first, as Phase 1a, ahead of the rest
   (§3.5). Done: #635.
 - One protected list (`scout/kb/hook_paths.py`) decides the file-tool gate,
   the shell gate and the OS sandbox. A run writes only paths the gate can
   read (§8.5, Phases 1b and 1c).
-- Tier S exists on paper only, until a wanted runtime needs it (§8.3, Q10).
+- Tier S exists on paper only and isn't built (§8.3, Q10).
 - Every hook reply is well-formed, never a crash meaning "block" (§8.5).
