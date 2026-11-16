@@ -15,6 +15,7 @@ struct SlotDraft: Equatable {
     var budgetUsd: Double?
     var tz: String?
     var runtime: SlotRuntime
+    var model: String?
 
     init(from slot: Slot) {
         self.key = slot.key
@@ -28,6 +29,7 @@ struct SlotDraft: Equatable {
         self.budgetUsd = slot.budgetUsd
         self.tz = slot.tz
         self.runtime = slot.runtime
+        self.model = slot.model
     }
 
     /// Materialize back to a Slot for the save path. Weekdays come out in
@@ -45,7 +47,8 @@ struct SlotDraft: Equatable {
             cooldownMinutes: cooldownMinutes,
             budgetUsd: budgetUsd,
             tz: tz,
-            runtime: runtime
+            runtime: runtime,
+            model: model
         )
     }
 

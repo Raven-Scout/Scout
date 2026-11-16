@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from scout import yaml_blocks
+from scout.yaml_safe import YAMLValueError, load_yaml, yaml_problem
 
 CUSTOM_FILE = "connectors.custom.yaml"
 SCHEMA_VERSION = 1
@@ -36,7 +37,17 @@ CREDENTIAL_RE = re.compile(
     r"|Bearer\s+[A-Za-z0-9._~+/-]{12,}"
 )
 _FIELDS = frozenset(
-    {"display_name", "server", "probe", "preset", "notes", "needs_user_input", "required_in_types", *ACTIVITIES}
+    {
+        "display_name",
+        "server",
+        "probe",
+        "preset",
+        "notes",
+        "needs_user_input",
+        "required_in_types",
+        "restrict_tools",
+        *ACTIVITIES,
+    }
 )
 # Binaries too generic to identify a connector: mapping them would relabel
 # every unrelated call (curl, python3 …) in a session as that connector.
@@ -113,6 +124,9 @@ class CustomConnector:
     notes: str = ""
     needs_user_input: tuple[str, ...] = ()
     required_in_types: tuple[str, ...] = ()
+    # Scheduled runs may call only the MCP tools listed here (probe + activities);
+    # the mcp-tool-gate hook denies the server's other tools. See tool_gate().
+    restrict_tools: bool = False
 
     @property
     def health_key(self) -> str:
@@ -131,6 +145,8 @@ class CustomLoad:
     connectors: dict[str, CustomConnector] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)  # every entry as written, valid or not
+    file_unusable: bool = False  # the whole file was rejected, so ``raw`` isn't what it holds: never write over it
+    unbuildable: bool = False  # rejected for a value PyYAML can't build; assembly stops on this, see load_custom
 
 
 def first_binary(cmd: str) -> str | None:
@@ -406,6 +422,15 @@ def parse_connector(
                 msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
             issues.append(Issue(f"{base}.needs_user_input", msg))
 
+    restrict = body.get("restrict_tools")
+    if restrict is None:
+        restrict = False
+    if not isinstance(restrict, bool):
+        issues.append(Issue(f"{base}.restrict_tools", "must be true or false"))
+        restrict = False
+    elif restrict and server is None:
+        issues.append(Issue(f"{base}.restrict_tools", "needs an MCP server; it limits that server's tools"))
+
     if issues or probe is None:
         return None, issues
     return (
@@ -419,6 +444,7 @@ def parse_connector(
             notes=notes.strip(),
             needs_user_input=tuple(needs),
             required_in_types=tuple(types),
+            restrict_tools=restrict,
         ),
         [],
     )
@@ -429,14 +455,20 @@ def parse_file(raw: Any, *, reserved: set[str], presets: dict[str, dict[str, str
     if raw is None:
         return CustomLoad()
     if not isinstance(raw, dict):
-        return CustomLoad(issues=[Issue(CUSTOM_FILE, "must be a mapping with schema_version and connectors")])
+        return CustomLoad(
+            issues=[Issue(CUSTOM_FILE, "must be a mapping with schema_version and connectors")], file_unusable=True
+        )
     if raw.get("schema_version") != SCHEMA_VERSION:
-        return CustomLoad(issues=[Issue(f"{CUSTOM_FILE}.schema_version", f"must be {SCHEMA_VERSION}")])
+        return CustomLoad(
+            issues=[Issue(f"{CUSTOM_FILE}.schema_version", f"must be {SCHEMA_VERSION}")], file_unusable=True
+        )
     conns = raw.get("connectors")
     if conns is None:
         conns = {}
     if not isinstance(conns, dict):
-        return CustomLoad(issues=[Issue(f"{CUSTOM_FILE}.connectors", "must be a mapping of key → definition")])
+        return CustomLoad(
+            issues=[Issue(f"{CUSTOM_FILE}.connectors", "must be a mapping of key → definition")], file_unusable=True
+        )
     out = CustomLoad(raw={str(k): v for k, v in conns.items()})
     for key, body in out.raw.items():
         try:
@@ -493,9 +525,17 @@ def load(vault: Path, *, plugin_root: Path | None = None) -> CustomLoad:
     if not path.exists():
         return CustomLoad()
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
-        return CustomLoad(issues=[Issue(CUSTOM_FILE, f"could not be read: {e}")])
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return CustomLoad(issues=[Issue(CUSTOM_FILE, f"could not be read: {e}")], file_unusable=True)
+    try:
+        raw = load_yaml(text)
+    except yaml.YAMLError as e:
+        return CustomLoad(
+            issues=[Issue(CUSTOM_FILE, f"could not be read: {yaml_problem(e, text)}")],
+            file_unusable=True,
+            unbuildable=isinstance(e, YAMLValueError),
+        )
     root = plugin_root or default_plugin_root()
     return parse_file(raw, reserved=reserved_keys(root), presets=load_presets(root))
 
@@ -640,7 +680,7 @@ def enabled_keys(vault: Path) -> set[str]:
     showing one Scout cannot confirm is enabled. Never raises.
     """
     try:
-        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        raw = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return set()
     if not isinstance(raw, dict):
@@ -657,7 +697,7 @@ def enabled_keys(vault: Path) -> set[str]:
 def bash_binaries(vault: Path) -> dict[str, str]:
     """Binary → connector key for every bash probe/tool. Unvalidated and never raises (hook path)."""
     try:
-        raw = yaml.safe_load((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
+        raw = load_yaml((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return {}
     conns = raw.get("connectors") if isinstance(raw, dict) else None
@@ -678,3 +718,78 @@ def bash_binaries(vault: Path) -> dict[str, str]:
                 if binary and binary not in _GENERIC_BINARIES and binary not in out:
                     out[binary] = str(key)
     return out
+
+
+# Every server is gated when the file can't be read at all: the hook can't tell
+# which servers a restricted entry names, so it denies every MCP call.
+GATE_ALL = "*"
+# Agnes's read-only tools for notes other people share with this person (Agnes Shared Areas §7).
+# `scoutctl connectors custom allow-shared-notes <key>` lists them on a restricted connector.
+SHARED_READ_TOOLS = ("shared_with_me", "shared_knowledge_search", "shared_knowledge_read")
+SHARED_NOTES_WHEN = (
+    "When a question may be answered by notes a colleague shared with you, find them with these tools. "
+    "They are private to you."
+)
+
+
+def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
+    """Server → the MCP tools a scheduled run may call, for each ``restrict_tools`` entry.
+
+    Read on the hook path, so unvalidated and never raises — and it fails
+    closed. It goes by the parsed file only, never its text. An entry whose
+    ``restrict_tools`` is anything but absent or false is gated even when it is
+    otherwise invalid: ``load`` drops an invalid entry, and that must not
+    quietly lift its restriction. A file that exists
+    but can't be read or parsed (a syntax error, or a value PyYAML can't build:
+    either way its layout may hide a restricted server), isn't a mapping of
+    connectors, or has a restricted entry that names no server, gates every
+    server (``GATE_ALL``); :func:`tool_gate_problem` says why. An empty file,
+    or one with no ``connectors`` yet, restricts nothing. Enabled or not
+    doesn't matter: a disabled connector's server stays restricted.
+    """
+    return _tool_gate(vault)[0]
+
+
+def tool_gate_problem(vault: Path) -> str | None:
+    """Why :func:`tool_gate` gates every server, in one line naming the file and where; None when it doesn't.
+
+    The error's cause and line only, never the file's text, which YAML errors can quote."""
+    return _tool_gate(vault)[1]
+
+
+def _tool_gate(vault: Path) -> tuple[dict[str, frozenset[str]], str | None]:
+    gate_all: dict[str, frozenset[str]] = {GATE_ALL: frozenset()}
+    try:
+        text = (vault / CUSTOM_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, UnicodeDecodeError) as e:
+        return gate_all, f"{CUSTOM_FILE} could not be read ({type(e).__name__})"
+    # No shortcut on the text: a double-quoted key like "restrict\x5ftools" parses to restrict_tools (#590).
+    try:
+        raw = load_yaml(text)
+    except yaml.YAMLError as e:
+        return gate_all, f"{CUSTOM_FILE} could not be read: {yaml_problem(e, text)}"
+    conns = raw.get("connectors") if isinstance(raw, dict) else None
+    if raw is None or (isinstance(raw, dict) and conns is None):
+        return {}, None  # empty, comments only, or no connectors yet: nothing to restrict
+    if not isinstance(conns, dict):
+        return gate_all, f"{CUSTOM_FILE} has no connectors mapping"
+    gate: dict[str, set[str]] = {}
+    for key, body in conns.items():
+        if not isinstance(body, dict) or body.get("restrict_tools") in (None, False):
+            continue
+        refs: list[Any] = [body.get("probe")]
+        for name in ACTIVITIES:
+            block = body.get(name)
+            if isinstance(block, dict) and isinstance(block.get("tools"), list):
+                refs += block["tools"]
+        tools = [r for r in refs if isinstance(r, str) and MCP_TOOL_RE.match(r)]
+        servers = {t.split("__")[1] for t in tools}
+        if isinstance(body.get("server"), str) and body["server"]:
+            servers.add(body["server"])
+        if not servers:
+            return gate_all, f"{CUSTOM_FILE}: restricted connector {str(key)!r} names no MCP server"
+        for server in servers:
+            gate.setdefault(server, set()).update(t for t in tools if t.split("__")[1] == server)
+    return {s: frozenset(t) for s, t in gate.items()}, None

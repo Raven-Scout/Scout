@@ -59,6 +59,26 @@ def test_desktop_sends_auth_when_marker_is_25h_old(tmp_path):
     assert res["ok"] is True
 
 
+def test_desktop_sends_the_auth_reminder_once_the_wrapper_banner_is_auth_remind_after_old(tmp_path):
+    """The wrapper re-alerts only daily; the notifier's sooner auth reminder must reach the desktop."""
+    _marker(tmp_path, str(int(NOW.timestamp() - hn.AUTH_REMIND_AFTER.total_seconds())))
+    res = hn.desktop_channel(_push("auth.expired", kind="reminder"), vault=tmp_path, now=NOW, send=lambda t, b: True)
+    assert res is not None and res["ok"] is True
+
+
+def test_a_desktop_auth_send_stamps_the_wrapper_marker(tmp_path):
+    (tmp_path / ".scout-logs").mkdir()
+    hn.desktop_channel(_push("auth.expired"), vault=tmp_path, now=NOW, send=lambda t, b: True)
+    assert (tmp_path / ".scout-logs" / ".auth-alert-sent").read_text() == str(int(NOW.timestamp()))
+
+
+def test_only_a_sent_auth_push_stamps_the_wrapper_marker(tmp_path):
+    (tmp_path / ".scout-logs").mkdir()
+    hn.desktop_channel(_push("auth.expired"), vault=tmp_path, now=NOW, send=lambda t, b: False)
+    hn.desktop_channel(_push("runs.failing"), vault=tmp_path, now=NOW, send=lambda t, b: True)
+    assert not (tmp_path / ".scout-logs" / ".auth-alert-sent").exists()
+
+
 def test_desktop_marker_garbage_falls_back_to_mtime(tmp_path):
     p = _marker(tmp_path, "not a number")
     recent = NOW.timestamp() - 600

@@ -226,6 +226,56 @@ struct EngineSettingsModelTests {
         #expect(model(runHealth(.green)).runsHelp == "No runs recorded yet")
     }
 
+    // MARK: the failing run's own error (#445)
+
+    private let limitLine = "You've hit your weekly limit · resets Oct 15 at 2pm (UTC)"
+    private let limitLog = "/Users/alex/Scout/.scout-logs/scout-2026-10-13_13-00.log"
+    private func paused(until: String?) -> RunHealth.Finding {
+        RunHealth.Finding(id: "runs.paused", severity: "yellow", since: nil,
+                          summary: "Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 5 scheduled run(s) failed on the limit.",
+                          fix: "Nothing to fix: the first scheduled run after the reset picks up.", source: "ledger",
+                          detail: limitLine, log: limitLog, until: until)
+    }
+
+    @Test func runsRowPausedSaysWhenScoutResumesInLocalTime() {
+        let m = model(runHealth(.yellow, findings: [paused(until: "2026-10-15T12:00:00Z")]))
+        #expect(m.runsLabel == "Paused")
+        #expect(m.runsIsPaused)
+        #expect(!m.runsIsOK)
+        #expect(m.runsHelp.hasPrefix("Claude usage limit: Scout resumes "))
+        #expect(!m.runsHelp.contains("2026-10-15T12:00:00Z"))   // a local date and time, not ISO-Z
+        #expect(m.runsDetail == limitLine)
+        #expect(m.runsFix == "Nothing to fix: the first scheduled run after the reset picks up.")
+        #expect(m.runsLogURL == URL(fileURLWithPath: limitLog))
+    }
+
+    @Test func runsRowPausedWithoutAReadableResetKeepsTheEngineSummary() {
+        let m = model(runHealth(.yellow, findings: [paused(until: "soon")]))
+        #expect(m.runsLabel == "Paused")
+        #expect(m.runsHelp == paused(until: nil).summary)
+    }
+
+    @Test func runsRowFailingShowsTheErrorLineFixAndLog() {
+        let failing = RunHealth.Finding(id: "runs.failing", severity: "red", since: nil,
+                                        summary: "The last 2 scheduled run(s) failed (network).", fix: "Run scoutctl bootstrap doctor",
+                                        source: "ledger", detail: "API Error: Connection error (ECONNRESET)", log: "/v/.scout-logs/x.log")
+        let m = model(runHealth(.red, findings: [failing]))
+        #expect(m.runsLabel == "Failing")
+        #expect(!m.runsIsPaused)
+        #expect(m.runsHelp == "The last 2 scheduled run(s) failed (network).")
+        #expect(m.runsDetail == "API Error: Connection error (ECONNRESET)")
+        #expect(m.runsFix == "Run scoutctl bootstrap doctor")
+        #expect(m.runsLogURL == URL(fileURLWithPath: "/v/.scout-logs/x.log"))
+    }
+
+    @Test func runsRowWithoutAnActionableFindingHasNoErrorFixOrLog() {
+        let note = RunHealth.Finding(id: "update.last", severity: "note", since: nil, summary: "n", fix: "Run: x", source: "update ledger",
+                                     detail: "d", log: "/v/l.log")
+        for m in [model(runHealth(.green)), model(runHealth(.green, findings: [note]))] {
+            #expect(m.runsDetail == nil && m.runsFix == nil && m.runsLogURL == nil && !m.runsIsPaused)
+        }
+    }
+
     // MARK: headless updates (#360)
 
     private func finding(_ id: String, _ severity: String, _ summary: String) -> RunHealth.Finding {

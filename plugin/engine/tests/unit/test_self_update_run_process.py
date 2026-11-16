@@ -8,9 +8,11 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+import pytest
 from typer.testing import CliRunner
 
 from scout import update_outcomes as uo
+from scout._spawn import python_module_argv
 from scout.cli import app
 from scout.scripts import self_update_run as sur
 from tests.unit.self_update_fakes import NOW, make_deps
@@ -72,9 +74,41 @@ def test_cli_detach_spawns_the_same_flags_and_returns(tmp_path, monkeypatch):
     monkeypatch.setattr(sur, "default_deps", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran inline")))
     result = runner.invoke(app, ["self-update", "run", "--scheduled", "--force", "--detach"])
     assert result.exit_code == 0, result.output
-    assert seen["argv"] == [sys.executable, "-m", "scout", "self-update", "run", "--scheduled", "--force"]
+    assert seen["argv"] == [sys.executable, "-P", "-m", "scout", "self-update", "run", "--scheduled", "--force"]
     assert seen["log_path"] == vault / ".scout-logs" / f"self-update-{datetime.now():%Y-%m-%d}.log"
     assert "pid 77" in result.output
+
+
+def _wait_for_exit(pid: int) -> None:
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if done:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"child {pid} still running")
+
+
+@pytest.mark.parametrize("safe", [True, False], ids=["python_module_argv", "bare -m (control)"])
+def test_detached_child_never_imports_a_vault_root_module(tmp_path, monkeypatch, safe):
+    """The heartbeat runs `self-update run --detach` with the vault as cwd, and the
+    child inherits it. `python -m` puts the cwd first on sys.path, so a vault-root
+    typer.py ran inside the process that upgrades the engine. The control proves
+    the vault module really would load without -P."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    marker = tmp_path / "shadowed"
+    (vault / "typer.py").write_text(f"open({str(marker)!r}, 'w').write('x')\nraise SystemExit(42)\n")
+    monkeypatch.chdir(vault)
+    argv = python_module_argv("scout", "--help") if safe else [sys.executable, "-m", "scout", "--help"]
+    log = tmp_path / "out.log"
+    _wait_for_exit(sur.spawn_detached(argv, log_path=log))
+    assert marker.exists() is not safe, log.read_text()
+    if safe:
+        assert "self-update" in log.read_text()
 
 
 def test_cli_skips_when_another_attempt_holds_the_lock(tmp_path, monkeypatch):

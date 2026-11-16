@@ -25,6 +25,11 @@ from typing import Any
 SEARCH_TOOLS = {"Grep", "Glob"}
 _SEARCH_BASH = re.compile(r"^\s*(?:rg|grep|egrep|fgrep|find|ag|fd)\b")
 FILE_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
+# The static instructions a run loads: the brain files, and any slice or deferred
+# block cut from them (spec 2026-10-13-static-instruction-trim §8.1).
+BRAIN_FILES = {"SKILL.md", "DREAMING.md", "RESEARCH.md"}
+BRAIN_CACHE_DIR = "/.scout-cache/brain/"
+GATE_MARK = re.compile(r"\[scout:(kb-read-gate|outbound-gate)\]")
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,9 @@ class ToolCall:
     input: dict[str, Any]
     is_error: bool
     position: float
+    # The Scout PreToolUse gate that denied the call (``kb-read-gate``, ``outbound-gate``), read from
+    # the ``[scout:<gate>]`` mark its error result carries; None when it ran. None in an older metrics.json.
+    gate: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,18 +60,54 @@ class SampleMetrics:
     mcp_servers: tuple[str, ...]
     result_subtype: str | None
     skipped_lines: int
+    # None in a metrics.json stored before these existed: unknown, not zero.
+    cache_creation_tokens: int | None = None
+    # chars/4 of what successful brain-file Reads returned, and that times the
+    # assistant turns after each read: every later turn re-reads it from cache.
+    brain_tokens: int | None = None
+    brain_token_turns: int | None = None
+    # The API retries claude logged (`system/api_retry`), and the result's text when the
+    # session ended in an error (`is_error`), e.g. "API Error: Can't reach the API server".
+    api_retries: int | None = None
+    api_error: str | None = None
 
 
 def _position(seq: int, total: int) -> float:
     return 0.5 if total == 1 else (seq - 1) / (total - 1)
 
 
+def _is_brain_read(name: str, inp: dict[str, Any]) -> bool:
+    path = str(inp.get("file_path", ""))
+    return name == "Read" and (path.rsplit("/", 1)[-1] in BRAIN_FILES or BRAIN_CACHE_DIR in path)
+
+
+def _result_chars(content: Any) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(str(b.get("text", ""))) for b in content if isinstance(b, dict))
+    return 0
+
+
+def _result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    return ""
+
+
 def parse_stream(lines: Iterable[str]) -> SampleMetrics:
     uses: list[tuple[str, str, dict[str, Any]]] = []
     errors: set[str] = set()
+    gates: dict[str, str] = {}
     message_ids: set[str] = set()
+    brain_uses: set[str] = set()
+    # (tokens, assistant messages seen when the result arrived) per brain read
+    brain_reads: list[tuple[int, int]] = []
     init: dict[str, Any] = {}
     result: dict[str, Any] = {}
+    retries = 0
     skipped = 0
     for line in lines:
         if not line.strip():
@@ -79,6 +123,8 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
         kind = event.get("type")
         if kind == "system" and event.get("subtype") == "init":
             init = event
+        elif kind == "system" and event.get("subtype") == "api_retry":
+            retries += 1
         elif kind == "assistant":
             message = event.get("message") or {}
             if message.get("id"):
@@ -86,15 +132,24 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
             for block in message.get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     uses.append((block.get("id", ""), block.get("name", ""), block.get("input") or {}))
+                    if _is_brain_read(uses[-1][1], uses[-1][2]):
+                        brain_uses.add(uses[-1][0])
         elif kind == "user":
             for block in (event.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                if block.get("is_error"):
                     errors.add(block.get("tool_use_id", ""))
+                    mark = GATE_MARK.search(_result_text(block.get("content")))
+                    if mark:
+                        gates[block.get("tool_use_id", "")] = mark.group(1)
+                elif block.get("tool_use_id") in brain_uses:
+                    brain_reads.append((_result_chars(block.get("content")) // 4, len(message_ids)))
         elif kind == "result":
             result = event
     total = len(uses)
     calls = tuple(
-        ToolCall(seq=i, name=name, input=inp, is_error=tid in errors, position=_position(i, total))
+        ToolCall(seq=i, name=name, input=inp, is_error=tid in errors, position=_position(i, total), gate=gates.get(tid))
         for i, (tid, name, inp) in enumerate(uses, start=1)
     )
     usage = result.get("usage") or {}
@@ -114,6 +169,11 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
         mcp_servers=tuple(s.get("name", "") for s in init.get("mcp_servers") or []),
         result_subtype=result.get("subtype"),
         skipped_lines=skipped,
+        cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        brain_tokens=sum(tokens for tokens, _ in brain_reads),
+        brain_token_turns=sum(tokens * (len(message_ids) - seen) for tokens, seen in brain_reads),
+        api_retries=retries,
+        api_error=str(result.get("result") or "unknown error") if result.get("is_error") else None,
     )
 
 

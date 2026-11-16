@@ -32,6 +32,7 @@ set -euo pipefail
 
 VERSION_FILES=(
   .claude-plugin/marketplace.json
+  plugin/.claude-plugin/marketplace.json
   plugin/.claude-plugin/plugin.json
   plugin/engine/pyproject.toml
   plugin/engine/scout/__init__.py

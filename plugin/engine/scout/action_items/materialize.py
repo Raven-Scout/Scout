@@ -47,6 +47,43 @@ _BANNER = (
 )
 
 
+_SKIP_BANNER = (
+    "\n\n🔴 **Skipped an item-less day** — {skipped} had no checklist items at "
+    "all (no `- [ ]` and no `- [x]` lines), so it was not carried forward; "
+    "the list above comes from [[action-items-{prev}]] instead. An item-less "
+    "file after a non-empty one is a truncated rewrite, not a cleared board — "
+    "check {skipped} in git before trusting it."
+)
+
+# A checklist item of any state. A board the user genuinely cleared still has
+# its `- [x]` lines; a file with none at all lost its item sections.
+_CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\]", re.MULTILINE)
+
+
+def _has_items(path: Path) -> bool:
+    return bool(_CHECKBOX.search(path.read_text(encoding="utf-8")))
+
+
+def _pick_source(data_dir: Path | None, target_date: _dt.date) -> tuple[_dt.date, Path, list[_dt.date]] | None:
+    """Newest prior daily file within LOOKBACK_DAYS that has checklist items.
+
+    Item-less files newer than it are returned as skipped. When no file in the
+    window has items, the newest file is used as before (nothing to heal from).
+    """
+    found: list[tuple[_dt.date, Path]] = []
+    for days_back in range(1, LOOKBACK_DAYS + 1):
+        prev_date = target_date - _dt.timedelta(days=days_back)
+        prev = paths.action_items_daily_path(data_dir, date=prev_date)
+        if prev.exists():
+            found.append((prev_date, prev))
+    if not found:
+        return None
+    for i, (prev_date, prev) in enumerate(found):
+        if _has_items(prev):
+            return prev_date, prev, [d for d, _ in found[:i]]
+    return found[0][0], found[0][1], []
+
+
 def _human_date(d: _dt.date) -> str:
     # Avoid strftime's platform-dependent no-pad flag (%-d vs %#d).
     return f"{d.strftime('%A')}, {d.strftime('%b')} {d.day}, {d.year}"
@@ -60,6 +97,76 @@ def _carry_body(prev_file: Path) -> str:
     if len(lines) > 1 and lines[1].lstrip().startswith("**"):
         skip = 2
     return "".join(lines[skip:])
+
+
+_MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+_WEEKDAYS = "Mon|Tue|Tues|Wed|Weds|Thu|Thur|Thurs|Fri|Sat|Sun"
+# A day label in an H2: "(Saturday Oct 17)", "— Sat Oct 17, 2026", "— Oct 17".
+_DAY_LABEL = re.compile(
+    rf"(?:\b(?:{_WEEKDAYS})[a-z]*\.?,?\s+)?"
+    rf"\b(?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}}(?:,?\s+20\d{{2}})?\b"
+)
+# A date introduced by one of these is a window boundary or a provenance stamp,
+# not the section's own day: "(since May 3 …)", "From chrome sweep (Wed Sep 9 …".
+_WINDOW_PREP = re.compile(
+    r"\b(?:since|from|between|through|until|as of|after|before|window|vs\.?)\b",
+    re.IGNORECASE,
+)
+_CARRIED_MARK = " — ⚠️ carried from {prev}, not re-verified"
+_MONTH_NUMBER = {n: i for i, n in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), start=1)}
+
+
+def _mark_carried_day_headings(body: str, prev_date: _dt.date) -> str:
+    """Annotate every ``## `` heading that names the *previous* file's day.
+
+    The carry-forward re-dates the H1 and writes a fresh banner; until now that
+    was the whole of it, so a heading like ``## 📅 Today's Meetings (Saturday
+    Oct 17)`` travelled verbatim into Sunday's file and asserted the wrong day
+    one screen below a correct title. Measured over one vault: 39 of 193 daily
+    files carried at least one such heading.
+
+    We deliberately **mark** rather than re-date. The content under the heading
+    is still yesterday's — re-dating the label would make a visible staleness
+    invisible, which is strictly worse than the defect. The mark says the same
+    thing the banner already says about the body, at the place a reader is
+    actually looking.
+    """
+    out = []
+    for line in body.splitlines(keepends=True):
+        stripped = line.rstrip("\n")
+        if not stripped.startswith("## ") or _CARRIED_MARK.split("{")[0] in stripped:
+            out.append(line)
+            continue
+        hit = None
+        for m in _DAY_LABEL.finditer(stripped):
+            if _WINDOW_PREP.search(stripped[: m.start()]):
+                continue
+            hit = m
+            break
+        if hit and _names_date(hit.group(0), prev_date):
+            nl = "\n" if line.endswith("\n") else ""
+            out.append(stripped + _CARRIED_MARK.format(prev=prev_date.isoformat()) + nl)
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def _names_date(label: str, when: _dt.date) -> bool:
+    """Does this free-text day label resolve to ``when``?
+
+    The year is optional in house style, so an absent year is taken from
+    ``when`` — inside a dated daily file that is never ambiguous.
+    """
+    m = re.search(rf"\b({_MONTHS})[a-z]*\.?\s+(\d{{1,2}})(?:,?\s+(20\d{{2}}))?", label)
+    if not m:
+        return False
+    mon = _MONTH_NUMBER.get(m.group(1)[:3].title())
+    if not mon:
+        return False
+    try:
+        return _dt.date(int(m.group(3)) if m.group(3) else when.year, mon, int(m.group(2))) == when
+    except ValueError:
+        return False
 
 
 _H2 = re.compile(r"^##\s")
@@ -195,16 +302,26 @@ def materialize(
     if not target.parent.is_dir():
         return None
 
-    for days_back in range(1, LOOKBACK_DAYS + 1):
-        prev_date = target_date - _dt.timedelta(days=days_back)
-        prev = paths.action_items_daily_path(data_dir, date=prev_date)
-        if not prev.exists():
-            continue
+    picked = _pick_source(data_dir, target_date)
+    if picked is not None:
+        prev_date, prev, skipped = picked
         banner = _BANNER.format(
             now=now.strftime("%H:%M %Z"),
             prev=prev_date.isoformat(),
         )
+        if skipped:
+            # Pattern #277: verbatim carry of a truncated file makes the
+            # accident tomorrow's baseline. Self-heal from the last good day,
+            # and say so in the file, because the session reading it needs to know.
+            banner += _SKIP_BANNER.format(
+                skipped=", ".join(d.isoformat() for d in skipped),
+                prev=prev_date.isoformat(),
+            )
         body = _carry_body(prev)
+        # Before anything reshapes the body: a `## ` heading that names the day
+        # we are carrying *from* is about to travel into a file dated something
+        # else. Mark it; never re-date it (see _mark_carried_day_headings).
+        body = _mark_carried_day_headings(body, prev_date)
         # Archive before compacting: the ledger fingerprinted the prior file as
         # written, and compaction drops whatever headings the archive emptied.
         body, archived_note = _archive_stale(data_dir, target_date, body)

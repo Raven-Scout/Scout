@@ -18,7 +18,7 @@ from scout.schedule import (
     SlotType,
     load_default_schedule,
     load_schedule,
-    next_fires,
+    next_fire_per_slot,
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -294,7 +294,7 @@ def test_overlay_path_layered_on_seed_when_present(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# next_fires() — forward-looking next-fire computation
+# next_fire_per_slot() — forward-looking next-fire computation
 # ---------------------------------------------------------------------------
 
 _ET = ZoneInfo("America/New_York")
@@ -325,13 +325,13 @@ def _make_slot(
     )
 
 
-def test_next_fires_today_slot_still_ahead():
+def test_next_fire_per_slot_today_slot_still_ahead():
     """A slot that fires later today should appear in the results."""
     # Mon 2026-05-04 06:00 ET — morning-briefing fires at 08:00
     now = datetime(2026, 5, 4, 6, 0, tzinfo=_ET)
     slot = _make_slot("morning-briefing", "08:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
     sched = _make_schedule({"morning-briefing": slot})
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 1
     key, fire_dt = results[0]
     assert key == "morning-briefing"
@@ -340,14 +340,14 @@ def test_next_fires_today_slot_still_ahead():
     assert fire_dt > now
 
 
-def test_next_fires_today_slot_already_past_gives_tomorrow():
+def test_next_fire_per_slot_today_slot_already_past_gives_tomorrow():
     """A slot whose today-target has already passed rolls to tomorrow."""
     # Mon 2026-05-04 10:00 ET — morning-briefing was at 08:00 (already past)
     now = datetime(2026, 5, 4, 10, 0, tzinfo=_ET)
     slot = _make_slot("morning-briefing", "08:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
     sched = _make_schedule({"morning-briefing": slot})
     # 24-hour window: includes tomorrow Tue 08:00 (24h from Mon 10:00 is Tue 10:00)
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 1
     key, fire_dt = results[0]
     assert key == "morning-briefing"
@@ -356,25 +356,46 @@ def test_next_fires_today_slot_already_past_gives_tomorrow():
     assert fire_dt.hour == 8
 
 
-def test_next_fires_weekday_filter_skips_non_matching_days():
+def test_next_fire_per_slot_weekday_filter_skips_non_matching_days():
     """Slots with weekday exclusions should skip excluded days."""
     # Saturday 2026-05-09 06:00 ET — morning-briefing only fires Mon-Fri
     now = datetime(2026, 5, 9, 6, 0, tzinfo=_ET)
     slot = _make_slot("morning-briefing", "08:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
     sched = _make_schedule({"morning-briefing": slot})
     # Next Mon is 2026-05-11 08:00; that's ~50h away — beyond a 24h window
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert results == []
 
 
-def test_next_fires_multi_day_skip_finds_next_matching_weekday():
+def test_next_fire_per_slot_returns_one_fire_per_slot_even_for_a_long_window():
+    """#67: a week-long window still yields only each slot's NEXT fire.
+
+    `schedule list-upcoming --json` (read by the app's Control Center) emits
+    one row per slot, so later fires of the same slot inside the window must
+    not appear.
+    """
+    # Mon 2026-05-04 06:00 ET. Within 7 days, the Mon/Wed/Fri slot fires three
+    # times and the weekday slot five times.
+    now = datetime(2026, 5, 4, 6, 0, tzinfo=_ET)
+    mwf = _make_slot("mwf-dream", "08:00", ["Mon", "Wed", "Fri"], slot_type=SlotType.DREAMING)
+    daily = _make_slot("morning-briefing", "09:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
+    sched = _make_schedule({"mwf-dream": mwf, "morning-briefing": daily})
+    results = next_fire_per_slot(sched, now=now, window_hours=24 * 7)
+    assert [key for key, _ in results] == ["mwf-dream", "morning-briefing"]
+    assert [dt for _, dt in results] == [
+        datetime(2026, 5, 4, 8, 0, tzinfo=_ET),
+        datetime(2026, 5, 4, 9, 0, tzinfo=_ET),
+    ]
+
+
+def test_next_fire_per_slot_multi_day_skip_finds_next_matching_weekday():
     """If next matching weekday is 2 days out, the result reflects that."""
     # Friday 2026-05-08 20:00 ET — weekend-briefing fires Sat/Sun at 08:30
     now = datetime(2026, 5, 8, 20, 0, tzinfo=_ET)
     slot = _make_slot("weekend-briefing", "08:30", ["Sat", "Sun"])
     sched = _make_schedule({"weekend-briefing": slot})
     # Sat 08:30 is ~12.5h ahead — within a 24h window
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 1
     key, fire_dt = results[0]
     assert key == "weekend-briefing"
@@ -383,7 +404,7 @@ def test_next_fires_multi_day_skip_finds_next_matching_weekday():
     assert fire_dt.minute == 30
 
 
-def test_next_fires_window_cutoff_excludes_slots_beyond_window():
+def test_next_fire_per_slot_window_cutoff_excludes_slots_beyond_window():
     """Slots whose next fire is beyond the window should be excluded."""
     # Mon 2026-05-04 09:00 ET — slot fires at 08:00 weekdays (already past)
     # Next fire is Tue 08:00 = 23h ahead — within 24h window
@@ -392,11 +413,11 @@ def test_next_fires_window_cutoff_excludes_slots_beyond_window():
     slot = _make_slot("morning-briefing", "08:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
     sched = _make_schedule({"morning-briefing": slot})
     # 12h window: now + 12h = Mon 21:00; Tue 08:00 is beyond that
-    results = next_fires(sched, now=now, window_hours=12)
+    results = next_fire_per_slot(sched, now=now, window_hours=12)
     assert results == []
 
 
-def test_next_fires_slot_tz_override_honored():
+def test_next_fire_per_slot_slot_tz_override_honored():
     """Per-slot tz override should be used when computing next fire."""
     # now is Mon 2026-05-04 07:00 ET (= 04:00 PT)
     # Slot fires at 08:00 PT (= 11:00 ET) on weekdays
@@ -408,7 +429,7 @@ def test_next_fires_slot_tz_override_honored():
         tz="America/Los_Angeles",
     )
     sched = _make_schedule({"pacific-standup": slot})
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 1
     key, fire_dt = results[0]
     assert key == "pacific-standup"
@@ -421,7 +442,7 @@ def test_next_fires_slot_tz_override_honored():
     assert fire_dt > now
 
 
-def test_next_fires_mixed_tz_schedule_returns_both_in_order():
+def test_next_fire_per_slot_mixed_tz_schedule_returns_both_in_order():
     """Two slots with different tz overrides should both appear, sorted by fire time."""
     # now Mon 2026-05-04 05:00 ET
     now = datetime(2026, 5, 4, 5, 0, tzinfo=_ET)
@@ -433,7 +454,7 @@ def test_next_fires_mixed_tz_schedule_returns_both_in_order():
         tz="America/Los_Angeles",
     )
     sched = _make_schedule({"et-slot": et_slot, "pt-slot": pt_slot})
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 2
     keys = [k for k, _ in results]
     # et-slot fires at 08:00 ET, pt-slot at 08:00 PT = 11:00 ET → et-slot is first
@@ -443,33 +464,33 @@ def test_next_fires_mixed_tz_schedule_returns_both_in_order():
     assert results[0][1] < results[1][1]
 
 
-def test_next_fires_empty_schedule_returns_empty_list():
+def test_next_fire_per_slot_empty_schedule_returns_empty_list():
     """Empty schedule should return an empty list, not raise."""
     sched = _make_schedule({})
     now = datetime(2026, 5, 4, 9, 0, tzinfo=_ET)
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert results == []
 
 
-def test_next_fires_single_slot_precision():
+def test_next_fire_per_slot_single_slot_precision():
     """Verify exact datetime values are correct for a known slot/now pair."""
     # Mon 2026-05-04 07:30:00 ET — slot fires 08:00 ET
     now = datetime(2026, 5, 4, 7, 30, 0, tzinfo=_ET)
     slot = _make_slot("morning-briefing", "08:00", ["Mon", "Tue", "Wed", "Thu", "Fri"])
     sched = _make_schedule({"morning-briefing": slot})
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     assert len(results) == 1
     _, fire_dt = results[0]
     expected = datetime(2026, 5, 4, 8, 0, 0, tzinfo=_ET)
     assert fire_dt == expected
 
 
-def test_next_fires_default_schedule_returns_slots_within_24h():
+def test_next_fire_per_slot_default_schedule_returns_slots_within_24h():
     """Smoke test against the real default schedule — should return >=1 slot for most times."""
     # Mon 2026-05-04 07:00 ET — several slots should be in the next 24 hours
     now = datetime(2026, 5, 4, 7, 0, tzinfo=_ET)
     sched = load_default_schedule()
-    results = next_fires(sched, now=now, window_hours=24)
+    results = next_fire_per_slot(sched, now=now, window_hours=24)
     # Morning briefing (08:00), consolidations (11, 13, 17, 19), research (14),
     # dreaming-evening (18:30), dreaming-nightly (22) are all ahead of 07:00
     assert len(results) >= 5
@@ -709,3 +730,45 @@ def test_malformed_overlay_slot_shapes_raise_config_error(tmp_path, overlay_body
     overlay.write_text("schema_version: 1\n" + overlay_body)
     with pytest.raises(ConfigError):
         load_schedule(seed, overlay=overlay)
+
+
+# ---------------------------------------------------------------------------
+# Slot.model — per-slot model selection (spec 2026-10-13-slot-model-selection)
+# ---------------------------------------------------------------------------
+
+_MODEL_SLOT = (
+    "schema_version: 1\n"
+    "slots:\n"
+    "  midday-consolidation:\n"
+    "    type: consolidation\n"
+    "    runner: run-scout.sh\n"
+    "    fires_at_local: '13:00'\n"
+    "    weekdays: [Mon]\n"
+    "    missed_window_hours: 2\n"
+    "    on_miss: collapse\n"
+    "    cooldown_minutes: 90\n"
+)
+
+
+def test_slot_model_defaults_to_none(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT)
+    assert load_schedule(yaml_file)["midday-consolidation"].model is None
+
+
+def test_slot_model_is_read_and_normalised(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT + "    model: Sonnet\n")
+    assert load_schedule(yaml_file)["midday-consolidation"].model == "sonnet"
+
+
+def test_slot_model_invalid_value_names_the_slot(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT + "    model: sonet\n")
+    with pytest.raises(ConfigError, match=r"slot 'midday-consolidation': model 'sonet'"):
+        load_schedule(yaml_file)
+
+
+def test_shipped_schedule_sets_no_model():
+    # Defaults don't change quality: every seeded slot inherits models.default.
+    assert all(slot.model is None for slot in load_default_schedule().values())

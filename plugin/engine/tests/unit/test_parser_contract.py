@@ -42,6 +42,7 @@ import pytest
 
 from scout.action_items import render
 from scout.action_items.parser import parse_file
+from scout.action_items.plan_marks import read_plan_marks
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "parser-corpus.json"
 
@@ -110,8 +111,21 @@ def test_fields(entry: dict, tmp_path: Path) -> None:
     assert fields == entry["expected"]["fields"], f"{entry['name']}: fields"
 
 
-@pytest.mark.parametrize("entry", _FIELD_ENTRIES, ids=lambda e: e["name"])
+_COMMENT_ENTRIES = [e for e in _ENTRIES if "comment_authors" in e["expected"]]
+
+
+@pytest.mark.parametrize("entry", _COMMENT_ENTRIES, ids=lambda e: e["name"])
 def test_comment_authors(entry: dict, tmp_path: Path) -> None:
-    """Field lines never become comments; real comments still do."""
+    """Field and plan marker lines never become comments; real comments still do."""
     task = _top_task(_write(tmp_path, entry))
     assert [c.author for c in task.comments] == entry["expected"]["comment_authors"], f"{entry['name']}: comments"
+
+
+_PLAN_ENTRIES = [e for e in _ENTRIES if "plan" in e["expected"]]
+
+
+@pytest.mark.parametrize("entry", _PLAN_ENTRIES, ids=lambda e: e["name"])
+def test_plan(entry: dict, tmp_path: Path) -> None:
+    """The plan comes from plan_marks.read_plan_marks; the task line is line 5 of the file."""
+    marks = read_plan_marks(_write(tmp_path, entry), task_line_number=5)
+    assert marks.to_json_dict() == entry["expected"]["plan"], f"{entry['name']}: plan"

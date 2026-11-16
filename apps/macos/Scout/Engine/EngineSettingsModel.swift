@@ -91,8 +91,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     /// The "Runs" row (spec §4.3) appears only when the engine reported run health.
     var showsRuns: Bool { doctor?.runHealth != nil }
     var runsIsOK: Bool { doctor?.runHealth?.severity == .green }
+    /// A Claude usage limit is holding the runs; it lifts on its own (#424).
+    var runsIsPaused: Bool { runsFinding?.id == "runs.paused" }
     var runsLabel: String {
         guard let rh = doctor?.runHealth else { return "Unknown" }
+        if runsIsPaused { return "Paused" }
         switch rh.severity {
         case .green: return "Healthy"
         case .yellow: return "Warnings"
@@ -101,13 +104,27 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     }
     var runsHelp: String {
         guard let rh = doctor?.runHealth else { return "" }
-        if let f = rh.firstActionable { return f.summary }
+        if let f = rh.firstActionable {
+            if runsIsPaused, let lifts = f.until.flatMap({ ISO8601DateFormatter().date(from: $0) }) {
+                return "Claude usage limit: Scout resumes \(lifts.formatted(Self.resumeStyle)) (\(Self.relative(lifts)))."
+            }
+            return f.summary
+        }
         if let ok = rh.lastOkAt { return "Last successful run \(Self.relative(ok))" }
         return "No runs recorded yet"
     }
+    /// What the failing run itself printed, e.g. Claude Code's "You've hit your weekly limit · resets …" (#445).
+    var runsDetail: String? { runsFinding?.detail }
+    var runsFix: String? { runsFinding.flatMap { $0.fix.isEmpty ? nil : $0.fix } }
+    var runsLogURL: URL? { runsFinding?.log.map { URL(fileURLWithPath: $0) } }
+    private var runsFinding: RunHealth.Finding? { doctor?.runHealth?.firstActionable }
+    private static let resumeStyle = Date.FormatStyle().weekday(.abbreviated).month(.abbreviated).day().hour().minute()
+    private static func relative(_ date: Date) -> String {
+        RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    }
     private static func relative(_ iso: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: iso) else { return iso }
-        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+        return relative(date)
     }
 
     var messages: [String] {

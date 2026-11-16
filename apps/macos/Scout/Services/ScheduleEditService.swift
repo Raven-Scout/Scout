@@ -170,6 +170,9 @@ final class ScheduleEditService: ObservableObject {
                 out += "    tz: \(yamlQuoted(tz))\n"
             }
             out += "    runtime: \(slot.runtime.rawValue)\n"
+            if let model = slot.model {
+                out += "    model: \(yamlScalar(model))\n"
+            }
         }
         return out
     }

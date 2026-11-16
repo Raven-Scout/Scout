@@ -54,7 +54,8 @@ def test_an_aborted_sample_round_trips_with_its_reason(
         real_claude=str(fake),
     )  # fmt: skip
     loaded = load_sample(ran.result_dir)
-    assert loaded.aborted == {"reason": "error_max_budget_usd"}
+    assert loaded.aborted == {"reason": "error_max_budget_usd", "budget_usd": "3"}  # the cap it hit
+    assert loaded.meta["budget_usd"] == "3"
     assert loaded == ran
 
 
@@ -90,7 +91,9 @@ def test_base_checkout_is_a_clean_detached_worktree_reused_by_commit(tmp_path: P
 def _plugin_copy_with_marker(tmp_path: Path) -> Checkout:
     """A stand-in base: a copy of plugin/ whose run-modes phase says something head's doesn't."""
     root = tmp_path / "other"
-    shutil.copytree(PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests"))
+    shutil.copytree(
+        PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests", ".coverage*")
+    )
     phase = root / "plugin" / "phases" / "core" / "00-run-modes.md"
     phase.write_text(phase.read_text() + "\nBASE-ARM-MARKER\n")
     return Checkout(label="base", root=root, commit="0" * 40, pythonpath=root / "plugin" / "engine")
@@ -221,15 +224,67 @@ def test_compare_refuses_an_unknown_base_and_a_big_plan(
     assert "--many" in capsys.readouterr().err
 
 
-def test_compare_stops_launching_after_an_aborted_sample(
+def test_compare_keeps_going_past_a_sample_that_hit_a_run_limit(
     tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
+    _compare(fake, cache_root, tmp_path, "--reps", "2")
+    out = capsys.readouterr().out
+    assert "hit a run limit (error_max_budget_usd)" in out and "stopped after" not in out
+    assert len(list((tmp_path / "results").iterdir())) == 4  # every planned sample ran
+    assert "within limits" in out
+    assert _cached(cache_root) == []  # a truncated base sample is never cached
+
+
+def test_compare_stops_launching_after_a_harness_failure(
+    tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_during_execution")
     assert _compare(fake, cache_root, tmp_path, "--reps", "2") == 2
     out = capsys.readouterr().out
     assert "stopped after an aborted sample" in out
     assert len(list((tmp_path / "results").iterdir())) == 1
     assert _cached(cache_root) == []
+
+
+def _compare_models(fake: Path, tmp_path: Path, *extra: str) -> int:
+    from tests.eval.harness.cli import main
+
+    return main(
+        ["compare-models", "busy-weekday", "--yes", "--today", "2026-10-12", "--claude", str(fake),
+         "--cli-version", "9.9.9", "--results", str(tmp_path / "results"), *extra]
+    )  # fmt: skip
+
+
+def test_compare_models_runs_both_models_interleaved(
+    tmp_path: Path, fake: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _compare_models(fake, tmp_path, "--reps", "1") == 0
+    out = capsys.readouterr().out
+    assert "Will start 2 sessions (busy-weekday: opus ×1 and sonnet ×1, interleaved)" in out
+    assert "A regression means sonnet did worse" in out
+    # The stand-in claude reports one model whatever it is asked for, so the
+    # guard must refuse a verdict rather than call the two arms "same".
+    assert "NO VERDICT: both arms ran" in out
+    assert f"{'check':<14}{'opus':>8}{'sonnet':>8}" in out
+    arms = sorted(p.name.removeprefix("busy-weekday-").split("-")[0] for p in (tmp_path / "results").iterdir())
+    assert arms == ["opus", "sonnet"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (("--a", "sonnet", "--b", "Sonnet"), "two different models"),
+        (("--b", "sonet"), "is not opus, sonnet, haiku"),
+        (("--reps", "6"), "--many"),
+    ],
+)
+def test_compare_models_refuses_a_bad_plan(
+    tmp_path: Path, fake: Path, capsys: pytest.CaptureFixture[str], extra: tuple[str, ...], message: str
+) -> None:
+    assert _compare_models(fake, tmp_path, *extra) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "results").exists()
 
 
 def test_the_install_guards_raise_rather_than_assert() -> None:

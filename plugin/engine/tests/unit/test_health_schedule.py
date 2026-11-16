@@ -474,6 +474,36 @@ def test_a_dead_session_lock_does_not_defer_fired_silent(vault):
     assert (vault / ".scout-logs" / ".scout-session.lock").exists()
 
 
+def _live_lock(v: Path, monkeypatch, taken_at: datetime) -> None:
+    """A lock a live session took at ``taken_at`` (fake PID, fake liveness)."""
+    lock = v / ".scout-logs" / ".scout-session.lock"
+    lock.write_text("424242\n")
+    os.utime(lock, (taken_at.timestamp(), taken_at.timestamp()))
+    monkeypatch.setattr(health, "is_lock_held_by_live_pid", lambda path: path == lock)
+
+
+def test_a_live_session_defers_only_its_own_slot(vault, monkeypatch):
+    """#467: the in-run health read holds the lock; other slots stay judged."""
+    # weekly-research fired 6 h ago and was killed; morning-briefing fired 5 h
+    # ago, took the lock seconds later, and is still running.
+    _fires(vault, morning_briefing=NOW - _h(5), weekly_research=NOW - _h(6))
+    _ledger(vault, ("morning-briefing", NOW - _h(30)), ("weekly-research", NOW - timedelta(days=2)))
+    _live_lock(vault, monkeypatch, NOW - _h(5) + timedelta(seconds=3))
+    ids = _ids(vault)
+    assert ids["slot.fired_silent:weekly-research"] == "yellow"
+    assert "slot.fired_silent:morning-briefing" not in ids
+
+
+def test_a_live_session_that_waited_for_the_lock_still_defers_its_own_slot(vault, monkeypatch):
+    """The fire is stamped at dispatch; the runner may take the lock much later."""
+    _fires(vault, morning_briefing=NOW - _h(5), weekly_research=NOW - _h(6))
+    _ledger(vault, ("morning-briefing", NOW - _h(30)), ("weekly-research", NOW - timedelta(days=2)))
+    _live_lock(vault, monkeypatch, NOW - _h(4.5))
+    ids = _ids(vault)
+    assert ids["slot.fired_silent:weekly-research"] == "yellow"
+    assert "slot.fired_silent:morning-briefing" not in ids
+
+
 MANUAL_ONLY = """\
 schema_version: 1
 slots:

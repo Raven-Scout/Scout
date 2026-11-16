@@ -62,6 +62,27 @@ def test_health_red_text_lists_finding_and_fix(tmp_path, monkeypatch):
     assert "    fix: " in result.stdout
 
 
+def test_health_text_quotes_the_error_line_and_the_log(tmp_path, monkeypatch):
+    v = _vault(tmp_path, monkeypatch)
+    now = int(time.time())
+    row = {
+        "slot": "morning-briefing",
+        "mode": "scout",
+        "started_at": now - 600,
+        "finished_at": now - 540,
+        "exit_code": 1,
+        "failure_class": "network",
+        "log": "scout-net.log",
+    }
+    (v / ".scout-logs" / "run-outcomes.jsonl").write_text(json.dumps(row) + "\n")
+    (v / ".scout-logs" / "scout-net.log").write_text("API Error: Connection error (ECONNRESET)\n")
+
+    result = runner.invoke(app, ["health"])
+
+    assert "    error: API Error: Connection error (ECONNRESET)\n" in result.stdout
+    assert f"    log: {v / '.scout-logs' / 'scout-net.log'}\n" in result.stdout
+
+
 def test_health_yellow_text_exits_one(tmp_path, monkeypatch):
     """M7: one failed run is yellow, exit 1."""
     _fail_rows(_vault(tmp_path, monkeypatch), count=1)

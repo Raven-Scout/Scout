@@ -95,6 +95,11 @@ def _build_vault(root: Path) -> Path:
                 "log": None,
             }
         )
+    # The newest failure's log survives, so its finding quotes the CLI's own error and links the log (#445).
+    rows[-1]["log"] = "scout-2026-10-09_06-00.log"
+    (logs / rows[-1]["log"]).write_text(
+        "=== Authentication failure (HTTP 401/403) ===\nOAuth token has expired\n", encoding="utf-8"
+    )
     (logs / "run-outcomes.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     tick = {
         "id": "x",
@@ -151,6 +156,10 @@ def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     assert ids["auth.expired"] == "red"
     assert any(i.startswith("slot.stale:") and s == "yellow" for i, s in ids.items())
     assert ids["update.last"] == "note"
+    auth = next(f for f in rh["findings"] if f["id"] == "auth.expired")
+    assert auth["detail"] == "OAuth token has expired"
+    assert auth["log"] == "/Users/alex/Scout/.scout-logs/scout-2026-10-09_06-00.log"
+    assert all({"detail", "log", "until"} <= set(f) for f in rh["findings"])
     assert sorted(rh["slots"][0]) == ["key", "last_fire", "last_outcome", "type"]
     outcomes = [s["last_outcome"] for s in rh["slots"]]
     assert len(outcomes) == 2 and sum(o is None for o in outcomes) == 1

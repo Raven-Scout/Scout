@@ -46,9 +46,28 @@ struct EngineSettingsSection: View {
             }
             if model.showsRuns {
                 SettingsRow(title: "Runs", help: model.runsHelp) {
-                    Text(model.runsLabel)
-                        .font(DS.sans(12, weight: .medium))
-                        .foregroundStyle(model.runsIsOK ? DS.Status.ok : DS.Status.warn)
+                    HStack(spacing: 10) {
+                        Text(model.runsLabel)
+                            .font(DS.sans(12, weight: .medium))
+                            .foregroundStyle(model.runsIsOK ? DS.Status.ok : model.runsIsPaused ? DS.Ink.p2 : DS.Status.warn)
+                        if let log = model.runsLogURL {
+                            Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+                                .buttonStyle(.plainHit)
+                                .font(DS.sans(12))
+                        }
+                    }
+                }
+                if model.runsDetail != nil || model.runsFix != nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let detail = model.runsDetail {
+                            Text(detail).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
+                        }
+                        if let fix = model.runsFix {
+                            Text(fix).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
                 }
             }
             if model.messages.count > 1 {

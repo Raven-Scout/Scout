@@ -7,12 +7,14 @@ struct KBTreeView: View {
     let nodes: [KBNode]
     @Binding var selectedPath: String?
     @Binding var expanded: Set<String>
+    /// Files whose privacy label is private: they get a lock badge (#453).
+    var privatePaths: Set<String> = []
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
                 ForEach(nodes) { node in
-                    KBTreeRow(node: node, depth: 0,
+                    KBTreeRow(node: node, depth: 0, privatePaths: privatePaths,
                               selectedPath: $selectedPath, expanded: $expanded)
                 }
             }
@@ -26,6 +28,7 @@ struct KBTreeView: View {
 private struct KBTreeRow: View {
     let node: KBNode
     let depth: Int
+    let privatePaths: Set<String>
     @Binding var selectedPath: String?
     @Binding var expanded: Set<String>
 
@@ -37,7 +40,7 @@ private struct KBTreeRow: View {
             Button { toggle() } label: { dirLabel }.buttonStyle(.plainHit)
             if isExpanded {
                 ForEach(node.children) { child in
-                    KBTreeRow(node: child, depth: depth + 1,
+                    KBTreeRow(node: child, depth: depth + 1, privatePaths: privatePaths,
                               selectedPath: $selectedPath, expanded: $expanded)
                 }
             }
@@ -74,6 +77,12 @@ private struct KBTreeRow: View {
                 .foregroundStyle(isSelected ? DS.Ink.p1 : DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            if privatePaths.contains(node.relativePath) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9)).foregroundStyle(DS.Ink.p4)
+                    .help("Private: only you and your own scheduled runs see this note")
+                    .accessibilityLabel("Private")
+            }
         }
         .padding(.leading, CGFloat(depth) * 14 + 20)
         .padding(.vertical, 4).padding(.trailing, 6)

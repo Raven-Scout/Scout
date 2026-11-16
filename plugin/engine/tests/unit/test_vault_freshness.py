@@ -149,6 +149,7 @@ def test_the_budget_tiers_are_the_kb_pre_filter_tiers() -> None:
     [
         ("linear-issues.md", "# issues\n"),
         ("channels.md", "# channels\n"),
+        ("meetings.md", "# meetings\n"),
         ("projects/a.md", "---\npriority: 🟡 medium\n---\n"),
         ("projects/b.md", "**Priority:** 🟢\n"),
         ("projects/c.md", "priority: none\n"),
@@ -205,6 +206,16 @@ def test_archives_and_dated_records_are_not_ranked(vault: Path, rel: str) -> Non
 def test_a_claim_older_than_the_last_commit_is_flagged_as_a_cosmetic_edit(vault: Path) -> None:
     claimed = (NOW - timedelta(days=40)).date().isoformat()
     _commit(vault, "projects/roadmap.md", f"**Last verified:** {claimed}\n", days_ago=2)
+
+    (row,) = _json(vault, "--divergence")["files"]
+
+    assert row["divergence"] == "claim-lags-git"
+    assert row["claimed_date"] == claimed
+
+
+def test_a_frontmatter_last_verified_is_a_claim(vault: Path) -> None:
+    claimed = (NOW - timedelta(days=40)).date().isoformat()
+    _commit(vault, "projects/roadmap.md", f"---\nlast_verified: {claimed}\n---\n# Roadmap\n", days_ago=2)
 
     (row,) = _json(vault, "--divergence")["files"]
 

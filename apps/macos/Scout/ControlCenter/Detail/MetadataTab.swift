@@ -28,7 +28,8 @@ struct MetadataTab: View {
             "logSizeBytes": String(run.logSizeBytes),
             "errorsCount": String(run.errorsDetected.count),
             "commitsCount": String(run.commits.count),
-            "retryOf": run.retryOf ?? "—"
+            "retryOf": run.retryOf ?? "—",
+            "model": run.model ?? "—"
         ]
         let sorted = info.sorted { $0.key < $1.key }
         return sorted.map { "\($0.key): \($0.value)" }.joined(separator: "\n")

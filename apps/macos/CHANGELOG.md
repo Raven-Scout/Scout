@@ -6,6 +6,57 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Control Center's session list reaches past its newest 30 runs** (`Scout/ControlCenter/RunWindow.swift`, `Scout/ControlCenter/SessionsListView.swift`). The list showed the first 30 runs that passed the filters and nothing else, so an older run could not be opened from the app. It now shows the same first 30, then "Show 30 more" and "Showing 30 of N" below them. Changing the search, the type filter or the day goes back to one page.
+
+## [0.18.13] - 2026-11-15
+
+## [0.18.12] - 2026-11-13
+
+## [0.18.11] - 2026-11-09
+
+## [0.18.10] - 2026-11-07
+
+## [0.18.9] - 2026-11-05
+
+## [0.18.8] - 2026-11-05
+
+## [0.18.7] - 2026-11-04
+
+### Added
+- **A planned task shows its `/scout-plan` time on the card** (`Scout/ActionItems/Models/TaskPlan.swift`, `Scout/ActionItems/ActionItemsParser.swift`, `Scout/ActionItems/Models/ActionTask.swift`, `Scout/ActionItems/Views/TaskCardView.swift`, `Scout/Profile/DisplayProfile.swift`, `Scout/Shell/ActionItemsDisplaySection.swift`). The `- estimate:`, `- block:` and `- actual:` lines `/scout-plan` writes under a task are read into the task instead of showing as three comments. An open task gets a clock chip in its header: `10:00-10:45 · 45m`, with the weekday first when the block isn't today, `· took 1h` once the actual time is logged, or just `45m` for an estimate without a block. A done task reads `Done · 1h`. The tooltip spells out the date, estimate, raw estimate, kind and actual. The app reads exactly the lines the engine treats as markers, so a hand-written `- block: waiting on Priya` stays a comment. `scoutctl`'s `--index` still counts the markers, so editing or deleting a comment adds the markers above it back into the index it sends, and the right comment changes with any engine version. Settings → Action Items has a Planned time switch (`actionItems.fields.plan` in `scout-display.json`, on by default) that hides the chip and the actual time on done tasks. A snoozed task never shows the chip, also when Snooze date is off.
+
+## [0.18.6] - 2026-10-31
+
+## [0.18.5] - 2026-10-30
+
+### Added
+- **Text in Action Items cards can be selected and copied with ⌘C** (`Scout/ActionItems/Views/TaskBodyView.swift`, `Scout/ActionItems/Views/TaskDetailsView.swift`, `Scout/ActionItems/Views/CommentListView.swift`, `Scout/ActionItems/Views/TaskCardView.swift`, `Scout/ActionItems/Views/BoardCardView.swift`, `Scout/ActionItems/TopicBoard/StepDetailView.swift`). In an open List card, the body, the sub-bullets, the comments and nested sub-tasks are selectable, like a context note already was. So are a Board card's tag, subject and link labels, and a Topics step's detail. Before, the only way to take text out of a card was the Copy button, which copies the whole task. A card's title and its collapsed summary stay click targets that open and close the card, so they aren't selectable. Links in selectable text open as before.
+- **Action Items display options, kept in `scout-display.json`** (#290, spec #320; `Scout/Profile/DisplayProfile.swift`, `Scout/Profile/DisplayProfileCodec.swift`, `Scout/Profile/DisplayProfileService.swift`, `Scout/Profile/ActionItemsDisplayMenu.swift`, `Scout/ActionItems/ActionItemsArrangement.swift`, `Scout/ActionItems/ActionItemsLayout.swift`, `Scout/Shell/ActionItemsDisplaySection.swift`). Action Items can open in List, Board or Topics, sort tasks A to Z instead of file order, show one list instead of sections, use compact cards, and show references, the snooze date and a comment count on collapsed cards. Change them in Settings ▸ Action Items, or from the View menu next to the view switch, which shows only what applies to the current mode. The options live in `scout-display.json` in the vault root: the app writes only the keys you changed, keeps keys it doesn't know, and never commits the file. Without the file Action Items looks as before. A hand edit applies while the app runs, and a file the app can't read keeps the last good options and isn't overwritten. Settings also has the Topics Done range, saved as `actionItems.topics.doneRange`. The Topics view doesn't read it yet.
+
+### Fixed
+- **A `## 🎯 Today's Focus` section shows as Today's Focus** (`Scout/ActionItems/ActionItemsParser.swift`). The engine's phases gave the heading as both 💡 and 🎯, and about half of daily files used 🎯, which the parser read as an ordinary section. 🎯 now maps to the focus section like 💡; the phases now write 💡 only.
+
+## [0.18.4] - 2026-10-27
+
+### Added
+- **The Knowledge Base tree shows a lock on private notes** (Raven-Scout/Scout#453; `Scout/KnowledgeBase/KBPrivacyLabels.swift`, `Scout/KnowledgeBase/Views/KBTreeView.swift`, `Scout/KnowledgeBase/Views/KnowledgeBaseView.swift`, `Scout/Shell/AppState.swift`). A note labelled `private` (its `visibility:` line, or a path default such as `knowledge-base/personal/`) gets a small lock next to its name. The app doesn't read frontmatter for this: it asks the engine, `scoutctl kb classify --reader owner --json`, for the files in open folders, up to 200 files per call. Each label is cached by the file's modification date, size and inode, so after a reparse only changed files are asked about again. A changed `scout-config.yaml` (its `privacy:` overlay can relabel any file) drops the cache. When `scoutctl` fails, the tree shows no locks and the exit code is logged (stderr only as private log data). An engine without `kb classify` (exit 2 or "No such command") isn't asked again until the `scoutctl` executable changes.
+
+## [0.18.3] - 2026-10-21
+
+## [0.18.2] - 2026-10-20
+
+### Added
+- **Choose the Claude model each scheduled slot runs on** (`Scout/Schedules/SlotEditForm.swift`, `Scout/Models/ModelChoice.swift`, `Scout/Services/ModelSettingsService.swift`, `Scout/Shell/ModelSettingsSection.swift`, `Scout/Schedules/SlotModelTag.swift`, `Scout/Services/SessionLogService.swift`). The slot editor in Schedules has a Model row: Default (the model named), Opus, Sonnet or Haiku. A full model ID set by hand in `schedule.yaml` shows as its own option and is kept on save. Settings has a Model section that sets the default for every slot without its own, written through `scoutctl model set-default` (the app never edits `scout-config.yaml`). Slots with their own model show a small tag in the table and cards; the rest look as before. A run's detail Metadata tab lists the model it ran on, read from the run log. Both pickers hide on an engine without `scoutctl model`, which would ignore the setting. Nothing changes until you pick a model: every run stays on Opus.
+
+### Changed
+- **CI also runs ScoutTests on Xcode 27, without blocking merges** (#337; `.github/workflows/app-ci.yml`). A new `xcode-27` job uses GitHub's free `xcode-27` preview image. It isn't part of the required `app-ci` check, and releases still build on Xcode 26.x. Grape 1.1.0 doesn't compile against the macOS 27 SDK yet; the fix is upstream in li3zhen1/Grape#78. Until Grape tags a release with that fix, the job patches its own throwaway copy of Grape so it can still test Scout's code. Shipped builds don't include that patch.
+
+### Fixed
+- **An archived group under an Action Items section opens from its whole header row** (#463; `Scout/ActionItems/Views/SectionView.swift`). Only the small arrow opened it before: on macOS a `DisclosureGroup` label doesn't take clicks, so the summary text did nothing. The group now keeps its open state in the section view, the way Recently Completed has since Raven-Scout/scout-app-legacy#122, and the state survives the reparse after a write. A link inside an archived group's summary now opens the group instead of following the link. Thanks to @ottomansky.
+- **Saving a slot in Schedules keeps every slot's `model:`** (`Scout/Models/Slot.swift`, `Scout/Schedules/SlotDraft.swift`, `Scout/Services/ScheduleEditService.swift`). The app rewrites the whole `schedule.yaml` on save from the fields it knows. Now that the engine reads a per-slot `model:`, the app decodes it from `scoutctl schedule list --json` and writes it back, so a model set by hand isn't dropped the next time any slot is saved.
+- **Scout builds on Xcode 27 except for Grape** (#337; `Scout/Services/GitService.swift`, `Scout/Services/Updates/UpdateService.swift`). The first Xcode 27 run found two more protocols that test actors couldn't conform to, `GitServiceProtocol` and `PluginUpdateChecking`. Both are now `nonisolated`, the same fix #353 made for `ProcessRunner`. `GitService.commitPaths` is pinned to `@MainActor` so it keeps the isolation it had. `KBTagTests` now imports SwiftUI for the chip text attributes, because the member-import-visibility check rejects them without that import on the macOS 27 SDK.
+
 ## [0.18.1] - 2026-10-13
 
 ### Security

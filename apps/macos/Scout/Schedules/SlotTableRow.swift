@@ -50,6 +50,9 @@ struct SlotTableRow: View {
             Image(systemName: "lock.fill")
                 .font(.system(size: 10))
                 .foregroundStyle(DS.Ink.p4)
+            if let model = slot.model {
+                SlotModelTag(model: model)
+            }
         }
     }
 

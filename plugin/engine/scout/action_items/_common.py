@@ -36,6 +36,13 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
     machine metadata, not user-authored comments.
 
     Stops at the first non-indented line, empty line, or a new task line.
+
+    The /scout-plan markers (`  - estimate: 45m`, see plan_marks.py) stay in
+    this list on purpose. `--index` is what every Scout.app version sends: an
+    app from before the plan chip shows the markers as comments, and a newer
+    one hides them and adds the markers above a comment back into the index it
+    sends (`TaskPlan.engineCommentIndex`). Skipping them here would make one
+    of the two edit the wrong line.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     idx = task_line_number - 1

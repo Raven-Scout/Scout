@@ -12,6 +12,8 @@ struct SlotEditForm: View {
     let onDelete: () async -> Void
     let onFireNow: (String) async -> Void
     let onRevertNewDraft: (() -> Void)?
+    /// nil hides the model picker: the engine can't run per-slot models.
+    let defaultModel: String?
 
     @State private var draft: SlotDraft
     @State private var isConfirmingTypeChange = false
@@ -24,7 +26,8 @@ struct SlotEditForm: View {
         onSave: @escaping (Slot) async -> Void,
         onDelete: @escaping () async -> Void,
         onFireNow: @escaping (String) async -> Void,
-        onRevertNewDraft: (() -> Void)? = nil
+        onRevertNewDraft: (() -> Void)? = nil,
+        defaultModel: String? = nil
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -32,6 +35,7 @@ struct SlotEditForm: View {
         self.onDelete = onDelete
         self.onFireNow = onFireNow
         self.onRevertNewDraft = onRevertNewDraft
+        self.defaultModel = defaultModel
         _draft = State(initialValue: SlotDraft(from: liveSlot))
     }
 
@@ -49,6 +53,9 @@ struct SlotEditForm: View {
             timeAndWeekdaysSection
             onMissSection
             cooldownSection
+            if let defaultModel {
+                modelSection(defaultModel: defaultModel)
+            }
             DisclosureGroup("Advanced") { advancedSection }.padding(.top, 8)
             actionBar
         }
@@ -174,6 +181,25 @@ struct SlotEditForm: View {
                 Text("\(draft.cooldownMinutes)")
             }
             .frame(width: 200)
+        }
+    }
+
+    private func modelSection(defaultModel: String) -> some View {
+        let current = ModelChoice(model: draft.model)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Model")
+                .font(DS.sans(11, weight: .medium))
+                .tracking(1)
+                .textCase(.uppercase)
+                .foregroundStyle(DS.Ink.p3)
+            EditorialSegmentedControl(
+                selection: Binding(get: { current }, set: { draft.model = $0.model }),
+                options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
+                minSegmentWidth: 64
+            )
+            Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

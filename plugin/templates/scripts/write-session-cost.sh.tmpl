@@ -54,4 +54,12 @@ if ! is_numeric "$EXIT_CODE"; then
     EXIT_CODE=0
 fi
 
-echo "{\"ts\":\"$TIMESTAMP\",\"ts_local\":\"$TIMESTAMP_LOCAL\",\"type\":\"$TYPE\",\"budget_cap\":$BUDGET_CAP,\"budget_spent\":$BUDGET_SPENT,\"exit_code\":$EXIT_CODE,\"source\":\"$SOURCE\"}" >> "$TRACKER_FILE"
+# The model the runner chose (it exports SCOUT_MODEL into the session too), so
+# cost can be attributed per model. Only a plain model name is written; anything
+# else would break the JSON line, so it is left out.
+MODEL_FIELD=""
+if [[ "${SCOUT_MODEL:-}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    MODEL_FIELD=",\"model\":\"$SCOUT_MODEL\""
+fi
+
+echo "{\"ts\":\"$TIMESTAMP\",\"ts_local\":\"$TIMESTAMP_LOCAL\",\"type\":\"$TYPE\",\"budget_cap\":$BUDGET_CAP,\"budget_spent\":$BUDGET_SPENT,\"exit_code\":$EXIT_CODE,\"source\":\"$SOURCE\"$MODEL_FIELD}" >> "$TRACKER_FILE"

@@ -18,11 +18,13 @@ struct ScheduleYAMLEmissionTests {
         weekdays: [String] = ["Mon", "Tue"],
         budgetUsd: Double? = nil,
         tz: String? = nil,
-        runtime: SlotRuntime = .local
+        runtime: SlotRuntime = .local,
+        model: String? = nil
     ) -> Slot {
         Slot(key: key, type: type, runner: runner, firesAtLocal: firesAtLocal,
              weekdays: weekdays, missedWindowHours: 4, onMiss: .fire,
-             cooldownMinutes: 60, budgetUsd: budgetUsd, tz: tz, runtime: runtime)
+             cooldownMinutes: 60, budgetUsd: budgetUsd, tz: tz, runtime: runtime,
+             model: model)
     }
 
     /// Save `slots` and hand back the canonical file's new contents.
@@ -103,6 +105,33 @@ struct ScheduleYAMLEmissionTests {
         let yaml = try await emit([slot(budgetUsd: 0.75, tz: "UTC")])
         #expect(yaml.contains("budget_usd: 0.75"))
         #expect(yaml.contains("tz: \"UTC\""))
+    }
+
+    // MARK: - model (per-slot model selection)
+
+    @Test("model is omitted when the slot inherits the default")
+    func emits_omitsNilModel() async throws {
+        let yaml = try await emit([slot(model: nil)])
+        #expect(!yaml.contains("model:"))
+    }
+
+    @Test("a slot's model survives a save of any slot")
+    func emits_keepsModel() async throws {
+        // The app rewrites every slot block on save; before `model` was in the
+        // emitter, saving one slot silently dropped every other slot's model.
+        let yaml = try await emit([
+            slot(key: "midday-consolidation", type: .consolidation, model: "sonnet"),
+            slot(key: "morning-briefing"),
+        ])
+        #expect(yaml.contains("  midday-consolidation:\n"))
+        #expect(yaml.contains("    model: sonnet\n"))
+        #expect(yaml.components(separatedBy: "model:").count == 2)
+    }
+
+    @Test("a full model ID is emitted unquoted")
+    func emits_fullModelID() async throws {
+        let yaml = try await emit([slot(model: "claude-sonnet-5-5")])
+        #expect(yaml.contains("    model: claude-sonnet-5-5\n"))
     }
 
     // MARK: - scalar quoting

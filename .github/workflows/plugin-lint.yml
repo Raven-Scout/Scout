@@ -106,6 +106,16 @@ jobs:
           if plugins[0]["source"] != pinned:
               sys.exit(f"marketplace.json source must be {pinned!r}, got {plugins[0]['source']!r}")
 
+          # plugin/.claude-plugin/marketplace.json makes the plugin subtree its own
+          # marketplace root (plugin/README.md: Agnes serves it from a vX.Y.Z tag;
+          # Scout.app bundles it). It must be the root manifest with only the scout
+          # entry, sourced "./". Its version is guarded by `versioning check`.
+          own = json.load(open("plugin/.claude-plugin/marketplace.json"))
+          scout = [dict(p, source="./") for p in plugins if p.get("name") == "scout"]
+          if own != {k: (scout if k == "plugins" else v) for k, v in market.items()}:
+              sys.exit("plugin/.claude-plugin/marketplace.json must be the root marketplace.json with only "
+                       "its scout entry, sourced \"./\"; copy it from the root and set the source")
+
           print("plugin manifests valid")
           PY
 

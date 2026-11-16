@@ -37,7 +37,7 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     for placeholder, value in {
         "{{SCOUT_DIR}}": str(scout_dir),
         "{{CLAUDE_BIN}}": "/usr/bin/true",  # never reached — the retry wrapper is stubbed
-        "{{SCOUTCTL_BIN}}": "/nonexistent/scoutctl",  # the connector-health roll-up is skipped
+        "{{SCOUTCTL_BIN}}": "/usr/bin/true",  # a no-op engine: the gate probe passes, every other step does nothing
         "{{INSTANCE_NAME_LOWER}}": "scout",
         "{{INSTANCE_NAME}}": "Scout",
         "{{MAX_BUDGET}}": "25",
@@ -256,14 +256,21 @@ def test_abandoned_guard_is_cleared_and_stale_lock_recovered(tmp_path: Path) -> 
 
 
 def test_wedged_holder_is_not_reaped_while_another_process_holds_the_guard(tmp_path: Path) -> None:
-    """The age-bounded reap runs under the same guard as stale recovery."""
+    """The wedged-holder reap runs under the same guard as stale recovery."""
     script, log_dir, lock = _vault(tmp_path)
     ran, _ = _stub_overlap_session(script.parent)
     holder = subprocess.Popen(["sleep", "300"])
     try:
         lock.write_text(str(holder.pid), encoding="utf-8")
-        old = time.time() - 120
+        old = int(time.time()) - 120
         os.utime(lock, (old, old))
+        # An earlier sample saw it stalled for 999 s of awake time (#466), so
+        # only the guard stands between it and the reap.
+        clock = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC)
+        awake = int(time.clock_gettime(clock))
+        lock.with_name(lock.name + ".progress").write_text(
+            f"{holder.pid} {old} 0 0 {holder.pid} awake {awake} 999\n", encoding="utf-8"
+        )
         lock.with_name(lock.name + ".takeover").touch()
 
         proc = subprocess.run(

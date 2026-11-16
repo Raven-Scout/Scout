@@ -15,7 +15,9 @@ from . import FOCUS, CheckResult, by_tag, section_emoji
 
 
 def _find_by_ref(items: Sequence[ActionItem], ref: str) -> ActionItem | None:
-    hits = [i for i in items if section_emoji(i) != FOCUS and (ref in i.raw_line or any(ref in d for d in i.details))]
+    hits = [
+        i for i in items if section_emoji(i) not in FOCUS and (ref in i.raw_line or any(ref in d for d in i.details))
+    ]
     return hits[0] if hits else None
 
 

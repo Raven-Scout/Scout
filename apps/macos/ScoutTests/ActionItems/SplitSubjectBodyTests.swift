@@ -229,15 +229,26 @@ struct SplitSubjectBodyScalingTests {
         return String(String(repeating: unit, count: repeats).prefix(chars))
     }
 
-    static func medianMS(of block: () -> Void, runs: Int = 5) -> Double {
-        var samples: [Double] = []
+    static func elapsedMS(_ block: () -> Void) -> Double {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        block()
+        let t1 = DispatchTime.now().uptimeNanoseconds
+        return Double(t1 - t0) / 1_000_000
+    }
+
+    /// Best-of-`runs` time for each block, sampled alternately (a, b, a, b, …).
+    ///
+    /// Contention only ever adds time, so each block's minimum is the sample
+    /// closest to its real cost. Alternating means a burst of load lands on
+    /// both sizes rather than skewing whichever was measured second (#431).
+    static func bestOfMS(_ a: () -> Void, _ b: () -> Void, runs: Int = 11) -> (Double, Double) {
+        var bestA = Double.infinity
+        var bestB = Double.infinity
         for _ in 0..<runs {
-            let t0 = DispatchTime.now().uptimeNanoseconds
-            block()
-            let t1 = DispatchTime.now().uptimeNanoseconds
-            samples.append(Double(t1 - t0) / 1_000_000)
+            bestA = min(bestA, elapsedMS(a))
+            bestB = min(bestB, elapsedMS(b))
         }
-        return samples.sorted()[samples.count / 2]
+        return (bestA, bestB)
     }
 
     @Test("Doubling the line length does not quadruple the time")
@@ -251,8 +262,10 @@ struct SplitSubjectBodyScalingTests {
         // Warm up, so first-call overhead doesn't land in either sample.
         _ = ActionItemsParser.splitSubjectBody(short)
 
-        let tShort = Self.medianMS(of: { _ = ActionItemsParser.splitSubjectBody(short) })
-        let tLong = Self.medianMS(of: { _ = ActionItemsParser.splitSubjectBody(long) })
+        let (tShort, tLong) = Self.bestOfMS(
+            { _ = ActionItemsParser.splitSubjectBody(short) },
+            { _ = ActionItemsParser.splitSubjectBody(long) }
+        )
 
         // Linear ⇒ ratio ≈ 2. Quadratic ⇒ ratio ≈ 4. Allow generous slack for a
         // noisy machine while still failing the quadratic implementation, which

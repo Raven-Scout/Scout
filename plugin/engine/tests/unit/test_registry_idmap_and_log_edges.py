@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import connector_calls
 from scout import connectors as conn
 from scout import id_map as idm
 from scout.connectors import Capability, Connector, ConnectorRegistry, Remediation, Tier, load_registry
@@ -453,7 +454,7 @@ def test_a_non_dict_tool_response_is_treated_as_no_error(log_vault: Path) -> Non
 def test_locking_is_skipped_where_fcntl_is_unavailable(log_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The import guard exists for non-POSIX hosts; the append must still
     happen there, just unserialized."""
-    monkeypatch.setattr(connector_log, "fcntl", None)
+    monkeypatch.setattr(connector_calls, "fcntl", None)
     connector_log.run(stdin=io.StringIO(json.dumps({"tool_name": "Read", "session_id": "s1"})))
     assert _rows(log_vault)[0]["tool"] == "Read"
 
@@ -468,7 +469,7 @@ def test_locking_uses_flock_when_available(log_vault: Path, monkeypatch: pytest.
         def flock(fd: int, op: int) -> None:
             calls.append(op)
 
-    monkeypatch.setattr(connector_log, "fcntl", FakeFcntl)
+    monkeypatch.setattr(connector_calls, "fcntl", FakeFcntl)
     connector_log.run(stdin=io.StringIO(json.dumps({"tool_name": "Read", "session_id": "s1"})))
     assert calls == [FakeFcntl.LOCK_EX]
 

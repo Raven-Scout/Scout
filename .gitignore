@@ -45,5 +45,9 @@ __pycache__/
 # ruling R24) — a per-checkout local artifact, not part of the plugin.
 docs/plans/archive/PLAN-8-RESUME.md
 
+# The scoutctl launcher's interpreter cache. plugin/.gitignore covers today's copy; engines from
+# before the monorepo wrote it at the repo root, and run health's engine.dirty must not count it.
+/.scoutctl-py-cache
+
 # Eval harness results (plugin/scripts/eval.sh run): local only, never committed
 .eval-results/

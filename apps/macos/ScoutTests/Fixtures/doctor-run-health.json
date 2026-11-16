@@ -5,36 +5,48 @@
     "evaluated_at": "2026-10-11T12:00:00Z",
     "findings": [
       {
+        "detail": "OAuth token has expired",
         "fix": "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)",
         "id": "auth.expired",
+        "log": "/Users/alex/Scout/.scout-logs/scout-2026-10-09_06-00.log",
         "severity": "red",
         "since": "2026-10-07T08:01:00Z",
         "source": "ledger",
-        "summary": "Scout can't run: your Claude login expired. 2 failed run(s) since the last success (2026-10-07T08:01:00Z)."
+        "summary": "Scout can't run: your Claude login expired. 2 failed run(s) since the last success (2026-10-07T08:01:00Z).",
+        "until": null
       },
       {
+        "detail": null,
         "fix": "The run was killed or ended before recording an outcome; see .scout-logs/failures.log. If this vault's runners predate skip recording, run /scout-update",
         "id": "slot.fired_silent:weekly-research",
+        "log": null,
         "severity": "yellow",
         "since": "2026-10-07T14:00:00Z",
         "source": "ledger",
-        "summary": "weekly-research fired at 2026-10-07T14:00:00Z but no run outcome was recorded."
+        "summary": "weekly-research fired at 2026-10-07T14:00:00Z but no run outcome was recorded.",
+        "until": null
       },
       {
+        "detail": null,
         "fix": "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor",
         "id": "slot.stale:morning-briefing",
+        "log": null,
         "severity": "yellow",
         "since": "2026-10-09T06:00:58Z",
         "source": "schedule",
-        "summary": "morning-briefing last fired 53 h ago."
+        "summary": "morning-briefing last fired 53 h ago.",
+        "until": null
       },
       {
+        "detail": null,
         "fix": "Run: scoutctl self-update run --dry-run",
         "id": "update.last",
+        "log": null,
         "severity": "note",
         "since": "2026-10-11T06:00:00Z",
         "source": "update ledger",
-        "summary": "Updates automatically. Last checked 6 h ago: updated to 0.17.0."
+        "summary": "Updates automatically. Last checked 6 h ago: updated to 0.17.0.",
+        "until": null
       }
     ],
     "last_ok_at": "2026-10-07T08:01:00Z",

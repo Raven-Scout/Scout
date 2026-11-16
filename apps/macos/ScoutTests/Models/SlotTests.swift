@@ -51,6 +51,31 @@ final class SlotTests: XCTestCase {
         """.data(using: .utf8)!
         let slot = try JSONDecoder().decode(Slot.self, from: json)
         XCTAssertEqual(slot.runtime, .local)
+        XCTAssertNil(slot.model, "engines before per-slot models send no model")
+    }
+
+    func test_decode_reads_model_and_null_model() throws {
+        func decode(_ modelJSON: String) throws -> Slot {
+            let json = """
+            {"key": "s", "type": "consolidation", "runner": "run-scout.sh",
+             "fires_at_local": "13:00", "weekdays": ["Mon"], "missed_window_hours": 2,
+             "on_miss": "collapse", "cooldown_minutes": 90, "budget_usd": null, "tz": null,
+             "runtime": "local"\(modelJSON)}
+            """.data(using: .utf8)!
+            return try JSONDecoder().decode(Slot.self, from: json)
+        }
+        XCTAssertEqual(try decode(#", "model": "sonnet""#).model, "sonnet")
+        XCTAssertNil(try decode(#", "model": null"#).model)
+    }
+
+    func test_draft_round_trip_keeps_model() {
+        let slot = Slot(key: "midday-consolidation", type: .consolidation, runner: "run-scout.sh",
+                        firesAtLocal: "13:00", weekdays: ["Mon"], missedWindowHours: 2,
+                        onMiss: .collapse, cooldownMinutes: 90, model: "sonnet")
+        let draft = SlotDraft(from: slot)
+        XCTAssertEqual(draft.model, "sonnet")
+        XCTAssertEqual(draft.toSlot(), slot)
+        XCTAssertFalse(draft.isDirty(against: slot))
     }
 
     func test_round_trip_encode_decode() throws {
@@ -65,7 +90,8 @@ final class SlotTests: XCTestCase {
             cooldownMinutes: 240,
             budgetUsd: 5.0,
             tz: "America/New_York",
-            runtime: .local
+            runtime: .local,
+            model: "claude-sonnet-5-5"
         )
         let encoded = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Slot.self, from: encoded)

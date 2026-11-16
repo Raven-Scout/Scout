@@ -1,5 +1,6 @@
 // ScoutTests/KnowledgeBase/KBTagTests.swift
 import Foundation
+import SwiftUI
 import Testing
 @testable import Scout
 

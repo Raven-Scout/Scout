@@ -17,6 +17,7 @@ struct TaskDetailsView: View {
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
                 .padding(.leading, CGFloat(detail.depth) * 14)
             }

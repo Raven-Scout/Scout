@@ -42,6 +42,9 @@ final class AppState: ObservableObject {
     let powerStateService: PowerStateService
     let scheduleEditService: ScheduleEditService
     let budgetSettingsService: BudgetSettingsService
+    let modelSettingsService: ModelSettingsService
+    /// Action Items display options from `scout-display.json` in the vault root (#52).
+    let displayProfileService: DisplayProfileService
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
@@ -120,6 +123,8 @@ final class AppState: ObservableObject {
     // Knowledge Base (browse + edit ~/Scout/knowledge-base/)
     let knowledgeBaseService: KnowledgeBaseService
     let knowledgeBaseWriterBox: KnowledgeBaseWriterBox
+    /// Privacy labels for the KB tree's lock badge, via `scoutctl kb classify`.
+    let knowledgeBasePrivacy: KBPrivacyLabelService
 
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
@@ -207,6 +212,13 @@ final class AppState: ObservableObject {
             runner: runner,
             argumentsPrefix: scoutctlArgsPrefix
         )
+        // Model defaults go through `scoutctl model show/set-default` for the
+        // same reason; a slot's own model is saved with the slot.
+        let modelSettings = ModelSettingsService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: configuration.claudeSessionsDirectory
@@ -223,6 +235,7 @@ final class AppState: ObservableObject {
         let docService = ActionItemsDocumentService(
             directory: actionItemsDir, fileEvents: events, defaults: defaults
         )
+        let displayProfile = DisplayProfileService(scoutDirectory: scoutDir, fileEvents: events)
         let writerActor = ActionItemsWriter(
             scoutctl: scoutctlExe,
             argumentsPrefix: scoutctlArgsPrefix,
@@ -281,6 +294,12 @@ final class AppState: ObservableObject {
         let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: events)
         let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
         let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
+        let kbPrivacy = KBPrivacyLabelService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix,
+            vault: kbService.scoutDirectory
+        )
 
         self.fileEvents = events
         self.gitService = git
@@ -292,6 +311,8 @@ final class AppState: ObservableObject {
         self.powerStateService = power
         self.scheduleEditService = scheduleEditService
         self.budgetSettingsService = budgetSettings
+        self.modelSettingsService = modelSettings
+        self.displayProfileService = displayProfile
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.sessionIndexService = sessionIndex
@@ -305,6 +326,7 @@ final class AppState: ObservableObject {
         self.perFileWriterBox = perFileWriterBox
         self.knowledgeBaseService = kbService
         self.knowledgeBaseWriterBox = kbWriterBox
+        self.knowledgeBasePrivacy = kbPrivacy
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
         self.defaults = defaults
@@ -381,6 +403,7 @@ final class AppState: ObservableObject {
         // Loads the last index from disk, then keeps it current: the sidebar
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
+        displayProfile.startWatching()
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()

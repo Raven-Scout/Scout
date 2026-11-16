@@ -30,6 +30,7 @@ Usage:
   session-lane-liveness.py --notify   # desktop notification (macOS) when a lane is dark
 
 Exit codes: 0 = no lane dark · 2 = at least one lane DARK · 3 = a lane FIRING-BUT-SILENT
+            4 = the commit scan itself failed, so no lane is judgeable
 
 The vault is $SCOUT_DATA_DIR, or else the directory this script is installed in
 (<vault>/scripts/). Read-only. Standard library only, so it runs under any
@@ -61,6 +62,10 @@ NOT_LANES = {"manual"}
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 RECENT_FIRE_DAYS = 1.5  # fired this recently but nothing committed: firing but silent
 COMMIT_SCAN = 4000
+# `git log -n 4000` measured 18–45 s on this vault (Oct 2026) and grows with
+# history, so 60 s was close enough to trip. Exceeding even this means
+# something is wrong, which is why it now raises instead of returning [].
+COMMIT_SCAN_TIMEOUT = 300
 
 AUTH_RE = re.compile(
     r"OAuth session expired|OAuth token (has )?expired|Failed to authenticate"
@@ -180,17 +185,42 @@ def run_windows(vault: Path) -> list[tuple[str, datetime, datetime, str | None]]
     return out
 
 
+class CommitScanError(RuntimeError):
+    """The commit scan could not run, so no lane's output is knowable.
+
+    Never degrade this to an empty list. An empty scan is read downstream as
+    "this lane has never committed", which turns one slow `git log` into
+    🔴 FIRING-BUT-SILENT on *every* lane at once — the shape of a total outage.
+    A watchdog that cries wolf on all four lanes is one nobody reads again.
+    """
+
+
+def _has_no_commits_yet(vault: Path) -> bool:
+    """A repo whose HEAD resolves to nothing (exit 1), as opposed to no repo (128)."""
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--verify", "--quiet", "HEAD"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 1
+
+
 def recent_commits(vault: Path) -> list[tuple[datetime, str]]:
+    if _has_no_commits_yet(vault):
+        return []  # a new vault: genuinely nothing committed, not a failed scan
     try:
         raw = subprocess.run(
             ["git", "-C", str(vault), "log", "-n", str(COMMIT_SCAN), "--format=%ct%x1f%s"],
             capture_output=True,
             text=True,
             check=True,
-            timeout=60,
+            timeout=COMMIT_SCAN_TIMEOUT,
         ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CommitScanError(f"git log over {COMMIT_SCAN} commits failed: {exc}") from exc
     out: list[tuple[datetime, str]] = []
     for line in raw.splitlines():
         epoch, sep, subject = line.partition("\x1f")
@@ -279,7 +309,7 @@ def assess(vault: Path, now: datetime | None = None) -> tuple[list[dict], int]:
                 ledger_logs[lane].append(log)
 
     output: dict[str, tuple[datetime, str]] = {}
-    for when, subject in recent_commits(vault):
+    for when, subject in recent_commits(vault) if lanes else ():
         words = subject.split()
         named = words[0].rstrip(":").lower() if words else ""
         # A subject that names a lane is authoritative; only an unnamed commit is
@@ -402,7 +432,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     now = datetime.now(timezone.utc)
-    report, worst = assess(vault_dir(), now)
+    try:
+        report, worst = assess(vault_dir(), now)
+    except CommitScanError as exc:
+        # "I can't tell" is its own answer. Exit 4 (soft-skip), never 3, so a
+        # broken scan is never read as four dead lanes.
+        print(f"⚪ lane liveness unknown — {exc}", file=sys.stderr)
+        return 4
     if args.json:
         print(json.dumps({"generated_at": now.isoformat(), "lanes": report}, indent=2, ensure_ascii=False))
     elif worst or not args.quiet:

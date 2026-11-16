@@ -76,6 +76,11 @@ struct SettingsView: View {
                         })
                 }
 
+                section(label: "Action Items") {
+                    ActionItemsDisplaySection()
+                        .environmentObject(appState.displayProfileService)
+                }
+
                 section(label: "Claude Code") {
                     SettingsCard {
                         SettingsField(
@@ -121,6 +126,11 @@ struct SettingsView: View {
                 section(label: "Budget") {
                     BudgetSettingsSection()
                         .environmentObject(appState.budgetSettingsService)
+                }
+
+                section(label: "Model") {
+                    ModelSettingsSection()
+                        .environmentObject(appState.modelSettingsService)
                 }
 
                 section(label: "Proposals") {

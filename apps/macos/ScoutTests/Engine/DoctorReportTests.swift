@@ -54,6 +54,22 @@ struct DoctorReportTests {
         #expect(r?.runHealth?.lastOkAt == "2026-10-07T08:01:00Z")
         #expect(r?.runHealth?.evaluatedAt == "2026-10-11T12:00:00Z")
         #expect(r?.runHealth?.firstActionable?.id == "auth.expired")
+        // The failing run's own error line and its log (#445).
+        #expect(r?.runHealth?.firstActionable?.detail == "OAuth token has expired")
+        #expect(r?.runHealth?.firstActionable?.log == "/Users/alex/Scout/.scout-logs/scout-2026-10-09_06-00.log")
+        #expect(r?.runHealth?.firstActionable?.until == nil)
+        #expect(r?.runHealth?.findings.last?.detail == nil)
+    }
+
+    @Test func decodesAFindingFromAnEngineOlderThanItsErrorLine() {
+        let json = #"""
+        {"severity": "green", "errors": [], "warnings": [], "run_health": {"severity": "yellow",
+         "evaluated_at": "2026-10-11T12:00:00Z", "last_ok_at": null, "slots": [],
+         "findings": [{"id": "runs.failing", "severity": "yellow", "since": null, "summary": "s", "fix": "f", "source": "ledger"}]}}
+        """#
+        let f = DoctorReport.parse(stdout: Data(json.utf8), stderr: Data())?.runHealth?.firstActionable
+        #expect(f?.id == "runs.failing")
+        #expect(f?.detail == nil && f?.log == nil && f?.until == nil)
     }
 
     @Test func decodesWithoutRunHealth() {

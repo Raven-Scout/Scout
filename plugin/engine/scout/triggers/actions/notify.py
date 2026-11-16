@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from scout.redact import redact_secrets
 from scout.triggers.actions._summary import summarize
 from scout.triggers.config import Trigger
 from scout.triggers.sources.base import ConnectorEvent
@@ -43,7 +44,8 @@ def run(
             try:
                 send_telegram(tier="info", body=body)
             except Exception as e:  # noqa: BLE001 — per-surface isolation
-                results[surface] = f"error: {type(e).__name__}: {e}"
+                # Redacted: a requests error's str() can embed the bot token.
+                results[surface] = f"error: {type(e).__name__}: {redact_secrets(str(e))}"
             else:
                 results[surface] = "sent"
                 delivered += 1

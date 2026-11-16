@@ -296,6 +296,64 @@ def test_user_scope_server_gets_only_its_entry_in_a_private_temp_file(home, tmp_
         assert not path.exists() and not path.parent.exists()
 
 
+LOCAL_ENTRY = {"type": "http", "url": "https://example.test/mcp", "headers": {"Authorization": f"Bearer {SECRET}"}}
+
+
+def _add_local_scope(home: Path, project: Path, servers: dict) -> None:
+    data = json.loads((home / ".claude.json").read_text())
+    data["projects"][str(project)] = {"mcpServers": servers}
+    (home / ".claude.json").write_text(json.dumps(data))
+
+
+def test_vault_local_scope_server_is_found_for_that_vault_only(home, tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    _add_local_scope(home, vault, {"knowledge": LOCAL_ENTRY})
+    assert cd.user_mcp_server("knowledge", vault) == LOCAL_ENTRY
+    assert cd.user_mcp_server("knowledge") is None
+    assert cd.user_mcp_server("knowledge", tmp_path / "elsewhere") is None
+
+
+def test_vault_local_scope_is_matched_by_resolved_path(home, tmp_path):
+    real = tmp_path / "real-vault"
+    real.mkdir()
+    link = tmp_path / "Scout"
+    link.symlink_to(real)
+    _add_local_scope(home, real.resolve(), {"knowledge": LOCAL_ENTRY})
+    assert cd.user_mcp_server("knowledge", link) == LOCAL_ENTRY
+
+
+def test_user_scope_wins_over_vault_local_scope(home, tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    _add_local_scope(home, vault, {"example-db": LOCAL_ENTRY})
+    assert cd.user_mcp_server("example-db", vault) == DB_ENTRY
+
+
+def test_draft_passes_a_vault_local_server_in_its_private_temp_file(home, tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    _add_local_scope(home, vault, {"knowledge": LOCAL_ENTRY})
+    rec = Recorder("knowledge")
+    out = _draft("knowledge", rec, tmp_path)
+    assert out["status"] == "drafted", out
+    assert len(rec.mcp_files) == 2
+    for argv in rec.calls:
+        assert not any(SECRET in a for a in argv)
+    for _path, content, file_mode, _dir_mode in rec.mcp_files:
+        assert content == {"mcpServers": {"knowledge": LOCAL_ENTRY}}
+        assert file_mode == 0o600
+
+
+@pytest.mark.parametrize("project", ["not a mapping", {"mcpServers": ["knowledge"]}, {"mcpServers": {"knowledge": 1}}])
+def test_odd_vault_local_entries_resolve_to_nothing(home, tmp_path, project):
+    vault = tmp_path / "Scout"
+    data = json.loads((home / ".claude.json").read_text())
+    data["projects"][str(vault)] = project
+    (home / ".claude.json").write_text(json.dumps(data))
+    assert cd.user_mcp_server("knowledge", vault) is None
+
+
 def test_claude_config_dir_overrides_home(home, tmp_path, monkeypatch):
     cfg = tmp_path / "cfg"
     cfg.mkdir()

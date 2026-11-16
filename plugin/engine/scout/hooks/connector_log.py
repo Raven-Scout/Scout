@@ -2,7 +2,8 @@
 
 Direct port of ~/Scout/hooks/connector-log.sh. Behavior identical:
   - Short-circuits when SCOUT_MODE is unset (interactive sessions).
-  - Emits one row to .scout-logs/connector-calls-YYYY-MM-DD.jsonl per call.
+  - Emits one row to .scout-logs/connector-calls-YYYY-MM-DD.jsonl per call
+    (locked, capped and pruned by scout.connector_calls, #66).
   - Tag-classifies tool_name → connector key (preserves bash classify() exactly).
   - Date-stamps the JSONL filename in the configured timezone (#207).
   - Truncates error snippets at 160 chars (matches bash original).
@@ -20,26 +21,11 @@ import sys
 from datetime import UTC, datetime
 from typing import IO, Any
 
-from scout import paths
+from scout import connector_calls, paths
 from scout.config import today as config_today
 from scout.custom_connectors import first_binary
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
-
-try:
-    import fcntl
-except ImportError:  # non-POSIX (Windows) — advisory locks unavailable.
-    fcntl = None  # type: ignore[assignment]
-
-
-def _lock_exclusive(f: IO[str]) -> None:
-    """Take an exclusive advisory lock; no-op where fcntl is unavailable.
-
-    Released implicitly when the file is closed.
-    """
-    if fcntl is not None:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-
 
 # Bash-invoked binaries that ARE connectors, mapped to their canonical key.
 # Matched anywhere in the command, not just at position 0 — see _bash_key().
@@ -192,16 +178,10 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     et_date = _local_date()
     log_dir = paths.data_dir() / ".scout-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    out_path = log_dir / f"connector-calls-{et_date}.jsonl"
-    line = json.dumps(record) + "\n"
+    out_path = connector_calls.day_path(log_dir, et_date)
     try:
-        with out_path.open("a", encoding="utf-8") as f:
-            # Hooks fire concurrently for parallel tool calls. O_APPEND only
-            # guarantees atomicity up to PIPE_BUF (~512B on some macOS FS), so
-            # large tool-response rows can interleave. An exclusive advisory
-            # lock serializes the append; the lock releases on close. (#38)
-            _lock_exclusive(f)
-            f.write(line)
+        # Locked, capped append; prunes old days on a day's first row (#38, #66).
+        connector_calls.append_rows(out_path, [json.dumps(record) + "\n"])
     except Exception as exc:
         # Never break the session on a log-write failure — but don't swallow
         # it silently either; a dropped row is an unsignalled gap in the

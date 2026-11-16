@@ -11,6 +11,9 @@ struct SchedulesDetailPane: View {
     let onDelete: () async -> Void
     let onFireNow: (String) async -> Void
     let onRevertNewDraft: (() -> Void)?
+    /// The model slots without their own run on; nil hides the model picker
+    /// (an engine before per-slot models).
+    var defaultModel: String? = nil
 
     var body: some View {
         if let slot {
@@ -32,7 +35,8 @@ struct SchedulesDetailPane: View {
                     onSave: onSave,
                     onDelete: onDelete,
                     onFireNow: onFireNow,
-                    onRevertNewDraft: onRevertNewDraft
+                    onRevertNewDraft: onRevertNewDraft,
+                    defaultModel: defaultModel
                 )
                 .id(slot.key)
             }

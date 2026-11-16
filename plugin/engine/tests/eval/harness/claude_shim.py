@@ -9,7 +9,11 @@ eval needs:
 - a fresh ``CLAUDE_CONFIG_DIR`` per sample, with
   ``CLAUDE_SECURESTORAGE_CONFIG_DIR=""`` so the keychain login (the only thing
   shared) stays reachable;
-- ``--setting-sources ""`` and hooks off;
+- ``--setting-sources ""``, and of the hooks only the arm's own PreToolUse and
+  PostToolUse ones (``plugin/hooks/hooks.json`` of the checkout whose engine
+  the session runs, with ``${CLAUDE_PLUGIN_ROOT}`` filled in): the privacy
+  gates and the KB read label are part of what a compare measures. Stop hooks
+  stay off; with no tool hook, every hook is off;
 - Claude Code's Bash sandbox (spec §12 R2a′): a Bash command writes only
   inside the sample's result dir and reaches no network host, and nothing
   runs outside it. Temp files go to ``<result>/tmp``;
@@ -37,6 +41,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .runner_env import SECRETS
 
@@ -59,10 +64,33 @@ EXIT_ABORTED, EXIT_TIMEOUT, EXIT_ENV = 3, 4, 2
 _SHARED_TMP_DENY = ["/tmp/claude*/-*", "/private/tmp/claude*/-*"]
 
 
-def settings(result_dir: str) -> dict[str, Any]:
+TOOL_HOOK_EVENTS = ("PreToolUse", "PostToolUse")
+
+
+def tool_hooks(plugin_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """The PreToolUse/PostToolUse entries of ``plugin_root``'s hooks.json, ``${CLAUDE_PLUGIN_ROOT}``
+    filled in; {} if none."""
+    try:
+        hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if not isinstance(hooks, dict):
+        return {}
+    text = json.dumps({k: hooks[k] for k in TOOL_HOOK_EVENTS if isinstance(hooks.get(k), list) and hooks[k]})
+    loaded = json.loads(text.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)))
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def session_plugin_root(env: dict[str, str]) -> Path:
+    """The plugin/ of the checkout whose engine the session runs: a base arm's, else this checkout's."""
+    return Path(env.get("SCOUT_EVAL_SESSION_PYTHONPATH") or env["SCOUT_EVAL_ENGINE"]).parent
+
+
+def settings(result_dir: str, hooks: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     """The ``--settings`` JSON. Under ``--setting-sources ""`` it is the only settings source."""
+    hook_settings: dict[str, Any] = {"hooks": hooks} if hooks else {"disableAllHooks": True}
     return {
-        "disableAllHooks": True,
+        **hook_settings,
         "sandbox": {
             "enabled": True,
             "failIfUnavailable": True,  # an unsandboxed eval session must not start
@@ -75,7 +103,14 @@ def settings(result_dir: str) -> dict[str, Any]:
 
 
 def build_command(
-    runner_argv: list[str], *, real_claude: str, model: str, mcp_config: str, allowed_tools: str, result_dir: str
+    runner_argv: list[str],
+    *,
+    real_claude: str,
+    model: str,
+    mcp_config: str,
+    allowed_tools: str,
+    result_dir: str,
+    hooks: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[list[str], str]:
     """The isolated claude argv for these runner flags, and the prompt to send on stdin."""
     kept: list[str] = []
@@ -100,7 +135,7 @@ def build_command(
         "--setting-sources",
         "",
         "--settings",
-        json.dumps(settings(result_dir)),
+        json.dumps(settings(result_dir, hooks)),
         "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
@@ -112,6 +147,16 @@ def build_command(
         *kept,
     ]
     return cmd, prompt
+
+
+# System events claude may print before init that carry no model output, tool call or billing: the
+# guard waits past them for init. Anything else first still aborts (no_init).
+PRE_INIT_EVENTS = frozenset({("system", "session_title_changed")})
+
+
+def pre_init(event: dict[str, Any]) -> bool:
+    """A known harmless event claude prints before its init (claude 2.1.3xx titles the session first)."""
+    return (event.get("type"), event.get("subtype")) in PRE_INIT_EVENTS
 
 
 def guard_init(event: dict[str, Any], allowed: set[str]) -> dict[str, Any] | None:
@@ -142,7 +187,51 @@ def _kill_group(pid: int) -> None:
         pass
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _is_gate_probe(env: dict[str, str]) -> bool:
+    """The runners' gate probe: plain http to a loopback host (no userinfo), its dummy key and its mode."""
+    from scout.agent_runtimes.gate_probe import DUMMY_KEY, PROBE_MODE
+
+    try:
+        url = urlsplit(env.get("ANTHROPIC_BASE_URL", ""))
+        host = url.hostname
+    except ValueError:
+        return False
+    return (
+        url.scheme == "http"
+        and host in _LOOPBACK_HOSTS
+        and url.username is None
+        and url.password is None
+        and env.get("ANTHROPIC_API_KEY") == DUMMY_KEY
+        and env.get("SCOUT_MODE") == PROBE_MODE
+    )
+
+
+def _passthrough(runner_argv: list[str], env: dict[str, str]) -> int | None:
+    """Hand a call that isn't a run session to the real claude unchanged; None for a session.
+
+    The runners always pass ``--name``. Calls without it are the runners' gate probe
+    (``scoutctl gates probe``, spec 2026-11-13 §3.5: a session against a fake model on
+    127.0.0.1) and ``--version``. They must test the claude the sessions use and never
+    write this sample's result dir. Anything else without ``--name`` is refused, so a
+    nameless call can't reach a real endpoint and bill a key past the session guards.
+    """
+    if "--name" in runner_argv:
+        return None
+    real = env.get("SCOUT_EVAL_REAL_CLAUDE")
+    if not real or not (runner_argv == ["--version"] or _is_gate_probe(env)):
+        print("claude-shim: not an eval session (no --name) and not the gate probe; refusing", file=sys.stderr)
+        return EXIT_ENV
+    os.execvpe(real, [real, *runner_argv], env)
+    return EXIT_ENV  # unreachable: execvpe replaces this process
+
+
 def run(runner_argv: list[str], env: dict[str, str]) -> int:
+    passed = _passthrough(runner_argv, env)
+    if passed is not None:
+        return passed
     missing = [k for k in REQUIRED_ENV if not env.get(k)]
     if missing:
         print(f"claude-shim: not an eval run, missing {', '.join(missing)}", file=sys.stderr)
@@ -158,6 +247,7 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         mcp_config=env["SCOUT_EVAL_MCP_CONFIG"],
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
         result_dir=str(result_dir),
+        hooks=tool_hooks(session_plugin_root(env)),
     )
     child_env = {k: v for k, v in env.items() if k not in SECRETS and k != "PYTHONPATH"}
     if env.get("SCOUT_EVAL_SESSION_PYTHONPATH"):  # a base arm: the session's scoutctl is the base's
@@ -227,7 +317,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not checked:  # the first event must be a clean init, or nothing runs
+                if not checked:  # the first event past PRE_INIT_EVENTS must be a clean init, or nothing runs
+                    if pre_init(event):
+                        continue
                     checked = True
                     why = guard_init(event, allowed)
                     if why:

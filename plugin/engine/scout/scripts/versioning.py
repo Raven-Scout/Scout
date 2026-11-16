@@ -1,8 +1,9 @@
 """Single-source-of-truth versioning for the scout plugin.
 
-The canonical version lives in .claude-plugin/plugin.json. Four derived places
-must always carry the SAME version: marketplace.json, pyproject.toml,
-__init__.py, and the macOS app's project.pbxproj, whose MARKETING_VERSION is
+The canonical version lives in .claude-plugin/plugin.json. Five derived places
+must always carry the SAME version: marketplace.json, the plugin subtree's own
+marketplace (plugin/.claude-plugin/marketplace.json), pyproject.toml, __init__.py, and the
+macOS app's project.pbxproj, whose MARKETING_VERSION is
 duplicated once per build configuration (four copies in the real project,
 all of which must agree). This module reads, asserts-in-sync, bumps, and
 propagates that version, and promotes the CHANGELOG on release.
@@ -35,6 +36,15 @@ _TARGETS = [
     (
         "marketplace.json",
         _REPO,
+        ".claude-plugin/marketplace.json",
+        re.compile(r'("plugins"[\s\S]*?"version":\s*")(?P<v>[^"]+)(")'),
+        False,
+    ),
+    # The plugin subtree as its own marketplace root: the same entry with source "./", which Agnes
+    # (and Scout.app's engine bundle) serve from a vX.Y.Z checkout (plugin/README.md).
+    (
+        "plugin-marketplace.json",
+        _PLUGIN,
         ".claude-plugin/marketplace.json",
         re.compile(r'("plugins"[\s\S]*?"version":\s*")(?P<v>[^"]+)(")'),
         False,

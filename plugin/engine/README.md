@@ -20,6 +20,10 @@ scoutctl version
 scoutctl manifest show
 ```
 
+`scripts/install-venv.sh` builds the venv that RUNS Scout and installs the
+runtime dependencies only; pass `--dev` (or `SCOUT_VENV_EXTRAS=dev`) if you
+want pytest, mypy and ruff in that venv too.
+
 ## Tests
 
 ```bash

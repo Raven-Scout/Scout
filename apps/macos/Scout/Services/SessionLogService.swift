@@ -142,6 +142,8 @@ final class SessionLogService: ObservableObject {
         let status: RunStatus
         let logSizeBytes: Int64
         let errorsDetected: [DetectedError]
+        /// From the runner's `=== model: <model> ===` line; nil for older logs.
+        var model: String? = nil
     }
 
     // Compiled once and reused. `parseBody` runs on every FSEvent for a log
@@ -189,6 +191,11 @@ final class SessionLogService: ObservableObject {
     )
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
     private static let rateLimitRegex = try! NSRegularExpression(pattern: #"Rate limit detected"#)
+    // `=== model: sonnet ===`, written by the runner before the session starts.
+    private static let modelRegex = try! NSRegularExpression(
+        pattern: #"^=== model: ([a-z0-9][a-z0-9.\-]*) ===$"#,
+        options: [.anchorsMatchLines]
+    )
 
     nonisolated static func parseBody(at url: URL, filename: ParsedFilename) throws -> ParsedBody {
         let data = try Data(contentsOf: url)
@@ -238,6 +245,12 @@ final class SessionLogService: ObservableObject {
             status = .running   // fallback: no terminal markers, no exit code
         }
 
+        var model: String? = nil
+        if let match = modelRegex.firstMatch(in: text, range: range),
+           let modelRange = Range(match.range(at: 1), in: text) {
+            model = String(text[modelRange])
+        }
+
         let errors = scanErrors(in: text)
         return ParsedBody(
             startedAt: startedAt,
@@ -245,7 +258,8 @@ final class SessionLogService: ObservableObject {
             exitCode: exitCode,
             status: status,
             logSizeBytes: size,
-            errorsDetected: errors
+            errorsDetected: errors,
+            model: model
         )
     }
 
@@ -447,7 +461,8 @@ final class SessionLogService: ObservableObject {
                     logSizeBytes: body.logSizeBytes,
                     errorsDetected: body.errorsDetected,
                     commits: [],
-                    retryOf: nil
+                    retryOf: nil,
+                    model: body.model
                 )
                 out.append(run)
             }
@@ -537,7 +552,8 @@ final class SessionLogService: ObservableObject {
             logSizeBytes: body.logSizeBytes,
             errorsDetected: body.errorsDetected,
             commits: commits,
-            retryOf: nil
+            retryOf: nil,
+            model: body.model
         )
         var updated = runs
         if let idx = updated.firstIndex(where: { $0.id == newRun.id }) {

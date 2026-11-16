@@ -139,6 +139,18 @@ def test_write_records_emits_jsonl_with_classify_field(tmp_path: Path) -> None:
     assert all(r["mode"] == "briefing" and r["session_id"] == "abc" for r in rows)
 
 
+def test_write_records_reports_zero_when_the_append_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Stop hook never raises: an unwritable ledger is 0 rows written (#66)."""
+    from scout import connector_calls
+
+    def fail(*_args: object, **_kwargs: object) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(connector_calls, "append_rows", fail)
+    records = [ToolCallRecord(tool_name="Read", tool_input={"file_path": "/x"}, tool_response={})]
+    assert write_records(records, mode="briefing", session_id="abc", log_dir=tmp_path / ".scout-logs") == 0
+
+
 def test_write_records_no_op_on_empty(tmp_path: Path) -> None:
     log_dir = tmp_path / ".scout-logs"
     count = write_records([], mode="briefing", session_id="abc", log_dir=log_dir)

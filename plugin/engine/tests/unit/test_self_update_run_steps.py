@@ -181,6 +181,14 @@ def test_vault_step_without_json_fails(tmp_path):
     assert row.result == "failed" and row.step == "vault" and "exited 70" in row.detail
 
 
+def test_vault_step_stderr_stays_out_of_the_row(tmp_path):
+    """The row's detail reaches pushes; stderr goes to the update log, and it can quote a user's file."""
+    deps, world, _ = make_deps(tmp_path)
+    world.overrides["bootstrap auto"] = Proc(70, "", "warning: a_private_value: [unclosed")
+    row = sur.run_update(deps, scheduled=True).row
+    assert row.step == "vault" and "exited 70" in row.detail and "a_private_value" not in row.detail
+
+
 def test_vault_json_after_progress_lines_is_parsed(tmp_path):
     deps, world, _ = make_deps(tmp_path)
     payload = json.dumps({"action": "upgrade", "conflicts": [], "mutated": False})
@@ -372,7 +380,9 @@ def test_slot_lookahead_and_off_peak_each_read_the_clock_their_scheduler_uses(tm
     (vault / "scout-config.yaml").write_text("user:\n  timezone: Asia/Tokyo\n")
     monkeypatch.setattr(schedule_tick, "_local_tz_name", lambda: "America/Chicago")
     seen: list[str] = []
-    monkeypatch.setattr(sched_mod, "next_fires", lambda sched, now, window_hours: seen.append(now.tzinfo.key) or [])
+    monkeypatch.setattr(
+        sched_mod, "next_fire_per_slot", lambda sched, now, window_hours: seen.append(now.tzinfo.key) or []
+    )
     sur._slot_due_within(vault, timedelta(minutes=45))
     assert seen == ["America/Chicago"]
 
