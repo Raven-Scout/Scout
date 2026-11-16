@@ -118,6 +118,10 @@ struct ProblemView: View {
                     Button(copied ? "Copied" : "Copy details") {
                         Self.copy(problem.copyText)
                         copied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            copied = false
+                        }
                     }
                     .buttonStyle(.link)
                     .controlSize(.small)

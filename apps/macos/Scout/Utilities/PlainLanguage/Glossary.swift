@@ -46,7 +46,7 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .consolidation:
             return "A shorter run during the day that catches up on what changed since the last run."
         case .dreaming:
-            return "An evening run that tidies the knowledge base and may suggest changes to how Scout works, as proposals."
+            return "A quieter run, most evenings and some weekend mornings, that tidies the knowledge base, makes the changes you approved on the Proposals page, and may suggest new ones."
         case .research:
             return "A run that looks outward, on the web and in connected tools, for news about the topics you asked Scout to follow."
         case .proposal:

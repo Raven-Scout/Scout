@@ -425,16 +425,16 @@ struct ActionItemsView: View {
     }
 
     private var environmentBanner: some View {
-        ProblemView(problem: Self.environmentProblem(message: envCheck.result.message))
+        ProblemView(problem: Self.environmentProblem(envCheck.result))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
     }
 
     /// The engine check failed, so Done, Snooze and comments can't be saved.
     /// The check's own message goes to Details.
-    static func environmentProblem(message: String?) -> Problem {
-        let details = message ?? "scoutctl unavailable"
-        var problem = details.contains("too old")
+    static func environmentProblem(_ result: ActionItemsEnvironmentResult) -> Problem {
+        let details = result.message ?? "scoutctl unavailable"
+        var problem = result.engineTooOld
             ? Problem.engineTooOld("Action Items", details: details)
             : Problem.engineUnavailable("Action Items", details: details)
         problem.impact = "You can read your action items, but marking them done, snoozing and commenting are turned off until it works."

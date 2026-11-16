@@ -78,14 +78,14 @@ struct DisplayNameTests {
     @Test("run-ledger outcomes share the app's wording", arguments: [
         ("ok", "Finished"),
         ("failed", "Failed"),
-        ("skipped_gates", "Skipped: privacy checks didn't load"),
+        ("skipped_gates", "Skipped: privacy checks not confirmed"),
         ("skipped_sandbox", "Skipped: couldn't protect this run"),
         ("skipped_runtime", "Skipped: agent not allowed"),
         ("skipped_lease", "Skipped: another app was writing"),
         ("skipped_lock", "Skipped: another run was going"),
         ("skipped_redundant", "Skipped: already done"),
         ("skipped_budget", "Skipped: over budget"),
-        ("skippedGates", "Skipped: privacy checks didn't load"),
+        ("skippedGates", "Skipped: privacy checks not confirmed"),
     ])
     func ledgerOutcomes(raw: String, expected: String) {
         #expect(DisplayName.runStatus(raw) == expected)
@@ -141,6 +141,12 @@ struct DisplayNameTests {
         #expect(DisplayName.slotKey(key) == expected)
     }
 
+    @Test("a user key that reads like a default schedule keeps its key")
+    func slotKeyCollision() {
+        #expect(DisplayName.slotKey("nightly-dreaming") == "Nightly dreaming (nightly-dreaming)")
+        #expect(DisplayName.slotKey("dreaming-nightly") == "Nightly dreaming")
+    }
+
     @Test("slot types and catch-up policies have names and explanations")
     func slotTypesAndPolicies() {
         for t in SlotType.allCases {
@@ -149,7 +155,12 @@ struct DisplayNameTests {
         }
         #expect(OnMissPolicy.fire.displayName == "Run late")
         #expect(OnMissPolicy.skip.displayName == "Skip")
-        #expect(OnMissPolicy.collapse.displayName == "Run once")
+        #expect(OnMissPolicy.collapse.displayName == "Latest only")
+        // Engine semantics (#193): skip still runs late inside the window,
+        // like fire; collapse runs only the latest missed schedule of a kind.
+        #expect(OnMissPolicy.skip.explanation.contains("Runs late if the Mac wakes within the catch-up window"))
+        #expect(OnMissPolicy.fire.explanation.contains("Runs late if the Mac wakes within the catch-up window"))
+        #expect(OnMissPolicy.collapse.explanation.contains("only the latest one runs"))
         for p in OnMissPolicy.allCases { #expect(!p.explanation.isEmpty) }
         let slot = Slot(key: "dreaming-evening", type: .dreaming, runner: "run-dreaming.sh",
                         firesAtLocal: "21:00", weekdays: ["Mon"], missedWindowHours: 2,
@@ -162,11 +173,42 @@ struct DisplayNameTests {
     @Test("connector keys become product names")
     func connectors() {
         #expect(DisplayName.connector("mcp:claude_ai_Slack") == "Slack")
-        #expect(DisplayName.connector("mcp:claude_ai_Google_Calendar") == "Calendar")
+        #expect(DisplayName.connector("mcp:claude_ai_Google_Calendar") == "Google Calendar")
         #expect(DisplayName.connector("github") == "GitHub")
         #expect(DisplayName.connector("mcp:claude_ai_Some_Tool") == "Some Tool")
         #expect(DisplayName.connector("mcp:plugin_acme_tracker") == "Acme Tracker")
         #expect(DisplayName.connector("") == "Unknown")
+    }
+
+    @Test("each connector gets its own fix; only MCP connectors are told to use /mcp", arguments: [
+        ("mcp:claude_ai_Slack", "claude.ai"),
+        ("mcp:fathom", "claude.ai"),
+        ("github", "GitHub command-line tool"),
+        ("mcp:claude-in-chrome", "Claude in Chrome extension"),
+        ("mcp:whatsapp-mcp", "WhatsApp bridge"),
+        ("notify:telegram", "Telegram bot token"),
+        ("mcp:acme-tracker", "/mcp"),
+        ("calendar-feed", "set up and signed in"),
+    ])
+    func connectorFix(key: String, expected: String) throws {
+        let fix = try #require(DisplayName.connectorFix(key).fix)
+        #expect(fix.contains(expected), "\(key): \(fix)")
+        if !key.hasPrefix("mcp:") || key.hasPrefix("mcp:claude_ai_") || key == "mcp:fathom"
+            || key == "mcp:claude-in-chrome" || key == "mcp:whatsapp-mcp" {
+            #expect(!fix.contains("/mcp"), "\(key) must not be told to use /mcp")
+        }
+    }
+
+    @Test("privacy-check skips don't blame the Claude Code version; the engine's advice is in details")
+    func gatesAdvice() {
+        for raw in ["gates_unsafe_endpoint", "gates_unsafe_launcher"] {
+            let e = DisplayName.failureClass(raw)
+            #expect(!e.why.contains("version"))
+            #expect(e.details?.contains("scoutctl gates probe") == true)
+            #expect(Problem(failureClass: raw, details: "Log: x").details?.contains("Log: x") == true)
+        }
+        #expect(DisplayName.failureClass("gates_unsafe_launcher").details?.contains("claude_bin") == true)
+        #expect(DisplayName.runStatusReason("skipped_gates")?.contains("version") == false)
     }
 
     @Test("alert and health levels use the glossary's health words")
@@ -253,6 +295,22 @@ struct ProblemTests {
         #expect(Problem.Severity.info < .warning && Problem.Severity.warning < .error)
     }
 
+    @Test("a connector alert becomes a problem with that connector's fix")
+    func connectorAlert() {
+        let alert = ConnectorAlert(ts: Date(), level: .critical, connector: "github",
+                                   reason: "`gh` returned 401", firstSeen: Date())
+        let p = Problem(connectorAlert: alert)
+        #expect(p.severity == .error)
+        #expect(p.title == "GitHub isn't working")
+        #expect(p.impact == "gh returned 401")
+        #expect(p.fix?.contains("/mcp") == false)
+        #expect(p.details?.contains("gh auth login") == true)
+        let warn = ConnectorAlert(ts: Date(), level: .warning, connector: "mcp:claude_ai_Slack",
+                                  reason: "slow", firstSeen: Date())
+        #expect(Problem(connectorAlert: warn).severity == .warning)
+        #expect(Problem.connectorRosterMissing(details: "snapshot not found").details == "snapshot not found")
+    }
+
     @Test("engine problems name the affected page and keep the engine's words in details")
     func engineProblems() {
         let p = Problem.engineUnavailable("Sessions", details: "scoutctl not found")
@@ -287,10 +345,11 @@ struct PlainLanguageSurfaceTests {
 
     @Test("the Action Items engine banner says what still works")
     func actionItemsBanner() {
-        let stale = ActionItemsView.environmentProblem(message: "scoutctl is too old — update scout-plugin to use Action Items writes.")
+        let stale = ActionItemsView.environmentProblem(ActionItemsEnvironmentResult(
+            ok: false, message: "Engine can't save action items.", engineTooOld: true))
         #expect(stale.title == "Action Items needs a newer Scout engine")
         #expect(stale.impact?.contains("read") == true)
-        let missing = ActionItemsView.environmentProblem(message: nil)
+        let missing = ActionItemsView.environmentProblem(ActionItemsEnvironmentResult(ok: false, message: nil))
         #expect(missing.severity == .error)
         #expect(missing.details == "scoutctl unavailable")
     }
@@ -317,6 +376,7 @@ struct PlainLanguageSurfaceTests {
             "scoutctl schedule init", "Dreaming-generated SKILL.md", "single-fire-per-tick",
             "Removes this slot from schedule.yaml", "No upcoming runs returned by scoutctl",
             "Text(run.status.rawValue)", "Text(policy.rawValue", "type.rawValue.capitalized",
+            "latest.status.rawValue", "next evening run", "type /mcp in a Claude Code session), then wait",
         ]
         let files = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         var hits: [String] = []

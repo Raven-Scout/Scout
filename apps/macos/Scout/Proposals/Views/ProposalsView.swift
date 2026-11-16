@@ -74,8 +74,8 @@ struct ProposalsView: View {
         let pending = docService.pendingCount
         switch pending {
         case 0:  return "Changes Scout suggests to how it works. Nothing is waiting for your decision."
-        case 1:  return "1 suggested change is waiting for your decision. If you approve it, the next evening run makes the change."
-        default: return "\(pending) suggested changes are waiting for your decision. If you approve one, the next evening run makes the change."
+        case 1:  return "1 suggested change is waiting for your decision. If you approve it, the next dreaming run makes the change."
+        default: return "\(pending) suggested changes are waiting for your decision. If you approve one, the next dreaming run makes the change."
         }
     }
 
@@ -91,7 +91,7 @@ struct ProposalsView: View {
         case .missing:
             emptyState(
                 icon: "tray",
-                message: "No suggested changes yet. Scout's evening run suggests them after it reads your feedback. If they are kept somewhere else, choose that folder in Settings."
+                message: "No suggested changes yet. Scout's dreaming runs suggest them after reading your feedback. If they are kept somewhere else, choose that folder in Settings."
             )
         case .failed(let err):
             Text("Couldn't load proposals: \(err)")

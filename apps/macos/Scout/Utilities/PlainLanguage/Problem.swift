@@ -64,8 +64,31 @@ extension Problem {
         let e = DisplayName.failureClass(failureClass)
         let soft = ["ratelimited", "network", "gitlock", "leaseheld"]
             .contains(DisplayName.normalized(failureClass))
+        let combined = [details, e.details].compactMap { $0 }.joined(separator: "\n")
         self.init(severity: soft ? .warning : .error, title: e.title,
-                  impact: e.why, fix: e.fix, details: details)
+                  impact: e.why, fix: e.fix, details: combined)
+    }
+
+    /// A connector alert from the engine's connector-health report, with the
+    /// fix that connector needs (claude.ai, `gh`, the Chrome extension…).
+    init(connectorAlert alert: ConnectorAlert) {
+        let name = DisplayName.connector(alert.connector)
+        let fix = DisplayName.connectorFix(alert.connector)
+        let detail = [fix.details, "Connector: \(alert.connector)"].compactMap { $0 }.joined(separator: "\n")
+        self.init(severity: alert.level == .critical ? .error : .warning,
+                  title: alert.level == .critical ? "\(name) isn't working" : "\(name) has a problem",
+                  impact: alert.reason.replacingOccurrences(of: "`", with: ""),
+                  fix: fix.fix, details: detail)
+    }
+
+    /// The app couldn't read the engine's connector roster and fell back to
+    /// its built-in list. `details` is the service's reason.
+    static func connectorRosterMissing(details: String?) -> Problem {
+        Problem(severity: .warning,
+                title: "Scout couldn't read its list of connectors",
+                impact: "The health table uses the built-in list and may miss some connectors.",
+                fix: "Updating Scout usually fixes this.",
+                details: details)
     }
 
     /// The problem a finished run shows, or nil when it ended well (or is

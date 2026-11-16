@@ -49,18 +49,10 @@ struct ConnectorAlertBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(alerts, id: \.fingerprint) { alert in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(DisplayName.connector(alert.connector)): \(alert.level.displayName.lowercased())")
-                        .font(DS.sans(12, weight: .semibold))
-                        .foregroundStyle(DS.Ink.p1)
-                        .help(alert.connector)
-                    Text(Self.plainReason(alert.reason))
-                        .font(DS.sans(11.5))
-                        .foregroundStyle(DS.Ink.p2)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("What to do: reconnect \(DisplayName.connector(alert.connector)) in Claude Code (type /mcp in a Claude Code session), then wait for the next run.")
-                        .font(DS.sans(11.5))
-                        .foregroundStyle(DS.Ink.p1)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // Per-connector fix (claude.ai, gh, the Chrome extension…)
+                    // from `DisplayName.connectorFix`; the roster's own
+                    // command-level advice is behind Details.
+                    ProblemView(problem: Problem(connectorAlert: alert), style: .inline)
                     Button("Acknowledge") {
                         state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
                     }
@@ -75,12 +67,8 @@ struct ConnectorAlertBanner: View {
     }
 
     private func summary(for alert: ConnectorAlert, moreCount: Int) -> String {
-        let base = "\(DisplayName.connector(alert.connector)) \(alert.level == .critical ? "isn't working" : "has a problem"): \(Self.plainReason(alert.reason))"
+        let p = Problem(connectorAlert: alert)
+        let base = "\(p.title): \(p.impact ?? "")"
         return moreCount > 0 ? "\(base)  (+\(moreCount) more)" : base
-    }
-
-    /// The engine's reason without its Markdown code ticks.
-    static func plainReason(_ reason: String) -> String {
-        reason.replacingOccurrences(of: "`", with: "")
     }
 }

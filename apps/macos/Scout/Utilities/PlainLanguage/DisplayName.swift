@@ -14,14 +14,14 @@ import Foundation
 /// and spaces ignored), so the camelCase Swift enum value and the snake_case
 /// value the engine writes to its run ledger share one entry. A value the
 /// table doesn't know falls back to `humanize`, never to the raw key: a new
-/// engine value reads as "Skipped token ceiling", not `skipped_token_ceiling`.
+/// engine value reads as "Skipped disk full", not `skipped_disk_full`.
 nonisolated enum DisplayName {
 
     // MARK: - Fallback
 
     /// A readable sentence-case label for any engine identifier.
-    /// `morningBriefing` → "Morning briefing", `skipped_token_ceiling` →
-    /// "Skipped token ceiling", `slot.never-ran` → "Slot never ran". Words
+    /// `morningBriefing` → "Morning briefing", `skipped_disk_full` →
+    /// "Skipped disk full", `slot.never-ran` → "Slot never ran". Words
     /// already in capitals (`API`, `KB`) stay that way. Empty input → "Unknown".
     static func humanize(_ raw: String) -> String {
         var words: [String] = []
@@ -80,10 +80,17 @@ nonisolated enum DisplayName {
 
     /// A schedule's name from its slot key: `morning-consolidation` →
     /// "Morning consolidation", `dreaming-nightly` → "Nightly dreaming".
-    /// Keys the owner made up in the app read as written, minus the dashes.
+    /// Keys the owner made up in the app read as written, minus the dashes —
+    /// unless that reads the same as a default schedule's name (a user's
+    /// `nightly-dreaming` beside the default `dreaming-nightly`), in which
+    /// case the key is added so the two stay tell-apart-able.
     static func slotKey(_ key: String) -> String {
-        lookup(slotKeys, key)
+        if let known = slotKeys[normalized(key)] { return known }
+        let name = humanize(key)
+        return defaultSlotNames.contains(name) ? "\(name) (\(key))" : name
     }
+
+    private static let defaultSlotNames = Set(slotKeys.values)
 
     private static let slotKeys: [String: String] = [
         "morningbriefing":        "Morning briefing",
@@ -110,21 +117,24 @@ nonisolated enum DisplayName {
         "manual":        "Manual",
     ]
 
-    /// What a schedule does when the Mac was asleep at its time.
+    /// What a schedule does when the Mac was asleep at its time. Mirrors
+    /// `_apply_miss_rules` in `plugin/engine/scout/scripts/schedule_tick.py`:
+    /// since #193 `skip` fires late inside the catch-up window exactly like
+    /// `fire`, and `collapse` runs only the latest missed schedule of its kind.
     static func onMiss(_ policy: OnMissPolicy) -> PlainExplanation {
         switch policy {
         case .fire:
             return PlainExplanation(
                 title: "Run late",
-                why: "Runs as soon as the Mac is awake, if that is within the catch-up window.")
+                why: "Runs late if the Mac wakes within the catch-up window; otherwise waits for the next time.")
         case .skip:
             return PlainExplanation(
                 title: "Skip",
-                why: "Skips the missed time and waits for the next one.")
+                why: "Runs late if the Mac wakes within the catch-up window; otherwise waits for the next time. Today this works the same as Run late.")
         case .collapse:
             return PlainExplanation(
-                title: "Run once",
-                why: "Runs once for all the times it missed, within the catch-up window.")
+                title: "Latest only",
+                why: "If several schedules of this kind were missed, only the latest one runs, and only within the catch-up window.")
         }
     }
 
@@ -146,9 +156,12 @@ nonisolated enum DisplayName {
         runStatusReasons[normalized(raw)]
     }
 
-    /// Keys every status the app models today plus the run-ledger outcomes the
-    /// engine writes (`plugin/templates/scripts/run-outcome.sh.tmpl`), so a
-    /// skip status added to `RunStatus` later already has its name.
+    /// Keys every status the app models today (`skippedConcurrency` is the
+    /// app's own, from the run log) plus the run-ledger outcomes the engine
+    /// writes (`SKIP_OUTCOMES` in `plugin/engine/scout/health.py`, written by
+    /// `plugin/templates/scripts/run-outcome.sh.tmpl`), so a skip status added
+    /// to `RunStatus` later already has its name. A runtime past its daily
+    /// token ceiling is recorded as `skipped_budget`.
     static let runStatuses: [String: String] = [
         "scheduled":           "Scheduled",
         "running":             "Running",
@@ -163,26 +176,24 @@ nonisolated enum DisplayName {
         "skippedconcurrency":  "Skipped: another run was going",
         "skippedlock":         "Skipped: another run was going",
         "skippedredundant":    "Skipped: already done",
-        "skippedgates":        "Skipped: privacy checks didn't load",
+        "skippedgates":        "Skipped: privacy checks not confirmed",
         "skippedsandbox":      "Skipped: couldn't protect this run",
         "skippedruntime":      "Skipped: agent not allowed",
         "skippedlease":        "Skipped: another app was writing",
-        "skippedtokenceiling": "Skipped: daily usage cap",
     ]
 
     private static let runStatusReasons: [String: String] = [
         "timeout":             "The run reached its time limit and Scout stopped it.",
         "orphaned":            "The run stopped without writing its last line, so Scout can't tell how it ended.",
         "ratelimited":         "Your Claude plan's usage limit was reached. Scout tries again after it resets.",
-        "skippedbudget":       "Running it would have gone over the budget you set.",
+        "skippedbudget":       "Running it would have gone over the budget you set, or the agent's daily usage cap.",
         "skippedconcurrency":  "Another Scout run was still going, so this one waited for the next time.",
         "skippedlock":         "Another Scout run was still going, so this one waited for the next time.",
         "skippedredundant":    "An earlier run already covered this time.",
-        "skippedgates":        "Scout's privacy checks didn't load for this version of Claude Code, so the run didn't start.",
+        "skippedgates":        "Scout couldn't confirm its privacy checks would work for this run, so it didn't start.",
         "skippedsandbox":      "Scout couldn't turn on write protection for this run, so it didn't start.",
-        "skippedruntime":      "The agent this schedule uses isn't allowed to run, or it's past its daily limit.",
+        "skippedruntime":      "The agent this schedule uses isn't allowed to run.",
         "skippedlease":        "Another app was writing to the Scout folder, so this run waited.",
-        "skippedtokenceiling": "The agent reached its daily usage cap.",
     ]
 
     // MARK: - Failure classes
@@ -227,14 +238,17 @@ nonisolated enum DisplayName {
             title: "Couldn't check who is writing",
             why: "Scout couldn't check whether another app was writing to the Scout folder, so the run waited.",
             fix: "If this keeps happening, check Settings ▸ Engine."),
+        // Mirrors `_UNSAFE_ADVICE` in plugin/engine/scout/health.py.
         "gatesunsafeendpoint": PlainExplanation(
-            title: "Privacy checks didn't load",
-            why: "Scout's privacy checks didn't load, so the run didn't start.",
-            fix: "Update Claude Code and Scout, then check Settings ▸ Engine."),
+            title: "Privacy checks couldn't run safely",
+            why: "One of your Claude settings names a server the privacy check can't control on this Mac, so the run didn't start.",
+            fix: "Remove or rename that setting in your Claude settings. Copy the details to see how to find which one.",
+            details: "Run `scoutctl gates probe` to see which setting; remove or rename it in your Claude settings' env, or run Scout where the check's network sandbox is available (macOS). Runs resume once the probe passes."),
         "gatesunsafelauncher": PlainExplanation(
-            title: "Privacy checks didn't load",
-            why: "Scout's privacy checks didn't load, so the run didn't start.",
-            fix: "Update Claude Code and Scout, then check Settings ▸ Engine."),
+            title: "Privacy checks couldn't run safely",
+            why: "Scout starts Claude through a launcher script (such as a mise or asdf shim) that the privacy check can't see through, so the run didn't start.",
+            fix: "Point Scout at the real Claude program instead of the launcher. Copy the details for the setting to change.",
+            details: "Set connectors.inputs.claude_bin in scout-config.yaml to the real claude binary (for mise: `mise which claude`), then run /scout-update. Check with `scoutctl gates probe`; runs resume once it passes."),
         "unknown": PlainExplanation(
             title: "Unrecognised error",
             why: "The run stopped with an error Scout doesn't recognise.",
@@ -260,21 +274,70 @@ nonisolated enum DisplayName {
         return title.isEmpty ? "Unknown" : title
     }
 
-    /// Keep in sync with the roster in `plugin/engine/scout/connectors.yaml`.
+    /// The `display_name` values in `plugin/engine/scout/connectors.yaml`,
+    /// without their parenthesised notes ("GitHub (gh CLI)" → "GitHub"), which
+    /// would crowd the health table. Keep in sync with that roster.
     private static let connectors: [String: String] = [
         "mcp:claude_ai_Slack":           "Slack",
         "mcp:claude_ai_Linear":          "Linear",
         "mcp:claude_ai_Gmail":           "Gmail",
-        "mcp:claude_ai_Google_Calendar": "Calendar",
+        "mcp:claude_ai_Google_Calendar": "Google Calendar",
         "mcp:claude_ai_Granola":         "Granola",
         "mcp:fathom":                    "Fathom",
-        "mcp:claude_ai_Google_Drive":    "Drive",
+        "mcp:claude_ai_Google_Drive":    "Google Drive",
         "github":                        "GitHub",
         "mcp:claude-in-chrome":          "Chrome",
         "mcp:whatsapp-mcp":              "WhatsApp",
         "notify:telegram":               "Telegram",
         "cc-session":                    "Claude Code",
     ]
+
+    /// How to fix a connector that stopped working, in plain words, with the
+    /// roster's own `remediation.first_fix` (commands and all) as `details`.
+    /// The connectors snapshot doesn't carry `remediation` yet, so this
+    /// mirrors `plugin/engine/scout/connectors.yaml`; keep the two in sync.
+    static func connectorFix(_ key: String) -> PlainExplanation {
+        let name = connector(key)
+        let claudeAI = "Open claude.ai, go to Settings ▸ Connectors and reconnect \(name). Scout picks it up at the next run."
+        switch key {
+        case "mcp:fathom":
+            return PlainExplanation(title: name, why: "", fix: claudeAI,
+                                    details: "Reconnect Fathom at https://claude.ai/settings/connectors — Fathom MCP tokens periodically expire.")
+        case "github":
+            return PlainExplanation(
+                title: name, why: "",
+                fix: "Sign in to GitHub again from Terminal with the GitHub command-line tool (copy the details for the command).",
+                details: "Run `gh auth status`; if expired, `gh auth login` to re-auth. Token lives in macOS keychain.")
+        case "mcp:claude-in-chrome":
+            return PlainExplanation(
+                title: name, why: "",
+                fix: "Make sure Chrome is open with the Claude in Chrome extension turned on. If the Mac was asleep, waking it is enough.",
+                details: "Check the extension at chrome://extensions.")
+        case "mcp:whatsapp-mcp":
+            return PlainExplanation(
+                title: name, why: "",
+                fix: "The WhatsApp bridge on this Mac may have stopped. Restart it (copy the details for the commands).",
+                details: "launchctl list | grep com.scout.whatsapp-bridge\nlaunchctl kickstart -k gui/$UID/com.scout.whatsapp-bridge")
+        case "notify:telegram":
+            return PlainExplanation(
+                title: name, why: "",
+                fix: "Check that Scout's Telegram bot token is still saved on this Mac (copy the details for where).",
+                details: "Check ~/.scout-secrets/telegram-bot-token exists (mode 600); test with `scoutctl notify telegram --tier info --body 'health check'`.")
+        default:
+            if key.hasPrefix("mcp:claude_ai_") {
+                return PlainExplanation(title: name, why: "", fix: claudeAI,
+                                        details: "https://claude.ai/settings/connectors")
+            }
+            if key.hasPrefix("mcp:") {
+                return PlainExplanation(
+                    title: name, why: "",
+                    fix: "Reconnect \(name) in Claude Code (type /mcp in a Claude Code session). Scout picks it up at the next run.")
+            }
+            return PlainExplanation(
+                title: name, why: "",
+                fix: "Check that \(name) is set up and signed in on this Mac. Scout tries again at the next run.")
+        }
+    }
 
     /// A connector alert level (`CRITICAL`, `WARNING`) in sentence case.
     static func alertLevel(_ raw: String) -> String {
@@ -305,6 +368,8 @@ nonisolated struct PlainExplanation: Equatable, Sendable {
     let title: String
     let why: String
     var fix: String? = nil
+    /// The engine-level how-to (commands, setting names) for Details.
+    var details: String? = nil
 }
 
 // MARK: - Model conveniences

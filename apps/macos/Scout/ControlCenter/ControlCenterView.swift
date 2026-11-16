@@ -443,7 +443,8 @@ struct SignalsRailCard: View {
                 id: "connectors",
                 severity: .warn,
                 tag: "CONNECTORS",
-                body: "Scout couldn't read its list of connectors, so the table below uses the built-in list and may miss some. Updating Scout usually fixes this."
+                body: Problem.connectorRosterMissing(details: nil).title + ". "
+                    + (Problem.connectorRosterMissing(details: nil).impact ?? "")
             ))
         }
 

@@ -262,13 +262,13 @@ struct MenuBarExtraContent: View {
         case .running:
             return ("Running \(latest.displayName)", "Started \(latest.startedAt.formatted(.relative(presentation: .named)))", DS.Accent.fill)
         case .failure, .timeout, .rateLimited, .orphaned:
-            return ("Last run needs attention", "\(latest.displayName) · \(latest.status.rawValue)", DS.Status.err)
+            return ("Last run needs attention", "\(latest.displayName) · \(latest.status.displayName)", DS.Status.err)
         case .skippedBudget:
             return ("Last run skipped", "Budget limit reached", DS.Status.warn)
         case .skippedConcurrency:
             return ("Last run skipped", "Another session was running", DS.Status.warn)
         case .scheduled, .success:
-            return ("Ready", "Last: \(latest.displayName) · \(latest.status.rawValue)", DS.Status.ok)
+            return ("Ready", "Last: \(latest.displayName) · \(latest.status.displayName)", DS.Status.ok)
         }
     }
 
