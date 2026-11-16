@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.14] - 2026-11-16
+
 **Upgrading with delegate mirrors:** each mirror now records which vault it is of, and a sync refuses one that doesn't match. A mirror linked before this release, or one whose vault has moved or whose computer lost `~/.scout-secrets/delegate-mirrors/vault.salt`, needs one `scoutctl delegate link <id> --remote <url> --replace-remote --confirm-account-unshared` per delegate. Until then run health is yellow with `delegate.sync_failed` (`remote_unbound`) and that agent reads its older copy.
 
 ### Added
