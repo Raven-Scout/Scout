@@ -72,6 +72,25 @@ struct ConnectorAlertContractTests {
         #expect(ConnectorAlert.parseFile(at: missing).isEmpty)
     }
 
+    /// `loadState` tells "no usable state" (nil) from "no alerts" ([]), so the
+    /// service never prunes acks against a file it could not read.
+    @Test func loadStateIsNilOnlyWithoutAUsableFile() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("alert-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent(ConnectorAlert.fileName)
+
+        #expect(ConnectorAlert.loadState(at: url) == nil)
+        for bad in ["{torn", "{\"schema_version\": 2, \"alerts\": []}", "{\"schema_version\": 1}"] {
+            try bad.write(to: url, atomically: true, encoding: .utf8)
+            #expect(ConnectorAlert.loadState(at: url) == nil, "\(bad)")
+        }
+        try "{\"schema_version\": 1, \"alerts\": []}".write(to: url, atomically: true, encoding: .utf8)
+        #expect(ConnectorAlert.loadState(at: url) == [])
+        #expect(ConnectorAlert.loadState(at: try Self.fixtureURL())?.count == 2)
+    }
+
     /// The pipe-delimited format of the retired bash report and the engine's
     /// human-readable `.log` line are both not the app's input.
     @Test func ignoresTheHumanReadableLogFormats() {

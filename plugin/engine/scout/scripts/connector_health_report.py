@@ -678,32 +678,51 @@ def _iso_z(t: datetime) -> str:
     return t.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def read_prior_first_seen(path: Path) -> dict[tuple[str, str], str]:
-    """`(connector_key, level) -> first_seen` from the previous run's alert state.
+def _is_iso(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
-    A missing, unreadable, or foreign-schema file reads as "no prior alerts":
-    every current alert then starts a fresh streak. That costs at most one
-    re-shown (already acked) banner, never a hidden one.
+
+def read_prior_alerts(path: Path) -> list[dict[str, str]]:
+    """The alert entries of the previous run's alert state, validated.
+
+    A missing, unreadable, or foreign-schema file reads as "no prior alerts",
+    and an entry missing a key, level or timestamp is dropped: its alert then
+    starts a fresh streak. That costs at most one re-shown (already acked)
+    banner, never a hidden one.
     """
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return []
     if not isinstance(doc, dict) or doc.get("schema_version") != ALERTS_STATE_SCHEMA_VERSION:
-        return {}
+        return []
     alerts = doc.get("alerts")
-    out: dict[tuple[str, str], str] = {}
+    out: list[dict[str, str]] = []
     for a in alerts if isinstance(alerts, list) else []:
         if not isinstance(a, dict):
             continue
-        key, level, first_seen = a.get("connector_key"), a.get("level"), a.get("first_seen")
-        if not (isinstance(key, str) and isinstance(level, str) and isinstance(first_seen, str)):
+        key, level = a.get("connector_key"), a.get("level")
+        if not (isinstance(key, str) and key and level in ("CRITICAL", "WARNING")):
             continue
-        try:
-            datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
-        except ValueError:
+        if not (_is_iso(a.get("ts")) and _is_iso(a.get("first_seen"))):
             continue
-        out[(key, level)] = first_seen
+        name, reason = a.get("name"), a.get("reason")
+        out.append(
+            {
+                "connector_key": key,
+                "level": str(level),
+                "name": name if isinstance(name, str) else key,
+                "reason": reason if isinstance(reason, str) else "",
+                "ts": str(a["ts"]),
+                "first_seen": str(a["first_seen"]),
+            }
+        )
     return out
 
 
@@ -712,12 +731,19 @@ def render_alerts_state(
     *,
     now: datetime,
     current_mode: str,
-    prior_first_seen: dict[tuple[str, str], str],
+    prior: list[dict[str, str]],
+    uncalled: set[str],
 ) -> str:
     """The alert state the macOS app reads: `.scout-logs/connector-alerts.json`.
 
-    Rewritten in full on every run, so it always holds exactly the alerts the
-    latest run raised (`"alerts": []` when it raised none)::
+    Rewritten in full on every run. It holds the alerts the latest run raised,
+    plus each prior alert on a connector the latest run did not call
+    (`uncalled`: no successes, no errors), carried over unchanged, `ts`
+    included. A run that never called a connector has no evidence the
+    connector recovered, and since #477 such a run doesn't raise the alert
+    either, so dropping it would reset the alert's streak (and lose the
+    user's ack) every time a run skips the connector. `"alerts": []` once
+    every alert is cleared::
 
         {
           "schema_version": 1,
@@ -729,36 +755,42 @@ def render_alerts_state(
               "level": "CRITICAL",                            # or "WARNING"
               "name": "Google Drive",                         # display name
               "reason": "...",                                # same text as the .log line
-              "ts": "2026-04-22T12:30:00Z",                   # this run
+              "ts": "2026-04-22T12:30:00Z",                   # the run that last raised it
               "first_seen": "2026-04-22T08:00:00Z"            # start of the streak
             }
           ]
         }
 
-    `first_seen` is the `ts` of the first run in an unbroken streak of runs
-    raising the same `(connector_key, level)`: carried over from the previous
-    state while the alert persists, reset once a run clears it. The app keys
-    its acknowledgements on `connector_key|level|first_seen`, so acking an
-    alert hides it for the rest of its streak, not the next one.
+    `first_seen` is the `ts` of the run that started the alert's streak. A
+    streak of `(connector_key, level)` lasts until a run CALLS the connector
+    without raising that alert: `first_seen` carries over through runs that
+    raise it again and through runs that skip the connector, and resets only
+    after such a clearing run. The app keys its acknowledgements on
+    `connector_key|level|first_seen`, so acking an alert hides it for the rest
+    of its streak, not the next one.
 
     The contract fixture is `tests/fixtures/contract/connector-alerts.json`.
     """
     ts = _iso_z(now)
+    raised = {(a.connector_key, a.level) for a in alerts}
+    first_seen = {(p["connector_key"], p["level"]): p["first_seen"] for p in prior}
+    entries = [
+        {
+            "connector_key": a.connector_key,
+            "level": a.level,
+            "name": a.name,
+            "reason": a.reason,
+            "ts": ts,
+            "first_seen": first_seen.get((a.connector_key, a.level), ts),
+        }
+        for a in alerts
+    ]
+    entries += [p for p in prior if p["connector_key"] in uncalled and (p["connector_key"], p["level"]) not in raised]
     doc = {
         "schema_version": ALERTS_STATE_SCHEMA_VERSION,
         "generated_at": ts,
         "mode": current_mode,
-        "alerts": [
-            {
-                "connector_key": a.connector_key,
-                "level": a.level,
-                "name": a.name,
-                "reason": a.reason,
-                "ts": ts,
-                "first_seen": prior_first_seen.get((a.connector_key, a.level), ts),
-            }
-            for a in alerts
-        ],
+        "alerts": entries,
     }
     return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
@@ -888,8 +920,9 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
         encoding="utf-8",
     )
 
-    # The app's alert state: every run rewrites it, so alerts a run no longer
-    # raises leave the app's banner, and a persisting alert keeps first_seen.
+    # The app's alert state: every run rewrites it, so an alert a run clears
+    # leaves the app's banner, and a persisting alert keeps first_seen.
+    uncalled = {c for c in alertable if _ok_count(stats, c, current_sid) + _err_count(stats, c, current_sid) == 0}
     try:
         atomic_write_text(
             alerts_state_path,
@@ -897,11 +930,16 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
                 alerts,
                 now=n,
                 current_mode=current_mode,
-                prior_first_seen=read_prior_first_seen(alerts_state_path),
+                prior=read_prior_alerts(alerts_state_path),
+                uncalled=uncalled,
             ),
         )
     except OSError:
-        pass
+        # A state we can't rewrite must not keep showing alerts this run may
+        # have cleared. Losing first_seen (a re-shown acked alert) is the
+        # lesser harm.
+        with contextlib.suppress(OSError):
+            alerts_state_path.unlink(missing_ok=True)
 
     pending_path.parent.mkdir(parents=True, exist_ok=True)
     if alerts:

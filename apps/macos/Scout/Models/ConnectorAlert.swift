@@ -3,8 +3,9 @@ import Foundation
 /// One alert from the engine's `.scout-logs/connector-alerts.json`.
 ///
 /// The engine (`scout.scripts.connector_health_report`) is authoritative: it
-/// rewrites that file on every run with exactly the alerts the latest run
-/// raised, so Swift does not duplicate the sustained-state alert logic. The
+/// rewrites that file on every run with the alerts still in force (those the
+/// latest run raised, plus earlier ones on connectors it didn't call), so
+/// Swift does not duplicate the sustained-state alert logic. The
 /// format is documented on `render_alerts_state` in that module, and the
 /// shared fixture `ScoutTests/Fixtures/connector-alerts.json` is a byte copy of
 /// `plugin/engine/tests/fixtures/contract/connector-alerts.json`.
@@ -40,18 +41,30 @@ struct ConnectorAlert: Equatable, Hashable, Sendable {
     }
 
     static func parseFile(at url: URL) -> [ConnectorAlert] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return parse(data)
+        loadState(at: url) ?? []
     }
 
-    /// Parses the engine's alert state. A missing or malformed file, or an
-    /// unknown `schema_version`, yields no alerts; a malformed entry is
-    /// skipped without dropping its siblings.
+    /// The alerts in the engine's state file, or `nil` when there is no
+    /// usable state: the file is missing, unreadable, malformed, or of an
+    /// unknown `schema_version`. Callers that prune acks against the live
+    /// alert set must skip pruning on `nil`, or one bad read wipes every ack.
+    static func loadState(at url: URL) -> [ConnectorAlert]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return decodeState(data)
+    }
+
+    /// Parses the engine's alert state. A malformed file or an unknown
+    /// `schema_version` yields no alerts; a malformed entry is skipped
+    /// without dropping its siblings.
     static func parse(_ data: Data) -> [ConnectorAlert] {
+        decodeState(data) ?? []
+    }
+
+    private static func decodeState(_ data: Data) -> [ConnectorAlert]? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               (root["schema_version"] as? Int) == schemaVersion,
               let rows = root["alerts"] as? [Any]
-        else { return [] }
+        else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return rows.compactMap { row -> ConnectorAlert? in

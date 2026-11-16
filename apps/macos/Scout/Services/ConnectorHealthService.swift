@@ -190,7 +190,7 @@ final class ConnectorHealthService: ObservableObject {
 
     func acknowledge(fingerprint: String) {
         ackStore.ack(fingerprint: fingerprint)
-        recomputeActiveAlerts(all: allAlertsFromLog())
+        recomputeActiveAlerts(all: alertState() ?? [])
     }
 
     // MARK: - Internals
@@ -205,15 +205,19 @@ final class ConnectorHealthService: ObservableObject {
         let calls = await loadCallsWithinWindow()
         matrix = ConnectorHealthMatrix(calls: calls, connectors: connectors)
         // 2. Alerts from the engine's connector-alerts.json.
-        let all = allAlertsFromLog()
-        recomputeActiveAlerts(all: all)
-        // 3. GC ack store against the live fingerprint set.
-        ackStore.gc(active: Set(all.map(\.fingerprint)))
+        let state = alertState()
+        recomputeActiveAlerts(all: state ?? [])
+        // 3. GC ack store against the live fingerprint set — only when the
+        //    state was readable: a missing, torn or foreign file says nothing
+        //    about which alerts are live, and pruning on it would drop every ack.
+        if let state {
+            ackStore.gc(active: Set(state.map(\.fingerprint)))
+        }
     }
 
-    private func allAlertsFromLog() -> [ConnectorAlert] {
+    private func alertState() -> [ConnectorAlert]? {
         let url = logsDirectory.appendingPathComponent(ConnectorAlert.fileName)
-        return ConnectorAlert.parseFile(at: url)
+        return ConnectorAlert.loadState(at: url)
     }
 
     private func recomputeActiveAlerts(all: [ConnectorAlert]) {
