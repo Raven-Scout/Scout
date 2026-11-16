@@ -65,6 +65,10 @@ struct KBLiveEditor: NSViewRepresentable {
         if tv.string != text {
             context.coordinator.isProgrammatic = true
             let sel = tv.selectedRange()
+            // Typing undo recorded against the old text would replay its
+            // ranges onto the new one (a reload, or a reverted save: C10).
+            tv.undoManager?.removeAllActions(withTarget: tv)
+            if let storage = tv.textStorage { tv.undoManager?.removeAllActions(withTarget: storage) }
             tv.string = text
             let len = (text as NSString).length
             tv.setSelectedRange(NSRange(location: min(sel.location, len), length: 0))

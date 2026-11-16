@@ -61,12 +61,17 @@ actor KnowledgeBaseFileWriter {
     /// it). Comparing content — not mtime — stays correct on filesystems with
     /// coarse timestamp granularity. A `nil` baseline means "the file didn't
     /// exist (or wasn't readable) at load". Commits the single path on success.
+    ///
+    /// Returns the bytes before and after for undo (nil for an unchanged save).
+    /// A `.commitFailed` error still means the file was written; the change
+    /// is then not undoable from the app.
+    @discardableResult
     func save(
         fileURL: URL,
         contents: String,
         baselineContents: String?,
         label: String
-    ) async throws {
+    ) async throws -> VaultChange? {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -97,7 +102,9 @@ actor KnowledgeBaseFileWriter {
     }
 
     /// Delete `fileURL` and commit the removal.
-    func delete(fileURL: URL, label: String) async throws {
+    /// Returns the deleted bytes for undo, which writes the note back.
+    @discardableResult
+    func delete(fileURL: URL, label: String) async throws -> VaultChange? {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -114,6 +121,12 @@ actor KnowledgeBaseFileWriter {
     /// URL. Fails if the destination already exists.
     @discardableResult
     func rename(fileURL: URL, to newName: String) async throws -> URL {
+        try await renameReturningChange(fileURL: fileURL, to: newName).url
+    }
+
+    /// `rename`, plus both paths' bytes before and after for undo (which moves
+    /// the note back).
+    func renameReturningChange(fileURL: URL, to newName: String) async throws -> (url: URL, change: VaultChange?) {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -124,6 +137,19 @@ actor KnowledgeBaseFileWriter {
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
+    }
+
+    /// Undo or redo a change this writer made, in its serial queue. Only
+    /// paths inside the knowledge base are ever restored.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        for url in change.urls { try ensureInsideKB(url) }
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
     }
 
     // MARK: - Guard
@@ -144,7 +170,7 @@ actor KnowledgeBaseFileWriter {
     private static func performSave(
         fileURL: URL, contents: String, baselineContents: String?, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws {
+    ) async throws -> VaultChange? {
         let fm = FileManager.default
         let exists = fm.fileExists(atPath: fileURL.path)
         if exists {
@@ -166,6 +192,9 @@ actor KnowledgeBaseFileWriter {
         }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try await commitOrThrow(gitService, paths: [rel], message: "app: edit \(label)")
+        return VaultChange(actionName: "Edit Note",
+                           before: [.text(fileURL, exists ? baselineContents : nil)],
+                           after: [.text(fileURL, contents)])
     }
 
     private static func performCreate(
@@ -192,22 +221,26 @@ actor KnowledgeBaseFileWriter {
     private static func performDelete(
         fileURL: URL, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws {
+    ) async throws -> VaultChange? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
         }
+        let before = try? FileSnapshot.capture(fileURL)
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         do { try fm.removeItem(at: fileURL) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         // `git add -- <path>` stages the deletion (git ≥ 2.0).
         try await commitOrThrow(gitService, paths: [rel], message: "app: delete \(label)")
+        return before.flatMap {
+            VaultChange(actionName: "Delete Note", before: [$0], after: [FileSnapshot(url: fileURL, data: nil)])
+        }
     }
 
     private static func performRename(
         fileURL: URL, newName: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws -> URL {
+    ) async throws -> (url: URL, change: VaultChange?) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
@@ -224,10 +257,16 @@ actor KnowledgeBaseFileWriter {
         }
         let oldRel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         let newRel = relativePathInRepo(fileURL: dest, repo: scoutDirectory)
+        let moved = try? FileSnapshot.capture(fileURL)
         do { try fm.moveItem(at: fileURL, to: dest) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         try await commitOrThrow(gitService, paths: [oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
-        return dest
+        let change = moved.flatMap {
+            VaultChange(actionName: "Rename Note",
+                        before: [$0, FileSnapshot(url: dest, data: nil)],
+                        after: [FileSnapshot(url: fileURL, data: nil), FileSnapshot(url: dest, data: $0.data)])
+        }
+        return (dest, change)
     }
 
     /// Commit the given paths, converting a git failure into `.commitFailed`

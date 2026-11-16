@@ -44,6 +44,31 @@ enum WriteOp: Sendable {
         }
     }
 
+    /// Edit-menu name: "Undo Mark Done".
+    var actionName: String {
+        switch self {
+        case .addComment:    return "Add Comment"
+        case .deleteComment: return "Delete Comment"
+        case .editComment:   return "Edit Comment"
+        case .markDone:      return "Mark Done"
+        case .reopen:        return "Reopen"
+        case .snooze:        return "Snooze"
+        }
+    }
+
+    /// The engine's own inverse, when it has one: mark-done and reopen undo
+    /// each other by `[#TAG]`, which stays correct even after a scheduled run
+    /// rewrote other lines of the file. Every other op is undone by restoring
+    /// the file's bytes.
+    var inverse: WriteOp? {
+        guard shortPrefix != nil else { return nil }
+        switch self {
+        case .markDone(let s, let p): return .reopen(subject: s, shortPrefix: p)
+        case .reopen(let s, let p):   return .markDone(subject: s, shortPrefix: p)
+        default: return nil
+        }
+    }
+
     var shortPrefix: String? {
         switch self {
         case .addComment(_, let p, _, _),
@@ -127,12 +152,17 @@ enum ActionItemsWriterError: Error, Equatable {
     enum Classification: Equatable { case noMatch, ambiguous, environment, other }
     case cliNonZeroExit(exitCode: Int32, stderr: String, classification: Classification)
     case processFailed(Error)
+    /// A task with no `[#TAG]` is found by its text, so a day file that
+    /// changed since the list was shown could hand the write a different
+    /// line. Refused instead (C10).
+    case stale(file: String)
 
     static func == (lhs: ActionItemsWriterError, rhs: ActionItemsWriterError) -> Bool {
         switch (lhs, rhs) {
         case let (.cliNonZeroExit(a, b, c), .cliNonZeroExit(d, e, f)):
             return a == d && b == e && c == f
         case (.processFailed, .processFailed): return true
+        case let (.stale(a), .stale(b)): return a == b
         default: return false
         }
     }
@@ -140,6 +170,9 @@ enum ActionItemsWriterError: Error, Equatable {
 
 struct WriteResult: Sendable {
     let stderr: String
+    /// The day file's bytes before and after, for undo. nil when the op
+    /// changed nothing, or the file couldn't be read back.
+    var change: VaultChange? = nil
 }
 
 /// Serializes action-item mutations through `scoutctl action-items <op>`.
@@ -186,14 +219,20 @@ actor ActionItemsWriter {
 
     /// Submit a write. Submissions are strictly serialized — only one CLI
     /// runs end-to-end at a time, even across concurrent callers.
+    ///
+    /// `shownDigest` is the SHA-256 of the day file the list was parsed from.
+    /// An op without a `[#TAG]` is refused with `.stale` when the file no
+    /// longer hashes to it; a tagged op is resolved by scoutctl on the current
+    /// bytes, so it needs no such check.
     @discardableResult
-    func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
+    func submit(_ op: WriteOp, displayedDate: Date, shownDigest: Data? = nil) async throws -> WriteResult {
         let previous = tail
         let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
+                shownDigest: shownDigest,
                 scoutctl: scoutctl,
                 argumentsPrefix: argumentsPrefix,
                 actionItemsDirectory: actionItemsDirectory,
@@ -206,9 +245,22 @@ actor ActionItemsWriter {
         return try await task.value
     }
 
+    /// Undo or redo a change this writer made, in the same serial queue as
+    /// its writes, then commit the file.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [gitService, scoutDirectory] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
+    }
+
     private static func perform(
         op: WriteOp,
         displayedDate: Date,
+        shownDigest: Data?,
         scoutctl: URL,
         argumentsPrefix: [String],
         actionItemsDirectory: URL,
@@ -218,6 +270,13 @@ actor ActionItemsWriter {
     ) async throws -> WriteResult {
         let dateISO = ActionItemsDay.stem(for: displayedDate)
         let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
+
+        // Stale check and undo baseline. A file we can't read here is left to
+        // scoutctl to report; the write just won't be undoable.
+        let before = try? FileSnapshot.capture(dailyFile)
+        if op.shortPrefix == nil, let shownDigest, let before, before.digest != shownDigest {
+            throw ActionItemsWriterError.stale(file: dailyFile.lastPathComponent)
+        }
 
         let result: ProcessResult
         do {
@@ -245,7 +304,12 @@ actor ActionItemsWriter {
         let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
 
-        return WriteResult(stderr: stderr)
+        let change = before.flatMap { before in
+            (try? FileSnapshot.capture(dailyFile)).flatMap {
+                VaultChange(actionName: op.actionName, before: [before], after: [$0])
+            }
+        }
+        return WriteResult(stderr: stderr, change: change)
     }
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last

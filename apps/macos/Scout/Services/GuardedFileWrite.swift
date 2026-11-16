@@ -35,6 +35,18 @@ enum GuardedFileWrite {
         modificationDate: @Sendable (URL) -> Date? = GuardedFileWrite.fsModificationDate,
         transform: (String) throws -> String
     ) throws -> Bool {
+        try applyCapturing(to: url, maxAttempts: maxAttempts,
+                           modificationDate: modificationDate, transform: transform) != nil
+    }
+
+    /// `apply`, returning the exact text the transform was applied to and
+    /// what was written (the undo baseline, C10), or nil for the no-op case.
+    static func applyCapturing(
+        to url: URL,
+        maxAttempts: Int = 4,
+        modificationDate: @Sendable (URL) -> Date? = GuardedFileWrite.fsModificationDate,
+        transform: (String) throws -> String
+    ) throws -> (before: String, after: String)? {
         for _ in 0..<maxAttempts {
             let text: String
             do { text = try String(contentsOf: url, encoding: .utf8) }
@@ -42,7 +54,7 @@ enum GuardedFileWrite {
             let mtimeAtRead = modificationDate(url)
 
             let updated = try transform(text)
-            guard updated != text else { return false }
+            guard updated != text else { return nil }
 
             // A concurrent writer landed between our read and now → loop and
             // reapply onto their content rather than overwriting it.
@@ -50,7 +62,7 @@ enum GuardedFileWrite {
 
             do { try updated.write(to: url, atomically: true, encoding: .utf8) }
             catch { throw Failure.write(error.localizedDescription) }
-            return true
+            return (text, updated)
         }
         throw Failure.conflictPersisted
     }

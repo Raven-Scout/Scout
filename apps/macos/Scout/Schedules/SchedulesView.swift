@@ -4,6 +4,8 @@ struct SchedulesView: View {
     @EnvironmentObject var service: ScheduleEditService
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var modelSettings: ModelSettingsService
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     @SceneStorage("schedulesView") private var viewMode: SchedulesViewMode = .table
     @State private var filterMode: SchedulesFilterMode = .all
@@ -251,15 +253,23 @@ struct SchedulesView: View {
         var combined = service.slots
         combined.append(slot)
         do {
-            try await service.save(allSlots: combined)
+            let change = try await service.save(allSlots: combined, actionName: "Add Slot")
             newDraftSlot = nil
             selectedSlotKey = slot.key
+            registerUndo(change)
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "add the slot")
         }
+    }
+
+    /// Shared write-problem wording (C10) for the error banner.
+    static func problemText(_ error: Error, action: String) -> String {
+        let problem = WriteProblem.from(error, action: action)
+        guard let details = problem.details else { return "\(problem.title). \(problem.message)" }
+        return "\(problem.title). \(problem.message)\n\(details)"
     }
 
     private func saveExistingSlot(_ saved: Slot, original: Slot) async {
@@ -268,12 +278,12 @@ struct SchedulesView: View {
             updated[idx] = saved
         }
         do {
-            try await service.save(allSlots: updated)
+            registerUndo(try await service.save(allSlots: updated, actionName: "Edit Slot"))
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "save the slot")
         }
     }
 
@@ -281,14 +291,26 @@ struct SchedulesView: View {
         guard let key = selectedSlotKey,
               let slot = service.slots.first(where: { $0.key == key }) else { return }
         do {
-            try await service.delete(slotKey: slot.key)
+            let change = try await service.delete(slotKey: slot.key)
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
+            registerUndo(change)
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "delete the slot")
         }
+    }
+
+    /// Edit ▸ Undo for a schedule save: restores the schedule file's bytes,
+    /// refused if it changed since (C10). The service reloads either way.
+    private func registerUndo(_ change: VaultChange?) {
+        guard let change else { return }
+        let service = service
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await service.restore(change, direction) },
+            with: undoManager
+        ) {}
     }
 
     private func handleFireNow(_ key: String) async {

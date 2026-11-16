@@ -18,6 +18,9 @@ struct KBEditorView: View {
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
 
+    @EnvironmentObject private var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
+
     private enum Mode: String { case read, rich, source }
 
     @State private var draft: String = ""
@@ -78,7 +81,7 @@ struct KBEditorView: View {
             Button("Delete", role: .destructive) { performDelete() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes \(node.relativePath) and commits the deletion. This can't be undone from the app.")
+            Text("This removes \(node.relativePath) and commits the deletion. You can undo it with Edit ▸ Undo.")
         }
         .sheet(isPresented: $showRename) { renameSheet }
     }
@@ -245,9 +248,12 @@ struct KBEditorView: View {
         let contents = draft
         Task {
             do {
-                try await writer.save(fileURL: node.url, contents: contents,
-                                      baselineContents: captured, label: node.displayName)
-                await MainActor.run { markSaved(contents) }
+                let change = try await writer.save(fileURL: node.url, contents: contents,
+                                                   baselineContents: captured, label: node.displayName)
+                await MainActor.run {
+                    markSaved(contents)
+                    registerUndo(change)
+                }
             } catch KBWriterError.conflict {
                 await MainActor.run { isSaving = false; showConflict = true }
             } catch {
@@ -259,10 +265,24 @@ struct KBEditorView: View {
                     } else {
                         isSaving = false
                     }
-                    errorMessage = KBWriterError.message(for: error)
+                    errorMessage = WriteProblem.from(error, action: "change the note").message
                 }
             }
         }
+    }
+
+    /// Edit ▸ Undo for a save, delete or rename: restores the file bytes
+    /// through the writer, refused if the note changed since (C10). The tree
+    /// reloads after; an open editor with no unsaved edits picks the restored
+    /// text up through `detectExternalChange`, and one with edits shows the
+    /// changed-on-disk banner instead of losing them.
+    private func registerUndo(_ change: VaultChange?) {
+        guard let change else { return }
+        let writer = writer
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await writer.restore(change, direction) },
+            with: undoManager
+        ) { [service] in service.reload() }
     }
 
     private func markSaved(_ contents: String) {
@@ -276,13 +296,13 @@ struct KBEditorView: View {
     private func performDelete() {
         Task {
             do {
-                try await writer.delete(fileURL: node.url, label: node.displayName)
-                await MainActor.run { service.reload(); onDeleted() }
+                let change = try await writer.delete(fileURL: node.url, label: node.displayName)
+                await MainActor.run { service.reload(); onDeleted(); registerUndo(change) }
             } catch {
                 await MainActor.run {
                     // The removal itself succeeded when only the commit failed.
                     if case KBWriterError.commitFailed = error { service.reload(); onDeleted() }
-                    errorMessage = KBWriterError.message(for: error)
+                    errorMessage = WriteProblem.from(error, action: "change the note").message
                 }
             }
         }
@@ -292,13 +312,13 @@ struct KBEditorView: View {
         let newName = renameText
         Task {
             do {
-                let dest = try await writer.rename(fileURL: node.url, to: newName)
-                await MainActor.run { service.reload(); onRenamed(dest); showRename = false }
+                let (dest, change) = try await writer.renameReturningChange(fileURL: node.url, to: newName)
+                await MainActor.run { service.reload(); onRenamed(dest); showRename = false; registerUndo(change) }
             } catch {
                 await MainActor.run {
                     // The move itself succeeded when only the commit failed.
                     if case KBWriterError.commitFailed = error { service.reload() }
-                    errorMessage = KBWriterError.message(for: error)
+                    errorMessage = WriteProblem.from(error, action: "change the note").message
                     showRename = false
                 }
             }

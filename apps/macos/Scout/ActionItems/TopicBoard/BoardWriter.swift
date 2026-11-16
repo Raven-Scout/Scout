@@ -46,6 +46,14 @@ enum BoardWriteOp: Sendable, Equatable {
         return text
     }
 
+    /// Edit-menu name: "Undo Dismiss Entry".
+    var actionName: String {
+        switch self {
+        case .renameTopic: "Rename Topic"
+        case .dismiss: "Dismiss Entry"
+        }
+    }
+
     var commitMessage: String {
         switch self {
         case .renameTopic(let tag, let name): name.isEmpty ? "action-items: clear topic name #\(tag)" : "action-items: rename topic #\(tag)"
@@ -85,11 +93,25 @@ actor BoardWriter {
         self.git = git
     }
 
-    func submit(_ op: BoardWriteOp) async throws {
+    /// Run `op`. Returns the touched file's bytes before and after, for
+    /// undo; nil when nothing changed or the file couldn't be read.
+    @discardableResult
+    func submit(_ op: BoardWriteOp) async throws -> VaultChange? {
         let previous = tail
         let task = Task { [self] in
             _ = await previous?.value
-            try await perform(op)
+            return try await perform(op)
+        }
+        tail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    /// Undo or redo a change this writer made, in its serial queue.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [git, scoutDirectory] in
+            _ = await previous?.value
+            try await change.apply(direction, git: git, repo: scoutDirectory)
         }
         tail = Task { _ = try? await task.value }
         try await task.value
@@ -111,18 +133,25 @@ actor BoardWriter {
         return supportsWrites
     }
 
-    private func perform(_ op: BoardWriteOp) async throws {
-        try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
+    private func perform(_ op: BoardWriteOp) async throws -> VaultChange? {
         let file = actionItemsDirectory.appendingPathComponent(op.fileName)
+        let before = try? FileSnapshot.capture(file)
+        try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
+        let change = before.flatMap { before in
+            (try? FileSnapshot.capture(file)).flatMap {
+                VaultChange(actionName: op.actionName, before: [before], after: [$0])
+            }
+        }
         guard let path = Self.relativePath(of: file, in: scoutDirectory) else {
             Self.log.debug("Not committing \(file.path, privacy: .public): outside \(self.scoutDirectory.path, privacy: .public)")
-            return
+            return change
         }
         do {
             try await git?.commitPaths([path], message: op.commitMessage)
         } catch {
             Self.log.debug("Commit of \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
+        return change
     }
 
     private func run(_ arguments: [String]) async throws {
