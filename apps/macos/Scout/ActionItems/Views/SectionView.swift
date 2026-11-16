@@ -165,7 +165,7 @@ struct SectionView: View {
             .padding(.top, 6)
         } label: {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isOpen.wrappedValue.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { isOpen.wrappedValue.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
@@ -343,7 +343,7 @@ struct SectionView: View {
             .padding(.top, 6)
         } label: {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { completedExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { completedExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Text("RECENTLY COMPLETED")

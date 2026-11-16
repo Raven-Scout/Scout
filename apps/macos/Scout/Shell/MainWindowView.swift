@@ -62,6 +62,14 @@ struct MainWindowView: View {
             selection = requested
             appState.requestedSidebar = nil
         }
+        .onAppear {
+            // The Go menu can reopen a closed window with a page already
+            // requested; `onChange` doesn't fire for a value set before appear.
+            if let requested = appState.requestedSidebar {
+                selection = requested
+                appState.requestedSidebar = nil
+            }
+        }
     }
 
     private var upgradeSheetPresented: Binding<Bool> {

@@ -154,7 +154,8 @@ struct KBMapView: View {
                     .background(Capsule().fill(on ? DS.Accent.wash : DS.Paper.sunk))
                     .overlay(Capsule().strokeBorder(on ? DS.Accent.fill.opacity(0.5) : .clear, lineWidth: 1))
                     .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p4)
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plainHit)
+                .accessibilitySelected(on)
             }
             Toggle("Hide orphans", isOn: $hideOrphans)
                 .toggleStyle(.checkbox).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
@@ -163,6 +164,8 @@ struct KBMapView: View {
                 Stepper(value: $minDegree, in: 0...10) {
                     Text("\(minDegree)").font(DS.mono(11)).foregroundStyle(DS.Ink.p2)
                 }.labelsHidden()
+                .accessibilityLabel("Minimum links")
+                .accessibilityValue("\(minDegree)")
             }
         }
         .frame(maxWidth: 1100, alignment: .leading)

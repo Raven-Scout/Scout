@@ -82,6 +82,7 @@ struct FilesTab: View {
             .buttonStyle(.plainHit)
             .foregroundStyle(.secondary)
             .help("Reveal in Finder")
+            .accessibilityLabel("Reveal in Finder")
         }
         .padding(.vertical, 2)
     }

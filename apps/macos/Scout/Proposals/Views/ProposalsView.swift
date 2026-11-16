@@ -46,6 +46,7 @@ struct ProposalsView: View {
                     Image(systemName: "folder")
                 }
                 .help("Reveal the dreaming-proposals folder in Finder")
+                .accessibilityLabel("Reveal the proposals folder in Finder")
             }
         }
         .onAppear { docService.load() }
@@ -136,7 +137,7 @@ struct ProposalsView: View {
     private func resolvedSection(_ resolved: [Proposal]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")

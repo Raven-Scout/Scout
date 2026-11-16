@@ -54,6 +54,8 @@ struct FilterChipsView: View {
                 .fill(DS.Paper.sunk.opacity(0.8))
                 .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Status")
     }
 
     private func segmentButton(_ s: ActionItemsFilter.Status) -> some View {
@@ -75,6 +77,7 @@ struct FilterChipsView: View {
                 }
         }
         .buttonStyle(.plainHit)
+        .accessibilitySelected(on)
     }
 
     // MARK: - Chips
@@ -118,6 +121,7 @@ struct FilterChipsView: View {
             HStack(spacing: 6) {
                 if let kind {
                     KindMarker(kind: kind, size: 12)
+                        .accessibilityHidden(true)
                 }
                 Text(label)
                     .font(DS.sans(12, weight: .medium))
@@ -140,6 +144,7 @@ struct FilterChipsView: View {
             }
         }
         .buttonStyle(.plainHit)
+        .accessibilitySelected(selected)
     }
 
     // MARK: - Toggle logic

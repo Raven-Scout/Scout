@@ -9,33 +9,47 @@ import AppKit
 enum DS {
 
     // MARK: - Semantic palette
+    //
+    // Every colour below is a `DS.Palette` token, so its raw light/dark values
+    // can be read back by `ContrastTokenTests`, which checks each text/surface
+    // pair the app uses against WCAG AA (4.5:1). Change a value here and that
+    // test tells you whether it is still readable — see `DS.ContrastPairs`.
 
     /// Paper is the page. Sunk is a recessed well. Raised is a lifted card.
     enum Paper {
-        static let base   = Color("Paper",       bundle: nil, fallbackLight: .sRGB(0.985, 0.984, 0.975, 1), fallbackDark: .sRGB(0.145, 0.147, 0.160, 1))
-        static let sunk   = Color("PaperSunk",   bundle: nil, fallbackLight: .sRGB(0.960, 0.958, 0.948, 1), fallbackDark: .sRGB(0.118, 0.120, 0.132, 1))
-        static let raised = Color("PaperRaised", bundle: nil, fallbackLight: .sRGB(1.000, 0.999, 0.995, 1), fallbackDark: .sRGB(0.180, 0.182, 0.197, 1))
+        static let base   = Palette.paperBase.color
+        static let sunk   = Palette.paperSunk.color
+        static let raised = Palette.paperRaised.color
     }
 
     /// Ink is the foreground type. 1 is primary, 4 is the faintest UI hint.
+    /// All four meet WCAG AA (4.5:1) as text on every paper surface, the
+    /// backdrop tint included, in light and dark; with Increase Contrast on,
+    /// 3 and 4 darken (lighten in dark mode) further.
     enum Ink {
-        static let p1 = Color(fallbackLight: .sRGB(0.125, 0.130, 0.195, 1), fallbackDark: .sRGB(0.950, 0.948, 0.940, 1))
-        static let p2 = Color(fallbackLight: .sRGB(0.310, 0.315, 0.380, 1), fallbackDark: .sRGB(0.780, 0.775, 0.760, 1))
-        static let p3 = Color(fallbackLight: .sRGB(0.510, 0.510, 0.565, 1), fallbackDark: .sRGB(0.600, 0.598, 0.585, 1))
-        static let p4 = Color(fallbackLight: .sRGB(0.660, 0.660, 0.700, 1), fallbackDark: .sRGB(0.440, 0.438, 0.425, 1))
+        static let p1 = Palette.inkP1.color
+        static let p2 = Palette.inkP2.color
+        static let p3 = Palette.inkP3.color
+        static let p4 = Palette.inkP4.color
+        /// Labels drawn on a mid-tone tint (slot-type pills, weekday dots).
+        static let onTint = Palette.inkOnTint.color
     }
 
     /// Hairline rules.
     enum Rule {
-        static let soft = Color(fallbackLight: .sRGB(0.91, 0.905, 0.890, 1), fallbackDark: .sRGB(0.240, 0.244, 0.260, 1))
-        static let hard = Color(fallbackLight: .sRGB(0.87, 0.865, 0.848, 1), fallbackDark: .sRGB(0.300, 0.305, 0.325, 1))
+        static let soft = Palette.ruleSoft.color
+        static let hard = Palette.ruleHard.color
     }
 
     /// Editorial amber accent. `ink` is the readable-on-paper variant.
+    /// `onFill` is the text colour for labels drawn *on* `fill` (badges,
+    /// primary buttons): white on the amber is ~3:1 in light mode and ~1.6:1
+    /// in dark mode, so labels on the accent use a dark ink in both modes.
     enum Accent {
-        static let fill = Color(fallbackLight: .sRGB(0.745, 0.540, 0.240, 1), fallbackDark: .sRGB(0.915, 0.790, 0.470, 1))
-        static let ink  = Color(fallbackLight: .sRGB(0.555, 0.380, 0.120, 1), fallbackDark: .sRGB(0.940, 0.840, 0.560, 1))
-        static let wash = Color(fallbackLight: .sRGB(0.975, 0.945, 0.880, 1), fallbackDark: .sRGB(0.310, 0.250, 0.140, 1))
+        static let fill   = Palette.accentFill.color
+        static let ink    = Palette.accentInk.color
+        static let wash   = Palette.accentWash.color
+        static let onFill = Palette.accentOnFill.color
     }
 
     /// Priority hues sit in the same chroma family on purpose — they read as a
@@ -48,21 +62,32 @@ enum DS {
         static let done     = Color(fallbackLight: .sRGB(0.620, 0.620, 0.640, 1), fallbackDark: .sRGB(0.520, 0.520, 0.535, 1))
     }
 
-    /// Status feedback colors (meeting-now, success, warn, error).
+    /// Status feedback colors (meeting-now, success, warn, error). Text-safe:
+    /// each meets 4.5:1 on every paper surface, so a "Healthy" or "Needs
+    /// attention" label can use them directly.
     enum Status {
-        static let ok   = Color(fallbackLight: .sRGB(0.300, 0.580, 0.385, 1), fallbackDark: .sRGB(0.430, 0.720, 0.500, 1))
-        static let warn = Color(fallbackLight: .sRGB(0.720, 0.510, 0.180, 1), fallbackDark: .sRGB(0.880, 0.660, 0.300, 1))
-        static let err  = Color(fallbackLight: .sRGB(0.750, 0.280, 0.200, 1), fallbackDark: .sRGB(0.880, 0.420, 0.340, 1))
+        static let ok   = Palette.statusOk.color
+        static let warn = Palette.statusWarn.color
+        static let err  = Palette.statusErr.color
     }
 
     // MARK: - Typography
+    //
+    // macOS has no Dynamic Type: `.dynamicTypeSize` and `Font.TextStyle` sizes
+    // don't change with any system setting (checked on macOS 26 — a `.body`
+    // Text measures the same at every `DynamicTypeSize`). So every size the
+    // app draws goes through ONE knob instead: `TextScale.shared`, set in
+    // Settings ▸ General ▸ Text size. `serif`/`mono`/`sans` multiply their
+    // point size by it, and new code should prefer the semantic
+    // `DS.font(_:_:weight:)` styles, which are defined in one place below.
 
     /// Reading voice. Falls back to Apple's "New York" serif on macOS.
     static func serif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if NSFont(name: "Newsreader", size: size) != nil {
+        let size = scaled(size)
+        if FontAvailability.newsreader {
             return .custom("Newsreader", size: size).weight(weight)
         }
-        if NSFont(name: "New York", size: size) != nil {
+        if FontAvailability.newYork {
             return .custom("New York", size: size).weight(weight)
         }
         return .system(size: size, weight: weight, design: .serif)
@@ -70,7 +95,8 @@ enum DS {
 
     /// IDs, timestamps, key counts.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if NSFont(name: "JetBrains Mono", size: size) != nil {
+        let size = scaled(size)
+        if FontAvailability.jetBrainsMono {
             return .custom("JetBrains Mono", size: size).weight(weight)
         }
         return .system(size: size, weight: weight, design: .monospaced)
@@ -78,7 +104,82 @@ enum DS {
 
     /// UI chrome (buttons, labels, filters). SF Pro on macOS.
     static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default)
+        .system(size: scaled(size), weight: weight, design: .default)
+    }
+
+    /// A design point size at the user's chosen text size. Reading
+    /// `TextScale.shared` inside a view's `body` registers an Observation
+    /// dependency, so changing the setting re-renders every view that sized
+    /// text through `DS` — no relaunch, no view-identity reset.
+    static func scaled(_ size: CGFloat) -> CGFloat {
+        scaledSize(size, factor: TextScale.shared.factor)
+    }
+
+    /// Pure scaling rule: multiply, then round to the nearest half point so
+    /// glyphs stay crisp. `factor` 1 returns `size` unchanged.
+    nonisolated static func scaledSize(_ size: CGFloat, factor: CGFloat) -> CGFloat {
+        guard factor != 1 else { return size }
+        return (size * factor * 2).rounded() / 2
+    }
+
+    /// The semantic type scale. New views pick a role, not a point size; the
+    /// scale maps each role to one design size, and `TextScale` grows them
+    /// all together.
+    enum TextStyle: CaseIterable, Sendable {
+        /// Small uppercase group labels, badges, dense metadata.
+        case caption2
+        /// Help text, secondary lines, timestamps.
+        case caption
+        /// Control labels: buttons, chips, segmented controls.
+        case label
+        /// Running text and list rows.
+        case body
+        /// Card and section titles.
+        case headline
+        /// Page section titles.
+        case title
+        /// Page titles.
+        case display
+
+        /// Design size in points at the standard text size.
+        nonisolated var pointSize: CGFloat {
+            switch self {
+            case .caption2: return 10.5
+            case .caption:  return 11.5
+            case .label:    return 12.5
+            case .body:     return 13
+            case .headline: return 15
+            case .title:    return 18
+            case .display:  return 28
+            }
+        }
+    }
+
+    /// Which typeface family carries the text.
+    enum Voice: Sendable {
+        /// SF Pro — UI chrome.
+        case sans
+        /// Newsreader / New York — reading voice.
+        case serif
+        /// JetBrains Mono / SF Mono — data and identifiers only.
+        case mono
+    }
+
+    /// The semantic font for a role. Prefer this over a raw `sans(_:)` size.
+    static func font(_ style: TextStyle, _ voice: Voice = .sans, weight: Font.Weight = .regular) -> Font {
+        switch voice {
+        case .sans:  return sans(style.pointSize, weight: weight)
+        case .serif: return serif(style.pointSize, weight: weight)
+        case .mono:  return mono(style.pointSize, weight: weight)
+        }
+    }
+
+    /// Brand fonts are optional installs; look each one up once, not on every
+    /// font call (the old per-call `NSFont(name:)` probe ran on every render).
+    private enum FontAvailability {
+        static let newsreader    = NSFont(name: "Newsreader", size: 13) != nil
+        static let newYork       = NSFont(name: "New York", size: 13) != nil
+        static let jetBrainsMono = NSFont(name: "JetBrains Mono", size: 13) != nil
     }
 
     // MARK: - Kind → priority mapping
@@ -116,23 +217,13 @@ enum DS {
 // MARK: - Color bridging
 
 private extension Color {
-    /// Light/dark sRGB fallback pair — renders the editorial palette without
-    /// requiring asset-catalog entries.
+    /// Light/dark sRGB pair for decorative colours (shadows, backdrop tints,
+    /// slot hues) that aren't text tokens. Text and surface colours live in
+    /// `DS.Palette` so the contrast test can read them.
     init(fallbackLight: NSColor, fallbackDark: NSColor) {
         self = Color(nsColor: NSColor(name: nil) { appearance in
-            let dark = appearance.bestMatch(from: [.darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua]) != nil
-            return dark ? fallbackDark : fallbackLight
+            DS.Appearance(appearance).isDark ? fallbackDark : fallbackLight
         })
-    }
-
-    /// Optional named asset with sRGB fallback for machines without the
-    /// asset catalog updated yet.
-    init(_ name: String, bundle: Bundle?, fallbackLight: NSColor, fallbackDark: NSColor) {
-        if NSColor(named: NSColor.Name(name), bundle: bundle) != nil {
-            self = Color(nsColor: NSColor(named: NSColor.Name(name), bundle: bundle)!)
-        } else {
-            self.init(fallbackLight: fallbackLight, fallbackDark: fallbackDark)
-        }
     }
 }
 
@@ -218,21 +309,13 @@ struct PaperBackdrop: View {
         ZStack {
             DS.Paper.base
             RadialGradient(
-                colors: [
-                    Color(fallbackLight: .sRGB(0.83, 0.81, 0.92, 0.45),
-                          fallbackDark:  .sRGB(0.20, 0.18, 0.30, 0.45)),
-                    .clear
-                ],
+                colors: [DS.Palette.backdropTintLeading.color, .clear],
                 center: .topLeading,
                 startRadius: 0,
                 endRadius: 760
             )
             RadialGradient(
-                colors: [
-                    Color(fallbackLight: .sRGB(0.95, 0.85, 0.62, 0.40),
-                          fallbackDark:  .sRGB(0.25, 0.18, 0.10, 0.40)),
-                    .clear
-                ],
+                colors: [DS.Palette.backdropTintTrailing.color, .clear],
                 center: .bottomTrailing,
                 startRadius: 0,
                 endRadius: 680
@@ -303,21 +386,16 @@ extension DS {
     /// and from `DS.Priority.*` (action-item urgency axis).
     enum SlotType {
         /// Briefing — warm amber.
-        static let briefing      = Color(fallbackLight: .sRGB(0.860, 0.660, 0.180, 1),
-                                         fallbackDark:  .sRGB(0.910, 0.760, 0.340, 1))
+        static let briefing      = Palette.slotBriefing.color
         /// Consolidation — desaturated steel blue.
-        static let consolidation = Color(fallbackLight: .sRGB(0.400, 0.580, 0.760, 1),
-                                         fallbackDark:  .sRGB(0.520, 0.700, 0.870, 1))
+        static let consolidation = Palette.slotConsolidation.color
         /// Dreaming — quiet violet.
-        static let dreaming      = Color(fallbackLight: .sRGB(0.560, 0.460, 0.760, 1),
-                                         fallbackDark:  .sRGB(0.700, 0.620, 0.880, 1))
+        static let dreaming      = Palette.slotDreaming.color
         /// Research — sage green.
-        static let research      = Color(fallbackLight: .sRGB(0.420, 0.620, 0.420, 1),
-                                         fallbackDark:  .sRGB(0.520, 0.740, 0.540, 1))
+        static let research      = Palette.slotResearch.color
         /// Manual — matched-chroma neutral; manual slots have no fixed
         /// cadence and shouldn't compete visually with the four colored types.
-        static let manual        = Color(fallbackLight: .sRGB(0.620, 0.620, 0.640, 1),
-                                         fallbackDark:  .sRGB(0.520, 0.520, 0.535, 1))
+        static let manual        = Palette.slotManual.color
 
         /// Convenience lookup. Used by every cell that renders a type-tinted dot.
         static func color(for type: Scout.SlotType) -> Color {

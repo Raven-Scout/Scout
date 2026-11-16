@@ -184,10 +184,12 @@ struct TaskCardView: View {
         }
         .buttonStyle(.plainHit)
         .help(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityLabel(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
     private func toggle() {
-        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        withMotion(.easeInOut(duration: 0.15)) { expanded.toggle() }
         if !expanded { onCollapse?() }
     }
 
@@ -349,6 +351,7 @@ struct TaskCardView: View {
         }
         .buttonStyle(.plainHit)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder

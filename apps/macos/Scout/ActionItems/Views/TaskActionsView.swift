@@ -98,6 +98,7 @@ struct TaskActionsView: View {
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .accessibilityLabel("Copy format")
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Choose a copy format")

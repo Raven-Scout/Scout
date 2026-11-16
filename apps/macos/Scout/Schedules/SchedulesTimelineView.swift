@@ -203,6 +203,7 @@ struct SchedulesTimelineView: View {
                         .frame(width: cardW)
                 }
                 .buttonStyle(.plainHit)
+                .accessibilitySelected(selectedSlotKey == slot.key)
                 .overlay(alignment: .leading) {
                     Rectangle()
                         .fill(ring.opacity(0.85))
@@ -240,7 +241,7 @@ struct SchedulesTimelineView: View {
                 Text(slot.type.rawValue.capitalized)
                     .font(DS.sans(9, weight: .medium))
                     .tracking(0.8)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(DS.Ink.onTint)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(ring))
@@ -271,13 +272,28 @@ struct SchedulesTimelineView: View {
                 let isOn = on.contains(name)
                 Text(String(name.prefix(1)))
                     .font(DS.sans(8.5, weight: .medium))
-                    .foregroundStyle(isOn ? Color.white : DS.Ink.p4)
+                    .foregroundStyle(isOn ? DS.Ink.onTint : DS.Ink.p4)
                     .frame(width: 12, height: 12)
                     .background(
                         Circle().fill(isOn ? ring : DS.Ink.p4.opacity(0.18))
                     )
             }
         }
+        // Seven single letters read badly; say the days instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.weekdaysAccessibilityLabel(weekdays))
+    }
+
+    /// "Runs Monday, Wednesday, Friday" / "Runs every day" / "No run days".
+    nonisolated static func weekdaysAccessibilityLabel(_ weekdays: [String]) -> String {
+        let order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        let full = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                    "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+        let on = Set(weekdays)
+        let days = order.filter(on.contains)
+        if days.isEmpty { return "No run days" }
+        if days.count == 7 { return "Runs every day" }
+        return "Runs " + days.compactMap { full[$0] }.joined(separator: ", ")
     }
 
     // MARK: - Layout helpers

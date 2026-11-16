@@ -96,12 +96,14 @@ struct KnowledgeBaseView: View {
                             .foregroundStyle(DS.Ink.p3)
                     }
                     .buttonStyle(.plainHit).help("Back to overview")
+                    .accessibilityLabel("Back to overview")
                 }
                 Button { showNewFile = true } label: {
                     Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
                 .buttonStyle(.plainHit).help("New note")
+                .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
@@ -131,6 +133,7 @@ struct KnowledgeBaseView: View {
                 Button { searchQuery = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -367,7 +370,8 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("FOLDER").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
-                Picker("", selection: $directoryPath) {
+                    .accessibilityHidden(true)
+                Picker("Folder", selection: $directoryPath) {
                     ForEach(directories, id: \.url.path) { dir in
                         Text(dir.label).tag(dir.url.path)
                     }
@@ -377,7 +381,9 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("NAME").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                    .accessibilityHidden(true)
                 TextField("my-note", text: $name)
+                    .accessibilityLabel("Name")
                     .textFieldStyle(.roundedBorder).font(DS.sans(13))
                     .onSubmit(create)
                 Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)

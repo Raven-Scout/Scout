@@ -92,6 +92,7 @@ struct ActionItemsView: View {
                     Image(systemName: "folder")
                 }
                 .help("Reveal in Finder")
+                .accessibilityLabel("Reveal in Finder")
             }
         }
         .overlay(alignment: .top) {
@@ -579,6 +580,7 @@ struct ActionItemsView: View {
             .menuIndicator(.hidden)
             .disabled(selectedTaskIDs.isEmpty)
             .help("Choose a concise or Markdown copy format")
+            .accessibilityLabel("Copy format")
 
             Button("Done") { endSelectionMode() }
                 .buttonStyle(.borderless)

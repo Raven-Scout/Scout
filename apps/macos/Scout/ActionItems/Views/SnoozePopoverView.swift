@@ -93,6 +93,7 @@ struct SnoozePopoverView: View {
                     Image(systemName: "chevron.left").font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
+                .accessibilityLabel("Back")
                 .foregroundStyle(.secondary)
                 Text("Pick a date")
                     .font(DS.sans(10, weight: .semibold))

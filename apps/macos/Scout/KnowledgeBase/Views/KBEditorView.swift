@@ -119,7 +119,7 @@ struct KBEditorView: View {
                     .font(DS.sans(12, weight: .semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isDirty && !isSaving ? .white : DS.Ink.p4)
+            .foregroundStyle(isDirty && !isSaving ? DS.Accent.onFill : DS.Ink.p4)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(isDirty && !isSaving ? DS.Accent.fill : DS.Paper.sunk))
             .disabled(!isDirty || isSaving)
@@ -134,6 +134,7 @@ struct KBEditorView: View {
                 Image(systemName: "ellipsis.circle").font(DS.sans(15)).foregroundStyle(DS.Ink.p3)
             }
             .menuStyle(.borderlessButton).frame(width: 28)
+            .accessibilityLabel("Note actions")
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
     }

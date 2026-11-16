@@ -53,7 +53,7 @@ struct ControlCenterView: View {
             .opacity(0)
             .frame(width: 0, height: 0)
         )
-        .animation(.easeInOut(duration: 0.18), value: detail)
+        .motionAnimation(.easeInOut(duration: 0.18), value: detail)
         .task { openPendingRunIfNeeded() }
         .onChange(of: state.pendingRunToOpen) { _, _ in openPendingRunIfNeeded() }
     }
@@ -123,6 +123,7 @@ struct ControlCenterView: View {
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
             .help("Close (⌘.)")
+            .accessibilityLabel("Close run details")
 
             Text(run.displayName)
                 .font(DS.serif(16, weight: .medium))
@@ -137,6 +138,7 @@ struct ControlCenterView: View {
             }
             .buttonStyle(.plainHit)
             .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+            .accessibilityLabel(isExpanded ? "Collapse run details" : "Expand run details")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

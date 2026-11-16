@@ -46,6 +46,7 @@ struct ScoutApp: App {
             CommandGroup(after: .appInfo) {        // app menu ▸ Check for Updates… (under About Scout)
                 CheckForUpdatesView(updates: updates)
             }
+            GoCommands(appState: appState)         // Go ▸ each page, ⌘1–⌘9
         }
         // "Start in menu bar": suppress the window at launch instead of
         // creating it and hiding it a run-loop later (which raced scene

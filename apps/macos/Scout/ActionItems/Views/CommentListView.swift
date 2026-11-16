@@ -113,6 +113,7 @@ private struct CommentRow: View {
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
                 .help("Edit comment")
+                .accessibilityLabel("Edit comment")
             }
             if onDelete != nil {
                 Button {
@@ -124,6 +125,7 @@ private struct CommentRow: View {
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
                 .help("Delete comment")
+                .accessibilityLabel("Delete comment")
             }
         }
     }

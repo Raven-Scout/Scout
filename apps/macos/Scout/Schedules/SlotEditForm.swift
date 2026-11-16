@@ -99,6 +99,9 @@ struct SlotEditForm: View {
         }
     }
 
+    private static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                                       "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+
     @ViewBuilder
     private var timeAndWeekdaysSection: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -109,6 +112,7 @@ struct SlotEditForm: View {
                     .foregroundStyle(DS.Ink.p3)
             TextField("HH:MM", text: $draft.firesAtLocal)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Time")
                 .frame(width: 120)
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
                 Text(err).font(DS.sans(10)).foregroundStyle(.red)
@@ -141,8 +145,13 @@ struct SlotEditForm: View {
                             .foregroundStyle(isOn ? DS.Paper.base : DS.Ink.p2)
                     }
                     .buttonStyle(.plainHit)
+                    .accessibilityLabel(Self.weekdayNames[day] ?? day)
+                    .accessibilityValue(isOn ? "On" : "Off")
+                    .accessibilityAddTraits(.isToggle)
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Weekdays")
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
                 Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
@@ -293,7 +302,7 @@ struct SlotEditForm: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
-                    .foregroundStyle(DS.Paper.base)
+                    .foregroundStyle(DS.Accent.onFill)
             }
             .buttonStyle(.plainHit)
             .keyboardShortcut(.return, modifiers: [.command])

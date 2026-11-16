@@ -82,6 +82,7 @@ struct LaunchClaudeMenu: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("More ways to launch in Claude")
         }
         .help("Launch this action item in Claude Code or Claude Desktop")
         .keyWindowPointingHand()
@@ -101,6 +102,7 @@ struct LaunchClaudeMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Launch this action item in Claude Code or Claude Desktop")
+        .accessibilityLabel("Launch in Claude")
         .keyWindowPointingHand()
     }
 

@@ -99,7 +99,7 @@ struct KBEditableView: View {
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                     .keyboardShortcut(.cancelAction)
                 Button("Save") { commit(seg) }
-                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
+                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.onFill)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
@@ -151,7 +151,7 @@ struct KBEditableView: View {
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                     .keyboardShortcut(.cancelAction)
                 Button("Send to Scout") { submitComment(seg) }
-                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
+                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.onFill)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
@@ -174,6 +174,7 @@ struct KBEditableView: View {
                 Image(systemName: "xmark.circle.fill").font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
             }
             .buttonStyle(.plain).help("Retract this comment (removes the marker)")
+            .accessibilityLabel("Retract comment")
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -251,7 +252,7 @@ struct KBEditableView: View {
     @ViewBuilder
     private func metadataDisclosure(_ history: [KBDocSegment]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { withAnimation(.easeInOut(duration: 0.15)) { showMeta.toggle() } } label: {
+            Button { withMotion(.easeInOut(duration: 0.15)) { showMeta.toggle() } } label: {
                 HStack(spacing: 6) {
                     Image(systemName: showMeta ? "chevron.down" : "chevron.right")
                         .font(DS.sans(9, weight: .semibold)).foregroundStyle(DS.Ink.p4)

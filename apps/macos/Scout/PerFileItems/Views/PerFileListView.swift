@@ -51,8 +51,8 @@ struct PerFileListView: View {
             .opacity(0)
             .frame(width: 0, height: 0)
         )
-        .animation(.easeInOut(duration: 0.18), value: selectedItemID)
-        .animation(.easeInOut(duration: 0.18), value: detailIsFull)
+        .motionAnimation(.easeInOut(duration: 0.18), value: selectedItemID)
+        .motionAnimation(.easeInOut(duration: 0.18), value: detailIsFull)
         .onChange(of: docService.items) { _, _ in
             // The file was deleted or renamed out from under the pane.
             if selectedItemID != nil && selectedItem == nil { closeDetail() }
@@ -64,12 +64,14 @@ struct PerFileListView: View {
                         Image(systemName: "plus")
                     }
                     .help("Add a new \(config.addNoun)")
+                    .accessibilityLabel("Add a new \(config.addNoun)")
                     Button {
                         NSWorkspace.shared.activateFileViewerSelecting([docService.directoryURL])
                     } label: {
                         Image(systemName: "folder")
                     }
                     .help("Reveal the \(config.title.lowercased()) folder in Finder")
+                    .accessibilityLabel("Reveal the \(config.title.lowercased()) folder in Finder")
                 }
             }
         }
@@ -153,6 +155,7 @@ struct PerFileListView: View {
                 Image(systemName: "chevron.left").font(DS.sans(12, weight: .medium))
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help("Close (⌘.)")
+            .accessibilityLabel("Close details")
             Text(item.title).font(DS.serif(16, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
             Spacer()
@@ -165,6 +168,7 @@ struct PerFileListView: View {
             }
             .buttonStyle(.plainHit)
             .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+            .accessibilityLabel(isExpanded ? "Collapse details" : "Expand details")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -258,7 +262,7 @@ struct PerFileListView: View {
     private func resolvedSection(_ resolved: [PerFileItem]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
