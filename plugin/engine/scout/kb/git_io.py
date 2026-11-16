@@ -196,6 +196,17 @@ def head_text_lossy(repo: Path, rel: str) -> str | None:
     return _text(proc.stdout) if proc.returncode == 0 else None
 
 
+def staged_blob(repo: Path, rel: str) -> bytes:
+    """``rel``'s staged bytes, raw (it must be in the index)."""
+    return git_bytes(repo, "cat-file", "blob", f":{rel}", check=True).stdout
+
+
+def head_blob(repo: Path, rel: str) -> bytes | None:
+    """``rel``'s bytes at HEAD, raw, or None when it (or HEAD) does not exist."""
+    proc = git_bytes(repo, "cat-file", "blob", f"HEAD:{rel}")
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def _names(repo: Path, *args: str) -> set[str]:
     proc = git_bytes(repo, *args)
     return {p for p in _text(proc.stdout).split("\0") if p} if proc.returncode == 0 else set()

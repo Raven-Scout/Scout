@@ -8,7 +8,18 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
 
   - **Bash**: a command :func:`raw_kb_read` flags is denied. ``scoutctl``
     segments (so ``scripts/scoutctl kb …``), the engine's scripts, ``git
-    add``/``commit`` and quoted commit messages are never flagged.
+    add``/``commit`` and quoted commit messages are never flagged. So is one
+    that sets, unsets or blanks ``SCOUT_MODE``/``SCOUT_READER`` or clears the
+    environment (``env -i``), or one that detaches (``nohup``, ``setsid``,
+    ``disown``, a trailing ``&``, ``launchctl``, ``osascript``, ``open``,
+    ``tmux``/``screen``, ``script``, ``at``/``batch``, ``ssh``):
+    :func:`scout.kb.live_run.run_escape`, #595. The commit hook knows a run's
+    commits from the process table either way; the denial makes the attempt
+    fail in the open and leaves it in the transcript. The same function flags
+    a git call that skips or redirects the commit hooks, which the hook can't
+    see because it never runs (``--no-verify``, ``-c core.hooksPath``,
+    ``commit-tree``, a write into ``.git/hooks``, #607): that deny names the
+    form and records the event ``kb_read_gate.hook_skip``.
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
@@ -16,7 +27,10 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`)
     tells the session the note's privacy label instead. Only a reader that
     ``scoutctl kb`` shows nothing (an ``agent:*`` reader, #453 v1) is denied a
-    Read of a KB note. ``knowledge-base/ontology/schema.yaml`` and
+    Read of a KB note. A ``delegate:<id>`` reader (#550 §4.1) is denied a Read
+    of any vault file ``scoutctl kb`` wouldn't show it, KB note or not (trading,
+    ``.scout-inbox``, ``.scout-cache``, ``.scout-logs`` included), and of a
+    missing one alike; hooks.json sends every delegate Read here. ``knowledge-base/ontology/schema.yaml`` and
     ``parser.py`` are tooling, not notes, and are never gated.
 
 Scope: only scheduled runs, by #517's rule (:func:`scout.kb.reader.is_scheduled`:
@@ -115,11 +129,63 @@ def _deny_search(tool: str) -> str:
     )
 
 
+def _deny_run_env() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't set, unset or blank SCOUT_MODE or SCOUT_READER, or clear its environment: "
+        "they say this session is a scheduled run and not the owner. Commit with `scripts/git-safe-commit.sh` as "
+        "usual; if a check refuses the commit, follow what it says."
+    )
+
+
+def _deny_detach() -> str:
+    return (
+        f"{MARK} A scheduled run runs its commands in the foreground: it doesn't background them (a trailing &) or "
+        "hand them to another process (nohup, setsid, disown, launchctl, osascript, open, tmux, screen, script, at, "
+        "batch, ssh). Run the command directly."
+    )
+
+
+def _deny_delegate_write() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't link, unlink or re-trust the owner's agents' mirrors, or change their deploy "
+        "keys (`scoutctl delegate link|unlink|key|trust-state`): those are the owner's, at the keyboard. "
+        "`scoutctl delegate sync` and `status` are fine. If a mirror needs one of these, say so in the run notes."
+    )
+
+
+def _deny_hook_skip(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
+        "private and shared notes apart. Commit the normal way: `scripts/git-safe-commit.sh` in the vault, plain "
+        "`git commit` in any other repo. If a hook refuses the commit, fix what it reports; if you can't, leave the "
+        "file uncommitted and say so in the run notes."
+    )
+
+
+def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
+    """The form and the run's mode, never the command: its text can quote a note."""
+    try:
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(vault),
+            kind="kb_read_gate.hook_skip",
+            source=f"hook:{GATE}",
+            payload={"form": form, "mode": mode},
+        )
+    except Exception:  # noqa: BLE001, S110 - the deny stands without the event
+        pass
+
+
+def _deny_delegate_read() -> str:
+    return f"{MARK} This delegate session may not read that file. {_REPLACEMENT}"
+
+
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
 
-def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
+def decide(payload: Mapping[str, Any], *, reader: str, mode: str | None = None) -> str | None:
     """The deny reason for one run's tool call, or None to allow it. May raise: the caller fails closed."""
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
@@ -135,6 +201,18 @@ def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
+        from scout.kb.live_run import DELEGATE_FORM, run_escape
+
+        escape = run_escape(command)
+        if escape == "env":
+            return _deny_run_env()
+        if escape == DELEGATE_FORM:
+            return _deny_delegate_write()
+        if escape == "detach":
+            return _deny_detach()
+        if escape is not None:
+            _record_hook_skip(vault, escape, mode)
+            return _deny_hook_skip(escape)
         return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
@@ -145,12 +223,60 @@ def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
-    rel = _rel(_target(raw, cwd), vault)
+    target = _target(raw, cwd)
+    from scout.kb.reader import delegate_id
+
+    if delegate_id(reader) is not None:
+        return _delegate_read(vault, target, reader)
+    rel = _rel(target, vault)
     if rel is None or not is_kb_note_path(rel):
         return None
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _vault_rel(vault: Path, target: Path) -> str | None:
+    """``target``'s canonical vault-relative path, ``"."`` for the vault itself, None when outside it.
+
+    Decided by file identity, not spelling: on a case-insensitive disk ``/Users/x/SCOUT/Trading/…``
+    is inside ``/Users/x/Scout``, so the ancestor that is the vault is found with ``samefile``, and
+    the rest takes each existing component's on-disk name (``normalize_rel``), so ``.GIT`` is ``.git``.
+    """
+    from scout.kb.privacy import normalize_rel
+
+    for anc in (target, *target.parents):
+        try:
+            if os.path.samefile(anc, vault):
+                tail = target.relative_to(anc).parts
+                break
+        except OSError:
+            continue
+    else:
+        return None
+    if not tail:
+        return "."
+    try:
+        return normalize_rel(vault, vault.joinpath(*tail))
+    except ValueError:
+        return "."
+
+
+def _delegate_read(vault: Path, target: Path, reader: str) -> str | None:
+    """A delegate (#550 §4.1) Reads only a vault file ``scoutctl kb`` would show it, KB note or not.
+
+    The vault itself, ``.git/``, a missing file and a hidden one get the same deny, so a deny
+    never says whether a file exists. A path outside the vault isn't this gate's to decide.
+    """
+    from scout.kb.privacy import label_file, load_policy, visible_to
+
+    rel = _vault_rel(vault, target)
+    if rel is None:
+        return None
+    if rel == "." or ".git" in rel.split("/") or not (vault / rel).is_file():
+        return _deny_delegate_read()
+    policy = load_policy(vault)
+    return None if visible_to(label_file(vault, rel, policy), reader, policy) else _deny_delegate_read()
 
 
 def _deny(reason: str) -> dict[str, Any]:
@@ -175,7 +301,8 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
         payload = json.load(src)
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
-        reason = decide(payload, reader=resolve_reader(None, env))
+        reader = resolve_reader(None, env)
+        reason = decide(payload, reader=reader, mode=env.get("SCOUT_MODE") or reader)
     except Exception as exc:  # noqa: BLE001 — a run fails closed
         reason = (
             f"{MARK} Scout's KB read gate could not check this call ({type(exc).__name__}), so it is blocked in "

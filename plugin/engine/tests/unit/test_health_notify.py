@@ -583,6 +583,90 @@ def test_auth_expired_is_listed_first_even_when_another_red_sorts_before_it():
     assert pushes[0].finding_ids == ("auth.expired", "a")
 
 
+def _auth_failed_at(at: datetime, *extra: health.Finding, outcome: str = "failed") -> health.RunHealth:
+    """auth.expired (plus ``extra``), with a scheduled run that ended ``outcome`` at ``at``."""
+    row = health.OutcomeRow(
+        slot="consolidation",
+        mode="consolidation",
+        started_at=at - timedelta(seconds=5),
+        finished_at=at,
+        exit_code=1,
+        failure_class="oauth_expired" if outcome == "failed" else "budget",
+        outcome=outcome,
+        log=None,
+        commits_in_window=0,
+        newest_commit=None,
+    )
+    slot = health.SlotStatus(key="consolidation", type="consolidation", last_fire=at, last_outcome=row)
+    return health.build_report([_finding("auth.expired"), *extra], now=at, last_ok_at=None, slots=(slot,))
+
+
+def test_a_sign_in_failure_is_reminded_after_auth_remind_after_not_a_day():
+    """A missed first alert must not mean a day of failed runs in silence."""
+    _, state = health_notify.plan(_auth_failed_at(NOW), {}, now=NOW)
+    again = _auth_failed_at(NOW + timedelta(minutes=90))  # the next slot fails too
+    early = NOW + health_notify.AUTH_REMIND_AFTER - timedelta(minutes=1)
+    assert _run(again, state, early)[0] == []
+    kinds, pushes, state = _run(again, state, NOW + health_notify.AUTH_REMIND_AFTER)
+    assert kinds == ["reminder"]
+    assert pushes[0].body.startswith("Still failing after ")
+    assert pushes[0].body.endswith("auth.expired is broken\nFix: fix auth.expired")
+    assert state["findings"]["auth.expired"]["pushes"] == 2
+
+
+def test_no_sooner_auth_reminder_when_no_run_failed_since_the_last_push():
+    """Signed in again, no run since: auth.expired stays until a run succeeds, but
+    nothing new failed, so the heartbeat must not say "Still failing" every 2 h."""
+    first = _auth_failed_at(NOW)
+    _, state = health_notify.plan(first, {}, now=NOW)
+    for hours in (2, 4, 6, 8, 23):
+        assert _run(first, state, NOW + timedelta(hours=hours))[0] == [], hours
+    assert _run(first, state, NOW + health_notify.REMIND_AFTER)[0] == ["reminder"]
+
+
+def test_a_skipped_run_since_the_last_push_is_not_a_new_sign_in_failure():
+    _, state = health_notify.plan(_auth_failed_at(NOW), {}, now=NOW)
+    skipped = _auth_failed_at(NOW + timedelta(hours=1), outcome="skipped_budget")
+    assert _run(skipped, state, NOW + health_notify.AUTH_REMIND_AFTER)[0] == []
+
+
+def test_the_shorter_auth_reminder_leaves_other_reds_on_the_daily_one():
+    _, state = health_notify.plan(_auth_failed_at(NOW, _finding("a")), {}, now=NOW)
+    pushes, _ = health_notify.plan(
+        _auth_failed_at(NOW + timedelta(hours=1), _finding("a")), state, now=NOW + health_notify.AUTH_REMIND_AFTER
+    )
+    assert [(p.kind, p.finding_ids) for p in pushes] == [("reminder", ("auth.expired",))]
+
+
+def test_a_desktop_only_vault_is_reminded_of_a_sign_in_failure_on_the_desktop(tmp_path, monkeypatch):
+    """The incident, on a vault with only the desktop channel (no Telegram, no
+    notify.command): the wrapper's own banner covers the first failure, and the
+    notifier's desktop reminder follows AUTH_REMIND_AFTER later, not a day later."""
+    from scout.errors import ConfigError
+
+    vault = _vault(tmp_path, monkeypatch)
+    (vault / ".scout-logs" / ".auth-alert-sent").write_text(str(int(NOW.timestamp())))
+    desktop: list[str] = []
+    monkeypatch.setattr(health_notify.notify_desktop, "send", lambda t, b: desktop.append(b) or True)
+
+    def no_telegram(tier, body):
+        raise ConfigError("telegram not configured")
+
+    monkeypatch.setattr(health_notify.notify_telegram, "send", no_telegram)
+    red = _report(_finding("auth.expired"))
+
+    health_notify.notify(vault, now=NOW, report=red)  # the wrapper's banner already said it
+    health_notify.notify(vault, now=NOW + timedelta(minutes=30), report=red)
+    assert desktop == []
+    health_notify.notify(vault, now=NOW + health_notify.AUTH_REMIND_AFTER, report=red)
+    assert desktop == ["auth.expired is broken\nFix: fix auth.expired"]
+    # the notifier's banner counts for the wrapper too, so its daily one won't double it
+    marker = (vault / ".scout-logs" / ".auth-alert-sent").read_text()
+    assert marker == str(int((NOW + health_notify.AUTH_REMIND_AFTER).timestamp()))
+    health_notify.notify(vault, now=NOW + health_notify.AUTH_REMIND_AFTER + timedelta(minutes=30), report=red)
+    assert len(desktop) == 1  # de-duplicated until the next reminder or recovery
+
+
 def test_two_overdue_reminders_are_one_push():
     _, state = health_notify.plan(_report(_finding("a"), _finding("b")), {}, now=NOW)
     pushes, state = health_notify.plan(_report(_finding("a"), _finding("b")), state, now=NOW + timedelta(hours=25))

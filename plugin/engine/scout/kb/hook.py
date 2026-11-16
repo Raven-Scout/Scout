@@ -6,8 +6,10 @@ line), or any exit other than 0 (pass) or 1 with a ``kb-lint:`` verdict, the
 hook prints ``kb-lint: privacy check could not run`` and then:
 
 - **a scheduled run's commit is refused** (``SCOUT_MODE`` set, or
-  ``SCOUT_READER`` set to anything but exactly ``owner``); the run's retry/park
-  handling applies;
+  ``SCOUT_READER`` set to anything but exactly ``owner``); the run's
+  retry/park handling applies. So is any commit while a run of the vault is
+  live (its runner, ``claude-with-retry.sh`` or ``claude`` session in the
+  process table), since without scoutctl the hook can't tell whose it is (#595);
 - **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
   naming the problem and ``scoutctl bootstrap doctor``, and an audit row
   (``event: "privacy.check_unavailable"``, no content) appended to
@@ -48,17 +50,39 @@ _TEMPLATE = """#!/bin/sh
 # commit goes on with a warning and an audit row (#453, spec 8.3).
 SCOUTCTL={scoutctl}
 
+vault_root() {{
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$common" ]; then
+    dirname "$common"
+  else
+    git rev-parse --show-toplevel 2>/dev/null
+  fi
+}}
+
+# A run of this vault is live while its runner holds the session lock, or its
+# claude-with-retry.sh or claude session is alive (#595; scout.kb.live_run). Without
+# scoutctl the hook can't tell whose commit it is, so any live run refuses it. The
+# split "--max-budget" "-usd" keeps this awk from matching its own row in ps.
+live_run() {{
+  root="$(vault_root)" && [ -n "$root" ] || return 1
+  holder="$({{ tr -d ' \\t\\r\\n' <"$root/.scout-logs/.scout-session.lock"; }} 2>/dev/null)"
+  ps -A -w -w -o pid=,stat=,command= 2>/dev/null | awk -v root="$root" -v holder="$holder" '
+    $2 ~ /^Z/ {{ next }}
+    {{ cmd = $0; sub(/^ *[0-9]+ +[^ ]+ */, "", cmd) }}
+    {{ first = cmd; sub(/ .*/, "", first); rest = cmd; sub(/^[^ ]+ +/, "", rest) }}
+    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research)\\.sh( |$)/ {{ found = 1 }}
+    index(cmd " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
+    first ~ /(^|\\/)-?(ba|z|da|k)?sh$/ && index(rest " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
+    index(cmd, "--max-budget" "-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}
+    END {{ exit !found }}'
+}}
+
 scheduled() {{
   [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }}
 }}
 
 audit_unavailable() {{
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-  if [ -n "$common" ]; then
-    root="$(dirname "$common")"
-  else
-    root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
-  fi
+  root="$(vault_root)" && [ -n "$root" ] || return 0
   ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
   ROW='{{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
   ROW="$ROW"'"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
@@ -73,6 +97,10 @@ audit_unavailable() {{
 cannot_run() {{
   echo "kb-lint: privacy check could not run" >&2
   if scheduled; then
+    exit 1
+  fi
+  if live_run; then
+    echo "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run." >&2
     exit 1
   fi
   echo "kb-lint: WARNING: the privacy check could not run ($1); this commit was NOT checked" \\

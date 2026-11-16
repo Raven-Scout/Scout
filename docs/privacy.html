@@ -1,28 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
+<meta charset="utf-8">
 <title>Privacy Policy — Scout</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="description" content="Scout is local-first and collects nothing — no account, no server, no analytics, no telemetry. Your data stays on your machine." />
-<meta name="robots" content="index, follow" />
-<link rel="stylesheet" href="fonts.css" />
-<link rel="stylesheet" href="legal.css" />
-<link rel="icon" type="image/svg+xml" href="assets/scout-icon.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Scout is local-first and collects nothing — no account, no server, no analytics, no telemetry. Your data stays on your machine.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="assets/scout-icon.svg">
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="site.css">
+<script>
+  try { var t = localStorage.getItem('scout-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+<script src="site.js" defer></script>
 </head>
-<body>
-<nav class="nav"><div class="nav-in">
-  <a class="brand" href="index.html"><img src="assets/scout-icon.svg" alt="" /><b>Scout</b></a>
-  <span class="sp"></span>
-  <a class="lnk" href="index.html">Home</a>
-  <a class="lnk" href="terms.html">Terms</a>
-  <a class="lnk" href="https://github.com/Raven-Scout/scout-plugin">GitHub</a>
-</div></nav>
+<body class="legal">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Scout home"><img src="assets/scout-icon.svg" alt="" width="28" height="28">Scout</a>
+    <nav class="nav" aria-label="Site">
+      <a href="./">Home</a>
+      <a href="privacy.html" aria-current="page">Privacy</a>
+      <a href="terms.html">Terms</a>
+    </nav>
+    <a class="icon-btn" href="https://github.com/Raven-Scout/Scout" aria-label="Scout on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+    </a>
+    <button class="icon-btn theme-btn" type="button" id="theme-btn" aria-label="Switch to dark theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4a8.2 8.2 0 1 0 10.6 10.6Z"/></svg>
+    </button>
+  </div>
+</header>
 
-<main><article class="doc">
-  <p class="eyebrow">Legal</p>
+<main id="main"><div class="wrap"><article class="doc">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: June 23, 2026</p>
+  <p class="updated">Last updated: November 13, 2026</p>
 
   <p>This Privacy Policy explains how the <b>Scout</b> project (&ldquo;Scout&rdquo;, &ldquo;we&rdquo;,
   &ldquo;us&rdquo;, or &ldquo;the project&rdquo; &mdash; the maintainers who publish the
@@ -65,6 +81,18 @@
   <code>~/Scout/</code> folder on your Mac and runs local commands (<code>scoutctl</code>, <code>launchctl</code>,
   <code>git</code>) to manage your schedule and action items. It does not contain analytics or crash reporting,
   does not create any account, and does not send your data to us or to any third party.</p>
+  <p><b>Updates.</b> The app checks for new versions of itself about once a day by fetching a release feed from
+  the project's GitHub repository, and downloads signed updates from there. This is an ordinary web request: GitHub
+  can see your IP address and the app's version, as it would for any download. The app does not send usage data or a
+  system profile with it. Setting up the engine also downloads the tools it needs, such as <code>uv</code>, from their
+  public sources.</p>
+
+  <h3>Optional sharing with your team</h3>
+  <p>Scout can upload a snapshot of the folders and notes <i>you choose</i> to a hosted repository that you or your
+  organization run, so that colleagues and their AI assistants can read them. This is <b>off unless you set it up</b>.
+  Notes marked private or local-only are not uploaded, and you can preview exactly what would be uploaded before
+  anything is. That repository is operated by you or your organization, under its own terms, not by us. We never
+  receive this data.</p>
 
   <h3>Scout for iOS</h3>
   <p>The iOS app reads a Scout vault folder that you select on your device &mdash; in practice, the vault inside
@@ -142,18 +170,24 @@
 
   <h2 id="contact">Contact</h2>
   <p>Scout has no hosted support desk. For privacy questions or requests, open an issue at
-  <a href="https://github.com/Raven-Scout/scout-plugin/issues">github.com/Raven-Scout/scout-plugin/issues</a>, or,
+  <a href="https://github.com/Raven-Scout/Scout/issues">github.com/Raven-Scout/Scout/issues</a>, or,
   for sensitive or security-related matters, use
-  <a href="https://github.com/Raven-Scout/scout-plugin/security/advisories">GitHub Security Advisories</a> as
+  <a href="https://github.com/Raven-Scout/Scout/security/advisories">GitHub Security Advisories</a> as
   described in our <a href="https://github.com/Raven-Scout/.github/blob/main/SECURITY.md">Security Policy</a>.</p>
-</article></main>
+</article></div></main>
 
-<footer><div class="foot">
-  <span>&copy; 2026 Raven Scout</span>
-  <span class="sp"></span>
-  <a href="privacy.html">Privacy</a>
-  <a href="terms.html">Terms</a>
-  <a href="https://github.com/Raven-Scout/scout-plugin">Repository</a>
-</div></footer>
+<footer class="site-foot">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/scout-icon.svg" alt="" width="24" height="24">Scout</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Raven-Scout/Scout">GitHub</a>
+      <a href="https://github.com/Raven-Scout/Scout/releases">Releases</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="https://github.com/Raven-Scout/Scout/blob/main/LICENSE">MIT License</a>
+    </nav>
+    <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no analytics, trackers or third-party fonts.</p>
+  </div>
+</footer>
 </body>
 </html>

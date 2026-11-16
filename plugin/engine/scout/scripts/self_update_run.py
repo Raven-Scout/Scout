@@ -500,6 +500,9 @@ def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any]
     whatever is left in the job's process group when the heartbeat exits. A
     backgrounded ``nohup … &`` stays in that group; a new session does not. This is
     the same pattern ``heartbeat.launch_runner`` and ``schedule_tick`` use.
+
+    The child inherits the caller's cwd, which for the heartbeat is the vault, so
+    an argv that runs Python must come from ``scout._spawn.python_module_argv``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_fh:

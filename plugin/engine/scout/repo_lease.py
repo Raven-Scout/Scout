@@ -268,7 +268,33 @@ def acquire_for_run(
     label = f"{machine_label()} ({what})"
     lease = _from_grant(host.lease_acquire(ref, label), owner="run", run_id=run_id, pid=pid, ref=ref, label=label)
     save(vault, lease)
+    note = refresh_host_cache(vault, host)
+    if note:
+        notes.append(note)
     return lease, notes
+
+
+def refresh_host_cache(vault: Path, host: Host) -> str | None:
+    """Cache Agnes's Local-Only list for the commit hook before the run writes anything (#596).
+
+    Best effort: the run keeps its lease whatever happens here, and a cache that
+    goes stale only makes the hook warn, and the doctor say so. Returns a note
+    when the list couldn't be read.
+    """
+    try:
+        state = repo_sync.load_state(vault)
+        if state is None:
+            return None
+        entries = host.status().local_only_paths
+        repo_sync.ensure_ignored(vault)  # a vault linked by an older engine ignores only repo-sync.json
+        repo_sync.save_host_cache(vault, entries, agnes_url=state.agnes_url)
+    except RepoSyncError as e:
+        why = e.code
+    except Exception as e:  # noqa: BLE001 - any failure here (an odd answer, a full disk) must not cost the run
+        why = type(e).__name__
+    else:
+        return None
+    return f"couldn't refresh the cached Agnes Local-Only list ({why}); the commit hook uses the old one"
 
 
 def renew(vault: Path, host: Host, run_id: str) -> LocalLease:

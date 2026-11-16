@@ -1,0 +1,12 @@
+{
+  "comments": [
+    {
+      "id": "cmt-1240-1",
+      "body": "Turned off the nightly PDF job. Its last run was {{d-2}}; the schedule and the template are deleted.",
+      "createdAt": "{{d-1}}T14:18:00Z",
+      "user": {
+        "name": "Sam Example"
+      }
+    }
+  ]
+}
