@@ -455,14 +455,25 @@ def test_the_runner_checks_integrity_after_claude_and_records_it(
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
-def test_no_start_snapshot_records_unchecked(vault: Path, runner: str) -> None:
+def test_a_scoutctl_that_takes_no_start_snapshot_records_an_error(vault: Path, runner: str) -> None:
     _sandbox_scoutctl(vault, "exit 6")  # prints nothing for any sandbox subcommand
     _capture_wrapper_env(vault)
 
     _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
 
     (row,) = _ledger(vault)
-    assert row["integrity"] == "unchecked"
+    assert row["integrity"] == "error"  # health turns yellow, so a snapshot that always fails gets noticed
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_profile_is_built_for_the_claude_the_runner_starts(vault: Path, runner: str) -> None:
+    seen = vault / "profile-claude-bin.txt"
+    _sandbox_scoutctl(vault, f'[ "$2" = profile ] && printf "%s" "${{SCOUT_CLAUDE_BIN-}}" > "{seen}"; exit 6')
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert seen.read_text() == "/usr/bin/true"  # the runner's CLAUDE_BIN, not whatever `which claude` finds
 
 
 @pytest.mark.parametrize("runner", RUNNERS)

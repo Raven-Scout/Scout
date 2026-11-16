@@ -174,8 +174,8 @@ a profile that may be wrong.
 | git config (`~/.gitconfig`, `$GIT_CONFIG_GLOBAL`, `$XDG_CONFIG_HOME/git`) | literal/subpath deny |
 | startup files (shell rc files, `~/Library/LaunchAgents`) | literal/subpath deny |
 | Scout's schedule (`.scout-state/schedule.yaml`, `triggers.yaml`) | literal deny; the loader, the tick and the trigger action also accept only the three runners (review of #642) |
-| git config the runners' git reads (each git's `--system` file from `--show-origin`, `$GIT_CONFIG_SYSTEM`, `include.path` targets) | literal deny |
-| programs the runners run (`~/.local/bin`, the resolved claude install and its `versions/`, a user-writable Homebrew prefix's `bin`, `sbin`, `etc`, `lib` incl. `python*/site-packages`, `opt`, `Cellar`) | subpath deny; plus, kernel only, no new or changed entry directly in a user-writable PATH folder |
+| git config the runners' git reads (each git's `--system` file from `--show-origin`, `$GIT_CONFIG_SYSTEM`, `include.path` targets, asked again from inside the vault so an `includeIf "gitdir:…"` that matches it counts) | literal deny |
+| programs the runners run (`~/.local/bin`, the resolved claude install and its `versions/` (the runner passes its own `CLAUDE_BIN` as `SCOUT_CLAUDE_BIN`, so an install off the scheduler's PATH counts), a user-writable Homebrew prefix's `bin`, `sbin`, `etc`, `lib` incl. `python*/site-packages`, `opt`, `Cellar`) | subpath deny; plus, kernel only, no new or changed entry directly in a user-writable PATH folder |
 | ssh config (`~/.ssh`) | subpath deny; `known_hosts` and `known_hosts.old` carved out (ssh records new hosts there) |
 
 Kernel-only rules (the hook layer lists their parts, the profile denies the whole):
@@ -296,7 +296,7 @@ can write that file and so could switch the sandbox off for the next run. The sw
 | Turned off by `SCOUT_RUN_SANDBOX=off` in the scheduler's environment | (runner) | runs as today | `sandbox: off`, `sandbox_source: env` | note `runs.sandbox_env_off` |
 | Integrity check put a protected tracked file back after the run (§13) | `verify` 10 | carries on | `integrity: restored` | red `run.integrity_restored` for 7 days |
 | … a tag or the stash still holds the change (not rewritten) | `verify` 11 | carries on | `integrity: unrestored` | red `run.integrity_restored` |
-| The integrity check couldn't run | `verify` 12 | carries on | `integrity: error` | yellow `run.integrity_unchecked` |
+| The integrity check couldn't run, or scoutctl took no start snapshot | `verify` 12, or no snapshot | carries on | `integrity: error` | yellow `run.integrity_unchecked` (`unchecked`, recorded only when there's no scoutctl at all, says nothing) |
 
 The eval harness sets `SCOUT_RUN_SANDBOX=off`, because its sessions run under Claude
 Code's Bash sandbox with `failIfUnavailable`.
@@ -474,9 +474,12 @@ All of Q1–Q8 were answered with the recommendation.
     restored | unrestored | error | unchecked`, and health is red for 7 days after a
     restore (§8). The log names the paths and the restoring commit, never content.
   - Not compared: the work tree (under an enforced sandbox it can't change; with the
-    sandbox off or unavailable, a changed file on disk is the pre-1c situation), and
-    remote-tracking refs (fetch moves them legitimately; a pushed change is undone on the
-    remote by the next push of the restored branch).
+    sandbox off or unavailable, a changed file on disk is the pre-1c situation),
+    remote-tracking refs (fetch moves them legitimately) and `ORIG_HEAD` (git's own
+    pointer to where a reset or merge started, which only a later `reset ORIG_HEAD` reads).
+  - A commit the session pushes reaches the remote before the check restores it. The
+    restoring commit sits on top of the local branch, so the remote holds the change until
+    the branch is pushed again, and a clone or pull elsewhere in between gets it.
   - Tests: `tests/unit/test_run_integrity.py` (a committed, staged, new-branch, detached,
     mid-merge and tag case on real git; an ordinary run adds no commit) and the runner
     wiring in `tests/integration/test_runner_skip_outcomes.py`.
@@ -541,6 +544,17 @@ Residuals and decisions this round leaves open:
   such a clone runs whatever hooks the run put there; (c) carve out only the clone's
   `.git/config` there, with `git clone --template=` in the phase so no hooks dir is
   written.
+- **Any in-run `git clone`**, not only the engine-change one: the any-repo rules refuse
+  the new repository's `.git/config` and hook samples wherever it is made, so a clone into
+  a temp dir, `gh repo clone`, and a package install that clones a git dependency (pip,
+  npm or uv from a `git+` URL) all fail inside the sandbox. The 50 runs replayed had no
+  clone other than the engine-change one.
+- **Phase 1d, an engine-PR broker** (the reviewer's shape, next to the commit and
+  Telegram brokers): the session writes its change into the vault as a `git format-patch`
+  series or a bundle; after claude exits, outside the sandbox, the runner makes a clean
+  `git clone --template=` of `origin/main`, applies it, pushes a `scout/<name>` branch
+  and opens the draft PR, so a run's engine change still reaches review without the run
+  writing any repo's config or hooks.
 - **`git branch -m`** renames the branch, then exits 128, because git always moves the
   branch's config section in `.git/config` and no setting stops that. 0 of the 50 runs
   used it.

@@ -31,10 +31,11 @@ RUN_TIMEOUT_S = 60
 SLOT = "morning-briefing"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-# Runs this checkout's engine for `scoutctl budget …`; records every other call.
+# Runs this checkout's engine for `scoutctl budget …` and the integrity check's `sandbox snapshot|verify`;
+# records every other call.
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ["budget"]:
+if sys.argv[1:2] == ["budget"] or sys.argv[1:3] in (["sandbox", "snapshot"], ["sandbox", "verify"]):
     os.execv({python!r}, [{python!r}, "-m", "scout.cli", *sys.argv[1:]])
 with open({calls!r}, "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")

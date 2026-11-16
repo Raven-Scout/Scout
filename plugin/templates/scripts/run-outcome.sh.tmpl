@@ -230,7 +230,8 @@ if sandbox in ("enforced", "unavailable", "off", "conflict", "failed"):
         row["sandbox_source"] = source
 # The post-run integrity check (spec 2026-11-15 §13): clean, restored (a protected tracked file the run changed
 # in git was put back in a new commit), unrestored (a tag or the stash still holds such a change), error (the
-# check couldn't run) or unchecked (no start snapshot); left out for rows from older runners.
+# check couldn't run, including a scoutctl that took no start snapshot) or unchecked (no scoutctl at all); left
+# out for rows from older runners.
 integrity = os.environ.get("SCOUT_INTEGRITY", "")
 if integrity in ("clean", "restored", "unrestored", "error", "unchecked"):
     row["integrity"] = integrity

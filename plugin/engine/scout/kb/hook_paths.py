@@ -366,7 +366,7 @@ def protected_specs(
         # The tick starts each slot's runner, and the trigger engine each trigger's, outside any run (#642 review).
         for name in SCHEDULE_FILES:
             add(vault / ".scout-state" / name, SCHEDULE, tree=False)
-    for path, tree in git_config_files(env, deadline=deadline):
+    for path, tree in git_config_files(env, deadline=deadline, vault=vault):
         add(path, USER_GIT_CONFIG, tree=tree)
     for path in runner_programs(env, home):
         add(path, PROGRAMS, tree=True)
@@ -396,32 +396,39 @@ def ssh_dir(env: Mapping[str, str]) -> Path:
     return Path(env.get("HOME") or Path.home()) / ".ssh"
 
 
-def git_config_files(env: Mapping[str, str], *, deadline: float | None = None) -> list[tuple[str, bool]]:
+def git_config_files(
+    env: Mapping[str, str], *, deadline: float | None = None, vault: Path | None = None
+) -> list[tuple[str, bool]]:
     """(path, tree) for git config a run's git reads besides the vault's and ~/.gitconfig: each git's system
     config (``git config --system --show-origin``, named even when the file doesn't exist yet), ``$GIT_CONFIG_SYSTEM``,
-    and every ``include.path``/``includeIf.*.path`` the global and system configs name. Review of #642."""
+    and every ``include.path``/``includeIf.*.path`` the global and system configs name. Review of #642.
+
+    With ``vault``, each git is asked again from inside it, so an ``includeIf "gitdir:…"`` that matches only the
+    vault names its file too."""
     out: list[tuple[str, bool]] = []
     if env.get("GIT_CONFIG_SYSTEM"):
         out.append((env["GIT_CONFIG_SYSTEM"], False))
     run_env = {k: v for k, v in env.items() if k not in ("GIT_CONFIG_NOSYSTEM", "GIT_DIR", "GIT_CONFIG_COUNT")}
+    places: list[Path | None] = [None, *([vault] if vault is not None and vault.is_dir() else [])]
     for git in _git_binaries(env):
-        for scope in ("--system", "--global"):
-            timeout = _remaining(deadline, _GIT_TIMEOUT_S)
-            if timeout <= 0:
-                return out  # out of time (a hook): the OS sandbox's profile still lists every git's config
-            try:
-                proc = subprocess.run(
-                    [git, "config", scope, "--show-origin", "--includes", "--list"],
-                    capture_output=True, text=True, timeout=timeout, check=False,
-                    stdin=subprocess.DEVNULL, env=run_env,
-                )  # fmt: skip
-            except (OSError, subprocess.SubprocessError):
-                continue
-            files = {m[1] for line in proc.stdout.splitlines() if (m := _ORIGIN.match(line))}
-            files |= set(_MISSING.findall(proc.stderr))
-            for f in sorted(files):
-                if f and f != os.devnull and (f, False) not in out:
-                    out.append((f, False))
+        for cwd in places:
+            for scope in ("--system", "--global"):
+                timeout = _remaining(deadline, _GIT_TIMEOUT_S)
+                if timeout <= 0:
+                    return out  # out of time (a hook): the OS sandbox's profile still lists every git's config
+                try:
+                    proc = subprocess.run(
+                        [git, "config", scope, "--show-origin", "--includes", "--list"],
+                        capture_output=True, text=True, timeout=timeout, check=False,
+                        stdin=subprocess.DEVNULL, env=run_env, cwd=cwd,
+                    )  # fmt: skip
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                files = {m[1] for line in proc.stdout.splitlines() if (m := _ORIGIN.match(line))}
+                files |= set(_MISSING.findall(proc.stderr))
+                for f in sorted(files):
+                    if f and f != os.devnull and (f, False) not in out:
+                        out.append((f, False))
     return out
 
 

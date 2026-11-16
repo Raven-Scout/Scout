@@ -237,6 +237,20 @@ def test_the_hooks_roots_build_keeps_to_its_time_budget(vault: Path, tmp_path: P
     assert hook_paths.protected_write(vault / ".git" / "hooks" / "pre-commit", vault, env) is not None
 
 
+def test_a_gitdir_include_that_matches_only_the_vault_is_protected(vault: Path, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    inc = home / "vault-only.inc"
+    inc.write_text("[user]\n\tname = Alex\n")
+    (home / ".gitconfig").write_text(f'[includeIf "gitdir:{os.path.realpath(vault)}/"]\n\tpath = {inc}\n')
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1")
+    assert str(inc) not in {p for p, _ in hook_paths.git_config_files(env)}
+    assert str(inc) in {p for p, _ in hook_paths.git_config_files(env, vault=vault)}
+    hook_paths._ROOTS_CACHE.clear()
+    assert hook_paths.protected_write(inc, vault, env) == hook_paths.USER_GIT_CONFIG
+
+
 def test_no_time_left_skips_the_git_calls(vault: Path) -> None:
     gone = time.monotonic() - 1
     assert hook_paths.git_hooks_dir(vault, deadline=gone) is None

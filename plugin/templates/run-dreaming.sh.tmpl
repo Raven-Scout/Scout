@@ -172,7 +172,9 @@ case "$(printf '%s' "${SCOUT_RUN_SANDBOX:-}" | tr '[:upper:]' '[:lower:]')" in
 esac
 if [ "$SANDBOX_RC" -ne 7 ] && [ -x "$SCOUTCTL_BIN" ]; then
     SANDBOX_RC=0
-    SCOUT_SANDBOX_PROFILE="$("$SCOUTCTL_BIN" sandbox profile --vault "$SCOUT_DIR" 2>>"$LOG_FILE")" || SANDBOX_RC=$?
+    # SCOUT_CLAUDE_BIN: the claude this runner starts, whose install the profile protects even when it isn't on
+    # the scheduler's PATH (nvm, npm-global, connectors.inputs.claude_bin).
+    SCOUT_SANDBOX_PROFILE="$(SCOUT_CLAUDE_BIN="$CLAUDE_BIN" "$SCOUTCTL_BIN" sandbox profile --vault "$SCOUT_DIR" 2>>"$LOG_FILE")" || SANDBOX_RC=$?
 fi
 case "$SANDBOX_RC" in
     0) SCOUT_SANDBOX_STATUS=enforced ;;
@@ -269,8 +271,12 @@ if [ -n "$SCOUT_INTEGRITY_START" ]; then
         10) SCOUT_INTEGRITY=restored ;;
         11) SCOUT_INTEGRITY=unrestored ;;
     esac
+elif [ -x "$SCOUTCTL_BIN" ]; then
+    # scoutctl is here but took no start snapshot: that's a check that couldn't run, and run health says so.
+    SCOUT_INTEGRITY=error
+    echo "=== integrity check: scoutctl took no start snapshot (see above) — not checked ===" >> "$LOG_FILE"
 else
-    echo "=== integrity check: no start snapshot (see above) — not checked ===" >> "$LOG_FILE"
+    echo "=== integrity check: no scoutctl, so no start snapshot — not checked ===" >> "$LOG_FILE"
 fi
 export SCOUT_INTEGRITY
 
