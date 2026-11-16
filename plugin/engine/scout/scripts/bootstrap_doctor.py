@@ -504,6 +504,84 @@ def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], [f"gate probe passed for claude {version} at {cached.checked_at}: Scout's privacy hooks load."]
 
 
+RUN_TIMEOUT_WINDOW_DAYS = 30
+RUN_TIMEOUT_MIN_RUNS = 5
+
+
+def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
+    """Slots whose runs usually take longer than their run timeout, in awake time (spec 2026-11-13 §8.6): a warning.
+
+    Reads the run-outcome rows' ``awake_s`` (runs from Phase 1 PR D on) over the last 30 days, per slot, with at
+    least 5 runs. A slot whose runtime has a timeout and whose 90th-percentile awake length is above it gets a
+    warning. While Claude Code's timeout is off (Jordan, 2026-11-16: it comes on at 45 minutes, 90 for research,
+    once runs fit), a note says how its slots compare with those values. Silent with no awake lengths yet.
+    """
+    import json as _json
+    import math
+
+    from scout.agent_runtimes import limits as _limits
+    from scout.agent_runtimes import registry
+    from scout.agent_runtimes.resolve import default_runtime
+    from scout.schedule import load_default_schedule, load_schedule
+
+    ledger = vault / ".scout-logs" / "run-outcomes.jsonl"
+    if not ledger.exists():
+        return [], []
+    since = (now or datetime.now(UTC)).timestamp() - RUN_TIMEOUT_WINDOW_DAYS * 86400
+    lengths: dict[str, list[int]] = {}
+    try:
+        for line in ledger.read_text(encoding="utf-8").splitlines():
+            try:
+                row = _json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("outcome", "ok") not in ("ok", "failed"):
+                continue
+            awake_s, finished = row.get("awake_s"), row.get("finished_at")
+            if not isinstance(awake_s, int) or not isinstance(finished, int | float) or finished < since:
+                continue
+            lengths.setdefault(str(row.get("slot")), []).append(awake_s)
+        schedule_path = vault / ".scout-state" / "schedule.yaml"
+        schedule = load_schedule(schedule_path) if schedule_path.exists() else load_default_schedule()
+        fallback = default_runtime(vault).runtime
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        return [], [f"could not compare run lengths with run timeouts: {e}"]
+
+    warnings: list[str] = []
+    readiness: list[str] = []
+    for key, slot in sorted(schedule.items()):
+        runs = lengths.get(key, [])
+        if len(runs) < RUN_TIMEOUT_MIN_RUNS:
+            continue
+        ordered = sorted(runs)
+        p90 = ordered[max(1, math.ceil(len(ordered) * 0.9)) - 1]
+        runtime = slot.agent_runtime or fallback
+        try:
+            adapter = registry.get(runtime)
+        except KeyError:
+            continue
+        lim = _limits.limits_for(vault, adapter, key, slot.type.value)
+        if lim.run_timeout_s is not None:
+            if p90 > lim.run_timeout_s:
+                warnings.append(
+                    f"slot {key!r}: its runs usually take {p90 // 60} min awake (90th percentile of {len(runs)} runs "
+                    f"in {RUN_TIMEOUT_WINDOW_DAYS} days), above its {lim.run_timeout_s // 60}-min run timeout on "
+                    f"{runtime}, so some runs are stopped. Raise it: scoutctl agent-runtime set-limit {runtime} "
+                    "--run-timeout-minutes <minutes>"
+                )
+        else:
+            planned = _limits.default_timeout_minutes(slot.type.value)
+            verdict = "fits" if p90 <= planned * 60 else "would be stopped"
+            readiness.append(f"{key} {p90 // 60} min p90 vs {planned} ({verdict})")
+    notes = []
+    if readiness:
+        notes.append(
+            "run timeout off; awake run lengths vs the planned timeout (45 min, 90 for research): "
+            + "; ".join(readiness)
+        )
+    return warnings, notes
+
+
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
     """How scheduled runs sign in to Claude (#267), as (warnings, notes).
 
@@ -918,6 +996,9 @@ def run_doctor(
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)
+    timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
+    warnings.extend(timeout_warnings)
+    notes.extend(timeout_notes)
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

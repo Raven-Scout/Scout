@@ -185,8 +185,57 @@ def test_limits_from_config(vault: Path) -> None:
     assert (c.run_timeout_s, c.timeout_source) == (90 * 60, "config")
     assert (c.max_tokens_per_day, c.ceiling_source) == (limits.FLOOR_TOKENS, "config")
     d = limits.limits_for(vault, DummyRuntime("d"))
-    assert (d.run_timeout_s, d.timeout_source) == (None, "off")
+    # scout-config.yaml can only make a limit stricter (a run can write it): `off` is ignored, and says so.
+    assert (d.run_timeout_s, d.timeout_source) == (45 * 60, "default")
+    assert d.ignored == ("run_timeout_minutes: off",)
     assert (d.max_tokens_per_day, d.ceiling_source) == (1000, "config")
+
+
+def test_config_can_never_loosen_a_limit(vault: Path) -> None:
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 600\n      max_tokens_per_day: off\n")
+    d = limits.limits_for(vault, DummyRuntime("d"), "night", "research")
+    assert (d.run_timeout_s, d.timeout_source) == (90 * 60, "default")
+    assert (d.max_tokens_per_day, d.ceiling_source) == (limits.FLOOR_TOKENS, "default")
+    assert set(d.ignored) == {"run_timeout_minutes: 600", "max_tokens_per_day: off"}
+
+
+def test_the_owners_limits_replace_the_default_and_config_still_narrows(vault: Path) -> None:
+    limits.set_owner_limit(vault, "d", run_timeout_minutes="180", max_tokens_per_day="off")
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    assert (d.run_timeout_s, d.timeout_source) == (180 * 60, "owner")
+    assert (d.max_tokens_per_day, d.ceiling_source) == (None, "owner")
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 120\n")
+    assert limits.limits_for(vault, DummyRuntime("d")).run_timeout_s == 120 * 60
+    # The owner can turn Claude Code's timeout on (Jordan's 45/90 once awake measurements say runs fit).
+    limits.set_owner_limit(vault, "claude-code", run_timeout_minutes="45")
+    assert limits.limits_for(vault, ClaudeCode()).run_timeout_s == 45 * 60
+    limits.set_owner_limit(vault, "d", clear=True)
+    # Back on the 45-minute default, config's 120 would loosen it: ignored.
+    back = limits.limits_for(vault, DummyRuntime("d"))
+    assert (back.run_timeout_s, back.timeout_source, back.ignored) == (
+        45 * 60,
+        "default",
+        ("run_timeout_minutes: 120",),
+    )
+    with pytest.raises(ValueError):
+        limits.set_owner_limit(vault, "d", run_timeout_minutes="soon")
+    assert oct(limits.run_limits_path().stat().st_mode & 0o777) == "0o600"
+
+
+def test_the_owners_limits_are_per_vault(vault: Path, tmp_path: Path) -> None:
+    limits.set_owner_limit(vault, "d", run_timeout_minutes="off")
+    other = tmp_path / "Other"
+    other.mkdir()
+    assert limits.limits_for(other, DummyRuntime("d")).run_timeout_s == 45 * 60
+
+
+def test_slot_kind_prefers_the_runners_own_run_type(vault: Path) -> None:
+    _schedule(vault, ("deep-dig", "research", ""))
+    assert limits.slot_kind(vault, "deep-dig", "dreaming") == "dreaming"
+    assert limits.slot_kind(vault, "deep-dig", None) == "research"
+    assert limits.slot_kind(vault, "deep-dig", "midday-thing") == "research"  # run type names no kind
+    assert limits.slot_kind(vault, "research-manual", None) == "research"
+    assert limits.slot_kind(vault, None, None) is None
 
 
 @pytest.mark.parametrize("bad", ["-5", "soon", "[1]", "true"])

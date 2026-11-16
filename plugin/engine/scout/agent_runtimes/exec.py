@@ -13,8 +13,9 @@ SIGPIPE and SIGXFSZ, which CPython ignores at startup and an exec would pass on.
 **The run timeout** (``scout.agent_runtimes.limits``). With none (Claude Code's
 default) the exec is the whole story. With one, this process stays as the CLI's
 parent: it starts the CLI in its own process group, forwards SIGTERM, SIGINT and
-SIGHUP to it, and at the run's deadline (``SCOUT_RUN_STARTED`` + the timeout, so
-retries share one budget) stops the group and exits 124.
+SIGHUP to it, and once the run has used the timeout in *awake* time (since the
+runner's ``SCOUT_RUN_AWAKE_STARTED``, so retries share one budget and a sleeping Mac
+spends none of it) stops the group and exits 124.
 """
 
 from __future__ import annotations
@@ -24,9 +25,10 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from scout.agent_runtimes import awake
 from scout.agent_runtimes.base import AgentRuntime, Launch, RunRequest
 
 TIMEOUT_EXIT = 124
@@ -80,11 +82,23 @@ def exec_launch(launch: Launch, env: Mapping[str, str]) -> None:
     os.execvpe(argv[0], argv, dict(env))
 
 
-def deadline(timeout_s: int, env: Mapping[str, str], *, now: float | None = None) -> float:
-    """When the run must end: its start (the runner's SCOUT_RUN_STARTED) plus the timeout."""
+POLL_S = 5.0
+
+
+def spent_s(
+    env: Mapping[str, str],
+    *,
+    awake_now: Callable[[], tuple[str, int]] = awake.now,
+    wall_now: Callable[[], float] = time.time,
+) -> int:
+    """Seconds of the run's time budget already used: awake time since ``SCOUT_RUN_AWAKE_STARTED`` (Jordan's
+    option A, 2026-11-16: time asleep doesn't count), else wall time since ``SCOUT_RUN_STARTED`` (an older
+    runner), else 0. Retries share the run's budget because both are the runner's, taken once."""
+    awake_spent = awake.elapsed(env.get("SCOUT_RUN_AWAKE_STARTED"), now_fn=awake_now, wall_fn=wall_now)
+    if awake_spent is not None:
+        return awake_spent
     raw = env.get("SCOUT_RUN_STARTED", "")
-    start = float(raw) if raw.isdigit() else (time.time() if now is None else now)
-    return start + timeout_s
+    return max(0, int(wall_now()) - int(raw)) if raw.isdigit() else 0
 
 
 def run_with_timeout(
@@ -93,58 +107,83 @@ def run_with_timeout(
     *,
     timeout_s: int,
     runtime_name: str,
-    now: float | None = None,
     grace_s: float = KILL_GRACE_S,
+    awake_now: Callable[[], tuple[str, int]] = awake.now,
+    wall_now: Callable[[], float] = time.time,
+    poll_s: float = POLL_S,
 ) -> int:
-    """Run the CLI as a child, stopping it at the run's deadline. Returns the exit code to exit with."""
-    end = deadline(timeout_s, env, now=now)
+    """Run the CLI as a child, stopping it once the run has used ``timeout_s`` of awake time (exit 124).
+
+    The budget is re-read from the awake clock every ``poll_s`` (never from ``wait``'s own timer), so a
+    host that sleeps mid-run neither spends the budget asleep nor overshoots it on wake.
+    """
     minutes = timeout_s // 60
-    if end - time.time() <= 0:
+
+    def remaining() -> float:
+        return timeout_s - spent_s(env, awake_now=awake_now, wall_now=wall_now)
+
+    if remaining() <= 0:
         print(f"=== Scout run timeout: {minutes} min already spent, not starting {runtime_name} ===", file=sys.stderr)
         return TIMEOUT_EXIT
-    proc = subprocess.Popen(  # noqa: S603 - the adapter's argv
-        list(launch.argv),
-        env=dict(env),
-        stdin=subprocess.PIPE if launch.stdin is not None else None,
-        start_new_session=True,
-        restore_signals=True,
-    )
+
+    # Handlers go in before the child starts, so no signal falls between the two; one that arrives
+    # before the child exists is passed on as soon as it does.
+    child: list[int] = []
+    pending: list[int] = []
 
     def forward(signum: int, _frame: object) -> None:
+        if not child:
+            pending.append(signum)
+            return
         try:
-            os.killpg(proc.pid, signum)
+            os.killpg(child[0], signum)
         except ProcessLookupError:
             pass
 
     forwarded = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     previous = {sig: signal.signal(sig, forward) for sig in forwarded}
     try:
+        proc = subprocess.Popen(  # noqa: S603 - the adapter's argv
+            list(launch.argv),
+            env=dict(env),
+            stdin=subprocess.PIPE if launch.stdin is not None else None,
+            start_new_session=True,
+            restore_signals=True,
+        )
+        child.append(proc.pid)
+        for signum in pending:
+            forward(signum, None)
         if launch.stdin is not None and proc.stdin is not None:
             try:
                 proc.stdin.write(launch.stdin.encode("utf-8"))
                 proc.stdin.close()
             except BrokenPipeError:
                 pass
-        try:
-            code = proc.wait(timeout=max(0.0, end - time.time()))
-        except subprocess.TimeoutExpired:
-            print(
-                f"=== Scout run timeout: {runtime_name} ran past {minutes} min "
-                f"(budget.per_runtime.<id>.run_timeout_minutes) — stopping it ===",
-                file=sys.stderr,
-            )
-            for sig, wait_s in ((signal.SIGTERM, grace_s), (signal.SIGKILL, grace_s)):
-                try:
-                    os.killpg(proc.pid, sig)
-                except ProcessLookupError:
-                    break
-                try:
-                    proc.wait(timeout=wait_s)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
-            return TIMEOUT_EXIT
-        return 128 - code if code < 0 else code
+        while True:
+            left = remaining()
+            if left <= 0:
+                break
+            try:
+                code = proc.wait(timeout=min(left, poll_s))
+            except subprocess.TimeoutExpired:
+                continue
+            return 128 - code if code < 0 else code
+        print(
+            f"=== Scout run timeout: {runtime_name} ran past {minutes} min of awake time "
+            f"(budget.per_runtime.<id>.run_timeout_minutes) — stopping it ===",
+            file=sys.stderr,
+        )
+        for sig, wait_s in ((signal.SIGTERM, grace_s), (signal.SIGKILL, grace_s)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                proc.wait(timeout=wait_s)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        return TIMEOUT_EXIT
     finally:
         # This process usually exits next; put the handlers back anyway (an in-process caller, a test).
         for sig, handler in previous.items():
@@ -177,7 +216,7 @@ __all__ = [
     "KILL_GRACE_S",
     "TIMEOUT_EXIT",
     "build_request",
-    "deadline",
+    "spent_s",
     "exec_launch",
     "launch_env",
     "run",

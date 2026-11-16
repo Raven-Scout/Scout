@@ -100,6 +100,8 @@ classify_failure() {
     [ "$code" -eq 0 ] && { echo "ok"; return; }
     [ -f "$log" ] || { echo "unknown"; return; }
     tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
+    # `agent-runtime exec` stopped the run at its timeout (exit 124 and its own banner, spec 2026-11-13 §8.6).
+    if [ "$code" -eq 124 ] && grep -q '^=== Scout run timeout: ' <<<"$tail_txt"; then echo "timeout"; return; fi
     last_txt="$(awk '/^=== Claude retry attempt /{buf=""; next} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$tail_txt" 2>/dev/null || true)"
     # The CLI's challenge line also starts "Failed to authenticate.", so it is taken out
     # before AUTH_RE looks: a real 401/403 on any attempt is still oauth_expired.
@@ -224,6 +226,14 @@ row = {
     "commits_in_window": int(commits) if commits else None,
     "newest_commit": newest or None,
 }
+# The run's length in awake time (the runner's SCOUT_RUN_AWAKE_S; time the host slept doesn't count), and
+# its agent runtime (spec 2026-11-13 §8.2); both left out for rows from older runners.
+awake_s = os.environ.get("SCOUT_RUN_AWAKE_S", "")
+if awake_s.isdigit():
+    row["awake_s"] = int(awake_s)
+agent_runtime = os.environ.get("SCOUT_AGENT_RUNTIME", "")
+if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", agent_runtime):
+    row["agent_runtime"] = agent_runtime
 runner = os.environ.get("SCOUT_RUNNER_KIND")
 if runner in ("scout", "dreaming", "research"):
     row["runner"] = runner
