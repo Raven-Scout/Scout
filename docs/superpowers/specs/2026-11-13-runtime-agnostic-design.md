@@ -15,10 +15,12 @@ one (§12). The coordinator cuts implementation cards from the plan
 - Approach A (§7).
 - Provider consent: opt in per provider; non-Anthropic runs never read
   local-only paths.
-- Non-Claude slots get a 45-minute timeout and a daily token ceiling, both
-  on by default.
-- A new Antigravity version is re-proved automatically by a tiny scripted
-  model call on the owner's own login.
+- Non-Claude slots get a 45-minute timeout (90 for research) and a daily
+  token ceiling, both on by default.
+- A new Antigravity version is re-proved automatically by the free
+  fake-model probe. A tiny scripted call on the owner's own login runs once
+  per install, and when Scout's hook code or agy's auth mode changes
+  (narrowed after Phase 0).
 - Connector-heavy slots stay on Claude Code at first.
 - The site may carry a "planned" line now.
 
@@ -27,7 +29,10 @@ started, and nothing in the adapter phases is built yet.
 
 - **In progress** (Jordan's go, 2026-11-16; cards cut by the coordinator):
   - **Phase 1**, the runtime interface with Claude Code behind it.
-  - **Phase 0**, a spike per CLI.
+  - **Phase 0**, a spike per CLI. Findings are in
+    (`2026-11-16-runtime-agnostic-phase0-findings.md`) and folded into this
+    spec. agy's real-login runs, agy under the real #642 profile, and its
+    login under launchd are still to do.
   - **Phase 1d**, the commit broker and the send-only Telegram broker.
   - **Phase 6's first card**, the "planned" line on the site and in the
     README.
@@ -160,7 +165,9 @@ Facts were checked on 2026-11-13 against vendor docs and repositories.
 **[docs]** is the vendor's own page, **[repo]** is its source repository or
 release notes, **[2nd]** is a secondary source, and **[unknown]** means not
 verified. Phase 0 re-checks every **[unknown]** that changes the plan by
-hand.
+hand. **[Phase 0]** marks a fact observed in a Phase 0 spike run on
+2026-11-16 (`2026-11-16-runtime-agnostic-phase0-findings.md`), against a
+local fake model in a loopback-only sandbox.
 
 ### 3.1 OpenAI Codex CLI (`codex`)
 
@@ -173,21 +180,23 @@ hand.
 | Headless | `codex exec "<prompt>"`: progress on stderr, final message on stdout. `--json` emits JSONL: `thread.started`, `turn.started`, `turn.completed`, `turn.failed`, `item.*`, `error`. `-o/--output-last-message`, `--output-schema`, `--ephemeral`, `--ignore-user-config`. Resume `codex exec resume <id>`. `--full-auto` removed. Exit codes not documented [docs] |
 | Usage / cost | `turn.completed.usage`: input, cached input, output, reasoning tokens. **No cost field** [docs] |
 | Permissions and sandbox | `sandbox_mode` `read-only` (exec default) / `workspace-write` / `danger-full-access`; `approval_policy = "never"` recommended headless. Network on/off. **Permission profiles** can `deny` *reads* of paths at the OS level (Seatbelt on macOS) [docs: learn.chatgpt.com/docs/sandboxing, config-reference] |
-| Hooks | `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart/End` and more; **on by default**. User config `~/.codex/hooks.json` / `config.toml`; project `.codex/` only if the project is trusted. PreToolUse matches Bash, `apply_patch`, MCP tools (`mcp__server__tool`); deny via `permissionDecision: "deny"` or exit 2; input has `tool_name`, `tool_input`, `cwd`, `session_id`, `transcript_path`. **No dedicated file-read tool**: Codex reads through the shell. Docs call hooks "a useful guardrail, not a complete enforcement boundary". Whether hooks fire in `codex exec` [unknown] [docs: learn.chatgpt.com/docs/hooks] |
+| Hooks | `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart/End` and more; **on by default**. User config `~/.codex/hooks.json` / `config.toml`; project `.codex/` only if the project is trusted. PreToolUse matches Bash, `apply_patch`, MCP tools (`mcp__server__tool`); deny via `permissionDecision: "deny"` or exit 2; input has `tool_name`, `tool_input`, `cwd`, `session_id`, `transcript_path`. **No dedicated file-read tool**: Codex reads through the shell. Docs call hooks "a useful guardrail, not a complete enforcement boundary" [docs: learn.chatgpt.com/docs/hooks]. **Hooks fire under `codex exec`, but an untrusted `~/.codex/hooks.json` is skipped silently** unless `--dangerously-bypass-hook-trust` is passed. **They fail open:** only a well-formed deny, or exit 2 with stderr, blocks; a crash, garbage, empty output, a kill or a timeout allows [Phase 0] |
 | Extensions | Skills = `SKILL.md` with `name` + `description` in `.agents/skills` or `~/.agents/skills`; plugins bundle skills, MCP and hooks; MCP stdio or streamable HTTP, `enabled_tools`/`disabled_tools` per server [docs: learn.chatgpt.com/docs/build-skills] |
 | Context | `AGENTS.md`; `developer_instructions` (append) and `model_instructions_file` (replace), settable per run with `-c` [docs] |
-| Custom endpoint | `model_providers.<id>.base_url`; the wire API must be the Responses API [docs] |
+| Custom endpoint | `model_providers.<id>.base_url`; the wire API must be the Responses API [docs]. A local fake works [Phase 0] |
 | ACP | Not native; adapter `agentclientprotocol/codex-acp` [repo] |
 
 **For Scout:** Track A's second runtime (Q5). Its live gate waits for someone
 with a ChatGPT plan, because Jordan holds none, so it ships as "preview"
-(§13). A strong candidate for Tier F. The hook protocol is close to
-Claude Code's, deny is first-class, and gate config can live in `~/.codex`,
-outside the vault and outside a `workspace-write` sandbox. Two points need
-Phase 0:
+(§13). The hook protocol is close to Claude Code's (the hook sees
+`tool_name: "Bash"`), deny is first-class, and gate config can live in
+`~/.codex`, outside the vault and outside a `workspace-write` sandbox.
+Phase 0 answered the two open points:
 
-- whether hooks fire under `exec`;
-- whether a crashed hook blocks.
+- Hooks fire under `exec`, but only trusted ones, so the adapter must make
+  Scout's hook trusted (§8.5).
+- A crashed hook does *not* block. Tier F depends on Scout's hook never
+  failing without an answer (§8.5).
 
 Because every Codex read is a shell call, the read gate's Bash classifier
 (`scout.kb.raw_read`, already shared with the eval) does all the work.
@@ -210,24 +219,29 @@ Antigravity first; Gemini CLI third, as preview.**
 
 | Question | Gemini CLI | Antigravity CLI |
 |---|---|---|
-| License, version | Apache-2.0; **0.68.0, 2026-11-10** (npm `@google/gemini-cli`) [repo] | Closed source (the public repo holds issues, changelog and examples only); version [unknown] [repo] |
+| License, version | Apache-2.0; **0.68.0, 2026-11-10** (npm `@google/gemini-cli`) [repo] | Closed source (the public repo holds issues, changelog and examples only) [repo]; **1.5.9** tested 2026-11-16; updates itself in place, no documented opt-out [Phase 0] |
 | Install | `npm i -g @google/gemini-cli` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` [docs] |
 | Own login without an API key | Only with a Code Assist Standard/Enterprise licence; otherwise a paid API key or Vertex. Whether a free AI Studio key still works [unknown] [docs: geminicli.com/docs/get-started/authentication] | Yes. All plans include it: a weekly quota for non-paying users, 5-hour + weekly for Pro/Ultra. "Bring-your-own-key is not supported"; headless reuses a prior interactive login [docs: antigravity.google/docs/plans] |
 | Headless | `gemini -p`, `-o text\|json\|stream-json`; events `init`, `message`, `tool_use`, `tool_result`, `error`, `result`; exit codes 0/1/42/53; `--resume` [docs: geminicli.com/docs/cli/headless] | `agy -p`, `--output-format text\|json\|stream-json`, `--json-schema`, `--print-timeout`; events `init`, `step_update`, `result`. In request-review mode unapproved actions are soft-denied and the run still exits 0 [docs: antigravity.google/docs/cli/headless] |
 | Usage / cost | Tokens per model; **no cost** | Tokens; **no cost** |
 | Permissions | `--approval-mode default\|auto_edit\|yolo\|plan`; policy engine (TOML rules with `toolName`, `mcpName`, `argsPattern`, `commandRegex`, `decision allow\|deny\|ask_user`; `ask_user` = deny headless); workspace-tier policies currently disabled [docs: geminicli.com/docs/reference/policy-engine] | `permissions.allow/deny/ask` rules `action(target)` over `read_file`, `write_file`, `command`, `mcp`, …; deny wins; path read-deny supported [docs: antigravity.google/docs/permissions] |
-| Hooks | `BeforeTool`/`AfterTool`, `SessionStart/End` and more, in `settings.json` (user, project, system) or extensions; block with exit 2 or `{"decision":"deny"}`; **malformed stdout fails open**; project hooks are fingerprinted and re-trusted on change. Whether hooks run under `-p` and the stdin schema [unknown] [docs: geminicli.com/docs/hooks] | `PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, …; `.agents/hooks.json` or `~/.gemini/config/hooks.json`; input `toolCall{name,args}`; `decision: "deny"` hard-blocks; 30 s default timeout; headless behaviour [unknown] [docs: antigravity.google/docs/hooks] |
+| Hooks | `BeforeTool`/`AfterTool`, `SessionStart/End` and more, in `settings.json` (user, project, system) or extensions; block with exit 2 or `{"decision":"deny"}`; **malformed stdout fails open**; project hooks are fingerprinted and re-trusted on change [docs: geminicli.com/docs/hooks]. **Hooks run under `-p`** (headless needs `--skip-trust`). **They fail open:** only a deny, or exit ≥ 2 with output, blocks [Phase 0] | `PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, …; `.agents/hooks.json` or `~/.gemini/config/hooks.json`; input `toolCall{name,args}`; `decision: "deny"` hard-blocks; 30 s default timeout [docs: antigravity.google/docs/hooks]. **User hooks load under `-p`** with no trust step. **They fail closed** (crash, bad exit, garbage, kill, timeout and `{}` all deny), **except empty stdout with exit 0, which allows**. `auto_approve` runs a call without a human approval [Phase 0] |
 | Extensions, context | Extensions bundle commands, MCP, hooks, skills; `GEMINI.md`; `GEMINI_SYSTEM_MD` replaces the system prompt [docs] | Plugins (`agy plugin import gemini`), skills in `.agents/skills/`, MCP in `.agents/mcp_config.json`; reads `GEMINI.md`/`AGENTS.md` [docs: antigravity.google/docs/cli/gcli-migration] |
-| Custom endpoint | `GOOGLE_GEMINI_BASE_URL` [2nd only] | **None** [docs] |
+| Custom endpoint | `GOOGLE_GEMINI_BASE_URL` plus a dummy `GEMINI_API_KEY` [Phase 0] | **Yes, on the gemini-provider path:** `--settings '{"modelProvider":"gemini"}'` plus `GOOGLE_GEMINI_BASE_URL` and a dummy `GEMINI_API_KEY`. Real hooks and tools run against the fake [Phase 0]. The docs say none |
 | ACP | Native, `gemini --acp` [docs] | `agy acp` [docs] |
 
 **For Scout:**
 
 - **Antigravity** fits "the owner's own login, no API spend".
   - It has a deny-capable PreToolUse hook *and* path deny rules.
-  - It is closed source and has no custom endpoint, so its conformance can
-    only be proven by model-backed runs: on Jordan's login for a release,
-    and on the owner's login when their `agy` updates (§8.3 rule 4, §11.2).
+  - It is closed source, but its gemini-provider path takes a local fake
+    model, so its conformance runs free on every version. One real-login
+    run proves the owner's Google login loads the same hooks (§8.3 rule 4,
+    §11.2).
+  - Its hooks fail closed except on empty output (§8.5). It has no hook that
+    adds context after a read, so it is **Tier L** at best.
+  - It updates itself in place, with no documented opt-out. A scheduled run
+    can meet a new version between two runs.
   - It is Track A's first runtime (Q5). Jordan can run its live gate on his
     own plan, quota rather than money.
 - **Gemini CLI** is open and testable with a fake model.
@@ -401,11 +415,13 @@ review) are recorded per provider in Phase 0, for the consent prompt in §8.4
   `scout/kb/*`). Adapters only translate.
 - **No paid API spend** (repo rule): each runtime uses the owner's own CLI
   login or subscription. Live tests on Jordan's accounts need his OK *per
-  run*. One exception, decided by Jordan (Q11): the owner's own install
-  re-proves a CLI it can't probe for free with a tiny scripted model call,
-  without asking (§8.3 rule 4). That is part of running Scout, not a test.
-  CI never starts a model. The conformance suite uses a scripted local
-  fake model, where the CLI allows a custom endpoint (§11.2).
+  run*. One exception, decided by Jordan (Q11, narrowed after Phase 0):
+  the owner's own install proves that its real `agy` login loads Scout's
+  hooks with a tiny scripted model call, without asking. It does this once
+  per install, and again when Scout's hook code or agy's auth mode changes
+  (§8.3 rule 4). That is part of running Scout, not a test. CI never starts
+  a model. The conformance suite uses a scripted local fake model, and
+  Phase 0 found that every chosen CLI accepts one (§11.2).
 - **One version, one tag, one release** (root CLAUDE.md). Adapters ship inside
   the plugin and engine, and release with them.
 - **Everything the plugin needs at runtime stays under `plugin/`.** Per-runtime
@@ -766,27 +782,36 @@ reason, when any of these hold:
    (§8.4).
 4. The installed binary's version hasn't passed the conformance probe
    (§11.2). A newer CLI isn't assumed to keep its hooks working.
-   - **Where the CLI takes a custom endpoint** (Claude Code, Codex, maybe
-     Gemini CLI), the probe runs **locally and
-     automatically** the first time a new version is seen.
+   - **Every chosen CLI takes a local fake model** (Claude Code, Codex,
+     Gemini CLI, and Antigravity on its gemini-provider path; Phase 0
+     findings §0). So the probe runs **locally and automatically** the first
+     time a new version is seen.
      - It is the fake-model probe of Phase 1a, generalised. It is free,
        takes seconds, and is cached by version and gate-config hash.
-     - So a CLI auto-update costs one probe, not a Scout release.
-   - **Where it doesn't** (Antigravity), the probe uses a real model
-     (decided, Q11):
-     - Before a release, Jordan's model-backed run proves a version and ships
-       it in `verified.json`, with his OK for that run.
-     - On the owner's Mac, when `agy` reports a version that is neither in
-       `verified.json` nor in the local probe cache, `check` runs
-       `scoutctl agent-runtime probe antigravity` before the first
-       scheduled run on it.
+     - So a CLI auto-update costs one probe, not a Scout release. That
+       matters most for `agy`, which updates itself in place with no
+       documented opt-out (Phase 0 findings §0.6).
+     - It also pins each runtime's hook failure behaviour (Phase 0 findings
+       §1.4, §2), so a release that changes it in either direction is
+       noticed.
+   - **Antigravity also needs one real-login proof** (decided, Q11; narrowed
+     by Jordan on 2026-11-16 after Phase 0). The fake-model probe runs agy
+     under `modelProvider: "gemini"`, not the owner's Google OAuth login, and
+     agy once failed to load hooks for a single auth mode (ADC, fixed in
+     1.4.7).
+     - Before a release, Jordan's model-backed run proves the OAuth path and
+       ships the result in `verified.json`, with his OK for that run.
+     - On the owner's Mac, `scoutctl agent-runtime probe antigravity
+       --real-login` runs once per install. It runs again when Scout's hook
+       code or agy's auth mode changes, **not on every agy version**.
        - The probe is a tiny scripted call on the owner's own login: a few
          thousand tokens of plan quota, no API spend. It asks for the same
          canary read as the fake-model probe, and passes only if Scout's
-         hook denied it.
-       - It runs without asking, as part of running Scout. A failed or
-         inconclusive probe (the model didn't make the call) refuses the run
-         and shows in the doctor. The owner can re-run it by hand.
+         hook recorded the call on the canary path and denied it (Phase 0
+         findings §4 has the pass, inconclusive and fail rules).
+       - It runs without asking, as part of running Scout. A failed probe,
+         or one still inconclusive after one retry, refuses the run and
+         shows in the doctor. The owner can re-run it by hand.
        - It never runs in CI.
      - Any other CLI without a custom endpoint gets no adapter until someone
        actually uses it (Jordan, Q11).
@@ -846,6 +871,19 @@ excluded from non-Anthropic runs.
   holds. Phase 1 also files a separate card to check Claude Code's newer
   read-capable tools against them. That check doesn't change behaviour in
   this spec.
+  - The allowlist is built from the names the **hook** sees, which can
+    differ from a CLI's documented or displayed names. agy's hook sees
+    `run_command` and `read_file`; its `init` event lists `view_file`,
+    `grep_search` and 40-odd others (Phase 0 findings §1.3). The
+    conformance suite records both lists per version.
+  - Tools that start further agents (agy's `run_workflow`, `swarm` and
+    `invoke_subagent`; Codex's `multi_agent_v1`) are denied in a run until a
+    conformance test shows their tool calls reach the same hook.
+- **`hook_in` reads the runtime from its flag and the cwd from the payload.**
+  agy runs hooks with the config dir as their cwd (Phase 0 findings §1.2).
+  Gemini CLI sets `CLAUDE_PROJECT_DIR` in its hooks' environment (§2.2).
+  So no hook infers "this is Claude Code" from its environment or cwd;
+  `--agent-runtime` is the only signal.
 - **Gate config is generated, outside the vault, and out of the session's
   reach.**
   - `scoutctl agent-runtime install` writes each runtime's hook
@@ -910,10 +948,42 @@ excluded from non-Anthropic runs.
       (`repo_sync` already writes `<vault>/.claude/settings.json`, §6.5);
     - `install --check` reports any hook config found there that
       Scout didn't write.
-  - **Hook replies are always well-formed.** Gemini CLI treats malformed
-    hook output as *allow* (§3.2). Every adapter's `hook_out` therefore
+  - **Hook replies are always well-formed.** Every adapter's `hook_out`
     prints a valid deny on any internal error and never relies on a crash
     meaning "block". The conformance suite injects errors to prove it.
+    Phase 0 measured why this rule is load-bearing (findings §1.4, §2):
+    - **Codex** blocks only on a well-formed `hookSpecificOutput` deny or
+      exit 2 with stderr. A crash, garbage, empty output, a kill or a
+      timeout allows the call.
+    - **Gemini CLI** blocks on a deny, or exit ≥ 2 with output. Exit 1,
+      empty output, a kill or a timeout allows it.
+    - **Antigravity** blocks on every failure except **empty stdout with
+      exit 0, which allows**. So agy's `hook_out` never prints nothing.
+    - Each adapter runs a watchdog that denies before the CLI's own hook
+      timeout, as #637 does for Claude Code.
+    - Codex and Gemini CLI still allow a call when the hook process is killed
+      before it can answer. Phases 3 and 4 decide whether that leaves them
+      Tier F, or caps them below it, and record the reason in
+      `docs/runtimes.md`.
+  - **Codex skips untrusted user hooks silently** (Phase 0 findings §2.1).
+    The adapter passes `--dangerously-bypass-hook-trust`, or installs managed
+    hooks if Phase 3 finds they install without root. The conformance canary
+    proves the hook actually ran.
+- **Each CLI's own OS sandbox is off inside Scout's sandbox.** A sandbox
+  can't be nested: agy's `--sandbox` and Codex's Seatbelt both fail with
+  `sandbox_apply: Operation not permitted` (exit 71) under #642's
+  `sandbox-exec` (Phase 0 findings §0.5). So agy runs without `--sandbox`,
+  Codex with `-s danger-full-access`, and Gemini CLI without its sandbox.
+  Scout's outer sandbox is the one OS boundary, as #642 designed.
+  - agy's approvals stay on. Its hook replies `auto_approve` for what the
+    gate allows and `deny` for the rest, so no run passes
+    `--dangerously-skip-permissions` (Phase 0 findings §1.1).
+- **agy's local server is in reach of a run's shell.** Shell children get
+  `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN` and
+  `ANTIGRAVITY_AGENTAPI_EXE` (Phase 0 findings §1.8). Until Phase 2 shows
+  that server can't start tool calls or change settings around the hooks,
+  the shell gate denies a run's command that names any of them, as it does
+  for `env -i`.
   - Generated configs are compared with `install --check` in the doctor
     and in a unit test. They are never hand-edited.
 - **The shell prefilters** in `hooks.json` exist to avoid a Python start per
@@ -948,10 +1018,28 @@ excluded from non-Anthropic runs.
   The daily budget check counts USD for priced rows. For unpriced runtimes it
   adds a daily token ceiling, `budget.per_runtime.<id>.max_tokens_per_day`.
   **Decided (Q6): the timeout and the token ceiling are both on by default.**
-  - The timeout's default is 45 minutes per run.
+  - The timeout's default is 45 minutes per run. **A research slot starts at
+    90 minutes** (Jordan, 2026-11-16, after Phase 0). Research is the long
+    slot: since 2026-11-01, 4 of 29 Claude research runs went over 45
+    minutes, and the 90th percentile was 111 minutes, retry waits included.
+  - The doctor warns when a slot's 90th-percentile Claude run length is
+    longer than its timeout.
   - The ceiling's default is derived from what the owner's Claude Code runs
-    typically use. Phase 0 sets the formula from Jordan's ledgers; the owner
-    can change it.
+    typically use (Phase 0 findings §3); the owner can change it:
+
+    ```
+    ceiling(runtime) = max(10M, 2 × Σ over the runtime's slots of runs_per_day(slot) × T(slot))
+    T(slot) = p90 USD per run for that slot kind, last 14 days of priced Claude rows × 1.0M tokens/USD
+              → after 7 days of the runtime's own rows: p90 of its own total_tokens per run
+    ```
+
+    - The headroom of 2 lets one runaway run through and stops the second.
+    - 1.0M tokens per USD is an estimate (±25%) at Opus list prices. It only
+      matters for the first week, before the runtime has its own history.
+    - An owner with no Claude history gets the 10M floor.
+    - With Jordan's ledgers, one research slot at 2 runs a day gets about
+      17M tokens a day, and one dreaming slot at 3 runs a day about 36M.
+    - The ceiling counts each CLI's `total_tokens`.
   - A run that would start past the ceiling is skipped as
     `skipped_budget`, like a USD overrun today.
   - On a subscription the danger is a runaway run using up the plan's 5-hour
@@ -1233,16 +1321,23 @@ exists, else `verified.json`.
 
 - **If a CLI can't be pointed at a fake model,** its conformance runs only as
   a model-backed eval on Jordan's login, with his per-run OK. Its tier is
-  capped at what that run proved.
-  - This applies to Antigravity, which has no custom endpoint (§3.2).
-  - Re-proving it on every CLI update costs a model run each time. On the
-    owner's Mac that run is automatic, on the owner's own login (§8.3 rule
-    4, Q11).
-- **Endpoints, per §3:**
+  capped at what that run proved. Phase 0 found that none of the chosen
+  CLIs is in this case.
+- **Antigravity's fake-model probe runs on its gemini-provider path, not the
+  owner's Google login.** So, besides the free per-version probe, one
+  real-login canary proves the OAuth path loads the same hooks. It runs once
+  per install, and again when Scout's hook code or agy's auth mode changes
+  (§8.3 rule 4, Q11). Phase 0 findings §4 sets its pass rule: the hook-side
+  record decides between "denied" and "never tried", and the model's own
+  text doesn't count.
+- **Endpoints, all confirmed by a Phase 0 run:**
   - Claude Code: `ANTHROPIC_BASE_URL`.
-  - Codex: `model_providers.<id>.base_url`, Responses API only.
-  - Gemini CLI: `GOOGLE_GEMINI_BASE_URL`, secondary evidence only.
-  - Antigravity: none.
+  - Codex: a `model_providers.<id>` entry with `base_url` and
+    `wire_api="responses"`, plus a dummy key.
+  - Gemini CLI: `GOOGLE_GEMINI_BASE_URL` plus a dummy `GEMINI_API_KEY`.
+    Headless needs `--skip-trust`.
+  - Antigravity: `--settings '{"modelProvider":"gemini"}'` plus
+    `GOOGLE_GEMINI_BASE_URL` and a dummy `GEMINI_API_KEY`.
 
 ### 11.3 Model-backed (local only, Jordan's login, per-run OK)
 
@@ -1261,13 +1356,13 @@ and per-PR checks are in the plan.
 
 | Phase | Ships | Done when | Effort (agent-days) |
 |---|---|---|---|
-| **0 Facts** (Jordan answered §14 on 2026-11-16) | A throwaway spike per chosen CLI (Antigravity, Codex, Gemini CLI) checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Antigravity's spike needs a real model, so it runs on Jordan's login with his OK per run. Also sets the formula for the default token ceiling (§8.6). Spec updated | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
+| **0 Facts** (Jordan answered §14 on 2026-11-16) | A throwaway spike per chosen CLI (Antigravity, Codex, Gemini CLI) checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Also sets the formula for the default token ceiling (§8.6). Spec updated. **Findings in** (`2026-11-16-runtime-agnostic-phase0-findings.md`, folded into §3, §5, §8.3, §8.5, §8.6 and §11.2). **Still pending:** agy's real-login runs (Jordan's OK per run), agy under the real #642 profile, and agy's login under launchd; each is listed with its owner phase in findings §6 | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
 | **1a Bare-mode guard (urgent, Claude Code only)** — *merged, #635* | **Prevention before launch,** because a bare session fires no hook that could detect it from inside. A free pre-launch probe runs `claude` with the run's own flags against a local fake Anthropic endpoint (`ANTHROPIC_BASE_URL`). A scripted tool call reads a fixture KB file, and the probe passes only if Scout's kb-read-gate denied it. Cached by Claude version + `hooks.json` hash + flags. The runners skip the run (`skipped_gates`) on a failed or unrunnable probe; health and doctor report `gates.not_loaded`. If Claude Code later ships an opt-out flag, the runners pass it too | Unit tests; the manual probe passes with today's flags and fails with `--bare` added | 2–3 |
 | **1b Claude run write gate (separate privacy fix)** — *merged, #637 (f1f9dba6)* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; four review rounds |
 | **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *merged, #642 (c4c3a018)* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so a write the hooks can't see is still refused by the kernel. Reads of `~/.scout-secrets` are denied apart from the two Telegram files. A post-run integrity check, outside the sandbox, puts back protected files a run changed in git. The owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description | Done |
 | **1d Commit broker and send-only Telegram broker (Claude Code; added 2026-11-16)** — *planned* | From #642's follow-ups. A broker outside the sandbox makes the run's commits, so per-command git settings no longer matter. A send-only broker sends the Telegram wrap, so the run no longer needs to read the two Telegram files and the sandbox can deny them too | Per its own card | Per its card |
 | **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, provider consent (§8.4), doctor loop, vestigial-variable cleanup. Every adapter's launch keeps #642's sandbox | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
-| **2 Antigravity CLI (first runtime, Q5)** | `antigravity` adapter; gate translation + generated config (`~/.gemini/config/hooks.json`); the local-only exclusion for non-Anthropic runs (§8.4); the timeout and token ceiling on by default (§8.6); model-backed conformance, plus the automatic re-check on a new `agy` version (§8.3 rule 4); per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; the generated `.agents/skills` tree and the first-release commands (§8.10) | Conformance at Tier F (or L) for a pinned version, proved by a model-backed run; `kb-gate` + privacy scenario pass on Antigravity on Jordan's AI Pro login (his OK per run); one slot live for a week | 9–13 |
+| **2 Antigravity CLI (first runtime, Q5)** | `antigravity` adapter; gate translation + generated config (`~/.gemini/config/hooks.json`); the local-only exclusion for non-Anthropic runs (§8.4); the timeout and token ceiling on by default (§8.6); fake-model conformance on agy's gemini-provider path, run automatically per new version, plus the real-login proof (§8.3 rule 4); first, and with no model: agy under the real #642 profile (a write carve-out for agy's data dir, none for `~/.gemini/config`), ruling out a hook bypass through agy's local server (§8.5), and agy's login under launchd; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; the generated `.agents/skills` tree and the first-release commands (§8.10) | Conformance at Tier L for a pinned version (agy has no `post_tool_context`, Phase 0 findings §1.3), proved by the fake-model probe plus one real-login run; `kb-gate` + privacy scenario pass on Antigravity on Jordan's AI Pro login (his OK per run); one slot live for a week | 9–13 |
 | **3 Codex CLI (preview, Q5)** | `codex` adapter; gate translation + generated config; fake Responses-API server and fake-model conformance; eval shim; generated Codex packaging (shares the `.agents/skills` tree) | Conformance at Tier F (or L) for a pinned version. Ships as **preview**. It becomes Supported only when someone with a ChatGPT plan passes `kb-gate` + the privacy scenario (§10) | 5–8 |
 | **4 Gemini CLI (preview, Q5)** | `gemini` adapter; fake-model conformance through `GOOGLE_GEMINI_BASE_URL` if Phase 0 confirms it; an extension package; `hook_out` that always prints valid JSON (malformed output fails open) | As Codex: preview until someone with a Code Assist licence or a paid key passes the live gate | 2–4 |
 | ~~Grok Build CLI~~ | **Dropped (Q1).** Tier S, which it would have needed, isn't built (Q10) | — | — |
@@ -1343,7 +1438,10 @@ landed.
 6. **Budget on subscription runtimes?** **On by default:** a 45-minute
    timeout per run, plus a daily token ceiling per runtime. The ceiling is
    derived from the owner's typical Claude Code usage (formula set in
-   Phase 0), and the owner can change it. → §8.6.
+   Phase 0), and the owner can change it. **Amended by Jordan after Phase 0
+   (2026-11-16):** a research slot starts at 90 minutes, because Claude
+   research runs often take longer than 45. The doctor warns when a slot's
+   usual length is longer than its timeout. → §8.6.
 7. **Connectors?** **Yes:** connector-heavy slots (briefing, consolidation)
    stay on Claude Code at first. The first non-Claude slots are dreaming or
    research. → §8.7, §8.8.
@@ -1360,8 +1458,13 @@ landed.
     exception**, because Jordan uses it. A new `agy` version is re-proved
     **automatically** by a tiny scripted model call on the owner's own
     login, a few thousand tokens of quota, before the first scheduled run
-    on it. A failed or inconclusive probe refuses the run. → §5, §8.3
-    rule 4, §11.2.
+    on it. A failed or inconclusive probe refuses the run. **Narrowed by
+    Jordan after Phase 0 (2026-11-16):** Phase 0 found that agy *can* run
+    against a local fake model. So every new agy version gets the free
+    fake-model probe instead. The real-login call runs once per install,
+    and again when Scout's hook code or agy's auth mode changes, to prove
+    the owner's Google login loads the same hooks. → §5, §8.3 rule 4,
+    §11.2.
 
 ## 15. Calls made in this spec (check while reading)
 
@@ -1383,8 +1486,12 @@ landed.
   to another provider (§8.4).
 - No price catalogue for other vendors; `cost_source: unpriced`, plus a run
   timeout and a daily token ceiling, both on by default (§8.6).
-- A CLI without a custom endpoint is re-proved on the owner's login,
-  automatically, per new version (§8.3 rule 4).
+- Every new CLI version is re-proved by the free fake-model probe,
+  automatically. agy also gets one real-login proof per install, and
+  another when Scout's hook code or agy's auth mode changes (§8.3 rule 4,
+  Q11 as narrowed).
+- Each CLI's own OS sandbox is off inside Scout's #642 sandbox, which is the
+  one OS boundary (§8.5).
 - `agent_runtime` stays out of the schedule snapshot for now (§8.7).
 - Neutral connector keys in Phase 2, a contract change (§8.8).
 - Connector drafting stays Claude-only in v1 (§8.8).

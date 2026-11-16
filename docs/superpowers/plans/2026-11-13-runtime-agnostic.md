@@ -22,8 +22,11 @@ defaults:
 - Approach A.
 - Opt-in provider consent, with local-only paths excluded from
   non-Anthropic runs.
-- A timeout and a daily token ceiling, on by default.
-- An automatic re-check per new `agy` version on the owner's login.
+- A timeout (45 minutes, 90 for research) and a daily token ceiling, on by
+  default.
+- A free fake-model probe per new `agy` version, plus a real-login proof
+  once per install and when Scout's hook code or agy's auth mode changes
+  (narrowed after Phase 0).
 - Connector-heavy slots stay on Claude Code.
 - A "planned" line is allowed now.
 - First-release commands: `scout-ask`, `scout-work`, `scout-status` and the
@@ -72,8 +75,9 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
   denied to every non-Anthropic run, consent or not (spec §8.4).
 - No paid API spend, no API keys in tests or CI, no model in CI. Model-backed
   runs are local, on Jordan's login, with his OK per run (repo rule). The
-  only exception is the owner's own install re-proving a new `agy` version
-  automatically, on the owner's login (spec §8.3 rule 4).
+  only exception is the owner's own install proving, automatically and on
+  the owner's login, that agy's real login loads Scout's hooks (spec §8.3
+  rule 4).
 - Never run a test that does `bootstrap install` without `--no-jobs`, and
   never touch `~/Scout`, `~/scout-plugin` or the live launchd jobs.
 - Local tests: affected files only. CI is the gate. Before pushing engine
@@ -596,38 +600,59 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
   A spike that needs a real model uses Jordan's login only with his per-run OK.
 - **Done when:** spec §3 has no unknown that changes a tier, and the
   coordinator has a go per runtime.
+- **Status (2026-11-16): findings in**, as
+  `docs/superpowers/specs/2026-11-16-runtime-agnostic-phase0-findings.md`,
+  folded into the spec. All three CLIs took a local fake model, Antigravity
+  included, so no spike needed a real model. Still to do, each owned by
+  Phase 2: agy's real-login runs (Jordan's OK per run; findings §4), agy
+  under the real #642 profile, and agy's login under launchd.
 
 ## Phase 2 — Antigravity CLI, the first runtime (cards; detailed plan after Phase 0)
 
 The first non-Claude runtime carries the shared pieces that Phases 3 and 4
 reuse.
 
-1. `antigravity` adapter: argv (`agy -p`, `--output-format stream-json`,
-   the run prompt); model validation; `classify_failure` (the plan's 5-hour
+0. First, with no model: agy under the real #642 profile (a write carve-out
+   for `~/.gemini/antigravity-cli`, none for `~/.gemini/config`; the
+   self-updater writes `~/.local/bin/agy`); show that agy's local server
+   (`ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`) can't start tool
+   calls around the hooks, or deny shell commands that name it (spec §8.5);
+   agy's login under a one-shot launchd job that Jordan starts himself.
+1. `antigravity` adapter: argv as in Phase 0 findings §1.9 (`agy -p`,
+   `--output-format stream-json`, `--print-timeout`, generated
+   `--settings`; no `--sandbox`, no `--dangerously-skip-permissions`; the
+   hook replies `auto_approve` or `deny`); model validation; `classify_failure` (the plan's 5-hour
    and weekly limits → `usage_limit(resets_at)`); `run_usage` from its token
    events (`cost_source: unpriced`); process markers.
 2. Protocol additions: `hook_in`/`hook_out`/`gate_config`/`parse_events`.
-   Antigravity gate translation: `toolCall{name,args}` → `GatePayload`;
-   unknown tools are denied in a run. `agent-runtime install` writes
+   Antigravity gate translation: `toolCall{name,args}` → `GatePayload`,
+   classed by the hook-side names (`run_command`, `read_file`, …; findings
+   §1.3), with `cwd` taken from the payload; unknown tools, and
+   `run_workflow`, `swarm` and `invoke_subagent`, are denied in a run.
+   `hook_out` prints a decision on every path, never empty output. `agent-runtime install` writes
    `~/.gemini/config/hooks.json` (a managed block) plus `--check`. The gate
    denies writes to `.agents/`, `.gemini/`, `.codex/` and `.claude/` in the
    vault, and every gate config path joins `hook_paths`.
 3. Privacy: provider consent applies (Task 1.7). Local-only paths are denied
    to non-Anthropic runs by the read gate and left out by `scoutctl kb`
    (spec §8.4).
-4. Budget: `run_timeout_minutes` (default 45) for every non-Claude slot; a
-   `budget.per_runtime.<id>.max_tokens_per_day` ceiling, on by default, with
-   Phase 0's formula; a skip past the ceiling is `skipped_budget` (spec
-   §8.6).
-5. Conformance, model-backed (no custom endpoint):
-   - `scoutctl agent-runtime probe antigravity`, a scripted canary read
-     that passes only on Scout's deny;
-   - run automatically by `check` before the first scheduled run on a
-     version that is neither in `verified.json` nor in the local cache. It
-     costs the owner's quota, never runs in CI, and refuses on fail or
-     "inconclusive";
-   - `verified.json` rows for Antigravity come from Jordan's runs, with his
-     OK per run.
+4. Budget: `run_timeout_minutes` (default 45; 90 for a research slot) for
+   every non-Claude slot, and a doctor warning when a slot's p90 Claude run
+   length is above its timeout; a `budget.per_runtime.<id>.max_tokens_per_day`
+   ceiling, on by default, with Phase 0's formula (findings §3, spec §8.6);
+   a skip past the ceiling is `skipped_budget`.
+5. Conformance:
+   - `scoutctl agent-runtime probe antigravity`: the fake-model probe on
+     agy's gemini-provider path (findings §1.9), with the canary
+     `run_command` and `read_file` and the failure-mode rows. Free, run
+     automatically by `check` on every version that is neither in
+     `verified.json` nor in the local cache, and in CI where agy installs.
+   - `probe antigravity --real-login`: the scripted canary on the owner's
+     own login, once per install and again when Scout's hook code or agy's
+     auth mode changes. It costs a little quota, never runs in CI, and
+     refuses on fail, or on "inconclusive" after one retry (findings §4).
+   - `verified.json`'s real-login rows for Antigravity come from Jordan's
+     runs, with his OK per run.
 6. Normalised `RunEvent`s: eval `metrics.py` and the Stop-hook accounting
    consume them; Claude's stays as it is.
 7. Neutral connector keys: `connectors.yaml` → regenerate
@@ -645,20 +670,30 @@ reuse.
     `.agents/skills` tree (shared with Codex later), with a drift test.
     First-release scope: `scout-ask`, `scout-work`, `scout-status` and the
     four launch skills (spec §8.10).
-11. Acceptance: conformance at Tier F or L for a pinned version, by a
-    model-backed run; `kb-gate` + privacy scenario pass on Antigravity on
+11. Acceptance: conformance at Tier L for a pinned version (agy has no
+    post-read context hook), by the fake-model probe plus one real-login
+    run; `kb-gate` + privacy scenario pass on Antigravity on
     Jordan's AI Pro login (his OK per run); one dreaming or research slot
     live for a week. Then add the `docs/runtimes.md` row.
 
 ## Phase 3 — Codex CLI, preview (cards; after Phase 2)
 
-1. `codex` adapter: argv (`codex exec --json`, `approval_policy=never`,
-   `sandbox_mode=workspace-write`, `developer_instructions` for the run
-   prompt); model validation; `classify_failure`; `run_usage` from
-   `turn.completed.usage` (`cost_source: unpriced`); process markers.
-2. Codex gate translation: Bash and `apply_patch` → `GatePayload`.
-   `agent-runtime install` writes `~/.codex/hooks.json` (a managed block)
-   plus `--check`.
+1. `codex` adapter: argv per Phase 0 findings §2.1 (`codex exec --json
+   --skip-git-repo-check --dangerously-bypass-hook-trust -s
+   danger-full-access`, `approval_policy=never`, `developer_instructions`
+   for the run prompt). Codex's own Seatbelt can't nest inside #642's
+   sandbox, which is the OS boundary. Model validation; `classify_failure`;
+   `run_usage` from `turn.completed.usage` (`cost_source: unpriced`);
+   process markers.
+2. Codex gate translation: Bash and `apply_patch` → `GatePayload` (the hook
+   payload is Claude Code's shape). `agent-runtime install` writes
+   `~/.codex/hooks.json` (a managed block) plus `--check`; use managed hooks
+   (`requirements.toml`) instead if they install without root. Codex hooks
+   fail open, so every error path in `hook_out` prints the
+   `hookSpecificOutput` deny or exits 2 with stderr, and a watchdog denies
+   before the hook timeout. Decide, and record in `docs/runtimes.md`,
+   whether a hook killed before it answers leaves Codex at Tier F (spec
+   §8.5). `multi_agent_v1` is denied in a run.
 3. Fake Responses-API server (sibling of `fake_anthropic.py`) and the Codex
    conformance suite. It writes `agent_runtimes/verified.json` (generated,
    never hand-edited).
@@ -673,9 +708,15 @@ reuse.
 
 ## Phase 4 — Gemini CLI, preview (cards; after Phase 2)
 
-- `gemini` adapter: fake-model conformance through `GOOGLE_GEMINI_BASE_URL`
-  if Phase 0 confirms it; an extension package; and `hook_out` that always
-  prints valid JSON (malformed output fails open).
+- `gemini` adapter: argv `gemini -p … -o stream-json --approval-mode yolo
+  --skip-trust`, with Gemini CLI's own sandbox off; fake-model conformance
+  through `GOOGLE_GEMINI_BASE_URL` and a dummy key (confirmed in Phase 0);
+  an extension package; hooks in a managed block of `~/.gemini/settings.json`,
+  owned by the same installer as agy's `~/.gemini/config` block; `hook_out`
+  always prints a JSON decision with exit 0, and a watchdog denies before
+  the timeout (hooks fail open, findings §2.2). The same Tier F question as
+  Codex. Hooks never read `CLAUDE_PROJECT_DIR`, which Gemini CLI sets, as a
+  sign of Claude Code.
 - Acceptance as Codex: preview until someone with a Code Assist licence or
   a paid key passes the live gate.
 
@@ -714,7 +755,8 @@ built (Q10).*
 
 - **Spec coverage:**
   - §8.2 → 1.1, 1.2, 1.4.
-  - §8.3 → 1.1, 1.4; rule 4's model-backed re-check → Phase 2.5.
+  - §8.3 → 1.1, 1.4; rule 4's per-version probe and real-login proof →
+    Phase 2.5.
   - §8.4 → 1.7; the local-only exclusion → Phase 2.3.
   - §8.5 liveness → 1.5; gate translation → Phase 2.2.
   - §8.6 → 1.6 and Phase 2.1/2.4.
