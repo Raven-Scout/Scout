@@ -6,11 +6,14 @@
 # Example: write-session-cost.sh dreaming 10 7.42 0 session
 #
 # source: "session" (actual Claude-reported cost) or "runner" (fallback from shell script).
-# Runner entries exist only so crashed sessions still leave a row, and get $0 as the
-# spent amount. budget_check.decide() counts each session once (_window_cost): rows
-# that share a session_id count as their largest, a session row written during a run
-# the runner priced from the transcripts is left out, and a row with no session_id
-# counts on its own, as every row did before #560.
+# Since #579 the runner normally records the run itself through `scoutctl budget
+# record-run`, with the cost claude reported (cost_source "transcript", the sessions'
+# ids in `sessions`). A runner row from this script is the fallback for a scoutctl
+# without record-run, so a crashed session still leaves a row; it gets $0 as the spent
+# amount. budget_check.decide() counts each session once (_window_cost): rows that
+# share a session_id count as their largest, a row whose session_id the runner row
+# lists in `sessions` is left out (the runner priced it from the transcript), and a
+# row with no session_id counts on its own, as every row did before #560.
 
 set -euo pipefail
 
