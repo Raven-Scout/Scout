@@ -10,6 +10,7 @@ without ``rg``, binary and non-UTF-8 files, and the audit log.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import datetime
 import io
 import json
@@ -96,7 +97,10 @@ def _settle(vault: Path) -> None:
     old = time.time() - 86_400
     for p in vault.rglob("*"):
         if p.is_file() and not p.is_symlink():
-            os.utime(p, (old, old))
+            # A file can vanish mid-walk (a detached `git gc --auto` packing the vault's loose
+            # objects failed this on CI); a file that is gone needs no backdating.
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(p, (old, old))
 
 
 def _labels_by_path(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
