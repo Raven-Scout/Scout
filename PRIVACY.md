@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated: November 13, 2026**
+**Last updated: November 16, 2026**
 
 This Privacy Policy explains how the **Scout** project ("Scout", "we", "us", or "the
 project" — the maintainers who publish the [Raven Scout](https://github.com/Raven-Scout)
@@ -15,6 +15,13 @@ server, no analytics, and no telemetry. The plugin runs as scheduled
 it produces — your knowledge base, action items, logs, and configuration — is written to
 files on *your* machine (by default, the `~/Scout/` folder) and to *your* own git history.
 Your data never reaches us, because there is nowhere for it to go.
+
+There is one thing we can count. Scout's one-command installer downloads a small version
+file from our GitHub Releases page, and GitHub publicly shows how many times each release
+file has been downloaded. That running total tells us roughly how many times the installer
+has run. It is a number and nothing more: no IP address, no identity, nothing about you or
+your machine. See ["The installer's version check"](#the-installers-version-check), which
+also says how to turn it off.
 
 Because we never receive your data, there is nothing for us to sell, share, mine, or lose.
 The honest privacy story for Scout is one of **architecture, not promises**: the data stays
@@ -107,6 +114,37 @@ update) those connected tools. All of this happens:
 We are not a party to any of it. To understand how your data is handled there, see
 [Anthropic's Privacy Policy](https://www.anthropic.com/legal/privacy) and the privacy policy of
 each service you connect.
+
+### The installer's version check
+
+When you run Scout's one-command installer (`install.sh`), it downloads one small public file,
+`scout-release.json`, from the latest release on
+[github.com/Raven-Scout/Scout/releases](https://github.com/Raven-Scout/Scout/releases). The
+file names the current version, and the installer uses it to tell you if the copy it just
+installed is behind the latest release.
+
+The installer adds nothing to that download: no identifier, no cookie, no query string, and
+nothing about your vault or your machine. Like any download, the request goes to GitHub, which
+can see your IP address and the version of `curl` making it. That is governed by
+[GitHub's Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-privacy-statement),
+not by us, and we have no access to it.
+
+What we can see is the running total that GitHub publishes for every release file: how many
+times it has been downloaded. For this file, that total is roughly how many times the installer
+has run, re-runs to upgrade included. It is a single number with no IP address, account, device
+or vault information in it, and the check sends us nothing else. (GitHub shows the maintainers of
+any public project similar totals, such as how often the repository is viewed and cloned.)
+
+The check is best effort: if GitHub doesn't answer within a few seconds, the installer says so and
+carries on. Scout.app and Claude Code's own plugin updates don't download this file. To skip the
+check, set `SCOUT_NO_RELEASE_CHECK=1` (or the general-purpose `DO_NOT_TRACK=1`) for the installer.
+Put it on `bash`, not on `curl`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | SCOUT_NO_RELEASE_CHECK=1 bash
+```
+
+The install works the same without the check.
 
 ## This website
 

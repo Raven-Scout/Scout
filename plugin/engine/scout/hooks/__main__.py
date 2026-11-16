@@ -17,6 +17,7 @@ from importlib import import_module
 
 HOOKS = {
     "kb-read-gate": "scout.hooks.kb_read_gate",
+    "kb-write-gate": "scout.hooks.kb_write_gate",
     "kb-read-label": "scout.hooks.kb_read_label",
     "outbound-gate": "scout.hooks.outbound_gate",
     "shared-read-record": "scout.hooks.shared_read_record",
