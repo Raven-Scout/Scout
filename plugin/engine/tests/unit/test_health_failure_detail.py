@@ -209,6 +209,7 @@ def test_to_dict_emits_the_new_keys(tmp_path):
     [
         ("network", "NETWORK_RE", "API Error: Connection error (ECONNREFUSED)"),
         ("network", "NETWORK_RE", "Stream idle timeout - partial response received"),
+        ("network", "NETWORK_RE", "API Error: Unable to connect to API (FailedToOpenSocket)"),
         ("git_lock", "GIT_LOCK_RE", "fatal: Unable to create '/v/.git/HEAD.lock': File exists."),
         ("rate_limited", "RATE_LIMIT_RE", "You've hit your session limit · resets 2:10pm (Europe/Prague)"),
         ("rate_limited", "RATE_LIMIT_RE", "API Error: 429 Too Many Requests"),

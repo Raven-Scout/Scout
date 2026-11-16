@@ -967,3 +967,121 @@ def test_shells_that_run_their_stdin_reach_python_from_the_shell(vault: Path, tm
     payload = _payload("Bash", {"command": command}, vault)
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, tmp_path / "missing", "Grep|Glob|Bash")
     assert res.returncode == 2, command
+
+
+# --- the shell reader, case by case (each one reads the command the way the shell does) ---------------------
+
+SETTINGS = ".claude/settings.local.json"
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        (f"x=$(echo a\\ b > {SETTINGS})", "agent settings"),  # an escaped space inside a substitution
+        (f'x=$(echo "`date`" > {SETTINGS})', "agent settings"),  # a backtick in quotes in a substitution
+        (f"x=$(echo `date` > {SETTINGS})", "agent settings"),  # a backtick in a substitution
+        (f"x=$(\n# a comment that doesn't close its quote\necho x > {SETTINGS}\n)", "agent settings"),
+        (f"x=$(cat <<'EOF'\n) don't\nEOF\necho y > {SETTINGS})", "agent settings"),  # a here-document inside
+        ("echo ok # it's a comment\necho x > $(printf .claude)/settings.local.json", "can't resolve"),
+        (f"tee >(cat > {SETTINGS}) < notes/a.md", "agent settings"),  # a process substitution's command
+        (f"sed -i --expression='s/a/b/' {SETTINGS}", "agent settings"),
+        ("f=$(mktemp -p .git/hooks); echo x > $f", ".git/hooks"),
+        (f"python3 \"-copen('{SETTINGS}', 'w').write('x')\"", "agent settings"),  # a program attached to -c
+        ('perl \'-eopen(F, ">", ".git/hooks/pre-commit")\'', ".git/hooks"),
+        (f"deno eval \"Deno.writeTextFileSync('{SETTINGS}', '{{}}')\"", "agent settings"),
+    ],
+)
+def test_the_shell_reader_finds_the_write(vault: Path, command: str, form: str) -> None:
+    assert form in _denied(_bash(vault, command)), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "f=$(mktemp --tmpdir=/tmp scout.XXXXXX); echo x > $f",
+        "python3 -c",  # no program given
+        "python3 < scripts/x.py",  # a program from a file
+        "python3 -c \"open('notes/a.md', 'w').write(open('notes/a.md').read())\"",  # one literal, twice
+        "ln -s notes/a.md",
+        "cd .git && cd - && rm -f config",  # `cd -` is back in the vault: ./config isn't .git/config
+        "sort notes/a.md | tee >(wc -l > notes/count.txt) > notes/sorted.md",  # a process substitution's pipe
+        "cat " + " ".join(f"notes/n{i}.md" for i in range(300)),  # the secret check stops at its cap
+    ],
+)
+def test_the_shell_reader_passes_these(vault: Path, command: str) -> None:
+    assert _bash(vault, command) is None, command
+
+
+def test_without_a_run_gate_the_spelled_paths_still_count() -> None:
+    from scout.kb.live_run import run_escape
+
+    assert run_escape(f"echo x > {SETTINGS}") == "agent settings"
+    assert run_escape("echo x > ~/.gitconfig") == "git config"
+    assert run_escape("git config pager.log true") == "git config pager.log"
+    assert run_escape("echo $(unset SCOUT_MODE)") == "env"  # a substitution that changes the run's variables
+    assert run_escape("git commit --no-verify", depth=1) == "--no-verify"  # an inner call leaves the state alone
+    assert run_escape("python3 -c \"open('x', 'w')\"", protect=lambda _p, _r: None) is None  # no secret callback
+
+
+def test_the_placeholder_name_cant_be_assigned(vault: Path) -> None:
+    from scout.kb.live_run import SUBST
+
+    assert "can't resolve" in _denied(_bash(vault, f"{SUBST[1:]}=notes; echo x > $(printf .claude)/x"))
+
+
+def test_nesting_past_the_limit_is_too_complex_in_a_run(vault: Path) -> None:
+    import shlex
+
+    from scout.kb.live_run import MAX_DEPTH, run_escape
+
+    command = "true"
+    for _ in range(MAX_DEPTH + 2):
+        command = f"sh -c {shlex.quote(command)}"
+    assert "too many paths" in _denied(_bash(vault, command))
+    assert run_escape(command) is None  # outside a run's gate, nothing to report
+
+
+def test_tools_the_gate_doesnt_judge_pass(vault: Path) -> None:
+    assert _decision(vault, "WebFetch", {"url": "https://example.invalid"}) is None
+
+
+def test_outside_any_vault_secrets_and_user_config_are_still_guarded(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    d = _secrets(home)
+    read = gate.run(
+        stdin=io.StringIO(json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(d / "linear-api-key")}})),
+        env={**{k: v for k, v in os.environ.items() if k != "SCOUT_DATA_DIR"}, **RUN},
+    )
+    assert "Scout's secrets" in _denied(read)
+    body = {"tool_name": "Write", "tool_input": {"file_path": "~/.gitconfig", "content": "x"}, "cwd": str(elsewhere)}
+    env = {**{k: v for k, v in os.environ.items() if k != "SCOUT_DATA_DIR"}, **RUN}
+    assert "git" in _denied(gate.run(stdin=io.StringIO(json.dumps(body)), env=env))
+    nocwd = {"tool_name": "Write", "tool_input": {"file_path": str(home / ".gitconfig"), "content": "x"}}
+    assert "git" in _denied(gate.run(stdin=io.StringIO(json.dumps(nocwd)), env=env))
+
+
+def test_git_dirs_reads_what_a_worktree_points_at(tmp_path: Path) -> None:
+    from scout.kb.hook_paths import git_dirs
+
+    v = tmp_path / "v"
+    v.mkdir()
+    (v / ".git").write_text("not a gitdir line\n")
+    assert git_dirs(v) == []
+    real = tmp_path / "real"
+    real.mkdir()
+    (v / ".git").write_text(f"gitdir: {real}\n")
+    assert git_dirs(v) == [real]  # no commondir file: only the git dir itself
+
+
+def test_git_hooks_dir_without_git_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import hook_paths
+
+    def no_git(*_a: object, **_k: object) -> None:
+        raise OSError("no git")
+
+    monkeypatch.setattr(hook_paths.subprocess, "run", no_git)
+    assert hook_paths.git_hooks_dir(tmp_path) is None

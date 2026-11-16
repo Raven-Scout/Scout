@@ -1341,6 +1341,12 @@ def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
         ("scoutctl --json delegate trust-state", True),
         ("/abs/plugin/engine/bin/scoutctl delegate key duet --revoke", True),
         ("python -m scout delegate unlink duet", True),
+        ("python3 -Pm scout delegate unlink duet", True),  # -m closing a short-option cluster
+        ("python3 -IPm scout delegate key duet --revoke", True),
+        ("python3 -mscout delegate link duet --remote x", True),
+        ("python3 -W ignore -m scout delegate trust-state", True),
+        ("python3 -Im scout delegate sync", False),
+        ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
         ("scoutctl delegate sync duet", False),
         ("scoutctl delegate preview duet", False),
         ("echo scoutctl delegate link", False),

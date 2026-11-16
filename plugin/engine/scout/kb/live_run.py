@@ -340,12 +340,37 @@ DELEGATE_FORM = "scoutctl delegate"
 _DELEGATE_WRITES = {"link", "unlink", "key", "trust-state"}
 
 
+def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
+    """The module ``python [options] -m MODULE ARGS`` runs, and its arguments; None when it runs no module.
+
+    Short options are read as Python reads them: ``-Pm scout``, ``-IPm scout``, ``-mscout``, ``-W ignore -m scout``.
+    A letter that takes a value (``c``, ``m``, ``W``, ``X``) takes the rest of its cluster, else the next word.
+    """
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--" or not a.startswith("-") or a.startswith("--") or a == "-":
+            return None  # a script, stdin, or the end of python's own options
+        for at, letter in enumerate(a[1:], 1):
+            if letter in "cmWX":
+                value, used = (a[at + 1 :], 1) if at + 1 < len(a) else (args[i + 1] if i + 1 < len(args) else "", 2)
+                if letter == "m":
+                    return value, args[i + used :]
+                if letter == "c":
+                    return None  # an inline program, not a module
+                i += used
+                break
+        else:
+            i += 1
+    return None
+
+
 def _delegate_write(name: str, args: list[str]) -> bool:
     """``scoutctl delegate link|unlink|key|trust-state``, by any path to scoutctl or as ``python -m scout``."""
     if name == "scoutctl":
         rest = args
-    elif name.startswith("python") and "-m" in args[:-1] and args[args.index("-m") + 1] == "scout":
-        rest = args[args.index("-m") + 2 :]
+    elif name.startswith("python") and (module := _python_module(args)) is not None and module[0] == "scout":
+        rest = module[1]
     else:
         return False
     words = [a for a in rest if not a.startswith("-")]
@@ -420,11 +445,6 @@ def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, 
                 body = []  # unterminated: the rest stays in the text, still scanned as commands
             bodies.append(("\n".join(body), expands))
     return "\n".join(out), bodies
-
-
-def _drop_heredoc_bodies(command: str) -> str:
-    """``command`` without its here-documents' bodies, which are text and not commands."""
-    return _HD_MARK.sub("EOF", _split_heredocs(command)[0])
 
 
 def _close(s: str, i: int, kind: str) -> int:
@@ -534,12 +554,6 @@ def _substitutions(s: str, *, quotes: bool = True) -> list[tuple[int, int, int, 
     return spans
 
 
-def _segments(command: str) -> list[str]:
-    """``command`` split at ``;``, ``&&``, ``||``, ``|``, newlines and subshell or substitution
-    boundaries, outside quotes."""
-    return [segment for segment, _ in _segments_with_ops(command)]
-
-
 def _segments_with_ops(command: str) -> list[tuple[str, str]]:
     """Each segment of ``command`` (see :func:`_segments`) with the operator before it ("" for the first)."""
     masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
@@ -550,12 +564,6 @@ def _segments_with_ops(command: str) -> list[tuple[str, str]]:
         at, op = m.end(), m[0]
     out.append((command[at:], op))
     return out
-
-
-def _split_redirects(segment: str) -> tuple[str, list[str]]:
-    """``segment`` without its unquoted redirects, and the files they write: an input redirect only reads."""
-    clean, writes, _reads, _strings = _redirects(segment)
-    return clean, writes
 
 
 def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
@@ -847,6 +855,7 @@ _PROGRAM_WRITES = re.compile(
         |spawn|execFile|write|open|mkdtemp)Sync\b|\b(?:writeFile|appendFile|copyFile|createWriteStream)\b|\bchild_process\b
     |\bFile\.(?:write|delete|unlink|rename|symlink|link|chmod|truncate|new)\b|\bIO\.(?:write|popen)\b
     |\bFileUtils\b|\bDir\.(?:mkdir|rmdir|delete|unlink)\b|%x[({\[]
+    |\bDeno\.(?:write\w*|remove|rename|symlink|link|truncate\w*|chmod\w*|copyFile\w*|create\w*|open\w*|run|Command)\b
     |\b(?:system|exec|qx|shell_exec|passthru|proc_open|popen|file_put_contents|fopen|unlink|rename|symlink|link
         |copy|tempnam|chmod|truncate)\s*[({]
     |\b(?:unlink|rename|symlink|link|truncate|chmod)\s+[$"'@]
@@ -1347,7 +1356,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     inner = [_run_escape(command[a:b], depth + 1, split=False) for _s, _e, a, b in spans]
     rebuilt, at, shift = [], 0, 0
     for (start, end, a, b), found in zip(spans, inner, strict=True):
-        known = _known_output(command[a:b]) if command[start] not in "<>" else None
+        # A process substitution becomes the pipe the shell hands over (its own command is judged above).
+        known = _known_output(command[a:b]) if command[start] not in "<>" else "/dev/fd/63"
         rebuilt += [command[at:start], known or SUBST]
         results.append((start - shift, found))
         shift += (end - start) - len(known or SUBST)
