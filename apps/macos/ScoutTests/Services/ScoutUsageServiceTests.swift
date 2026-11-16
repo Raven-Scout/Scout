@@ -147,7 +147,7 @@ struct ScoutUsageServiceTests {
         await svc.refresh()
         await svc.refresh()
         #expect(svc.summary?.today.runs == 2)
-        #expect(svc.lastError == "it needs a newer Scout engine (this one has no `scoutctl budget usage`).")
+        #expect(svc.lastError == "it needs a newer Scout engine (this one has no scoutctl budget usage).")
     }
 
     @Test func anEngineErrorIsShownAsTheEngineWroteIt() async {
@@ -158,6 +158,9 @@ struct ScoutUsageServiceTests {
         await svc.refresh()
         #expect(svc.lastError == "tracker unreadable")
         #expect(ScoutUsageService.failureMessage(exitCode: 1, stderr: "") == "Scout's engine couldn't report usage (exit 1).")
+        // Exit 2 is any usage error; only "No such command" means an older engine.
+        #expect(ScoutUsageService.failureMessage(exitCode: 2, stderr: "Error: Invalid value for '--json'")
+            == "Error: Invalid value for '--json'")
     }
 
     @Test func undecodableOutputIsAnError() async {

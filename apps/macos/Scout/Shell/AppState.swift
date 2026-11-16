@@ -416,7 +416,12 @@ final class AppState: ObservableObject {
         // A finished run adds a runner row to the usage tracker, and the
         // tracker service re-reads the file on every change to it, so re-read
         // Scout's usage then. (Keying on the run log missed a runner row that
-        // landed after the log said the run was done.)
+        // landed after the log said the run was done.) This relies on
+        // `entries` publishing on EVERY assignment, even an equal one: it only
+        // keeps `session` rows, so a runner row leaves it unchanged. Don't add
+        // `removeDuplicates()` here or in UsageTrackerService. The launch read
+        // (`tracker.loadInitial()` below) also lands here, which is the
+        // launch-time usage refresh.
         tracker.$entries
             .dropFirst()
             .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
@@ -431,7 +436,6 @@ final class AppState: ObservableObject {
             _ = try? await tracker.loadInitial()
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
-            await usage.refresh()
             await MainActor.run {
                 sched.start()
                 power.start()

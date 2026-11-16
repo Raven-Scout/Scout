@@ -83,12 +83,13 @@ final class ScoutUsageService: ObservableObject {
     }
 
     /// What the card says when `scoutctl budget usage` fails. An engine older
-    /// than the command exits 2 with typer's usage text, which means nothing
-    /// to a reader, so that case asks for a newer engine instead.
+    /// than the command exits 2 with typer's "No such command" usage text,
+    /// which means nothing to a reader, so that case asks for a newer engine
+    /// instead. Exit 2 alone is any usage error, so the text must match too.
     nonisolated static func failureMessage(exitCode: Int32, stderr: String) -> String {
         let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        if exitCode == 2 || text.contains("No such command") {
-            return "it needs a newer Scout engine (this one has no `scoutctl budget usage`)."
+        if exitCode == 2 && text.contains("No such command") {
+            return "it needs a newer Scout engine (this one has no scoutctl budget usage)."
         }
         return text.isEmpty ? "Scout's engine couldn't report usage (exit \(exitCode))." : text
     }
