@@ -100,6 +100,7 @@ nonisolated enum VaultWrite {
             let mode = ((try? fm.attributesOfItem(atPath: target.path))?[.posixPermissions] as? NSNumber)?.uint16Value
             let dir = target.deletingLastPathComponent()
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            sweepStaleTemporaries(in: dir)
             let tmp = dir.appendingPathComponent(".\(target.lastPathComponent).scout-\(UUID().uuidString).tmp")
             try writeNew(data, to: tmp, mode: mode)
             guard rename(tmp.path, target.path) == 0 else {
@@ -111,6 +112,25 @@ nonisolated enum VaultWrite {
             throw error
         } catch {
             throw VaultWriteError.writeFailed(file: url.lastPathComponent, reason: error.localizedDescription)
+        }
+    }
+
+    /// How old a leftover temporary file must be before a write removes it:
+    /// well past any write still in flight.
+    static let staleTemporaryAge: TimeInterval = 60
+
+    /// Remove `.<name>.scout-<uuid>.tmp` files older than a minute from
+    /// `dir`: what an app killed between creating a temporary file and the
+    /// rename leaves behind. Hidden from the engine and Obsidian, but git
+    /// could commit one. Best effort; runs before each write into `dir`.
+    static func sweepStaleTemporaries(in dir: URL, now: Date = Date()) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.hasPrefix(".") && name.hasSuffix(".tmp") && name.contains(".scout-") {
+            let url = dir.appendingPathComponent(name)
+            guard let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+                  now.timeIntervalSince(modified) > staleTemporaryAge else { continue }
+            try? fm.removeItem(at: url)
         }
     }
 

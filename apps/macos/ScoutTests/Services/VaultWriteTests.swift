@@ -203,4 +203,21 @@ struct VaultWriteTests {
         #expect(LineDelta(before: Data("a\nb\nc\n".utf8), after: Data("a\nc\n".utf8)) == LineDelta(removed: 1, added: 0))
         #expect(LineDelta(before: Data("a\nb\nc\n".utf8), after: Data("A\nb\nC\n".utf8)) == LineDelta(removed: 3, added: 3))
     }
+
+    @Test func aWriteSweepsStaleTemporariesButNotFreshOnes() throws {
+        // What an app killed mid-write leaves behind is cleared by the next
+        // write into the same folder; a write still in flight is not.
+        let fm = FileManager.default
+        let stale = dir.appendingPathComponent(".a.md.scout-1111.tmp")
+        let fresh = dir.appendingPathComponent(".a.md.scout-2222.tmp")
+        let other = dir.appendingPathComponent(".obsidian-thing.tmp")
+        for url in [stale, fresh, other] { try Data("x".utf8).write(to: url) }
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: stale.path)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: other.path)
+
+        try VaultWrite.write(Data("one".utf8), to: dir.appendingPathComponent("a.md"))
+        #expect(!fm.fileExists(atPath: stale.path))
+        #expect(fm.fileExists(atPath: fresh.path))
+        #expect(fm.fileExists(atPath: other.path))
+    }
 }
