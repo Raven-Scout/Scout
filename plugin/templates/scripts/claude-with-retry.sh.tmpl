@@ -32,6 +32,12 @@
 # Usage:
 #   claude-with-retry.sh <log-file> <claude-bin> <claude-args...>
 #
+# The runners pass `scoutctl agent-runtime exec …` as <claude-bin> and its args
+# (spec 2026-11-13 §8.2): it execs the run's CLI in its own place, inside the
+# same sandbox, so each attempt's process is still that CLI. SCOUT_AGENT_BIN
+# names the CLI itself, for the messages below; it is dropped from the
+# environment before any attempt.
+#
 # Env knobs:
 #   SCOUT_RETRY_MAX=2          total attempts (default: 2 → 1 retry)
 #   SCOUT_RETRY_BACKOFF_S=60   base backoff seconds (default 60; scales linearly: 60s, 120s, ...)
@@ -58,6 +64,7 @@ fi
 
 LOG_FILE="$1"; shift
 CLAUDE_BIN="$1"; shift
+AGENT_BIN="${SCOUT_AGENT_BIN:-$CLAUDE_BIN}"; unset SCOUT_AGENT_BIN
 
 MAX_ATTEMPTS="${SCOUT_RETRY_MAX:-2}"
 BACKOFF_S="${SCOUT_RETRY_BACKOFF_S:-60}"
@@ -355,12 +362,12 @@ while :; do
                     if [ "$TOKEN_UNREADABLE" -eq 1 ]; then
                         echo "    A long-lived token is stored in $TOKEN_STORE, but this run couldn't read it, so it used your login."
                     fi
-                    echo "    Re-authenticate the claude binary this runner uses ($CLAUDE_BIN):"
-                    echo "      - interactive: run: $AUTH_FIX   (or: $CLAUDE_BIN auth login), or"
+                    echo "    Re-authenticate the claude binary this runner uses ($AGENT_BIN):"
+                    echo "      - interactive: run: $AUTH_FIX   (or: $AGENT_BIN auth login), or"
                     echo "      - headless:    run: scoutctl auth setup-token   (stores a long-lived 'claude setup-token' token every scheduled run uses)."
                     ;;
             esac
-            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
+            echo "    Then verify before the next scheduled run:  $AGENT_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
         } >> "$LOG_FILE"
         notify_auth_failure || true
         exit "$exit_code"

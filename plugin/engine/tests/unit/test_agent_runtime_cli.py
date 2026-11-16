@@ -300,8 +300,8 @@ def test_check_exit_codes(vault: Path) -> None:
         )
         code, out, _ = _cli("agent-runtime", "check", "--runtime", "dummy")
         assert code == 4 and "token_ceiling" in out
-    code, _, _ = _cli("agent-runtime", "check", "--runtime", "nope")
-    assert code == 2
+    code, out, _ = _cli("agent-runtime", "check", "--runtime", "nope")
+    assert code == 3 and "check_failed" in out  # never 2: the runners read 2 as an engine without the command
     code, out, _ = _cli("agent-runtime", "check", "--slot", "x", env={"SCOUT_AGENT_RUNTIME": "nope"})
     assert code == 3 and "check_failed" in out
 
@@ -331,3 +331,13 @@ def test_run_with_timeout_puts_the_signal_handlers_back(tmp_path: Path) -> None:
 def test_the_worker_keeps_sigpipe_ignored_after_an_exec_test() -> None:
     """Pins the fixture above: CPython ignores SIGPIPE, and a test must not leave it at default."""
     assert signal.getsignal(signal.SIGPIPE) == signal.SIG_IGN
+
+
+def test_model_resolve_for_another_runtime(vault: Path) -> None:
+    code, out, _ = _cli("model", "resolve", "--slot", "x", "--runtime", "claude-code")
+    assert code == 0 and out.strip() == "opus"
+    with registered(DummyRuntime("dummy")):
+        code, out, _ = _cli("model", "resolve", "--runtime", "dummy", "--json")
+        assert code == 0 and json.loads(out) == {"model": "dm-default", "source": "builtin"}
+    code, out, _ = _cli("model", "resolve", "--runtime", "nope")
+    assert code == 1 and "nope" in out
