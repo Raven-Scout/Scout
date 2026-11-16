@@ -17,24 +17,24 @@ struct FeedbackTab: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Notes for this run")
-                    .font(.headline)
+                    .font(DS.sans(13, weight: .bold))
                 Spacer()
                 if let s = savedAt {
                     Text("Saved \(s.formatted(.relative(presentation: .named)))")
-                        .font(.caption)
+                        .font(DS.sans(10))
                         .foregroundStyle(.secondary)
                 } else if let err = saveError {
                     Text("Error: \(err)")
-                        .font(.caption)
+                        .font(DS.sans(10))
                         .foregroundStyle(.red)
                 }
             }
             Text("Like a Slack reply — leave a note about what worked, what didn't, or what you'd want next time. Markdown is fine.")
-                .font(.caption)
+                .font(DS.sans(10))
                 .foregroundStyle(.secondary)
 
             TextEditor(text: $text)
-                .font(.system(.body, design: .default))
+                .font(DS.sans(13))
                 .frame(minHeight: 220)
                 .padding(6)
                 .overlay(

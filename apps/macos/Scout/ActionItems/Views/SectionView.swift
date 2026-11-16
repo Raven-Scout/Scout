@@ -367,7 +367,7 @@ struct SectionView: View {
                 completedSelectionButton(t)
             }
             Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .medium))
+                .font(DS.sans(10, weight: .medium))
                 .foregroundStyle(DS.Priority.done)
             InlineMarkdownText(t.subject)
                 .font(DS.serif(13))
@@ -378,7 +378,7 @@ struct SectionView: View {
             if !t.comments.isEmpty {
                 HStack(spacing: 3) {
                     Image(systemName: "text.bubble")
-                        .font(.system(size: 9))
+                        .font(DS.sans(9))
                     Text("\(t.comments.count)")
                         .font(DS.mono(10.5))
                 }
@@ -400,7 +400,7 @@ struct SectionView: View {
             }
         } label: {
             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14, weight: .medium))
+                .font(DS.sans(14, weight: .medium))
                 .foregroundStyle(selected ? DS.Accent.ink : DS.Ink.p4)
                 .frame(width: 26, height: 24)
                 .contentShape(Rectangle())

@@ -53,7 +53,7 @@ struct KBOverviewView: View {
                             ForEach(links, id: \.path) { ql in
                                 Button { onNavigate(ql.path) } label: {
                                     HStack(spacing: 10) {
-                                        Image(systemName: ql.icon).font(.system(size: 15))
+                                        Image(systemName: ql.icon).font(DS.sans(15))
                                             .foregroundStyle(DS.Accent.ink).frame(width: 20)
                                         Text(ql.label).font(DS.sans(13, weight: .medium))
                                             .foregroundStyle(DS.Ink.p1)

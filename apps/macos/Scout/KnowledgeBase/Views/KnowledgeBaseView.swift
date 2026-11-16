@@ -92,13 +92,13 @@ struct KnowledgeBaseView: View {
                 Spacer()
                 if selectedPath != nil {
                     Button { selectedPath = nil } label: {
-                        Image(systemName: "house").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "house").font(DS.sans(11, weight: .semibold))
                             .foregroundStyle(DS.Ink.p3)
                     }
                     .buttonStyle(.plainHit).help("Back to overview")
                 }
                 Button { showNewFile = true } label: {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
                 .buttonStyle(.plainHit).help("New note")
@@ -124,12 +124,12 @@ struct KnowledgeBaseView: View {
 
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             TextField("Search notes…", text: $searchQuery)
                 .textFieldStyle(.plain).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
             if !searchQuery.isEmpty {
                 Button { searchQuery = "" } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+                    Image(systemName: "xmark.circle.fill").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
             }
         }
@@ -218,7 +218,7 @@ struct KnowledgeBaseView: View {
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: icon).font(DS.sans(30)).foregroundStyle(DS.Ink.p4)
             Text(title).font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p2)
             Text(detail).font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)

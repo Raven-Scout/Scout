@@ -48,7 +48,7 @@ struct SlotTableRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Image(systemName: "lock.fill")
-                .font(.system(size: 10))
+                .font(DS.sans(10))
                 .foregroundStyle(DS.Ink.p4)
             if let model = slot.model {
                 SlotModelTag(model: model)
@@ -89,7 +89,7 @@ struct SlotTableRow: View {
                 .font(DS.mono(13))
                 .foregroundStyle(DS.Ink.p2)
             Image(systemName: "bolt.fill")
-                .font(.system(size: 8))
+                .font(DS.sans(8))
                 .foregroundStyle(DS.Ink.p4)
         }
     }

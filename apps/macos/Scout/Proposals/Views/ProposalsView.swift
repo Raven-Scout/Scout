@@ -140,7 +140,7 @@ struct ProposalsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                     Text("Resolved")
                         .font(DS.sans(11.5, weight: .semibold))
                         .tracking(0.06 * 11.5)
@@ -165,7 +165,7 @@ struct ProposalsView: View {
     private func emptyState(icon: String, message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
-                .font(.largeTitle)
+                .font(DS.sans(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
                 .font(DS.serif(14))

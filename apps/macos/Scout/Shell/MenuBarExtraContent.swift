@@ -52,7 +52,7 @@ struct MenuBarExtraContent: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "binoculars.fill")
-                .font(.system(size: 15, weight: .semibold))
+                .font(DS.sans(15, weight: .semibold))
                 .foregroundStyle(DS.Accent.ink)
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(DS.Accent.wash))
@@ -243,7 +243,7 @@ struct MenuBarExtraContent: View {
     private func footerButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .medium))
+                .font(DS.sans(11, weight: .medium))
                 .frame(width: 26, height: 24)
         }
         .buttonStyle(.borderless)

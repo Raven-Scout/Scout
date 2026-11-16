@@ -164,14 +164,14 @@ struct KBEditableView: View {
     private func scoutCommentChip(_ seg: KBDocSegment) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 10)).foregroundStyle(DS.Accent.ink)
+                .font(DS.sans(10)).foregroundStyle(DS.Accent.ink)
             Text(ScoutMarker.body(of: seg.raw) ?? seg.raw)
                 .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
             Text("for Scout · pending").font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
             Spacer(minLength: 8)
             Button { retractComment(seg) } label: {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(DS.Ink.p4)
+                Image(systemName: "xmark.circle.fill").font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
             }
             .buttonStyle(.plain).help("Retract this comment (removes the marker)")
         }
@@ -254,7 +254,7 @@ struct KBEditableView: View {
             Button { withAnimation(.easeInOut(duration: 0.15)) { showMeta.toggle() } } label: {
                 HStack(spacing: 6) {
                     Image(systemName: showMeta ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
+                        .font(DS.sans(9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
                     Text("History & properties").font(DS.sans(11, weight: .medium)).foregroundStyle(DS.Ink.p3)
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())

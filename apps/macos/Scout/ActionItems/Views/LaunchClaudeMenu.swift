@@ -57,7 +57,7 @@ struct LaunchClaudeMenu: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                     Text("Launch Claude Code")
                         .font(DS.sans(11.5, weight: .medium))
                 }
@@ -73,7 +73,7 @@ struct LaunchClaudeMenu: View {
                 menuItems
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
+                    .font(DS.sans(8))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.horizontal, 6)
                     .frame(height: 24)
@@ -92,7 +92,7 @@ struct LaunchClaudeMenu: View {
             menuItems
         } label: {
             Image(systemName: "sparkles")
-                .font(.system(size: 11))
+                .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .contentShape(Rectangle())

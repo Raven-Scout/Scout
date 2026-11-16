@@ -118,7 +118,7 @@ struct ControlCenterView: View {
         HStack(alignment: .center, spacing: 10) {
             Button { closeDetail() } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(DS.sans(12, weight: .medium))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
@@ -132,7 +132,7 @@ struct ControlCenterView: View {
                 Image(systemName: isExpanded
                       ? "arrow.down.right.and.arrow.up.left"
                       : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 12))
+                    .font(DS.sans(12))
                     .foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)

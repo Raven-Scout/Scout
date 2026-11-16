@@ -108,7 +108,7 @@ private struct CommentRow: View {
                     DispatchQueue.main.async { editorFocused = true }
                 } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
@@ -119,7 +119,7 @@ private struct CommentRow: View {
                     confirmingDelete = true
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)

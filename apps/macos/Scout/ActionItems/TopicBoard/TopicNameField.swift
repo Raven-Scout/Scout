@@ -44,7 +44,7 @@ struct TopicNameField: View {
                         editing = true
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.system(size: 11))
+                            .font(DS.sans(11))
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }

@@ -225,7 +225,7 @@ struct SessionDetailView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "rectangle.stack.badge.person.crop")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
             Text(index == nil ? "No session index yet" : "Pick a session")
                 .font(DS.serif(18, weight: .medium))

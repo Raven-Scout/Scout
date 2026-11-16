@@ -131,7 +131,7 @@ struct KBEditorView: View {
                 Divider()
                 Button("Delete…", role: .destructive) { showDeleteConfirm = true }
             } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(DS.Ink.p3)
+                Image(systemName: "ellipsis.circle").font(DS.sans(15)).foregroundStyle(DS.Ink.p3)
             }
             .menuStyle(.borderlessButton).frame(width: 28)
         }

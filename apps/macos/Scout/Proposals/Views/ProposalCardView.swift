@@ -74,7 +74,7 @@ struct ProposalCardView: View {
                 if isBusy {
                     ProgressView().controlSize(.small).frame(width: 12, height: 12)
                 } else {
-                    Image(systemName: systemImage).font(.system(size: 10))
+                    Image(systemName: systemImage).font(DS.sans(10))
                 }
                 Text(label).font(DS.sans(11.5, weight: .medium))
             }

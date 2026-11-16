@@ -60,10 +60,10 @@ struct RunDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(run.displayName).font(.title2).fontWeight(.bold)
+                Text(run.displayName).font(DS.sans(17)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
                     Text("manual")
-                        .font(.caption.monospaced())
+                        .font(DS.mono(10))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
@@ -87,7 +87,7 @@ struct RunDetailView: View {
                     Text("· \(n) commit\(n == 1 ? "" : "s")")
                 }
             }
-            .font(.caption)
+            .font(DS.sans(10))
             .foregroundStyle(.secondary)
         }
     }
@@ -96,7 +96,7 @@ struct RunDetailView: View {
         HStack(spacing: 5) {
             Circle().fill(statusColor).frame(width: 6, height: 6)
             Text(run.status.rawValue)
-                .font(.caption.monospaced())
+                .font(DS.mono(10))
                 .foregroundStyle(statusColor)
         }
     }

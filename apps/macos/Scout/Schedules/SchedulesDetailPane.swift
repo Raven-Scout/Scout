@@ -59,7 +59,7 @@ struct SchedulesDetailPane: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "cursorarrow.click")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("Pick a slot to edit")
                 .font(DS.serif(18, weight: .medium))

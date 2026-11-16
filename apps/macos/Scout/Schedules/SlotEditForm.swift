@@ -84,16 +84,16 @@ struct SlotEditForm: View {
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
                 if let err = SlotDraft.validateSlotKey(draft.key) {
-                    Text(err).font(.caption).foregroundStyle(.red)
+                    Text(err).font(DS.sans(10)).foregroundStyle(.red)
                 } else {
                     Text("Slot keys are immutable after first save. Choose carefully.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DS.sans(10)).foregroundStyle(.secondary)
                 }
             }
         } else {
             HStack {
                 Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                Text(draft.key).font(.body.monospaced())
+                Text(draft.key).font(DS.mono(13))
                 Spacer()
             }
         }
@@ -111,7 +111,7 @@ struct SlotEditForm: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 120)
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
         VStack(alignment: .leading, spacing: 4) {
@@ -144,7 +144,7 @@ struct SlotEditForm: View {
                 }
             }
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
     }
@@ -198,7 +198,7 @@ struct SlotEditForm: View {
                 minSegmentWidth: 64
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -255,7 +255,7 @@ struct SlotEditForm: View {
                 .disabled(true)
                 .opacity(0.5)
                 Text("Remote slot execution arrives in Plan 7 (Anthropic routines integration).")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
             }
         }
         .padding(.top, 4)

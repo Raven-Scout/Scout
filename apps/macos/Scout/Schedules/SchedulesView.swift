@@ -101,7 +101,7 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "calendar.badge.plus")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("No scheduled slots")
                 .font(DS.serif(20, weight: .medium))

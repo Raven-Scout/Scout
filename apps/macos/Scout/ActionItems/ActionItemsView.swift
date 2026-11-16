@@ -441,7 +441,7 @@ struct ActionItemsView: View {
         let isFuture = displayedDate > Self.today()
         return VStack(spacing: 14) {
             Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
-                .font(.largeTitle)
+                .font(DS.sans(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(isFuture
                  ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."

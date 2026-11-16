@@ -112,7 +112,7 @@ struct KBLocalGraphView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+                .font(DS.sans(22)).foregroundStyle(DS.Ink.p4)
             Text("No linked notes")
                 .font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             Text("This note has no [[wikilinks]] to or from other notes.")

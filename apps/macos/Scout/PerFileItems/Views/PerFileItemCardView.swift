@@ -121,7 +121,7 @@ struct PerFileItemCardView: View {
 
     private func actionLabel(_ label: String, systemImage: String, tint: Color) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: systemImage).font(.system(size: 10))
+            Image(systemName: systemImage).font(DS.sans(10))
             Text(label).font(DS.sans(11.5, weight: .medium))
         }
         .foregroundStyle(tint)

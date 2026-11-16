@@ -80,7 +80,7 @@ struct SidebarView: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: system)
-                    .font(.system(size: 13))
+                    .font(DS.sans(13))
                     .foregroundStyle(isActive ? DS.Accent.ink : DS.Ink.p3)
                     .frame(width: 16, height: 16)
                 Text(label)

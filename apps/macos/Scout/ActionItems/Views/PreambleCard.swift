@@ -34,7 +34,7 @@ struct PreambleCard: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                         .foregroundStyle(DS.Ink.p3)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: 12)

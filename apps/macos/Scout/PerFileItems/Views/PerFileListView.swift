@@ -150,7 +150,7 @@ struct PerFileListView: View {
     private func detailHeader(_ item: PerFileItem, isExpanded: Bool) -> some View {
         HStack(alignment: .center, spacing: 10) {
             Button { closeDetail() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
+                Image(systemName: "chevron.left").font(DS.sans(12, weight: .medium))
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help("Close (⌘.)")
             Text(item.title).font(DS.serif(16, weight: .medium)).foregroundStyle(DS.Ink.p1)
@@ -161,7 +161,7 @@ struct PerFileListView: View {
                 Image(systemName: isExpanded
                       ? "arrow.down.right.and.arrow.up.left"
                       : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 12)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
             .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
@@ -262,7 +262,7 @@ struct PerFileListView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                     Text("Resolved")
                         .font(DS.sans(11.5, weight: .semibold))
                         .tracking(0.06 * 11.5)
@@ -294,7 +294,7 @@ struct PerFileListView: View {
     private func emptyState(icon: String, message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
-                .font(.largeTitle)
+                .font(DS.sans(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
                 .font(DS.serif(14))

@@ -90,7 +90,7 @@ struct SessionsListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 10))
+                .font(DS.sans(10))
                 .foregroundStyle(DS.Ink.p4)
             TextField("Search sessions", text: $search)
                 .textFieldStyle(.plain)

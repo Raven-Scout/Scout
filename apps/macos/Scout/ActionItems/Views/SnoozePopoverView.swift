@@ -56,10 +56,10 @@ struct SnoozePopoverView: View {
                 showingCustom = true
             } label: {
                 HStack {
-                    Text("Other date…").font(.system(size: 12))
+                    Text("Other date…").font(DS.sans(12))
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9))
+                        .font(DS.sans(9))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
@@ -73,7 +73,7 @@ struct SnoozePopoverView: View {
             Button("Cancel", action: onCancel)
                 .buttonStyle(.plainHit)
                 .foregroundStyle(.secondary)
-                .font(.caption)
+                .font(DS.sans(10))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,12 +90,12 @@ struct SnoozePopoverView: View {
                 Button {
                     showingCustom = false
                 } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 10))
+                    Image(systemName: "chevron.left").font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(.secondary)
                 Text("Pick a date")
-                    .font(.caption.weight(.semibold))
+                    .font(DS.sans(10, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -146,7 +146,7 @@ struct SnoozePopoverView: View {
 
     private func header(title: String) -> some View {
         Text(title)
-            .font(.caption.weight(.semibold))
+            .font(DS.sans(10, weight: .semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.top, 6)
@@ -158,10 +158,10 @@ struct SnoozePopoverView: View {
             commit(days: days)
         } label: {
             HStack {
-                Text(label).font(.system(size: 12))
+                Text(label).font(DS.sans(12))
                 Spacer(minLength: 8)
                 Text(relativeLabel(days: days))
-                    .font(.caption2)
+                    .font(DS.sans(10))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
