@@ -103,15 +103,15 @@ struct SchedulesView: View {
             Image(systemName: "calendar.badge.plus")
                 .font(.system(size: 36))
                 .foregroundStyle(DS.Ink.p4)
-            Text("No scheduled slots")
+            Text("No schedules yet")
                 .font(DS.serif(20, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
-            Text("Add a slot to start scheduling Scout runs. Or run `scoutctl schedule init` from the terminal to seed the plugin defaults (10 standard slots).")
+            Text("A schedule tells Scout when to run by itself, such as a briefing every weekday morning. Add one to get started.")
                 .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
-            Button("+ Add slot") { addDraftSlot() }
+            Button("+ Add schedule") { addDraftSlot() }
                 .buttonStyle(.borderedProminent)
             Spacer()
         }
@@ -125,7 +125,7 @@ struct SchedulesView: View {
         HStack(alignment: .firstTextBaseline) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
             VStack(alignment: .leading, spacing: 2) {
-                Text("schedule.yaml was modified externally")
+                Text("The schedule changed outside the app")
                     .font(DS.sans(13, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 if let detail = stalenessDetail {

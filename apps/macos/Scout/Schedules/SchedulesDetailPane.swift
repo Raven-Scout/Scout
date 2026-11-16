@@ -45,8 +45,9 @@ struct SchedulesDetailPane: View {
 
     private func header(for slot: Slot) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(slot.key)
-                .font(DS.mono(15, weight: .semibold))
+            Text(slot.displayName)
+                .font(DS.sans(15, weight: .semibold))
+                .help(slot.key)
                 .foregroundStyle(DS.Ink.p1)
             TypePill(type: slot.type)
             Spacer()

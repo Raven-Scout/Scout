@@ -32,6 +32,7 @@ struct SessionsHeader: View {
                     Text("Sessions")
                         .font(DS.serif(28, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
+                        .glossaryHelp(.session)
                     TimelineView(.periodic(from: .now, by: 10)) { context in
                         Text(SessionsFormat.freshness(
                             lastRefreshAt: service.lastRefreshAt,

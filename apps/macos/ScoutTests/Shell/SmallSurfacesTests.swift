@@ -46,16 +46,17 @@ struct ViewModeEnumTests {
 @Suite("StaleScheduleError")
 struct StaleScheduleErrorTests {
 
-    @Test("the error names the external modification and tells the user to reload")
+    @Test("the error says the schedule changed elsewhere, when, and to reload — without the file name")
     func describesTheConflict() {
         let loaded = Date(timeIntervalSince1970: 1_781_600_000)
         let modified = loaded.addingTimeInterval(120)
         let error = StaleScheduleError(loadedAt: loaded, modifiedAt: modified)
 
         let text = try? #require(error.errorDescription)
-        #expect(text?.contains("schedule.yaml") == true)
+        #expect(text?.contains("changed outside the app") == true)
+        #expect(text?.contains("schedule.yaml") == false)
         #expect(text?.contains("Reload") == true)
-        #expect(text?.contains("\(modified)") == true)
+        #expect(text?.contains(modified.formatted(date: .omitted, time: .shortened)) == true)
         #expect(error.localizedDescription == error.errorDescription)
         #expect(error.loadedAt == loaded)
         #expect(error.modifiedAt == modified)

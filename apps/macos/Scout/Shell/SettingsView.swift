@@ -40,7 +40,7 @@ struct SettingsView: View {
                     SettingsCard {
                         SettingsRow(
                             title: "Launch Scout at login",
-                            help: "Start the app automatically so it's watching your Scout instance all day."
+                            help: "Start the app automatically so it's watching your Scout folder all day."
                         ) {
                             SettingsToggle(isOn: $launchAtLogin)
                                 .onChange(of: launchAtLogin) { _, newValue in
@@ -249,7 +249,7 @@ struct SettingsView: View {
             Text("Settings")
                 .font(DS.serif(24, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
-            Text("Preferences for this Scout instance.")
+            Text("How Scout looks and runs on this Mac.")
                 .font(DS.sans(12.5))
                 .foregroundStyle(DS.Ink.p3)
         }

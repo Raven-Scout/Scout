@@ -35,7 +35,7 @@ struct SchedulesFilterChips: View {
 
     private func typeChip(for type: SlotType) -> some View {
         chip(
-            label: type.rawValue.capitalized,
+            label: type.displayName,
             count: SchedulesFilterMode.count(of: type, in: slots),
             isSelected: filterMode == .type(type),
             dotColor: DS.SlotType.color(for: type)

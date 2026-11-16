@@ -89,6 +89,7 @@ struct KnowledgeBaseView: View {
             HStack(spacing: 8) {
                 Text("Knowledge Base")
                     .font(DS.serif(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.knowledgeBase)
                 Spacer()
                 if selectedPath != nil {
                     Button { selectedPath = nil } label: {

@@ -61,7 +61,7 @@ struct NowStripView: View {
                 bigName(r.displayName)
                 HStack(spacing: 4) {
                     Image(systemName: statusIcon(for: r.status)).imageScale(.small)
-                    Text("\(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
+                    Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
                 .font(DS.mono(12))
                 .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)

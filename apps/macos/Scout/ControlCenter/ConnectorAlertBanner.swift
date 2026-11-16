@@ -49,12 +49,18 @@ struct ConnectorAlertBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(alerts, id: \.fingerprint) { alert in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(alert.level.rawValue) · \(alert.connector)")
+                    Text("\(DisplayName.connector(alert.connector)): \(alert.level.displayName.lowercased())")
                         .font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Ink.p1)
-                    Text(alert.reason)
-                        .font(DS.mono(11.5))
-                        .foregroundStyle(DS.Ink.p3)
+                        .help(alert.connector)
+                    Text(Self.plainReason(alert.reason))
+                        .font(DS.sans(11.5))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("What to do: reconnect \(DisplayName.connector(alert.connector)) in Claude Code (type /mcp in a Claude Code session), then wait for the next run.")
+                        .font(DS.sans(11.5))
+                        .foregroundStyle(DS.Ink.p1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("Acknowledge") {
                         state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
                     }
@@ -69,28 +75,12 @@ struct ConnectorAlertBanner: View {
     }
 
     private func summary(for alert: ConnectorAlert, moreCount: Int) -> String {
-        let base = "\(displayName(for: alert.connector)) connector: \(alert.level.rawValue) — \(alert.reason)"
+        let base = "\(DisplayName.connector(alert.connector)) \(alert.level == .critical ? "isn't working" : "has a problem"): \(Self.plainReason(alert.reason))"
         return moreCount > 0 ? "\(base)  (+\(moreCount) more)" : base
     }
 
-    private func displayName(for connector: String) -> String {
-        // Same labels as the rail card's header row, duplicated locally;
-        // anything unlisted gets the rail card's prettifier rather than the
-        // raw key.
-        // Alert keys are pre-canonicalized by `ConnectorAlert.parseFile`, so
-        // we only need the canonical entries here.
-        switch connector {
-        case "mcp:claude_ai_Slack":             return "Slack"
-        case "mcp:claude_ai_Linear":            return "Linear"
-        case "mcp:claude_ai_Gmail":             return "Gmail"
-        case "mcp:claude_ai_Google_Calendar":   return "Calendar"
-        case "mcp:claude_ai_Granola":           return "Granola"
-        case "mcp:fathom":                      return "Fathom"
-        case "mcp:claude_ai_Google_Drive":      return "Drive"
-        case "github":                          return "GitHub"
-        case "mcp:claude-in-chrome":            return "Chrome"
-        default:
-            return ConnectorHealthRailCard.heuristicLabel(for: connector)
-        }
+    /// The engine's reason without its Markdown code ticks.
+    static func plainReason(_ reason: String) -> String {
+        reason.replacingOccurrences(of: "`", with: "")
     }
 }

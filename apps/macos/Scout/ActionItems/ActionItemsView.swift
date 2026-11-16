@@ -425,16 +425,20 @@ struct ActionItemsView: View {
     }
 
     private var environmentBanner: some View {
-        return HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text("Action Items writes disabled — \(envCheck.result.message ?? "scoutctl unavailable")")
-        }
-        .font(DS.sans(11))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.Status.err.opacity(0.85))
+        ProblemView(problem: Self.environmentProblem(message: envCheck.result.message))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+    }
+
+    /// The engine check failed, so Done, Snooze and comments can't be saved.
+    /// The check's own message goes to Details.
+    static func environmentProblem(message: String?) -> Problem {
+        let details = message ?? "scoutctl unavailable"
+        var problem = details.contains("too old")
+            ? Problem.engineTooOld("Action Items", details: details)
+            : Problem.engineUnavailable("Action Items", details: details)
+        problem.impact = "You can read your action items, but marking them done, snoozing and commenting are turned off until it works."
+        return problem
     }
 
     private func missingState(url: URL) -> some View {

@@ -59,10 +59,8 @@ struct ProposalsView: View {
                 Text("Proposals")
                     .font(DS.serif(28, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.proposal)
                 Spacer(minLength: 0)
-                Text("repo ~/Scout")
-                    .font(DS.mono(12))
-                    .foregroundStyle(DS.Ink.p4)
             }
             Text(subtitle)
                 .font(DS.sans(13))
@@ -75,9 +73,9 @@ struct ProposalsView: View {
     private var subtitle: String {
         let pending = docService.pendingCount
         switch pending {
-        case 0:  return "Dreaming-generated SKILL.md change proposals. Nothing awaiting your decision."
-        case 1:  return "1 proposal awaiting your decision. Approving flips its status; the next dreaming run applies the change."
-        default: return "\(pending) proposals awaiting your decision. Approving flips status; the next dreaming run applies the change."
+        case 0:  return "Changes Scout suggests to how it works. Nothing is waiting for your decision."
+        case 1:  return "1 suggested change is waiting for your decision. If you approve it, the next evening run makes the change."
+        default: return "\(pending) suggested changes are waiting for your decision. If you approve one, the next evening run makes the change."
         }
     }
 
@@ -93,7 +91,7 @@ struct ProposalsView: View {
         case .missing:
             emptyState(
                 icon: "tray",
-                message: "No dreaming-proposals folder found. Dreaming runs write per-proposal files into dreaming-proposals/ when they process feedback. You can point Scout at a different folder in Settings."
+                message: "No suggested changes yet. Scout's evening run suggests them after it reads your feedback. If they are kept somewhere else, choose that folder in Settings."
             )
         case .failed(let err):
             Text("Couldn't load proposals: \(err)")

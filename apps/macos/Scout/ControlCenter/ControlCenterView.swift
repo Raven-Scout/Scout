@@ -417,7 +417,7 @@ struct SignalsRailCard: View {
                     id: "dreaming",
                     severity: .err,
                     tag: "DREAMING",
-                    body: "Last run \(when) ended in \(d.status.rawValue) — investigate."
+                    body: "Last run \(when): \(d.status.displayName). Open it in the list below to see why."
                 ))
             default:
                 break
@@ -429,19 +429,21 @@ struct SignalsRailCard: View {
                 id: "dreaming",
                 severity: .warn,
                 tag: "DREAMING",
-                body: "No overnight run in the last 36h — check launchd."
+                body: "No overnight run in the last 36 hours. Check Settings ▸ Engine to see whether scheduled runs are installed."
             ))
         }
 
         // Connector roster fallback: ConnectorHealthService publishes a
         // reason when it can't read the canonical roster — surface it here
         // so the user knows why the matrix may be stale.
-        if let reason = state.connectorHealthService.rosterFallbackReason {
+        // The service's reason (a file path and the engine command) goes to
+        // the app log; the signal says what it means for the table.
+        if state.connectorHealthService.rosterFallbackReason != nil {
             out.append(Signal(
                 id: "connectors",
                 severity: .warn,
                 tag: "CONNECTORS",
-                body: "Roster fallback: \(reason)"
+                body: "Scout couldn't read its list of connectors, so the table below uses the built-in list and may miss some. Updating Scout usually fixes this."
             ))
         }
 

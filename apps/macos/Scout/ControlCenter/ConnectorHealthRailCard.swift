@@ -143,44 +143,9 @@ struct ConnectorHealthRailCard: View {
 
     // MARK: - Labels
 
-    /// Pretty label for a roster key. Tries the canonical map first; falls
-    /// back to a heuristic so brand-new connectors render readably without
-    /// requiring a code change every time the YAML grows.
+    /// Pretty label for a roster key; see `DisplayName.connector`.
     private func label(for key: String) -> String {
-        if let known = Self.canonicalLabels[key] { return known }
-        return Self.heuristicLabel(for: key)
-    }
-
-    /// Hand-tuned labels for keys we know about. Source of truth for these
-    /// is the scout-plugin connectors.yaml; keep additions in sync there.
-    private static let canonicalLabels: [String: String] = [
-        "mcp:claude_ai_Slack":           "Slack",
-        "mcp:claude_ai_Linear":          "Linear",
-        "mcp:claude_ai_Gmail":           "Gmail",
-        "mcp:claude_ai_Google_Calendar": "Calendar",
-        "mcp:claude_ai_Granola":         "Granola",
-        "mcp:fathom":                    "Fathom",
-        "mcp:claude_ai_Google_Drive":    "Drive",
-        "github":                        "GitHub",
-        "mcp:claude-in-chrome":          "Chrome",
-        "mcp:whatsapp-mcp":              "WhatsApp",
-        "notify:telegram":               "Telegram",
-        "cc-session":                    "Claude Code"   // CC-7: reserved for upstream scoutctl emitter
-    ]
-
-    /// Best-effort prettifier for keys we haven't seen before. Strips MCP
-    /// prefixes, replaces underscores with spaces, title-cases.
-    static func heuristicLabel(for key: String) -> String {
-        let stripped = key
-            .replacingOccurrences(of: "mcp:claude_ai_", with: "")
-            .replacingOccurrences(of: "mcp:plugin_", with: "")
-            .replacingOccurrences(of: "mcp:", with: "")
-            .replacingOccurrences(of: "notify:", with: "")
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-        return stripped.split(separator: " ")
-            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-            .joined(separator: " ")
+        DisplayName.connector(key)
     }
 
     // MARK: - Tooltips

@@ -6,6 +6,14 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Changed
+- **Plain language across the app** (`Scout/Utilities/PlainLanguage/`, card C4 of the 2026-11-16 UI audit). Engine names no longer reach the owner. One module, `DisplayName`, turns run types, run statuses, run-ledger outcomes, failure classes, schedule keys and kinds, catch-up policies, connector keys and health levels into words: `rateLimited` reads "Paused: usage limit", `skipped_gates` "Skipped: privacy checks didn't load", `dreaming-nightly` "Nightly dreaming", `mcp:claude_ai_Slack` "Slack". A value it doesn't know reads as words ("Skipped token ceiling"), never as the raw key. Run rows, run detail, the Now strip, Control Center signals, the run search and type filter, the connector alert banner and popover, and every Schedules view (table, cards, timeline, filter chips, pills, detail header) use it. Run search now matches what the row shows ("morning briefing", "usage limit", a date).
+- **The same thing has the same name on every page.** "Fire now" and "Retry" are "Run now" and "Run again"; "Retry (bypass budget)" is "Run anyway (ignore budget)". The schedule form says Name, If the Mac was asleep (Run late / Skip / Run once), Wait between runs, Script, Catch-up window and Kind of work, with a line of help under each, and its alerts no longer mention schedule.yaml or "single-fire-per-tick priority". Proposals, the Schedules empty state, the upcoming-runs strip, Settings and the onboarding welcome drop `scoutctl`, `SKILL.md`, launchd and folder names; the install details sit behind "What gets installed?".
+- **One way to show a problem** (`Problem`, `ProblemView`). It says what happened, why it matters and what to do, offers buttons (Try again, Open Settings), and keeps the engine's own words behind Details and Copy details. The Sessions banners, the Action Items engine banner, the upcoming-runs error and the header of a failed or skipped run use it; health findings (`Problem(finding:)`) and write errors are ready to.
+
+### Added
+- **Help ▸ Scout Glossary**: a searchable window defining the words Scout can't avoid (Scout folder, knowledge base, schedule, run, session, engine, briefing, consolidation, dreaming, research, proposal, agent copy), with the other names each goes by (vault, slot, delegate, scoutctl). Page titles show the definition as a tooltip.
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

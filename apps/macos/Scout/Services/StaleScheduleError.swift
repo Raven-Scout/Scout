@@ -9,6 +9,6 @@ struct StaleScheduleError: Error, LocalizedError {
     let modifiedAt: Date
 
     var errorDescription: String? {
-        "schedule.yaml was modified externally at \(modifiedAt). Reload to bring in changes."
+        "The schedule changed outside the app at \(modifiedAt.formatted(date: .omitted, time: .shortened)). Reload to see the changes before saving."
     }
 }

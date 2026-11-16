@@ -76,7 +76,7 @@ struct SlotEditForm: View {
     private var slotKeyField: some View {
         if isNewDraft {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Slot key")
+                Text("Name")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -86,14 +86,16 @@ struct SlotEditForm: View {
                 if let err = SlotDraft.validateSlotKey(draft.key) {
                     Text(err).font(.caption).foregroundStyle(.red)
                 } else {
-                    Text("Slot keys are immutable after first save. Choose carefully.")
+                    Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             HStack {
-                Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                Text(draft.key).font(.body.monospaced())
+                Text(DisplayName.slotKey(draft.key)).font(.body.weight(.medium))
+                Text(draft.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    .help("This schedule's key. It can't be changed after the first save.")
                 Spacer()
             }
         }
@@ -152,7 +154,7 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var onMissSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("On miss")
+            Text("If the Mac was asleep")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -160,19 +162,22 @@ struct SlotEditForm: View {
             EditorialSegmentedControl(
                 selection: $draft.onMiss,
                 options: [
-                    ("Fire", OnMissPolicy.fire),
-                    ("Skip", OnMissPolicy.skip),
-                    ("Collapse", OnMissPolicy.collapse),
+                    (OnMissPolicy.fire.displayName, OnMissPolicy.fire),
+                    (OnMissPolicy.skip.displayName, OnMissPolicy.skip),
+                    (OnMissPolicy.collapse.displayName, OnMissPolicy.collapse),
                 ],
                 minSegmentWidth: 70
             )
+            Text(draft.onMiss.explanation)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     @ViewBuilder
     private var cooldownSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Cooldown (minutes)")
+            Text("Wait between runs (minutes)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -181,6 +186,9 @@ struct SlotEditForm: View {
                 Text("\(draft.cooldownMinutes)")
             }
             .frame(width: 200)
+            Text("After this schedule runs, it won't run again for at least this long.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -197,7 +205,7 @@ struct SlotEditForm: View {
                 options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
                 minSegmentWidth: 64
             )
-            Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
+            Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -207,7 +215,7 @@ struct SlotEditForm: View {
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Runner")
+                Text("Script")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -215,9 +223,12 @@ struct SlotEditForm: View {
                 TextField("run-scout.sh", text: $draft.runner)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
+                Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Missed window (hours)")
+                Text("Catch-up window (hours)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -226,16 +237,19 @@ struct SlotEditForm: View {
                     Text("\(draft.missedWindowHours)")
                 }
                 .frame(width: 200)
+                Text("How late a missed run may still start after the Mac wakes.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Type")
+                Text("Kind of work")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
                 EditorialSegmentedControl(
                     selection: $draft.type,
-                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
+                    options: SlotType.allCases.map { ($0.displayName, $0) }
                 )
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -267,7 +281,7 @@ struct SlotEditForm: View {
             if !isNewDraft {
                 Button("Delete") { isConfirmingDelete = true }
                     .foregroundStyle(.red)
-                Button("Fire now") {
+                Button("Run now") {
                     Task { await onFireNow(draft.key) }
                 }
                 .disabled(draft.isDirty(against: liveSlot))
@@ -301,7 +315,7 @@ struct SlotEditForm: View {
         }
         .padding(.top, 8)
         .alert(
-            "Change slot type?",
+            "Change the kind of work?",
             isPresented: $isConfirmingTypeChange,
             actions: {
                 Button("Cancel", role: .cancel) { }
@@ -310,11 +324,11 @@ struct SlotEditForm: View {
                 }
             },
             message: {
-                Text("Changing slot type updates which connectors are required at fire time and reorders single-fire-per-tick priority. Continue?")
+                Text("This changes which connected tools the run needs, and which schedule goes first when two are due at the same time.")
             }
         )
         .confirmationDialog(
-            "Delete \(draft.key)?",
+            "Delete \(DisplayName.slotKey(draft.key))?",
             isPresented: $isConfirmingDelete,
             titleVisibility: .visible,
             actions: {
@@ -324,7 +338,7 @@ struct SlotEditForm: View {
                 Button("Cancel", role: .cancel) { }
             },
             message: {
-                Text("Removes this slot from schedule.yaml. Tracker history is retained but unused. Run-event logs keep their references.")
+                Text("Scout stops running it. Past runs stay in the run history.")
             }
         )
     }
