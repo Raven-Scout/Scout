@@ -231,7 +231,7 @@ struct ShellViewSmokeTests {
     @Test("every sidebar destination has a status label")
     func sidebarItemsHaveStatusLabels() {
         let labels = SidebarItem.allCases.map(\.statusLabel)
-        #expect(labels.count == 9)
+        #expect(labels.count == 10)
         #expect(Set(labels).count == labels.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
     }
