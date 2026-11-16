@@ -349,9 +349,10 @@ merged:
 - #647: Tasks 1.1–1.3;
 - #649: Task 1.4's engine side, Task 1.7, and the Q6 timeout and ceiling
   plumbing. The default ceiling (`max_tokens_per_day: auto`) is Phase 0's
-  formula, which Jordan approved as built on 2026-11-16. Still to add: the
-  90-minute default for a research slot, and the doctor warning when a
-  slot's p90 Claude run length is above its timeout (spec §8.6);
+  formula, which Jordan approved as built on 2026-11-16. The timeout is
+  chosen per slot kind: 45 minutes, 90 for research (1e62a6c1). The doctor
+  warning for a slot whose p90 Claude run length is above its timeout goes
+  in Task 1.8;
 - #651: Task 1.4's runner side and Task 1.5.
 
 Tasks 1.6, 1.8 and 1.9 haven't started. Two calls made during the build are
@@ -569,6 +570,7 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 
 **Files:**
 - Modify: `plugin/engine/scout/scripts/bootstrap_doctor.py:369-430, 775-784` (loop the runner-binary and auth checks over the runtimes the schedule uses; Claude's findings are worded as today)
+- Add: a doctor warning when a slot on a non-Claude runtime has a run timeout below its slot kind's p90 Claude run length (spec §8.6; Jordan's Q6 amendment). Read run lengths from the run-outcome rows; a slot with no Claude history gets no warning
 - Create: `docs/runtimes.md` (the spec §13 evidence table, with one row: Claude Code, Tier F, probe version and date, kb-gate date, privacy-scenario date, "paid Claude plan", release)
 - Modify: `plugin/phases/core/git-setup.md:86`, `plugin/phases/research/commit-notify.md:34` (drop the vestigial `CLAUDE_MAX_BUDGET_USD` / `CLAUDE_BUDGET_SPENT_USD` arguments; check `write-session-cost.sh`'s argument order first)
 - Modify: `plugin/engine/scout/scripts/bootstrap.py:69, 769, 825` and `cli.py:2937, 3002, 3317` (remove the dead `--skip-claude`; keep it accepted and ignored with a deprecation note if any caller passes it, so grep the app and `install.sh` first)
