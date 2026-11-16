@@ -3772,9 +3772,7 @@ def _register_bootstrap() -> None:
             )
             raise typer.Exit(code=2)
         try:
-            cfg = _config_from_existing_vault(
-                vault, skip_jobs=skip_jobs, managed_by=managed_by
-            )
+            cfg = _config_from_existing_vault(vault, skip_jobs=skip_jobs, managed_by=managed_by)
         except ConfigError as e:
             # Preserve the pre-E3 exit code (10) for a malformed scout-config.yaml —
             # distinct from the "no vault"/"refused" (2) case above.
@@ -4162,9 +4160,7 @@ def _register_bootstrap() -> None:
             if ignored:
                 typer.echo(f"note: ignored on upgrade (read from scout-config.yaml): {', '.join(ignored)}", err=True)
             try:
-                cfg = _config_from_existing_vault(
-                    vault, skip_jobs=skip_jobs, managed_by=managed_by
-                )
+                cfg = _config_from_existing_vault(vault, skip_jobs=skip_jobs, managed_by=managed_by)
             except (ConfigError, OSError) as e:
                 _emit(
                     result_dict(

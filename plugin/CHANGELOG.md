@@ -6,6 +6,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The doctor checks each agent runtime the schedule uses** (spec §8.9; Phase 1, task 1.8, PR D3; `engine/scout/scripts/bootstrap_doctor.py`). A slot's runtime is its `agent_runtime:`, else `agent_runtimes.default`, else `claude-code`. Claude Code keeps its runner-binary and sign-in checks, worded as before (a test pins them). Any other runtime a slot uses gets a check that its CLI is installed and its version readable, and a note or warning on how it signs in. When the schedule or config can't be read, the doctor checks Claude Code alone and says so. With only `claude-code` registered, the doctor's output is unchanged.
+- **`docs/runtimes.md`**, the evidence table of spec §13 (Phase 1, task 1.8). One row per runtime: the CLI version the gate probe passed on, the tier, the probe, the conformance suite, `kb-gate`, the privacy scenario, the plan a run needs, and the release that shipped it. Claude Code's row: Tier F; gate probe passed on claude 2.1.318, 2026-11-16; `kb-gate` not yet run through the new path (task 1.9 records it); privacy scenario not yet; paid Claude plan; v0.18.15.
+- **The phases stop passing `CLAUDE_MAX_BUDGET_USD` / `CLAUDE_BUDGET_SPENT_USD`** to `write-session-cost.sh` (`phases/core/git-setup.md`, `phases/research/commit-notify.md`). Claude Code never sets them, so they always expanded to `0`. The phases now pass `0` for the budget cap and the amount spent, and the row is unchanged. The runner records what a run cost (`scoutctl budget record-run`, #561).
+
 ### Changed
 - **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, and part of task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
   - **scout-config.yaml can only tighten a limit that is on** (`budget.per_runtime`, which a run can write). It never turns a limit on, never goes under a floor (30 minutes of awake time, 10,000,000 tokens), and never uses a value that isn't a whole number (`0.5`, `"5m"`, `"²"`). Only `scoutctl agent-runtime set-limit` loosens a limit or turns one on or off.
@@ -14,6 +19,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **A slot's kind:** the runner's `SCOUT_RUN_TYPE` decides it only when it is exactly a kind (`dreaming`, `research`); otherwise the schedule's `type` does.
   - **Usage-tracker rows:** the runner's row and each attempt row carry `agent_runtime`, `provider` and `cost_kind`: `reported` (Claude Code's own cost), `priced` (from usage rows) or `unpriced` (tokens only). `cost_source` keeps its meaning, and a row without these keys is Claude Code's.
   - **The daily token ceiling counts real tokens.** The runner's row carries the run's tokens (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts and its subagents', each message once. Before, the ceiling read token fields no row had and counted 0. Rows dated in the future are skipped, since they would never age out.
+
+### Deprecated
+- **`scoutctl bootstrap install|upgrade|auto --skip-claude`** (spec §8.9; Phase 1, task 1.8; `engine/scout/cli.py`, `engine/scout/scripts/bootstrap.py`). Bootstrap never starts Claude, so the flag did nothing. It is now hidden, still accepted and ignored, and prints a note to stderr. `BootstrapConfig.skip_claude` and `config_from_vault(skip_claude=…)` are removed. Scout.app never passed the flag.
 
 ### Fixed
 - **Each run gets its own log, even two runs in one minute** (`templates/run-scout.sh.tmpl`, `templates/run-dreaming.sh.tmpl`, `templates/run-research.sh.tmpl`, `engine/scout/health.py`, `templates/scripts/session-lane-liveness.py`). Run logs were named to the minute, so a second run in the same minute, usually one the session lock skipped, wrote its skip line into the running session's log, and the app showed the running session as skipped.

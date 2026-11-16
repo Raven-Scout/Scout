@@ -860,9 +860,7 @@ def test_custom_load_marks_an_unbuildable_value(tmp_path: Path, body: str) -> No
 @pytest.mark.parametrize("body", BUILD_STAGE)
 def test_an_upgrade_stops_rather_than_drop_the_custom_sections(installed: Path, body: str) -> None:
     _break_custom(installed, lambda t: t + body + "\n")
-    cfg = bootstrap.config_from_vault(
-        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True
-    )
+    cfg = bootstrap.config_from_vault(installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True)
     with pytest.raises(ConfigError, match="could not be read") as raised:
         bootstrap.upgrade(cfg)
     assert body.split(": ", 1)[1] not in str(raised.value)
@@ -872,9 +870,7 @@ def test_an_upgrade_stops_rather_than_drop_the_custom_sections(installed: Path, 
 def test_an_upgrade_still_runs_past_a_syntax_error(installed: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Main's documented behaviour for a file that isn't YAML ("skipped until fixed"), unchanged here."""
     _break_custom(installed, lambda t: t + SYNTAX_ERROR)
-    cfg = bootstrap.config_from_vault(
-        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True
-    )
+    cfg = bootstrap.config_from_vault(installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True)
     bootstrap.upgrade(cfg)
     assert "could not be read: ParserError at line" in capsys.readouterr().err
     assert "## First Inbound Scan" not in (installed / "SKILL.md").read_text(encoding="utf-8")

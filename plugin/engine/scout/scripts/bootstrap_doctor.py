@@ -459,7 +459,10 @@ def _check_runtime_bin(*, runtime: str, slots: list[str]) -> tuple[list[str], li
 
 
 def _check_runtime_auth(*, runtime: str, slots: list[str]) -> tuple[list[str], list[str]]:
-    """How a non-Claude runtime signs in for scheduled runs: (warnings, notes). Claude Code's is ``_check_claude_auth``."""
+    """How a non-Claude runtime signs in for scheduled runs: (warnings, notes).
+
+    Claude Code's is ``_check_claude_auth``.
+    """
     from scout.agent_runtimes import registry
 
     adapter = registry.get(runtime)

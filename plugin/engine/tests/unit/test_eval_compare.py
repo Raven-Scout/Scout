@@ -152,9 +152,7 @@ def test_the_install_guard_refuses_a_command_without_no_jobs() -> None:
     import tests.eval.harness.build as build
 
     with pytest.raises(RuntimeError, match="--no-jobs"):
-        build._refuse_system_side_effects(
-            ["python", "-m", "scout", "bootstrap", "install"], {"HOME": "/tmp/x"}
-        )
+        build._refuse_system_side_effects(["python", "-m", "scout", "bootstrap", "install"], {"HOME": "/tmp/x"})
 
 
 def test_the_in_process_install_refuses_jobs() -> None:
