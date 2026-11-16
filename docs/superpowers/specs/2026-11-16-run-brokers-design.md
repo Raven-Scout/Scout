@@ -380,7 +380,8 @@ Affected tests only; CI is the gate. Defensive framing: each test asserts a posi
   `tool_calls` does).
 - **`git config user.email|user.name`** (Step 0 of `git-setup.md`): 64 calls in 28 sessions. They
   write `.git/config`, which the 1c profile already refuses, so the brokers change nothing for them;
-  they have failed since v0.18.14. Follow-up: skip Step 0 in a sandboxed run.
+  they have failed since v0.18.14. Fixed here (Jordan, 2026-11-16): Step 0 now skips them when
+  `SCOUT_SANDBOX_STATUS` is `enforced`.
 - **Unix sockets:** `(deny file-write* (subpath D))` leaves `connect()` to a socket in D allowed and
   refuses removing or replacing it (checked against the kernel).
 - **Real claude** against the fake endpoint, through the wrapper, inside the tightened profile:

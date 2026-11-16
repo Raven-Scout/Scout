@@ -12,9 +12,13 @@ Silently ensure git is ready. Run every time without commentary:
 
 ```bash
 cd {{SCOUT_DIR}}
-git config user.email "{{USER_EMAIL}}"
-git config user.name "{{INSTANCE_NAME}} Bot"
+if [ "${SCOUT_SANDBOX_STATUS:-}" != enforced ]; then
+  git config user.email "{{USER_EMAIL}}"
+  git config user.name "{{INSTANCE_NAME}} Bot"
+fi
 ```
+
+Inside the write sandbox (`SCOUT_SANDBOX_STATUS` is `enforced`) the vault's git config is read-only, so the block leaves it alone; commits there use the identity already set.
 
 Do not mention git setup in your output unless something goes wrong.
 
