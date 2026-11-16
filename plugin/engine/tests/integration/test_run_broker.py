@@ -146,6 +146,47 @@ def test_a_commit_the_hook_refuses_leaves_nothing_staged(vault: Vault, served: s
     assert vault.git("diff", "--cached", "--name-only").strip() == ""  # the owner's next commit won't carry it
 
 
+def test_a_refused_commit_leaves_what_the_owner_staged_as_it_was(vault: Vault, served: str) -> None:
+    (vault.path / "notes" / "seed.md").write_text("owner's staged version\n")
+    vault.git("add", "notes/seed.md")
+    staged = vault.git("ls-files", "-s", "notes/seed.md")
+    hook = vault.path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    res = vault.run('echo "run edit" > notes/seed.md && scripts/git-safe-commit.sh "notes: s" notes/seed.md', served)
+    assert res.returncode == 5, res.stderr
+    assert vault.git("ls-files", "-s", "notes/seed.md") == staged
+
+
+def test_a_stopped_drain_stops_the_commit_it_was_running(vault: Vault) -> None:
+    import signal
+
+    hook = vault.path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho $$ > .scout-logs/hook.pid\nsleep 120\n")
+    broker.enqueue(vault.path, "commit", {"message": "notes: slow", "paths": ["notes/slow.md"]})
+    (vault.path / "notes" / "slow.md").write_text("x\n")
+    proc = subprocess.Popen(
+        [sys.executable, "-P", "-m", "scout", "broker", "drain", "--vault", str(vault.path)],
+        env=vault.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )  # fmt: skip
+    pid_file = vault.path / ".scout-logs" / "hook.pid"
+    deadline = time.monotonic() + 60
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    hook_pid = int(pid_file.read_text().strip())
+    proc.send_signal(signal.SIGTERM)  # what the wrapper's watchdog does
+    proc.wait(timeout=20)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(hook_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("the commit's hook outlived the stopped drain")
+    assert proc.returncode != 0
+
+
 def test_a_refused_path_leaves_head_where_it_was(vault: Vault, served: str) -> None:
     before = vault.head()
     res = vault.run(

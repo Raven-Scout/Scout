@@ -311,11 +311,26 @@ def run_commit(
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _stop_group(proc)
+        return Reply(5, f"git-safe-commit: the commit took longer than {int(timeout)}s and was stopped\n")
+    except BaseException:
+        # Stopped (the drain's SIGTERM from the wrapper's watchdog): the helper and its hook are in their own process
+        # group, so they would outlive us and the run's lock. Take the group down with us.
+        _stop_group(proc)
+        raise
+    return Reply(proc.returncode, err, out)
+
+
+def _stop_group(proc: subprocess.Popen[str]) -> None:
+    with contextlib.suppress(OSError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        return Reply(5, f"git-safe-commit: the commit took longer than {int(timeout)}s and was stopped\n")
-    return Reply(proc.returncode, err, out)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
 
 
 def send_telegram(fields: Mapping[str, Any]) -> Reply:
@@ -387,6 +402,66 @@ def _hour(rows: list[dict[str, str]], now: datetime) -> int:
     return sum(1 for r in rows if now - datetime.fromisoformat(r["at"]) < timedelta(hours=1))
 
 
+# Runs the owner side knows: one file per run in the protected owner folder, written by the run's broker as it starts
+# and closed by the wrapper's drain as the run ends ({"at", "open", "rids"}). A drain credits a queued Telegram entry
+# to its run only through this record; anything else shares UNREGISTERED's single slot an hour.
+RUNS_DIR_NAME = "runs"
+UNREGISTERED = "unregistered"
+UNREGISTERED_PER_HOUR = 1
+RUN_RECORD_KEEP = timedelta(hours=24)  # a queued entry's own lifetime
+
+
+def _run_record(env: Mapping[str, str], run: str) -> Path:
+    return owner_dir(env) / RUNS_DIR_NAME / f"{run}.json"
+
+
+def register_run(env: Mapping[str, str], run: str, *, now: datetime | None = None) -> None:
+    """Record ``run`` as open (the live broker, as it starts). Prunes records past their lifetime."""
+    now = now or datetime.now(UTC)
+    d = owner_dir(env) / RUNS_DIR_NAME
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for old in d.glob("scout-broker.*.json"):
+        with contextlib.suppress(OSError, ValueError):
+            if now - datetime.fromtimestamp(old.lstat().st_mtime, UTC) > 2 * RUN_RECORD_KEEP:
+                old.unlink()
+    _write_record(env, run, {"at": now.isoformat(), "open": True, "rids": []})
+
+
+def close_run(env: Mapping[str, str], run: str, rids: Sequence[str]) -> None:
+    """Close ``run`` (the wrapper's drain, as the run ends): only the Telegram requests still queued now (``rids``)
+    keep its allowance; an entry written after this gets none."""
+    record = _read_record(env, run)
+    if record is None:
+        return
+    _write_record(env, run, {"at": record["at"], "open": False, "rids": sorted(set(rids))})
+
+
+def _write_record(env: Mapping[str, str], run: str, data: Mapping[str, Any]) -> None:
+    path = _run_record(env, run)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_record(env: Mapping[str, str], run: str) -> dict[str, Any] | None:
+    if not _RUN_ID.match(run):
+        return None
+    try:
+        data = json.loads(_run_record(env, run).read_text(encoding="utf-8"))
+        datetime.fromisoformat(data["at"])
+    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _credited(env: Mapping[str, str], run: str, rid: str, now: datetime) -> bool:
+    record = _read_record(env, run)
+    if record is None or now - datetime.fromisoformat(record["at"]) > RUN_RECORD_KEEP:
+        return False
+    rids = record.get("rids")
+    return record.get("open") is True or (bool(rid) and isinstance(rids, list) and rid in rids)
+
+
 def run_id_of(sock_path: str) -> str:
     """The run's id: its broker folder's name. "unknown" when there is none to name."""
     name = Path(sock_path).parent.name if sock_path else ""
@@ -440,24 +515,37 @@ class Broker:
             return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n", kind=REFUSED)
         if fields["dry_run"]:
             return self.sender(fields)
-        run = self.run_id or (
-            req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else "unknown"
-        )
         rid = req["rid"] if isinstance(req.get("rid"), str) and _REQUEST_ID.match(req["rid"]) else ""
         now = self.clock()
+        claimed = req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else ""
+        # The live broker is its run. A drained entry gets a run's allowance only when the owner side registered
+        # that run and it is still open, or it closed with this request still queued (close_run): a queue file is
+        # the run's to write, so its own `run` field proves nothing.
+        if self.run_id:
+            run = self.run_id
+        elif claimed and _credited(self.env, claimed, rid, now):
+            run = claimed
+        else:
+            run = UNREGISTERED
+        cap = UNREGISTERED_PER_HOUR if run == UNREGISTERED else self.limits.max_per_run
         # Held across the send, so two brokers can't both take the hour's last slot or send one request twice.
         with _locked(owner_dir(self.env) / TELEGRAM_LOCK_NAME):
             rows = _read_sends(self.env, now)
             if rid and any(r["rid"] == rid for r in rows):
                 return Reply(0, f"scoutctl notify telegram: request {rid} was already sent\n")
-            if sum(1 for r in rows if r["run"] == run) >= self.limits.max_per_run:
-                return Reply(
-                    EXIT_LIMIT,
-                    f"scoutctl notify telegram: this run has sent its {self.limits.max_per_run} messages; "
-                    "put the rest in the wrap\n",
-                    kind=RUN_LIMIT,
+            mine = [r for r in rows if r["run"] == run]
+            if run == UNREGISTERED:
+                mine = [r for r in mine if now - datetime.fromisoformat(r["at"]) < timedelta(hours=1)]
+            full = _hour(rows, now) >= self.limits.max_per_hour
+            if len(mine) >= cap or (run == UNREGISTERED and full):
+                # No run vouches for it: one shared slot an hour, and a full hour fails it rather than keeping it.
+                why = (
+                    "no open run vouches for this queued message, and its shared slot is used"
+                    if run == UNREGISTERED
+                    else f"this run has sent its {self.limits.max_per_run} messages; put the rest in the wrap"
                 )
-            if _hour(rows, now) >= self.limits.max_per_hour:
+                return Reply(EXIT_LIMIT, f"scoutctl notify telegram: {why}\n", kind=RUN_LIMIT)
+            if full:
                 return Reply(
                     EXIT_LIMIT,
                     f"scoutctl notify telegram: {_hour(rows, now)} messages went out in the last hour, the most "
@@ -531,6 +619,8 @@ def serve(vault: Path, broker_dir: Path, *, parent: int | None = None, broker: B
     _check_dir(broker_dir)
     os.environ["SCOUT_DATA_DIR"] = str(vault)  # notify_telegram's duplicate guard finds the vault by it
     broker = broker or Broker.for_vault(vault, run_id=broker_dir.name)
+    if broker.run_id and _RUN_ID.match(broker.run_id):
+        register_run(broker.env, broker.run_id)
     sweep_stale(broker_dir.parent, keep=broker_dir.name)
     with contextlib.suppress(Exception):  # warm the protected-path list, so the first commit isn't the slow one
         hook_paths.protected_roots(vault, broker.env)
@@ -813,7 +903,7 @@ def _read_entry(dir_fd: int, name: str) -> dict[str, Any]:
         raise ValueError("unreadable") from e
     with os.fdopen(fd, "rb") as fh:
         st = os.fstat(fh.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_size > QUEUE_MAX_ENTRY_BYTES:
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > QUEUE_MAX_ENTRY_BYTES:
             raise ValueError("not a queue entry")
         data = fh.read(QUEUE_MAX_ENTRY_BYTES + 1)
     try:
@@ -909,9 +999,26 @@ def drain(
     env: Mapping[str, str] | None = None,
     broker: Broker | None = None,
     deadline_s: float = DRAIN_DEADLINE_S,
+    run: str | None = None,
 ) -> DrainResult:
-    """Apply the queue outside the sandbox: each entry validated exactly like a live request (spec §5.6)."""
+    """Apply the queue outside the sandbox: each entry validated exactly like a live request (spec §5.6).
+
+    ``run``: the wrapper's drain, as its run ends. Afterwards the run is closed (:func:`close_run`): the Telegram
+    requests of its still queued keep its allowance for later drains, and nothing queued after gets any.
+    """
     env = dict(os.environ if env is None else env)
+    try:
+        return _drain(vault, env=env, broker=broker, deadline_s=deadline_s)
+    finally:
+        if run and _RUN_ID.match(run):
+            try:
+                left = [e for e in _queued(vault, "telegram") if e.get("run") == run]
+            except (QueueUnsafe, OSError):
+                left = []
+            close_run(env, run, [e["rid"] for e in left if isinstance(e.get("rid"), str)])
+
+
+def _drain(vault: Path, *, env: dict[str, str], broker: Broker | None, deadline_s: float) -> DrainResult:
     result = DrainResult()
     problem = queue_problem(vault)
     if problem is not None:

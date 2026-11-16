@@ -197,14 +197,20 @@ done
 
 # On a failed add or commit (a hook refusal), take back what this helper staged,
 # so the next bare `git commit` (the owner's) doesn't carry it. A scheduled run
-# can't unstage anything itself.
+# can't unstage anything itself. Index entries the paths had before (something
+# the owner staged) are put back as they were.
 unstage_ours() {
   if [ "${#ADD[@]}" -gt 0 ]; then
     git reset -q -- "${ADD[@]}" >/dev/null 2>&1 || true
+    if [ -n "$INDEX_BEFORE" ]; then
+      printf '%s\n' "$INDEX_BEFORE" | git update-index --index-info >/dev/null 2>&1 || true
+    fi
   fi
 }
 
+INDEX_BEFORE=""
 if [ "${#ADD[@]}" -gt 0 ]; then
+  INDEX_BEFORE="$(git ls-files -s -- "${ADD[@]}" 2>/dev/null || true)"
   git add -- "${ADD[@]}" || {
     unstage_ours
     die 5 "git add failed"

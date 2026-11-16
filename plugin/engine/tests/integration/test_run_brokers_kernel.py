@@ -354,6 +354,41 @@ def test_a_commit_queued_mid_session_lands_when_the_wrapper_exits(tmp_path: Path
     assert broker.pending(w.vault) == 0
 
 
+def test_the_wrappers_watchdog_leaves_no_commit_running(tmp_path: Path, broker_dir: Path) -> None:
+    w = World(tmp_path.resolve(), broker_dir)
+    hook = w.vault / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho $$ > .scout-logs/hook.pid\nsleep 120\n")
+    claude = w.root / "bin" / "claude"
+    claude.parent.mkdir(parents=True, exist_ok=True)
+    claude.write_text(
+        "#!/bin/bash\n"
+        'echo s > notes/s.md && SCOUT_RUN_BROKER=/tmp/scout-no-broker.sock scripts/git-safe-commit.sh "notes: s" '
+        "notes/s.md\nexit 0\n"
+    )
+    claude.chmod(0o755)
+    log = w.vault / ".scout-logs" / "run.log"
+    started = time.monotonic()
+    res = subprocess.run(
+        [str(_wrapper(w)), str(log), str(claude), "-p", "x"],
+        cwd=w.vault, env={**_wrapper_env(w), "SCOUT_BROKER_DRAIN_WATCHDOG_S": "3"},
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert res.returncode == 0, log.read_text()
+    assert time.monotonic() - started < 60  # the hook's 120 s sleep didn't hold the wrapper
+    assert "ran past its watchdog" in log.read_text()
+    hook_pid = int((w.vault / ".scout-logs" / "hook.pid").read_text().strip())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(hook_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("the commit's hook outlived the wrapper")
+    assert broker.pending(w.vault) == 1  # the commit waits in the queue for the tick
+
+
 # -- real claude, no spend (FakeAnthropic, a dummy key, a scratch HOME) ------------------------------------------
 
 

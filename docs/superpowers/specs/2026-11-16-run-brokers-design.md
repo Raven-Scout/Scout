@@ -288,8 +288,21 @@ queued; past it, it answers exit 5, as the live broker would. In the drain:
 - a request id already in the log counts as sent. That covers a send whose reply was lost, which the
   client also queued, and it no longer depends on `send()`'s 10-minute duplicate window.
 
-Run ids come from a folder name the run can see. A run that writes queue entries by hand can invent
-ids, so the hourly limit is the bound on queued sends.
+A queue file's `run` field is the run's to write, so it proves nothing (second review of #648). The
+drain credits a run only through the owner side's record in `run-brokers/runs/<run>.json`:
+- the live broker writes it as it starts (open);
+- the wrapper's drain closes it as the run ends (`--run`), listing the request ids still queued;
+- a drained entry gets its run's allowance only while that run is open, or if its request id was on
+  that list.
+
+Everything else, such as an invented id, a closed run's later entries or no id, shares one slot an hour
+(`UNREGISTERED_PER_HOUR`). An entry that doesn't get that slot fails at once instead of waiting, so
+it can't fill the hours other runs' wraps need.
+
+**A stopped drain stops its commit.** The helper and its hook run in their own process group. When
+the wrapper's watchdog sends SIGTERM to the drain, the drain stops that group (SIGTERM, then SIGKILL
+after 2 s) before exiting, so nothing outlives the run's lock. The helper also puts back any index
+entry the owner had staged for a path before it unstages its own.
 
 **The helper takes back what it staged** when `git add` or the commit fails, for example when the
 pre-commit hook refuses it. A run can't unstage, so a refused commit's paths would otherwise ride

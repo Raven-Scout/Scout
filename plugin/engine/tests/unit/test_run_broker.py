@@ -160,7 +160,9 @@ def test_the_send_carries_only_the_message_never_a_recipient(vault: Path) -> Non
 
 def test_the_per_run_limit_holds(vault: Path) -> None:
     sender = Sender()
-    b = broker.Broker(vault, _env(), limits=broker.Limits(max_per_run=2), sender=sender, clock=lambda: NOW)
+    b = broker.Broker(
+        vault, _env(), limits=broker.Limits(max_per_run=2), sender=sender, clock=lambda: NOW, run_id="scout-broker.p"
+    )
     codes = [b.handle(_tg(f"m{i}")).exit for i in range(3)]
     assert codes == [0, 0, broker.EXIT_LIMIT] and len(sender.calls) == 2
 
@@ -413,6 +415,7 @@ def test_a_full_hour_keeps_queued_messages_without_using_their_tries(vault: Path
     limits = broker.Limits(max_per_run=4, max_per_hour=1)
     busy = broker.Broker(vault, _env(), limits=limits, sender=Sender(), clock=lambda: NOW, run_id="scout-broker.x")
     assert busy.handle(_tg("first")).exit == 0
+    broker.register_run(os.environ, "scout-broker.y", now=NOW)  # its broker started, then died
     broker.enqueue(vault, "telegram", {**_tg("later"), "run": "scout-broker.y"}, now=NOW)
     sender = Sender()
     result = broker.drain(vault, broker=broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW))
@@ -427,6 +430,7 @@ def test_a_run_sends_at_most_its_allowance_live_and_queued_together(
     vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run = "scout-broker.r1"
+    broker.register_run(os.environ, run)  # what `broker serve` does as it starts
     live = broker.Broker(vault, _env(), sender=Sender(), run_id=run)
     assert [live.handle(_tg(f"live{i}")).exit for i in range(3)] == [0, 0, 0]
     gone = str(tmp_path / run / broker.SOCKET_NAME)  # the broker died: the client queues
@@ -438,6 +442,29 @@ def test_a_run_sends_at_most_its_allowance_live_and_queued_together(
     sender = Sender()
     result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender))
     assert result.done == 1 and [c["body"] for c in sender.calls] == ["queued0"]
+
+
+def test_queued_messages_get_no_allowance_from_a_run_id_the_owner_side_never_recorded(vault: Path) -> None:
+    for i in range(8):
+        broker.enqueue(vault, "telegram", {**_tg(f"forged{i}"), "run": f"scout-broker.forged{i}"}, now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender, clock=lambda: NOW))
+    assert len(sender.calls) == broker.UNREGISTERED_PER_HOUR  # one shared slot an hour, whatever the ids say
+    assert result.done == 1 and result.failed == 7 and broker.pending(vault) == 0
+
+
+def test_a_closed_run_keeps_its_allowance_only_for_what_it_left_queued(vault: Path) -> None:
+    run = "scout-broker.c1"
+    broker.register_run(os.environ, run, now=NOW)
+    broker.enqueue(vault, "telegram", {**_tg("left over"), "run": run, "rid": "01LEFTOVER"}, now=NOW)
+    broker.drain(vault, broker=Recorder(vault, {"left over": 2}), run=run)  # the wrapper's drain: Telegram is down
+    broker.enqueue(vault, "telegram", {**_tg("written after"), "run": run, "rid": "01AFTER"}, now=NOW)
+    broker.enqueue(vault, "telegram", {**_tg("also after"), "run": run, "rid": "01AFTER2"}, now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender, clock=lambda: NOW))
+    bodies = sorted(c["body"] for c in sender.calls)
+    assert "left over" in bodies  # credited to its run
+    assert len(bodies) == 2 and result.failed == 1  # the two written after share one unvouched slot
 
 
 def test_a_message_the_broker_already_sent_is_not_sent_again_from_the_queue(vault: Path) -> None:
