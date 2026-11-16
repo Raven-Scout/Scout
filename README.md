@@ -215,6 +215,14 @@ your local Claude Code sessions. Scout can also draft a **read-only custom conne
 connected to Claude Code (`/scout-connect`); the draft check rejects any tool that sends, posts, creates, updates or
 deletes. The roster lives in [`plugin/engine/scout/connectors.yaml`](plugin/engine/scout/connectors.yaml).
 
+### Runtimes
+
+Scout runs on Claude Code. Other agents are planned, but none of them is supported yet:
+
+- **Planned:** Google's Antigravity CLI first, then OpenAI's Codex CLI and Google's Gemini CLI, which will start as
+  previews.
+- **Planned:** hosted agents such as Grok Bot and Claude Duet reading a filtered copy of your notes.
+
 ### Commands
 
 | In Claude Code | What it does |
