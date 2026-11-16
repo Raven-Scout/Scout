@@ -98,11 +98,12 @@ struct KBEditableView: View {
                 Button("Cancel") { editing = nil }
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                     .keyboardShortcut(.cancelAction)
-                Button("Save") { commit(seg) }
+                Button(Self.inlineCommitTitle) { commit(seg) }
                     .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
+                    .help("Apply this change to the note. Save (⌘S) writes it to disk.")
             }
         }
         .padding(.vertical, 2)
@@ -117,6 +118,11 @@ struct KBEditableView: View {
         buffer = seg.raw
         editing = seg.id
     }
+
+    /// The inline editor's confirm button only updates the note's draft; the
+    /// header's Save writes the file. Calling it "Save" made people think the
+    /// change was on disk.
+    static let inlineCommitTitle = "Done"
 
     private func commit(_ seg: KBDocSegment) {
         source = KBDocSegment.replaceLines(in: source, start: seg.lineStart, end: seg.lineEnd, with: buffer)

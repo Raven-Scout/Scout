@@ -48,10 +48,12 @@ enum GuardedFileWrite {
         transform: (String) throws -> String
     ) throws -> (before: String, after: String)? {
         for _ in 0..<maxAttempts {
+            // The mtime is taken BEFORE the read: a write landing between the
+            // two then shows as a changed mtime instead of slipping past.
+            let mtimeAtRead = modificationDate(url)
             let text: String
             do { text = try String(contentsOf: url, encoding: .utf8) }
             catch { throw Failure.read(error.localizedDescription) }
-            let mtimeAtRead = modificationDate(url)
 
             let updated = try transform(text)
             guard updated != text else { return nil }

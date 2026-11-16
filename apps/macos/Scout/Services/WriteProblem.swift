@@ -65,6 +65,11 @@ struct WriteProblem: Equatable, Identifiable {
                 kind: .stale, title: title,
                 message: "The schedule changed on disk since this page loaded it. Reload to see the current schedule, then make your change again.",
                 details: e.errorDescription, retryable: false)
+        case let e as ScheduleNotLoadedError:
+            return WriteProblem(
+                kind: .stale, title: title,
+                message: "The schedule didn't load, so Scout won't save over it. Reload the page, then make your change again.",
+                details: e.errorDescription, retryable: false)
         case let e as GuardedFileWrite.Failure:
             switch e {
             case .read(let m):

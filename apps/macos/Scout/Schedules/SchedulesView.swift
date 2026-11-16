@@ -46,7 +46,8 @@ struct SchedulesView: View {
                 slotCount: service.slots.count,
                 typeCount: typeCount,
                 viewMode: $viewMode,
-                onAddSlot: addDraftSlot
+                onAddSlot: addDraftSlot,
+                canAddSlot: service.loadState == .loaded
             )
             Divider().background(DS.Rule.hard)
 
@@ -64,18 +65,48 @@ struct SchedulesView: View {
         }
     }
 
+    /// What the master pane shows. A failed load is its own state: showing the
+    /// empty state there would offer "+ Add slot" on a page that doesn't know
+    /// what schedule.yaml holds.
+    enum ContentState: Equatable {
+        case loading
+        case loadFailed(String)
+        case empty
+        case slots
+    }
+
+    static func contentState(
+        isInitialLoading: Bool,
+        loadState: ScheduleLoadState,
+        hasVisibleSlots: Bool,
+        hasNewDraft: Bool
+    ) -> ContentState {
+        if case .failed(let message) = loadState { return .loadFailed(message) }
+        if isInitialLoading || loadState == .notLoaded { return .loading }
+        if !hasVisibleSlots && !hasNewDraft { return .empty }
+        return .slots
+    }
+
     @ViewBuilder
     private var content: some View {
-        if isInitialLoading {
+        switch Self.contentState(
+            isInitialLoading: isInitialLoading,
+            loadState: service.loadState,
+            hasVisibleSlots: !filteredSlots.isEmpty,
+            hasNewDraft: newDraftSlot != nil
+        ) {
+        case .loading:
             VStack {
                 Spacer()
                 ProgressView()
                 Spacer()
             }
             .frame(maxWidth: .infinity)
-        } else if filteredSlots.isEmpty && newDraftSlot == nil {
+        case .loadFailed(let message):
+            loadFailedState(message)
+        case .empty:
             emptyState
-        } else {
+        case .slots:
             switch viewMode {
             case .table:
                 SchedulesMasterTable(
@@ -96,6 +127,34 @@ struct SchedulesView: View {
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func loadFailedState(_ message: String) -> some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 36))
+                .foregroundStyle(DS.Status.err)
+            Text("Couldn't load the schedule")
+                .font(DS.serif(20, weight: .medium))
+                .foregroundStyle(DS.Ink.p2)
+            Text("Scout won't change the schedule until it can read it.")
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p3)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Text(message)
+                .font(DS.mono(11))
+                .foregroundStyle(DS.Ink.p3)
+                .lineLimit(6)
+                .textSelection(.enabled)
+                .frame(maxWidth: 420)
+            Button("Retry") { Task { await reload() } }
+                .buttonStyle(.borderedProminent)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -215,6 +274,7 @@ struct SchedulesView: View {
     // MARK: - Actions
 
     private func addDraftSlot() {
+        guard service.loadState == .loaded else { return }
         guard newDraftSlot == nil else {
             selectedSlotKey = newDraftSlot?.key
             return
@@ -230,13 +290,10 @@ struct SchedulesView: View {
         // Best effort: an engine without `scoutctl model` leaves the settings
         // nil and the model picker hidden. Never blocks the schedule load.
         try? await modelSettings.load()
-        do {
-            try await service.loadAll()
-            isInitialLoading = false
-        } catch {
-            errorMessage = error.localizedDescription
-            isInitialLoading = false
-        }
+        // A failure lands in `service.loadState`, which the master pane
+        // shows as the load-failed state (with Retry) instead of a banner.
+        try? await service.loadAll()
+        isInitialLoading = false
     }
 
     private func handleSave(_ saved: Slot) async {
