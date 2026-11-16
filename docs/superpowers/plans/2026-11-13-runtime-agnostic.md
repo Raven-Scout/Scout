@@ -65,12 +65,14 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 - No gate is weakened. A refusal fails closed, and a refused runtime never
   falls back to Claude Code (spec §8.3).
 - Resolve failure falls back to `claude-code`. Check failure (or "can't
-  evaluate") skips the run with `scout_record_skip refused_runtime` (spec §8.2).
+  evaluate") skips the run with `scout_record_skip skipped_runtime` (spec §8.2).
 - New config key names: slot `agent_runtime`, config `agent_runtimes.default`,
   env `SCOUT_AGENT_RUNTIME`, runtime ids `claude-code`, `antigravity`,
   `codex`, `gemini`. Never reuse `Slot.runtime` (spec §8.1).
-- Ledger keys `agent_runtime`, `provider`, `cost_source` ∈ `{reported, priced, unpriced}`.
-  Absent means Claude Code (spec §8.6).
+- Ledger keys `agent_runtime`, `provider`, and a cost-kind key ∈ `{reported, priced, unpriced}`.
+  Absent means Claude Code (spec §8.6). The cost-kind key can't be
+  `cost_source`, which usage-tracker rows already use (`"transcript"`);
+  Task 1.6 names it.
 - `privacy.providers` defaults to `[anthropic]`. Local-only paths are
   denied to every non-Anthropic run, consent or not (spec §8.4).
 - No paid API spend, no API keys in tests or CI, no model in CI. Model-backed
@@ -342,6 +344,17 @@ Done when:
 - `eval.sh kb-gate` passes on Claude through the new path, run with Jordan's
   OK (spec §12).
 
+**Status (2026-11-16): in progress.** Three stacked draft PRs are open, none
+merged:
+- #647: Tasks 1.1–1.3;
+- #649: Task 1.4's engine side, Task 1.7, and the Q6 timeout and ceiling
+  plumbing;
+- #651: Task 1.4's runner side and Task 1.5.
+
+Tasks 1.6, 1.8 and 1.9 haven't started. Two calls made during the build are
+in spec §8.4 (where the provider grant lives) and §8.6 (the cost-kind key
+name), and the skip outcome is `skipped_runtime` (spec §8.2).
+
 ### Task 1.1: Types, protocol and registry
 
 **Files:**
@@ -476,7 +489,7 @@ Done when:
 Runner changes (all three):
 
 1. Resolve `SCOUT_AGENT_RUNTIME` (fallback `claude-code`, logged).
-2. Run `check`; on a non-zero exit, `scout_record_skip refused_runtime` and
+2. Run `check`; on a non-zero exit, `scout_record_skip skipped_runtime` and
    exit 0.
 3. Log `=== agent runtime: $SCOUT_AGENT_RUNTIME ===`.
 4. Launch `claude-with-retry.sh "$LOG_FILE" "$SCOUTCTL_BIN" agent-runtime exec --runtime "$SCOUT_AGENT_RUNTIME" --model "$SCOUT_MODEL" --max-budget-usd {{MAX_BUDGET}} --name "$RUN_NAME" -p "$PROMPT"`.
@@ -493,7 +506,7 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
   - `test_check_refusal_matrix`: parametrised tier × reader × vault {plain, has `restrict_tools`} × providers × verified-version, against a dummy Tier-D adapter registered in the test;
   - `test_check_error_is_refusal`;
   - `test_runner_resolve_failure_falls_back_to_claude_code`;
-  - `test_runner_check_refusal_records_refused_runtime_and_never_launches`;
+  - `test_runner_check_refusal_records_skipped_runtime_and_never_launches`;
   - `test_unrendered_old_runner_still_launches_claude`;
   - `test_live_run_still_matches_exec_launched_claude` (the `ps` line after `exec` carries `--name -p --max-budget-usd` and the vault path; reuse `test_kb_live_run.py` helpers).
 - [ ] **Step 2: Run them.** Expected: FAIL.
@@ -521,7 +534,7 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 ### Task 1.6: Ledgers name the runtime
 
 **Files:**
-- Modify: `plugin/templates/scripts/run-outcome.sh.tmpl` (add `"agent_runtime": $SCOUT_AGENT_RUNTIME` when set, as `model` is), `plugin/engine/scout/cli.py:1015-1087` (`budget record-run`/`record-attempt` rows gain `agent_runtime`, `provider`, `cost_source: "reported"` for Claude transcript cost, `"priced"` for the usage fallback)
+- Modify: `plugin/templates/scripts/run-outcome.sh.tmpl` (add `"agent_runtime": $SCOUT_AGENT_RUNTIME` when set, as `model` is), `plugin/engine/scout/cli.py:1015-1087` (`budget record-run`/`record-attempt` rows gain `agent_runtime`, `provider`, and the cost-kind key: `"reported"` for Claude transcript cost, `"priced"` for the usage fallback. Pick a name other than `cost_source`, which these rows already carry as `"transcript"`, and update spec §8.6 with it)
 - Modify: `plugin/engine/scout/health.py` (`_parse_row` defaults `agent_runtime` to `claude-code`), `plugin/engine/scout/scripts/budget_check.py` (unchanged maths; reads the new keys only to group usage limits per runtime)
 - Test: `plugin/engine/tests/unit/test_run_cost.py`, `test_budget_cli.py`, `test_budget_check.py`
 
@@ -535,7 +548,8 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 
 **Files:**
 - Modify: `plugin/engine/scout/kb/privacy.py` (overlay key `privacy.providers`, default `["anthropic"]`; no label change, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, as #625 did). The local-only exclusion for non-Anthropic runs (spec §8.4) arrives in Phase 2, with the first such runtime
-- Modify: `plugin/engine/scout/cli.py` (`scoutctl privacy consent-provider <id>` / `revoke-provider <id>`, written through the overlay path `privacy-migrate --accept` uses (#510))
+- Modify: `plugin/engine/scout/cli.py` (`scoutctl privacy consent-provider <id>` / `revoke-provider <id>`, recorded like `privacy-migrate --accept` (#510))
+- **As built (#649):** the grant is stored in `~/.local/state/scout/provider-consent.json`, protected by `hook_paths` and the sandbox like `run-sandbox.json`. `privacy.providers` in `scout-config.yaml` can only narrow it, because a run can write that file. Until Phase 2's exclusion lands, `check` refuses every non-Anthropic run with `local_only_unenforced` (spec §8.4)
 - Test: `plugin/engine/tests/unit/test_privacy_providers.py`
 
 - [ ] **Step 1: Write the failing tests:**

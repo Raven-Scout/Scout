@@ -28,7 +28,15 @@ Progress (2026-11-16). The Claude Code hardening has shipped. Phase 1 has
 started, and nothing in the adapter phases is built yet.
 
 - **In progress** (Jordan's go, 2026-11-16; cards cut by the coordinator):
-  - **Phase 1**, the runtime interface with Claude Code behind it.
+  - **Phase 1**, the runtime interface with Claude Code behind it. Three
+    stacked draft PRs are open, none merged:
+    - #647: tasks 1.1–1.3;
+    - #649: task 1.4's engine side, task 1.7, and the Q6 timeout and
+      ceiling plumbing;
+    - #651: task 1.4's runner side and task 1.5.
+
+    Tasks 1.6, 1.8 and 1.9 haven't started. Two calls made during the build
+    are recorded in §8.4 and §8.6.
   - **Phase 0**, a spike per CLI. Findings are in
     (`2026-11-16-runtime-agnostic-phase0-findings.md`) and folded into this
     spec. agy's real-login runs, agy under the real #642 profile, and its
@@ -676,8 +684,12 @@ class AgentRuntime(Protocol):
 SCOUT_AGENT_RUNTIME="$("$SCOUTCTL_BIN" agent-runtime resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
 [ -n "$SCOUT_AGENT_RUNTIME" ] || SCOUT_AGENT_RUNTIME=claude-code   # the pre-change behaviour
 export SCOUT_AGENT_RUNTIME
-"$SCOUTCTL_BIN" agent-runtime check --slot "$MODE" >>"$LOG_FILE" 2>&1 || { scout_record_skip refused_runtime; exit 0; }
+"$SCOUTCTL_BIN" agent-runtime check --slot "$MODE" >>"$LOG_FILE" 2>&1 || { scout_record_skip skipped_runtime; exit 0; }
 ```
+
+The skip outcome is `skipped_runtime`, matching the existing run-outcome
+names (`skipped_budget`, `skipped_gates`). The health finding stays
+`agent_runtime.refused` (Phase 1 build, #651).
 
 - The launch line becomes `claude-with-retry.sh $LOG $SCOUTCTL_BIN
   agent-runtime exec --runtime … --model … --max-budget-usd N --name R -p
@@ -844,6 +856,14 @@ excluded from non-Anthropic runs.
   The default is `[anthropic]`, which is today's behaviour.
 - Adding one is an explicit owner step, `scoutctl privacy consent-provider
   openai`, recorded like the P5 consent (#510).
+- **Where the grant lives (Phase 1 build, #649).** The grant is stored in
+  `~/.local/state/scout/provider-consent.json`, outside the vault. Like
+  `run-sandbox.json`, that file is protected by `hook_paths` and by the
+  sandbox. `privacy.providers` in `scout-config.yaml` can only *narrow* the
+  grant, never widen it, because a scheduled run can write that file.
+- **Until Phase 2's read-gate exclusion lands**, `check` refuses every
+  non-Anthropic run with `local_only_unenforced`, so a consented provider
+  still can't run before local-only paths are actually withheld from it.
 - Until then `check` refuses that runtime for any session that reads the
   vault as `owner` or `autonomous`. A delegate mirror is already
   normal-notes-only, so it needs only the same consent.
@@ -1000,9 +1020,13 @@ excluded from non-Anthropic runs.
 
 ### 8.6 Usage, cost and budget
 
-- **Ledgers gain three keys.** `agent_runtime`, `provider`, and `cost_source`
-  ∈ `{reported, priced, unpriced}` join the existing `model`. Absent means
+- **Ledgers gain three keys.** `agent_runtime`, `provider`, and a cost-kind
+  key ∈ `{reported, priced, unpriced}` join the existing `model`. Absent means
   Claude Code (old rows).
+  - The cost-kind key can't be called `cost_source`: usage-tracker rows
+    already carry `cost_source: "transcript"` (§6.2). Task 1.6 picks the new
+    name. Where this spec writes `cost_source: unpriced` below, read that
+    key.
 - **Claude Code is unchanged.** Its cost comes from the transcript's
   `cost-state`, and the native `--max-budget-usd` cap applies.
 - **Runtimes that report tokens but no USD:**
@@ -1361,7 +1385,7 @@ and per-PR checks are in the plan.
 | **1b Claude run write gate (separate privacy fix)** — *merged, #637 (f1f9dba6)* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; four review rounds |
 | **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *merged, #642 (c4c3a018)* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so a write the hooks can't see is still refused by the kernel. Reads of `~/.scout-secrets` are denied apart from the two Telegram files. A post-run integrity check, outside the sandbox, puts back protected files a run changed in git. The owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description | Done |
 | **1d Commit broker and send-only Telegram broker (Claude Code; added 2026-11-16)** — *planned* | From #642's follow-ups. A broker outside the sandbox makes the run's commits, so per-command git settings no longer matter. A send-only broker sends the Telegram wrap, so the run no longer needs to read the two Telegram files and the sandbox can deny them too | Per its own card | Per its card |
-| **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, provider consent (§8.4), doctor loop, vestigial-variable cleanup. Every adapter's launch keeps #642's sandbox | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
+| **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, provider consent (§8.4), doctor loop, vestigial-variable cleanup. Every adapter's launch keeps #642's sandbox. **In progress:** stacked drafts #647 (1.1–1.3), #649 (1.4 engine, 1.7, Q6 plumbing) and #651 (1.4 runners, 1.5); 1.6, 1.8 and 1.9 not started | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
 | **2 Antigravity CLI (first runtime, Q5)** | `antigravity` adapter; gate translation + generated config (`~/.gemini/config/hooks.json`); the local-only exclusion for non-Anthropic runs (§8.4); the timeout and token ceiling on by default (§8.6); fake-model conformance on agy's gemini-provider path, run automatically per new version, plus the real-login proof (§8.3 rule 4); first, and with no model: agy under the real #642 profile (a write carve-out for agy's data dir, none for `~/.gemini/config`), ruling out a hook bypass through agy's local server (§8.5), and agy's login under launchd; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; the generated `.agents/skills` tree and the first-release commands (§8.10) | Conformance at Tier L for a pinned version (agy has no `post_tool_context`, Phase 0 findings §1.3), proved by the fake-model probe plus one real-login run; `kb-gate` + privacy scenario pass on Antigravity on Jordan's AI Pro login (his OK per run); one slot live for a week | 9–13 |
 | **3 Codex CLI (preview, Q5)** | `codex` adapter; gate translation + generated config; fake Responses-API server and fake-model conformance; eval shim; generated Codex packaging (shares the `.agents/skills` tree) | Conformance at Tier F (or L) for a pinned version. Ships as **preview**. It becomes Supported only when someone with a ChatGPT plan passes `kb-gate` + the privacy scenario (§10) | 5–8 |
 | **4 Gemini CLI (preview, Q5)** | `gemini` adapter; fake-model conformance through `GOOGLE_GEMINI_BASE_URL` if Phase 0 confirms it; an extension package; `hook_out` that always prints valid JSON (malformed output fails open) | As Codex: preview until someone with a Code Assist licence or a paid key passes the live gate | 2–4 |
