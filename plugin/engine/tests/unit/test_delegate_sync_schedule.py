@@ -23,15 +23,19 @@ from scout import health
 from scout import repo_sync as rs
 from scout.cli import app
 from scout.kb.outbound import note_from_text, terms_of
-from scout.scripts import bootstrap_doctor, schedule_tick
+from scout.scripts import bootstrap_doctor, privacy_migrate, schedule_tick
 
+from . import office_fixtures as of
 from .privacy_vault_helpers import git
 from .test_delegate_mirror import (  # noqa: F401 - the fixtures
     GITHUB,
     INBOX_CANARY,
+    LEFT_OUT_OFFICE,
     PRIYA,
+    UNSCANNABLE,
     FakeGh,
     _all_blobs,
+    _allow_unscanned,
     _bare,
     _commit,
     _commit_files,
@@ -1177,3 +1181,226 @@ def test_the_trust_state_cli_needs_each_link_confirmed(vault: Path, tmp_path: Pa
     out = runner.invoke(app, ["delegate", "trust-state", "--confirm", "grok-personal"], env=env)
     assert out.exit_code == 0 and "holds grok-personal's mirror" in out.output
     assert dm.load_links(vault)["grok-personal"].last_mirror
+
+
+def test_a_preview_writes_nothing_not_even_the_vault_salt(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    secrets = dm.secrets_dir()
+    assert not secrets.exists()  # a fresh computer
+    assert dm._vault_mark(vault) == ""  # no salt yet: no mark, and no manifest matches ""
+    dm.preview(vault, "grok-personal")
+    assert not secrets.exists() and not dm.state_path(vault).exists()
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))  # the first push makes the salt
+    assert (secrets / dm.VAULT_SALT).stat().st_mode & 0o777 == 0o600
+    mark = dm._vault_mark(vault)
+    assert len(mark) == 32 and dm._vault_mark(vault, create=True) == mark
+
+
+# ----- Office files and archives with the memo and the trusted check (#639 merge traps) ---------
+
+OFFICE_NAMED = "attachments/named.docx"
+OFFICE_MACRO = "attachments/macro.docm"
+ARCHIVE = "attachments/bundle.zip"
+
+
+def _office_files(vault: Path) -> None:  # noqa: F811
+    _commit_files(
+        vault,
+        {
+            OFFICE_NAMED: LEFT_OUT_OFFICE["attachments/metadata.docx"],  # names Sammy in its author field
+            OFFICE_MACRO: UNSCANNABLE["attachments/macro.docm"],
+            ARCHIVE: UNSCANNABLE["attachments/bundle.zip"],
+        },
+        "office files",
+    )
+
+
+def _verdicts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the path of every binary_verdict call."""
+    seen: list[str] = []
+    real = dm.binary_verdict
+
+    def counting(rel: str, *a: object, **k: object) -> str | None:
+        seen.append(rel)
+        return real(rel, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dm, "binary_verdict", counting)
+    return seen
+
+
+def test_a_trusted_check_still_judges_every_office_file_and_archive(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Trap a: trust skips a text scan only; a forged trusted commit can't carry a refused binary through."""
+    _office_files(vault)
+    _synced(vault, tmp_path)
+    link = dm.load_links(vault)["grok-personal"]
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    assert not {OFFICE_NAMED, OFFICE_MACRO, ARCHIVE} & {f.path for f in the_plan.files}
+    for rel in (OFFICE_NAMED, OFFICE_MACRO, ARCHIVE):  # HEAD's own blob at HEAD's path: only the verdict can catch it
+        entry = rs._blob_at(vault, head, rel)
+        assert entry is not None
+        p = dataclasses.replace(the_plan, files=[*the_plan.files, dm.MirrorFile(rel, entry.mode, None, entry.sha)])
+        forged = git(vault, "commit-tree", dm.write_tree(vault, p), "-m", "x").strip()
+        verdicts = _verdicts(monkeypatch)
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, forged, "grok-personal", head, trusted=(forged, link.checked_fingerprint or ""))
+        assert e.value.code == "delegate_mirror_unsafe" and rel in verdicts, rel
+
+
+def test_the_matcher_source_covers_the_container_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Trap b: a change to delegate_containers changes the fingerprint, so no memo or trust outlives it."""
+    from scout import delegate_containers
+
+    before = dm._matcher_source()
+    edited = tmp_path / "delegate_containers.py"
+    edited.write_bytes(Path(delegate_containers.__file__).read_bytes() + b"\n# changed\n")
+    monkeypatch.setattr(delegate_containers, "__file__", str(edited))
+    dm._matcher_source.cache_clear()
+    try:
+        assert dm._matcher_source() != before
+    finally:
+        monkeypatch.undo()
+        dm._matcher_source.cache_clear()
+    assert dm._matcher_source() == before
+
+
+def test_the_memo_keeps_why_a_binary_was_left_out_and_reports_it_on_reuse(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Trap c: a reused drop row restores left_out_files, without unpacking the file again."""
+    _office_files(vault)
+    _synced(vault, tmp_path)
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    assert memo.files[OFFICE_MACRO][1:3] == ["drop", "macros"]
+    assert memo.files[OFFICE_NAMED][1:3] == ["drop", "names_hidden"]
+    assert memo.files[ARCHIVE][1:3] == ["drop", "archive"]
+    _commit(vault, NEW, "---\ntitle: New\n---\n\nnew\n", "new")
+    verdicts = _verdicts(monkeypatch)
+    result = dm.sync(vault, "grok-personal")
+    assert not {OFFICE_NAMED, OFFICE_MACRO, ARCHIVE} & set(verdicts)  # reused, not judged again
+    assert {p: result.left_out_files[p] for p in (OFFICE_NAMED, OFFICE_MACRO, ARCHIVE)} == {
+        OFFICE_NAMED: "names_hidden",
+        OFFICE_MACRO: "macros",
+        ARCHIVE: "archive",
+    }
+
+
+def test_a_signed_memo_that_keeps_a_refused_office_file_is_caught_by_check_tree(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """Trap d's other half: a "keep" a key holder signs skips the build's verdict, never check_tree's."""
+    _office_files(vault)
+    bare = _synced(vault, tmp_path)
+    before = _main(bare)
+    _commit(vault, NEW, "---\ntitle: New\n---\n\nnew\n", "new")
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        fingerprint = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    forged = dm.ScanMemo(memo.path, delegate="grok-personal")
+    forged.seen = {rel: [_blob(vault, rel), "keep", _blob(vault, rel), 0] for rel in (OFFICE_NAMED, OFFICE_MACRO)}
+    forged.save(dm.Plan(delegate="grok-personal", fingerprint=fingerprint))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "delegate_mirror_unsafe"
+    assert _main(bare) == before and not {OFFICE_NAMED, OFFICE_MACRO} & set(_bare_files(bare))
+
+
+def test_withdrawing_allow_unscanned_takes_the_archive_out_on_the_next_sync(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """The opt-in is in the policy, so the fingerprint: a memo "keep" made under it isn't reused after it goes."""
+    _office_files(vault)
+    _allow_unscanned(vault, '["attachments/*.zip"]')
+    bare = _synced(vault, tmp_path)
+    assert ARCHIVE in set(_bare_files(bare))
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    withdrawn = config.replace(
+        '    grok-personal:\n      allow_unscanned: ["attachments/*.zip"]\n', "    grok-personal: {}\n"
+    )
+    assert withdrawn != config
+    _commit_files(vault, {"scout-config.yaml": withdrawn.encode()}, "withdraw")
+    privacy_migrate.accept(vault)
+    result = dm.sync(vault, "grok-personal")
+    assert ARCHIVE not in set(_bare_files(bare)) and result.left_out_files[ARCHIVE] == "archive"
+
+
+SAM = "knowledge-base/people/sam.md"
+NEWLY = {
+    "attachments/roadmap.docx": of.docx("<w:p><w:r><w:t>Widgetron roadmap</w:t></w:r></w:p>"),
+    "notes/widget.md": b"# Widget\n\nWidgetron plan\nKept line.\n",
+}
+
+
+def test_an_unchanged_tree_is_checked_again_when_the_fingerprint_moved(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """Round 2 of the #639 review: a signed "keep" can't make a newly named file "unchanged" on the remote.
+
+    A clean .docx and .md are mirrored; an alias added to a hidden note makes both name it; a key holder signs
+    memo rows that keep them. The build's tree is then the remote's tree, but the fingerprint moved, so check_tree
+    runs on it, refuses, and drops the memo; the next sync scans afresh and takes both out.
+    """
+    _commit_files(vault, NEWLY, "widget files")
+    bare = _synced(vault, tmp_path)
+    assert set(NEWLY) <= set(_bare_files(bare))
+    before = _main(bare)
+    sam = (vault / SAM).read_text(encoding="utf-8")
+    _commit(vault, SAM, sam.replace("aliases: [Sammy]", "aliases: [Sammy, Widgetron]"), "an alias")
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        fingerprint = dm.plan(vault, head, "grok-personal", blobs)[0].fingerprint
+    finally:
+        blobs.close()
+    assert fingerprint != dm.load_links(vault)["grok-personal"].checked_fingerprint
+    memo = dm.ScanMemo.load(vault, "grok-personal")
+    forged = dm.ScanMemo(memo.path, delegate="grok-personal")
+    forged.seen = {**memo.files, **{rel: [_blob(vault, rel), "keep", _blob(vault, rel), 0] for rel in NEWLY}}
+    forged.save(dm.Plan(delegate="grok-personal", fingerprint=fingerprint))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "delegate_mirror_unsafe"
+    assert _main(bare) == before and not memo.path.exists()  # nothing pushed, and the forged memo is gone
+    result = dm.sync(vault, "grok-personal")
+    assert result.pushed and "attachments/roadmap.docx" not in set(_bare_files(bare))
+    assert _show(bare, "notes/widget.md") == "# Widget\n\nKept line.\n"
+    assert dm.load_links(vault)["grok-personal"].checked_fingerprint == fingerprint
+
+
+def test_an_unchanged_tree_under_the_same_fingerprint_skips_the_check(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _synced(vault, tmp_path)
+    calls: list[str] = []
+    real = dm.check_tree
+
+    def counting(*a: object, **k: object) -> str:
+        calls.append("check")
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dm, "check_tree", counting)
+    assert dm.sync(vault, "grok-personal").unchanged and calls == []  # same tree, same fingerprint: no check
+    links = dm.load_links(vault)
+    dm.save_links(
+        vault, {**links, "grok-personal": dataclasses.replace(links["grok-personal"], checked_fingerprint="x")}
+    )
+    assert dm.sync(vault, "grok-personal").unchanged and calls == ["check"]  # another fingerprint: checked again
+    assert dm.load_links(vault)["grok-personal"].checked_fingerprint not in (None, "x")

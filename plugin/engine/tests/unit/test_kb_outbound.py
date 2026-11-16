@@ -174,6 +174,12 @@ def test_multi_word_unicode_terms(tmp_path: Path) -> None:
     assert outbound.find_mentions("\n".join(hits), terms, allow_markers=False) == [1, 2, 3, 4, 5]
 
 
+def test_a_soft_hyphen_or_zero_width_character_inside_a_name_hides_nothing() -> None:
+    terms = outbound.terms_of([outbound.note_from_text("people/priya.md", "---\nname: Priya Sharma\n---\n")])
+    for hidden in ("Priya­ Sharma", "Pri​ya Sharma", "Priya Shar‍ma", "﻿Priya Sharma"):
+        assert outbound.find_mentions(f"one\n{hidden} two\n", terms, allow_markers=False) == [2], repr(hidden)
+
+
 def test_accents_are_optional_on_both_sides() -> None:
     """A term matches with or without its accents, however the text spells them (precomposed or NFD)."""
     nfd = "Rene\u0301 Lee and Project Cafe\u0301\n"
