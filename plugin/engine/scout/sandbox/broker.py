@@ -1195,7 +1195,7 @@ def build_profile(vault: Path, broker_dir: Path, base: str, env: Mapping[str, st
         raise BrokerError("no base profile was passed")
     if not helper_has_client(vault):
         raise BrokerError("the vault's scripts/git-safe-commit.sh predates the broker (run /scout-update)")
-    if not wait_for(broker_dir / SOCKET_NAME):
+    if not wait_for(broker_dir / SOCKET_NAME, timeout=SOCKET_WAIT_S):
         raise BrokerError(f"the broker didn't answer within {int(SOCKET_WAIT_S)}s")
     try:
         text = sbx.with_broker_rules(base, sbx.broker_rules(vault, broker_dir, env))
