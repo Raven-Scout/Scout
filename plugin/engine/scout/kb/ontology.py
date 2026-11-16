@@ -75,6 +75,7 @@ from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
     FULL_READERS,
+    Label,
     NoteFacts,
     Policy,
     classifier_block,
@@ -87,6 +88,8 @@ from scout.kb.privacy import (
     normalize_rel,
     note_facts,
     read_head,
+    reads_any,
+    visible_to,
 )
 
 # Per-process frontmatter cache (#77). ``load()`` used to read and YAML-parse
@@ -304,8 +307,8 @@ class _Labeller:
         except ValueError:
             return fast
 
-    def label(self, path: Path, facts: NoteFacts) -> dict[str, Any]:
-        return label_from_facts(self.rel(path), facts, self.policy).to_json()
+    def label_obj(self, path: Path, facts: NoteFacts) -> Label:
+        return label_from_facts(self.rel(path), facts, self.policy)
 
 
 class FrontmatterStore(Protocol):
@@ -346,7 +349,7 @@ class KnowledgeGraph:
         self.vault = Path(vault) if vault is not None else None
         # A reader that sees nothing gets no schema read either: nothing under
         # the KB is opened for it.
-        self.schema: dict[str, Any] = self._load_schema() if self._full else {}
+        self.schema: dict[str, Any] = self._load_schema() if self._reads else {}
         self.entities: dict[str, dict[str, Any]] = {}
         self.relationships: list[dict[str, str]] = []
         # Files whose frontmatter isn't valid YAML: path (vault-relative), error, _source_path, _label.
@@ -359,7 +362,12 @@ class KnowledgeGraph:
 
     @property
     def _full(self) -> bool:
+        """Every entity: ``owner`` and ``autonomous``. A delegate reads too, filtered (``_reads``)."""
         return self.reader in FULL_READERS
+
+    @property
+    def _reads(self) -> bool:
+        return reads_any(self.reader)
 
     def _load_schema(self) -> dict[str, Any]:
         try:
@@ -377,8 +385,12 @@ class KnowledgeGraph:
         against them (:meth:`_resolve_target`). Files matching the schema's
         ``graph.exclude`` are skipped; a malformed frontmatter block lands in
         ``parse_errors``. Each entity gets ``_source_path`` and ``_label``. A
-        reader outside ``FULL_READERS`` gets an empty graph and nothing is
-        read. ``KBError`` when no ``vault`` was given and :func:`find_vault`
+        reader that sees nothing (:func:`~scout.kb.privacy.reads_any`) gets an
+        empty graph and nothing is read. A ``delegate:<id>`` reader gets only
+        the entities and parse errors :func:`~scout.kb.privacy.visible_to`
+        shows it, and only relationships between two of them: a link to a
+        hidden entity resolves to nothing and is dropped, so its name never
+        appears as a dangling target. ``KBError`` when no ``vault`` was given and :func:`find_vault`
         finds none.
         """
         self.entities = {}
@@ -388,7 +400,7 @@ class KnowledgeGraph:
         self._slug_index = {}
         self._alias_index = {}
         self._adj = None
-        if not self._full:
+        if not self._reads:
             return self
         exclude = self.exclude_globs()
 
@@ -414,12 +426,15 @@ class KnowledgeGraph:
                 if not isinstance(facts, NoteFacts):
                     text, unreadable = read_head(md_file)
                     facts = note_facts(text, unreadable=unreadable)
+                error_label = labeller.label_obj(md_file, facts)
+                if not self._full and not visible_to(error_label, self.reader, labeller.policy):
+                    continue
                 self.parse_errors.append(
                     {
                         "path": labeller.rel(md_file),
                         "error": str(frontmatter[PARSE_ERROR_KEY]),
                         "_source_path": str(md_file),
-                        "_label": labeller.label(md_file, facts),
+                        "_label": error_label.to_json(),
                     }
                 )
                 continue
@@ -431,8 +446,11 @@ class KnowledgeGraph:
             if not isinstance(facts, NoteFacts):  # an override's own parse: read the head
                 text, unreadable = read_head(md_file)
                 facts = note_facts(text, unreadable=unreadable)
+            label = labeller.label_obj(md_file, facts)
+            if not self._full and not visible_to(label, self.reader, labeller.policy):
+                continue
             frontmatter["_source_path"] = str(md_file)
-            frontmatter["_label"] = labeller.label(md_file, facts)
+            frontmatter["_label"] = label.to_json()
             raw_relationships = frontmatter.pop("relationships", [])
             self.entities[name] = frontmatter
             pending.append((name, raw_relationships))
@@ -442,6 +460,8 @@ class KnowledgeGraph:
             for rel in raw_relationships or []:
                 target = self._resolve_target(rel.get("target", ""))
                 rel_type = rel.get("type", "")
+                if not self._full and target not in self.entities:
+                    continue  # a delegate: a dangling target may be a hidden entity's name
                 if target and rel_type:
                     self.relationships.append({"source": name, "type": rel_type, "target": target})
                     inverse = self._get_inverse(rel_type)

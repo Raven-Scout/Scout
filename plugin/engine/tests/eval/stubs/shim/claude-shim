@@ -1,3 +1,5 @@
 #!/bin/bash
 # eval: the CLAUDE_BIN of an eval vault's runner (tests/eval/harness/claude_shim.py).
+# The runners' gate probe scans its claude for provider switches to turn off; this launcher stands for
+# $SCOUT_EVAL_REAL_CLAUDE, which the probe reaches through the shim: CLAUDE_CODE_USE_BEDROCK and its siblings.
 PYTHONPATH="$SCOUT_EVAL_ENGINE" exec "$SCOUT_EVAL_PYTHON" -P -m tests.eval.harness.claude_shim "$@"
