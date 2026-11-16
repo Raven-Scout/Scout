@@ -31,6 +31,8 @@ Protected (each with the form name a deny and the audit row use):
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
   ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
 - ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
+- ``ssh config``: ``~/.ssh`` (its config and keys decide what ``git push`` over ssh runs after a run; the OS
+  sandbox lets ssh itself add to ``known_hosts``);
 - ``Scout's secrets``: ``~/.scout-secrets`` and ``$SCOUT_SECRETS_DIR`` (also read-gated in runs: Read, Grep, Glob,
   and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS`);
 - ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json`` and ``.scout-state/delegate-scan/``.
@@ -54,6 +56,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,6 +76,7 @@ SANDBOX_SWITCH_NAME = "run-sandbox.json"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
+SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
@@ -174,14 +178,22 @@ def git_dirs(vault: Path) -> list[Path]:
     return dirs
 
 
-def git_hooks_dir(vault: Path) -> Path | None:
+def _remaining(deadline: float | None, cap: float) -> float:
+    """Seconds a git call may take: ``cap``, or what is left before ``deadline`` if that is less."""
+    return cap if deadline is None else min(cap, deadline - time.monotonic())
+
+
+def git_hooks_dir(vault: Path, *, deadline: float | None = None) -> Path | None:
     """Where git runs this vault's hooks from: ``core.hooksPath`` if set, else the git dir's ``hooks``."""
+    timeout = _remaining(deadline, _GIT_TIMEOUT_S)
+    if timeout <= 0:
+        return None
     try:
         out = subprocess.run(
             ["git", "-C", str(vault), "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=timeout,
             check=False,
             stdin=subprocess.DEVNULL,
         )
@@ -244,6 +256,11 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     return roots
 
 
+# The whole roots build inside a hook (protected_roots): kb-read-gate's watchdog blocks the call at 8 s, so a few slow
+# gits must not use it all up. Past this, the hook skips the git calls it has left; the OS sandbox's profile is
+# built once per run with no deadline and keeps the full list (review of #642).
+HOOK_ROOTS_BUDGET_S = 4.0
+
 _ENV_KEYS = (
     "HOME", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT", "SCOUT_SECRETS_DIR",
     "GIT_CONFIG_SYSTEM", "PATH", "SCOUT_CLAUDE_BIN",
@@ -260,13 +277,13 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
     env = os.environ if env is None else env
     key = (str(vault), *(env.get(k, "") for k in _ENV_KEYS))
     if key not in _ROOTS_CACHE:
-        _ROOTS_CACHE[key] = _build_roots(vault, env)
+        _ROOTS_CACHE[key] = _build_roots(vault, env, deadline=time.monotonic() + HOOK_ROOTS_BUDGET_S)
     return _ROOTS_CACHE[key]
 
 
-def _build_roots(vault: Path | None, env: Mapping[str, str]) -> list[Root]:
+def _build_roots(vault: Path | None, env: Mapping[str, str], *, deadline: float | None = None) -> list[Root]:
     roots: list[Root] = []
-    for spec in protected_specs(vault, env):
+    for spec in protected_specs(vault, env, deadline=deadline):
         for key in {canon(spec.path, env), spelled(spec.path, env)}:
             roots.append(Root(key, spec.form, spec.tree))
     return roots
@@ -282,11 +299,15 @@ def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
     return dirs
 
 
-def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Spec]:
+def protected_specs(
+    vault: Path | None, env: Mapping[str, str] | None = None, *, deadline: float | None = None
+) -> list[Spec]:
     """Every protected path as written here (``~`` unexpanded, not resolved, not case-folded), with its form.
 
     :func:`protected_roots` is these, normalised for matching. The scheduled runs' OS write sandbox
     (:mod:`scout.sandbox.profile`, Phase 1c) is generated from the same list, so the two layers never drift.
+    ``deadline`` (a :func:`time.monotonic` value) bounds the git calls: one past it is skipped (the hooks pass
+    :data:`HOOK_ROOTS_BUDGET_S`; the profile passes none).
     """
     env = os.environ if env is None else env
     home = Path(env.get("HOME") or Path.home())
@@ -299,7 +320,7 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
         add(vault / ".git", GIT_DIR, tree=False)
         for gitdir in git_dirs(vault):
             add(gitdir, GIT_DIR, tree=True)
-        hooks = git_hooks_dir(vault)
+        hooks = git_hooks_dir(vault, deadline=deadline)
         if hooks is not None:
             add(hooks, GIT_HOOKS, tree=True)
         for name in (".gitattributes", ".gitmodules", ".mcp.json"):
@@ -340,11 +361,12 @@ def protected_specs(vault: Path | None, env: Mapping[str, str] | None = None) ->
     add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
     for secrets in secrets_dirs(env):
         add(secrets, SECRETS, tree=True)
+    add(ssh_dir(env), SSH_CONFIG, tree=True)
     if vault is not None:
         # The tick starts each slot's runner, and the trigger engine each trigger's, outside any run (#642 review).
         for name in SCHEDULE_FILES:
             add(vault / ".scout-state" / name, SCHEDULE, tree=False)
-    for path, tree in git_config_files(env):
+    for path, tree in git_config_files(env, deadline=deadline):
         add(path, USER_GIT_CONFIG, tree=tree)
     for path in runner_programs(env, home):
         add(path, PROGRAMS, tree=True)
@@ -370,7 +392,11 @@ _ORIGIN = re.compile(r"^file:(.+?)\t")
 _MISSING = re.compile(r"unable to read config file '([^']+)'")
 
 
-def git_config_files(env: Mapping[str, str]) -> list[tuple[str, bool]]:
+def ssh_dir(env: Mapping[str, str]) -> Path:
+    return Path(env.get("HOME") or Path.home()) / ".ssh"
+
+
+def git_config_files(env: Mapping[str, str], *, deadline: float | None = None) -> list[tuple[str, bool]]:
     """(path, tree) for git config a run's git reads besides the vault's and ~/.gitconfig: each git's system
     config (``git config --system --show-origin``, named even when the file doesn't exist yet), ``$GIT_CONFIG_SYSTEM``,
     and every ``include.path``/``includeIf.*.path`` the global and system configs name. Review of #642."""
@@ -380,10 +406,13 @@ def git_config_files(env: Mapping[str, str]) -> list[tuple[str, bool]]:
     run_env = {k: v for k, v in env.items() if k not in ("GIT_CONFIG_NOSYSTEM", "GIT_DIR", "GIT_CONFIG_COUNT")}
     for git in _git_binaries(env):
         for scope in ("--system", "--global"):
+            timeout = _remaining(deadline, _GIT_TIMEOUT_S)
+            if timeout <= 0:
+                return out  # out of time (a hook): the OS sandbox's profile still lists every git's config
             try:
                 proc = subprocess.run(
                     [git, "config", scope, "--show-origin", "--includes", "--list"],
-                    capture_output=True, text=True, timeout=_GIT_TIMEOUT_S, check=False,
+                    capture_output=True, text=True, timeout=timeout, check=False,
                     stdin=subprocess.DEVNULL, env=run_env,
                 )  # fmt: skip
             except (OSError, subprocess.SubprocessError):
@@ -398,8 +427,9 @@ def git_config_files(env: Mapping[str, str]) -> list[tuple[str, bool]]:
 
 def runner_programs(env: Mapping[str, str], home: Path) -> list[str]:
     """Trees the runners and the gate probe run programs from, outside the sandbox, that the user can write: the
-    claude install the runner's claude resolves to (with its side-by-side versions) and a user-writable Homebrew
-    prefix's bin/sbin/etc/lib/opt/Cellar. Review of #642. The PATH folders themselves are :func:`path_dirs`."""
+    claude install the runner's claude resolves to (with its side-by-side versions), ``~/.local/bin``, and a
+    user-writable Homebrew prefix's bin/sbin/etc/lib (its python site-packages included)/opt/Cellar. Review of #642.
+    The PATH folders themselves are :func:`path_dirs`."""
     out: list[str] = []
 
     def keep(path: str) -> None:
@@ -407,6 +437,11 @@ def runner_programs(env: Mapping[str, str], home: Path) -> list[str]:
         if real not in out and real not in ("/", os.path.realpath(home)):
             out.append(real)
 
+    # ~/.local/bin, where the native installer links `claude` (and pipx/uv put tools), whether or not it is on
+    # this PATH: the scheduler's PATH may differ from this one.
+    local_bin = home / ".local" / "bin"
+    if local_bin.is_dir():
+        keep(str(local_bin))
     claude = env.get("SCOUT_CLAUDE_BIN") or shutil.which("claude", path=env.get("PATH")) or ""
     if claude and os.path.isabs(claude):
         real = os.path.realpath(claude)

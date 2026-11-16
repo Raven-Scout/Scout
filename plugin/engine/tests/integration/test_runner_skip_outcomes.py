@@ -407,4 +407,72 @@ def test_the_env_switch_turns_it_off_without_asking_the_engine(vault: Path, runn
 
     assert result.returncode == 0, result.stderr
     assert seen.read_text().strip() == "off|"
-    assert "sandbox" not in calls.read_text()
+    assert "sandbox profile" not in calls.read_text()
+    (row,) = _ledger(vault)
+    assert (row["sandbox"], row["sandbox_source"]) == ("off", "env")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_owners_switch_is_recorded_as_the_source(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "exit 7")
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    (row,) = _ledger(vault)
+    assert (row["sandbox"], row["sandbox_source"]) == ("off", "switch")
+
+
+# -- the post-run integrity check (spec 2026-11-15 §13) -----------------------------------------------------------
+
+_INTEGRITY_STUB = """#!/bin/bash
+case "$1 $2" in
+    "sandbox profile") printf '(version 1)\\n(allow default)\\n' ;;
+    "sandbox snapshot") echo '{{"version":1,"start":true}}' ;;
+    "sandbox verify") cat > "{stdin}"; echo "integrity check: stub"; exit {verify_rc} ;;
+esac
+exit 0
+"""
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize(
+    ("verify_rc", "status"), [(0, "clean"), (10, "restored"), (11, "unrestored"), (12, "error"), (1, "error")]
+)
+def test_the_runner_checks_integrity_after_claude_and_records_it(
+    vault: Path, runner: str, verify_rc: int, status: str
+) -> None:
+    stdin = vault / "verify-stdin.txt"
+    _script(vault / "bin" / "scoutctl", _INTEGRITY_STUB.format(stdin=stdin, verify_rc=verify_rc))
+    _capture_wrapper_env(vault)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr  # never changes the run's exit code
+    assert stdin.read_text() == '{"version":1,"start":true}'  # the start state, by value
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["integrity"]) == ("ok", status)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_no_start_snapshot_records_unchecked(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "exit 6")  # prints nothing for any sandbox subcommand
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    (row,) = _ledger(vault)
+    assert row["integrity"] == "unchecked"
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_integrity_check_brackets_claude_and_comes_before_every_post_session_step(runner: str) -> None:
+    text = (TEMPLATES / runner).read_text(encoding="utf-8")
+    snapshot = text.index("sandbox snapshot --vault")
+    claude = text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+    verify = text.index("sandbox verify --vault")
+    outcome = text.index('"$OUTCOME" record')
+    assert snapshot < claude < verify < outcome
+    for later in ("POST_BACKFILL=", "connector-health-report", "budget record-run", "delegate sync"):
+        if later in text:
+            assert verify < text.index(later), later

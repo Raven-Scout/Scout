@@ -160,8 +160,9 @@ for VENV_PY in "${candidates[@]}"; do
         case "${STAMP_LINES%%$'\n'*}" in */scout/cli.py) ;; *) continue ;; esac
         # Best-effort write to the cache so the next call skips the probe.
         # Failures (read-only plugin root in Claude Code's cache copy, no
-        # write perms, etc.) are silently ignored.
-        printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE" 2>/dev/null || true
+        # write perms, the run's write sandbox) are silently ignored: the
+        # braces make the redirect's own error go to /dev/null too.
+        { printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE"; } 2>/dev/null || true
         exec "$VENV_PY" -P -m "$MODULE" "$@"
     fi
 done

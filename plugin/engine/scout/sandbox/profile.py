@@ -34,8 +34,10 @@ from scout.kb import hook_paths
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 
 # What git writes under the git dir for commit, checkout, switch, restore, stash, reset, fetch, push, tag, rm,
-# mv, merge, rebase, cherry-pick and gc (spec §6). An allowlist: any other file git adds later stays denied.
-GIT_CARVE_DIRS: tuple[str, ...] = ("objects", "refs", "logs", "rebase-merge", "rebase-apply", "sequencer", "rr-cache")
+# mv, merge and gc (spec §6), plus git-lfs's object store. An allowlist: any other file git adds later stays
+# denied. No rebase-merge/, rebase-apply/ or sequencer/: none of the last 50 scheduled runs used them (review of
+# #642), so a rebase or a multi-commit cherry-pick inside a run fails and leaves the repo as it was.
+GIT_CARVE_DIRS: tuple[str, ...] = ("objects", "refs", "logs", "rr-cache", "lfs")
 GIT_CARVE_FILES: tuple[str, ...] = (
     "index",
     "HEAD",
@@ -49,7 +51,6 @@ GIT_CARVE_FILES: tuple[str, ...] = (
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
     "REBASE_HEAD",
-    "BISECT_LOG",
     "COMMIT_EDITMSG",
     "SQUASH_MSG",
     "TAG_EDITMSG",
@@ -75,6 +76,36 @@ GIT_REDENY: tuple[str, ...] = (
 )
 # Claude Code's CLAUDE_PLUGIN_DATA: plugins and their MCP servers keep their state here (Q4, Jordan 2026-11-15).
 PLUGIN_DATA = "data"
+# ~/.claude (and $CLAUDE_CONFIG_DIR) is denied as a whole, like the git dir, and only what Claude Code writes for a
+# session is allowed back (spec §5.2): its transcripts and per-session state, and the plugins' data dir (Q4). A
+# file or folder Claude Code adds later stays denied until it is listed here.
+CLAUDE_HOME_CARVE_DIRS: tuple[str, ...] = (
+    "projects",
+    "session-env",
+    "sessions",
+    "shell-snapshots",
+    "backups",
+    "todos",
+    "file-history",
+    "statsig",
+    "debug",
+    f"plugins/{PLUGIN_DATA}",
+)
+# The vault's own .claude/ is denied as a whole too (skills, commands, agents, hooks and settings alike); a session
+# writes nothing there.
+VAULT_CLAUDE_DIR = ".claude"
+# Any git repo's hooks and config and any project's agent settings, wherever they are (another repo, the dev
+# checkout, a clone in a temp dir): literal suffixes, no character classes, so case-insensitive matching (§5.4)
+# only ever widens them. Review of #642.
+ANYWHERE_SUFFIXES: tuple[str, ...] = (
+    r"/\.git/hooks/",
+    r"/\.git/config$",
+    r"/\.claude/settings\.json$",
+    r"/\.claude/settings\.local\.json$",
+    r"/\.mcp\.json$",
+)
+# ~/.ssh is protected (hook_paths); ssh itself records a new host's key here.
+SSH_WRITABLE: tuple[str, ...] = ("known_hosts", "known_hosts.old")
 
 # ~/.scout-secrets: no reads of the contents, no writes (#636's review). Metadata (stat, `test -s`) stays allowed.
 # The Telegram wrap is sent from inside the session (phases/connectors/telegram.md, 18 of the last 50 runs), so
@@ -136,6 +167,12 @@ def _under(path: str, root: str) -> bool:
     return p == r or p.startswith(r + "/")
 
 
+def kernel_trees(vault: Path | None, env: Mapping[str, str]) -> list[Path]:
+    """The kernel's own, wider protected trees (the hook layer lists their parts): all of ~/.claude (and
+    ``$CLAUDE_CONFIG_DIR``) and the vault's .claude/. Their carve-outs are in :func:`carve_outs`."""
+    return [*_claude_dirs(env), *([vault / VAULT_CLAUDE_DIR] if vault is not None else [])]
+
+
 def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, str]]:
     """(kind, path) of each kernel-only allow under a protected root (spec §5.3)."""
     out: list[tuple[str, str]] = []
@@ -150,7 +187,10 @@ def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, st
                 for form in _forms(str(gitdir), env):
                     out.append(("regex", f"^{_rx_escape(form)}/{rx}$"))
     for base in _claude_dirs(env):
-        out.append(("subpath", str(base / "plugins" / PLUGIN_DATA)))
+        for name in CLAUDE_HOME_CARVE_DIRS:
+            out.append(("subpath", str(base / name)))
+    for name in SSH_WRITABLE:
+        out.append(("literal", str(hook_paths.ssh_dir(env) / name)))
     return out
 
 
@@ -171,6 +211,9 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
                 # GIT_CONFIG_GLOBAL=/dev/null names no file a run could change; denying it breaks `> /dev/null`.
                 continue
             protected.append(Rule("deny", "file-write*", "subpath" if spec.tree else "literal", form))
+    for tree in kernel_trees(vault, env):
+        for form in _forms(str(tree), env):
+            protected.append(Rule("deny", "file-write*", "subpath", form))
     secrets: list[Rule] = []
     readable: list[Rule] = []
     for d in secrets_dirs(env):
@@ -196,6 +239,10 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
             for rel in GIT_REDENY:
                 for form in _forms(str(gitdir / rel), env):
                     redeny.append(Rule("deny", "file-write*", "literal", form))
+            # objects/ is carved out, but the folder holding alternates can't be removed or renamed either.
+            for form in _forms(str(gitdir / "objects" / "info"), env):
+                redeny.append(Rule("deny", "file-write-unlink", "literal", form))
+    redeny += [Rule("deny", "file-write*", "regex", rx) for rx in ANYWHERE_SUFFIXES]
     for rule in protected:
         if any(
             a.kind != "regex"
@@ -347,12 +394,18 @@ def self_test(profile: str, *, timeout_s: float = SELF_TEST_TIMEOUT_S) -> str | 
             )
         except (OSError, subprocess.SubprocessError) as e:
             return f"sandbox-exec didn't run: {e}"
+        stderr = proc.stderr.strip()[-300:]
+        detail = f": {stderr}" if stderr else ""
         if proc.returncode == 9 or os.path.exists(canary):
             return "the sandbox let through a write its profile denies"
-        if proc.returncode == 8 or not os.path.exists(ordinary):
-            return "the sandbox refused an ordinary temp-file write"
+        if proc.returncode == 8:
+            return f"the sandbox refused an ordinary temp-file write{detail}"
         if proc.returncode != 0:
-            return f"sandbox-exec failed (exit {proc.returncode}): {proc.stderr.strip()[-300:]}"
+            # The script never ran: a profile sandbox-exec can't parse, or a sandbox it can't start (inside
+            # another sandbox: `sandbox_apply: Operation not permitted`, exit 71).
+            return f"sandbox-exec failed (exit {proc.returncode}){detail}"
+        if not os.path.exists(ordinary):
+            return "the sandbox refused an ordinary temp-file write"
     return None
 
 

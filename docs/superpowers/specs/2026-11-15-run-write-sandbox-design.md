@@ -73,9 +73,10 @@ arbitrary shell as the user (Bash, inline interpreters, any binary on disk), plu
 Claude Code's file tools. It wants a **persistent** change that turns off a gate for
 the next commit or the next run.
 
-**Trusted computing base:** the runner scripts *before* `claude` starts (they run
-outside the sandbox), `sandbox-exec` and the kernel, and the profile, which is built
-fresh outside the sandbox at every attempt and passed by value (§4).
+**Trusted computing base:** the runner scripts *before* `claude` starts and after it
+exits (they run outside the sandbox), `sandbox-exec` and the kernel, and the profile,
+which is built once per run, outside the sandbox, and passed by value to every attempt
+(§4).
 
 **Paths around the profile, and how each is handled (macOS):**
 
@@ -94,7 +95,7 @@ fresh outside the sandbox at every attempt and passed by value (§4).
 | A long-running daemon that runs commands for its clients: Docker (`docker run -v ~/Scout:/v …`), a tmux/screen server, `ssh localhost` | Unix-socket connects to `docker.sock`, `tmux-*/`, `.screen/` and TCP to loopback :22 are denied. This is the one network change. |
 | cron / at | Writes to `/usr/lib/cron` and `/private/var/at` are denied (crontab is setuid; the sandbox survives exec) |
 | Other spawners we haven't listed (the Claude desktop app, Scout.app, a user's own agent daemons) | **Residual.** Named in the doc and the PR; health can't see it. |
-| **Commit a changed protected tracked file without writing it** (`git hash-object -w` + `git update-index --cacheinfo` + `git commit`, or `commit-tree` + `update-ref`), so a later unsandboxed `reset --hard`, checkout or pull on any machine writes it | **Residual, open (§13).** The git carve-outs let a run write objects, the index and refs, and the file on disk stays intact during the run. Fix options are in §13. |
+| A protected tracked file's **committed** content changes during the run (the git carve-outs let a run write objects, the index and refs, while the file on disk stays intact), so a later unsandboxed checkout would write it | The post-run integrity check (§13): outside the sandbox, after claude exits, protected tracked paths in HEAD, the index and every branch, tag and stash ref the run moved are compared with the run's start and put back in a new commit; health turns red |
 
 Per-command git tricks stay with the hook layer (non-goal above). A run can still
 *commit* with `-c core.hooksPath=/dev/null` if it also gets past #607's shell gate,
@@ -111,8 +112,8 @@ run-*.sh  (outside: lock, budget, gate probe, model)
   └─ post-session steps, run-outcome  (outside again)
 ```
 
-- **Per attempt, by value.** The profile is in the wrapper's memory, never in a file
-  the run could rewrite before a retry.
+- **Once per run, by value to every attempt.** The runner builds the profile once; it
+  is in the wrapper's memory, never in a file the run could rewrite before a retry.
 - **Self-test.** Before printing, `scoutctl sandbox profile` runs
   `sandbox-exec -p <profile + one canary deny> /bin/sh -c …` against two temp paths:
   a write to the canary must fail and a write to a temp file must succeed (~20 ms).
@@ -172,11 +173,28 @@ a profile that may be wrong.
 | runner scripts (`RUNNER_FILES`) | literal deny |
 | git config (`~/.gitconfig`, `$GIT_CONFIG_GLOBAL`, `$XDG_CONFIG_HOME/git`) | literal/subpath deny |
 | startup files (shell rc files, `~/Library/LaunchAgents`) | literal/subpath deny |
+| Scout's schedule (`.scout-state/schedule.yaml`, `triggers.yaml`) | literal deny; the loader, the tick and the trigger action also accept only the three runners (review of #642) |
+| git config the runners' git reads (each git's `--system` file from `--show-origin`, `$GIT_CONFIG_SYSTEM`, `include.path` targets) | literal deny |
+| programs the runners run (`~/.local/bin`, the resolved claude install and its `versions/`, a user-writable Homebrew prefix's `bin`, `sbin`, `etc`, `lib` incl. `python*/site-packages`, `opt`, `Cellar`) | subpath deny; plus, kernel only, no new or changed entry directly in a user-writable PATH folder |
+| ssh config (`~/.ssh`) | subpath deny; `known_hosts` and `known_hosts.old` carved out (ssh records new hosts there) |
+
+Kernel-only rules (the hook layer lists their parts, the profile denies the whole):
+
+| Rule | Why |
+|---|---|
+| all of `~/.claude` and `$CLAUDE_CONFIG_DIR`, then §5.2's list carved out | the same allowlist pattern as the git dir: a file Claude Code adds later fails closed |
+| all of the vault's `.claude/` (skills, commands, agents, hooks, settings) | a session writes nothing there |
+| any path ending `/.git/hooks/…`, `/.git/config`, `/.claude/settings.json`, `/.claude/settings.local.json`, `/.mcp.json` | other repos and the dev checkout; literal suffixes, no character classes, so case-insensitive matching only widens them |
+| `file-write-unlink` of `.git/objects/info` | `objects/` is carved out; the folder that holds `alternates` can't be swapped |
 
 ### 5.2 What claude and its helpers write (allowed, verified with real claude 2.1.318)
 
 `~/.claude/projects/<cwd>/*.jsonl`, `~/.claude/{session-env,sessions,shell-snapshots,backups,todos,file-history,statsig,debug}`,
 `$TMPDIR`, `/private/tmp/claude-<uid>/…`, the vault (except the protected roots), `.scout-*`.
+Since the review of #642 the `~/.claude` part of this list is the carve-out list itself
+(`profile.CLAUDE_HOME_CARVE_DIRS`, plus `plugins/data`): everything else under `~/.claude`
+is denied. The real-claude kernel test (§10.4) still finishes, commits and writes its
+transcript under it.
 Claude Code tries to update `~/.claude.json` and fails quietly. The session still
 exits 0 and writes its transcript, and nothing in Scout reads that file for a
 scheduled run (Q7).
@@ -192,6 +210,8 @@ pinned by a test (the list is `profile.CARVE_OUTS`):
    their MCP servers keep their state. Scout keeps nothing there. The rest of the plugin
    store (`installed_plugins.json`, `known_marketplaces.json`, `cache/`,
    `marketplaces/`, `config.json`, the catalog caches) stays denied (Q4).
+3. **§5.2's session folders under `~/.claude`**, now that `~/.claude` is denied as a whole.
+4. **`~/.ssh/known_hosts`** and `known_hosts.old`.
 
 ### 5.4 Case and normalisation
 
@@ -214,14 +234,15 @@ going by #637's replay).
 
 **A. Carve-outs inside the git dir (recommended).** Deny the whole git dir, then allow:
 
-- `objects/` (re-deny `objects/info/alternates` and `http-alternates`), `refs/`, `logs/`;
+- `objects/` (re-deny `objects/info/alternates` and `http-alternates`, and no unlink of
+  `objects/info` itself), `refs/`, `logs/`, `rr-cache/`, `lfs/` (git-lfs's store);
 - exact files, each also as `<name>.lock`: `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`,
   `MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE`, `MERGE_RR`, `AUTO_MERGE`, `CHERRY_PICK_HEAD`,
-  `REVERT_HEAD`, `REBASE_HEAD`, `COMMIT_EDITMSG`, `SQUASH_MSG`, `packed-refs`, `gc.pid`,
-  `gc.log`, `shallow`;
-- `rebase-merge/`, `rebase-apply/`, `sequencer/` (a run's pull --rebase or cherry-pick).
-  Their `exec` todo lines only ever run in a sandboxed process, because the runner
-  never continues a rebase;
+  `REVERT_HEAD`, `REBASE_HEAD`, `COMMIT_EDITMSG`, `SQUASH_MSG`, `TAG_EDITMSG`,
+  `packed-refs`, `gc.pid`, `gc.log`, `shallow`;
+- no `rebase-merge/`, `rebase-apply/` or `sequencer/`, and no `BISECT_LOG` (review of
+  #642): none of the last 50 scheduled runs used them, so a rebase, a multi-commit
+  cherry-pick or a bisect inside a run fails and leaves the repo as it was;
 - for a worktree, the same set under `worktrees/<name>/`, with `config.worktree`,
   `commondir` and `gitdir` still denied.
 
@@ -272,13 +293,20 @@ can write that file and so could switch the sandbox off for the next run. The sw
 | Claude Code's own Bash sandbox is on in the effective settings (can't nest) | 8 | runs as today, Claude's sandbox only | `sandbox: conflict` | yellow `runs.unsandboxed` (Q2) |
 | scoutctl missing | 127 | **skip** (same rule as #635) | `skipped_sandbox` | red |
 | claude itself breaks under the rules (a future version needs a new path) | (run) | the run fails | `failed` | `runs.failing` (the composed probe would catch it first; follow-up) |
+| Turned off by `SCOUT_RUN_SANDBOX=off` in the scheduler's environment | (runner) | runs as today | `sandbox: off`, `sandbox_source: env` | note `runs.sandbox_env_off` |
+| Integrity check put a protected tracked file back after the run (§13) | `verify` 10 | carries on | `integrity: restored` | red `run.integrity_restored` for 7 days |
+| … a tag or the stash still holds the change (not rewritten) | `verify` 11 | carries on | `integrity: unrestored` | red `run.integrity_restored` |
+| The integrity check couldn't run | `verify` 12 | carries on | `integrity: error` | yellow `run.integrity_unchecked` |
 
 The eval harness sets `SCOUT_RUN_SANDBOX=off`, because its sessions run under Claude
 Code's Bash sandbox with `failIfUnavailable`.
 
 Doctor shows a line: `run sandbox: enforced (sandbox-exec, self-test ok)`, `off (turned
 off by scoutctl sandbox off)`, `unavailable on linux` or `failed: <reason>`. It never
-starts claude. The doctor JSON shape doesn't change (same pattern as #635), so the
+starts claude. It judges the switch as the scheduler sees it: `SCOUT_RUN_SANDBOX` in the
+doctor's own shell is left out (and named in a note; with it off, the doctor reports the
+owner's switch file and builds no profile), and whether the last run was off, and from
+where, comes from that run's `sandbox_source`, so its advice names the right switch. The doctor JSON shape doesn't change (same pattern as #635), so the
 contract fixture stays as it is.
 
 Side fix: `doctor`'s `launchctl list` check treats a non-zero exit as "couldn't check",
@@ -408,6 +436,11 @@ All of Q1–Q8 were answered with the recommendation.
   147 path literals inside inline programs (`python3 -c`, heredocs) fall under a deny, all
   of them runner scripts the programs read or run. The kernel allows reads and execution,
   so they're not writes. 63 paths built at run time couldn't be resolved statically.
+  Re-run after the review round below (the 50 newest runs then, 3,877 tool calls): 2,253
+  write targets and 394 reads in scope, **0 denied writes, 0 denied secret reads**, 0
+  unresolved. The replay is a **static lower bound**: it judges the paths a tool call names
+  or the shell parser sees it write, not paths built at run time or the writes programs
+  and git make themselves (see the clone item below).
 - **Tested against the kernel** (macOS 26.5.2): the model matches `sandbox-exec` on 29
   write targets and 4 secret reads. 20 attacks left every protected file unchanged. The
   git matrix (commit, checkout, switch, restore, stash, reset, mv, rm, tag, push, fetch,
@@ -415,25 +448,100 @@ All of Q1–Q8 were answered with the recommendation.
   commits. Real claude 2.1.318 finished a session against FakeAnthropic, writing a note,
   committing and writing its transcript; its protected writes were refused and
   `~/.claude.json` was left as it was.
-- **Found after the build: a run can commit a protected tracked file's change without
-  writing the file.** The carve-outs let git write objects, the index and refs. So
-  `git hash-object -w` + `git update-index --cacheinfo … scripts/claude-with-retry.sh`
-  + `git commit` lands an edited runner script in HEAD. The file on disk is untouched
-  (the kernel refuses `git checkout --` into it), but the next unsandboxed `git reset
-  --hard`, checkout or pull writes it, including a pull on another machine that shares
-  the vault. That's no worse than before Phase 1c, when a run could just write the file,
-  but it is a hole in the guarantee. A throwaway check in a scratch repo reproduced it.
-  Options, for Jordan:
-  1. **Post-run integrity check (recommended).** Outside the sandbox, after claude
-     exits, the runner compares the protected tracked paths (`hook_paths`' vault files:
-     runner scripts, `.gitattributes`, `.gitmodules`, `.mcp.json`, `.claude/…`) in
-     HEAD, in the index and in every ref the run moved, against the run's start. On a
-     change, it restores them in a new commit, records it, and turns health red. It
-     judges results, not commands, so plumbing doesn't get past it.
-  2. A pre-commit refusal. Plumbing (`commit-tree`) skips hooks, so it leans on #607's
-     parser again.
-  3. The Phase 1d commit broker: no git writes inside the sandbox at all.
+- **Found after the build: a protected tracked file's committed content could change
+  without the file being written.** The carve-outs let git write objects, the index and
+  refs, so HEAD could end the run holding an edited runner script while the file on disk
+  stayed intact, and the next unsandboxed checkout or pull (on any machine that shares
+  the vault) would write it. Jordan chose option 1 of three (a post-run integrity check;
+  the others were a pre-commit refusal and the Phase 1d commit broker), built in this PR:
+  - `scout/sandbox/integrity.py`, `scoutctl sandbox snapshot` and `scoutctl sandbox
+    verify`. Each runner takes the snapshot outside the sandbox just before claude starts
+    and keeps it in a shell variable (never a file), then pipes it to `verify` right
+    after claude exits, before any post-session step.
+  - The scope is every `hook_paths.protected_specs()` entry inside the vault's work tree
+    and outside its git dir: the runner scripts, `.gitattributes`, `.gitmodules`,
+    `.mcp.json`, `.claude/…`, the other agent dirs, the delegate state, and
+    `.scout-state/schedule.yaml` and `triggers.yaml`. Paths compare NFC-normalised and
+    case-folded, as the sandbox does.
+  - Compared: HEAD (detached too), the index (unmerged stages too) and every branch, tag,
+    stash and replace ref the run created or moved. A ref that existed is held to its
+    own start content, a new one to the start HEAD's. Objects are read with replace refs
+    off.
+  - Restored: each changed branch (or detached HEAD) gets one new commit on top that puts
+    the changed paths back as they were (the run's other work stays), by `commit-tree` +
+    a compare-and-swap `update-ref`; the index entries go back too. A tag or the stash is
+    reported, not rewritten (`unrestored`). The run-outcome row gets `integrity: clean |
+    restored | unrestored | error | unchecked`, and health is red for 7 days after a
+    restore (§8). The log names the paths and the restoring commit, never content.
+  - Not compared: the work tree (under an enforced sandbox it can't change; with the
+    sandbox off or unavailable, a changed file on disk is the pre-1c situation), and
+    remote-tracking refs (fetch moves them legitimately; a pushed change is undone on the
+    remote by the next push of the restored branch).
+  - Tests: `tests/unit/test_run_integrity.py` (a committed, staged, new-branch, detached,
+    mid-merge and tag case on real git; an ordinary run adds no commit) and the runner
+    wiring in `tests/integration/test_runner_skip_outcomes.py`.
 - **More attack cases (from #637's list of what it leaves to 1c):** a script the run
   writes and then runs; `chr()`- and base64-built names in inline Python; `tar -C` into
   the git dir; `find -exec`; `xargs`; `git checkout --` of a staged blob over a runner
   script. The kernel refuses every one; all 27 attacks are pinned.
+
+### 13.1 The coordinator's review at f88a7dcd (built in this PR)
+
+- **Runner allowlist** (f55a1fb5): a slot's or trigger's `runner:` must be `run-scout.sh`,
+  `run-dreaming.sh` or `run-research.sh`; the loader, the tick and the trigger action
+  refuse anything else. `schedule.yaml` and `triggers.yaml` are protected.
+- **More protected roots** (f55a1fb5 and after): each git's system config and
+  `$GIT_CONFIG_SYSTEM`, `include.path` targets, the claude install with its versions,
+  `~/.local/bin` (whether or not it's on PATH), a user-writable Homebrew prefix, the
+  engine's `sys.base_prefix`/`base_exec_prefix`, and `~/.ssh` (known_hosts carved out).
+  Scheduled claude runs set `DISABLE_AUTOUPDATER=1`. Vault scripts started from
+  templates and `hooks/` run with `-I`, and a static test covers both.
+- **Kernel-only wider trees**: `~/.claude` and the vault's `.claude/` as a whole, with
+  §5.2's list carved out, and literal-suffix rules for any repo's hooks and config and
+  any project's agent settings (§5.1).
+- **Git carve-outs**: no `rebase-merge/`, `rebase-apply/`, `sequencer/` or `BISECT_LOG`;
+  `lfs/` added; no unlink of `objects/info`.
+- **Git's config writes**: `claude-with-retry.sh` appends `branch.autoSetupMerge=false` and
+  `push.autoSetupRemote=false` as `GIT_CONFIG_*`, so `git checkout -b x origin/x` and a
+  plain push write no config; `git push -u` pushes, and only its upstream record is
+  refused, with a warning (kernel test).
+- **The doctor**: `launchctl` that can't start (`PermissionError` in the sandbox) is a
+  skipped check, not missing jobs; the switch is read as in §8.
+- **The self-test** reports a profile that doesn't start by its exit code and stderr, not
+  as "an ordinary write was refused".
+- **`SCOUT_RUN_SANDBOX=off`** is recorded with its source and gets a health note (§8).
+- **The hook's time budget** (#637's review): building the protected list inside a hook
+  runs `git config --show-origin` for each git on PATH; kb-read-gate's watchdog blocks at
+  8 s. The hook build now has one 4 s deadline (`hook_paths.HOOK_ROOTS_BUDGET_S`) and
+  skips the git calls left after it; the profile, built once per run, has none and keeps
+  every git's config. Tested with a fake git that sleeps.
+- **Who writes `schedule.yaml` and `triggers.yaml`** (#637's review): the kernel now
+  refuses a run's write to them. No run transcript writes either; `schedule init` is the
+  owner's and bootstrap's. `scoutctl repo sync` writes `schedule.yaml` into the vault
+  (`read-tree -u` of Agnes's commits, R1), but no runner step, phase, skill, command or
+  hook starts it (a static test pins that), the runner's lease keepalive only renews the
+  lease, and the replay counts 0 in-session `scoutctl repo` calls. So an in-session
+  `repo sync` would now fail at that write, which nothing does today.
+- **Smaller fixes**: the switch file is written through `mkstemp` and an atomic rename;
+  the launcher's best-effort cache write sends the redirect's own error to /dev/null.
+
+Residuals and decisions this round leaves open:
+
+- **Open, for Jordan: engine-change clones.** `phases/core/git-setup.md` tells a run to
+  make any engine change in a fresh clone, `git clone … ~/.scout-worktrees/$NAME`, then
+  `switch -c`, commit and `push -u`. The new any-repo rules refuse that clone's
+  `.git/config` and hook samples, so the clone fails (2 `git clone` calls in the 50
+  runs replayed; the static replay can't see git's own writes). Options: (a) keep the
+  rules strict and accept that runs can't open engine PRs; (b) carve out
+  `~/.scout-worktrees/` from the any-repo rules, accepting that a later owner command in
+  such a clone runs whatever hooks the run put there; (c) carve out only the clone's
+  `.git/config` there, with `git clone --template=` in the phase so no hooks dir is
+  written. Until Jordan picks one, the PR ships (a): with the sandbox on by default, a
+  run that starts an engine-change clone gets a failed `git clone`, and the phase's own
+  rule (name the clone's path if the push fails) puts that in the wrap.
+- **`git branch -m`** renames the branch, then exits 128, because git always moves the
+  branch's config section in `.git/config` and no setting stops that. 0 of the 50 runs
+  used it.
+- **Package-manager config** (`~/.npmrc`, `uv.toml`, `pip.conf`, user site-packages):
+  follow-up, not this PR.
+- **Linux**: detection only (§9).

@@ -157,7 +157,10 @@ def test_health_reads_the_held_slots_as_one_pause(vault: Path, lifts: datetime) 
     report = health.evaluate(vault, now=datetime.now(UTC))
 
     assert report.severity == "yellow"
-    assert [(f.id, f.severity) for f in report.findings] == [(health.PAUSED_FINDING_ID, "yellow")]
+    # Notes don't change severity (the suite's runners have SCOUT_RUN_SANDBOX=off, which health notes).
+    assert [(f.id, f.severity) for f in report.findings if f.severity != "note"] == [
+        (health.PAUSED_FINDING_ID, "yellow")
+    ]
     assert f"runs paused until {health.iso_z(lifts)}" in report.findings[0].summary
 
 

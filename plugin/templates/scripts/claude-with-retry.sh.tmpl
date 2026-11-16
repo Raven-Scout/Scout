@@ -231,6 +231,16 @@ SANDBOX=()
 SANDBOX_PROFILE="${SCOUT_SANDBOX_PROFILE:-}"
 # A scheduled run never updates claude itself: the install it would rewrite is what the next run starts.
 export DISABLE_AUTOUPDATER=1
+# The sandbox keeps .git/config read-only, so git mustn't try to record upstreams in it: with these, `git
+# checkout -b x origin/x` and a plain `git push` don't write it (`git push -u` still pushes; only its upstream
+# record is refused). Appended after any GIT_CONFIG_* the environment already has.
+GIT_N="${GIT_CONFIG_COUNT:-0}"
+case "$GIT_N" in ''|*[!0-9]*) GIT_N=0 ;; esac
+export "GIT_CONFIG_KEY_$GIT_N=branch.autoSetupMerge" "GIT_CONFIG_VALUE_$GIT_N=false"
+GIT_N=$((GIT_N + 1))
+export "GIT_CONFIG_KEY_$GIT_N=push.autoSetupRemote" "GIT_CONFIG_VALUE_$GIT_N=false"
+export GIT_CONFIG_COUNT=$((GIT_N + 1))
+unset GIT_N
 unset SCOUT_SANDBOX_PROFILE
 if [ -n "$SANDBOX_PROFILE" ]; then
     SANDBOX=(/usr/bin/sandbox-exec -p "$SANDBOX_PROFILE")

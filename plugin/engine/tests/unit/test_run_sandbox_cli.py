@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,45 @@ def test_self_test_fails_on_any_other_exit(monkeypatch) -> None:
     assert "exit 71" in (sbx.self_test("(version 1)") or "")
 
 
+def test_a_profile_that_doesnt_start_is_reported_as_that_with_its_stderr(monkeypatch) -> None:
+    # sandbox-exec refused the profile (a parse error, or a sandbox it can't start inside another): the script
+    # never ran, so no file was written; the reason is the exit code and stderr, not "an ordinary write".
+    _fake_sandbox_exec(monkeypatch, rc=71, write_ordinary=False)
+    reason = sbx.self_test("(version 1)") or ""
+    assert reason == "sandbox-exec failed (exit 71): boom"
+
+
+def test_a_refused_ordinary_write_carries_stderr(monkeypatch) -> None:
+    _fake_sandbox_exec(monkeypatch, rc=8, write_ordinary=False)
+    assert sbx.self_test("(version 1)") == "the sandbox refused an ordinary temp-file write: boom"
+
+
+def test_an_exit_0_without_the_ordinary_file_still_fails(monkeypatch) -> None:
+    _fake_sandbox_exec(monkeypatch, rc=0, write_ordinary=False)
+    assert sbx.self_test("(version 1)") == "the sandbox refused an ordinary temp-file write"
+
+
+def test_the_switch_is_written_through_a_fresh_temp_file(tmp_path: Path) -> None:
+    env = {"HOME": str(tmp_path)}
+    path = launch.set_switch(False, env)
+    assert json.loads(path.read_text()) == {"scheduled_runs": False}
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]  # no temp file left behind
+    launch.set_switch(True, env)
+    assert launch.switch(env) == (True, "default")
+
+
+def test_a_failed_switch_write_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None:
+    env = {"HOME": str(tmp_path)}
+
+    def refuse(*_a):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(launch.os, "replace", refuse)
+    with pytest.raises(OSError):
+        launch.set_switch(False, env)
+    assert list(launch.switch_path(env).parent.iterdir()) == []
+
+
 def test_self_test_fails_when_sandbox_exec_wont_run(monkeypatch) -> None:
     def run(*_a, **_k):
         raise OSError("no such file")
@@ -168,12 +208,41 @@ def test_rules_serialise(vault: Path) -> None:
 def test_regex_rules_render_and_match(vault: Path) -> None:
     rules = sbx.build_rules(vault)
     rx = [r for r in rules if r.kind == "regex"]
-    assert rx and all(sbx.render([r]).count('(regex #"^') == 1 for r in rx)
+    assert rx and all(sbx.render([r]).count('(regex #"') == 1 for r in rx)
+    # Anchored at a path's start, except the anywhere-suffixes, which match a name at any depth.
+    assert all(r.path.startswith("^") for r in rx if r.path not in sbx.ANYWHERE_SUFFIXES)
     git = os.path.realpath(vault / ".git")
     assert sbx._matches(rx[0], f"{git}/next-index-12.lock") or sbx._matches(rx[1], f"{git}/index.stash.12")
 
 
 # -- hook_paths edges the profile depends on ------------------------------------------------------------------
+
+
+def _slow_git(tmp_path: Path) -> Path:
+    slow = tmp_path / "slowbin"
+    slow.mkdir()
+    (slow / "git").write_text("#!/bin/sh\nexec sleep 5\n")  # exec: the timeout's kill ends the sleep itself
+    (slow / "git").chmod(0o755)
+    return slow
+
+
+def test_the_hooks_roots_build_keeps_to_its_time_budget(vault: Path, tmp_path: Path, monkeypatch) -> None:
+    # kb-read-gate's watchdog blocks at 8 s: slow gits on PATH mustn't use it up building the list (review of #642).
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{_slow_git(tmp_path)}:/usr/bin:/bin"}
+    monkeypatch.setattr(hook_paths, "HOOK_ROOTS_BUDGET_S", 0.5)
+    hook_paths._ROOTS_CACHE.clear()
+    started = time.monotonic()
+    hook_paths.protected_roots(vault, env)
+    assert time.monotonic() - started < 2.5
+    assert hook_paths.protected_write(vault / ".git" / "hooks" / "pre-commit", vault, env) is not None
+
+
+def test_no_time_left_skips_the_git_calls(vault: Path) -> None:
+    gone = time.monotonic() - 1
+    assert hook_paths.git_hooks_dir(vault, deadline=gone) is None
+    assert hook_paths.git_config_files({"PATH": "/usr/bin", "HOME": "/nonexistent"}, deadline=gone) == []
+    # The profile passes no deadline and gets every git's config.
+    assert hook_paths.git_hooks_dir(vault) is not None
 
 
 def test_a_worktree_protects_its_gitdir_and_common_dir(tmp_path: Path) -> None:
@@ -231,6 +300,7 @@ def test_doctor_survives_a_broken_check(tmp_path: Path, monkeypatch) -> None:
         raise RuntimeError("bug")
 
     monkeypatch.delenv("SCOUT_SANDBOX_STATUS", raising=False)
+    monkeypatch.delenv("SCOUT_RUN_SANDBOX", raising=False)  # else the doctor doesn't build the profile here
     monkeypatch.setattr(launch, "prepare", boom)
     warnings, notes = bootstrap_doctor._check_run_sandbox(vault=tmp_path)
     assert notes == [] and "couldn't check" in warnings[0]

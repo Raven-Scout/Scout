@@ -18,8 +18,10 @@ eval harness), which a run can't set for a later run.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,7 @@ from scout.sandbox import profile as sbx
 STATUS_EXIT = {"enforced": 0, "failed": 3, "unavailable": 6, "off": 7, "conflict": 8}
 ENV_SWITCH = "SCOUT_RUN_SANDBOX"
 _OFF = ("0", "off", "false", "no")
+OFF_VALUES = _OFF  # what turns it off, for callers that read the variable themselves
 _ON = ("1", "on", "true", "yes")
 
 
@@ -61,9 +64,17 @@ def switch(env: Mapping[str, str] | None = None) -> tuple[bool, str]:
 def set_switch(on: bool, env: Mapping[str, str] | None = None) -> Path:
     path = switch_path(env)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"scheduled_runs": on}) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    # A fresh temp file of our own (mkstemp opens it O_CREAT|O_EXCL, mode 0600), never a fixed name that could
+    # already exist as a link to somewhere else; then an atomic rename over the switch.
+    fd, tmp = tempfile.mkstemp(prefix=f".{SANDBOX_SWITCH_NAME}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"scheduled_runs": on}) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     return path
 
 

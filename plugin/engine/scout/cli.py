@@ -199,6 +199,54 @@ def cli_sandbox_on() -> None:
     typer.echo(f"run sandbox: on (wrote {path})")
 
 
+@sandbox_app.command("snapshot")
+def cli_sandbox_snapshot(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+) -> None:
+    """Print the start state the post-run integrity check compares against (JSON, one line).
+
+    The runners call it outside the sandbox before claude starts and keep the output in memory, then pipe it to
+    `scoutctl sandbox verify` after claude exits. Exit 12 (and nothing on stdout) when it can't be taken.
+    """
+    from scout import paths
+    from scout.sandbox import integrity
+
+    try:
+        snap = integrity.snapshot(paths.data_dir(vault))
+    except integrity.IntegrityError as e:
+        typer.echo(f"[scout:integrity] couldn't take the start snapshot: {e}", err=True)
+        raise typer.Exit(integrity.STATUS_EXIT["error"]) from None
+    typer.echo(integrity.dumps(snap))
+
+
+@sandbox_app.command("verify")
+def cli_sandbox_verify(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    label: str = typer.Option("scheduled", "--label", help="The run's mode, for the restoring commit's message."),
+) -> None:
+    """After a run: compare the vault's protected tracked files with the start snapshot on stdin, and put back
+    what the run changed in git.
+
+    Exit 0 clean, 10 restored (a new commit on each changed branch, and the index), 11 a tag or the stash still
+    holds a change (reported, not rewritten), 12 the check couldn't run. Paths go to stdout, never file content.
+    """
+    import sys
+
+    from scout import paths
+    from scout.sandbox import integrity
+
+    data_dir = paths.data_dir(vault)
+    try:
+        start = integrity.loads(sys.stdin.read())
+    except integrity.IntegrityError as e:
+        result = integrity.Result("error", reason=str(e))
+    else:
+        result = integrity.verify(data_dir, start, label=label)
+    for line in result.lines():
+        typer.echo(line)
+    raise typer.Exit(result.exit_code)
+
+
 @sandbox_app.command("replay")
 def cli_sandbox_replay(
     transcripts: str = typer.Option(..., "--transcripts", help="A Claude Code project dir of session .jsonl files."),

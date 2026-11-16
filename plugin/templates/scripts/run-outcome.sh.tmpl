@@ -223,6 +223,17 @@ if resets_at:
 sandbox = os.environ.get("SCOUT_SANDBOX_STATUS", "")
 if sandbox in ("enforced", "unavailable", "off", "conflict", "failed"):
     row["sandbox"] = sandbox
+    # When it was off: "env" (SCOUT_RUN_SANDBOX) or "switch" (scoutctl sandbox off), so health and the doctor
+    # can say which to undo.
+    source = os.environ.get("SCOUT_SANDBOX_SOURCE", "")
+    if sandbox == "off" and source in ("env", "switch"):
+        row["sandbox_source"] = source
+# The post-run integrity check (spec 2026-11-15 §13): clean, restored (a protected tracked file the run changed
+# in git was put back in a new commit), unrestored (a tag or the stash still holds such a change), error (the
+# check couldn't run) or unchecked (no start snapshot); left out for rows from older runners.
+integrity = os.environ.get("SCOUT_INTEGRITY", "")
+if integrity in ("clean", "restored", "unrestored", "error", "unchecked"):
+    row["integrity"] = integrity
 # The model the runner passed to claude (scoutctl model resolve), so health and
 # eval can attribute a run's cost; left out for rows from older runners.
 model = os.environ.get("SCOUT_MODEL", "").strip().lower()

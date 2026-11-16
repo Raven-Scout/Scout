@@ -69,7 +69,9 @@ _BARE_SCRIPT = re.compile(r"\bpython3?(?:\.\d+)?\s+[\"']?[\w$./{}\"-]*\.py\b")
 
 
 def test_runner_templates_never_run_a_vault_script_bare():
-    """Runner and hook templates run outside the sandbox, so a vault script they start gets -I."""
+    """Runner and hook templates run outside the sandbox, and the plugin's hooks.json runs in every session, so a
+    vault script either starts gets -I."""
     files = [p for p in (PLUGIN / "templates").rglob("*") if p.is_file() and p.suffix in {".tmpl", ".sh"}]
+    files += [p for p in (PLUGIN / "hooks").rglob("*") if p.is_file()]
     assert files
     assert _offenders(files, _BARE_SCRIPT, skip_comments=True) == []

@@ -110,7 +110,8 @@ def test_a_pointer_naming_something_other_than_a_venv_adds_nothing(world) -> Non
         "AUTO_MERGE",
         "COMMIT_EDITMSG",
         "packed-refs.lock",
-        "rebase-merge/git-rebase-todo",
+        "lfs/objects/ab/cd/abcd",
+        "lfs/tmp/x",
         "gc.pid",
         "next-index-57253.lock",
         "index.stash.4242",
@@ -141,6 +142,11 @@ def test_git_writes_stay_allowed(world, rel: str) -> None:
         "something-git-adds-later",
         "next-index-x.lock",
         "hooks/next-index-1.lock",
+        # Not carved out (review of #642: no run used them).
+        "rebase-merge/git-rebase-todo",
+        "rebase-apply/patch",
+        "sequencer/todo",
+        "BISECT_LOG",
     ],
 )
 def test_git_switches_stay_denied(world, rel: str) -> None:
@@ -160,6 +166,7 @@ def test_a_hooks_path_inside_a_carve_out_is_denied_again(world) -> None:
 def test_every_carve_out_is_under_a_protected_root(world) -> None:
     _, vault, env = world
     roots = [os.path.realpath(s.path) for s in hook_paths.protected_specs(vault, env) if s.tree]
+    roots += [os.path.realpath(p) for p in sbx.kernel_trees(vault, env)]
     for kind, path in sbx.carve_outs(vault, env):
         if kind == "regex":
             path = path.removeprefix("^").split("/next-index")[0].split("/index\\.stash")[0].replace("\\", "")
@@ -186,7 +193,6 @@ def test_plugin_data_is_carved_out_and_the_rest_of_the_store_is_not(world) -> No
         ".scout-logs/run.log",
         ".scout-state/x.json",
         ".scout-cache/c.json",
-        ".claude/worktrees/x",
         "scripts/my-own-script.py",
     ],
 )
@@ -241,6 +247,83 @@ def test_runner_scripts_and_vault_settings_are_denied(world) -> None:
         ".gitattributes",
     ):
         assert sbx.decide(rules, str(vault / rel)) == "deny", rel
+
+
+@pytest.mark.parametrize(
+    "rel", [".claude/skills/x/SKILL.md", ".claude/worktrees/x", ".claude/anything.json", ".claude/agents/a.md"]
+)
+def test_the_vaults_claude_folder_is_denied_as_a_whole(world, rel: str) -> None:
+    _, vault, env = world
+    assert sbx.decide(_rules(vault, env), str(vault / rel)) == "deny"
+
+
+@pytest.mark.parametrize("rel", ["CLAUDE.md", "agents/a.md", "skills/s/SKILL.md", "something-claude-adds-later"])
+def test_the_rest_of_claudes_home_is_denied(world, rel: str) -> None:
+    home, vault, env = world
+    assert sbx.decide(_rules(vault, env), str(home / ".claude" / rel)) == "deny"
+
+
+def test_only_the_listed_claude_home_folders_are_carved_out(world) -> None:
+    home, vault, env = world
+    rules = _rules(vault, env)
+    for name in sbx.CLAUDE_HOME_CARVE_DIRS:
+        assert sbx.decide(rules, str(home / ".claude" / name / "f")) == "allow", name
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/private/tmp/clone/.git/hooks/pre-commit",
+        "/private/tmp/clone/.git/config",
+        "/Users/someone/dev/repo/.claude/settings.json",
+        "/Users/someone/dev/repo/.claude/settings.local.json",
+        "/Users/someone/dev/repo/.mcp.json",
+        "/Users/someone/dev/repo/.GIT/CONFIG",
+    ],
+)
+def test_any_repos_hooks_config_and_agent_settings_are_denied(world, path: str) -> None:
+    _, vault, env = world
+    assert sbx.decide(_rules(vault, env), path) == "deny"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/private/tmp/clone/.git/objects/ab/cd", "/private/tmp/clone/notes.md", "/private/tmp/clone/.git/configs/x"],
+)
+def test_other_repos_ordinary_files_stay_writable(world, path: str) -> None:
+    _, vault, env = world
+    assert sbx.decide(_rules(vault, env), path) == "allow"
+
+
+def test_the_suffix_rules_use_no_character_classes() -> None:
+    assert not any("[" in rx for rx in sbx.ANYWHERE_SUFFIXES)
+
+
+def test_ssh_is_denied_except_known_hosts(world) -> None:
+    home, vault, env = world
+    rules = _rules(vault, env)
+    ssh = home / ".ssh"
+    assert hook_paths.protected_write(ssh / "config", vault, env) == hook_paths.SSH_CONFIG
+    for rel in ("config", "id_ed25519", "authorized_keys", "rc"):
+        assert sbx.decide(rules, str(ssh / rel)) == "deny", rel
+    for rel in sbx.SSH_WRITABLE:
+        assert sbx.decide(rules, str(ssh / rel)) == "allow", rel
+
+
+def test_local_bin_is_protected_in_both_layers(world) -> None:
+    home, vault, env = world
+    (home / ".local" / "bin").mkdir(parents=True)
+    env["PATH"] = "/usr/bin:/bin"  # not on PATH: protected anyway
+    hook_paths._ROOTS_CACHE.clear()
+    assert hook_paths.protected_write(home / ".local" / "bin" / "date", vault, env) == hook_paths.PROGRAMS
+    assert sbx.decide(_rules(vault, env), str(home / ".local" / "bin" / "date")) == "deny"
+
+
+def test_the_object_info_folder_cant_be_removed(world) -> None:
+    _, vault, env = world
+    rules = _rules(vault, env)
+    assert sbx.decide(rules, str(vault / ".git" / "objects" / "info"), "unlink") == "deny"
+    assert sbx.decide(rules, str(vault / ".git" / "objects" / "ab"), "unlink") == "allow"
 
 
 def test_matching_is_case_insensitive_like_apfs(world) -> None:

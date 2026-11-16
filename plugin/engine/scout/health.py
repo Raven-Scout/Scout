@@ -45,6 +45,9 @@ LEASE_UNAVAILABLE_RED = 3
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
 LOCK_SKIP_WINDOW = timedelta(hours=24)
+# How long a run whose protected files the integrity check had to put back keeps health red (spec 2026-11-15 §13):
+# the restore fixed the vault, but the owner should look at what that run did.
+INTEGRITY_WINDOW = timedelta(days=7)
 # Runs that fail, succeed, then fail again never form a trailing streak, so
 # runs.failing clears on every success between them. This many failed runs in
 # the window, with a success after the first of them, is a pattern of its own.
@@ -128,6 +131,10 @@ class OutcomeRow:
     # Whether the session ran in the write sandbox (Phase 1c): enforced | unavailable | off | conflict | failed;
     # None for rows from runners that predate it.
     sandbox: str | None = None
+    # When sandbox is "off": "env" (SCOUT_RUN_SANDBOX) or "switch" (scoutctl sandbox off).
+    sandbox_source: str | None = None
+    # The post-run integrity check: clean | restored | unrestored | error | unchecked; None for older runners.
+    integrity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +261,8 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         newest_commit=str(commit) if commit else None,
         resets_at=_opt_epoch(obj.get("resets_at")),
         sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
+        sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
+        integrity=str(obj["integrity"]) if isinstance(obj.get("integrity"), str) else None,
     )
 
 
@@ -556,6 +565,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
     findings.extend(gates_findings(rows, vault=vault))
     findings.extend(sandbox_findings(rows, vault=vault))
+    findings.extend(integrity_findings(rows, vault=vault, now=now))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -717,6 +727,23 @@ def sandbox_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
             )
         ]
     last = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    if last is not None and last.sandbox == "off" and last.sandbox_source == "env":
+        return [
+            Finding(
+                id="runs.sandbox_env_off",
+                severity="note",
+                since=last.finished_at,
+                summary=(
+                    "The last scheduled run ran without Scout's write sandbox: SCOUT_RUN_SANDBOX=off was set in the "
+                    "environment the scheduler started it with. That switch is meant for tests and the eval harness."
+                ),
+                fix=(
+                    "Remove SCOUT_RUN_SANDBOX from the environment your scheduled runs start with (the LaunchAgent "
+                    "or crontab, or the shell that starts the tick). `scoutctl sandbox off` is the owner's switch."
+                ),
+                source="ledger",
+            )
+        ]
     if last is None or last.sandbox not in _UNSANDBOXED:
         return []
     severity, what, fix = _UNSANDBOXED[last.sandbox]
@@ -731,6 +758,49 @@ def sandbox_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
             log=None,
         )
     ]
+
+
+def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
+    """A run whose protected tracked files the post-run integrity check put back, or couldn't (spec 2026-11-15 §13)."""
+    recent = [r for r in rows if r.integrity in ("restored", "unrestored") and r.finished_at >= now - INTEGRITY_WINDOW]
+    if recent:
+        newest = recent[-1]
+        log = _run_log(vault, newest)
+        still = newest.integrity == "unrestored"
+        return [
+            Finding(
+                id="run.integrity_restored",
+                severity="red",
+                since=recent[0].finished_at,
+                summary=(
+                    f"{len(recent)} scheduled run(s) in the last {INTEGRITY_WINDOW.days} days changed a protected "
+                    "file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new "
+                    "commit" + ("; a tag or the stash still holds the change." if still else ".")
+                ),
+                fix=(
+                    "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and "
+                    "its session, to see what made it change them."
+                    + (" Then delete the tag or drop the stash entry it names." if still else "")
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    last = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    if last is not None and last.integrity == "error":
+        log = _run_log(vault, last)
+        return [
+            Finding(
+                id="run.integrity_unchecked",
+                severity="yellow",
+                since=last.finished_at,
+                summary="The post-run integrity check couldn't run after the last scheduled run.",
+                fix="The run log's `integrity check:` line says why; `git status` in the vault shows its state.",
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        ]
+    return []
 
 
 def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:

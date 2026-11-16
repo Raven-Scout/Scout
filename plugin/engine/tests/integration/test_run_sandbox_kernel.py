@@ -125,6 +125,18 @@ def _cases(w: World) -> list[str]:
         str(h / ".codex" / "config.toml"),
         str(h / ".scout-secrets" / "new"),
         str(h / "Documents" / "x.txt"),
+        # Review of #642: ~/.claude and the vault's .claude/ as a whole, other repos' hooks and config, ~/.ssh.
+        str(h / ".claude" / "CLAUDE.md"),
+        str(h / ".claude" / "todos" / "t.json"),
+        str(v / ".claude" / "skills" / "s" / "SKILL.md"),
+        str(w.root / "other" / ".git" / "hooks" / "pre-push"),
+        str(w.root / "other" / ".git" / "config"),
+        str(w.root / "other" / ".git" / "objects" / "ab" / "x"),
+        str(w.root / "other" / ".mcp.json"),
+        str(h / ".ssh" / "config"),
+        str(h / ".ssh" / "known_hosts"),
+        str(v / ".git" / "lfs" / "objects" / "x"),
+        str(v / ".git" / "rebase-merge" / "todo"),
     ]
 
 
@@ -278,7 +290,6 @@ git tag v-test
 git push -q origin main side v-test
 git fetch -q origin
 git merge -q --no-edit side
-git cherry-pick -q side 2>/dev/null || git cherry-pick --abort 2>/dev/null || true
 git gc -q --auto
 git gc -q
 echo ok
@@ -288,6 +299,47 @@ echo ok
     assert res.stdout.strip().endswith("ok")
     assert (world.vault / ".scout-logs" / "pre-commit.log").read_text().count("ran") >= 3
     assert subprocess.run(["git", "-C", str(remote), "tag"], capture_output=True, text=True).stdout.strip() == "v-test"
+
+
+def test_branch_checkout_and_push_work_with_the_wrappers_git_settings(world: World) -> None:
+    """`git checkout -b x origin/x` and `git push -u`, run by a session under claude-with-retry, succeed without the
+    config write the sandbox refuses; `git branch -m` renames the branch (git then reports that it couldn't move
+    the branch's config section, spec §13)."""
+    remote = world.root / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, env=world.env)
+    world.git("remote", "add", "origin", str(remote))
+    world.git("push", "-q", "origin", "main", "main:feature")
+    world.git("fetch", "-q", "origin")
+    config_before = (world.vault / ".git" / "config").read_bytes()
+    wrapper = _wrapper(world)
+    claude = world.root / "bin" / "claude"
+    claude.write_text(
+        "#!/bin/bash\n"
+        "git checkout -q -b feature origin/feature && echo checkout-ok >> notes/git.txt\n"
+        "echo x > notes/f.md && git add notes/f.md && git commit -qm f\n"
+        "git checkout -q -b pushed && git push -q -u origin pushed && echo push-ok >> notes/git.txt\n"
+        'git branch -m pushed renamed; echo "rename-rc=$?" >> notes/git.txt\n'
+        "exit 0\n"
+    )
+    claude.chmod(0o755)
+    env = {
+        **world.env,
+        "SCOUT_SANDBOX_PROFILE": world.profile,
+        "SCOUT_SANDBOX_STATUS": "enforced",
+        "SCOUT_RETRY_DISABLE": "1",
+        "SCOUT_NO_CAFFEINATE": "1",
+    }
+    res = subprocess.run(
+        [str(wrapper), str(world.root / "run.log"), str(claude)],
+        cwd=world.vault, env=env, capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert res.returncode == 0, (world.root / "run.log").read_text()
+    ran = (world.vault / "notes" / "git.txt").read_text()
+    assert "checkout-ok" in ran and "push-ok" in ran, (world.root / "run.log").read_text()
+    remote_heads = subprocess.run(["git", "-C", str(remote), "branch"], capture_output=True, text=True).stdout
+    assert "pushed" in remote_heads
+    assert "renamed" in world.git("branch", "--list", "renamed")
+    assert (world.vault / ".git" / "config").read_bytes() == config_before
 
 
 def test_git_config_reads_pass_and_writes_fail(world: World) -> None:

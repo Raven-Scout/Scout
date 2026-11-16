@@ -185,7 +185,14 @@ if [ "$SCOUT_SANDBOX_STATUS" = enforced ] && [ -z "$SCOUT_SANDBOX_PROFILE" ]; th
     SCOUT_SANDBOX_STATUS=failed
 fi
 [ "$SCOUT_SANDBOX_STATUS" = enforced ] || SCOUT_SANDBOX_PROFILE=""
-export SCOUT_SANDBOX_STATUS
+# Who turned it off, for the run-outcome row and the doctor: the environment
+# (SCOUT_RUN_SANDBOX, meant for tests and the eval harness) or the owner's switch file.
+SCOUT_SANDBOX_SOURCE=""
+if [ "$SCOUT_SANDBOX_STATUS" = off ]; then
+    SCOUT_SANDBOX_SOURCE=switch
+    [ -n "${SCOUT_RUN_SANDBOX:-}" ] && SCOUT_SANDBOX_SOURCE=env
+fi
+export SCOUT_SANDBOX_STATUS SCOUT_SANDBOX_SOURCE
 if [ "$SCOUT_SANDBOX_STATUS" = failed ]; then
     echo "=== Write sandbox: couldn't be set up here (exit $SANDBOX_RC; see scoutctl sandbox status) — skipping this run ===" >> "$LOG_FILE"
     scout_record_skip skipped_sandbox
@@ -217,6 +224,14 @@ echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
 # The session's --name. Every retry attempt gets the same one, so the cost step
 # below can find each attempt's transcript by it.
 RUN_NAME="{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)"
+# Integrity start state (spec 2026-11-15 §13): the protected tracked files (runner
+# scripts, agent settings, .scout-state/schedule.yaml …) as HEAD, the index and every
+# branch, tag and stash ref hold them now. Taken outside the sandbox and kept in this
+# shell's memory, never in a file, so nothing the session does can change it.
+SCOUT_INTEGRITY_START=""
+if [ -x "$SCOUTCTL_BIN" ]; then
+    SCOUT_INTEGRITY_START="$("$SCOUTCTL_BIN" sandbox snapshot --vault "$SCOUT_DIR" 2>>"$LOG_FILE" || true)"
+fi
 START_TIME=$(date +%s)
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
@@ -237,6 +252,27 @@ cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SA
     || EXIT_CODE=$?
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
+
+# Post-run integrity check (spec 2026-11-15 §13), outside the sandbox and before any
+# post-session step: the sandbox keeps the session from writing a protected file, but
+# git may still commit a changed copy of one. `scoutctl sandbox verify` compares HEAD,
+# the index and every ref the run moved with the start state, puts any changed
+# protected file back in a new commit, and says so here; run-outcome records it and
+# run health turns red. It never changes this run's exit code.
+SCOUT_INTEGRITY=unchecked
+if [ -n "$SCOUT_INTEGRITY_START" ]; then
+    INTEGRITY_RC=0
+    SCOUT_INTEGRITY=error
+    printf '%s' "$SCOUT_INTEGRITY_START" | "$SCOUTCTL_BIN" sandbox verify --vault "$SCOUT_DIR" --label "$MODE" >> "$LOG_FILE" 2>&1 || INTEGRITY_RC=$?
+    case "$INTEGRITY_RC" in
+        0) SCOUT_INTEGRITY=clean ;;
+        10) SCOUT_INTEGRITY=restored ;;
+        11) SCOUT_INTEGRITY=unrestored ;;
+    esac
+else
+    echo "=== integrity check: no start snapshot (see above) — not checked ===" >> "$LOG_FILE"
+fi
+export SCOUT_INTEGRITY
 
 echo "=== {{INSTANCE_NAME}} Dreaming run finished at $(date) (exit code: $EXIT_CODE, duration: ${DURATION}s) ===" >> "$LOG_FILE"
 

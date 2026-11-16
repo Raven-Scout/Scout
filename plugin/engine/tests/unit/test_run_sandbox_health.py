@@ -88,6 +88,63 @@ def test_a_sandbox_skip_counts_as_a_recorded_fire(tmp_path: Path) -> None:
     assert "skipped_sandbox" in health.SKIP_OUTCOMES
 
 
+def test_a_run_with_the_env_switch_off_gets_a_note(tmp_path: Path) -> None:
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), sandbox="off", sandbox_source="env")])
+    (finding,) = health.evaluate(v, now=NOW).findings
+    assert (finding.id, finding.severity) == ("runs.sandbox_env_off", "note")
+    assert "SCOUT_RUN_SANDBOX" in finding.summary and "LaunchAgent" in finding.fix
+
+
+def test_the_owners_switch_off_says_nothing(tmp_path: Path) -> None:
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), sandbox="off", sandbox_source="switch")])
+    assert _ids(v) == {}
+
+
+# -- the post-run integrity check (spec §13) -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["restored", "unrestored"])
+def test_a_run_whose_protected_files_were_put_back_is_red(tmp_path: Path, status: str) -> None:
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(days=2), sandbox="enforced", integrity=status),
+            _row(NOW - timedelta(hours=1), sandbox="enforced", integrity="clean"),
+        ],
+    )
+    (finding,) = health.evaluate(v, now=NOW).findings
+    assert (finding.id, finding.severity) == ("run.integrity_restored", "red")
+    assert ("tag or the stash" in finding.summary) == (status == "unrestored")
+
+
+def test_an_old_restore_ages_out(tmp_path: Path) -> None:
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - health.INTEGRITY_WINDOW - timedelta(hours=1), integrity="restored"),
+            _row(NOW - timedelta(hours=1), integrity="clean"),
+        ],
+    )
+    assert _ids(v) == {}
+
+
+def test_a_check_that_couldnt_run_is_yellow(tmp_path: Path) -> None:
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), sandbox="enforced", integrity="error")])
+    assert _ids(v) == {"run.integrity_unchecked": "yellow"}
+
+
+@pytest.mark.parametrize("status", ["clean", "unchecked", None])
+def test_a_clean_or_unchecked_run_says_nothing(tmp_path: Path, status: str | None) -> None:
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), **({"integrity": status} if status else {}))])
+    assert _ids(v) == {}
+
+
 # -- doctor -----------------------------------------------------------------------------------------------------
 
 
@@ -102,6 +159,7 @@ def test_a_sandbox_skip_counts_as_a_recorded_fire(tmp_path: Path) -> None:
     ],
 )
 def test_doctor_reports_the_sandbox(tmp_path: Path, monkeypatch, status: str, where: str) -> None:
+    monkeypatch.delenv("SCOUT_RUN_SANDBOX", raising=False)
     monkeypatch.setattr(launch, "prepare", lambda *_a, **_k: launch.Prepared(status, "because"))
     warnings, notes = bootstrap_doctor._check_run_sandbox(vault=tmp_path, home=tmp_path)
     got = {"warnings": warnings, "notes": notes}[where]
@@ -119,6 +177,65 @@ def test_doctor_inside_a_sandboxed_run_doesnt_try_to_nest(tmp_path: Path, monkey
         [],
         ["run sandbox: enforced (this session runs inside it)"],
     )
+
+
+def test_doctor_judges_the_switch_as_the_scheduler_sees_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SCOUT_RUN_SANDBOX", "1")
+    seen: list[str | None] = []
+
+    def prepare(_vault, env, **_k):  # noqa: ANN001
+        seen.append(env.get("SCOUT_RUN_SANDBOX"))
+        return launch.Prepared("enforced", "sandbox-exec, self-test ok")
+
+    monkeypatch.setattr(launch, "prepare", prepare)
+    warnings, notes = bootstrap_doctor._check_run_sandbox(vault=tmp_path, home=tmp_path)
+    assert seen == [None]  # this shell's switch isn't the scheduler's
+    assert warnings == []
+    assert notes == [
+        "run sandbox: enforced (sandbox-exec, self-test ok)",
+        "this shell has SCOUT_RUN_SANDBOX=1, which scheduled runs don't inherit",
+    ]
+
+
+@pytest.mark.parametrize(("file_off", "says"), [(False, "on (default)"), (True, "off (")])
+def test_doctor_in_a_shell_with_the_switch_off_reports_the_owners_switch(
+    tmp_path: Path, monkeypatch, file_off: bool, says: str
+) -> None:
+    monkeypatch.setenv("SCOUT_RUN_SANDBOX", "off")
+
+    def boom(*_a, **_k):
+        raise AssertionError("no profile is built for a shell that runs without the sandbox")
+
+    monkeypatch.setattr(launch, "prepare", boom)
+    if file_off:
+        launch.set_switch(False, {"HOME": str(tmp_path)})
+    warnings, notes = bootstrap_doctor._check_run_sandbox(vault=tmp_path, home=tmp_path)
+    assert warnings == []
+    assert notes[0].startswith("run sandbox: not checked here (SCOUT_RUN_SANDBOX=off in this shell")
+    assert f"the owner's switch says {says}" in notes[0]
+
+
+@pytest.mark.parametrize(("source", "where", "text"), [("env", "warnings", "LaunchAgent"), ("switch", "notes", "off")])
+def test_doctor_reads_the_last_runs_switch_from_its_row(
+    tmp_path: Path, monkeypatch, source: str, where: str, text: str
+) -> None:
+    monkeypatch.delenv("SCOUT_RUN_SANDBOX", raising=False)
+    monkeypatch.setattr(launch, "prepare", lambda *_a, **_k: launch.Prepared("enforced", "ok"))
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), sandbox="off", sandbox_source=source)])
+    warnings, notes = bootstrap_doctor._check_run_sandbox(vault=v, home=tmp_path)
+    got = {"warnings": warnings, "notes": notes}[where]
+    assert any("the last scheduled run ran" in line and text in line for line in got)
+
+
+@pytest.mark.parametrize("error", [PermissionError("Operation not permitted"), FileNotFoundError("launchctl")])
+def test_doctor_completes_when_launchctl_cant_start(monkeypatch, error: OSError) -> None:
+    def refuse(*_a, **_k):
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    errors, warnings = bootstrap_doctor._check_launchd_jobs()
+    assert errors == [] and warnings == ["launchctl unavailable — skipped job registration check"]
 
 
 def test_doctor_a_refused_launchctl_list_is_not_missing_jobs(monkeypatch) -> None:
