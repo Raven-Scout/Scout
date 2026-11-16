@@ -116,8 +116,9 @@ run-*.sh   (unchanged: lock, budget, gate probe, `scoutctl sandbox profile`, int
        ├─ BROKER_DIR=$(mktemp -d "$TMPDIR/scout-broker.XXXXXX")
        ├─ scoutctl broker serve --vault V --dir D --parent $$ &      (outside the sandbox)
        ├─ scoutctl broker profile --vault V --dir D                   (waits ≤10 s for the socket,
-       │     reads the 1c profile from SCOUT_SANDBOX_PROFILE, appends §5.4's rules, self-tests,
-       │     prints the result; non-zero = keep the 1c profile)
+       │     reads the 1c profile on stdin, appends §5.4's rules, self-tests (a write it refuses, an
+       │     ordinary one, and the engine's Python starting: scoutctl can be the session's first
+       │     process), prints the result; non-zero = keep the 1c profile)
        ├─ export SCOUT_RUN_BROKER=D/b.sock GIT_OPTIONAL_LOCKS=0
        ├─ attempts: sandbox-exec -p "$PROFILE" claude …               (the broker outlives retries)
        └─ on exit (trap): stop the broker, `scoutctl broker drain --vault V` (outside), rm -rf D
