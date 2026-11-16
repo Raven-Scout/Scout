@@ -96,8 +96,7 @@ struct MotionTests {
         // renders under the machine's setting; the rules above cover both.
         ViewHost.render(
             Text("x")
-                .motionAnimation(.easeInOut, value: 1)
-                .motionTransition(.move(edge: .top)),
+                .motionAnimation(.easeInOut, value: 1),
             size: CGSize(width: 100, height: 40))
     }
 

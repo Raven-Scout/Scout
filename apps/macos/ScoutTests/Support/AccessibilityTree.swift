@@ -26,7 +26,8 @@ enum AccessibilityTree {
         }
     }
 
-    private static var enabled = false
+    private static let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"]
+        .map { NSAccessibility.Attribute(rawValue: $0) }
 
     /// Every element under `view`, depth first.
     ///
@@ -34,13 +35,12 @@ enum AccessibilityTree {
     /// switch, and fills a new hosting view's tree, on a later main-run-loop
     /// turn. Awaiting a short sleep yields the main actor so that turn
     /// happens, without re-entering the run loop (which crashes the host).
+    /// The switch is turned off again before returning, so other suites run
+    /// with the host as they always did.
     static func nodes<V: View>(of view: V, size: CGSize = CGSize(width: 900, height: 700)) async -> [Node] {
-        if !enabled {
-            NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
-            NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
-            enabled = true
-            try? await Task.sleep(for: .milliseconds(300))
-        }
+        for attribute in attributes { NSApp.accessibilitySetValue(true, forAttribute: attribute) }
+        defer { for attribute in attributes { NSApp.accessibilitySetValue(false, forAttribute: attribute) } }
+        try? await Task.sleep(for: .milliseconds(300))
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],

@@ -146,7 +146,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -184,7 +184,7 @@ struct TaskCardView: View {
         }
         .buttonStyle(.plainHit)
         .help(expanded ? "Collapse action item" : "Expand action item")
-        .accessibilityLabel(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityLabel("Action item details")
         .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
@@ -578,7 +578,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(13.5))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {

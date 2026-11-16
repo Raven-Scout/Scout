@@ -371,7 +371,7 @@ struct SectionView: View {
                 .foregroundStyle(DS.Priority.done)
             InlineMarkdownText(t.subject)
                 .font(DS.serif(13))
-                .strikethrough(color: DS.Ink.p4)
+                .strikethrough(color: DS.Ink.decorative)
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -69,6 +69,10 @@ struct AccessibilityFoundationTests {
         #expect(proposals?.value == "2 awaiting a decision")
         let settings = nodes.first { $0.identifier == SidebarItem.settings.accessibilityIdentifier }
         #expect(settings?.value == "needs attention")
+        // The system badge must not be a second element saying "2" on top of
+        // the row's own "2 awaiting a decision".
+        let strayBadges = nodes.filter { $0.label == "2" || $0.value == "2" }
+        #expect(strayBadges.isEmpty, "badge read twice:\n\(nodes.map(\.description).joined(separator: "\n"))")
     }
 
     // MARK: - Sidebar and Go menu metadata

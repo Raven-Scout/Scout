@@ -12,12 +12,16 @@ struct KBGraphCanvas: View {
     let labelMinDegree: Int
 
     @State private var state: ForceDirectedGraphState
+    /// VoiceOver's list of notes, sorted once per graph — not on every
+    /// simulation tick or zoom, which re-run `body`.
+    private let accessibleNodes: [KBGraphNode]
 
     init(graph: KBGraph, onNavigate: @escaping (String) -> Void,
          labelMinDegree: Int = 1, initialScale: Double = 1.8) {
         self.graph = graph
         self.onNavigate = onNavigate
         self.labelMinDegree = labelMinDegree
+        self.accessibleNodes = Self.accessibleNodes(graph)
         // Start zoomed in so node labels are legible without manual pinching;
         // the simulation runs (initialIsRunning) and the user can pan/zoom.
         // Under Reduce Motion the layout is computed up front and the graph
@@ -71,7 +75,7 @@ struct KBGraphCanvas: View {
         // instead, most-linked first, each one a button that opens the note.
         .accessibilityRepresentation {
             VStack(alignment: .leading) {
-                ForEach(Self.accessibleNodes(graph)) { node in
+                ForEach(accessibleNodes) { node in
                     Button(Self.accessibilityLabel(for: node)) { onNavigate(node.id) }
                 }
             }
@@ -80,14 +84,18 @@ struct KBGraphCanvas: View {
         }
     }
 
+    /// At most this many notes in VoiceOver's list (the map already shows
+    /// at most 40; this bounds any larger graph handed to the canvas).
+    static let accessibleNodeLimit = 60
+
     /// Nodes in VoiceOver order: the centre note first, then by link count,
-    /// then by name.
+    /// then by name; capped at `accessibleNodeLimit`.
     static func accessibleNodes(_ graph: KBGraph) -> [KBGraphNode] {
-        graph.nodes.sorted { a, b in
+        Array(graph.nodes.sorted { a, b in
             if a.isCenter != b.isCenter { return a.isCenter }
             if a.degree != b.degree { return a.degree > b.degree }
             return a.label.localizedStandardCompare(b.label) == .orderedAscending
-        }
+        }.prefix(accessibleNodeLimit))
     }
 
     static func accessibilityLabel(for node: KBGraphNode) -> String {

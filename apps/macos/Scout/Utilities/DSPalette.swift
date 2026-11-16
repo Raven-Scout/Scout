@@ -140,6 +140,11 @@ extension DS {
         /// Dark text for labels on a mid-tone tint (slot-type pills, weekday
         /// dots); white on those tints is 2–4:1.
         static let inkOnTint = Swatch(name: "InkOnTint", light: RGB(0.100, 0.080, 0.040), dark: RGB(0.100, 0.080, 0.040))
+        /// Non-text strokes: strikethroughs, empty-day outlines, timeline
+        /// ticks. The pre-C7 `p4`, which was too faint for text but is the
+        /// right weight for a line; `p4` itself is now a text colour.
+        static let inkDecorative = Swatch(name: "InkDecorative", light: RGB(0.660, 0.660, 0.700), dark: RGB(0.440, 0.438, 0.425),
+                                          lightIncreasedContrast: RGB(0.500, 0.500, 0.540), darkIncreasedContrast: RGB(0.600, 0.598, 0.588))
 
         // Rules (non-text; stronger under Increase Contrast)
         static let ruleSoft = Swatch(name: "RuleSoft", light: RGB(0.910, 0.905, 0.890), dark: RGB(0.240, 0.244, 0.260),
@@ -150,14 +155,21 @@ extension DS {
         // Accent
         static let accentFill   = Swatch(name: "AccentFill",   light: RGB(0.745, 0.540, 0.240), dark: RGB(0.915, 0.790, 0.470))
         static let accentInk    = Swatch(name: "AccentInk",    light: RGB(0.535, 0.365, 0.112), dark: RGB(0.940, 0.840, 0.560))
-        static let accentWash   = Swatch(name: "AccentWash",   light: RGB(0.975, 0.945, 0.880), dark: RGB(0.310, 0.250, 0.140))
+        /// A tinted surface (selected chips, pending comments). Darker in dark
+        /// mode than before C7 so every paper text colour still reads on it.
+        static let accentWash   = Swatch(name: "AccentWash",   light: RGB(0.975, 0.945, 0.880), dark: RGB(0.220, 0.180, 0.100))
         /// Text on `accentFill`. White there was ~3:1 (light) and ~1.6:1 (dark).
         static let accentOnFill = Swatch(name: "AccentOnFill", light: RGB(0.120, 0.090, 0.030), dark: RGB(0.145, 0.147, 0.160))
 
         // Status (text-safe on paper)
         static let statusOk   = Swatch(name: "StatusOk",   light: RGB(0.225, 0.440, 0.292), dark: RGB(0.430, 0.720, 0.500))
-        static let statusWarn = Swatch(name: "StatusWarn", light: RGB(0.520, 0.368, 0.130), dark: RGB(0.880, 0.660, 0.300))
+        /// Orange, not amber: in light mode it must not read as `accentInk`
+        /// (ΔE ≥ 15 from it and from `statusErr`, checked in the tests).
+        static let statusWarn = Swatch(name: "StatusWarn", light: RGB(0.620, 0.280, 0.020), dark: RGB(0.880, 0.660, 0.300))
         static let statusErr  = Swatch(name: "StatusErr",  light: RGB(0.690, 0.255, 0.180), dark: RGB(0.895, 0.480, 0.410))
+        /// Text on a solid status fill (the Action Items error banner): white
+        /// on the light-mode red, dark ink on the lighter dark-mode red.
+        static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
 
         // Slot-type hues (fills; their labels use `inkOnTint`)
         static let slotBriefing      = Swatch(name: "SlotBriefing",      light: RGB(0.860, 0.660, 0.180), dark: RGB(0.910, 0.760, 0.340))
@@ -188,9 +200,12 @@ extension DS {
             let name: String
             let swatch: Swatch
             var under: Swatch? = nil
+            /// Draw `swatch` at this opacity over `under` (a tinted wash).
+            var opacity: Double? = nil
 
             func resolved(_ appearance: Appearance) -> RGB {
-                let top = swatch.resolved(appearance)
+                var top = swatch.resolved(appearance)
+                if let opacity { top.a = opacity }
                 guard let under else { return top }
                 return top.over(under.resolved(appearance))
             }
@@ -203,7 +218,11 @@ extension DS {
             Surface(name: "Paper.raised", swatch: Palette.paperRaised),
             Surface(name: "backdrop (leading tint)", swatch: Palette.backdropTintLeading, under: Palette.paperBase),
             Surface(name: "backdrop (trailing tint)", swatch: Palette.backdropTintTrailing, under: Palette.paperBase),
+            Surface(name: "Accent.wash", swatch: Palette.accentWash),
         ]
+
+        /// The washes `OnMissPill` and similar pills draw behind status text.
+        static let statusWashOpacity = 0.10
 
         /// Swatches used as text on paper.
         static let paperText: [Swatch] = [
@@ -221,7 +240,16 @@ extension DS {
             // The selected segment of `EditorialSegmentedControl`: paper on ink.
             pairs.append(Pair(foreground: Palette.paperBase,
                               background: Surface(name: "Ink.p1", swatch: Palette.inkP1)))
-            // Slot-type pills and weekday dots.
+            // Status text on its own wash (the FIRE on-miss pill).
+            for status in [Palette.statusWarn, Palette.statusErr, Palette.statusOk] {
+                pairs.append(Pair(foreground: status,
+                                  background: Surface(name: "\(status.name) wash", swatch: status,
+                                                      under: Palette.paperBase, opacity: statusWashOpacity)))
+            }
+            // The Action Items error banner.
+            pairs.append(Pair(foreground: Palette.statusOnFill,
+                              background: Surface(name: "Status.err", swatch: Palette.statusErr)))
+            // Slot-type pills, weekday dots and the day-circle strip.
             for slot in [Palette.slotBriefing, Palette.slotConsolidation, Palette.slotDreaming,
                          Palette.slotResearch, Palette.slotManual] {
                 pairs.append(Pair(foreground: Palette.inkOnTint,

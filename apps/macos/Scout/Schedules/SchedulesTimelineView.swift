@@ -93,7 +93,7 @@ struct SchedulesTimelineView: View {
             let center = geo.size.width / 2
             ZStack {
                 Rectangle()
-                    .fill(t.major ? DS.Ink.p4.opacity(0.4) : DS.Rule.soft)
+                    .fill(t.major ? DS.Ink.decorative.opacity(0.4) : DS.Rule.soft)
                     .frame(width: axisWidth - 16, height: 0.5)
                     .position(x: center, y: t.y)
                 if t.major {
@@ -273,9 +273,9 @@ struct SchedulesTimelineView: View {
                 Text(String(name.prefix(1)))
                     .font(DS.sans(8.5, weight: .medium))
                     .foregroundStyle(isOn ? DS.Ink.onTint : DS.Ink.p4)
-                    .frame(width: 12, height: 12)
+                    .frame(width: DS.scaled(12), height: DS.scaled(12))   // grows with Text size
                     .background(
-                        Circle().fill(isOn ? ring : DS.Ink.p4.opacity(0.18))
+                        Circle().fill(isOn ? ring : DS.Ink.decorative.opacity(0.18))
                     )
             }
         }

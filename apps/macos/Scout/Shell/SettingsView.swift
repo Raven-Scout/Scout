@@ -331,6 +331,7 @@ private struct TextSizePicker: View {
             ForEach(TextScale.Size.allCases) { Text($0.title).tag($0) }
         }
         .labelsHidden()
+        .labelledBySettingsRow()
         .pickerStyle(.menu)
         .fixedSize()
         .accessibilityIdentifier("settings-text-size")

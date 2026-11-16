@@ -103,7 +103,7 @@ private struct GoMenuItems: View {
             Button(item.title) {
                 appState.requestedSidebar = item
                 openWindow(id: "main")
-                NSApp.activate()
+                NSApp.activate(ignoringOtherApps: true)   // as the menu-bar panel does
             }
             .keyboardShortcut(item.goShortcutKey.map { KeyboardShortcut(KeyEquivalent($0), modifiers: .command) })
             if item == .knowledgeBase { Divider() }

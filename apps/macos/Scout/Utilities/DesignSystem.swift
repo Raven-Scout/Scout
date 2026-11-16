@@ -33,6 +33,8 @@ enum DS {
         static let p4 = Palette.inkP4.color
         /// Labels drawn on a mid-tone tint (slot-type pills, weekday dots).
         static let onTint = Palette.inkOnTint.color
+        /// Strokes, not text: strikethroughs, outlines, ticks.
+        static let decorative = Palette.inkDecorative.color
     }
 
     /// Hairline rules.
@@ -69,6 +71,10 @@ enum DS {
         static let ok   = Palette.statusOk.color
         static let warn = Palette.statusWarn.color
         static let err  = Palette.statusErr.color
+        /// Text on a solid `err` (or other status) fill.
+        static let onFill = Palette.statusOnFill.color
+        /// Opacity of a status wash behind status-coloured text.
+        static let washOpacity = ContrastPairs.statusWashOpacity
     }
 
     // MARK: - Typography

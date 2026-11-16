@@ -431,11 +431,11 @@ struct ActionItemsView: View {
             Text("Action Items writes disabled — \(envCheck.result.message ?? "scoutctl unavailable")")
         }
         .font(DS.sans(11))
-        .foregroundStyle(.white)
+        .foregroundStyle(DS.Status.onFill)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.Status.err.opacity(0.85))
+        .background(DS.Status.err)
     }
 
     private func missingState(url: URL) -> some View {

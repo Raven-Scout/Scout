@@ -15,12 +15,21 @@ extension EnvironmentValues {
     @Entry var settingsControlLabel: String? = nil
 }
 
+/// Set by a control that took the row's title as its VoiceOver label, so the
+/// row can hide its own title text and VoiceOver doesn't read it twice. Rows
+/// whose trailing item is plain text or a button keep the title readable.
+struct SettingsRowTitleUsedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
 private struct SettingsRowAccessibilityLabel: ViewModifier {
     @Environment(\.settingsControlLabel) private var label
 
     func body(content: Content) -> some View {
         if let label {
             content.accessibilityLabel(label)
+                .preference(key: SettingsRowTitleUsedKey.self, value: true)
         } else {
             content
         }
@@ -62,6 +71,8 @@ struct SettingsRow<Trailing: View>: View {
     let title: String
     let help: String
     @ViewBuilder var trailing: () -> Trailing
+    /// True once the trailing control has taken `title` as its label.
+    @State private var titleUsedByControl = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -70,6 +81,7 @@ struct SettingsRow<Trailing: View>: View {
                     Text(title)
                         .font(DS.sans(13, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
+                        .accessibilityHidden(titleUsedByControl)
                     Text(help)
                         .font(DS.sans(11.5))
                         .foregroundStyle(DS.Ink.p3)
@@ -78,6 +90,7 @@ struct SettingsRow<Trailing: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 trailing()
                     .environment(\.settingsControlLabel, title)
+                    .onPreferenceChange(SettingsRowTitleUsedKey.self) { titleUsedByControl = $0 }
             }
             .padding(.vertical, 14)
             Rectangle().fill(DS.Rule.soft).frame(height: 0.5)
@@ -137,6 +150,7 @@ struct SettingsInput: View {
     var body: some View {
         TextField(placeholder, text: $text)
             .accessibilityLabel(accessibilityLabel ?? rowLabel ?? placeholder)
+            .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
             .textFieldStyle(.plain)
             .font(DS.sans(13, weight: .medium))
             .foregroundStyle(DS.Ink.p1)
@@ -177,6 +191,7 @@ struct SettingsToggle: View {
         }
         .buttonStyle(.plainHit)
         .accessibilityLabel(ifPresent: accessibilityLabel ?? rowLabel)
+        .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
         .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
     }

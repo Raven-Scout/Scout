@@ -41,6 +41,33 @@ struct ContrastPairsTests {
         }
     }
 
+    @Test("warning, accent and error stay distinguishable by colour, not only by ratio",
+          arguments: [DS.Appearance.light, .dark])
+    func statusHuesAreDistinct(_ appearance: DS.Appearance) {
+        // All three sit near 4.5–5:1 on paper, so their lightness is alike;
+        // what tells them apart is hue. ΔE (CIE76) 15+ is plainly different.
+        let warn = DS.Palette.statusWarn.resolved(appearance)
+        let accent = DS.Palette.accentInk.resolved(appearance)
+        let err = DS.Palette.statusErr.resolved(appearance)
+        #expect(Self.deltaE(warn, accent) >= 15, "warn vs accent ink in \(appearance)")
+        #expect(Self.deltaE(warn, err) >= 15, "warn vs error in \(appearance)")
+    }
+
+    /// CIE76 colour difference between two sRGB colours (D65).
+    static func deltaE(_ a: DS.RGB, _ b: DS.RGB) -> Double {
+        func lab(_ c: DS.RGB) -> (Double, Double, Double) {
+            func lin(_ v: Double) -> Double { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            let r = lin(c.r), g = lin(c.g), bl = lin(c.b)
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * bl) / 0.95047
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * bl
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * bl) / 1.08883
+            func f(_ t: Double) -> Double { t > 0.008856 ? cbrt(t) : 7.787 * t + 16.0 / 116.0 }
+            return (116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z)))
+        }
+        let (l1, a1, b1) = lab(a), (l2, a2, b2) = lab(b)
+        return ((l1 - l2) * (l1 - l2) + (a1 - a2) * (a1 - a2) + (b1 - b2) * (b1 - b2)).squareRoot()
+    }
+
     // MARK: - WCAG math
 
     @Test("contrast is 21:1 for black on white and 1:1 for a colour on itself")
