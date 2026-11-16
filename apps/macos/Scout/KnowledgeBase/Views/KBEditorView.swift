@@ -41,8 +41,54 @@ struct KBEditorView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDeleteConfirm = false
+    /// The file exists but couldn't be read. The editor shows an error with
+    /// Retry instead of an empty document, so nothing typed into a blank
+    /// stand-in can be saved over the real file.
+    @State private var isUnreadable = false
 
     private var isDirty: Bool { draft != originalText }
+
+    /// What the conflict alert offers. "Keep my edits" has the cancel role, so
+    /// Esc (or closing the alert) never discards work.
+    enum ConflictChoice: CaseIterable {
+        case overwrite, keepEditing, reload
+
+        var title: String {
+            switch self {
+            case .overwrite: return "Overwrite"
+            case .keepEditing: return "Keep my edits"
+            case .reload: return "Discard my edits and reload"
+            }
+        }
+
+        var role: ButtonRole? {
+            switch self {
+            case .overwrite, .reload: return .destructive
+            case .keepEditing: return .cancel
+            }
+        }
+    }
+
+    /// What the editor opens with. Pure, so tests can pin the rules.
+    enum LoadResult: Equatable {
+        case editing(KBDraft, restored: Bool)
+        case unreadable
+    }
+
+    /// An unsaved draft for this file wins over disk (it keeps the baseline it
+    /// was typed against, so saving still detects an external change). A file
+    /// that exists but can't be read is never shown as an empty document.
+    static func resolveLoad(diskText: String?, fileExists: Bool, diskDate: Date?,
+                            stashed: KBDraft?) -> LoadResult {
+        if let stashed, stashed.isDirty { return .editing(stashed, restored: true) }
+        if diskText == nil && fileExists { return .unreadable }
+        return .editing(.fromDisk(diskText, date: diskDate), restored: false)
+    }
+
+    private var currentDraft: KBDraft {
+        KBDraft(text: draft, originalText: originalText,
+                baselineContents: baselineContents, baselineDate: baselineDate)
+    }
     private var isMarkdown: Bool { node.ext == "md" }
 
     var body: some View {
@@ -53,18 +99,26 @@ struct KBEditorView: View {
             content
         }
         .background(Color.clear)
-        .onChange(of: node.id) { _, _ in loadFile() }
-        .onAppear { loadFile() }
+        .onChange(of: node.id) { _, _ in openFile() }
+        .onAppear { openFile() }
+        // Mirror every change into the app-lifetime draft store, so leaving
+        // this note (another note, a link, the overview, another page) keeps
+        // unsaved edits; coming back restores them.
+        .onChange(of: currentDraft) { _, new in
+            guard !isUnreadable else { return }
+            service.drafts.update(new, for: node.url)
+        }
         // Service reparses on FSEvents; re-check whether our open file moved
         // out from under us.
         .onReceive(service.objectWillChange) { _ in
             DispatchQueue.main.async { detectExternalChange() }
         }
         .alert("File changed on disk", isPresented: $showConflict) {
-            Button("Overwrite", role: .destructive) { forceSave() }
-            Button("Reload", role: .cancel) { loadFile() }
+            ForEach(ConflictChoice.allCases, id: \.self) { choice in
+                Button(choice.title, role: choice.role) { resolveConflict(choice) }
+            }
         } message: {
-            Text("\(node.name) was modified by another process since you opened it. Overwrite it with your version, or reload to discard your changes?")
+            Text("\(node.name) was modified by another process since you opened it. Overwrite it with your version, keep editing, or discard your changes and reload?")
         }
         .alert("Couldn't save", isPresented: Binding(
             get: { errorMessage != nil },
@@ -122,7 +176,7 @@ struct KBEditorView: View {
             .foregroundStyle(isDirty && !isSaving ? .white : DS.Ink.p4)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(isDirty && !isSaving ? DS.Accent.fill : DS.Paper.sunk))
-            .disabled(!isDirty || isSaving)
+            .disabled(!isDirty || isSaving || isUnreadable)
             .keyboardShortcut("s", modifiers: .command)
 
             Menu {
@@ -177,9 +231,27 @@ struct KBEditorView: View {
 
     // MARK: - Content
 
+    private var unreadableState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28)).foregroundStyle(DS.Status.warn)
+            Text("Couldn't read \(node.name)")
+                .font(DS.serif(17, weight: .medium)).foregroundStyle(DS.Ink.p2)
+            Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")
+                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                .multilineTextAlignment(.center).frame(maxWidth: 380)
+            Button("Retry") { loadFile() }.buttonStyle(.borderedProminent)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     @ViewBuilder
     private var content: some View {
-        if !isMarkdown {
+        if isUnreadable {
+            unreadableState
+        } else if !isMarkdown {
             KBSourceEditor(text: $draft)
         } else {
             switch mode {
@@ -198,14 +270,53 @@ struct KBEditorView: View {
 
     // MARK: - Actions
 
+    /// Open the file, restoring an unsaved draft if one is held for it.
+    private func openFile() {
+        apply(Self.resolveLoad(
+            diskText: service.readFile(node.url),
+            fileExists: FileManager.default.fileExists(atPath: node.url.path),
+            diskDate: GuardedFileWrite.fsModificationDate(node.url),
+            stashed: service.drafts.draft(for: node.url)))
+    }
+
+    /// Load from disk, discarding any unsaved draft. Every "Reload" goes here.
     private func loadFile() {
-        let text = service.readFile(node.url)
-        draft = text ?? ""
-        originalText = draft
-        baselineContents = text
-        baselineDate = GuardedFileWrite.fsModificationDate(node.url)
+        service.drafts.discard(for: node.url)
+        apply(Self.resolveLoad(
+            diskText: service.readFile(node.url),
+            fileExists: FileManager.default.fileExists(atPath: node.url.path),
+            diskDate: GuardedFileWrite.fsModificationDate(node.url),
+            stashed: nil))
+    }
+
+    private func apply(_ result: LoadResult) {
         externallyChanged = false
         if !isMarkdown { mode = .source }
+        switch result {
+        case .unreadable:
+            isUnreadable = true
+            draft = ""
+            originalText = ""
+            baselineContents = nil
+            baselineDate = GuardedFileWrite.fsModificationDate(node.url)
+        case .editing(let loaded, let restored):
+            isUnreadable = false
+            draft = loaded.text
+            originalText = loaded.originalText
+            baselineContents = loaded.baselineContents
+            baselineDate = loaded.baselineDate
+            // A restored draft may predate a change on disk: flag it now.
+            if restored { detectExternalChange() }
+        }
+    }
+
+    private func resolveConflict(_ choice: ConflictChoice) {
+        switch choice {
+        case .overwrite: forceSave()
+        // Edits stay; the banner keeps the conflict visible until resolved.
+        case .keepEditing: externallyChanged = true
+        case .reload: loadFile()
+        }
     }
 
     /// Detect an external change to the open file: the mtime is the cheap
@@ -214,6 +325,11 @@ struct KBEditorView: View {
     /// unsaved edits; otherwise flags the banner.
     private func detectExternalChange() {
         guard !isSaving else { return }
+        // Can't recover from unreadable by comparing contents: just retry.
+        if isUnreadable {
+            if service.readFile(node.url) != nil { loadFile() }
+            return
+        }
         guard FileManager.default.fileExists(atPath: node.url.path) else { return }
         let current = GuardedFileWrite.fsModificationDate(node.url)
         guard let current, current != baselineDate else { return }
@@ -230,7 +346,7 @@ struct KBEditorView: View {
     }
 
     private func save() {
-        guard isDirty, !isSaving else { return }
+        guard isDirty, !isSaving, !isUnreadable else { return }
         performSave(baseline: baselineContents)
     }
 
@@ -265,6 +381,13 @@ struct KBEditorView: View {
         }
     }
 
+    /// The user deleted the file on purpose: drop its draft, and stop the
+    /// draft mirror from re-recording it as this view goes away.
+    private func forgetDraft() {
+        originalText = draft
+        service.drafts.discard(for: node.url)
+    }
+
     private func markSaved(_ contents: String) {
         originalText = contents
         baselineContents = contents
@@ -277,11 +400,11 @@ struct KBEditorView: View {
         Task {
             do {
                 try await writer.delete(fileURL: node.url, label: node.displayName)
-                await MainActor.run { service.reload(); onDeleted() }
+                await MainActor.run { forgetDraft(); service.reload(); onDeleted() }
             } catch {
                 await MainActor.run {
                     // The removal itself succeeded when only the commit failed.
-                    if case KBWriterError.commitFailed = error { service.reload(); onDeleted() }
+                    if case KBWriterError.commitFailed = error { forgetDraft(); service.reload(); onDeleted() }
                     errorMessage = KBWriterError.message(for: error)
                 }
             }
@@ -293,7 +416,10 @@ struct KBEditorView: View {
         Task {
             do {
                 let dest = try await writer.rename(fileURL: node.url, to: newName)
-                await MainActor.run { service.reload(); onRenamed(dest); showRename = false }
+                await MainActor.run {
+                    service.drafts.move(from: node.url, to: dest)
+                    service.reload(); onRenamed(dest); showRename = false
+                }
             } catch {
                 await MainActor.run {
                     // The move itself succeeded when only the commit failed.
