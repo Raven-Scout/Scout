@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,6 +71,36 @@ def _retry_floor(cap: float) -> float:
 # The same guard write-session-cost.sh puts on SCOUT_MODEL: only a plain model
 # name is written.
 _MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+
+
+# The cost kind of a row (spec 2026-11-13 §8.6, task 1.6), beside the older ``cost_source``:
+# "reported" when the runtime said what the run cost (Claude Code's cost-state), "priced" when Scout
+# priced it from usage rows, "unpriced" when a runtime reports tokens only (Phase 2).
+COST_KIND_REPORTED = "reported"
+COST_KIND_PRICED = "priced"
+COST_KIND_UNPRICED = "unpriced"
+_RUNTIME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+def runtime_keys(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``{agent_runtime, provider}`` for a row, from the runner's ``SCOUT_AGENT_RUNTIME``; {} when unset or unknown.
+
+    A row without them is Claude Code's (every row written before the keys existed).
+    """
+    env = os.environ if env is None else env
+    runtime = env.get("SCOUT_AGENT_RUNTIME", "")
+    if not _RUNTIME_RE.match(runtime):
+        return {}
+    try:
+        from scout.agent_runtimes import registry
+
+        return {"agent_runtime": runtime, "provider": registry.get(runtime).provider}
+    except KeyError:
+        return {"agent_runtime": runtime}
+
+
+def _cost_kind(priced_by: str | None) -> str | None:
+    return {PRICED_BY_CLAUDE: COST_KIND_REPORTED, PRICED_BY_USAGE: COST_KIND_PRICED}.get(priced_by or "")
 
 
 @dataclass(frozen=True)
@@ -230,6 +261,11 @@ def tracker_row(
     }
     if model and _MODEL_RE.match(model):
         row["model"] = model
+    row.update(runtime_keys())
+    if cost.estimated:
+        row["cost_kind"] = COST_KIND_PRICED
+    elif cost.measured:
+        row["cost_kind"] = COST_KIND_REPORTED
     row["run_started"] = _utc(started)
     row["attempts"] = cost.attempts
     if cost.priced:
@@ -343,6 +379,9 @@ def record_attempt(
         }
         if model and _MODEL_RE.match(model):
             row["model"] = model
+        row.update(runtime_keys())
+        if kind := _cost_kind(attempt.priced_by):
+            row["cost_kind"] = kind
         rows.append(row)
     if rows:
         _append(tracker, rows)
@@ -376,6 +415,10 @@ def record_attempt(
 
 
 __all__ = [
+    "COST_KIND_PRICED",
+    "COST_KIND_REPORTED",
+    "COST_KIND_UNPRICED",
+    "runtime_keys",
     "COST_SOURCE_TRANSCRIPT",
     "EXIT_NO_RETRY",
     "PRICED_BY_CLAUDE",

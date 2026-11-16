@@ -381,3 +381,58 @@ def test_cli_record_attempt_exits_3_when_no_retry_should_follow(env):
     assert result.exit_code == run_cost.EXIT_NO_RETRY == 3
     assert result.stdout.strip() == ""
     assert "no retry" in result.stderr
+
+
+# -- task 1.6: rows name the agent runtime, its provider, and the cost kind (spec 2026-11-13 §8.6) ----------
+
+
+def test_record_run_writes_runtime_keys(env, monkeypatch):
+    vault, projects = env
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", "claude-code")
+    _transcript(projects, vault, "a1", name=NAME, cost=4.0)
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault)
+    assert (row["agent_runtime"], row["provider"], row["cost_kind"]) == ("claude-code", "anthropic", "reported")
+    assert row["cost_source"] == "transcript"  # the older key keeps its meaning
+
+
+def test_a_run_priced_from_usage_is_cost_kind_priced(env, monkeypatch):
+    vault, projects = env
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", "claude-code")
+    _transcript(projects, vault, "a1", name=NAME, cost=4.0)
+    _transcript(projects, vault, "a2", name=NAME, cost=None, usage=[("msg_a", TOKENS)])
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=1, vault=vault)
+    assert row["cost_kind"] == "priced"
+
+
+def test_attempt_rows_carry_the_runtime_keys(env, monkeypatch):
+    vault, projects = env
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", "claude-code")
+    _transcript(projects, vault, "a1", name=NAME, cost=None, usage=[("msg_a", TOKENS)])
+    run_cost.record_attempt("research", name=NAME, started=STARTED, cap=20.0, exit_code=1, vault=vault)
+    [row] = _tracker_rows(vault)
+    assert (row["agent_runtime"], row["provider"], row["cost_kind"]) == ("claude-code", "anthropic", "priced")
+
+
+def test_legacy_rows_default_to_claude_code(env, monkeypatch):
+    """No SCOUT_AGENT_RUNTIME (an older runner): no keys, which every reader takes as Claude Code."""
+    from scout.agent_runtimes import limits
+
+    vault, projects = env
+    monkeypatch.delenv("SCOUT_AGENT_RUNTIME", raising=False)
+    _transcript(projects, vault, "a1", name=NAME, cost=4.0)
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault)
+    assert "agent_runtime" not in row and "provider" not in row
+    tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
+    with tracker.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": row["ts"], "tokens": 7}) + "\n")
+    assert limits.tokens_used(vault, "claude-code", now=STARTED + timedelta(hours=1)) == 7
+
+
+@pytest.mark.parametrize("value", ["", "Claude Code", 'x", "y'])
+def test_an_unsafe_runtime_value_is_left_out(env, monkeypatch, value):
+    monkeypatch.setenv("SCOUT_AGENT_RUNTIME", value)
+    assert run_cost.runtime_keys() == {}
+
+
+def test_an_unknown_runtime_is_named_without_a_provider(monkeypatch):
+    assert run_cost.runtime_keys({"SCOUT_AGENT_RUNTIME": "antigravity"}) == {"agent_runtime": "antigravity"}

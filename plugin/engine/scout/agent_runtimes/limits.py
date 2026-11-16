@@ -13,7 +13,10 @@ Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, me
 2. **The owner's limits**, ``~/.local/state/scout/run-limits.json`` (``scoutctl agent-runtime set-limit``,
    owner only), which a run can't write (the write gate and the OS sandbox protect it). They replace the
    default: this is the only way to raise a limit or turn it off.
-3. **scout-config.yaml**, which a run *can* write, so it can only make a limit stricter::
+3. **scout-config.yaml**, which a run *can* write, so it can only make a limit that is on stricter, and
+   never below a floor (``CONFIG_FLOOR_TIMEOUT_MINUTES`` of awake time, ``FLOOR_TOKENS``). It can't turn a
+   limit on where the default or the owner has it off (Claude Code's timeout today), so a run can't set
+   later runs a tiny limit::
 
        budget:
          per_runtime:
@@ -21,7 +24,8 @@ Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, me
              run_timeout_minutes: 30     # applies only below the limit above
              max_tokens_per_day: 2000000 # likewise; `auto` applies where it is lower
 
-   A value that would loosen a limit is ignored, and ``agent-runtime show`` says so.
+   A value that would loosen a limit, turn one on, or go below its floor is ignored, and says so in
+   ``agent-runtime show``, the run's log and ``scoutctl bootstrap doctor``.
 
 The ceiling counts the usage tracker's rows for that runtime (``agent_runtime``, a
 missing key meaning ``claude-code``) over the last 24 hours, summing their
@@ -60,6 +64,9 @@ DEFAULT_RUN_TIMEOUT_MINUTES = 45
 # A slot kind whose runs usually take longer starts higher (spec §8.6, Q6 as amended 2026-11-16: Claude research runs'
 # p90 is 111 min).
 DEFAULT_TIMEOUT_BY_KIND: dict[str, int] = {"research": 90}
+# The least a scout-config.yaml value may narrow a run timeout to (review of #653): below it, a run that
+# writes the config could stop the next runs before they do anything.
+CONFIG_FLOOR_TIMEOUT_MINUTES = 30
 CEILING_WINDOW = timedelta(hours=24)
 # The default ceiling's formula (Phase 0, #650 §3). K is derived from USD at list prices, not measured
 # (about ±25%), which is why a runtime's own rows replace the bootstrap after OWN_ROWS_AFTER.
@@ -189,8 +196,11 @@ def slot_kind(data_dir: Path | None, slot: str | None, run_type: str | None = No
     """The kind (dreaming, research, briefing, consolidation) of the run: the runner's own ``SCOUT_RUN_TYPE``
     first, then the schedule's ``type`` for the slot, then the slot key's own words (``research-manual``),
     else None. Never raises."""
-    if kind := kind_of(run_type):
-        return kind
+    # The runner's own run type names the kind only when it is exactly one (run-dreaming and run-research pass
+    # "dreaming" / "research"); run-scout passes the slot key, whose words prove nothing (a `research-digest`
+    # slot may be `type: briefing`), so the schedule decides those.
+    if run_type in SLOT_KINDS:
+        return run_type
     if not slot:
         return None
     try:
@@ -259,6 +269,15 @@ def _valid_ceiling(value: Any) -> bool:
     return _valid_timeout(value) or (isinstance(value, str) and value.strip().lower() == "auto")
 
 
+def _stored(value: Any) -> Any:
+    """A number as an int; ``off`` / ``auto`` as lower-case words."""
+    if (n := _positive_int(value)) is not None:
+        return n
+    if _off(value):
+        return "off"
+    return str(value).strip().lower()
+
+
 def set_owner_limit(
     data_dir: Path | None,
     runtime_id: str,
@@ -279,9 +298,9 @@ def set_owner_limit(
     entry = vaults.setdefault(_vault_key(data_dir), {})
     block = {} if clear else dict(entry.get(runtime_id) or {})
     if run_timeout_minutes is not None:
-        block["run_timeout_minutes"] = run_timeout_minutes
+        block["run_timeout_minutes"] = _stored(run_timeout_minutes)
     if max_tokens_per_day is not None:
-        block["max_tokens_per_day"] = max_tokens_per_day
+        block["max_tokens_per_day"] = _stored(max_tokens_per_day)
     if block:
         entry[runtime_id] = block
     else:
@@ -332,12 +351,16 @@ def limits_for(
         timeout_s, t_src = minutes * 60, "owner"
     raw = config.get("run_timeout_minutes")
     if (minutes := _positive_int(raw)) is not None:
-        if timeout_s is None or minutes * 60 < timeout_s:
+        if timeout_s is None:
+            ignored.append(f"run_timeout_minutes: {minutes} (the timeout is off; only the owner turns it on)")
+        elif minutes < CONFIG_FLOOR_TIMEOUT_MINUTES:
+            ignored.append(f"run_timeout_minutes: {minutes} (below the {CONFIG_FLOOR_TIMEOUT_MINUTES}-minute floor)")
+        elif minutes * 60 < timeout_s:
             timeout_s, t_src = minutes * 60, "config"
         elif minutes * 60 > timeout_s:
-            ignored.append(f"run_timeout_minutes: {minutes}")
+            ignored.append(f"run_timeout_minutes: {minutes} (looser than {timeout_s // 60})")
     elif raw is not None and _off(raw) and timeout_s is not None:
-        ignored.append("run_timeout_minutes: off")
+        ignored.append("run_timeout_minutes: off (only the owner turns it off)")
 
     # The ceiling: likewise.
     ceiling: int | None
@@ -360,12 +383,16 @@ def limits_for(
     elif isinstance(raw, str) and raw.strip().lower() == "auto":
         wanted = default_daily_token_ceiling(data_dir, adapter.id)
     elif raw is not None and _off(raw) and ceiling is not None:
-        ignored.append("max_tokens_per_day: off")
+        ignored.append("max_tokens_per_day: off (only the owner turns it off)")
     if wanted is not None:
-        if ceiling is None or wanted < ceiling:
+        if ceiling is None:
+            ignored.append(f"max_tokens_per_day: {raw} (the ceiling is off; only the owner turns it on)")
+        elif wanted < FLOOR_TOKENS:
+            ignored.append(f"max_tokens_per_day: {raw} (below the {FLOOR_TOKENS:,}-token floor)")
+        elif wanted < ceiling:
             ceiling, c_src = wanted, "config"
         elif wanted > ceiling:
-            ignored.append(f"max_tokens_per_day: {raw}")
+            ignored.append(f"max_tokens_per_day: {raw} (looser than {ceiling:,})")
     return RuntimeLimits(adapter.id, timeout_s, t_src, ceiling, c_src, tuple(ignored))
 
 
@@ -430,6 +457,7 @@ def dumps(limits: RuntimeLimits) -> str:
 __all__ = [
     "CEILING_WINDOW",
     "DEFAULT_RUN_TIMEOUT_MINUTES",
+    "CONFIG_FLOOR_TIMEOUT_MINUTES",
     "DEFAULT_TIMEOUT_BY_KIND",
     "default_timeout_minutes",
     "kind_of",

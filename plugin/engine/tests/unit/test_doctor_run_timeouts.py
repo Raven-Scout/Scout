@@ -87,3 +87,36 @@ def test_too_few_runs_old_runs_and_skips_are_left_out(vault: Path) -> None:
     _rows(vault, "web", [300] * 5, days_ago=40)  # outside the window
     _rows(vault, "web", [300] * 5, outcome="skipped_lock")
     assert _check_run_timeouts(vault=vault, now=NOW) == ([], [])
+
+
+def test_a_run_stopped_at_its_timeout_is_a_warning(vault: Path) -> None:
+    """A cut-off run ran at least its timeout, which the 90th percentile under-counts (review of #653)."""
+    finished = int((NOW - timedelta(days=1)).timestamp())
+    with (vault / ".scout-logs" / "run-outcomes.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"slot": "other", "outcome": "failed", "finished_at": finished, "failure_class": "timeout"}))
+        f.write("\n")
+    warnings, _ = _check_run_timeouts(vault=vault, now=NOW)
+    assert len(warnings) == 1 and "'other': 1 run(s)" in warnings[0] and "stopped at their run timeout" in warnings[0]
+
+
+def test_ignored_config_values_are_a_warning(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_text(
+        "budget:\n  per_runtime:\n    claude-code:\n      run_timeout_minutes: 5\n", encoding="utf-8"
+    )
+    (vault / ".scout-logs" / "run-outcomes.jsonl").write_text("", encoding="utf-8")
+    warnings, _ = _check_run_timeouts(vault=vault, now=NOW)
+    assert len(warnings) == 1
+    assert "budget.per_runtime.claude-code: ignored run_timeout_minutes: 5" in warnings[0]
+    assert "only the owner turns it on" in warnings[0]
+
+
+def test_runs_without_an_awake_length_say_why(vault: Path) -> None:
+    finished = int((NOW - timedelta(days=1)).timestamp())
+    with (vault / ".scout-logs" / "run-outcomes.jsonl").open("a", encoding="utf-8") as f:
+        for _ in range(3):
+            f.write(
+                json.dumps({"slot": "night", "outcome": "ok", "finished_at": finished, "agent_runtime": "claude-code"})
+            )
+            f.write("\n")
+    _, notes = _check_run_timeouts(vault=vault, now=NOW)
+    assert len(notes) == 1 and "3 recent run(s) recorded no awake length" in notes[0] and "python3" in notes[0]

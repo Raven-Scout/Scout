@@ -41,6 +41,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
     - `budget.per_runtime` in `scout-config.yaml`, which a run can write, can now only make a limit stricter. A value that would loosen one is ignored, and `agent-runtime show` lists it under `ignored`.
   - **A slot's kind** (research gets 90 minutes) comes from the runner's own `SCOUT_RUN_TYPE` first, then the schedule, then the slot key's words.
   - **The doctor** warns when a slot's 90th-percentile awake run length over 30 days (at least 5 runs) is above its run timeout. While Claude Code's timeout is off, it notes how each slot compares with the planned 45 minutes (90 for research). That is the measurement for turning Claude Code's timeout on. Both are silent until runs carry `awake_s`.
+- **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, plus task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
+  - **Config can't turn a limit on.** `budget.per_runtime` in `scout-config.yaml` no longer turns on a limit that is off, whether off by default (Claude Code's timeout) or by the owner. Only `scoutctl agent-runtime set-limit` does.
+  - **Config narrowing has floors:** 30 minutes of awake time for a run timeout, and 10,000,000 tokens for the daily ceiling. Without them, a run that writes the config could stop the next runs before they start.
+  - **Where an ignored value shows up:** a value the limits ignore (it would loosen a limit, turn one on, or go below a floor) is now written into the run's log by `agent-runtime exec` and raised as a `scoutctl bootstrap doctor` warning, as well as in `agent-runtime show`.
+  - **More doctor checks:**
+    - a warning on any run stopped at its timeout (`failure_class: timeout`), since a cut-off run pulls the 90th percentile down;
+    - a note when recent runs recorded no awake length because there was no python3 where the runner ran.
+  - **A slot's kind:** the runner's `SCOUT_RUN_TYPE` decides it only when it is exactly a kind (`dreaming`, `research`). run-scout passes the slot key, so a `research-digest` slot of `type: briefing` now gets a briefing's 45 minutes, as the doctor already assumed.
+  - `set-limit` stores numbers as numbers.
+  - **Usage-tracker rows (task 1.6):** the runner's row and each attempt row now carry `agent_runtime`, `provider` and `cost_kind`.
+    - `cost_kind` is `reported` when Claude Code's own cost was read, and `priced` when it was priced from usage rows; a runtime that reports tokens only will write `unpriced`.
+    - The older `cost_source` keeps its meaning.
+    - A row without these keys is Claude Code's.
 
 ## [0.18.14] - 2026-11-16
 

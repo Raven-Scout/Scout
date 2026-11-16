@@ -508,6 +508,8 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
         return [], []
     since = (now or datetime.now(UTC)).timestamp() - RUN_TIMEOUT_WINDOW_DAYS * 86400
     lengths: dict[str, list[int]] = {}
+    timeouts: dict[str, int] = {}
+    unmeasured = 0  # rows from runners that record awake_s, without one (no python3 where the runner ran)
     try:
         for line in ledger.read_text(encoding="utf-8").splitlines():
             try:
@@ -517,7 +519,13 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             if not isinstance(row, dict) or row.get("outcome", "ok") not in ("ok", "failed"):
                 continue
             awake_s, finished = row.get("awake_s"), row.get("finished_at")
-            if not isinstance(awake_s, int) or not isinstance(finished, int | float) or finished < since:
+            if not isinstance(finished, int | float) or finished < since:
+                continue
+            if row.get("failure_class") == "timeout":
+                timeouts[str(row.get("slot"))] = timeouts.get(str(row.get("slot")), 0) + 1
+            if not isinstance(awake_s, int):
+                if "agent_runtime" in row:
+                    unmeasured += 1
                 continue
             lengths.setdefault(str(row.get("slot")), []).append(awake_s)
         schedule_path = vault / ".scout-state" / "schedule.yaml"
@@ -528,6 +536,25 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
 
     warnings: list[str] = []
     readiness: list[str] = []
+    # A run cut off at its timeout ran at least that long, so the 90th percentile under-counts such slots:
+    # any timed-out run is worth a warning of its own (review of #653).
+    for key, n in sorted(timeouts.items()):
+        warnings.append(
+            f"slot {key!r}: {n} run(s) in {RUN_TIMEOUT_WINDOW_DAYS} days were stopped at their run timeout "
+            "(failure_class timeout). Raise it if the work needs longer: scoutctl agent-runtime set-limit "
+            "<runtime> --run-timeout-minutes <minutes>"
+        )
+    # scout-config.yaml values the limits ignored (they would loosen a limit, turn one on, or go under a floor).
+    for runtime in sorted({slot.agent_runtime or fallback for slot in schedule.values()}):
+        try:
+            ignored = _limits.limits_for(vault, registry.get(runtime)).ignored
+        except KeyError:
+            continue
+        if ignored:
+            warnings.append(
+                f"scout-config.yaml budget.per_runtime.{runtime}: ignored {'; '.join(ignored)}. Only the owner can "
+                f"loosen a run limit or turn one on: scoutctl agent-runtime set-limit {runtime} …"
+            )
     for key, slot in sorted(schedule.items()):
         runs = lengths.get(key, [])
         if len(runs) < RUN_TIMEOUT_MIN_RUNS:
@@ -553,6 +580,11 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             verdict = "fits" if p90 <= planned * 60 else "would be stopped"
             readiness.append(f"{key} {p90 // 60} min p90 vs {planned} ({verdict})")
     notes = []
+    if unmeasured and not lengths:
+        notes.append(
+            f"{unmeasured} recent run(s) recorded no awake length, so run lengths can't be compared with run "
+            "timeouts: the runners measure it with python3, which wasn't found where they ran"
+        )
     if readiness:
         notes.append(
             "run timeout off; awake run lengths vs the planned timeout (45 min, 90 for research): "
