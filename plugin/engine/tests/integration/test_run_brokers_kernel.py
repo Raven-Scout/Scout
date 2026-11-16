@@ -181,6 +181,19 @@ echo ok
     assert world.git("ls-files", "notes").split() == ["notes/moved.md"]
 
 
+def test_the_engines_python_starts_inside_the_tightened_profile(world: World) -> None:
+    """The session's first process can be scoutctl (`agent-runtime exec`): Python and the CLI start under it."""
+    assert broker.python_starts(world.profile) is None
+    res = world.sh(f'"{world.scoutctl}" version')
+    assert res.returncode == 0, res.stderr
+
+
+def test_a_profile_python_cannot_start_under_is_not_used(world: World) -> None:
+    blocked = world.profile + f'(deny process-exec (literal "{os.path.realpath(sys.executable)}"))\n'
+    reason = broker.python_starts(blocked)
+    assert reason is not None and "didn't start" in reason
+
+
 # -- secrets and the broker's folder -------------------------------------------------------------------------------
 
 

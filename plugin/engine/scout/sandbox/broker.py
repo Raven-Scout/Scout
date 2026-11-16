@@ -788,10 +788,35 @@ def build_profile(vault: Path, broker_dir: Path, base: str, env: Mapping[str, st
         text = sbx.with_broker_rules(base, sbx.broker_rules(vault, broker_dir, env))
     except sbx.ProfileError as e:
         raise BrokerError(str(e)) from e
-    err = sbx.self_test(text)
+    err = sbx.self_test(text) or python_starts(text)
     if err is not None:
         raise BrokerError(f"the tightened profile failed its self-test: {err}")
     return text
+
+
+PYTHON_START_TIMEOUT_S = 30.0
+
+
+def python_starts(profile: str, *, timeout_s: float = PYTHON_START_TIMEOUT_S) -> str | None:
+    """None when the engine's own interpreter starts and imports the CLI under ``profile``, else why not.
+
+    The session's first process inside the sandbox can be scoutctl (``agent-runtime exec`` launches claude), so a
+    profile that stopped Python from starting would stop every run.
+    """
+    from scout.sandbox import profile as sbx
+
+    try:
+        proc = subprocess.run(
+            [str(sbx.SANDBOX_EXEC), "-p", profile, sys.executable, "-P", "-c", "import scout.cli"],
+            capture_output=True, text=True, timeout=timeout_s, check=False, stdin=subprocess.DEVNULL,
+            cwd="/",
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"the engine's Python didn't start under it: {e}"
+    if proc.returncode != 0:
+        tail = proc.stderr.strip()[-300:]
+        return f"the engine's Python didn't start under it (exit {proc.returncode}){': ' + tail if tail else ''}"
+    return None
 
 
 def write_status(vault: Path, status: str, reason: str, *, now: datetime | None = None) -> None:
