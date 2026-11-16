@@ -49,6 +49,62 @@ def test_schedule_list_json_emits_full_slot_records():
     assert morning["budget_usd"] is None
     assert morning["tz"] is None
     assert morning["runtime"] == "local"
+    # Unset agent runtime is emitted as null, not omitted, so the app can tell
+    # "inherits the default" from "engine too old to say".
+    assert "agent_runtime" in morning
+    assert morning["agent_runtime"] is None
+
+
+_SCHEDULE_WITH_AGENT_RUNTIME = """\
+schema_version: 1
+slots:
+  pinned-briefing:
+    type: briefing
+    runner: run-scout.sh
+    fires_at_local: "08:00"
+    weekdays: [Mon, Tue, Wed, Thu, Fri]
+    missed_window_hours: 4
+    on_miss: fire
+    cooldown_minutes: 60
+    runtime: local
+    agent_runtime: claude-code
+  plain-consolidation:
+    type: consolidation
+    runner: run-scout.sh
+    fires_at_local: "13:00"
+    weekdays: [Mon, Tue, Wed, Thu, Fri]
+    missed_window_hours: 4
+    on_miss: fire
+    cooldown_minutes: 60
+    runtime: local
+"""
+
+
+@pytest.fixture
+def vault_with_agent_runtime(tmp_path, monkeypatch):
+    state = tmp_path / ".scout-state"
+    state.mkdir()
+    (state / "schedule.yaml").write_text(_SCHEDULE_WITH_AGENT_RUNTIME)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+def test_schedule_list_json_carries_agent_runtime(vault_with_agent_runtime):
+    """The app rewrites schedule.yaml from this JSON (C2): a field missing here is
+    dropped from every slot on the next in-app save."""
+    result = runner.invoke(app, ["schedule", "list", "--json"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    by_key = {s["key"]: s for s in json.loads(result.stdout)}
+    assert by_key["pinned-briefing"]["agent_runtime"] == "claude-code"
+    assert by_key["plain-consolidation"]["agent_runtime"] is None
+
+
+def test_schedule_show_carries_agent_runtime(vault_with_agent_runtime):
+    result = runner.invoke(app, ["schedule", "show", "pinned-briefing"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    record = json.loads(result.stdout)
+    assert record["agent_runtime"] == "claude-code"
+    assert record["runtime"] == "local"
 
 
 def test_schedule_list_default_emits_tab_separated():

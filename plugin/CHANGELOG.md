@@ -42,6 +42,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **A slot's kind** (research gets 90 minutes) comes from the runner's own `SCOUT_RUN_TYPE` first, then the schedule, then the slot key's words.
   - **The doctor** warns when a slot's 90th-percentile awake run length over 30 days (at least 5 runs) is above its run timeout. While Claude Code's timeout is off, it notes how each slot compares with the planned 45 minutes (90 for research). That is the measurement for turning Claude Code's timeout on. Both are silent until runs carry `awake_s`.
 
+### Fixed
+- **A slot's `agent_runtime` survives a schedule save in the app** (`engine/scout/cli.py`). `scoutctl schedule list --json` and `schedule show` now include `agent_runtime` (null when the slot inherits), and `schedule show` also gains the `runtime` field `list` already had. The app rewrites `.scout-state/schedule.yaml` from the list, so a field missing there was dropped from every slot on the next in-app save. `schedule.snapshot.json` is unchanged.
+
 ## [0.18.14] - 2026-11-16
 
 **Upgrading with delegate mirrors:** each mirror now records which vault it is of, and a sync refuses one that doesn't match. A mirror linked before this release, or one whose vault has moved or whose computer lost `~/.scout-secrets/delegate-mirrors/vault.salt`, needs one `scoutctl delegate link <id> --remote <url> --replace-remote --confirm-account-unshared` per delegate. Until then run health is yellow with `delegate.sync_failed` (`remote_unbound`) and that agent reads its older copy.
