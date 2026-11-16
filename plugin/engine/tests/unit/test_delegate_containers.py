@@ -365,3 +365,85 @@ def test_media_metadata_reads_text_chunks_comments_and_what_follows_the_image() 
     assert "Priya" in media.metadata("a.jpg", b"\xff\xd8\xff\xda\x00\x02scan\xff\xd9 trailing Priya")
     big = b"%PDF-1.7\n" + b"\x00" * 300_000 + b"<< /Author (Priya) >>"
     assert "Priya" in media.metadata("a.pdf", big) and media.metadata("a.png", b"\x89PNG\x00") is not None
+
+
+# ----- every branch of the layout check and the part reader ----------------------------------------
+
+
+def test_mixed_content_tails_are_read_in_every_reading() -> None:
+    mixed = "<r>one <b>two</b> Priya</r>"
+    assert _named(_clean(of.docx(extra={"customXml/item1.xml": mixed})))
+    dropped = _runs(_r("Hello"), "<w:del/>Priya")  # a deleted run's tail is still in the final text
+    assert _named(_clean(of.docx(dropped)))
+
+
+def test_extra_fields_strong_encryption_unicode_paths_and_zip64_sizes() -> None:
+    encrypted = struct.pack("<HH", 0x0017, 2) + b"\x00\x00"
+    assert dc.unpack(of.raw_zip([("a.xml", 0, b"<a/>", b"<a/>", 0, b"", encrypted)]), ".docx").refusal == "encrypted"
+    path = struct.pack("<HH", 0x7075, 10) + b"\x01\x00\x00\x00\x00Priya"
+    assert _named(dc.unpack(of.raw_zip([("a.xml", 0, b"<a/>", b"<a/>", 0, b"", path)]), ".docx"))
+    z64 = struct.pack("<HH", 0x0001, 16) + struct.pack("<QQ", 4, 4)  # the unpacked and the packed size
+    data = bytearray(of.raw_zip([("a.xml", 0, b"<a/>", b"<a/>", 0, b"", z64)]))
+    cd = data.find(b"PK\x01\x02")
+    struct.pack_into("<LL", data, cd + 20, 0xFFFFFFFF, 0xFFFFFFFF)  # the sizes live in the zip64 field
+    got = dc.unpack(bytes(data), ".docx")
+    assert got.refusal is None  # a zip64 extra field is known, its values used where the header says so
+
+
+def test_a_zip64_end_record_is_followed_and_a_broken_one_refused() -> None:
+    data = of.docx()
+    assert dc.unpack(of.zip64_end(data), ".docx").refusal is None
+    no_locator = data[: data.rfind(b"PK\x05\x06")] + struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0xFFFF, 0xFFFF,
+                                                                    0xFFFFFFFF, 0xFFFFFFFF, 0)  # fmt: skip
+    assert dc.unpack(no_locator, ".docx").refusal == "unreadable"
+    moved = bytearray(of.zip64_end(data))
+    at = moved.find(b"PK\x06\x06")
+    moved[at : at + 4] = b"XXXX"  # the locator points at something that isn't the zip64 record
+    assert dc.unpack(bytes(moved), ".docx").refusal == "unreadable"
+
+
+def test_a_data_descriptor_without_its_signature_and_one_that_overruns() -> None:
+    content = b"<a/>"
+    plain = struct.pack("<3L", zlib.crc32(content), len(content), len(content))  # unsigned, 32-bit sizes
+    assert dc.unpack(of.raw_zip([("a.xml", 0, content, content, 0x8, plain)]), ".docx").refusal is None
+    assert dc.unpack(of.raw_zip([("a.xml", 0, content, content, 0x8)]), ".docx").refusal == "unreadable"
+
+
+def test_directory_entries_are_skipped() -> None:
+    assert _clean(of.docx(extra={"word/media/": b""}))
+
+
+def test_a_nested_zip_that_cant_be_read_is_refused_without_stopping_the_outer_one() -> None:
+    inner = of.docx(_runs(_r("Plain")))
+    for broken in (of.mark_encrypted(inner), _bad_crc(inner)):
+        got = dc.unpack(of.docx(_runs(_r("Dear Priya")), extra={"word/embeddings/d.docx": broken}), ".docx")
+        assert got.refusal == "nested_archive" and _named(got)
+
+
+def _bad_crc(data: bytes) -> bytes:
+    """``data`` with every member's CRC wrong: its layout is whole, but zipfile refuses to read it."""
+    out = bytearray(data)
+    for sig, offset in ((b"PK\x03\x04", 14), (b"PK\x01\x02", 16)):
+        at = out.find(sig)
+        while at != -1:
+            struct.pack_into("<L", out, at + offset, 0xDEADBEEF)
+            at = out.find(sig, at + 4)
+    return bytes(out)
+
+
+def test_an_obfuscated_font_is_recognised_by_its_guid() -> None:
+    guid = "{6C8B7F0A-1234-4ABC-9DEF-0123456789AB}"
+    key = bytes.fromhex(guid.strip("{}").replace("-", ""))[::-1]
+    font = b"\x00\x01\x00\x00" + b"\x10" * 60
+    hidden = bytes(b ^ key[i % 16] for i, b in enumerate(font[:32])) + font[32:]
+    assert _clean(of.docx(extra={f"word/fonts/{guid}.odttf": hidden}))
+    assert dc.unpack(of.docx(extra={"word/fonts/font1.odttf": hidden}), ".docx").refusal == "unscannable_part"
+
+
+def test_a_svgz_past_the_budget_and_an_image_whose_metadata_breaks(monkeypatch: pytest.MonkeyPatch) -> None:
+    svgz = gzip.compress(b"<svg>" + b" " * 500_000 + b"</svg>")
+    monkeypatch.setattr(dc, "MAX_UNPACKED_BYTES", 300_000)
+    assert dc.unpack(of.docx(extra={"word/media/big.svgz": svgz}), ".docx").refusal == "too_large"
+    monkeypatch.undo()
+    png = b"\x89PNG\r\n\x1a\n" + struct.pack(">L", 9) + b"zTXtKey\x00\x00xx\x00\x00\x00\x00"
+    assert dc.unpack(of.docx(extra={"word/media/a.png": png}), ".docx").refusal == "broken_part"

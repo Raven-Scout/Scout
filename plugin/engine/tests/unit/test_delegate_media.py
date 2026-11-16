@@ -327,3 +327,127 @@ def test_a_wav_s_broadcast_description_originator_and_engineer_are_read() -> Non
 def test_a_mislabeled_file_that_isnt_media_has_its_text_read() -> None:
     assert _verdict("a.png", b"\x00\x01 a note on Priya \x00\x02") == "names_hidden"
     assert _verdict("a.png", b"\x00\x01 a note on the weather \x00\x02") == "mislabeled"
+
+
+# ----- every branch of the readers -----------------------------------------------------------------
+
+
+def _frame(fid: bytes, body: bytes, v4: bool = False) -> bytes:
+    size = len(body)
+    packed = (
+        bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F])
+        if v4
+        else (struct.pack(">L", size))
+    )
+    return fid + packed + b"\x00\x00" + body
+
+
+def _id3(frames: bytes, version: int = 3) -> bytes:
+    n = len(frames)
+    size = bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+    return b"ID3" + bytes([version, 0, 0]) + size + frames + b"\xff\xfb\x90\x00" + b"\x00" * 32
+
+
+def test_id3_text_and_comment_frames_but_not_the_encoder() -> None:
+    assert _verdict("a.mp3", _id3(_frame(b"TIT2", b"\x00Interview with Priya"))) == "names_hidden"
+    comm = _frame(b"COMM", b"\x01eng" + "﻿\x00".encode("utf-16-le") + "Priya".encode("utf-16"))
+    assert _verdict("a.mp3", _id3(comm)) == "names_hidden"
+    v4 = _id3(_frame(b"TPE1", b"\x03Priya", v4=True), version=4)
+    assert _verdict("a.mp3", v4) == "names_hidden"
+    tool = _id3(_frame(b"TSSE", b"\x00LAME Microsoft") + _frame(b"APIC", b"\x00pic") + _frame(b"TIT2", b""))
+    assert _verdict("a.mp3", tool) is None
+    assert media.read("a.mp3", b"ID3\x03\x00") == ("", False)
+
+
+def test_png_itxt_in_every_form_and_a_tool_ztxt() -> None:
+    plain = _chunk(b"iTXt", b"Title\x00\x00\x00en\x00Title\x00for Priya")
+    packed = _chunk(b"iTXt", b"Title\x00\x01\x00en\x00\x00" + zlib.compress(b"for Priya"))
+    xmp = _chunk(b"iTXt", b"XML:com.adobe.xmp\x00\x00\x00\x00\x00" + _xmp("Priya"))
+    raw_xmp = _chunk(b"iTXt", b"XML:com.adobe.xmp\x00\x00\x00\x00\x00<plain>Priya</plain>")
+    for chunk in (plain, packed, xmp, raw_xmp):
+        assert _verdict("a.png", _png(chunk)) == "names_hidden"
+    tool = _chunk(b"zTXt", b"Software\x00\x00" + zlib.compress(b"Adobe"))
+    tool_i = _chunk(b"iTXt", b"Software\x00\x00\x00\x00\x00Microsoft")
+    assert _verdict("a.png", _png(tool, tool_i)) is None
+    truncated = _chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"for Priya " * 50)[:20])
+    assert media.read("a.png", _png(truncated))[1] is True
+
+
+def test_webp_exif_and_xmp_and_heic_exif() -> None:
+    for exif_body in (b"Exif\x00\x00" + _tiff([(0x013B, 2, _ascii("Priya"))]), _tiff([(0x013B, 2, _ascii("Priya"))])):
+        chunk = b"EXIF" + struct.pack("<L", len(exif_body)) + exif_body + (b"\x00" if len(exif_body) & 1 else b"")
+        assert _verdict("a.webp", b"RIFF\x00\x00\x00\x00WEBP" + chunk) == "names_hidden"
+    xmp = _xmp("Priya")
+    chunk = b"XMP " + struct.pack("<L", len(xmp)) + xmp + (b"\x00" if len(xmp) & 1 else b"")
+    assert _verdict("a.webp", b"RIFF\x00\x00\x00\x00WEBP" + chunk) == "names_hidden"
+    heic = HEIC_HEAD + _box(b"mdat", b"\x00\x00\x00\x06Exif\x00\x00" + _tiff([(0x013B, 2, _ascii("Priya"))]))
+    assert _verdict("a.heic", heic) == "names_hidden"
+
+
+def test_exif_edges_a_short_block_a_truncated_ifd_and_a_chain_past_the_end() -> None:
+    assert media.exif(b"not a tiff") == []
+    truncated = b"II*\x00" + struct.pack("<L", 8) + struct.pack("<H", 40) + b"\x00" * 12  # claims 40 entries
+    assert media.exif(truncated) == []
+    cut = _tiff([(0x013B, 2, _ascii("Alex"))])[:-4]  # the next-IFD pointer is cut off; the value too
+    assert isinstance(media.exif(cut), list)  # read as far as it goes, no error
+
+
+def test_xmp_edges_broken_packets_tool_attributes_and_many_packets() -> None:
+    assert "Priya" in media.metadata("a.gif", b"GIF89a" + b"<x:xmpmeta>unclosed <b>Priya</x:xmpmeta>")
+    attrs = (
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        b'<rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"'
+        b' photoshop:Headline="for Priya"/></rdf:RDF></x:xmpmeta>'
+    )
+    assert "for Priya" in media.metadata("a.gif", b"GIF89a" + attrs)
+    many = b"GIF89a" + b"".join(b"<x:xmpmeta>n%d</x:xmpmeta>" % i for i in range(12))
+    assert media.metadata("a.gif", many).count("n") == 8  # eight packets, no more
+
+
+def test_bmff_box_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    big = struct.pack(">L4sQ", 1, b"free", 16)  # a 64-bit size
+    rest = struct.pack(">L4s", 0, b"moov") + _box(b"udta", _box(b"\xa9nam", b"\x00\x05\x55\xc4for Priya"))
+    assert _verdict("a.mov", b"\x00\x00\x00\x08wide" + big + rest) == "names_hidden"  # size 0: to the end
+    short = b"\x00\x00\x00\x08wide" + struct.pack(">L4s", 4, b"moov")  # a box smaller than its header
+    assert media.read("a.mov", short) == ("", False)
+    keys = _box(b"keys", b"\x00\x00\x00\x00" + struct.pack(">L", 5))  # claims five keys, holds none
+    untyped = _box(b"ilst", _box(struct.pack(">L", 1), _box(b"data", b"\x00\x00\x00\x15\x00\x00\x00\x00\x01")))
+    assert _verdict("a.mov", _box(b"ftyp", b"qt  ") + _box(b"moov", _box(b"meta", keys + untyped))) is None
+    monkeypatch.setattr(media, "MAX_ITEMS", 2)
+    many = _box(b"ftyp", b"qt  ") + b"".join(_box(b"free", b"") for _ in range(5)) + _box(b"moov", rest[8:])
+    assert _verdict("a.mov", many) is None  # past the item limit: not read
+
+
+def test_item_limits_stop_every_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(media, "MAX_ITEMS", 2)
+    pad = _chunk(b"tEXt", b"Title\x00ok")
+    assert _verdict("a.png", b"\x89PNG\r\n\x1a\n" + pad * 3 + _chunk(b"tEXt", b"Author\x00Priya")) is None
+    seg = (0xFE, b"ok")
+    assert _verdict("a.jpg", _jpeg(seg, seg, seg, (0xFE, b"Priya"))) is None
+    info = b"LIST" + struct.pack("<L", 4) + b"INFO"
+    assert _verdict("a.wav", b"RIFF\x00\x00\x00\x00WAVE" + info * 3) is None
+    frames = b"".join(_frame(b"TIT2", b"\x00ok") for _ in range(3)) + _frame(b"TIT2", b"\x00Priya")
+    assert _verdict("a.mp3", _id3(frames)) is None
+    strings = PDF_HEAD + b"".join(b"/T%d (ok) " % i for i in range(25)) + b"/Author (Priya)"
+    assert _verdict("a.pdf", strings) is None
+
+
+def test_pdf_stream_limits_and_a_truncated_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    truncated = b"2 0 obj << /Type /ObjStm /Filter /FlateDecode >> stream\n" + zlib.compress(b"x" * 9000)[:30]
+    assert _verdict("a.pdf", PDF_HEAD + truncated) == "broken_metadata"
+    monkeypatch.setattr(media, "MAX_PDF_INFLATED", 100)
+    big = _stream(b"/Type /ObjStm /N 1 /First 4", b"3 0 << /Title (" + b"x" * 400 + b") >>")
+    assert _verdict("a.pdf", PDF_HEAD + big + big) == "broken_metadata"  # past the budget: not vouched for
+    monkeypatch.setattr(media, "MAX_ITEMS", 1)
+    two = _stream(b"/Type /ObjStm", b"<< /Title (a) >>") + _stream(b"/Type /ObjStm", b"<< /Author (Priya) >>")
+    assert _verdict("a.pdf", PDF_HEAD + two) is None  # past the stream limit: not read
+
+
+def test_trailing_bytes_that_arent_text() -> None:
+    assert _verdict("a.png", _png(tail=b"\xff\xfe\xfd not utf-8")) is None
+    assert _verdict("a.png", _png(tail=b"\x00\x00")) is None
+
+
+def test_a_scan_that_runs_out_of_time_is_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "MAX_SCAN_SECONDS", -1.0)
+    assert dm._readings_name_hidden(["plain words"], VENDOR_SCAN, "a.png") == "too_large"

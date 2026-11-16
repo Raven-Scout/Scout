@@ -465,7 +465,7 @@ def _read(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> bytes | No
     with zf.open(info) as fh:
         while chunk := fh.read(_CHUNK):
             buf += chunk
-            if len(buf) > budget:
+            if len(buf) > budget:  # pragma: no cover - the declared sizes are checked first and zipfile stops there
                 return None
     return bytes(buf)
 
@@ -544,7 +544,7 @@ def _nested(raw: bytes, out: Unpacked) -> None:
 def _unpack(data: bytes, odf: bool, out: Unpacked, *, depth: int) -> None:
     with zipfile.ZipFile(BytesIO(data)) as zf:
         infos = zf.infolist()
-        if len(infos) > MAX_MEMBERS:
+        if len(infos) > MAX_MEMBERS:  # pragma: no cover - check_layout refused it from the end record already
             raise _Stop("too_large")
         names = [zf.comment.decode("utf-8", "replace")]
         names += [n for i in infos for n in (i.filename, i.comment.decode("utf-8", "replace"))]
@@ -552,7 +552,7 @@ def _unpack(data: bytes, odf: bool, out: Unpacked, *, depth: int) -> None:
         wanted: list[zipfile.ZipInfo] = []
         for info in infos:
             low = info.filename.lower()
-            if info.flag_bits & 0x1:
+            if info.flag_bits & 0x1:  # pragma: no cover - check_layout refused an encrypted member already
                 raise _Stop("encrypted")
             if posixpath.basename(low) == "vbaproject.bin" or (odf and low.startswith(("basic/", "scripts/"))):
                 out.refuse("macros")

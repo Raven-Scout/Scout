@@ -11,6 +11,7 @@ import io
 import struct
 import zipfile
 import zlib
+from typing import Any
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -114,23 +115,38 @@ def odt(text: str = "Plain words only.", extra: dict[str, str | bytes] | None = 
     )
 
 
-def raw_zip(entries: list[tuple[str, int, bytes, bytes]]) -> bytes:
-    """A zip written by hand: ``(name, method, payload as stored, the content it stands for)`` per entry.
+def raw_zip(entries: list[tuple[Any, ...]]) -> bytes:
+    """A zip written by hand: ``(name, method, payload as stored, the content it stands for)`` per entry, then
+    optionally ``flags``, a ``trailer`` written after the payload (a data descriptor), and an ``extra`` field
+    block for the central directory entry.
 
     The sizes and CRC come from the content, the span from the payload, so a test can put bytes in a member's
     span that zipfile itself never reads.
     """
     local, central = bytearray(), bytearray()
-    for name, method, payload, content in entries:
+    for entry in entries:
+        name, method, payload, content = entry[:4]
+        flags, trailer, extra = [*entry[4:], *[0, b"", b""][len(entry) - 4 :]]
         n = name.encode()
         crc = zlib.crc32(content)
-        head = struct.pack("<4s5H3L2H", b"PK\x03\x04", 20, 0, method, 0, 0x21, crc, len(payload), len(content),
+        head = struct.pack("<4s5H3L2H", b"PK\x03\x04", 20, flags, method, 0, 0x21, crc, len(payload), len(content),
                            len(n), 0)  # fmt: skip
-        central += struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 20, 20, 0, method, 0, 0x21, crc, len(payload),
-                               len(content), len(n), 0, 0, 0, 0, 0, len(local)) + n  # fmt: skip
-        local += head + n + payload
+        central += struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 20, 20, flags, method, 0, 0x21, crc, len(payload),
+                               len(content), len(n), len(extra), 0, 0, 0, 0, len(local)) + n + extra  # fmt: skip
+        local += head + n + payload + trailer
     end = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, len(entries), len(entries), len(central), len(local), 0)
     return bytes(local + central + end)
+
+
+def zip64_end(data: bytes) -> bytes:
+    """``data`` with its end record moved to zip64 form: a zip64 end record and locator, the classic record's
+    fields all 0xFFFF/0xFFFFFFFF."""
+    eocd = data.rfind(b"PK\x05\x06")
+    _sig, _d, _cd, _nd, entries, cd_size, cd_offset, _cl = struct.unpack_from("<4s4H2LH", data, eocd)
+    record = struct.pack("<4sQ2H2L4Q", b"PK\x06\x06", 44, 45, 45, 0, 0, entries, entries, cd_size, cd_offset)
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, eocd, 1)
+    end = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0)
+    return data[:eocd] + record + locator + end
 
 
 def deflated(content: bytes) -> bytes:
