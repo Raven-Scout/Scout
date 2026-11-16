@@ -126,6 +126,41 @@ extension SessionLogService {
             .appendingPathComponent("\(vaultKey(scoutDirectory)).json")
     }
 
+    /// The bundle ID of the shipping app, the only build allowed to delete the
+    /// old shared cache file.
+    nonisolated static let shippingBundleIdentifier = "com.scout.Scout"
+
+    /// Delete the old shared `<caches>/Scout/session-parse-cache.json` once
+    /// this build keeps its own per-vault cache. Only the shipping app does it,
+    /// so a dev build (`com.scout.Scout.dev`) can't delete the file the
+    /// installed app still reads before it updates. Only that one file goes;
+    /// the `Scout/` folder holds the new `parse-cache/` tree. Returns whether a
+    /// file was removed. Safe to call on every launch: a missing file is a no-op.
+    @discardableResult
+    nonisolated static func removeLegacyParseCache(
+        cachesDirectory: URL,
+        bundleIdentifier: String?,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard bundleIdentifier == shippingBundleIdentifier else { return false }
+        let legacy = cachesDirectory
+            .appendingPathComponent("Scout", isDirectory: true)
+            .appendingPathComponent("session-parse-cache.json")
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: legacy.path, isDirectory: &isDirectory), !isDirectory.boolValue
+        else { return false }
+        return (try? fileManager.removeItem(at: legacy)) != nil
+    }
+
+    /// `removeLegacyParseCache` against the per-user caches directory and this
+    /// process's bundle ID. Called once at launch.
+    nonisolated static func removeLegacyParseCacheAtLaunch() {
+        guard let base = try? FileManager.default.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+        ) else { return }
+        removeLegacyParseCache(cachesDirectory: base, bundleIdentifier: Bundle.main.bundleIdentifier)
+    }
+
     /// First 16 hex digits of the SHA-256 of the vault's standardized path.
     nonisolated static func vaultKey(_ scoutDirectory: URL) -> String {
         let path = scoutDirectory.standardizedFileURL.resolvingSymlinksInPath().path

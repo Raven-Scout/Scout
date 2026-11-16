@@ -423,6 +423,10 @@ final class AppState: ObservableObject {
             .sink { _ in Task { await usage.refresh() } }
             .store(in: &cancellables)
 
+        // The run-log parse cache moved to a per-build, per-vault file; the
+        // shipping app removes the old shared one (a dev build never does).
+        Task.detached(priority: .utility) { SessionLogService.removeLegacyParseCacheAtLaunch() }
+
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
             _ = try? await connectorHealth.loadInitial()
