@@ -413,22 +413,36 @@ struct KBEditorView: View {
 
     private func performRename() {
         let newName = renameText
+        let source = node.url
+        let planned = try? KnowledgeBaseFileWriter.renameDestination(for: source, to: newName)
         Task {
             do {
-                let dest = try await writer.rename(fileURL: node.url, to: newName)
-                await MainActor.run {
-                    service.drafts.move(from: node.url, to: dest)
-                    service.reload(); onRenamed(dest); showRename = false
-                }
+                let dest = try await writer.rename(fileURL: source, to: newName)
+                await MainActor.run { finishRename(from: source, to: dest) }
             } catch {
                 await MainActor.run {
-                    // The move itself succeeded when only the commit failed.
-                    if case KBWriterError.commitFailed = error { service.reload() }
+                    if let moved = Self.movedLocation(after: error, planned: planned) {
+                        finishRename(from: source, to: moved)
+                    }
                     errorMessage = KBWriterError.message(for: error)
                     showRename = false
                 }
             }
         }
+    }
+
+    /// Where the file is after a rename that threw: only a failed commit
+    /// means the move itself happened. Pure, so tests can pin it.
+    static func movedLocation(after error: Error, planned: URL?) -> URL? {
+        guard case KBWriterError.commitFailed = error else { return nil }
+        return planned
+    }
+
+    /// The file now lives at `dest`: carry its unsaved draft over and reopen it
+    /// there, so the edits and the quit prompt follow the file.
+    private func finishRename(from old: URL, to dest: URL) {
+        service.drafts.move(from: old, to: dest)
+        service.reload(); onRenamed(dest); showRename = false
     }
 
     private var renameSheet: some View {
