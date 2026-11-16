@@ -116,34 +116,39 @@ def run_with_timeout(
         except ProcessLookupError:
             pass
 
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, forward)
-    if launch.stdin is not None and proc.stdin is not None:
-        try:
-            proc.stdin.write(launch.stdin.encode("utf-8"))
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
+    forwarded = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous = {sig: signal.signal(sig, forward) for sig in forwarded}
     try:
-        code = proc.wait(timeout=max(0.0, end - time.time()))
-    except subprocess.TimeoutExpired:
-        print(
-            f"=== Scout run timeout: {runtime_name} ran past {minutes} min "
-            f"(budget.per_runtime.<id>.run_timeout_minutes) — stopping it ===",
-            file=sys.stderr,
-        )
-        for sig, wait_s in ((signal.SIGTERM, grace_s), (signal.SIGKILL, grace_s)):
+        if launch.stdin is not None and proc.stdin is not None:
             try:
-                os.killpg(proc.pid, sig)
-            except ProcessLookupError:
-                break
-            try:
-                proc.wait(timeout=wait_s)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        return TIMEOUT_EXIT
-    return 128 - code if code < 0 else code
+                proc.stdin.write(launch.stdin.encode("utf-8"))
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        try:
+            code = proc.wait(timeout=max(0.0, end - time.time()))
+        except subprocess.TimeoutExpired:
+            print(
+                f"=== Scout run timeout: {runtime_name} ran past {minutes} min "
+                f"(budget.per_runtime.<id>.run_timeout_minutes) — stopping it ===",
+                file=sys.stderr,
+            )
+            for sig, wait_s in ((signal.SIGTERM, grace_s), (signal.SIGKILL, grace_s)):
+                try:
+                    os.killpg(proc.pid, sig)
+                except ProcessLookupError:
+                    break
+                try:
+                    proc.wait(timeout=wait_s)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            return TIMEOUT_EXIT
+        return 128 - code if code < 0 else code
+    finally:
+        # This process usually exits next; put the handlers back anyway (an in-process caller, a test).
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def run(

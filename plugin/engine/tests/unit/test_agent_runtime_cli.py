@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,24 @@ PROMPT = (
 
 class Execd(Exception):
     pass
+
+
+_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGPIPE", "SIGXFSZ", "SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
+)
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_workers_signals() -> Iterator[None]:
+    """exec resets SIGPIPE before its execve; with execve patched out the reset would stay in this worker.
+
+    A worker left with SIGPIPE at default dies on the next write to a closed pipe (a hook test feeding a
+    shell that exits early): xdist then reports a "crashed worker" in some unrelated test.
+    """
+    saved = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
 
 
 @pytest.fixture
@@ -297,3 +316,18 @@ def test_list_and_show(vault: Path) -> None:
     assert code == 0
     assert payload["runtime"] == "claude-code" and payload["model"] == "opus"
     assert payload["run_timeout_s"] is None and payload["max_tokens_per_day"] is None
+
+
+def test_run_with_timeout_puts_the_signal_handlers_back(tmp_path: Path) -> None:
+    script = tmp_path / "quick.sh"
+    script.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    env = {**os.environ, "SCOUT_RUN_STARTED": str(int(time.time()))}
+    assert rt_exec.run_with_timeout(Launch(argv=(str(script),)), env, timeout_s=60, runtime_name="Q") == 0
+    assert {sig: signal.getsignal(sig) for sig in before} == before
+
+
+def test_the_worker_keeps_sigpipe_ignored_after_an_exec_test() -> None:
+    """Pins the fixture above: CPython ignores SIGPIPE, and a test must not leave it at default."""
+    assert signal.getsignal(signal.SIGPIPE) == signal.SIG_IGN
