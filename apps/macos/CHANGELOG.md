@@ -13,6 +13,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 - **The Sessions page's data source is injectable** (`Scout/Sessions/SessionIndexSource.swift`, `Scout/Sessions/SessionIndexService.swift`, `Scout/Shell/AppState.swift`). It asked `scoutctl session index`, which reads the Mac's real `~/.claude`, even when the app pointed at a test vault. A `FileSessionIndexSource` reads a fixed `sessions-index.json` instead and runs no process. Tests use it, and a dev build reads one when its `sessionsIndexFile` default is set (`defaults write <dev bundle id> sessionsIndexFile <path>`), which also stops it watching `~/.claude`. Production is unchanged.
 - **A big-vault fixture and layout tests** (`ScoutTests/Support/BigVault.swift`, `ScoutTests/Support/LayoutHarness.swift`, `ScoutTests/Shell/PageLayoutTests.swift`). `BigVault` writes an anonymised vault at the scale of a long-used one: hundreds of action items with paragraph-length titles, hundreds of KB notes with long names, 150 sessions across 14 projects, dozens of wishlist, research and proposal files, two weeks of runs and 36 connectors with long names. The tests check that every page, the Action Items filter row and the Sessions header lay out within the width they get at the minimum window, and render every page at 1100, 1280 and 1600 pt at the minimum height. With `TEST_RUNNER_SCOUT_LAYOUT_SNAPSHOTS=<dir>` they also write a PNG of the whole window per page, size and appearance (light and dark) for review.
 
+## [0.18.15] - 2026-11-16
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed
