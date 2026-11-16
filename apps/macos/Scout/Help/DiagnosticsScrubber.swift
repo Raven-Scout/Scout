@@ -24,9 +24,12 @@ nonisolated struct DiagnosticsScrubber: Sendable {
     let names: [String: String]
     /// Short plain names hidden only as a path segment (next to a "/").
     let segments: [String: String]
+    /// Names hidden even inside a word: scripts written without spaces between words (CJK).
+    let loose: [String: String]
     private let pathPattern: NSRegularExpression?
     private let namePattern: NSRegularExpression?
     private let segmentPattern: NSRegularExpression?
+    private let loosePattern: NSRegularExpression?
 
     // MARK: Structure (keep in step with diagnostics.py)
 
@@ -37,16 +40,43 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         "knowledge-base/ontology/parser.py", "action-items/render.py",
     ]
     static let structuralTopDirs: Set<String> = ["scripts", "hooks"]
+    /// Inside .git only these are Scout's business (lock and HEAD errors); refs and the rest can name the owner's work.
+    static let gitFiles: Set<String> = [
+        ".git", ".git/index.lock", ".git/HEAD.lock", ".git/HEAD", ".git/config", ".git/index", ".git/ORIG_HEAD",
+        ".git/FETCH_HEAD", ".git/MERGE_HEAD",
+    ]
+    static let peopleDir = "knowledge-base/people/"
+    /// Scout's own vocabulary, kept when a message quotes it ("must be one of ['mon', …]").
+    static let keywords: Set<String> = [
+        "mon", "tue", "wed", "thu", "fri", "sat", "sun", "fire", "skip", "collapse", "true", "false", "yes", "no",
+        "on", "off", "inbound", "outbound", "lookup", "owner", "autonomous", "claude-code", "anthropic",
+        "briefing", "consolidation", "dreaming", "research", "manual", "ok", "failed", "unknown", "timeout",
+        "budget", "oauth_expired", "network", "git_lock", "rate_limited", "enforced", "unavailable", "conflict",
+        "clean", "restored", "unrestored", "error", "unchecked",
+    ]
+    /// Report fields built from allowlists by the engine. The app checks their shape instead of scrubbing them.
+    static let structuredKeys: Set<String> = [
+        "id", "severity", "source", "outcome", "failure_class", "sandbox", "integrity", "mode", "slot", "key", "type",
+        "status", "runtime", "provider",
+    ]
+    /// Every key `scoutctl diagnostics` uses (keep in step with diagnostics.REPORT_KEYS). Others are scrubbed.
+    static let reportKeys: Set<String> = [
+        "schema", "generated_at", "engine", "version", "python", "platform", "vault", "exists", "schedule", "config",
+        "git", "custom_slots", "doctor", "severity", "errors", "warnings", "notes", "run_health", "evaluated_at",
+        "last_ok_at", "findings", "id", "since", "source", "until", "summary", "fix", "has_detail", "slots", "key",
+        "type", "last_fire", "last_outcome", "outcome", "finished_at", "failure_class", "sandbox", "status", "reason",
+        "runtime", "provider", "gate_probe", "ok", "checked_at", "claude_version", "recent_runs", "slot", "mode",
+        "started_at", "exit_code", "integrity", "commits", "redaction", "unavailable",
+    ]
     static let structuralMarkdown: Set<String> = ["CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "README.md"]
     /// Scout's own folder names: never hidden, though what is inside them is.
     static let keepWords: Set<String> = [
         "knowledge-base", "action-items", "ontology", "wishlist", "research",
         "proposals", "archive", "scripts", "hooks",
     ]
-    /// Only Scout's and the toolchain's own folders, whose names hold no spaces: text after the first
-    /// space is kept as ordinary text, so a prefix here must never hold a folder the owner names.
+    /// Scout's and the toolchain's own folders. Only the first path segment after one is kept; anything deeper is `<path>`.
     static let homeKeepPrefixes = [
-        "Library/Application Support/Scout/", "Library/Caches/com.scout.", "Library/Caches/Scout/",
+        ".local/share/scout/", ".local/state/scout/", "Library/Application Support/Scout/", "Library/Caches/com.scout.", "Library/Caches/Scout/",
         "Library/LaunchAgents/com.scout.", "Library/Logs/Scout/",
         ".local/bin/", ".claude/plugins/", ".scout-secrets/", ".scout/",
     ]
@@ -56,7 +86,8 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         "https://docs.anthropic.com/", "https://code.claude.com/",
     ]
 
-    init(paths: [(String, String)] = [], names: [String: String] = [:], segments: [String: String] = [:]) {
+    init(paths: [(String, String)] = [], names: [String: String] = [:], segments: [String: String] = [:],
+         loose: [String: String] = [:]) {
         var uniquePaths: [String: String] = [:]
         for (p, ph) in paths {
             let trimmed = p.hasSuffix("/") && p.count > 1 ? String(p.dropLast()) : p
@@ -65,6 +96,8 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         self.paths = uniquePaths.sorted { $0.key.count > $1.key.count }.map { ($0.key, $0.value) }
         self.names = names
         self.segments = segments
+        self.loose = loose
+        loosePattern = Self.alternation(Array(loose.keys), prefix: "", suffix: "")
         let delim = Self.delimiterClass
         pathPattern = Self.alternation(self.paths.map(\.0), prefix: "", suffix: "(?![^/\\s\(delim)])", options: [.caseInsensitive])
         namePattern = Self.alternation(Array(names.keys), prefix: "(?<![\\w])", suffix: "(?![\\w])")
@@ -91,6 +124,8 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         }
         let vaultName = vault.lastPathComponent
         if vaultName != "Scout" { b.add(vaultName, "<vault-name>", anywhere: true) }
+        let parts = vault.standardizedFileURL.pathComponents
+        if parts.count > 2, parts[1] == "Volumes" { b.add(parts[2], "<volume>", anywhere: true) }
         for h in homes(home) {
             b.addPath(h.path, "~")
             if !genericHomeNames.contains(h.lastPathComponent) { b.add(h.lastPathComponent, "<user>", anywhere: true) }
@@ -109,28 +144,51 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         var paths: [(String, String)] = []
         var names: [String: String] = [:]
         var segments: [String: String] = [:]
+        var loose: [String: String] = [:]
 
         mutating func addPath(_ path: String, _ placeholder: String) { paths.append((path, placeholder)) }
 
         mutating func add(_ raw: String, _ placeholder: String, anywhere: Bool = false) {
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
-            guard value.count >= 2, !DiagnosticsScrubber.keepWords.contains(value) else { return }
+            guard !value.isEmpty, !DiagnosticsScrubber.keepWords.contains(value) else { return }
+            if value.unicodeScalars.contains(where: DiagnosticsScrubber.isWide) {
+                // No spaces between words in these scripts, so no word boundary to wait for.
+                if loose[value] == nil { loose[value] = placeholder }
+                return
+            }
+            guard value.count >= 2 else { return }
             let tail = value.dropFirst()
             let distinctive = value.contains { !$0.isLetter } || tail.contains { $0.isUppercase }
-            if anywhere || (value.count >= 5 && (distinctive || value.count >= 8)) || value.contains(" ") {
+            let nonASCII = value.unicodeScalars.contains { !$0.isASCII }
+            if anywhere || nonASCII || (value.count >= 5 && (distinctive || value.count >= 8)) || value.contains(" ") {
                 if names[value] == nil { names[value] = placeholder }
             } else if value.count >= 3 {
                 if segments[value] == nil { segments[value] = placeholder }
             }
         }
 
-        func build() -> DiagnosticsScrubber { DiagnosticsScrubber(paths: paths, names: names, segments: segments) }
+        func build() -> DiagnosticsScrubber {
+            DiagnosticsScrubber(paths: paths, names: names, segments: segments, loose: loose)
+        }
     }
 
     static func isStructural(_ relative: String) -> Bool {
-        let rel = relative.hasSuffix("/") ? String(relative.dropLast()) : relative
+        var rel = relative
+        while let last = rel.last, "/:,;.".contains(last) { rel.removeLast() }
         let first = rel.split(separator: "/", maxSplits: 1).first.map(String.init) ?? rel
+        if first == ".git" { return gitFiles.contains(rel) }
         return scoutDotDirs.contains(first) || structuralTopDirs.contains(first) || structuralFiles.contains(rel)
+    }
+
+    /// A letter of a script written without spaces between words (CJK and the like).
+    static func isWide(_ scalar: Unicode.Scalar) -> Bool {
+        guard scalar.properties.isAlphabetic else { return false }
+        switch scalar.value {
+        case 0x1100...0x115F, 0x2E80...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFF00...0xFF60, 0x20000...0x3FFFD:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Claude Code's folder name for a cwd: every non-alphanumeric becomes "-".
@@ -169,9 +227,11 @@ nonisolated struct DiagnosticsScrubber: Sendable {
                 continue
             }
             b.add(rel, "<path>", anywhere: true)
-            b.add(url.lastPathComponent, "<name>")
+            // A person's name is short and plain ("Priya"), and the most sensitive name there is: hide it anywhere.
+            let person = rel.hasPrefix(peopleDir)
+            b.add(url.lastPathComponent, "<name>", anywhere: person)
             let stem = url.deletingPathExtension().lastPathComponent
-            if stem != url.lastPathComponent { b.add(stem, "<name>") }
+            if stem != url.lastPathComponent { b.add(stem, "<name>", anywhere: person) }
         }
     }
 
@@ -306,6 +366,8 @@ nonisolated struct DiagnosticsScrubber: Sendable {
     private static let vaultPath = regex("<vault>/([^\(delimiterClass)]*)")
     private static let homePath = regex("(?<![\\w/])~/([^\(delimiterClass)]*)")
     private static let usersPath = regex("(?<![\\w])(/Users|/home)/(?!<user>)[^/\\s\(delimiterClass)]+((?:/[^\(delimiterClass)]*)?)")
+    /// External volumes and temporary folders: everything after the root is `<path>`.
+    private static let otherRoots = regex("(?<![\\w/~>])(/Volumes|/private|/tmp|/var)/(?!<path>)[^\(delimiterClass)]*")
     private static let encodedUsers = regex("-(Users|home)-(?!<user>)[A-Za-z0-9._]+(-|$)")
     private static let wikilink = regex("\\[\\[[^\\]\\n]*\\]\\]")
     private static let quoted: [(NSRegularExpression, String)] = [
@@ -343,9 +405,14 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         secretRules.reduce(text) { template($1.0, $0, $1.1) }
     }
 
+    /// A path under a home folder: a kept prefix and its first segment stay, anything deeper is `<path>`.
+    /// Text after the first segment that doesn't continue the path (a space, then words) is ordinary text.
     static func homeRest(_ rest: String) -> String {
-        // Kept whole: the folder's own names hold no spaces, so what follows a space is ordinary text.
-        homeKeepPrefixes.contains { rest.hasPrefix($0) } ? rest : "<path>"
+        guard let prefix = homeKeepPrefixes.first(where: { rest.hasPrefix($0) }) else { return "<path>" }
+        let tail = rest.dropFirst(prefix.count)
+        let segment = tail.prefix { $0 != "/" && !$0.isWhitespace }
+        let after = tail.dropFirst(segment.count)
+        return after.hasPrefix("/") ? prefix + segment + "/<path>" : prefix + segment + after
     }
 
     func scrub(_ input: String) -> String {
@@ -385,12 +452,14 @@ nonisolated struct DiagnosticsScrubber: Sendable {
             if rest.isEmpty || rest == "/" { return "\(root)/<user>\(rest)" }
             return "\(root)/<user>/" + Self.homeRest(String(rest.dropFirst()))
         }
+        text = Self.template(Self.otherRoots, text, "$1/<path>")
         text = Self.template(Self.encodedUsers, text, "-$1-<user>$2")
         text = replaceNames(text)
         text = Self.template(Self.wikilink, text, "[[<note>]]")
         for (re, q) in Self.quoted {
             text = Self.replace(re, in: text) { match, m, ns in
-                Self.group(m, 1, ns).hasPrefix("<") ? match : "\(q)<quoted>\(q)"
+                let inner = Self.group(m, 1, ns)
+                return inner.hasPrefix("<") || Self.keywords.contains(inner) ? match : "\(q)<quoted>\(q)"
             }
         }
         text = Self.replace(Self.mdToken, in: text) { match, _, _ in
@@ -402,6 +471,9 @@ nonisolated struct DiagnosticsScrubber: Sendable {
 
     private func replaceNames(_ input: String) -> String {
         var text = input
+        if let loosePattern {
+            text = Self.replace(loosePattern, in: text) { match, _, _ in loose[match] ?? "<name>" }
+        }
         if let namePattern {
             text = Self.replace(namePattern, in: text) { match, _, _ in names[match] ?? "<name>" }
         } else {
@@ -436,15 +508,32 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         return String(data: out, encoding: .utf8)
     }
 
-    private func scrubTree(_ value: Any) -> Any {
+    /// An allowlisted field's value as the engine builds it: lowercase words, dots, colons, `custom-N`, `<other>`.
+    private static let structuredValue = regex("^[a-z0-9_.:-]*(<other>)?$")
+
+    private func scrubTree(_ value: Any, key: String? = nil) -> Any {
         switch value {
         case let s as String:
+            // Allowlisted fields keep an enum-shaped value as is (scrubbing could only corrupt it), and
+            // anything else in them is scrubbed like free text.
+            if let key, Self.structuredKeys.contains(key),
+               Self.structuredValue.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil {
+                return s
+            }
             let out = scrub(s)
             return out.count > Self.maxLine ? String(out.prefix(Self.maxLine)) + "…" : out
         case let d as [String: Any]:
-            return d.mapValues { scrubTree($0) }
+            var out: [String: Any] = [:]
+            var unknown = 0
+            for k in d.keys.sorted() {
+                // Every key is a fixed name today; one that isn't could carry content, so it is replaced.
+                let name: String
+                if Self.reportKeys.contains(k) { name = k } else { unknown += 1; name = "<key-\(unknown)>" }
+                out[name] = scrubTree(d[k] as Any, key: k)
+            }
+            return out
         case let a as [Any]:
-            return a.map { scrubTree($0) }
+            return a.map { scrubTree($0, key: key) }
         default:
             return value
         }

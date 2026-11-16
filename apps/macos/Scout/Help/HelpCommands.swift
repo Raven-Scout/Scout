@@ -46,21 +46,29 @@ enum SettingsAnchor {
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
-    /// Set when Engine Settings… opens a Settings window that hasn't appeared yet.
-    private static var engineSettingsRequested = false
+    /// When Engine Settings… last asked for the Engine section. A Settings window that appears soon after
+    /// scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings view
+    /// scrolls on the notification instead. The request expires rather than being cleared by whichever
+    /// view sees it first, so the main window's Settings page can't swallow a new window's request.
+    private static var engineSettingsRequestedAt: Date?
+    static let engineSettingsRequestWindow: TimeInterval = 2
 
     /// Open Settings at its Engine section.
     static func showEngineSettings(_ openSettings: OpenSettingsAction) {
-        engineSettingsRequested = true
+        engineSettingsRequestedAt = Date()
         openSettings()
         NotificationCenter.default.post(name: .scoutShowEngineSettings, object: nil)
     }
 
-    /// Whether Engine Settings… asked for the Engine section; reading it clears it.
-    static func takeEngineSettingsRequest() -> Bool {
-        defer { engineSettingsRequested = false }
-        return engineSettingsRequested
+    /// Whether Engine Settings… asked for the Engine section just now; reading it clears it.
+    static func takeEngineSettingsRequest(now: Date = Date()) -> Bool {
+        defer { engineSettingsRequestedAt = nil }
+        guard let at = engineSettingsRequestedAt else { return false }
+        return now.timeIntervalSince(at) <= engineSettingsRequestWindow
     }
+
+    /// For tests: record a request made at `date`.
+    static func recordEngineSettingsRequest(at date: Date) { engineSettingsRequestedAt = date }
 
     /// `<vault>/.scout-logs` when it exists, else the vault itself.
     static func logsFolder(vault: URL, fileManager: FileManager = .default) -> URL {

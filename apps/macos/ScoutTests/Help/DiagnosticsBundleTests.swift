@@ -271,7 +271,16 @@ struct DiagnosticsScrubberTests {
         ("linked from [[Some Note]]", "linked from [[<note>]]"),
         ("note 'Board Meeting Prep' has no title", "note '<quoted>' has no title"),
         ("it's Alex's", "it's Alex's"),
-        ("\(home)/Library/Caches/com.scout.Scout/x.json", "~/Library/Caches/com.scout.Scout/x.json"),
+        ("\(home)/Library/Caches/com.scout.Scout/x.json", "~/Library/Caches/com.scout.Scout/<path>"),
+        ("\(home)/.local/share/scout/engine/current", "~/.local/share/scout/engine/<path>"),
+        ("\(home)/Library/Application Support/Scout/vaults/Acme Plan/state", "~/Library/Application Support/Scout/vaults/<path>"),
+        ("\(vault)/.git/index.lock: File exists", "<vault>/.git/index.lock: File exists"),
+        ("\(vault)/.git/refs/heads/acme-merger-notes is locked by Jane Roe", "<vault>/<path>"),
+        ("/Volumes/Work Drive/Secret Plans/Q3 Board.pdf could not be read", "/Volumes/<path>"),
+        ("/private/tmp/Acme Board Deck.key", "/private/<path>"),
+        ("/tmp/Acme Board Deck.key", "/tmp/<path>"),
+        ("/usr/bin/git failed", "/usr/bin/git failed"),
+        ("invalid weekday 'funday'; must be one of ['fri', 'mon']", "invalid weekday '<quoted>'; must be one of ['fri', 'mon']"),
         ("\(home)/Library/Caches/Other App/x.json", "~/<path>"),
         ("\(home)/Documents/Acme Contract.pdf", "~/<path>"),
         ("~/My Vault/Old Project/plan.txt", "~/<path>"),
@@ -322,11 +331,44 @@ struct DiagnosticsScrubberTests {
     }
 
     @Test func json_isScrubbedValueByValue() throws {
-        let doc = try JSONSerialization.data(withJSONObject: ["a": "\(Self.vault)/Old Project/x", "n": 3, "list": ["Acme Deal"]])
+        let doc = try JSONSerialization.data(withJSONObject: [
+            "reason": "\(Self.vault)/Old Project/x", "schema": 3, "warnings": ["Acme Deal"],
+        ])
         let out = try #require(scrubber.scrubJSON(doc))
-        #expect(out.contains("\"a\" : \"<vault>/<path>\""))
+        #expect(out.contains("\"reason\" : \"<vault>/<path>\""))
         #expect(out.contains("\"<name>\""))
-        #expect(out.contains("\"n\" : 3"))
+        #expect(out.contains("\"schema\" : 3"))
+    }
+
+    @Test func peopleAndNonASCIINames_areHiddenAnywhere() throws {
+        let vault = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("Scout")
+        defer { try? FileManager.default.removeItem(at: vault.deletingLastPathComponent()) }
+        for name in ["Priya", "王小明", "Zoë"] {
+            try DiagnosticsBundleTests.write("x", vault.appendingPathComponent("knowledge-base/people/\(name).md"))
+        }
+        try FileManager.default.createDirectory(at: vault.appendingPathComponent("knowledge-base/Acme"), withIntermediateDirectories: true)
+        let s = DiagnosticsScrubber.forVault(vault, home: vault.deletingLastPathComponent())
+        #expect(s.scrub("note Priya changed") == "note <name> changed")
+        #expect(s.scrub("note 王小明 changed") == "note <name> changed")
+        #expect(s.scrub("王小明的笔记") == "<name>的笔记")
+        #expect(s.scrub("ask Zoë") == "ask <name>")
+        #expect(s.scrub("folder Acme changed") == "folder Acme changed")
+    }
+
+    @Test func json_scrubsUnknownKeys_keepsAllowlistedValues() throws {
+        var b = DiagnosticsScrubber.Builder()
+        b.add("Zephyr Acme Renewal", "<name>")
+        let s = b.build()
+        let doc = try JSONSerialization.data(withJSONObject: [
+            "doctor": ["Zephyr Acme Renewal": "x", "warnings": ["Zephyr Acme Renewal"]],
+            "recent_runs": [["failure_class": "oauth_expired", "slot": "custom-1", "mode": "Zephyr Acme Renewal"]],
+        ])
+        let out = try #require(s.scrubJSON(doc))
+        #expect(!out.contains("Zephyr"))
+        #expect(out.contains("\"<key-1>\" : \"x\""))
+        #expect(out.contains("\"failure_class\" : \"oauth_expired\""))
+        #expect(out.contains("\"slot\" : \"custom-1\""))
+        #expect(out.contains("\"mode\" : \"<name>\""))
     }
 
     @Test func identity_readsFlowStyleAndComments() throws {

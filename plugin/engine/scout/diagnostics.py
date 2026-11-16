@@ -66,15 +66,30 @@ _STRUCTURAL_FILES = frozenset(
     }
 )
 _STRUCTURAL_TOP_DIRS = frozenset({"scripts", "hooks"})
+# Inside .git only these files are Scout's business (lock and HEAD errors); refs and the rest can name the owner's work.
+_GIT_FILES = frozenset(
+    {
+        ".git",
+        ".git/index.lock",
+        ".git/HEAD.lock",
+        ".git/HEAD",
+        ".git/config",
+        ".git/index",
+        ".git/ORIG_HEAD",
+        ".git/FETCH_HEAD",
+        ".git/MERGE_HEAD",
+    }
+)
 _STRUCTURAL_MD = frozenset({"CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "README.md"})
 # Scout's own folder names: never hidden as names, though what is inside them is walked.
 _KEEP_WORDS = frozenset(
     {"knowledge-base", "action-items", "ontology", "wishlist", "research", "proposals", "archive", "scripts", "hooks"}
 )
 # Paths under the home folder that are Scout's or the toolchain's, kept up to the first space after the prefix.
-# Only Scout's and the toolchain's own folders, whose names hold no spaces: text after the first space is kept as
-# ordinary text, so a prefix here must never hold a folder the owner names.
+# Scout's and the toolchain's own folders. Only the first path segment after one is kept; anything deeper is <path>.
 _HOME_KEEP_PREFIXES = (
+    ".local/share/scout/",
+    ".local/state/scout/",
     "Library/Application Support/Scout/",
     "Library/Caches/com.scout.",
     "Library/Caches/Scout/",
@@ -136,6 +151,34 @@ _FAILURE_CLASSES = frozenset(
 _SANDBOX = frozenset({"enforced", "unavailable", "off", "conflict", "failed"})
 _INTEGRITY = frozenset({"clean", "restored", "unrestored", "error", "unchecked"})
 _SLOT_TYPES = frozenset({"briefing", "consolidation", "dreaming", "research", "manual"})
+# Words a doctor message may quote that are Scout's own vocabulary, kept when quoted ("must be one of ['mon', …]").
+_KEYWORDS = frozenset(
+    {
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun",
+        "fire",
+        "skip",
+        "collapse",
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+        "inbound",
+        "outbound",
+        "lookup",
+        "owner",
+        "autonomous",
+        "claude-code",
+        "anthropic",
+    }
+)
 _DEFAULT_SLOTS = frozenset(
     {
         "morning-briefing",
@@ -153,11 +196,15 @@ _DEFAULT_SLOTS = frozenset(
     }
 )
 
+_KEYWORDS = _KEYWORDS | _SLOT_TYPES | _DEFAULT_SLOTS | _OUTCOMES | (_FAILURE_CLASSES - {""}) | _SANDBOX | _INTEGRITY
 _GENERIC_HOME_NAMES = frozenset({"", "home", "Users", "root", "var", "tmp"})
 # Names this short are hidden only where they sit next to a "/" (a path segment).
 _MIN_NAME = 3
+# Odd ledger values shorter than this are left alone in free text (see _ledger_free_text).
+_EXACT_MIN = 8
 _ANYWHERE_LEN = 5
 _SKIP_WALK = frozenset({".git", "node_modules", "__pycache__"})
+_PEOPLE_DIR = "knowledge-base/people/"
 _MAX_WALK = 50_000
 
 _DELIM = "'\"`<>()\\[\\]\n"
@@ -180,6 +227,8 @@ _PROJECT_URL_PREFIXES = (
 _VAULT_PATH = re.compile(rf"<vault>/([^{_DELIM}]*)")
 _HOME_PATH = re.compile(rf"(?<![\w/])~/([^{_DELIM}]*)")
 _USERS_PATH = re.compile(rf"(?<![\w])(/Users|/home)/(?!<user>)[^/\s{_DELIM}]+((?:/[^{_DELIM}]*)?)")
+# Other places an owner keeps files: external volumes and temporary folders. Everything after the root is <path>.
+_OTHER_ROOTS = re.compile(rf"(?<![\w/~>])(/Volumes|/private|/tmp|/var)/(?!<path>)[^{_DELIM}]*")
 _ENCODED_USERS = re.compile(r"-(Users|home)-(?!<user>)[A-Za-z0-9._]+(-|$)")
 _WIKILINK = re.compile(r"\[\[[^\]\n]*\]\]")
 # A quoted span is usually a value from the vault (a title, a field). (pattern, quote character)
@@ -196,6 +245,11 @@ def _nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+def _is_wide(c: str) -> bool:
+    """A character of a script written without spaces between words (CJK and the like)."""
+    return unicodedata.east_asian_width(c) in ("W", "F") and unicodedata.category(c).startswith("L")
+
+
 @dataclass
 class ScrubContext:
     """What :func:`scrub` replaces: path prefixes, and names with their placeholders."""
@@ -208,7 +262,11 @@ class ScrubContext:
     segments: dict[str, str] = field(default_factory=dict)
     # Raw text Scout's own ledgers hold, replaced verbatim before any other rule rewrites it.
     exact: dict[str, str] = field(default_factory=dict)
+    # Names hidden anywhere, even inside a word: scripts written without spaces between words (CJK).
+    loose: dict[str, str] = field(default_factory=dict)
     _path_pattern: re.Pattern[str] | None = None
+    _exact_pattern: re.Pattern[str] | None = None
+    _loose_pattern: re.Pattern[str] | None = None
     _name_pattern: re.Pattern[str] | None = None
     _segment_pattern: re.Pattern[str] | None = None
 
@@ -220,10 +278,17 @@ class ScrubContext:
     def add(self, value: str, placeholder: str, *, anywhere: bool = False) -> None:
         """Hide ``value``. Long or distinctive names go anywhere; short plain words only as path segments."""
         value = _nfc(value.strip())
-        if len(value) < 2 or value in _KEEP_WORDS:
+        if not value or value in _KEEP_WORDS:
+            return
+        if any(_is_wide(c) for c in value):
+            # No spaces between words in these scripts, so no word boundary to wait for.
+            self.loose.setdefault(value, placeholder)
+            return
+        if len(value) < 2:
             return
         distinctive = any(not c.isalpha() for c in value) or any(c.isupper() for c in value[1:])
-        if anywhere or (len(value) >= _ANYWHERE_LEN and (distinctive or len(value) >= 8)) or " " in value:
+        non_ascii = any(ord(c) > 127 for c in value)
+        if anywhere or non_ascii or (len(value) >= _ANYWHERE_LEN and (distinctive or len(value) >= 8)) or " " in value:
             self.names.setdefault(value, placeholder)
         elif len(value) >= _MIN_NAME:
             self.segments.setdefault(value, placeholder)
@@ -235,6 +300,12 @@ class ScrubContext:
             self.paths = list(unique.items())
             alts = "|".join(re.escape(p) for p in unique)
             self._path_pattern = re.compile(rf"(?:{alts})(?![^/\s{_DELIM}])", re.IGNORECASE)
+        if self.exact:
+            alts = "|".join(map(re.escape, sorted(self.exact, key=len, reverse=True)))
+            self._exact_pattern = re.compile(rf"(?<![\w])(?:{alts})(?![\w])")
+        if self.loose:
+            alts = "|".join(map(re.escape, sorted(self.loose, key=len, reverse=True)))
+            self._loose_pattern = re.compile(rf"(?:{alts})")
         if self.names:
             alts = "|".join(map(re.escape, sorted(self.names, key=len, reverse=True)))
             self._name_pattern = re.compile(rf"(?<![\w])(?:{alts})(?![\w])")
@@ -250,6 +321,8 @@ class ScrubContext:
         return self._path_pattern.sub(lambda m: lookup.get(m.group(0).casefold(), "<path>"), text)
 
     def replace_names(self, text: str) -> str:
+        if self._loose_pattern is not None:
+            text = self._loose_pattern.sub(lambda m: self.loose[m.group(0)], text)
         if self._name_pattern is not None:
             text = self._name_pattern.sub(lambda m: self.names[m.group(0)], text)
         if self._segment_pattern is not None:
@@ -258,8 +331,10 @@ class ScrubContext:
 
 
 def _is_structural(rel: str) -> bool:
-    rel = rel.rstrip("/")
+    rel = rel.rstrip("/").rstrip(":,;.")
     first = rel.split("/", 1)[0]
+    if first == ".git":
+        return rel in _GIT_FILES
     return first in _SCOUT_DOT_DIRS or first in _STRUCTURAL_TOP_DIRS or rel in _STRUCTURAL_FILES
 
 
@@ -275,11 +350,16 @@ def _vault_path(match: re.Match[str]) -> str:
 
 
 def _home_rest(rest: str) -> str:
+    """A path under a home folder: a kept prefix and its first segment stay, anything deeper is ``<path>``.
+
+    Text after the first segment that doesn't continue the path (a space, then words) is ordinary text.
+    """
     for prefix in _HOME_KEEP_PREFIXES:
         if rest.startswith(prefix):
             tail = rest[len(prefix) :]
-            token, sep, remainder = tail.partition(" ")
-            return f"{prefix}{token}{sep}{remainder}"
+            segment = re.match(r"[^/\s]*", tail).group(0)  # type: ignore[union-attr]
+            after = tail[len(segment) :]
+            return f"{prefix}{segment}/<path>" if after.startswith("/") else f"{prefix}{segment}{after}"
     return "<path>"
 
 
@@ -305,7 +385,10 @@ def _url(match: re.Match[str]) -> str:
 
 def _quoted_replacer(quote: str) -> Callable[[re.Match[str]], str]:
     def replace(m: re.Match[str]) -> str:
-        return m.group(0) if m.group(1).startswith("<") else f"{quote}<quoted>{quote}"
+        inner = m.group(1)
+        if inner.startswith("<") or inner in _KEYWORDS:
+            return m.group(0)
+        return f"{quote}<quoted>{quote}"
 
     return replace
 
@@ -321,8 +404,8 @@ def scrub(text: str, ctx: ScrubContext) -> str:
     if not text:
         return text
     text = _nfc(text).replace("\\/", "/")
-    for raw, placeholder in ctx.exact.items():
-        text = text.replace(raw, placeholder)
+    if ctx._exact_pattern is not None:
+        text = ctx._exact_pattern.sub(lambda m: ctx.exact[m.group(0)], text)
     text = _secrets(text)
     text = _FILE_URL.sub(lambda m: unquote(m.group(1)), text)
     if "%" in text:
@@ -336,6 +419,7 @@ def scrub(text: str, ctx: ScrubContext) -> str:
     text = _VAULT_PATH.sub(_vault_path, text)
     text = _HOME_PATH.sub(_home_path, text)
     text = _USERS_PATH.sub(_users_path, text)
+    text = _OTHER_ROOTS.sub(lambda m: f"{m.group(1)}/<path>", text)
     text = _ENCODED_USERS.sub(lambda m: f"-{m.group(1)}-<user>{m.group(2)}", text)
     text = ctx.replace_names(text)
     text = _WIKILINK.sub("[[<note>]]", text)
@@ -349,14 +433,97 @@ def scrub(text: str, ctx: ScrubContext) -> str:
     return text
 
 
-def scrub_tree(value: Any, ctx: ScrubContext) -> Any:
-    """``value`` with every string in it (dict keys excepted) scrubbed."""
+# Fields whose values are built from allowlists (or aliases) above, so scrubbing can only corrupt them.
+STRUCTURED_KEYS = frozenset(
+    {
+        "id",
+        "severity",
+        "source",
+        "outcome",
+        "failure_class",
+        "sandbox",
+        "integrity",
+        "mode",
+        "slot",
+        "key",
+        "type",
+        "status",
+        "runtime",
+        "provider",
+    }
+)
+# Every key the report uses. Any other key (none today) is replaced with <key-N>, in case one ever carries content.
+REPORT_KEYS = frozenset(
+    {
+        "schema",
+        "generated_at",
+        "engine",
+        "version",
+        "python",
+        "platform",
+        "vault",
+        "exists",
+        "schedule",
+        "config",
+        "git",
+        "custom_slots",
+        "doctor",
+        "severity",
+        "errors",
+        "warnings",
+        "notes",
+        "run_health",
+        "evaluated_at",
+        "last_ok_at",
+        "findings",
+        "id",
+        "since",
+        "source",
+        "until",
+        "summary",
+        "fix",
+        "has_detail",
+        "slots",
+        "key",
+        "type",
+        "last_fire",
+        "last_outcome",
+        "outcome",
+        "finished_at",
+        "failure_class",
+        "sandbox",
+        "status",
+        "reason",
+        "runtime",
+        "provider",
+        "gate_probe",
+        "ok",
+        "checked_at",
+        "claude_version",
+        "recent_runs",
+        "slot",
+        "mode",
+        "started_at",
+        "exit_code",
+        "integrity",
+        "commits",
+        "redaction",
+        "unavailable",
+    }
+)
+
+
+def scrub_tree(value: Any, ctx: ScrubContext, key: str | None = None) -> Any:
+    """``value`` with every string in it scrubbed, except allowlisted fields; unknown keys are replaced."""
     if isinstance(value, str):
-        return scrub(value, ctx)
+        return value if key in STRUCTURED_KEYS else scrub(value, ctx)
     if isinstance(value, dict):
-        return {k: scrub_tree(v, ctx) for k, v in value.items()}
+        out: dict[str, Any] = {}
+        for i, (k, v) in enumerate(value.items(), 1):
+            out[k if k in REPORT_KEYS else f"<key-{i}>"] = scrub_tree(v, ctx, k)
+        return out
     if isinstance(value, list | tuple):
-        return [scrub_tree(v, ctx) for v in value]
+        return [scrub_tree(v, ctx, key) for v in value]
     return value
 
 
@@ -383,9 +550,11 @@ def _walk_names(vault: Path, ctx: ScrubContext) -> None:
             if _is_structural(rel):
                 continue
             ctx.add(rel, "<path>", anywhere=True)
-            ctx.add(entry.name, "<name>")
+            # A person's name is short and plain ("Priya"), and the most sensitive name there is: hide it anywhere.
+            person = rel.startswith(_PEOPLE_DIR)
+            ctx.add(entry.name, "<name>", anywhere=person)
             if entry.suffix:
-                ctx.add(entry.stem, "<name>")
+                ctx.add(entry.stem, "<name>", anywhere=person)
             try:
                 if entry.is_dir() and not entry.is_symlink():
                     stack.append(entry)
@@ -486,15 +655,16 @@ def _encoded(path: Path) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def _ledger_free_text(vault: Path) -> list[str]:
-    """Free text the doctor quotes from Scout's own ledgers: each self-update row's ``detail``, and
-    every run-ledger value outside its allowlist (a run-health summary names the failure class)."""
+def _ledger_free_text(vault: Path) -> tuple[list[str], list[str]]:
+    """Free text the doctor quotes from Scout's own ledgers: (each self-update row's ``detail``, every
+    run-ledger value outside its allowlist, which a run-health summary can name)."""
     from scout.health import read_outcomes
     from scout.update_outcomes import read
 
+    details: list[str] = []
     out: list[str] = []
     try:
-        out += [row.detail for row in read(vault) if row.detail]
+        details = [row.detail for row in read(vault) if row.detail]
     except Exception:  # noqa: BLE001 - an unreadable ledger quotes nothing
         pass
     try:
@@ -509,7 +679,7 @@ def _ledger_free_text(vault: Path) -> list[str]:
                     out.append(value)
     except Exception:  # noqa: BLE001
         pass
-    return out
+    return details, out
 
 
 def build_context(
@@ -522,6 +692,9 @@ def build_context(
             ctx.add(_encoded(variant), "<vault>", anywhere=True)
         if vault.name and vault.name not in _KEEP_WORDS and vault.name != "Scout":
             ctx.add(vault.name, "<vault-name>", anywhere=True)
+        parts = vault.parts
+        if len(parts) > 2 and parts[1] == "Volumes":
+            ctx.add(parts[2], "<volume>", anywhere=True)
     for h in _homes(home):
         ctx.add_path(h, "~")
         if h.name not in _GENERIC_HOME_NAMES:
@@ -533,8 +706,13 @@ def build_context(
     if vault is not None and vault.is_dir():
         _identity_names(vault, ctx)
         _walk_names(vault, ctx)
-        for text in sorted(_ledger_free_text(vault), key=len, reverse=True):
-            if len(text.strip()) >= 2:
+        details, values = _ledger_free_text(vault)
+        for text in details:
+            if text.strip():
+                ctx.exact.setdefault(_nfc(text), OTHER)
+        # An odd ledger value short enough to be an ordinary word ("auth", "crash") would rewrite other words.
+        for text in values:
+            if len(text) >= _EXACT_MIN:
                 ctx.exact.setdefault(_nfc(text), OTHER)
     return ctx.finish()
 
@@ -565,6 +743,16 @@ def _mode(mode: str, aliases: dict[str, str]) -> str:
     if mode in _DEFAULT_SLOTS or mode in _SLOT_TYPES:
         return mode
     return aliases.get(mode, OTHER)
+
+
+def _finding_id(fid: str, aliases: dict[str, str]) -> str:
+    """A run-health finding id, with the slot or lane it names (``slot.stale:<key>``) aliased like any slot."""
+    kind, sep, name = fid.partition(":")
+    if not sep:
+        return fid if re.fullmatch(r"[a-z_.]+", fid) else OTHER
+    if kind.startswith("lane."):
+        return f"{kind}:{name if name in _SLOT_TYPES else OTHER}"
+    return f"{kind}:{_slot(name, aliases)}"
 
 
 def _known(value: str | None, allowed: frozenset[str]) -> str | None:
@@ -605,7 +793,7 @@ def _doctor_section(
             "last_ok_at": rh["last_ok_at"],
             "findings": [
                 {
-                    "id": f["id"],
+                    "id": _finding_id(f["id"], aliases),
                     "severity": f["severity"],
                     "since": f["since"],
                     "source": f["source"],
@@ -632,7 +820,7 @@ def _sandbox_section(vault: Path) -> dict[str, Any]:
     from scout.sandbox import launch
 
     result = launch.prepare(vault)
-    return {"status": result.status, "reason": result.reason or ""}
+    return {"status": _known(result.status, _SANDBOX), "reason": result.reason or ""}
 
 
 def _runtime_section(vault: Path) -> dict[str, Any]:

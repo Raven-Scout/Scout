@@ -188,19 +188,17 @@ def _raw_sandbox(vault: Path) -> dict:
         f" {vault}/.trash/{CANARIES['dot_folder_note']}.md,"
         f" {vault}/{CANARIES['missing_folder']}/{CANARIES['missing_file']}.txt"
     )
-    return {"status": "failed", "reason": reason, "home_doc": f"{home}/Documents/{CANARIES['home_document']}.pdf"}
+    return {"status": "failed", "reason": f"{reason}; also {home}/Documents/{CANARIES['home_document']}.pdf"}
 
 
 def _raw_runtime(vault: Path) -> dict:
     encoded = CANARIES["encoded_folder"].replace(" ", "%20")
-    return {
-        "runtime": "claude-code",
-        "reason": f"token {CANARIES['token']} {CANARIES['github_token']} refused for {CANARIES['delegate']}"
-        f" via {CANARIES['custom_connector']}",
-        "url": f"https://example.com/x?access_token={CANARIES['query_token']}",
-        "file": f"file://{vault}/{encoded}/x.txt",
-        "user": getpass.getuser(),
-    }
+    reason = (
+        f"token {CANARIES['token']} {CANARIES['github_token']} refused for {CANARIES['delegate']}"
+        f" via {CANARIES['custom_connector']}; see https://example.com/x?access_token={CANARIES['query_token']}"
+        f" and file://{vault}/{encoded}/x.txt as {getpass.getuser()}"
+    )
+    return {"runtime": "claude-code", "reason": reason}
 
 
 def _raising_runtime(vault: Path) -> dict:
@@ -229,9 +227,9 @@ def test_report_never_carries_vault_content(tmp_path: Path) -> None:
     assert all("detail" not in f and "log" not in f for f in findings)
     assert any(f["id"].startswith("update.") for f in findings), "the self-update detail vector wasn't exercised"
     assert report["sandbox"]["reason"].startswith("can't write <vault>/<path>")
-    assert report["sandbox"]["home_doc"] == "~/<path>"
-    assert report["runtime"]["url"] == "<url>"
-    assert report["runtime"]["file"] == "<vault>/<path>"
+    # Each owner path runs to the next placeholder, swallowing the words between: nothing of them is left.
+    assert report["sandbox"]["reason"] == "can't write " + "<vault>/<path>" * 4
+    assert "see <url> and <vault>/<path>" in report["runtime"]["reason"]
 
 
 def test_ledger_and_slot_fields_are_allowlisted(tmp_path: Path) -> None:
@@ -334,12 +332,30 @@ def _ctx(tmp_path: Path, *names: str) -> ScrubContext:
         # Other dot-folders are the owner's.
         ("{v}/.trash/Secret Merger.md", "<vault>/<path>"),
         ("{v}/.claude/projects/-Users-jane-Vault/a.jsonl", "<vault>/<path>"),
+        # In .git only lock, HEAD and config files are Scout's; a ref can name the owner's work.
+        ("{v}/.git/index.lock: File exists", "<vault>/.git/index.lock: File exists"),
+        ("{v}/.git/refs/heads/acme-merger-notes is locked by Jane Roe", "<vault>/<path>"),
+        # External volumes and temporary folders.
+        ("/Volumes/Work Drive/Secret Plans/Q3 Board.pdf could not be read", "/Volumes/<path>"),
+        ("/private/tmp/Acme Board Deck.key", "/private/<path>"),
+        ("/tmp/Acme Board Deck.key", "/tmp/<path>"),
+        ("/usr/bin/git failed", "/usr/bin/git failed"),
+        # Scout's own vocabulary stays readable when quoted.
+        (
+            "invalid weekday 'funday'; must be one of ['fri', 'mon']",
+            "invalid weekday '<quoted>'; must be one of ['fri', 'mon']",
+        ),
         ("see notes/alex.md", "see <note>.md"),
         ("linked from [[Some Note]]", "linked from [[<note>]]"),
         ("note 'Board Meeting Prep' has no title", "note '<quoted>' has no title"),
         ("it's Alex's", "it's Alex's"),
         # Home, other users, encoded folders, file URLs, percent-encoding.
-        ("{h}/Library/Caches/com.scout.Scout/x.json", "~/Library/Caches/com.scout.Scout/x.json"),
+        ("{h}/Library/Caches/com.scout.Scout/x.json", "~/Library/Caches/com.scout.Scout/<path>"),
+        ("{h}/.local/share/scout/engine/current", "~/.local/share/scout/engine/<path>"),
+        (
+            "{h}/Library/Application Support/Scout/vaults/Acme Plan/state",
+            "~/Library/Application Support/Scout/vaults/<path>",
+        ),
         ("{h}/Library/Caches/Other App/x.json", "~/<path>"),
         ("{h}/Library/Application Support/Scout/engine x", "~/Library/Application Support/Scout/engine x"),
         ("{h}/Documents/Acme Contract.pdf", "~/<path>"),
@@ -392,3 +408,87 @@ def test_scrub_matches_names_in_any_unicode_form(tmp_path: Path) -> None:
 def test_scrub_truncates_long_strings(tmp_path: Path) -> None:
     out = scrub("word " * 200, _ctx(tmp_path))
     assert len(out) == diagnostics.MAX_STRING + 1 and out.endswith("…")
+
+
+def test_short_ledger_values_never_rewrite_other_words(tmp_path: Path) -> None:
+    """D1: an odd failure class like "auth" or "crash" must not be replaced inside ids, enums or prose."""
+    vault, home = _synthetic_vault(tmp_path)
+    logs = vault / ".scout-logs"
+    started = int(NOW.timestamp()) - 7 * 86400
+    old = [
+        {
+            "slot": "morning-briefing",
+            "mode": "morning-briefing",
+            "started_at": started - i * 60,
+            "finished_at": started - i * 60 + 30,
+            "exit_code": 1,
+            "outcome": "failed",
+            "failure_class": fc,
+        }
+        for i, fc in enumerate(("auth", "crash"))
+    ]
+    (logs / "run-outcomes.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in old) + "\n" + (logs / "run-outcomes.jsonl").read_text()
+    )
+    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_raw_sandbox, runtime=_raw_runtime)
+    text = json.dumps(report)
+    assert "o<other>_expired" not in text and "<other>.expired" not in text
+    assert "auth.expired" in text and "oauth_expired" in text
+    assert "claude auth login" in text
+    assert [r["failure_class"] for r in report["recent_runs"][-2:]] == [diagnostics.OTHER, diagnostics.OTHER]
+    _assert_no_canary(text)
+
+
+def test_finding_ids_alias_the_slot_they_name() -> None:
+    aliases = {"acme-renewal-prep": "custom-1"}
+    assert diagnostics._finding_id("slot.stale:acme-renewal-prep", aliases) == "slot.stale:custom-1"
+    assert diagnostics._finding_id("slot.stale:morning-briefing", aliases) == "slot.stale:morning-briefing"
+    assert diagnostics._finding_id("lane.dark:dreaming", aliases) == "lane.dark:dreaming"
+    assert diagnostics._finding_id("lane.dark:Acme Lane", aliases) == "lane.dark:<other>"
+    assert diagnostics._finding_id("runs.failing", aliases) == "runs.failing"
+
+
+def test_people_and_non_ascii_names_are_hidden_anywhere(tmp_path: Path) -> None:
+    """D2: a short person's name and a CJK name are hidden in free text, not only next to a "/"."""
+    vault = tmp_path / "Scout"
+    people = vault / "knowledge-base" / "people"
+    people.mkdir(parents=True)
+    for name in ("Priya", "王小明", "Zoë"):
+        (people / f"{name}.md").write_text("x")
+    (vault / "knowledge-base" / "Acme").mkdir()
+    ctx = diagnostics.build_context(vault, tmp_path)
+    assert scrub("note Priya changed", ctx) == "note <name> changed"
+    assert scrub("note 王小明 changed", ctx) == "note <name> changed"
+    assert scrub("王小明的笔记", ctx) == "<name>的笔记"
+    assert scrub("ask Zoë", ctx) == "ask <name>"
+    # A short plain folder name elsewhere still only goes as a path segment.
+    assert scrub("folder Acme changed", ctx) == "folder Acme changed"
+
+
+def test_unknown_keys_are_scrubbed_known_ones_kept(tmp_path: Path) -> None:
+    ctx = diagnostics.build_context(None, tmp_path)
+    ctx.add("Zephyr Acme Renewal", "<name>")
+    ctx.finish()
+    out = diagnostics.scrub_tree({"doctor": {"Zephyr Acme Renewal": "x", "warnings": ["Zephyr Acme Renewal"]}}, ctx)
+    assert out == {"doctor": {"<key-1>": "x", "warnings": ["<name>"]}}
+    # A key that isn't the report's is replaced even when nothing marks it as content.
+    assert diagnostics.scrub_tree({"Unknown Client": 1}, ctx) == {"<key-1>": 1}
+    # Allowlisted fields are never rewritten.
+    assert diagnostics.scrub_tree({"failure_class": "oauth_expired"}, ctx) == {"failure_class": "oauth_expired"}
+
+
+def test_report_uses_only_known_keys(tmp_path: Path) -> None:
+    vault, home = _synthetic_vault(tmp_path)
+    report = build_report(vault, home=home, now=NOW, check_jobs=False)
+
+    def keys(v: object, out: set[str]) -> set[str]:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                out.add(k)
+                keys(x, out)
+        elif isinstance(v, list):
+            for x in v:
+                keys(x, out)
+        return out
+
+    assert keys(report, set()) <= diagnostics.REPORT_KEYS

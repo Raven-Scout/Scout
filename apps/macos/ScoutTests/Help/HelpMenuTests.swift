@@ -27,6 +27,15 @@ struct HelpMenuTests {
         #expect(HelpActions.logsFolder(vault: vault).standardizedFileURL == logs.standardizedFileURL)
     }
 
+    @Test func engineSettingsRequest_expiresAndIsTakenOnce() {
+        let now = Date()
+        HelpActions.recordEngineSettingsRequest(at: now)
+        #expect(HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(1)))
+        #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(1)), "taken once")
+        HelpActions.recordEngineSettingsRequest(at: now)
+        #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(60)), "a later ⌘, opens at the top")
+    }
+
     @Test func windowIDs_areDistinct() {
         #expect(HelpWindow.doctor != HelpWindow.diagnostics)
     }
