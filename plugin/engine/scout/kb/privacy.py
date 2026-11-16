@@ -23,7 +23,9 @@ owner's own agents that run off the laptop, read as ``delegate:<id>``. A listed
 delegate sees normal notes, private ones only with ``include_private: true``
 written exactly so (``yes``, ``on``, ``True`` or a quoted ``"true"`` count as
 false, with a warning), and never a local-only path; an unlisted one
-sees nothing. Labels don't change: what a delegate sees is derived from the
+sees nothing. ``allow_unscanned: [<glob>…]`` names files its mirror may carry
+although they can't be scanned (an archive, an old binary Office file;
+:mod:`scout.delegate_mirror`). Labels don't change: what a delegate sees is derived from the
 label's ``visibility`` and ``local_only`` (:func:`visible_to`). Delegate keys
 never sit inside the ``federation*`` keys, nor federation keys inside
 ``delegates``; policy-wide delegate switches are reserved for a sibling
@@ -81,8 +83,9 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
   nothing and is dropped.
 - ``privacy-overlay-invalid`` also covers ``delegates``: a non-mapping block,
   an id that isn't ``[a-z0-9][a-z0-9-]{0,39}``, an entry that isn't a mapping
-  (each dropped), and an ``include_private`` that isn't written ``true`` or
-  ``false`` (kept as false).
+  (each dropped), an ``include_private`` that isn't written ``true`` or
+  ``false`` (kept as false), and an ``allow_unscanned`` that isn't a list of
+  non-empty glob strings (kept as an empty list, so nothing ships unscanned).
 - ``privacy-sync-only-invalid``: ``sync_only`` has the wrong shape or an entry
   that can't name a vault path. It is kept as an empty list, which uploads
   nothing, and ``scoutctl repo`` refuses until it is fixed.
@@ -200,10 +203,13 @@ class ScopeDefault:
 
 @dataclass(frozen=True)
 class DelegateRule:
-    """One ``delegates`` entry: the agent ``delegate:<id>`` and whether it sees private notes."""
+    """One ``delegates`` entry: the agent ``delegate:<id>``, whether it sees private notes, and the globs of
+    files its mirror may carry unscanned (``allow_unscanned``; :mod:`scout.delegate_mirror`). Labels never
+    depend on ``allow_unscanned``."""
 
     id: str
     include_private: bool = False
+    allow_unscanned: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -279,7 +285,11 @@ class Policy:
         if self.sync_only is not None:
             out["sync_only"] = list(self.sync_only)
         if self.delegates:
-            out["delegates"] = {d.id: {"include_private": d.include_private} for d in self.delegates}
+            out["delegates"] = {
+                d.id: {"include_private": d.include_private}
+                | ({"allow_unscanned": list(d.allow_unscanned)} if d.allow_unscanned else {})
+                for d in self.delegates
+            }
         return out
 
 
@@ -486,7 +496,10 @@ def _delegate_rules(value: Any, literal_true: frozenset[str] | None) -> tuple[tu
         include = (entry or {}).get("include_private", False)
         if not isinstance(include, bool) or (include and literal_true is not None and key not in literal_true):
             bad, include = True, False
-        rules.append(DelegateRule(id=key, include_private=include))
+        unscanned = (entry or {}).get("allow_unscanned", [])
+        if not isinstance(unscanned, list) or not all(isinstance(g, str) and g.strip() for g in unscanned):
+            bad, unscanned = True, []
+        rules.append(DelegateRule(id=key, include_private=include, allow_unscanned=tuple(dict.fromkeys(unscanned))))
     return tuple(rules), bad
 
 

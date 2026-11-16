@@ -176,7 +176,13 @@ class PrivateTerms:
 
 def _norm(text: str) -> str:
     """NFKC case folding: ``Jose\u0301``, ``José`` and ``JOSÉ`` all become ``josé``."""
-    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    return folded.translate(_INVISIBLE)  # a soft hyphen or zero-width character inside a name hides nothing
+
+
+# Characters that change no word a reader sees: the soft hyphen and the zero-width ones. ZWNJ and ZWJ do shape
+# Persian and Indic words; folding them out only makes a match likelier there (fails towards leaving text out).
+_INVISIBLE = dict.fromkeys(map(ord, "­᠎​‌‍⁠﻿"))
 
 
 def _strips(base: str) -> bool:
