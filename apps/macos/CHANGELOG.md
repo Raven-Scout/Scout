@@ -17,6 +17,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 - **The run Feedback tab never saves over a note it couldn't read** (`Scout/ControlCenter/Detail/FeedbackTab.swift`). An unreadable note loaded as empty text, and the next save deleted it. It now shows "Couldn't read the saved note" and turns editing off. Opening a note or switching runs no longer rewrites it, and an edit typed just before switching runs is saved to its own run's note.
 - **An unreadable connector-acknowledgement file is set aside, not replaced** (`Scout/Services/ConnectorAckStore.swift`). A torn `.scout-cache/connector-alerts-acked.json` loaded as no acknowledgements, and the next acknowledgement overwrote the file. The app now moves it to `connector-alerts-acked.json.unreadable` before writing, and reads dates with fractional seconds too.
 
+## [0.18.15] - 2026-11-16
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed
