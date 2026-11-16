@@ -63,6 +63,15 @@ final class VaultUndoController: ObservableObject {
     @Published var problem: WriteProblem?
     /// The action the page's "Undo" toast offers, until it's used or replaced.
     @Published private(set) var latest: Registered?
+    /// A write landed but can't be undone; the overlay says so briefly.
+    @Published var notice: String?
+
+    /// Say that `actionName` worked but has no undo, because the file changed
+    /// by more than that write at the same moment (a run wrote it too).
+    func noteNotUndoable(_ actionName: String) {
+        latest = nil
+        notice = "\(WriteFeedbackOverlay.doneLine(for: actionName)). Undo isn't available: a Scout run changed the same file at the same moment."
+    }
 
     struct Registered: Equatable {
         let actionName: String
@@ -80,6 +89,9 @@ final class VaultUndoController: ObservableObject {
         /// False once an undo or redo failed: the stacks no longer describe
         /// the file.
         var valid = true
+        /// The manager holding this action's entries, so eviction can remove
+        /// them instead of leaving a menu item that does nothing.
+        weak var manager: UndoManager?
         init(step: UndoStep, refresh: @escaping @MainActor () async -> Void) {
             self.step = step
             self.refresh = refresh
@@ -91,10 +103,11 @@ final class VaultUndoController: ObservableObject {
     private(set) var lastRun: Task<Void, Never>?
     private weak var latestRegisteredToken: Token?
     /// Recent tokens, held strongly so their actions stay undoable whether or
-    /// not the undo manager retains its targets. Bounded: each token carries
-    /// file bytes.
+    /// not the undo manager retains its targets. Bounded; a token past the
+    /// bound has its Edit-menu entries removed. A token holds only the changed
+    /// bytes of each file (`FileDelta`), so 100 one-line edits stay small.
     private var live: [Token] = []
-    static let liveLimit = 50
+    static let liveLimit = 100
 
     /// Register a completed write. `refresh` reloads the page from disk after
     /// an undo or redo, whether it worked or not.
@@ -106,8 +119,21 @@ final class VaultUndoController: ObservableObject {
         let token = Token(step: step, refresh: refresh)
         latest = Registered(actionName: step.actionName, token: token)
         latestRegisteredToken = token
+        token.manager = manager
+        // The manager drops its oldest group past this many, so an entry
+        // older than `liveLimit` disappears from the Edit menu instead of
+        // staying as a dead item (removing a group's actions leaves the
+        // group behind).
+        if let manager, manager.levelsOfUndo == 0 || manager.levelsOfUndo > Self.liveLimit {
+            manager.levelsOfUndo = Self.liveLimit
+        }
         live.append(token)
-        if live.count > Self.liveLimit { live.removeFirst(live.count - Self.liveLimit) }
+        if live.count > Self.liveLimit {
+            // The manager has already dropped these groups (`levelsOfUndo`);
+            // removing their actions by hand would leave empty groups behind.
+            for old in live.prefix(live.count - Self.liveLimit) { old.valid = false }
+            live.removeFirst(live.count - Self.liveLimit)
+        }
         if let manager { registerUndo(token, manager) }
     }
 

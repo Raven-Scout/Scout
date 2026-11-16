@@ -17,6 +17,10 @@ struct KBEditorView: View {
     /// Called when the user clicks the breadcrumb root — parent clears the
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
+    /// Called when an undo or redo of a rename moves a note from the first
+    /// URL to the second, so the parent can follow it if it's still showing
+    /// the note.
+    var onMoved: ((URL, URL) -> Void)? = nil
 
     @EnvironmentObject private var vaultUndo: VaultUndoController
     @Environment(\.undoManager) private var undoManager
@@ -396,6 +400,29 @@ struct KBEditorView: View {
         ) { [service] in service.reload() }
     }
 
+    /// Undo of a rename moves the note back; its unsaved draft and the
+    /// selection follow it, so a dirty draft can't be saved to the old name
+    /// and recreate it. Redo moves both forward again.
+    private func registerRenameUndo(_ change: VaultChange?, from original: URL, to dest: URL) {
+        guard let change else { return }
+        let writer = writer, service = service, onMoved = onMoved
+        vaultUndo.register(
+            UndoStep(
+                actionName: change.actionName,
+                undo: {
+                    try await writer.restore(change, .undo)
+                    service.drafts.move(from: dest, to: original)
+                    onMoved?(dest, original)
+                },
+                redo: {
+                    try await writer.restore(change, .redo)
+                    service.drafts.move(from: original, to: dest)
+                    onMoved?(original, dest)
+                }),
+            with: undoManager
+        ) { [service] in service.reload() }
+    }
+
     /// The user deleted the file on purpose: drop its draft, and stop the
     /// draft mirror from re-recording it as this view goes away.
     private func forgetDraft() {
@@ -430,11 +457,12 @@ struct KBEditorView: View {
         let newName = renameText
         Task {
             do {
-                let (dest, change) = try await writer.renameReturningChange(fileURL: node.url, to: newName)
+                let original = node.url
+                let (dest, change) = try await writer.renameReturningChange(fileURL: original, to: newName)
                 await MainActor.run {
-                    service.drafts.move(from: node.url, to: dest)
+                    service.drafts.move(from: original, to: dest)
                     service.reload(); onRenamed(dest); showRename = false
-                    registerUndo(change)
+                    registerRenameUndo(change, from: original, to: dest)
                 }
             } catch {
                 await MainActor.run {

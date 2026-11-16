@@ -63,8 +63,8 @@ struct ActionItemsWritePathTests {
             .markDone(subject: "Draft the demo outline", shortPrefix: "QZX7"), displayedDate: day)
         let change = try #require(result.change)
         #expect(change.actionName == "Mark Done")
-        #expect(change.before.first?.data == Data(openTask.utf8))
-        #expect(change.after.first?.data == Data(doneTask.utf8))
+        #expect(change.files.map(\.lineDelta) == [LineDelta(removed: 1, added: 1)])
+        #expect(!result.undoUnavailable)
     }
 
     @Test @MainActor func undoOfTaggedDoneRunsTheEngineInverse() async throws {
@@ -120,6 +120,38 @@ struct ActionItemsWritePathTests {
         #expect(vault.read(dayFile) == openTask)
     }
 
+    @Test func aRunEditDuringTheWriteLeavesNoByteUndo() async throws {
+        // Review finding 1: B0 → a run's B1 → the app's B2. Recording (B0, B2)
+        // would let undo drop the run's line, so the change is discarded.
+        let vault = try TempVault()
+        try vault.write(dayFile, openTask)
+        let runAndSnooze = "## 🔥 Urgent\n\n- [ ] [#WVB2] **A run added this**\n- [ ] [#QZX7] **Draft the demo outline** — for Priya\n  - snoozed-until: 2026-04-22\n"
+        let runner = scoutctl(vault) { _ in runAndSnooze }
+        let result = try await writer(vault, runner).submit(
+            .snooze(subject: "x", shortPrefix: "QZX7", until: day, fromKind: nil), displayedDate: day)
+        #expect(result.change == nil)
+        #expect(result.undoUnavailable)
+        #expect(vault.read(dayFile) == runAndSnooze)
+    }
+
+    @Test func aRunEditFarFromTheOpIsAlsoCaught() async throws {
+        let vault = try TempVault()
+        let longDay = openTask + "\n## 👀 Watch\n\n- [ ] [#WVB2] **Keep an eye on the tracing job**\n"
+        try vault.write(dayFile, longDay)
+        let both = doneTask + "\n## 👀 Watch\n\n- [x] [#WVB2] **Keep an eye on the tracing job**\n"
+        let runner = scoutctl(vault) { _ in both }
+        let result = try await writer(vault, runner).submit(
+            .markDone(subject: "Draft the demo outline", shortPrefix: nil), displayedDate: day)
+        #expect(result.change == nil)
+        #expect(result.undoUnavailable)
+    }
+
+    @Test func expectedLineShapes() {
+        #expect(WriteOp.snooze(subject: "s", shortPrefix: nil, until: day, fromKind: nil).expectedLineDelta == LineDelta(removed: 0, added: 1))
+        #expect(WriteOp.deleteComment(subject: "s", shortPrefix: nil, selector: .index(1)).expectedLineDelta == LineDelta(removed: 1, added: 0))
+        #expect(WriteOp.addComment(subject: "s", shortPrefix: nil, text: "two\nlines", author: "alex").expectedLineDelta == nil)
+    }
+
     @Test func snoozeUndoRestoresTheBytesAndRedoReappliesThem() async throws {
         let vault = try TempVault()
         try vault.write(dayFile, openTask)
@@ -171,7 +203,7 @@ struct BoardWritePathTests {
         let url = vault.url(file)
         runner.onCall = { _ in try? "- https://a.example/1\n- https://a.example/2\n".write(to: url, atomically: true, encoding: .utf8) }
         let w = writer(vault, runner)
-        let change = try #require(try await w.submit(.dismiss(key: "https://a.example/2")))
+        let change = try #require(try await w.submit(.dismiss(key: "https://a.example/2")).change)
         #expect(change.actionName == "Dismiss Entry")
 
         try await w.restore(change, .undo)
@@ -190,9 +222,21 @@ struct BoardWritePathTests {
             try? "- https://a.example/2\n".write(to: url, atomically: true, encoding: .utf8)
         }
         let w = writer(vault, runner)
-        let change = try #require(try await w.submit(.dismiss(key: "https://a.example/2")))
+        let change = try #require(try await w.submit(.dismiss(key: "https://a.example/2")).change)
         try await w.restore(change, .undo)
         #expect(!vault.exists(file))
+    }
+
+    @Test func aDismissMixedWithAnotherEditHasNoByteUndo() async throws {
+        let vault = try TempVault()
+        let file = "action-items/\(DismissedFileLoader.fileName)"
+        try vault.write(file, "- a\n")
+        let runner = RecordingRunner()
+        let url = vault.url(file)
+        runner.onCall = { _ in try? "- someone else\n- a\n- k\n".write(to: url, atomically: true, encoding: .utf8) }
+        let result = try await writer(vault, runner).submit(.dismiss(key: "k"))
+        #expect(result.change == nil)
+        #expect(result.undoUnavailable)
     }
 
     @Test func failedDismissThrowsAndHasNothingToUndo() async throws {
@@ -210,7 +254,7 @@ struct BoardWritePathTests {
         let url = vault.url(file)
         runner.onCall = { _ in try? "- k\n".write(to: url, atomically: true, encoding: .utf8) }
         let w = writer(vault, runner)
-        let change = try #require(try await w.submit(.dismiss(key: "k")))
+        let change = try #require(try await w.submit(.dismiss(key: "k")).change)
         try vault.write(file, "- k\n- another\n")
         await #expect(throws: VaultWriteError.undoStale(file: DismissedFileLoader.fileName)) {
             try await w.restore(change, .undo)
@@ -354,6 +398,33 @@ struct KnowledgeBaseWritePathTests {
         #expect(vault.read(note) == "v2\nResearch appended this.\n")
     }
 
+    @Test func saveComparesBytesNotCanonicalText() async throws {
+        // Review finding 6: NFC and NFD spell "é" differently on disk but
+        // compare equal as Strings. A byte compare sees the change.
+        let vault = try TempVault()
+        let url = try vault.write(note, "Cafe\u{301}\n")
+        let w = KnowledgeBaseFileWriter(scoutDirectory: vault.root, gitService: nil)
+        await #expect(throws: KBWriterError.conflict(file: "demo.md")) {
+            try await w.save(fileURL: url, contents: "mine\n", baselineContents: "Caf\u{E9}\n", label: "demo")
+        }
+        #expect(try Data(contentsOf: url) == Data("Cafe\u{301}\n".utf8))
+    }
+
+    @Test func undoNeverTouchesAnUnreadableFile() async throws {
+        // Review finding 3: "can't read" must not pass for "doesn't exist".
+        let vault = try TempVault()
+        let url = try vault.write(note, "keep me\n")
+        let w = KnowledgeBaseFileWriter(scoutDirectory: vault.root, gitService: nil)
+        let change = try #require(try await w.delete(fileURL: url, label: "demo"))
+        try vault.write(note, "recreated, then locked\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+
+        await #expect(throws: VaultWriteError.self) { try await w.restore(change, .undo) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        #expect(vault.read(note) == "recreated, then locked\n")
+    }
+
     @Test func deleteIsUndoable() async throws {
         let vault = try TempVault()
         let url = try vault.write(note, "keep me\n")
@@ -479,6 +550,21 @@ struct ScheduleWritePathTests {
         #expect(vault.read("schedule.yaml") == cli)
     }
 
+    @Test func aWriteDuringValidationIsNotClobbered() async throws {
+        // Review finding 2: the stale check ran before `schedule validate`.
+        let vault = try TempVault()
+        let path = try vault.write("schedule.yaml", scheduleYAML)
+        let cli = scheduleYAML.replacingOccurrences(of: "08:00", with: "06:45")
+        let s = ScheduleEditService(
+            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
+            runner: EditDuringValidateRunner(list: scheduleJSON, file: path, edit: cli),
+            canonicalSchedulePath: path,
+            argumentsPrefix: ["scoutctl"])
+        try await s.loadAll()
+        await #expect(throws: StaleScheduleError.self) { try await s.save(allSlots: edited(s)) }
+        #expect(vault.read("schedule.yaml") == cli)
+    }
+
     @Test func deleteIsUndoable() async throws {
         let vault = try TempVault()
         let s = try service(vault)
@@ -487,5 +573,21 @@ struct ScheduleWritePathTests {
         #expect(change.actionName == "Delete Slot")
         try await s.restore(change, .undo)
         #expect(vault.read("schedule.yaml") == scheduleYAML)
+    }
+}
+
+/// `scoutctl` for the schedule: lists `list`, and on `schedule validate`
+/// rewrites `file` with `edit` (another writer landing mid-save) before
+/// passing.
+private struct EditDuringValidateRunner: ProcessRunner {
+    let list: String
+    let file: URL
+    let edit: String
+    func run(executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?) async throws -> ProcessResult {
+        if arguments.contains("validate") {
+            try edit.write(to: file, atomically: true, encoding: .utf8)
+            return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+        }
+        return ProcessResult(exitCode: 0, stdout: Data(list.utf8), stderr: Data())
     }
 }

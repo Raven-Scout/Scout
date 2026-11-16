@@ -154,4 +154,53 @@ struct VaultWriteTests {
         #expect(read(a) == "a1")
         #expect(read(b) == "b2")
     }
+
+    // MARK: Review fixes
+
+    @Test func anUnreadableFileMatchesNothingNotEvenNoFile() throws {
+        let url = try file("locked.md", "secret")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+        #expect(!FileSnapshot(url: url, data: nil).matchesDisk())
+        #expect(throws: VaultWriteError.self) { try FileSnapshot.capture(url) }
+    }
+
+    @Test func writeKeepsTheFilesPermissions() throws {
+        let url = try file("private.md", "one")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try VaultWrite.write(Data("two".utf8), to: url)
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        #expect(read(url) == "two")
+    }
+
+    @Test func writeGoesThroughASymlink() throws {
+        let target = try file("real.md", "one")
+        let link = dir.appendingPathComponent("link.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        try VaultWrite.write(Data("two".utf8), to: link)
+        #expect(read(target) == "two")
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil)
+    }
+
+    @Test func aChangeKeepsOnlyTheChangedBytes() throws {
+        // Review finding 9: a one-line edit to a large file mustn't hold two
+        // copies of it.
+        let big = String(repeating: "- [ ] [#AAAA] a long line of an action item\n", count: 20_000)
+        let url = try file("day.md", big + "- [ ] [#QZX7] **Edit me**\n" + big)
+        let before = try FileSnapshot.capture(url)
+        try (big + "- [x] [#QZX7] **Edit me**\n" + big).write(to: url, atomically: true, encoding: .utf8)
+        let change = try #require(VaultChange(actionName: "Mark Done", before: [before], after: [try FileSnapshot.capture(url)]))
+        let delta = try #require(change.files.first)
+        #expect(delta.before.middle.count + delta.after.middle.count < 10)
+        #expect(delta.lineDelta == LineDelta(removed: 1, added: 1))
+        try change.undo()
+        #expect(try Data(contentsOf: url) == before.data)
+    }
+
+    @Test func lineDeltaShapes() {
+        #expect(LineDelta(before: Data("a\nb\n".utf8), after: Data("a\nx\nb\n".utf8)) == LineDelta(removed: 0, added: 1))
+        #expect(LineDelta(before: Data("a\nb\nc\n".utf8), after: Data("a\nc\n".utf8)) == LineDelta(removed: 1, added: 0))
+        #expect(LineDelta(before: Data("a\nb\nc\n".utf8), after: Data("A\nb\nC\n".utf8)) == LineDelta(removed: 3, added: 3))
+    }
 }

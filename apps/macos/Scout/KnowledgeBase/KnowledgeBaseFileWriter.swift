@@ -171,30 +171,30 @@ actor KnowledgeBaseFileWriter {
         fileURL: URL, contents: String, baselineContents: String?, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
     ) async throws -> VaultChange? {
-        let fm = FileManager.default
-        let exists = fm.fileExists(atPath: fileURL.path)
-        if exists {
-            // Conflict check: what's on disk must still be what the editor
-            // loaded. A nil baseline on an existing file means the caller
-            // couldn't read it at load — treat as a conflict to be safe.
-            guard let baselineContents,
-                  let current = try? String(contentsOf: fileURL, encoding: .utf8),
-                  current == baselineContents else {
-                throw KBWriterError.conflict(file: fileURL.lastPathComponent)
-            }
+        // Conflict check: the bytes on disk must still be exactly what the
+        // editor loaded. Bytes, not `String`s: `String ==` treats NFC and NFD
+        // spellings of the same text as equal. A nil baseline on an existing
+        // file means the caller couldn't read it at load, and a file that
+        // can't be read now is not "missing": both are conflicts.
+        let onDisk: Data?
+        do { onDisk = try FileSnapshot.capture(fileURL).data }
+        catch { throw KBWriterError.conflict(file: fileURL.lastPathComponent) }
+        if let onDisk, baselineContents.map({ Data($0.utf8) }) != onDisk {
+            throw KBWriterError.conflict(file: fileURL.lastPathComponent)
         }
+        let written = Data(contents.utf8)
         do {
-            try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
-                                   withIntermediateDirectories: true)
-            try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+            try VaultWrite.replace(fileURL, expecting: onDisk, with: written)
+        } catch VaultWriteError.stale {
+            throw KBWriterError.conflict(file: fileURL.lastPathComponent)
         } catch {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try await commitOrThrow(gitService, paths: [rel], message: "app: edit \(label)")
         return VaultChange(actionName: "Edit Note",
-                           before: [.text(fileURL, exists ? baselineContents : nil)],
-                           after: [.text(fileURL, contents)])
+                           before: [FileSnapshot(url: fileURL, data: onDisk)],
+                           after: [FileSnapshot(url: fileURL, data: written)])
     }
 
     private static func performCreate(
@@ -208,8 +208,9 @@ actor KnowledgeBaseFileWriter {
             throw KBWriterError.alreadyExists(fileName)
         }
         do {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            try initialContents.write(to: dest, atomically: true, encoding: .utf8)
+            try VaultWrite.replace(dest, expecting: nil, with: Data(initialContents.utf8))
+        } catch VaultWriteError.stale {
+            throw KBWriterError.alreadyExists(fileName)
         } catch {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }

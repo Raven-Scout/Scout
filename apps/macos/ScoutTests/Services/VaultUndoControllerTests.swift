@@ -157,4 +157,33 @@ struct VaultUndoControllerTests {
         }
         #expect(probes.allSatisfy { $0.log == ["undo"] })
     }
+
+    @Test func entriesPastTheLimitAreRemovedNotLeftDead() async {
+        let c = VaultUndoController(), m = manager()
+        let probes = (0...VaultUndoController.liveLimit).map { _ in Probe() }
+        for p in probes { register(c, p, m) }
+        for _ in probes {
+            guard m.canUndo else { break }
+            m.undo()
+            await c.lastRun?.value
+        }
+        let ran = probes.indices.filter { !probes[$0].log.isEmpty }
+        let missed = probes.indices.filter { probes[$0].log.isEmpty }
+        #expect(missed == [0], "ran \(ran.count), missed \(missed)")
+        #expect(probes.dropFirst().allSatisfy { $0.log == ["undo"] })
+        #expect(!m.canUndo)
+    }
+
+    /// Review item 8, the rule: the window has one undo stack (text and vault
+    /// changes, newest first, as in Finder), except the Rich note editor,
+    /// whose typing history is its own, so ⌘Z while typing a note stops there.
+    @Test func theRichNoteEditorKeepsItsOwnTypingHistory() {
+        let editor = KBLiveEditor(text: .constant("note"))
+        let coordinator = editor.makeCoordinator()
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        let tv = NSTextView()
+        window.contentView = tv
+        #expect(coordinator.undoManager(for: tv) === coordinator.textUndo)
+        #expect(coordinator.textUndo !== window.undoManager)
+    }
 }

@@ -69,6 +69,26 @@ enum WriteOp: Sendable {
         }
     }
 
+    /// The line change this op makes to the day file: one line inserted
+    /// (snooze marker, new comment), changed (checkbox, edited comment) or
+    /// removed (deleted comment). A before/after pair that differs by
+    /// anything else also holds someone else's edit, made while scoutctl ran,
+    /// so it isn't byte-undone. nil: no shape is known (multi-line text).
+    var expectedLineDelta: LineDelta? {
+        switch self {
+        case .snooze:
+            return LineDelta(removed: 0, added: 1)
+        case .addComment(_, _, let text, _):
+            return text.contains(where: \.isNewline) ? nil : LineDelta(removed: 0, added: 1)
+        case .editComment(_, _, _, let text):
+            return text.contains(where: \.isNewline) ? nil : LineDelta(removed: 1, added: 1)
+        case .markDone, .reopen:
+            return LineDelta(removed: 1, added: 1)
+        case .deleteComment:
+            return LineDelta(removed: 1, added: 0)
+        }
+    }
+
     var shortPrefix: String? {
         switch self {
         case .addComment(_, let p, _, _),
@@ -108,10 +128,8 @@ enum WriteOp: Sendable {
     ///   comment from the app read `scout: <author>: <text>` and parsed as a
     ///   comment from Scout. The name is folded by `CommentAuthor.handle`
     ///   into the shape both parsers accept.
-    /// - Reopen routes through `mark-done --undo`. scoutctl doesn't currently
-    ///   expose `--undo` (BACKLOG: add scoutctl mark-done --undo); the call
-    ///   will fail with a clear "no such option" error until the plugin
-    ///   catches up.
+    /// - Reopen routes through `mark-done --undo`, which flips `[x]` back to
+    ///   `[ ]` and refuses an ambiguous match rather than guessing.
     fileprivate func scoutctlArguments(dailyFilePath: URL) -> [String] {
         var args = ["action-items", scoutctlSubcommand, dailyFilePath.path]
         if let prefix = shortPrefix {
@@ -173,6 +191,9 @@ struct WriteResult: Sendable {
     /// The day file's bytes before and after, for undo. nil when the op
     /// changed nothing, or the file couldn't be read back.
     var change: VaultChange? = nil
+    /// The write changed the file, but not only in the op's own line (a run
+    /// wrote the day at the same moment), so it has no byte undo.
+    var undoUnavailable = false
 }
 
 /// Serializes action-item mutations through `scoutctl action-items <op>`.
@@ -300,16 +321,29 @@ actor ActionItemsWriter {
                 exitCode: result.exitCode, stderr: stderr, classification: cls)
         }
 
+        // Read "after" the moment scoutctl exits, before the commit, and keep
+        // the change only if it is exactly this op's own line edit: a run that
+        // wrote the day while scoutctl ran would otherwise be in the pair, and
+        // undo would drop its edit along with ours.
+        let after = try? FileSnapshot.capture(dailyFile)
+        let change = Self.undoableChange(op: op, before: before, after: after)
+
         let slug = Self.slugify(op.subject)
         let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
 
-        let change = before.flatMap { before in
-            (try? FileSnapshot.capture(dailyFile)).flatMap {
-                VaultChange(actionName: op.actionName, before: [before], after: [$0])
-            }
-        }
-        return WriteResult(stderr: stderr, change: change)
+        return WriteResult(stderr: stderr, change: change,
+                           undoUnavailable: change == nil && before?.data != after?.data)
+    }
+
+    /// The byte-undoable change for `op`, or nil when the files couldn't be
+    /// read or the change isn't the op's expected line edit.
+    static func undoableChange(op: WriteOp, before: FileSnapshot?, after: FileSnapshot?) -> VaultChange? {
+        guard let before, let after, before.exists, let expected = op.expectedLineDelta,
+              let change = VaultChange(actionName: op.actionName, before: [before], after: [after]),
+              change.files.allSatisfy({ $0.lineDelta == expected })
+        else { return nil }
+        return change
     }
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last

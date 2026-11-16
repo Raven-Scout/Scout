@@ -19,6 +19,22 @@ struct WriteFeedbackOverlay: View {
                 WriteProblemBanner(problem: problem) { controller.problem = nil }
                     .transition(.opacity)
             }
+            if let notice = controller.notice {
+                Text(notice)
+                    .font(DS.sans(12))
+                    .foregroundStyle(DS.Ink.p1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: 420, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(.regularMaterial))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft))
+                    .shadow(radius: 4, y: 1)
+                    .transition(.opacity)
+                    .task(id: notice) {
+                        try? await Task.sleep(for: .seconds(Self.toastSeconds))
+                        if controller.notice == notice { controller.notice = nil }
+                    }
+            }
             if let latest = controller.latest {
                 undoToast(latest)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -32,6 +48,7 @@ struct WriteFeedbackOverlay: View {
         .padding(.bottom, 16)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: controller.latest)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: controller.problem)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: controller.notice)
     }
 
     private func undoToast(_ latest: VaultUndoController.Registered) -> some View {

@@ -67,8 +67,7 @@ struct KBLiveEditor: NSViewRepresentable {
             let sel = tv.selectedRange()
             // Typing undo recorded against the old text would replay its
             // ranges onto the new one (a reload, or a reverted save: C10).
-            tv.undoManager?.removeAllActions(withTarget: tv)
-            if let storage = tv.textStorage { tv.undoManager?.removeAllActions(withTarget: storage) }
+            context.coordinator.textUndo.removeAllActions()
             tv.string = text
             let len = (text as NSString).length
             tv.setSelectedRange(NSRange(location: min(sel.location, len), length: 0))
@@ -87,7 +86,15 @@ struct KBLiveEditor: NSViewRepresentable {
         /// or deleting a fence delimiter would leave stale styling below.
         private var lastBlockRanges: [NSRange] = []
 
+        /// The note's own typing history (C10). The window's undo manager
+        /// also holds vault changes (Mark Done, Approve, …) from every page;
+        /// with its own manager, ⌘Z while typing a note stops at the note's
+        /// text instead of reaching past it into those.
+        let textUndo = UndoManager()
+
         init(_ parent: KBLiveEditor) { self.parent = parent }
+
+        func undoManager(for view: NSTextView) -> UndoManager? { textUndo }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView, !isProgrammatic else { return }

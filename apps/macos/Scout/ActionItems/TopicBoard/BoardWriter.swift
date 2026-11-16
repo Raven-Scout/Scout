@@ -54,6 +54,17 @@ enum BoardWriteOp: Sendable, Equatable {
         }
     }
 
+    /// Whether a before/after line change is exactly what this op does to an
+    /// existing file: dismiss appends one line; a rename changes, adds or
+    /// removes one. Anything else also holds another writer's edit. A file
+    /// the op created is fine: Scout runs never write either file.
+    func isOwnChange(_ delta: LineDelta) -> Bool {
+        switch self {
+        case .dismiss: delta == LineDelta(removed: 0, added: 1)
+        case .renameTopic: delta.removed <= 1 && delta.added <= 1
+        }
+    }
+
     var commitMessage: String {
         switch self {
         case .renameTopic(let tag, let name): name.isEmpty ? "action-items: clear topic name #\(tag)" : "action-items: rename topic #\(tag)"
@@ -93,10 +104,18 @@ actor BoardWriter {
         self.git = git
     }
 
-    /// Run `op`. Returns the touched file's bytes before and after, for
-    /// undo; nil when nothing changed or the file couldn't be read.
+    /// What a write left for undo.
+    struct Result: Sendable {
+        /// nil when nothing changed, the file couldn't be read, or the change
+        /// wasn't only this op's (see `undoUnavailable`).
+        var change: VaultChange?
+        /// The file changed by more than this op's line: no byte undo.
+        var undoUnavailable = false
+    }
+
+    /// Run `op`, and return how the touched file changed, for undo.
     @discardableResult
-    func submit(_ op: BoardWriteOp) async throws -> VaultChange? {
+    func submit(_ op: BoardWriteOp) async throws -> Result {
         let previous = tail
         let task = Task { [self] in
             _ = await previous?.value
@@ -133,25 +152,30 @@ actor BoardWriter {
         return supportsWrites
     }
 
-    private func perform(_ op: BoardWriteOp) async throws -> VaultChange? {
+    private func perform(_ op: BoardWriteOp) async throws -> Result {
         let file = actionItemsDirectory.appendingPathComponent(op.fileName)
         let before = try? FileSnapshot.capture(file)
         try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
-        let change = before.flatMap { before in
-            (try? FileSnapshot.capture(file)).flatMap {
-                VaultChange(actionName: op.actionName, before: [before], after: [$0])
-            }
+        // Read "after" as soon as scoutctl exits, before the commit, and keep
+        // it only if the change is this op's own (see `isOwnChange`).
+        let after = try? FileSnapshot.capture(file)
+        let captured = before.flatMap { before in
+            after.flatMap { VaultChange(actionName: op.actionName, before: [before], after: [$0]) }
         }
+        let own = captured.flatMap { change in
+            change.files.allSatisfy { !$0.before.exists || op.isOwnChange($0.lineDelta) } ? change : nil
+        }
+        let result = Result(change: own, undoUnavailable: captured != nil && own == nil)
         guard let path = Self.relativePath(of: file, in: scoutDirectory) else {
             Self.log.debug("Not committing \(file.path, privacy: .public): outside \(self.scoutDirectory.path, privacy: .public)")
-            return change
+            return result
         }
         do {
             try await git?.commitPaths([path], message: op.commitMessage)
         } catch {
             Self.log.debug("Commit of \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
-        return change
+        return result
     }
 
     private func run(_ arguments: [String]) async throws {

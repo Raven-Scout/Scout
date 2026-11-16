@@ -135,9 +135,10 @@ struct TopicBoardView: View {
         let writer = writerBox.boardWriter
         Task {
             do {
-                let change = try await writer.submit(op)
+                let result = try await writer.submit(op)
                 reloadBoardFiles()
-                if let change {
+                if result.undoUnavailable { vaultUndo.noteNotUndoable(op.actionName) }
+                if let change = result.change {
                     vaultUndo.register(
                         .restoring(change) { change, direction in try await writer.restore(change, direction) },
                         with: undoManager

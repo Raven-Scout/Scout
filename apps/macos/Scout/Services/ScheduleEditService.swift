@@ -114,8 +114,28 @@ final class ScheduleEditService: ObservableObject {
     ///
     /// Returns the file's bytes before and after for undo (`restore`), nil
     /// when the save changed nothing. `actionName` names it in the Edit menu.
+    ///
+    /// Saves, deletes and undo/redo run one at a time (`serialized`), so an
+    /// undo can't land while a save waits on `schedule validate`.
     @discardableResult
     func save(allSlots: [Slot], actionName: String = "Edit Schedule") async throws -> VaultChange? {
+        try await serialized { try await self.performSave(allSlots: allSlots, actionName: actionName) }
+    }
+
+    /// Tail of the write chain: each write awaits the previous one.
+    private var writeTail: Task<Void, Never>?
+
+    private func serialized<T>(_ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        let previous = writeTail
+        let task = Task { @MainActor in
+            _ = await previous?.value
+            return try await work()
+        }
+        writeTail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    private func performSave(allSlots: [Slot], actionName: String) async throws -> VaultChange? {
         // 0. Never write from a page that doesn't know what's in the file.
         guard loadState == .loaded else { throw ScheduleNotLoadedError() }
 
@@ -170,9 +190,14 @@ final class ScheduleEditService: ObservableObject {
             )
         }
 
-        // 5. Atomic rename. replaceItemAt consumes tmp on success, so the
+        // 5. Atomic rename. Re-check the bytes first: `schedule validate` is a
+        // subprocess, and a write that landed while it ran must not be
+        // clobbered (C10). replaceItemAt consumes tmp on success, so the
         // defer becomes a no-op (removeItem on a missing file fails silently
         // because of the `try?`).
+        if try FileSnapshot.capture(canonicalSchedulePath).data != before.data {
+            throw StaleScheduleError(loadedAt: loadedMtime, modifiedAt: currentMtime())
+        }
         _ = try FileManager.default.replaceItemAt(
             canonicalSchedulePath,
             withItemAt: tmp,
@@ -180,10 +205,15 @@ final class ScheduleEditService: ObservableObject {
             options: [.usingNewMetadataOnly]
         )
 
+        // The undo baseline is the bytes renamed into place, not a re-read
+        // after the reload below, which could already hold someone else's
+        // edit.
+        let change = VaultChange(actionName: actionName, before: [before],
+                                 after: [FileSnapshot(url: canonicalSchedulePath, data: Data(body.utf8))])
+
         // 6. Reload + recapture mtime.
         try await loadAll()
-        let after = try? FileSnapshot.capture(canonicalSchedulePath)
-        return after.flatMap { VaultChange(actionName: actionName, before: [before], after: [$0]) }
+        return change
     }
 
     /// Undo or redo a save: put the schedule file's earlier (or later) bytes
@@ -191,13 +221,15 @@ final class ScheduleEditService: ObservableObject {
     /// schedule saves aren't either. The restored bytes were valid when they
     /// were written, so they skip `schedule validate`.
     func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
-        do {
-            try await change.apply(direction, git: nil, repo: canonicalSchedulePath.deletingLastPathComponent())
-        } catch {
-            try? await loadAll()
-            throw error
+        try await serialized {
+            do {
+                try await change.apply(direction, git: nil, repo: self.canonicalSchedulePath.deletingLastPathComponent())
+            } catch {
+                try? await self.loadAll()
+                throw error
+            }
+            try await self.loadAll()
         }
-        try await loadAll()
     }
 
     /// Delete a slot by key and persist via the same atomic-write path as save.
@@ -212,8 +244,10 @@ final class ScheduleEditService: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "no such slot: \(slotKey)"]
             )
         }
-        let remaining = slots.filter { $0.key != slotKey }
-        return try await save(allSlots: remaining, actionName: "Delete Slot")
+        return try await serialized {
+            let remaining = self.slots.filter { $0.key != slotKey }
+            return try await self.performSave(allSlots: remaining, actionName: "Delete Slot")
+        }
     }
 
     /// Serialize slot array to a YAML string matching the engine's expected
