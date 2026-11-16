@@ -12,7 +12,7 @@ from scout.agent_runtimes import check as rt_check
 from scout.agent_runtimes import consent, limits
 from scout.agent_runtimes.base import TIER_F_REQUIRES, TIER_L_REQUIRES, Capability
 from scout.agent_runtimes.claude_code import FULL_CAPABILITIES, ClaudeCode
-from tests._agent_runtimes import DummyRuntime
+from tests._agent_runtimes import DummyRuntime, registered
 
 C = Capability
 NOW = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
@@ -150,7 +150,7 @@ def _config(vault: Path, text: str) -> None:
 def test_limits_default_on_for_a_runtime_without_a_cap(vault: Path) -> None:
     lim = limits.limits_for(vault, DummyRuntime("d"))
     assert (lim.run_timeout_s, lim.timeout_source) == (45 * 60, "default")
-    assert (lim.max_tokens_per_day, lim.ceiling_source) == (limits.PLACEHOLDER_DAILY_TOKENS, "default")
+    assert (lim.max_tokens_per_day, lim.ceiling_source) == (limits.FLOOR_TOKENS, "default")
 
 
 def test_limits_default_off_for_claude_code(vault: Path) -> None:
@@ -168,7 +168,7 @@ def test_limits_from_config(vault: Path) -> None:
     )
     c = limits.limits_for(vault, ClaudeCode())
     assert (c.run_timeout_s, c.timeout_source) == (90 * 60, "config")
-    assert (c.max_tokens_per_day, c.ceiling_source) == (limits.PLACEHOLDER_DAILY_TOKENS, "config")
+    assert (c.max_tokens_per_day, c.ceiling_source) == (limits.FLOOR_TOKENS, "config")
     d = limits.limits_for(vault, DummyRuntime("d"))
     assert (d.run_timeout_s, d.timeout_source) == (None, "off")
     assert (d.max_tokens_per_day, d.ceiling_source) == (1000, "config")
@@ -231,3 +231,91 @@ def test_the_token_ceiling_skips_as_budget(vault: Path) -> None:
 def test_the_default_ceiling_is_one_replaceable_function(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(limits, "default_daily_token_ceiling", lambda d, rid: 123)
     assert limits.limits_for(vault, DummyRuntime("d")).max_tokens_per_day == 123
+
+
+# -- the default ceiling's formula (Phase 0, #650 §3) ----------------------------------------------------------
+
+SLOT = """\
+  {key}:
+    type: {kind}
+    runner: run-{runner}.sh
+    fires_at_local: "02:00"
+    weekdays: [Mon, Tue, Wed, Thu, Fri]
+    missed_window_hours: 4
+    on_miss: skip
+    cooldown_minutes: 60
+{extra}"""
+
+
+def _schedule(vault: Path, *slots: tuple[str, str, str]) -> None:
+    body = "".join(
+        SLOT.format(key=k, kind=kind, runner="scout" if kind in ("briefing", "consolidation") else kind, extra=e)
+        for k, kind, e in slots
+    )
+    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots:\n" + body, encoding="utf-8")
+
+
+def _boot(hours_ago: float, kind: str, usd: float, **extra: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "ts": _ts(hours_ago),
+        "type": kind,
+        "source": "runner",
+        "cost_source": "transcript",
+        "budget_spent": usd,
+    }
+    row.update(extra)
+    return row
+
+
+def test_formula_floor_with_no_rows(vault: Path) -> None:
+    with registered(DummyRuntime("d")):
+        _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == limits.FLOOR_TOKENS
+
+
+def test_formula_bootstraps_from_claudes_measured_runs(vault: Path) -> None:
+    with registered(DummyRuntime("d")):
+        _schedule(
+            vault,
+            ("night", "dreaming", "    agent_runtime: d\n"),
+            ("night-2", "dreaming", "    agent_runtime: d\n"),
+            ("web", "research", "    agent_runtime: d\n"),
+            ("brief", "briefing", ""),  # Claude Code's: not counted for d
+        )
+        # dreaming p90 of [2, 4, 6, 8, 10] = 10 USD; research p90 of [3] = 3 USD.
+        _rows(
+            vault,
+            *[_boot(24 * i + 1, "dreaming-nightly", usd) for i, usd in enumerate([2, 4, 6, 8, 10])],
+            _boot(5, "research", 3),
+            _boot(5, "dreaming", 0),  # the $0 rows the run_cost fix left behind: never counted
+            _boot(5, "research", 99, cost_source="usage"),  # not measured from the transcript
+            _boot(5, "research", 99, source="session"),
+            _boot(24 * 20, "research", 99),  # outside the 14 days
+        )
+        want = 2 * (10 + 10 + 3) * 1_000_000
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == want
+
+
+def test_formula_uses_the_runtimes_own_rows_after_a_week(vault: Path) -> None:
+    with registered(DummyRuntime("d")):
+        _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
+        boot = [_boot(5, "dreaming", 50)]
+        young = [{"ts": _ts(24 * 3), "agent_runtime": "d", "type": "dreaming", "tokens": 9_000_000}]
+        _rows(vault, *boot, *young)
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 2 * 50 * 1_000_000  # still bootstrap
+        old = [{"ts": _ts(24 * 8), "agent_runtime": "d", "type": "dreaming", "tokens": 7_000_000}]
+        _rows(vault, *boot, *young, *old)
+        # Own rows: p90 of [7M, 9M] = 9M; 2 * 9M = 18M.
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 18_000_000
+
+
+def test_formula_a_kind_without_rows_uses_all_rows(vault: Path) -> None:
+    with registered(DummyRuntime("d")):
+        _schedule(vault, ("web", "research", "    agent_runtime: d\n"))
+        _rows(vault, _boot(5, "dreaming", 8))
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 16_000_000
+
+
+def test_formula_errors_keep_the_floor(vault: Path) -> None:
+    (vault / ".scout-state" / "schedule.yaml").write_text("slots: [\n", encoding="utf-8")
+    assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == limits.FLOOR_TOKENS

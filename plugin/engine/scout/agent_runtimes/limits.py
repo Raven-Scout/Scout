@@ -18,11 +18,18 @@ missing key meaning ``claude-code``) over the last 24 hours, summing their
 ``tokens`` (or ``input_tokens`` + ``output_tokens``). A run that would start past it
 is skipped as ``skipped_budget``, like a USD overrun.
 
-**The default ceiling is a placeholder.** Phase 0 derives the formula from the
-owner's Claude Code ledgers. Until it reports, ``default_daily_token_ceiling``
-returns ``PLACEHOLDER_DAILY_TOKENS``; the formula replaces that one function.
-No runtime registered in Phase 1 lacks ``budget_cap``, so the placeholder can't
-skip a run yet.
+**The default ceiling** (``auto``) is Phase 0's formula (spec §8.6; the Phase 0
+findings, #650 §3), pending Jordan's OK, so every constant is a module constant::
+
+    ceiling = max(FLOOR, H * sum over this runtime's slots s of T(kind of s))
+
+``T`` is one run's tokens at the 90th percentile over the last 14 days of the usage
+tracker. While the runtime has under 7 days of its own rows, it is bootstrapped from
+Claude Code's measured runs (``source: runner``, ``cost_source: transcript``) as
+``p90(budget_spent) * K``. Rows are grouped by slot kind (dreaming, research,
+briefing, consolidation), and a kind without rows uses all of them. A slot counts
+one run per day. No rows at all gives ``FLOOR``. No runtime registered in Phase 1
+lacks ``budget_cap``, so the ceiling can't skip a run yet.
 """
 
 from __future__ import annotations
@@ -37,9 +44,16 @@ from scout import paths
 from scout.agent_runtimes.base import AgentRuntime
 
 DEFAULT_RUN_TIMEOUT_MINUTES = 45
-# TODO(Phase 0, spec §8.6): replace with the formula from the owner's Claude Code ledgers.
-PLACEHOLDER_DAILY_TOKENS = 5_000_000
 CEILING_WINDOW = timedelta(hours=24)
+# The default ceiling's formula (Phase 0, #650 §3). K is derived from USD at list prices, not measured
+# (about ±25%), which is why a runtime's own rows replace the bootstrap after OWN_ROWS_AFTER.
+K_TOKENS_PER_USD = 1_000_000
+H_HEADROOM = 2
+FLOOR_TOKENS = 10_000_000
+FORMULA_WINDOW = timedelta(days=14)
+OWN_ROWS_AFTER = timedelta(days=7)
+PCTL = 0.90
+SLOT_KINDS = ("dreaming", "research", "briefing", "consolidation")
 
 Source = Literal["config", "default", "off"]
 
@@ -53,9 +67,73 @@ class RuntimeLimits:
     ceiling_source: Source
 
 
-def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str) -> int:
-    """The default daily token ceiling for *runtime_id* (``max_tokens_per_day: auto``). Placeholder until Phase 0."""
-    return PLACEHOLDER_DAILY_TOKENS
+def _percentile(values: list[float], q: float = PCTL) -> float:
+    """Nearest-rank percentile; 0.0 for no values."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, -(-len(ordered) * q // 1))  # ceil(n * q), at least 1
+    return float(ordered[int(rank) - 1])
+
+
+def _kind(text: object) -> str | None:
+    if not isinstance(text, str):
+        return None
+    for kind in SLOT_KINDS:
+        if kind in text:
+            return kind
+    return None
+
+
+def _runtime_slot_kinds(data_dir: Path | None, runtime_id: str) -> list[str]:
+    """The slot kind of every scheduled slot that runs on *runtime_id* (its own agent_runtime, else the default)."""
+    from scout.agent_runtimes.resolve import default_runtime
+    from scout.schedule import load_default_schedule, load_schedule
+
+    vault_schedule = paths.state_dir(data_dir) / "schedule.yaml"
+    schedule = load_schedule(vault_schedule) if vault_schedule.exists() else load_default_schedule()
+    fallback = default_runtime(data_dir).runtime
+    return [slot.type.value for slot in schedule.values() if (slot.agent_runtime or fallback) == runtime_id]
+
+
+def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: datetime | None = None) -> int:
+    """The default daily token ceiling for *runtime_id* (``max_tokens_per_day: auto``): Phase 0's formula.
+
+    Any error (an unreadable schedule or tracker) gives FLOOR, so the ceiling stays on.
+    """
+    from scout.scripts.budget_check import _row_ts, iter_tracker_rows
+
+    try:
+        kinds = _runtime_slot_kinds(data_dir, runtime_id)
+        now = now or datetime.now(UTC)
+        since = now - FORMULA_WINDOW
+        tracker = paths.logs_dir(data_dir) / "usage-tracker.jsonl"
+        own: dict[str | None, list[float]] = {}
+        boot: dict[str | None, list[float]] = {}
+        oldest_own: datetime | None = None
+        if tracker.exists():
+            for row in iter_tracker_rows(tracker):
+                if not isinstance(row, dict):
+                    continue
+                ts = _row_ts(row)
+                if ts is None or ts < since:
+                    continue
+                kind = _kind(row.get("type"))
+                if row.get("agent_runtime") == runtime_id and runtime_id != "claude-code":
+                    if (n := _row_tokens(row)) > 0:
+                        own.setdefault(kind, []).append(float(n))
+                        oldest_own = ts if oldest_own is None or ts < oldest_own else oldest_own
+                elif row.get("source") == "runner" and row.get("cost_source") == "transcript":
+                    usd = row.get("budget_spent")
+                    if isinstance(usd, int | float) and not isinstance(usd, bool) and usd > 0:
+                        boot.setdefault(kind, []).append(float(usd) * K_TOKENS_PER_USD)
+        use_own = oldest_own is not None and now - oldest_own >= OWN_ROWS_AFTER
+        rows = own if use_own else boot
+        everything = [v for values in rows.values() for v in values]
+        total = sum(_percentile(rows.get(kind) or everything) for kind in kinds)
+        return max(FLOOR_TOKENS, int(H_HEADROOM * total))
+    except Exception:  # noqa: BLE001 - the ceiling stays on at its floor
+        return FLOOR_TOKENS
 
 
 def _block(data_dir: Path | None, runtime_id: str) -> dict[str, Any]:
@@ -188,7 +266,9 @@ def dumps(limits: RuntimeLimits) -> str:
 __all__ = [
     "CEILING_WINDOW",
     "DEFAULT_RUN_TIMEOUT_MINUTES",
-    "PLACEHOLDER_DAILY_TOKENS",
+    "FLOOR_TOKENS",
+    "H_HEADROOM",
+    "K_TOKENS_PER_USD",
     "RuntimeLimits",
     "default_daily_token_ceiling",
     "dumps",
