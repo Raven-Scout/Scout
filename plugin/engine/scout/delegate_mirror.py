@@ -28,9 +28,34 @@ case-folded.
 - ``.txt``, ``.csv``, ``.tsv`` and ``.jsonl`` files lose the lines that hit; any
   other text file that hits is left out whole.
 - Any file that decodes as UTF-8 is text and is scanned, whatever its
-  extension. A file that isn't UTF-8 text is left out, since it can't be
-  scanned, unless its extension is a known binary type (:data:`BINARY_TYPES`),
-  which is kept on its label alone.
+  extension. Of the rest (:func:`binary_verdict`):
+
+  - an Office or OpenDocument file (``.docx``/``.xlsx``/``.pptx``, their
+    macro-enabled and template forms, ``.odt``/``.ods``/``.odp``/``.odg``) is
+    opened as the zip of XML it is and its text scanned
+    (:mod:`scout.delegate_containers`: body, headers, footers, comments and
+    their authors, shared strings, slides and notes, ``docProps`` metadata,
+    custom XML). It can't be redacted, so it is kept whole or left out whole:
+    left out when any of its text names a hidden file (even under
+    ``allow_unscanned``, and even when it is also refused for something
+    else), or when it can't be vouched for (too large or a zip bomb,
+    encrypted, corrupt, holding macros, a nested archive or embedded object,
+    or bytes outside its parts);
+  - images, sound, video and PDFs (:data:`BINARY_TYPES`) are kept on their
+    label alone: a PDF's text isn't read. One whose bytes are an archive or
+    an Office file (a ``.docx`` renamed ``scan.png``) is left out as
+    ``mislabeled``;
+  - archives (``.zip``, ``.gz``, ``.tar``, ``.7z``, ``.rar``…), old binary
+    Office files (``.doc``/``.xls``/``.ppt``) and anything else that isn't
+    text are left out.
+
+  ``privacy.delegates.<id>.allow_unscanned: [<glob>…]`` lets the owner ship
+  such a file anyway, on its label alone: one the scanner can't read, never one
+  whose text names a hidden file. A glob counts only when both the live
+  ``scout-config.yaml`` and its committed version list it. Every file that
+  isn't text and is left out is listed, with why, in the sync's and the
+  preview's notes (``left_out_files`` in ``--json``); the mirror itself holds
+  only counts.
 - ``scout-config.yaml`` is rewritten (:func:`mirror_config`): ``privacy``
   keeps only known keys, and of their path entries only those that match a
   mirrored file, so no local-only or hidden folder is named; ``delegates``
@@ -108,6 +133,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -119,8 +145,9 @@ from urllib.parse import unquote
 import yaml
 
 import scout
-from scout import paths
-from scout.kb.lint_config import glob_match
+from scout import delegate_containers as containers
+from scout import delegate_media, paths
+from scout.kb.lint_config import any_match, glob_match
 from scout.kb.outbound import (
     _AFTER,
     _BEFORE,
@@ -187,14 +214,25 @@ IDENTITY = {
     "GIT_COMMITTER_EMAIL": "scout@localhost",
 }
 LINE_FILES = (".txt", ".csv", ".tsv", ".jsonl")
-# Kept on their label alone: they can't be scanned as text.
+# Kept on their label alone: images, sound, video and PDFs can't be scanned as text. Office documents are
+# scanned inside (:mod:`scout.delegate_containers`); archives and old binary Office files are left out.
 BINARY_TYPES = frozenset(
     {
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".bmp", ".ico", ".tif", ".tiff",
-        ".pdf", ".mp3", ".m4a", ".wav", ".mp4", ".mov", ".zip", ".gz",
-        ".xlsx", ".docx", ".pptx",
+        ".pdf", ".mp3", ".m4a", ".wav", ".mp4", ".mov",
     }
 )  # fmt: skip
+# Why a file that can't be scanned, or whose container names a hidden note, was left out (Plan.left_out_files).
+LEFT_OUT_REASONS = {
+    **containers.REASONS,
+    "names_hidden": "names a hidden note inside",
+    "archive": "an archive",
+    "legacy_office": "an old binary Office file",
+    "mislabeled": "named as an image, sound, video or PDF, but its bytes aren't one (or hold an archive)",
+    "not_text": "not text, and not a type the mirror can scan",
+    "broken_metadata": "its metadata can't be read",
+}
+LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
 MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until clean
 GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH})
 # The privacy keys a mirror's config keeps (overlay keys; see scout.kb.privacy.load_policy).
@@ -282,15 +320,20 @@ def _state_key(*, create: bool) -> bytes | None:
     return _secret(STATE_KEY, create=create)
 
 
-def _vault_mark(vault: Path) -> str:
+def _vault_mark(vault: Path, *, create: bool = False) -> str:
     """Which vault a mirror is of, as its manifest records it: this computer's salt and the vault's real path.
 
     A run can read the salt but can't move the vault, so it can't make one vault's
     mark match another's; a delegate can't confirm a guessed path without the salt.
     A vault that moves gets a new mark: its mirrors are re-linked with --replace-remote.
+
+    Only a build that will push makes the salt (``create=True``, in
+    :func:`_build_and_push`); everything else reads it, so a preview writes
+    nothing. No salt yet means no mark yet: ``""``, which no manifest matches.
     """
-    salt = _secret(VAULT_SALT, create=True)
-    assert salt is not None
+    salt = _secret(VAULT_SALT, create=create)
+    if salt is None:
+        return ""
     return hashlib.sha256(salt + b"\0" + str(vault.resolve()).encode("utf-8")).hexdigest()[:32]
 
 
@@ -772,7 +815,8 @@ def delegate_policy(vault: Path, head: str, delegate: str, blobs: BlobReader) ->
 
     The stricter of the live ``scout-config.yaml`` and the one committed at
     ``head``. The delegate must be listed in both, and sees private notes only
-    when both say ``include_private: true`` (written exactly so). Its
+    when both say ``include_private: true`` (written exactly so), and takes a
+    file unscanned only under an ``allow_unscanned`` glob both list. Its
     ``delegates`` names this delegate alone.
     """
     reader = f"delegate:{delegate}"
@@ -794,8 +838,13 @@ def delegate_policy(vault: Path, head: str, delegate: str, blobs: BlobReader) ->
             "(both the file and its committed version must list it)",
         )
     include_private = all(r.include_private for r in rules if r is not None)
+    live_rule, committed_rule = rules
+    assert live_rule is not None and committed_rule is not None
+    # A file ships unscanned only under a glob both configs list, written the same.
+    unscanned = tuple(g for g in live_rule.allow_unscanned if g in committed_rule.allow_unscanned)
     base = live if live == committed else _stricter_policy(live, committed)
-    policy = dataclasses.replace(base, delegates=(DelegateRule(id=delegate, include_private=include_private),))
+    rule = DelegateRule(id=delegate, include_private=include_private, allow_unscanned=unscanned)
+    policy = dataclasses.replace(base, delegates=(rule,))
     return policy, [live, committed]
 
 
@@ -1035,6 +1084,9 @@ class Plan:
     withheld: int = 0
     redacted: dict[str, int] = field(default_factory=dict)
     left_out: int = 0  # visible files left out: their name, their encoding, or redaction
+    # The visible files that aren't text and were left out, and why (a LEFT_OUT_REASONS key). For the owner's
+    # report only: never written into the mirror.
+    left_out_files: dict[str, str] = field(default_factory=dict)
     hidden_paths: set[str] = field(default_factory=set)
     mirror_policy: Policy | None = None
     fingerprint: str = ""  # what the scan depended on (:func:`scan_fingerprint`)
@@ -1096,7 +1148,11 @@ def _manifest_ok(data: bytes, delegate: str, tree_paths: set[str], vault: str = 
 
 
 def _content(rel: str, data: bytes) -> tuple[str, str | None]:
-    """``("text", text)`` for UTF-8 text, ``("binary", None)`` for a known binary type, else ``("opaque", None)``.
+    """What a file is to the scanner: ``("text", text)`` for UTF-8 text, else ``(kind, None)``.
+
+    ``binary``: a type kept on its label alone (:data:`BINARY_TYPES`). ``container``: an Office or
+    OpenDocument file, scanned inside (:func:`binary_verdict`). ``archive``, ``legacy_office``: left out
+    unless the delegate's ``allow_unscanned`` names it. ``opaque``: anything else, the same.
 
     The bytes decide before the extension: a ``.pdf`` that is really UTF-8 text is text, and is scanned.
     """
@@ -1108,9 +1164,93 @@ def _content(rel: str, data: bytes) -> tuple[str, str | None]:
             pass
     if text is not None:
         return "text", text
-    if posixpath.splitext(rel.lower())[1] in BINARY_TYPES:
-        return "binary", None
+    ext = posixpath.splitext(rel.lower())[1]
+    if ext in BINARY_TYPES:
+        # The bytes decide here too: an archive or an Office file renamed scan.png or scan.pdf isn't kept on
+        # the label an image gets.
+        disguised = data.startswith(containers.ARCHIVE_MAGIC) or containers.is_zip(data)
+        return ("mislabeled" if disguised or not containers.looks_like(rel, data) else "binary"), None
+    if ext in containers.CONTAINER_TYPES:
+        return "container", None
+    if ext in containers.ARCHIVE_TYPES:
+        return "archive", None
+    if ext in containers.LEGACY_OFFICE_TYPES:
+        return "legacy_office", None
     return "opaque", None
+
+
+def allowed_unscanned(rel: str, policy: Policy) -> bool:
+    """Whether the delegate's ``allow_unscanned`` (as :func:`delegate_policy` worked it out) names ``rel``."""
+    return bool(policy.delegates) and any_match(policy.delegates[0].allow_unscanned, rel)
+
+
+def binary_verdict(rel: str, kind: str, data: bytes, scan: Scanner, policy: Policy) -> str | None:
+    """None when a file that isn't text may go in the mirror as it is; else why not (a LEFT_OUT_REASONS key).
+
+    An Office container goes when its text (:func:`scout.delegate_containers.unpack`) names no hidden
+    file. One that can't be vouched for, an archive, an old binary Office file and anything else that
+    can't be scanned go only under ``allow_unscanned``; one whose text names a hidden file never does.
+    """
+    if kind in ("binary", "mislabeled", "archive"):
+        # A label-only file's metadata, and the contents of any zip a file is or hides: a name there leaves it
+        # out whatever allow_unscanned says.
+        broken = False
+        readings: list[str] = []
+        if kind != "archive":
+            meta, broken = delegate_media.read(rel, data)
+            readings.append(meta)
+        if kind == "mislabeled" and not containers.looks_like(rel, data):
+            readings.append(containers.strings(data))  # not media at all: its plain text, under a glob too
+        if containers.is_zip(data):
+            readings += containers.unpack(data, posixpath.splitext(rel.lower())[1]).parts
+        hit = _readings_name_hidden(readings, scan, rel)
+        if hit == "names_hidden":
+            return hit
+        if kind == "binary":
+            # Metadata that didn't parse can't be vouched for: what did parse was scanned above.
+            if not broken and hit is None:
+                return None
+            return None if allowed_unscanned(rel, policy) else (hit or "broken_metadata")
+    if kind == "container":
+        unpacked = containers.unpack(data, posixpath.splitext(rel.lower())[1])
+        # Every reading the unpacking got to, even past a refusal: a name anywhere leaves the file out,
+        # allow_unscanned or not.
+        hit = _readings_name_hidden(unpacked.parts, scan, rel)
+        if hit == "names_hidden":
+            return hit
+        reason = hit or unpacked.refusal
+        if reason is None:
+            return None
+    else:
+        reason = {"archive": "archive", "legacy_office": "legacy_office", "mislabeled": "mislabeled"}.get(
+            kind, "not_text"
+        )
+    return None if allowed_unscanned(rel, policy) else reason
+
+
+SCAN_CHUNK = 256 * 1024  # readings are scanned in batches of about this many characters
+# A far backstop for one file's scan, past which it is too large to vouch for (fails closed). The 2M-character
+# cap (delegate_containers.MAX_TEXT_CHARS) already bounds a scan at about 8 s, so the build and check_tree agree
+# unless the machine is far slower than that.
+MAX_SCAN_SECONDS = 120.0
+
+
+def _readings_name_hidden(parts: Sequence[str], scan: Scanner, rel: str) -> str | None:
+    """``names_hidden`` when a reading names a hidden file, ``too_large`` when the scan runs out of time."""
+    deadline = time.monotonic() + MAX_SCAN_SECONDS
+    batch: list[str] = []
+    size = 0
+    for i, part in enumerate(parts):
+        batch.append(part)
+        size += len(part)
+        if size < SCAN_CHUNK and i + 1 < len(parts):
+            continue
+        if scan.lines("\n".join(batch), rel):
+            return "names_hidden"
+        if time.monotonic() > deadline:
+            return "too_large"
+        batch, size = [], 0
+    return None
 
 
 def hidden_terms(vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str], blobs: BlobReader) -> Scanner:
@@ -1236,7 +1376,8 @@ def _matcher_source() -> str:
     from scout.kb import outbound, privacy, shared_reads
 
     h = hashlib.sha256()
-    for source in (outbound.__file__, privacy.__file__, shared_reads.__file__, __file__):
+    sources = (outbound, privacy, shared_reads, containers, delegate_media)
+    for source in (*(m.__file__ for m in sources), __file__):
         with contextlib.suppress(OSError, TypeError):
             h.update(Path(str(source)).read_bytes())
     return h.hexdigest()
@@ -1256,7 +1397,11 @@ class ScanMemo:
 
     The build's memo only (:func:`plan`); :func:`check_tree` never reads it.
     ``files[path] = [source blob, kind, mirror blob, lines removed]``, kind
-    ``keep``, ``redact`` or ``drop``.
+    ``keep``, ``redact`` or ``drop``; a ``drop`` row's third slot holds why a
+    file that isn't text was left out (a :data:`LEFT_OUT_REASONS` key), or None.
+    A ``keep`` reused for an Office file or an opted-in archive skips the
+    build's :func:`binary_verdict`, never check_tree's, which judges every file
+    that isn't text afresh on every push.
     """
 
     path: Path
@@ -1287,6 +1432,11 @@ class ScanMemo:
 
     def put(self, rel: str, entry: list[Any]) -> None:
         self.seen[rel] = entry
+
+    def discard(self) -> None:
+        """Forget every result: check_tree refused a tree built from them."""
+        with contextlib.suppress(OSError):
+            self.path.unlink(missing_ok=True)
 
     def save(self, the_plan: Plan) -> None:
         """Keep this build's results (the files it saw, nothing stale), once its new blobs are written."""
@@ -1341,8 +1491,8 @@ def plan(
         if made is not None:
             kept.append(made)
         if memo is not None:
-            if made is None:
-                memo.put(e.path, [e.sha, "drop", None, 0])
+            if made is None:  # a file that isn't text keeps why it went, for the owner's report
+                memo.put(e.path, [e.sha, "drop", out.left_out_files.get(e.path), 0])
             elif made[0].data is None:
                 memo.put(e.path, [e.sha, "keep", e.sha, 0])
             else:
@@ -1412,8 +1562,10 @@ def _reuse(
 ) -> tuple[MirrorFile, Label, str | None] | None | _Miss:
     """A memoised scan result for ``e``: what it becomes, None when it was left out, :class:`_Miss` when unusable."""
     _sha, kind, mirror_sha, removed = hit
-    if kind == "drop":
+    if kind == "drop":  # the third slot holds why a file that isn't text went (LEFT_OUT_REASONS), or None
         out.left_out += 1
+        if isinstance(mirror_sha, str) and mirror_sha in LEFT_OUT_REASONS:
+            out.left_out_files[e.path] = mirror_sha
         return None
     markdown = e.path.lower().endswith(".md")
     if kind == "keep" and mirror_sha != e.sha:
@@ -1437,10 +1589,12 @@ def _mirror_file(
 ) -> tuple[MirrorFile, Label, str | None] | None:
     """What a visible file becomes in the mirror, or None (counted in ``out.left_out``) when it can't go."""
     kind, text = _content(e.path, data)
-    if kind == "binary":
-        return MirrorFile(e.path, e.mode, None, e.sha), label, None
     if text is None:
+        why = binary_verdict(e.path, kind, data, scan, policy)
+        if why is None:
+            return MirrorFile(e.path, e.mode, None, e.sha), label, None
         out.left_out += 1
+        out.left_out_files[e.path] = why
         return None
     low = e.path.lower()
     markdown = low.endswith(".md")
@@ -1514,7 +1668,9 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
     nothing HEAD's config doesn't hold, so no file can carry another file's
     content; every file must be visible under both
     policies with the same label; every text file, the config included, must
-    name no hidden file; a file that isn't text must be a known binary type;
+    name no hidden file; a file that isn't text must pass :func:`binary_verdict`
+    as the build applies it (an Office file's text names no hidden file; an
+    archive goes only under ``allow_unscanned``);
     every symlink must point at a folder the tree holds. The generated files
     must be exactly what the tree implies: the policy document is regenerated
     from the tree's config and files and compared byte for byte, and the
@@ -1582,8 +1738,13 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
                 labels.append(_classify(e.path, None, theirs))
                 continue
             kind, text = _content(e.path, data)
+            # A file that isn't text is judged afresh every time, trusted or not: the trust covers a text
+            # scan only, and binary_verdict's refusals (macros, archives, mislabeled) aren't scans.
+            if text is None and binary_verdict(e.path, kind, data, scan, seen.policy) is not None:
+                bad += 1
+                continue
             scanned_before = (e.path, e.sha) in checked
-            if kind == "opaque" or (text is not None and not scanned_before and scan.lines(text, e.path)):
+            if text is not None and not scanned_before and scan.lines(text, e.path):
                 bad += 1
                 continue
             head_text = _note_head(e.path, data) if text is not None else None
@@ -1619,6 +1780,7 @@ class Result:
     redacted_files: int = 0
     redacted_lines: int = 0
     left_out: int = 0
+    left_out_files: dict[str, str] = field(default_factory=dict)  # path -> reason, for files that aren't text
     unchanged: bool = False
     in_history: int = 0
     notes: list[str] = field(default_factory=list)
@@ -1664,6 +1826,7 @@ def _build_and_push(
     replace: bool = False,
 ) -> tuple[Result, DelegateLink]:
     head = _head(vault)
+    _vault_mark(vault, create=True)  # the first push makes this computer's salt; nothing before it does
     memo = ScanMemo.load(vault, link.id)
     blobs = BlobReader(vault)
     try:
@@ -1687,13 +1850,19 @@ def _build_and_push(
         redacted_files=len(the_plan.redacted),
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
-        notes=_drop_warning(link.id, the_plan),
+        left_out_files=dict(sorted(the_plan.left_out_files.items())),
+        notes=_drop_warning(link.id, the_plan) + _left_out_note(link.id, the_plan),
     )
     parent = None if fresh else link.last_mirror
     parent_tree = git(vault, "rev-parse", "--verify", "-q", f"{parent}^{{tree}}", check=False) if parent else None
-    if parent_tree is not None and parent_tree.stdout.strip() == tree:
+    if parent is not None and parent_tree is not None and parent_tree.stdout.strip() == tree:
+        # The same tree is current only under the fingerprint check_tree passed it under. Anything else (a note
+        # hidden since, new code, a memo "keep" this build trusted) means the remote's tree is checked again.
+        checked = link.checked_fingerprint
+        if checked != the_plan.fingerprint:
+            checked = _checked(vault, memo, parent, link.id, head, trusted=None)
         result.unchanged = True
-        return result, dataclasses.replace(link, last_vault=head, last_sync=_now())
+        return result, dataclasses.replace(link, last_vault=head, last_sync=_now(), checked_fingerprint=checked)
     # The remote must be this delegate's own mirror before anything is built on it: the link state is no proof,
     # since whatever can read the signing key can sign a forged one.
     check_remote(link.remote, vault=vault, gh=gh)
@@ -1709,7 +1878,7 @@ def _build_and_push(
     args = ["commit-tree", "--no-gpg-sign", tree] + (["-p", parent] if parent else [])
     commit = git(vault, *args, env=IDENTITY, input=MESSAGE).stdout.strip()
     trusted = (link.last_mirror, link.checked_fingerprint) if link.last_mirror and link.checked_fingerprint else None
-    fingerprint = check_tree(vault, commit, link.id, head, trusted=None if fresh else trusted)
+    fingerprint = _checked(vault, memo, commit, link.id, head, trusted=None if fresh else trusted)
     check_remote(link.remote, vault=vault, gh=gh)  # again, right before the push
     git(vault, "update-ref", mirror_ref(link.id), commit)  # keeps its objects while it is pending
     record(dataclasses.replace(link, pending_mirror=commit))
@@ -1731,6 +1900,18 @@ def _build_and_push(
     return result, done
 
 
+def _checked(
+    vault: Path, memo: ScanMemo, rev: str, delegate: str, head: str, *, trusted: tuple[str, str] | None
+) -> str:
+    """:func:`check_tree`; when it refuses, the memo the build trusted goes too, so the next sync scans afresh
+    instead of failing on the same rows for ever."""
+    try:
+        return check_tree(vault, rev, delegate, head, trusted=trusted)
+    except RepoSyncError:
+        memo.discard()
+        raise
+
+
 DROP_WARN_MIN = 5  # left-out files below this never warn: a few redaction casualties are normal
 
 
@@ -1743,6 +1924,20 @@ def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
         f"warning: {the_plan.left_out} of the {total} file(s) {delegate} may see were left out of its mirror, "
         "because they name a hidden file or can't be scanned; check `scoutctl delegate preview "
         f"{delegate}` and the privacy settings before relying on this mirror"
+    ]
+
+
+def _left_out_note(delegate: str, the_plan: Plan) -> list[str]:
+    """Which files that aren't text were left out and why, so the owner can fix them or opt one in."""
+    if not the_plan.left_out_files:
+        return []
+    items = sorted(the_plan.left_out_files.items())
+    listed = "; ".join(f"{rel} ({LEFT_OUT_REASONS.get(why, why)})" for rel, why in items[:LEFT_OUT_LISTED])
+    more = f"; and {len(items) - LEFT_OUT_LISTED} more (--json lists them all)" if len(items) > LEFT_OUT_LISTED else ""
+    return [
+        f"left out of {delegate}'s mirror, since they can't be scanned or name a hidden note inside: {listed}{more}. "
+        f"To ship one that can't be scanned anyway, list a glob for it under privacy.delegates.{delegate}."
+        "allow_unscanned in scout-config.yaml, and commit it"
     ]
 
 
@@ -2448,5 +2643,6 @@ def preview(vault: Path, delegate: str) -> Result:
         redacted_files=len(the_plan.redacted),
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
-        notes=_drop_warning(delegate, the_plan),
+        left_out_files=dict(sorted(the_plan.left_out_files.items())),
+        notes=_drop_warning(delegate, the_plan) + _left_out_note(delegate, the_plan),
     )
