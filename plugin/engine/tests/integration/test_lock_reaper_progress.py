@@ -41,6 +41,25 @@ def _script(path: Path, body: str) -> Path:
     return path
 
 
+# exec: drop --runtime, take --bin as the program, keep every other word.
+NOOP_SCOUTCTL = """#!/bin/bash
+if [ "$1 $2" = "agent-runtime exec" ]; then
+    shift 2
+    bin=""
+    args=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --runtime) shift 2 ;;
+            --bin) bin="$2"; shift 2 ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    exec "$bin" --permission-mode auto "${args[@]}"
+fi
+exit 0
+"""
+
+
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
@@ -49,7 +68,9 @@ def vault(tmp_path: Path) -> Path:
     for placeholder, value in {
         "{{SCOUT_DIR}}": str(v),
         "{{CLAUDE_BIN}}": str(v / "bin" / "claude"),
-        "{{SCOUTCTL_BIN}}": "/usr/bin/true",  # a no-op engine: the gate probe passes, every other step does nothing
+        # A no-op engine (the gate probe passes, every other step does nothing) whose `agent-runtime exec` execs the
+        # claude it is given, as the real one does (spec 2026-11-13 §8.2).
+        "{{SCOUTCTL_BIN}}": str(v / "bin" / "scoutctl"),
         "{{INSTANCE_NAME_LOWER}}": "scout",
         "{{INSTANCE_NAME}}": "Scout",
         "{{MAX_BUDGET}}": "25",
@@ -61,6 +82,7 @@ def vault(tmp_path: Path) -> Path:
     _script(v / "run-scout.sh", text)
     lock_lib = (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8")
     _script(v / "scripts" / "scout-lock.sh", lock_lib.replace("{{INSTANCE_NAME}}", "Scout"))
+    _script(v / "bin" / "scoutctl", NOOP_SCOUTCTL)
     # The retry wrapper is called as `claude-with-retry.sh LOG_FILE CLAUDE_BIN args…`;
     # the stub runs the (fake) claude as a child, as the real one does.
     _script(v / "scripts" / "claude-with-retry.sh", '#!/bin/bash\nshift\n"$@"\n')

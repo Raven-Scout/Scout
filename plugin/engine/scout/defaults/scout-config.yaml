@@ -69,6 +69,14 @@ auto_update:
 # models:
 #   default: opus
 
+# The agent CLI scheduled runs use. A slot's own `agent_runtime:` in
+# .scout-state/schedule.yaml wins (SCOUT_AGENT_RUNTIME wins over both); with
+# neither, runs use claude-code, which is today the only runtime. models.default
+# above applies to Claude Code; another runtime's default model goes under its
+# own id. Deliberately unset here, like models.
+# agent_runtimes:
+#   default: claude-code
+
 # Day planning for /scout-plan. MUST equal PlanningSettings()'s defaults in
 # scout/planning/settings.py; tests/unit/test_planning_settings.py fails the
 # build if they drift. Times are quoted: YAML 1.1 reads a bare 09:00 as a

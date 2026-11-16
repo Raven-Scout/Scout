@@ -129,6 +129,48 @@ def test_the_runner_holding_the_lock_its_wrapper_and_its_claude_are_the_run() ->
     assert run_processes(V, table, holder=None) == {110, 120}
 
 
+# The runners launch through `scoutctl agent-runtime exec` (spec 2026-11-13 §8.2): until it execs claude, the
+# wrapper's child is scoutctl carrying the same words, and after it, claude exactly as before.
+EXEC: Row = (
+    120,
+    110,
+    "/Users/alex/scout-plugin/.venv/bin/python -P -m scout.cli agent-runtime exec --runtime claude-code "
+    "--bin /Users/alex/.local/bin/claude --model opus --max-budget-usd 25 "
+    f"--name scout-morning-briefing-20261107-0700 -p You are Scout. Your working directory is {V}.",
+    VENV_PY,
+    RUN_AGE - 2,
+)
+
+
+def test_the_exec_step_before_claude_is_still_the_run() -> None:
+    table, _ = _world(RUNNER, WRAPPER, EXEC)
+    assert run_processes(V, table, holder=None) == {110, 120}
+
+
+def test_claude_markers_unchanged() -> None:
+    from scout.agent_runtimes.claude_code import ClaudeCode
+    from scout.kb.live_run import marker_sets
+
+    assert marker_sets()[0] == ("--name", "-p", "--max-budget-usd")
+    assert ClaudeCode().process_markers().argv_words == marker_sets()[0]
+    # kb/hook.py's awk twin looks for the same three words.
+    from scout.kb import hook
+
+    src = Path(hook.__file__).read_text(encoding="utf-8")
+    assert 'index(cmd, "--max-budget" "-usd") && index(cmd, "--name")' in src
+
+
+def test_markers_come_from_registry() -> None:
+    from tests._agent_runtimes import DummyRuntime, registered
+
+    other: Row = (130, 1, f"dummy-cli run --model dm-x --title scout-dream -p in {V}", "/usr/bin/dummy-cli", RUN_AGE)
+    table, _ = _world(other)
+    assert run_processes(V, table, holder=None) == set()
+    with registered(DummyRuntime("dummy")):
+        assert run_processes(V, table, holder=None) == {130}
+    assert run_processes(V, table, holder=None) == set()
+
+
 @pytest.mark.parametrize(
     "command",
     [

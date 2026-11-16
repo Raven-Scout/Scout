@@ -74,6 +74,9 @@ STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
 # The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
 SANDBOX_SWITCH_NAME = "run-sandbox.json"
+# The owner's model-provider consent (scout.agent_runtimes.consent, spec 2026-11-13 §8.4), also in
+# ~/.local/state/scout/: a run that could write it could consent to a provider for the next run.
+PROVIDER_CONSENT_NAME = "provider-consent.json"
 # The run brokers' owner folder, in ~/.local/state/scout/ (scout.sandbox.broker): the Telegram limits, the hourly
 # send count and the drain lock.
 RUN_BROKERS_NAME = "run-brokers"
@@ -257,6 +260,7 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     # The owner's switch for the scheduled runs' write sandbox (scout.sandbox, Phase 1c): a run that could write
     # it could turn the sandbox off for the next run.
     roots.append(state / SANDBOX_SWITCH_NAME)
+    roots.append(state / PROVIDER_CONSENT_NAME)
     # The run brokers' limits and counts (Phase 1d): a run that could write them could lift its own send limit.
     roots.append(state / RUN_BROKERS_NAME)
     return roots
@@ -591,6 +595,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     ".gitmodules",
     ".scoutctl-py-cache",
     "engine.json",
+    "provider-consent.json",
     RUN_BROKERS_NAME,
     "hooks.json",
     "pyvenv.cfg",

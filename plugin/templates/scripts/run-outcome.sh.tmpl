@@ -23,6 +23,7 @@
 # session held the vault lock), skipped_budget (the budget check said no),
 # skipped_redundant, skipped_gates (the gate probe found claude not loading
 # Scout's privacy hooks), skipped_sandbox (the write sandbox expected here couldn't be set up),
+# skipped_runtime (`scoutctl agent-runtime check` refused the run's agent runtime, spec 2026-11-13 §8.3),
 # gates_unsafe_endpoint / gates_unsafe_launcher (the probe couldn't be
 # run safely; recorded as skipped_gates with that failure_class), or a Repository Writer Lease skip of a vault linked to
 # Agnes (R2): lease_held (Agnes holds the lease) or lease_unavailable (Agnes
@@ -181,7 +182,7 @@ cmd_record() {
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     local lease_class=""
     case "$outcome" in
-        skipped_lock|skipped_budget|skipped_redundant|skipped_gates|skipped_sandbox) ;;
+        skipped_lock|skipped_budget|skipped_redundant|skipped_gates|skipped_sandbox|skipped_runtime) ;;
         gates_unsafe_endpoint|gates_unsafe_launcher) lease_class="$outcome"; outcome="skipped_gates"; code=0 ;;
         lease_held|lease_unavailable) lease_class="$outcome"; outcome="skipped_lease"; code=0 ;;
         *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;

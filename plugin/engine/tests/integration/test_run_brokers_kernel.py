@@ -414,9 +414,19 @@ def test_real_claude_commits_and_sends_through_the_brokers(tmp_path: Path, broke
         env.update(SCOUT_MODE="consolidation", SCOUT_READER="autonomous")
         assert env["ANTHROPIC_BASE_URL"] == base_url and "CLAUDE_CODE_OAUTH_TOKEN" not in env
         log = w.vault / ".scout-logs" / "run.log"
+        # As the runners launch since #651: the wrapper's claude-bin is scoutctl, and `agent-runtime exec` replaces
+        # itself with claude inside the tightened profile. --bin is a shim that adds this test's flags (no MCP, no
+        # permission prompts) to the adapter's argv; everything else is the real launch.
+        claude = shutil.which("claude") or "claude"
+        shim = w.root / "bin" / "claude-shim"
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        flags = " ".join(f"'{f}'" for f in ("--permission-mode", "bypassPermissions", *NO_MCP_FLAGS))
+        shim.write_text(f'#!/bin/sh\nexec "{claude}" "$@" {flags}\n')
+        shim.chmod(0o755)
+        env["SCOUT_AGENT_BIN"] = claude
         res = subprocess.run(
-            [str(_wrapper(w)), str(log), shutil.which("claude") or "claude",
-             "--permission-mode", "bypassPermissions", *NO_MCP_FLAGS, "-p", "broker check"],
+            [str(_wrapper(w)), str(log), str(w.scoutctl), "agent-runtime", "exec", "--runtime", "claude-code",
+             "--bin", str(shim), "--model", "sonnet", "--name", "scout-broker-check", "-p", "broker check"],
             cwd=w.vault, env=env, capture_output=True, text=True, timeout=240, stdin=subprocess.DEVNULL,
         )  # fmt: skip
     finally:

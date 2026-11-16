@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from scout.agent_runtimes.resolve import validate_runtime
 from scout.errors import ConfigError
 from scout.models import validate_model
 from scout.yaml_safe import load_yaml
@@ -96,6 +97,9 @@ class Slot:
     tz: str | None = None  # optional IANA zone; absent → system local
     runtime: SlotRuntime = SlotRuntime.LOCAL
     model: str | None = None  # optional; absent → scout-config's models.default (scout.models)
+    # Optional agent runtime (spec 2026-11-13 §8.7); absent → SCOUT_AGENT_RUNTIME / agent_runtimes.default /
+    # claude-code (scout.agent_runtimes.resolve). Not `runtime`, which says where the slot runs.
+    agent_runtime: str | None = None
 
     @property
     def priority(self) -> SlotPriority:
@@ -259,8 +263,17 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             raise ConfigError(
                 f"slot {key!r}: runtime {runtime_raw!r} is not one of {[r.value for r in SlotRuntime]}"
             ) from e
+        agent_runtime_raw = raw.get("agent_runtime")
+        agent_runtime = (
+            None if agent_runtime_raw is None else validate_runtime(agent_runtime_raw, where=f"slot {key!r}")
+        )
+        # A slot's model must fit the slot's own runtime; without one, Claude Code's rule (as before).
         model_raw = raw.get("model")
-        model = None if model_raw is None else validate_model(model_raw, where=f"slot {key!r}")
+        model = (
+            None
+            if model_raw is None
+            else validate_model(model_raw, where=f"slot {key!r}", runtime=agent_runtime or "claude-code")
+        )
         return Slot(
             key=key,
             type=slot_type,
@@ -274,6 +287,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             tz=tz,
             runtime=runtime,
             model=model,
+            agent_runtime=agent_runtime,
         )
     except (KeyError, ValueError, TypeError) as e:
         raise ConfigError(f"slot {key}: malformed entry: {e}") from e
