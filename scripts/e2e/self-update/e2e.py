@@ -274,6 +274,8 @@ class Host:
             "SCOUT_E2E_STATE": str(self.state),
             "TZ": zone,
             "SCOUT_LOCALTIME": self.localtime(zone),
+            # A rehearsal is not a user's install: keep it out of the public download count (PRIVACY.md).
+            "SCOUT_NO_RELEASE_CHECK": "1",
             "LANG": "C.UTF-8",
             "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(WORK / "uv-cache")),
             "UV_PYTHON_INSTALL_DIR": os.environ.get("UV_PYTHON_INSTALL_DIR", str(WORK / "uv-python")),

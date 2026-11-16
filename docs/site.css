@@ -666,3 +666,4 @@ html.js .brief .item:not(.shown) { opacity: 0; transform: translateY(6px); }
 .legal b, .legal strong { color: var(--ink); font-weight: 600; }
 .legal .lead { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 24px 8px; margin: 0 0 20px; }
 .legal .lead p { font-size: 18px; color: var(--ink); }
+.legal .code { padding-right: 16px; margin: 0 0 16px; }
