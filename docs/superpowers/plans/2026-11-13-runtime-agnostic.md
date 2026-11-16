@@ -46,8 +46,8 @@ templates, SwiftUI app (Phase 2+), GitHub Actions (no model runs).
 
 - **Phases 1a, 1b and 1c** have shipped (#635, #637, #642). **Phase 1d** is
   a card from #642's follow-ups.
-- **Phase 1** is detailed and starts on Jordan's approval of the spec. It
-  does not depend on the open questions.
+- **Phase 1** is detailed. Jordan approved the spec and gave the go for it
+  on 2026-11-16.
 - **Phases 0 and 2–6** are card-level. Jordan has answered §14. Each phase
   needs Phase 0's facts, and gets its own detailed plan (`…-phase-N.md`)
   when its card is cut. Writing their task-level steps now would mean

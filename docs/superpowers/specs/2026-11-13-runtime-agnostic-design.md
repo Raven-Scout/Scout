@@ -1,9 +1,10 @@
 # Runtime-agnostic Scout: scheduled runs and skills on agent CLIs other than Claude Code — design
 
-Status: **draft; Jordan answered every open question on 2026-11-16** (§14).
-The answers are folded into the sections they change. Implementation starts
-per phase (§12) on Jordan's go. The coordinator cuts implementation cards
-from the plan (`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
+Status: **approved by Jordan on 2026-11-16, with his go for Phase 1.** He
+answered every open question the same day (§14), and the answers are folded
+into the sections they change. Phases after Phase 1 start on his go, one by
+one (§12). The coordinator cuts implementation cards from the plan
+(`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
 
 **Decisions in one line each (2026-11-16, details in §14):**
 
