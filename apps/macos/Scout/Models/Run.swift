@@ -41,21 +41,8 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case rateLimited
 }
 
-extension RunType {
-    /// Human-readable name without embedded times — the schedule rows already
-    /// show the time, so the display label only needs to convey the kind of
-    /// work ("Consolidation", "Briefing").
-    var displayName: String {
-        switch self {
-        case .morningBriefing:    return "Morning briefing"
-        case .weekendBriefing:    return "Weekend briefing"
-        case .consolidation:      return "Consolidation"
-        case .dreaming:           return "Dreaming"
-        case .research:           return "Research"
-        case .manual:             return "Manual run"
-        }
-    }
-}
+// `RunType.displayName` and `RunStatus.displayName` live in
+// `Utilities/PlainLanguage/DisplayName.swift`, with every other engine label.
 
 extension RunType {
     /// Map a slot key (emitted by `scoutctl schedule list-upcoming`) to a
