@@ -61,6 +61,27 @@ struct PageLayoutTests {
             .environmentObject(vault.updates))
     }
 
+    /// A loaded `BigVault`, checked: a page that silently failed to load
+    /// renders its empty state, which fits any width and proves nothing.
+    static func loadedVault() async throws -> BigVault {
+        let vault = try BigVault()
+        await vault.load()
+        let state = vault.state
+        guard case .loaded(let doc) = state.actionItemsDocumentService.state else {
+            Issue.record("action items didn't load: \(state.actionItemsDocumentService.state)")
+            return vault
+        }
+        #expect(doc.sections.flatMap(\.tasks).count >= 100)
+        #expect(!state.knowledgeBaseService.tree.isEmpty)
+        #expect((state.sessionIndexService.index?.sessions.count ?? 0) >= 100)
+        #expect(state.wishlistDocumentService.activeCount > 0)
+        #expect(!state.researchDocumentService.items.isEmpty)
+        #expect(state.proposalsDocumentService.pendingCount > 0)
+        #expect(!state.scheduleEditService.slots.isEmpty)
+        #expect(!state.sessionLogService.runs.isEmpty)
+        return vault
+    }
+
     static func window(_ item: SidebarItem, in vault: BigVault) -> some View {
         MainWindowView(initialSelection: item)
             .environmentObject(vault.state)
@@ -70,8 +91,7 @@ struct PageLayoutTests {
 
     @Test("every page fits the page width at the minimum window", arguments: SidebarItem.allCases)
     func pageFitsAtMinimumWindow(_ item: SidebarItem) async throws {
-        let vault = try BigVault(); defer { vault.tearDown() }
-        await vault.load()
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
         let available = LayoutSize.pageWidth(window: LayoutSize.windowWidths[0])
         let needed = LayoutHarness.minimumWidth(of: Self.page(item, in: vault), height: LayoutSize.minimumPageHeight)
         #expect(needed <= available, "\(item) needs \(needed) pt; it gets \(available) pt at a 1100 pt window")
@@ -106,8 +126,7 @@ struct PageLayoutTests {
 
     @Test("the Sessions header never wraps its title and fits the board's width")
     func sessionsHeaderFits() async throws {
-        let vault = try BigVault(); defer { vault.tearDown() }
-        await vault.load()
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
         let service = vault.state.sessionIndexService
         let index = try #require(service.index)
         var mode = SessionsViewMode.board
@@ -143,6 +162,19 @@ struct PageLayoutTests {
         #expect(Pane.layout(pageWidth: 1059, hasSelection: true) == .shown(width: 380, closable: false))
         #expect(Pane.layout(pageWidth: 879, hasSelection: false) == .hidden)
         #expect(Pane.layout(pageWidth: 879, hasSelection: true) == .shown(width: 340, closable: true))
+    }
+
+    @Test("Schedules closes its pane only when compact, and never over a new slot or unsaved edits")
+    func schedulesCloseRule() {
+        let compact = DetailPaneLayout.shown(width: 340, closable: true)
+        let regular = DetailPaneLayout.shown(width: 380, closable: false)
+        #expect(SchedulesView.canCloseDetail(pane: compact, isNewDraft: false, isDirty: false))
+        // A dirty edit of an existing slot survives Esc and the close button.
+        #expect(!SchedulesView.canCloseDetail(pane: compact, isNewDraft: false, isDirty: true))
+        #expect(!SchedulesView.canCloseDetail(pane: compact, isNewDraft: true, isDirty: false))
+        // At full width Esc never closes the pane, dirty or not.
+        #expect(!SchedulesView.canCloseDetail(pane: regular, isNewDraft: false, isDirty: false))
+        #expect(!SchedulesView.canCloseDetail(pane: .hidden, isNewDraft: false, isDirty: false))
     }
 
     @Test("a long project name is shortened in the middle")
@@ -211,8 +243,7 @@ struct PageLayoutTests {
 
     @Test("every page renders at 1100, 1280 and 1600 pt and the minimum height", arguments: SidebarItem.allCases)
     func pageRendersAtEverySize(_ item: SidebarItem) async throws {
-        let vault = try BigVault(); defer { vault.tearDown() }
-        await vault.load()
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
         for width in LayoutSize.windowWidths {
             for height in [LayoutSize.minimumWindowHeight, 900] {
                 let size = CGSize(width: width, height: height)

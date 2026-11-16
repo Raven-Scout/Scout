@@ -16,6 +16,16 @@ struct SchedulesView: View {
     @State private var isInitialLoading = true
     /// The page's width, for `DetailPaneLayout` (UI audit C6).
     @State private var pageWidth: CGFloat?
+    /// The open slot form has unsaved edits: the pane must not close over it.
+    @State private var detailIsDirty = false
+
+    /// Whether the close button or Esc may hide the detail pane. Only a
+    /// compact pane closes, and never over a new slot or unsaved edits:
+    /// `SlotEditForm` keeps its draft in `@State`, so closing would drop it.
+    nonisolated static func canCloseDetail(pane: DetailPaneLayout, isNewDraft: Bool, isDirty: Bool) -> Bool {
+        guard case .shown(_, closable: true) = pane else { return false }
+        return !isNewDraft && !isDirty
+    }
 
     var body: some View {
         let pane = DetailPaneLayout.layout(pageWidth: pageWidth, hasSelection: detailSlot != nil)
@@ -31,19 +41,24 @@ struct SchedulesView: View {
                     onDelete: handleDelete,
                     onFireNow: handleFireNow,
                     onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil,
-                    defaultModel: modelSettings.settings?.default.model
+                    defaultModel: modelSettings.settings?.default.model,
+                    onDirtyChange: { detailIsDirty = $0 }
                 )
                 .frame(width: width)
                 .overlay(alignment: .topTrailing) {
-                    // Never over an unsaved new slot: closing would drop it.
-                    if closable && !detailIsNewDraft {
+                    if closable && Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
                         DetailPaneCloseButton(help: "Close slot details") { selectedSlotKey = nil }
                     }
                 }
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        .onExitCommand { if !detailIsNewDraft { selectedSlotKey = nil } }
+        .onChange(of: selectedSlotKey) { _, _ in detailIsDirty = false }
+        .onExitCommand {
+            if Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
+                selectedSlotKey = nil
+            }
+        }
         .background(DS.Paper.base)
         .task { await reload() }
     }

@@ -15,9 +15,10 @@ import Foundation
 /// `sessions-index.json` behind a `FileSessionIndexSource`, and every
 /// `scoutctl` call is answered by a `RuleBasedRunner`.
 ///
-/// To look at it in a dev build (under a separate bundle ID only), write it to
-/// disk with `BigVaultWriterTests` (see that file), then point the dev
-/// build's `scoutDataDir` and `sessionsIndexFile` defaults at it.
+/// To look at it in a Debug build (under a separate bundle ID only), write it
+/// to a folder with `BigVault(scale: .full, at: folder)` (kept on disk by
+/// `tearDown()`), then point that build's `scoutDataDir` default at the folder
+/// and its `sessionsIndexFile` default at `<folder>/sessions-index.big.json`.
 @MainActor
 struct BigVault {
     struct Scale: Sendable {

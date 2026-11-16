@@ -14,6 +14,9 @@ struct SlotEditForm: View {
     let onRevertNewDraft: (() -> Void)?
     /// nil hides the model picker: the engine can't run per-slot models.
     let defaultModel: String?
+    /// Told whether the draft differs from `liveSlot`, so the page can refuse
+    /// to close the pane over unsaved edits (UI audit C6).
+    let onDirtyChange: (Bool) -> Void
 
     @State private var draft: SlotDraft
     @State private var isConfirmingTypeChange = false
@@ -27,7 +30,8 @@ struct SlotEditForm: View {
         onDelete: @escaping () async -> Void,
         onFireNow: @escaping (String) async -> Void,
         onRevertNewDraft: (() -> Void)? = nil,
-        defaultModel: String? = nil
+        defaultModel: String? = nil,
+        onDirtyChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -36,6 +40,7 @@ struct SlotEditForm: View {
         self.onFireNow = onFireNow
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
+        self.onDirtyChange = onDirtyChange
         _draft = State(initialValue: SlotDraft(from: liveSlot))
     }
 
@@ -60,6 +65,9 @@ struct SlotEditForm: View {
             actionBar
         }
         .padding(20)
+        .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
+        .onChange(of: draft) { _, newDraft in onDirtyChange(newDraft.isDirty(against: liveSlot)) }
+        .onChange(of: liveSlot) { _, newLive in onDirtyChange(draft.isDirty(against: newLive)) }
     }
 
     // MARK: - Private helpers

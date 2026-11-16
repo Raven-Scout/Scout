@@ -10,9 +10,11 @@ nonisolated enum SessionIndexLane: Sendable, Equatable {
 
 /// Where the Sessions page gets its index. Production asks `scoutctl session
 /// index`, which reads the Mac's real `~/.claude` and the desktop app's store
-/// whatever vault the app points at. Tests, the big-vault fixture and a dev
+/// whatever vault the app points at. Tests, the big-vault fixture and a Debug
 /// build pointed at a synthetic vault inject a `FileSessionIndexSource`
-/// instead, so they never read a real person's sessions.
+/// instead, so the Sessions page never reads a real person's sessions. (Other
+/// readers of `~/.claude`, such as Action Items' Launch Claude folder lookup,
+/// are configured separately: `AppState.Configuration.claudeSessionsDirectory`.)
 ///
 /// The answer is a `ProcessResult`, so every source goes through the same
 /// exit-code classification and decoding as the engine's output.
@@ -47,15 +49,22 @@ nonisolated struct ScoutctlSessionIndexSource: SessionIndexSource {
 nonisolated struct FileSessionIndexSource: SessionIndexSource {
     let file: URL
 
+    /// A file that can't be read answers like a failed command (exit 1, the
+    /// reason on stderr), so the page says "fixture file not found" instead of
+    /// blaming a missing engine.
     func build(_ lane: SessionIndexLane) async throws -> ProcessResult {
         let url = file
-        let data = try await Task.detached(priority: .utility) { try Data(contentsOf: url) }.value
+        guard let data = await Task.detached(priority: .utility, operation: { try? Data(contentsOf: url) }).value else {
+            return ProcessResult(exitCode: 1, stdout: Data(),
+                                 stderr: Data("Sessions fixture file not found or unreadable: \(url.path)".utf8))
+        }
         return ProcessResult(exitCode: 0, stdout: data, stderr: Data())
     }
 
-    /// The `sessionsIndexFile` user default, if set: a dev build reads its
-    /// sessions from this file instead of the Mac's real Claude data. Set it
-    /// for a separate bundle ID only, e.g.
+    /// The `sessionsIndexFile` user default, if set: a Debug build reads its
+    /// sessions from this file instead of the Mac's real Claude data (Release
+    /// builds never call this; see `AppState.Configuration.production()`).
+    /// Set it for a separate bundle ID only, e.g.
     /// `defaults write <dev bundle id> sessionsIndexFile /path/sessions-index.json`,
     /// or pass `-sessionsIndexFile /path/…` as a launch argument.
     static func configured(in defaults: UserDefaults) -> FileSessionIndexSource? {

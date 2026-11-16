@@ -54,7 +54,14 @@ struct KnowledgeBaseView: View {
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let node = selectedNode, node.isEditable {
-                PaneResizeHandle(width: $rightPanelWidth, minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
+                // The handle starts a drag from the width on screen, not the
+                // stored one: when the page clamps a wide stored panel, a drag
+                // from the stored width would do nothing until it caught up.
+                PaneResizeHandle(
+                    width: Binding(
+                        get: { Double(Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth)) },
+                        set: { rightPanelWidth = $0 }),
+                    minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
                 KBRightPanel(relPath: node.relativePath, service: service,
                              onNavigate: { navigate(toPath: $0) })
                     .frame(width: Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth))

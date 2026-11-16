@@ -46,7 +46,7 @@ struct SessionIndexSourceTests {
         #expect(runner.calls.isEmpty)
     }
 
-    @Test("a missing fixture file reads as a launch failure, not as real data")
+    @Test("a missing fixture file says so, and isn't reported as a missing engine")
     func missingFileIsAFailure() async throws {
         let runner = RuleBasedRunner()
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("absent-\(UUID().uuidString).json")
@@ -55,7 +55,8 @@ struct SessionIndexSourceTests {
         await service.refreshFast()
 
         #expect(service.index == nil)
-        #expect(service.lastError != nil)
+        #expect(service.lastError?.contains("fixture file not found") == true)
+        #expect(service.availability == .ok)
         #expect(runner.calls.isEmpty)
     }
 

@@ -34,7 +34,8 @@ struct SessionsView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        .onExitCommand { selectedID = nil }
+        // Esc closes only the compact pane; at full width the pane stays.
+        .onExitCommand { if case .shown(_, closable: true) = pane { selectedID = nil } }
         .background(DS.Paper.base)
         .onAppear {
             service.setAppVisible(NSApp?.occlusionState.contains(.visible) ?? true)

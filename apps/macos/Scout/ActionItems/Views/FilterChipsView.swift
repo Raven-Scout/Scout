@@ -74,13 +74,23 @@ struct FilterChipsView: View {
 
     private var kindMenu: some View {
         Menu {
-            Button("All sections") { filter.kinds = [] }
+            Toggle("All sections", isOn: Binding(
+                get: { filter.kinds.isEmpty },
+                set: { if $0 { filter.kinds = [] } }
+            ))
             Divider()
             ForEach(Self.kindOptions, id: \.kind) { opt in
                 Toggle(opt.label, isOn: Binding(
                     get: { filter.kinds.contains(opt.kind) },
                     set: { _ in toggle(opt.kind) }
                 ))
+            }
+            Divider()
+            // The chips' right-click "Only X", for the folded row.
+            Menu("Show only") {
+                ForEach(Self.kindOptions, id: \.kind) { opt in
+                    Button(opt.label) { filter.kinds = [opt.kind] }
+                }
             }
         } label: {
             Text(Self.kindMenuTitle(for: filter.kinds))
