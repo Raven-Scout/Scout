@@ -128,7 +128,8 @@ run-*.sh   (unchanged: lock, budget, gate probe, `scoutctl sandbox profile`, int
 - **All of it is in `claude-with-retry.sh`.** The runner templates don't change, which keeps
   this away from the Phase 1 runtime-interface work in `run-*.sh`. The broker is started once
   per run and lives across retries. It also exits by itself when `--parent` is gone, so a
-  wrapper killed with SIGKILL doesn't leave it running.
+  wrapper killed with SIGKILL doesn't leave it running. The folder such a wrapper leaves behind is
+  removed by the next broker after a day (only this user's real `scout-broker.*` folders).
 - **The tightening depends on the broker.** The rules that deny the git dir and the Telegram
   files are appended only after the broker answers. They are also appended only when the
   vault's `git-safe-commit.sh` has the client mode, which `broker profile` checks for. So a
@@ -143,7 +144,9 @@ run-*.sh   (unchanged: lock, budget, gate probe, `scoutctl sandbox profile`, int
 ### 5.2 Protocol
 
 One JSON object per line on the unix socket, one reply line, then the connection closes.
-Requests are capped at 1 MiB, replies at 64 KiB.
+Requests are capped at 1 MiB, each reply output at 12,000 characters. A request the broker can't
+parse (not JSON, too long, nested too deeply) gets exit 2 and the broker keeps answering. A Telegram
+request also carries `rid` (a request id) and `run` (its run's id) for the send log (§5.6).
 
 ```json
 {"v": 1, "verb": "commit",   "message": "…", "paths": ["…"], "override": "…"?}
@@ -171,8 +174,9 @@ kernel now refuses: a failure, not a bypass.
   with `-` or `:` (no option, no pathspec magic), none of the script's blanket forms;
 - each path, taken relative to the vault (an absolute path must be inside it), is normalised.
   It is refused if it is outside the vault after `realpath`, if it has a `.git` component, or
-  if `hook_paths.protected_write` names it (judged both as spelled and resolved, case-folded,
-  like the gates);
+  if it is or holds a protected path (`hook_paths.removes_protected`: `scripts` would commit the
+  owner's uncommitted edits to the runner scripts), judged both as spelled and resolved,
+  case-folded, like the gates;
 - `override` (`SCOUT_LINT_OVERRIDE`, write-protocol's escape hatch after two failed lint fixes)
   is ≤ 500 chars with no control characters. It is the only variable a request can set. The
   hook still logs it and never lets it lift a privacy block.
@@ -226,7 +230,7 @@ chat id itself (owner files), so **the request names no recipient**. Limits:
 | messages per rolling hour, all runs | 12 | `telegram.max_per_hour`; the count is kept in `run-brokers/telegram-sent.jsonl` |
 | body size | 8,000 chars (observed max 1,134; Telegram splits at 4,096) | `telegram.max_chars` |
 
-The `run-brokers/` folder (limits, hourly count, drain lock) is one of `hook_paths`' engine roots,
+The `run-brokers/` folder (limits, the send log, the locks) is one of `hook_paths`' engine roots,
 next to the 1c switch file. Both layers then deny a run's write to it. Nothing in the vault, which a
 run can write, sets a limit. A missing or malformed owner file means the defaults. Dry runs send
 nothing and count against neither limit; the size limit applies to them too.
@@ -252,15 +256,44 @@ before replying, it writes the request to `<vault>/.scout-state/broker-queue/<ve
 
 **Drain** (`scoutctl broker drain --vault V`, outside the sandbox): the wrapper runs it as it
 exits, and the tick runs it detached, the same way it starts the delegate-mirror sync, when the
-queue isn't empty. A `flock` on `~/.local/state/scout/run-brokers/drain.lock` (owner-only, so a
-run's leftover process can't hold it) makes sure only one drain runs. Entries are handled in name
-order, the folder (not the file) names the verb, and each is validated exactly like a live request.
-One drain has one run's Telegram allowance. A broker only ever commits for a run, so a drained
-commit gets the scheduled-run checks too (`SCOUT_MODE` defaults to `scheduled`).
+queue isn't empty. Only one drain runs: it holds a `flock` on
+`~/.local/state/scout/run-brokers/drain.lock`, a write-only (0200) file, which a run (the same user)
+can't open for reading, and whose write open its sandbox refuses, so a run can't hold it. The Telegram
+send lock is made the same way. Entries are handled in name order, the folder (not the file) names the
+verb, and each is validated exactly like a live request. A broker only ever commits for a run, so a
+drained commit gets the scheduled-run checks too (`SCOUT_MODE` defaults to `scheduled`).
 A sent or committed entry is deleted. A transient failure (commit mutex timeout, network) stays
 queued with `attempts` + 1. An entry that fails validation, or is older than 24 h, or has had 10
 attempts, moves to `broker-queue/failed/` with an event and a health finding,
-`broker.queue_failed` (yellow). A queued commit takes the paths' content **at drain time**: a
+`broker.queue_failed` (yellow). The wrapper's drain starts no entry after 120 s (`--deadline`), and
+a watchdog stops it at 480 s, since the runner still holds the session lock then.
+
+**The queue is in the vault, and the drain isn't sandboxed** (review of #648). So the drain never
+follows a link. From the vault's resolved path it opens `.scout-state`, `broker-queue` and each
+folder below one component at a time with `O_NOFOLLOW`, and checks each is a folder of this user's.
+Then it reads, rewrites, moves and removes entries only through those folders' descriptors. It opens
+each entry `O_NOFOLLOW | O_NONBLOCK` and takes only a regular file, which turns a FIFO into a failed
+entry instead of a hang. If any folder isn't real, the drain applies nothing, logs
+`broker.queue_unsafe`, and health turns red (`broker.queue_unsafe`).
+
+**Queued Telegram messages keep "queued means delivered" (Q5) and the run's allowance.** Every
+real send is a row in the owner's send log (`run-brokers/telegram-sent.jsonl`: `at`, the run's
+id (its broker folder's name), a request id), kept 48 h. The per-run cap counts that run's rows, live
+or drained, so the wrapper's drain doesn't grant a second allowance. A client queues only within
+its run's allowance, counting the log, which a run can read but not write, plus what it already
+queued; past it, it answers exit 5, as the live broker would. In the drain:
+- a request that breaks the rules, or is over its run's allowance (only an entry written outside the
+  client), moves to `failed/`;
+- a full hour keeps the entry queued without using up its tries;
+- a request id already in the log counts as sent. That covers a send whose reply was lost, which the
+  client also queued, and it no longer depends on `send()`'s 10-minute duplicate window.
+
+Run ids come from a folder name the run can see. A run that writes queue entries by hand can invent
+ids, so the hourly limit is the bound on queued sends.
+
+**The helper takes back what it staged** when `git add` or the commit fails, for example when the
+pre-commit hook refuses it. A run can't unstage, so a refused commit's paths would otherwise ride
+into the owner's next bare `git commit`. A queued commit takes the paths' content **at drain time**: a
 later edit to the same path rides in the earlier message's commit. That is the cost of the
 fallback, and it is written down here rather than hidden.
 
@@ -370,15 +403,20 @@ Affected tests only; CI is the gate. Defensive framing: each test asserts a posi
 
 ## 10.1 What the build found
 
-- **The replay** (`scoutctl sandbox replay --brokers`, the 50 newest scheduled runs, 3,919 tool
-  calls, read-only, counts only): 0 in-vault git writes without a replacement; 0 writes newly denied
-  outside the git dir; 2 newly denied secret reads, both listings of `~/.scout-secrets` (the
-  Telegram phase now says `test -s`); 0 reads of the Telegram files themselves. Helper calls: 166
-  (126 printed a SHA); 40 sessions reuse a SHA mid-session, which the synchronous broker keeps.
-  Telegram: 16 calls. In-vault git writes, each with its replacement: `add` 14, `checkout --` 12,
-  `commit` 11, `restore --staged` 10, `rm` 8, `reset` 3, `mv` 1. §3's survey counted some calls
-  twice (it read every transcript row; the replay reads assistant and user rows only, as
-  `tool_calls` does).
+- **The replay** (`scoutctl sandbox replay --brokers`, the 50 newest scheduled runs, 3,893 tool
+  calls, read-only, counts only; re-run after the review of #648 fixed its classification):
+  - 0 in-vault git writes without a replacement, and 0 writes newly denied outside the git dir.
+  - 2 newly denied secret reads, both listings of `~/.scout-secrets` (the Telegram phase now says
+    `test -s`), and 0 reads of the Telegram files themselves.
+  - Helper calls: 163 (124 printed a SHA). 39 sessions reuse a SHA mid-session, which the
+    synchronous broker keeps.
+  - Telegram: 16 calls.
+  - In-vault git writes, each with its replacement: `add` 16 (counting later lines of multi-line
+    commands), `checkout --` 12, `commit` 11, `restore --staged` 8, `rm` 7, `reset` 3,
+    `restore --staged --worktree` 2 (`git show`), `rm --cached` 1 (untracking: `.gitignore`, move
+    aside, commit the path, move back), `mv` 1.
+  - §3's survey counted some calls twice: it read every transcript row, while the replay reads
+    assistant and user rows only, as `tool_calls` does.
 - **`git config user.email|user.name`** (Step 0 of `git-setup.md`): 64 calls in 28 sessions. They
   write `.git/config`, which the 1c profile already refuses, so the brokers change nothing for them;
   they have failed since v0.18.14. Fixed here (Jordan, 2026-11-16): Step 0 now skips them when

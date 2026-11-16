@@ -134,6 +134,18 @@ def test_nothing_to_commit_keeps_its_exit_code(vault: Vault, served: str) -> Non
     assert res.returncode == 4
 
 
+def test_a_commit_the_hook_refuses_leaves_nothing_staged(vault: Vault, served: str) -> None:
+    hook = vault.path / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        '#!/bin/sh\ngit diff --cached --name-only | grep -q blocked && { echo "kb-lint: no" >&2; exit 1; }\nexit 0\n'
+    )
+    before = vault.head()
+    res = vault.run('echo x > notes/blocked.md && scripts/git-safe-commit.sh "notes: blocked" notes/blocked.md', served)
+    assert res.returncode == 5, res.stderr
+    assert vault.head() == before
+    assert vault.git("diff", "--cached", "--name-only").strip() == ""  # the owner's next commit won't carry it
+
+
 def test_a_refused_path_leaves_head_where_it_was(vault: Vault, served: str) -> None:
     before = vault.head()
     res = vault.run(

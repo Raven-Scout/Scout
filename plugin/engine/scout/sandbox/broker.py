@@ -21,10 +21,13 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import io
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import stat
@@ -75,11 +78,22 @@ BLANKET = frozenset({"-A", "--all", ".", "./", ":/", ":"})
 QUEUE_MAX_AGE = timedelta(hours=24)
 QUEUE_MAX_ATTEMPTS = 10
 QUEUE_MAX_ENTRY_BYTES = MAX_REQUEST_BYTES
+# A drain stops starting entries after this; the rest wait for the next drain (the wrapper's exit holds the run lock).
+DRAIN_DEADLINE_S = 120.0
+# What a queue entry's file name may be (the client writes ULIDs); anything else is moved to failed/ unread.
+_ENTRY_NAME = re.compile(r"^[0-9A-Za-z_-]{1,64}\.json$")
+# A run's id, its broker folder's name (``scout-broker.XXXXXX``), and a request's id (a ULID).
+_RUN_ID = re.compile(r"^scout-broker\.[0-9A-Za-z_]{1,32}$")
+_REQUEST_ID = re.compile(r"^[0-9A-Za-z]{1,64}$")
 # Exit codes after which a queued entry stays queued for the next drain: the commit mutex was busy, git or a hook
 # failed (a lock not provably stale), the network or Telegram failed, the secrets are missing.
 _TRANSIENT = {"commit": {1, 3, 5}, "telegram": {1, 2, 10}}
 # Exit codes that mean the entry is done: committed or nothing left to commit; sent or already sent.
 _DONE = {"commit": {0, 4}, "telegram": {0, 3}}
+# Reply kinds (never sent over the socket) that decide a queued entry's fate before its exit code does.
+REFUSED = "refused"  # the request breaks the rules: moved to failed/
+RUN_LIMIT = "run_limit"  # over its run's allowance: moved to failed/ (a client never queues past it)
+HOUR_LIMIT = "hour_limit"  # the hour is full: stays queued, not counted as an attempt
 
 # The variables a commit runs with (spec §5.3); nothing else reaches git, the helper or the hook.
 _COMMIT_ENV_KEYS = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SCOUT_MODE", "SCOUT_READER")
@@ -108,6 +122,7 @@ class Reply:
     exit: int
     stderr: str = ""
     stdout: str = ""
+    kind: str = ""  # REFUSED | RUN_LIMIT | HOUR_LIMIT; the drain reads it, the socket never carries it
 
     def to_dict(self) -> dict[str, Any]:
         return {"v": PROTOCOL, "exit": self.exit, "stderr": _tail(self.stderr), "stdout": _tail(self.stdout)}
@@ -142,7 +157,13 @@ def owner_dir(env: Mapping[str, str]) -> Path:
 
 
 CONFIG_NAME = "config.json"
+# One row per real send: {"at", "run", "rid"}, kept 48 h. The hourly count, each run's count (live and drained
+# alike), and which requests already went out (a send whose reply was lost is never sent again from the queue).
 TELEGRAM_LOG_NAME = "telegram-sent.jsonl"
+TELEGRAM_LOG_KEEP = timedelta(hours=48)
+# Locks are write-only files (mode 0200): a run, the same user, can't open them to read, and its sandbox refuses the
+# write open, so it can't hold a lock and stall the brokers.
+TELEGRAM_LOCK_NAME = "telegram.lock"
 DRAIN_LOCK_NAME = "drain.lock"
 
 
@@ -177,8 +198,8 @@ def _control(text: str) -> bool:
 def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str]) -> tuple[str, list[str], str | None]:
     """(message, paths relative to the vault, override) for a commit request, or :class:`Refused` (exit 2).
 
-    A path must stay inside the vault as spelled and resolved, have no ``.git`` component, and not be a path
-    :func:`scout.kb.hook_paths.protected_write` protects; options, pathspec magic and blanket forms are refused.
+    A path must stay inside the vault as spelled and resolved, have no ``.git`` component, and neither be nor hold a
+    path :mod:`scout.kb.hook_paths` protects; options, pathspec magic and blanket forms are refused.
     """
     msg = req.get("message")
     if not isinstance(msg, str) or not msg.strip():
@@ -220,7 +241,9 @@ def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str])
             raise Refused(EXIT_REFUSED, f"refusing blanket stage ('{p}') — pass explicit file paths")
         if any(part.casefold() == ".git" for part in (*rel.split("/"), *real[len(vault_real) :].split("/"))):
             raise Refused(EXIT_REFUSED, f"'{p}' is in git's own folder")
-        form = hook_paths.protected_write(spelled, vault, env) or hook_paths.protected_write(real, vault, env)
+        # removes_protected: the path itself, or a folder that holds a protected path (`scripts`): committing a
+        # folder would take the owner's uncommitted edits to its protected files with it.
+        form = hook_paths.removes_protected(spelled, vault, env) or hook_paths.removes_protected(real, vault, env)
         if form is not None:
             raise Refused(EXIT_REFUSED, f"'{p}' is protected ({form}); a scheduled run doesn't commit it")
         out.append(rel)
@@ -314,43 +337,77 @@ def send_telegram(fields: Mapping[str, Any]) -> Reply:
 
 
 @contextlib.contextmanager
-def _locked(path: Path, *, blocking: bool = True) -> Iterator[Any]:
+def _locked(path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """An exclusive flock on ``path``, a write-only (0200) file in the owner folder. Yields False when
+    ``blocking`` is off and another process holds it."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with path.open("a+", encoding="utf-8") as fh:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o200)
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, 0o200)  # a lock file made by an older build
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError:
-            yield None
+            yield False
             return
         try:
-            yield fh
+            yield True
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
-def _recent_sends(fh: Any, now: datetime) -> list[str]:
-    fh.seek(0)
-    keep: list[str] = []
-    for line in fh.read().splitlines():
+def _read_sends(env: Mapping[str, str], now: datetime) -> list[dict[str, str]]:
+    """The send log's rows from the last 48 h. Readable to a run (it counts its own sends), never writable."""
+    try:
+        lines = (owner_dir(env) / TELEGRAM_LOG_NAME).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    rows: list[dict[str, str]] = []
+    for line in lines:
         try:
-            at = datetime.fromisoformat(json.loads(line)["at"])
+            row = json.loads(line)
+            at = datetime.fromisoformat(row["at"])
         except (ValueError, KeyError, TypeError):
             continue
-        if timedelta(0) <= now - at < timedelta(hours=1):
-            keep.append(line)
-    return keep
+        if isinstance(row, dict) and timedelta(0) <= now - at < TELEGRAM_LOG_KEEP:
+            rows.append({k: str(row.get(k) or "") for k in ("at", "run", "rid")})
+    return rows
+
+
+def _write_sends(env: Mapping[str, str], rows: list[dict[str, str]]) -> None:
+    path = owner_dir(env) / TELEGRAM_LOG_NAME
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _hour(rows: list[dict[str, str]], now: datetime) -> int:
+    return sum(1 for r in rows if now - datetime.fromisoformat(r["at"]) < timedelta(hours=1))
+
+
+def run_id_of(sock_path: str) -> str:
+    """The run's id: its broker folder's name. "unknown" when there is none to name."""
+    name = Path(sock_path).parent.name if sock_path else ""
+    return name if _RUN_ID.match(name) else "unknown"
 
 
 @dataclass
 class Broker:
-    """One run's brokers: the commit verb and the Telegram verb, sharing nothing but the process."""
+    """One run's brokers (or one drain's): the commit verb and the Telegram verb, sharing nothing but the process.
+
+    ``run_id`` is the live broker's own run; a drain has none and takes each entry's (a client tags what it
+    queues). Each run's Telegram allowance is counted in the owner's send log, so live sends and drained ones
+    share it.
+    """
 
     vault: Path
     env: Mapping[str, str]
     limits: Limits = field(default_factory=Limits)
     sender: Callable[[Mapping[str, Any]], Reply] = send_telegram
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
-    sent: int = 0
+    run_id: str | None = None
 
     @classmethod
     def for_vault(cls, vault: Path, env: Mapping[str, str] | None = None, **kw: Any) -> Broker:
@@ -359,7 +416,7 @@ class Broker:
 
     def handle(self, req: Any) -> Reply:
         if not isinstance(req, dict) or req.get("v") != PROTOCOL:
-            return Reply(EXIT_REFUSED, "broker: not a request this broker speaks\n")
+            return Reply(EXIT_REFUSED, "broker: not a request this broker speaks\n", kind=REFUSED)
         verb = req.get("verb")
         if verb == "ping":
             return Reply(0, "", "pong")
@@ -367,45 +424,49 @@ class Broker:
             return self.commit(req)
         if verb == "telegram":
             return self.telegram(req)
-        return Reply(EXIT_REFUSED, "broker: unknown verb\n")
+        return Reply(EXIT_REFUSED, "broker: unknown verb\n", kind=REFUSED)
 
     def commit(self, req: Mapping[str, Any]) -> Reply:
         try:
             message, paths, override = validate_commit(req, self.vault, self.env)
         except Refused as r:
-            return Reply(r.exit_code, f"git-safe-commit: {r.reason}\n")
+            return Reply(r.exit_code, f"git-safe-commit: {r.reason}\n", kind=REFUSED)
         return run_commit(self.vault, message, paths, override, self.env)
 
     def telegram(self, req: Mapping[str, Any]) -> Reply:
         try:
             fields = validate_telegram(req, self.limits)
         except Refused as r:
-            return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n")
+            return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n", kind=REFUSED)
         if fields["dry_run"]:
             return self.sender(fields)
-        if self.sent >= self.limits.max_per_run:
-            return Reply(
-                EXIT_LIMIT,
-                f"scoutctl notify telegram: this run has sent its {self.limits.max_per_run} messages; "
-                "put the rest in the wrap\n",
-            )
+        run = self.run_id or (
+            req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else "unknown"
+        )
+        rid = req["rid"] if isinstance(req.get("rid"), str) and _REQUEST_ID.match(req["rid"]) else ""
         now = self.clock()
-        # Held across the send, so two runs' brokers can't both take the hour's last slot.
-        with _locked(owner_dir(self.env) / TELEGRAM_LOG_NAME) as fh:
-            recent = _recent_sends(fh, now)
-            if len(recent) >= self.limits.max_per_hour:
+        # Held across the send, so two brokers can't both take the hour's last slot or send one request twice.
+        with _locked(owner_dir(self.env) / TELEGRAM_LOCK_NAME):
+            rows = _read_sends(self.env, now)
+            if rid and any(r["rid"] == rid for r in rows):
+                return Reply(0, f"scoutctl notify telegram: request {rid} was already sent\n")
+            if sum(1 for r in rows if r["run"] == run) >= self.limits.max_per_run:
                 return Reply(
                     EXIT_LIMIT,
-                    f"scoutctl notify telegram: {len(recent)} messages went out in the last hour, the most the "
-                    "owner allows; nothing was sent\n",
+                    f"scoutctl notify telegram: this run has sent its {self.limits.max_per_run} messages; "
+                    "put the rest in the wrap\n",
+                    kind=RUN_LIMIT,
+                )
+            if _hour(rows, now) >= self.limits.max_per_hour:
+                return Reply(
+                    EXIT_LIMIT,
+                    f"scoutctl notify telegram: {_hour(rows, now)} messages went out in the last hour, the most "
+                    "the owner allows; nothing was sent\n",
+                    kind=HOUR_LIMIT,
                 )
             reply = self.sender(fields)
             if reply.exit == 0:
-                self.sent += 1
-                fh.seek(0)
-                fh.truncate()
-                fh.write("".join(line + "\n" for line in [*recent, json.dumps({"at": now.isoformat()})]))
-                fh.flush()
+                _write_sends(self.env, [*rows, {"at": now.isoformat(), "run": run, "rid": rid}])
         return reply
 
 
@@ -440,11 +501,37 @@ def _check_dir(broker_dir: Path) -> None:
         raise BrokerError(f"{broker_dir} must be a folder of this user's with mode 0700")
 
 
+STALE_BROKER_DIR = timedelta(hours=24)
+
+
+def sweep_stale(parent: Path, *, keep: str = "", now: float | None = None) -> int:
+    """Remove ``scout-broker.*`` folders a killed wrapper left in ``parent`` over a day ago. Only this user's real
+    folders: a link of that name is left alone, and nothing is followed below them."""
+    removed = 0
+    cutoff = (now if now is not None else time.time()) - STALE_BROKER_DIR.total_seconds()
+    try:
+        entries = list(os.scandir(parent))
+    except OSError:
+        return 0
+    for entry in entries:
+        if not _RUN_ID.match(entry.name) or entry.name == keep:
+            continue
+        try:
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and st.st_mtime < cutoff:
+            shutil.rmtree(entry.path, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def serve(vault: Path, broker_dir: Path, *, parent: int | None = None, broker: Broker | None = None) -> int:
     """Answer requests on ``<broker_dir>/b.sock`` one at a time until SIGTERM or ``parent`` is gone."""
     _check_dir(broker_dir)
     os.environ["SCOUT_DATA_DIR"] = str(vault)  # notify_telegram's duplicate guard finds the vault by it
-    broker = broker or Broker.for_vault(vault)
+    broker = broker or Broker.for_vault(vault, run_id=broker_dir.name)
+    sweep_stale(broker_dir.parent, keep=broker_dir.name)
     with contextlib.suppress(Exception):  # warm the protected-path list, so the first commit isn't the slow one
         hook_paths.protected_roots(vault, broker.env)
     path = broker_dir / SOCKET_NAME
@@ -493,8 +580,9 @@ def _answer(conn: socket.socket, broker: Broker) -> None:
     req: Any = None
     try:
         req = json.loads(_read_line(conn, MAX_REQUEST_BYTES))
-    except (ValueError, OSError, UnicodeDecodeError):
+    except Exception:  # noqa: BLE001 - not JSON, too long, too deeply nested (RecursionError): a refusal, never a crash
         reply = Reply(EXIT_REFUSED, "broker: a request must be one JSON line under 1 MiB\n")
+        req = None
     else:
         try:
             reply = broker.handle(req)
@@ -533,7 +621,7 @@ def call(sock_path: str, req: Mapping[str, Any], *, timeout: float) -> Reply:
         raise Unreachable("the broker closed the connection without a reply")
     try:
         return Reply.from_dict(json.loads(line))
-    except (ValueError, UnicodeDecodeError) as e:
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
         raise Unreachable(str(e)) from None
 
 
@@ -569,7 +657,7 @@ def client_commit(message: str, paths: Sequence[str], env: Mapping[str, str] | N
         pass
     try:
         qid = enqueue(_vault(env), "commit", req)
-    except OSError as e:
+    except (OSError, QueueUnsafe) as e:
         print(
             f"git-safe-commit: the commit broker isn't answering and the queue can't be written ({e})", file=sys.stderr
         )
@@ -582,19 +670,46 @@ def client_commit(message: str, paths: Sequence[str], env: Mapping[str, str] | N
 
 
 def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = None) -> int:
-    """In-session ``scoutctl notify telegram``: the broker sends it, or it is queued and sent after (exit 0)."""
+    """In-session ``scoutctl notify telegram``: the broker sends it, or it is queued and sent after (exit 0).
+
+    A queued message is one the drain will send: the client queues only within its run's allowance (what the log
+    says the run sent, plus what it already queued), and answers exit 5 past it, as the broker would.
+    """
+    from scout.ids import new_ulid
+
     env = os.environ if env is None else env
-    req = {"v": PROTOCOL, "verb": "telegram", **fields}
+    sock = env.get(ENV_SOCKET, "")
+    run = run_id_of(sock)
+    req = {"v": PROTOCOL, "verb": "telegram", **fields, "rid": new_ulid(), "run": run}
     try:
-        return _emit(call(env.get(ENV_SOCKET, ""), req, timeout=TELEGRAM_TIMEOUT_S + CLIENT_SLACK_S))
+        return _emit(call(sock, req, timeout=TELEGRAM_TIMEOUT_S + CLIENT_SLACK_S))
     except Unreachable:
         pass
     if fields.get("dry_run"):
         print("scoutctl notify telegram: the Telegram broker isn't answering; a dry run isn't queued", file=sys.stderr)
         return 1
+    limits = load_limits(env)
+    body = fields.get("body")
+    if isinstance(body, str) and len(body) > limits.max_chars:
+        print(
+            f"scoutctl notify telegram: the message is {len(body)} characters; the broker sends at most "
+            f"{limits.max_chars}",
+            file=sys.stderr,
+        )
+        return EXIT_LIMIT
+    vault = _vault(env)
     try:
-        qid = enqueue(_vault(env), "telegram", req)
-    except OSError as e:
+        used = sum(1 for r in _read_sends(env, datetime.now(UTC)) if r["run"] == run)
+        used += sum(1 for entry in _queued(vault, "telegram") if entry.get("run") == run)
+        if used >= limits.max_per_run:
+            print(
+                f"scoutctl notify telegram: this run has sent or queued its {limits.max_per_run} messages; "
+                "put the rest in the wrap",
+                file=sys.stderr,
+            )
+            return EXIT_LIMIT
+        qid = enqueue(vault, "telegram", req)
+    except (OSError, QueueUnsafe) as e:
         print(
             f"scoutctl notify telegram: the broker isn't answering and the queue can't be written ({e})",
             file=sys.stderr,
@@ -606,6 +721,121 @@ def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = N
 
 
 # -- the queue -----------------------------------------------------------------------------------------------------
+#
+# The queue is in the vault, which a run can write, and the drain runs outside the sandbox. So the drain never
+# follows a link: it opens .scout-state, broker-queue and each folder below one at a time with O_NOFOLLOW, from the
+# vault's resolved path, and checks each is a folder of this user's; then it reads, rewrites, moves and removes
+# entries only through those folders' descriptors, opening each entry with O_NOFOLLOW | O_NONBLOCK and taking only
+# a regular file. A link, a FIFO or a folder that isn't this user's can't take the drain outside the queue or stall
+# it.
+
+
+class QueueUnsafe(Exception):
+    """A queue folder isn't a real folder of this user's (a link, a file, another owner's)."""
+
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_dir(parent_fd: int, name: str, *, create: bool) -> int | None:
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            return None
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        return _open_dir(parent_fd, name, create=False)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+            raise QueueUnsafe(f"{name} isn't a real folder") from None
+        raise
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        os.close(fd)
+        raise QueueUnsafe(f"{name} isn't a folder of this user's")
+    return fd
+
+
+@contextlib.contextmanager
+def _queue_dirs(vault: Path, *names: str, create: bool = False) -> Iterator[dict[str, int | None]]:
+    """Descriptors of the queue's folders ``names`` (verbs, failed), opened link by link from the vault. A missing
+    folder is None (made, when ``create``). :class:`QueueUnsafe` when any folder on the way isn't real."""
+    opened: list[int] = []
+    try:
+        fd: int | None = os.open(os.path.realpath(vault), os.O_RDONLY | os.O_DIRECTORY)
+        assert fd is not None
+        opened.append(fd)
+        for part in QUEUE_DIR.parts:
+            fd = _open_dir(opened[-1], part, create=create) if fd is not None else None
+            if fd is None:
+                break
+            opened.append(fd)
+        queue_fd = fd  # broker-queue/, or None when it (or .scout-state) is missing
+        out: dict[str, int | None] = {}
+        for name in names:
+            sub = _open_dir(queue_fd, name, create=create) if queue_fd is not None else None
+            out[name] = sub
+            if sub is not None:
+                opened.append(sub)
+        yield out
+    finally:
+        for f in reversed(opened):
+            with contextlib.suppress(OSError):
+                os.close(f)
+
+
+def queue_problem(vault: Path) -> str | None:
+    """Why the queue can't be drained safely, or None (also when there is no queue)."""
+    try:
+        with _queue_dirs(vault, *VERBS, FAILED_DIR):
+            return None
+    except QueueUnsafe as e:
+        return str(e)
+    except OSError:
+        return None
+
+
+def _names(dir_fd: int | None) -> list[str]:
+    if dir_fd is None:
+        return []
+    try:
+        return sorted(n for n in os.listdir(dir_fd) if _ENTRY_NAME.match(n))
+    except OSError:
+        return []
+
+
+def _read_entry(dir_fd: int, name: str) -> dict[str, Any]:
+    """The entry ``name`` in ``dir_fd``; ValueError for anything but a regular file holding one JSON object."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as e:
+        raise ValueError("unreadable") from e
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_size > QUEUE_MAX_ENTRY_BYTES:
+            raise ValueError("not a queue entry")
+        data = fh.read(QUEUE_MAX_ENTRY_BYTES + 1)
+    try:
+        entry = json.loads(data.decode("utf-8"))
+    except Exception as e:  # noqa: BLE001 - malformed or too deeply nested
+        raise ValueError("malformed") from e
+    if not isinstance(entry, dict):
+        raise ValueError("not a queue entry")
+    return entry
+
+
+def _write_entry(dir_fd: int, name: str, data: Mapping[str, Any]) -> None:
+    tmp = f".{name}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp, dir_fd=dir_fd)
+        raise
 
 
 def queue_dir(vault: Path, verb: str) -> Path:
@@ -619,34 +849,41 @@ def enqueue(vault: Path, verb: str, req: Mapping[str, Any], *, now: datetime | N
     if verb not in VERBS:
         raise ValueError(verb)
     qid = new_ulid()
-    d = queue_dir(vault, verb)
-    d.mkdir(parents=True, exist_ok=True)
     entry = {k: v for k, v in req.items() if k not in ("v", "verb")}
     entry.update({"v": PROTOCOL, "queued_at": (now or datetime.now(UTC)).isoformat(), "attempts": 0})
-    _write_atomic(d / f"{qid}.json", entry)
+    with _queue_dirs(vault, verb, create=True) as dirs:
+        fd = dirs[verb]
+        assert fd is not None
+        _write_entry(fd, f"{qid}.json", entry)
     return qid
 
 
-def _write_atomic(path: Path, data: Mapping[str, Any]) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
+def _queued(vault: Path, verb: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    with _queue_dirs(vault, verb) as dirs:
+        fd = dirs[verb]
+        for name in _names(fd):
+            with contextlib.suppress(ValueError):
+                out.append(_read_entry(fd, name))  # type: ignore[arg-type]
+    return out
 
 
 def pending(vault: Path) -> int:
-    """How many entries wait in the queue (failed ones not counted)."""
-    return sum(len(list(queue_dir(vault, verb).glob("*.json"))) for verb in VERBS)
+    """How many entries wait in the queue (failed ones not counted); 0 when the queue isn't safe to read."""
+    try:
+        with _queue_dirs(vault, *VERBS, FAILED_DIR) as dirs:  # failed/ too: an unsafe queue waits for the owner
+            return sum(len(_names(dirs[v])) for v in VERBS)
+    except (QueueUnsafe, OSError):
+        return 0
 
 
-def failed_entries(vault: Path) -> list[Path]:
-    return sorted((vault / QUEUE_DIR / FAILED_DIR).glob("*.json"))
+def failed_entries(vault: Path) -> list[str]:
+    """The names in ``failed/`` ([] when there are none or the queue isn't safe to read)."""
+    try:
+        with _queue_dirs(vault, FAILED_DIR) as dirs:
+            return _names(dirs[FAILED_DIR])
+    except (QueueUnsafe, OSError):
+        return []
 
 
 @dataclass
@@ -655,42 +892,70 @@ class DrainResult:
     kept: int = 0
     failed: int = 0
     busy: bool = False
+    unsafe: str = ""
     reasons: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         if self.busy:
             return "broker drain: another drain is running"
+        if self.unsafe:
+            return f"broker drain: refused, the queue isn't safe to read ({self.unsafe}); nothing was applied"
         return f"broker drain: {self.done} done, {self.kept} kept for the next drain, {self.failed} moved to failed/"
 
 
-def drain(vault: Path, *, env: Mapping[str, str] | None = None, broker: Broker | None = None) -> DrainResult:
+def drain(
+    vault: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    broker: Broker | None = None,
+    deadline_s: float = DRAIN_DEADLINE_S,
+) -> DrainResult:
     """Apply the queue outside the sandbox: each entry validated exactly like a live request (spec §5.6)."""
     env = dict(os.environ if env is None else env)
     result = DrainResult()
+    problem = queue_problem(vault)
+    if problem is not None:
+        result.unsafe = problem
+        _event(vault, "broker.queue_unsafe", {"reason": problem})
+        return result
     if pending(vault) == 0:
         return result
-    with _locked(owner_dir(env) / DRAIN_LOCK_NAME, blocking=False) as fh:
-        if fh is None:
+    stop_at = time.monotonic() + deadline_s
+    with _locked(owner_dir(env) / DRAIN_LOCK_NAME, blocking=False) as held:
+        if not held:
             result.busy = True
             return result
-        # One drain has the per-run Telegram allowance of one run.
         broker = broker or Broker.for_vault(vault, env)
         now = broker.clock()
-        for verb in VERBS:
-            for path in sorted(queue_dir(vault, verb).glob("*.json")):
-                _drain_one(vault, verb, path, broker, now, result)
+        try:
+            with _queue_dirs(vault, *VERBS, FAILED_DIR, create=True) as dirs:
+                for verb in VERBS:
+                    for name in _names(dirs[verb]):
+                        if time.monotonic() >= stop_at:
+                            result.kept += 1
+                            continue
+                        _drain_one(vault, verb, name, dirs, broker, now, result)
+        except QueueUnsafe as e:  # a folder swapped for a link between the check and here
+            result.unsafe = str(e)
+            _event(vault, "broker.queue_unsafe", {"reason": str(e)})
     return result
 
 
-def _drain_one(vault: Path, verb: str, path: Path, broker: Broker, now: datetime, result: DrainResult) -> None:
+def _drain_one(
+    vault: Path,
+    verb: str,
+    name: str,
+    dirs: Mapping[str, int | None],
+    broker: Broker,
+    now: datetime,
+    result: DrainResult,
+) -> None:
+    vfd = dirs[verb]
+    assert vfd is not None
     try:
-        if path.is_symlink() or path.stat().st_size > QUEUE_MAX_ENTRY_BYTES:
-            raise ValueError("not a queue entry")
-        entry = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(entry, dict):
-            raise ValueError("not a queue entry")
-    except (OSError, ValueError, UnicodeDecodeError):
-        _fail(vault, verb, path, "malformed", result)
+        entry = _read_entry(vfd, name)
+    except ValueError as e:
+        _fail(vault, verb, name, dirs, str(e), result)
         return
     raw_attempts = entry.get("attempts")
     attempts = raw_attempts if isinstance(raw_attempts, int) and raw_attempts >= 0 else 0
@@ -698,52 +963,55 @@ def _drain_one(vault: Path, verb: str, path: Path, broker: Broker, now: datetime
         queued = datetime.fromisoformat(str(entry.get("queued_at")))
         queued = queued if queued.tzinfo else queued.replace(tzinfo=UTC)
     except ValueError:
-        queued = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        queued = datetime.fromtimestamp(0, UTC)
     if now - queued > QUEUE_MAX_AGE:
-        _fail(vault, verb, path, "older than 24 h", result)
+        _fail(vault, verb, name, dirs, "older than 24 h", result)
         return
     if attempts >= QUEUE_MAX_ATTEMPTS:
-        _fail(vault, verb, path, f"{attempts} attempts", result)
+        _fail(vault, verb, name, dirs, f"{attempts} attempts", result)
         return
     req = {k: v for k, v in entry.items() if k not in ("queued_at", "attempts", "last_exit")}
     req.update({"v": PROTOCOL, "verb": verb})  # the folder says the verb, not the file
     reply = broker.handle(req)
-    if reply.exit in _DONE[verb]:
+    if reply.kind in (REFUSED, RUN_LIMIT):
+        _fail(vault, verb, name, dirs, f"refused (exit {reply.exit})", result)
+    elif reply.exit in _DONE[verb]:
         with contextlib.suppress(OSError):
-            path.unlink()
+            os.unlink(name, dir_fd=vfd)
         result.done += 1
-    elif reply.exit in _TRANSIENT[verb]:
-        entry.update({"attempts": attempts + 1, "last_exit": reply.exit})
-        try:
-            _write_atomic(path, entry)
-        except OSError:
-            pass
+    elif reply.kind == HOUR_LIMIT or reply.exit in _TRANSIENT[verb]:
+        # The hour being full isn't the entry's fault: it waits for a later drain without using up its tries.
+        if reply.kind != HOUR_LIMIT:
+            entry.update({"attempts": attempts + 1, "last_exit": reply.exit})
+            with contextlib.suppress(OSError):
+                _write_entry(vfd, name, entry)
         result.kept += 1
     else:
-        _fail(vault, verb, path, f"refused (exit {reply.exit})", result)
+        _fail(vault, verb, name, dirs, f"refused (exit {reply.exit})", result)
 
 
-def _fail(vault: Path, verb: str, path: Path, reason: str, result: DrainResult) -> None:
-    dest = vault / QUEUE_DIR / FAILED_DIR
+def _fail(vault: Path, verb: str, name: str, dirs: Mapping[str, int | None], reason: str, result: DrainResult) -> None:
+    vfd, ffd = dirs[verb], dirs[FAILED_DIR]
+    assert vfd is not None
     try:
-        dest.mkdir(parents=True, exist_ok=True)
-        os.replace(path, dest / f"{verb}-{path.name}")
+        if ffd is None:
+            raise OSError("no failed/ folder")
+        os.replace(name, f"{verb}-{name}", src_dir_fd=vfd, dst_dir_fd=ffd)
     except OSError:
         with contextlib.suppress(OSError):
-            path.unlink()
+            os.unlink(name, dir_fd=vfd)
     result.failed += 1
     result.reasons.append(f"{verb}: {reason}")
+    _event(vault, "broker.queue_failed", {"verb": verb, "reason": reason})
+
+
+def _event(vault: Path, kind: str, payload: dict[str, Any]) -> None:
     try:
         from scout import paths
         from scout.events import append_event
 
-        append_event(
-            paths.logs_dir(vault),
-            kind="broker.queue_failed",
-            source="cli:broker_drain",
-            payload={"verb": verb, "reason": reason},
-        )
-    except Exception:  # noqa: BLE001, S110 - the entry is in failed/ either way, and health counts it
+        append_event(paths.logs_dir(vault), kind=kind, source="cli:broker_drain", payload=payload)
+    except Exception:  # noqa: BLE001, S110 - the drain's outcome stands without its event; health reads the queue
         pass
 
 
@@ -788,7 +1056,7 @@ def build_profile(vault: Path, broker_dir: Path, base: str, env: Mapping[str, st
         text = sbx.with_broker_rules(base, sbx.broker_rules(vault, broker_dir, env))
     except sbx.ProfileError as e:
         raise BrokerError(str(e)) from e
-    err = sbx.self_test(text) or python_starts(text)
+    err = sbx.self_test(text) or python_starts(text, vault, env)
     if err is not None:
         raise BrokerError(f"the tightened profile failed its self-test: {err}")
     return text
@@ -797,19 +1065,23 @@ def build_profile(vault: Path, broker_dir: Path, base: str, env: Mapping[str, st
 PYTHON_START_TIMEOUT_S = 30.0
 
 
-def python_starts(profile: str, *, timeout_s: float = PYTHON_START_TIMEOUT_S) -> str | None:
-    """None when the engine's own interpreter starts and imports the CLI under ``profile``, else why not.
+def python_starts(
+    profile: str, vault: Path, env: Mapping[str, str], *, timeout_s: float = PYTHON_START_TIMEOUT_S
+) -> str | None:
+    """None when the vault's ``scripts/scoutctl`` starts the engine under ``profile``, with the run's environment
+    and in the vault, as a session would; else why not.
 
     The session's first process inside the sandbox can be scoutctl (``agent-runtime exec`` launches claude), so a
-    profile that stopped Python from starting would stop every run.
+    profile that stopped it from starting would stop every run.
     """
     from scout.sandbox import profile as sbx
 
+    run_env = {k: v for k, v in env.items() if k != ENV_SOCKET}
     try:
         proc = subprocess.run(
-            [str(sbx.SANDBOX_EXEC), "-p", profile, sys.executable, "-P", "-c", "import scout.cli"],
+            [str(sbx.SANDBOX_EXEC), "-p", profile, str(vault / "scripts" / "scoutctl"), "version"],
             capture_output=True, text=True, timeout=timeout_s, check=False, stdin=subprocess.DEVNULL,
-            cwd="/",
+            cwd=str(vault), env=run_env,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError) as e:
         return f"the engine's Python didn't start under it: {e}"

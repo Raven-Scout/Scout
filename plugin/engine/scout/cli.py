@@ -334,13 +334,14 @@ def cli_broker_commit(
 @broker_app.command("drain")
 def cli_broker_drain(
     vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    deadline: float = typer.Option(120.0, "--deadline", help="Start no entry after this many seconds; the rest wait."),
 ) -> None:
     """Outside the sandbox: apply what runs queued while their broker didn't answer, each checked like a live one."""
     from scout import paths
     from scout.sandbox import broker
 
-    result = broker.drain(paths.data_dir(vault))
-    if result.done or result.kept or result.failed or result.busy:
+    result = broker.drain(paths.data_dir(vault), deadline_s=deadline)
+    if result.done or result.kept or result.failed or result.busy or result.unsafe:
         typer.echo(result.line())
     for reason in result.reasons:
         typer.echo(f"  failed: {reason}")

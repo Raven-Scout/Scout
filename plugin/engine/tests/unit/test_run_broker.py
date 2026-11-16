@@ -81,6 +81,8 @@ def test_broker_commits_always_get_the_scheduled_run_checks(vault: Path) -> None
         (["notes/../.git/HEAD"], "git's own folder"),
         (["scripts/claude-with-retry.sh"], "protected"),
         ([".claude/settings.local.json"], "protected"),
+        (["scripts"], "protected"),  # a folder holding protected files
+        (["notes", "scripts/"], "protected"),
         (["--all"], "blanket"),
         (["."], "blanket"),
         (["-n"], "can't start with"),
@@ -166,11 +168,17 @@ def test_the_per_run_limit_holds(vault: Path) -> None:
 def test_the_hourly_limit_holds_across_runs(vault: Path) -> None:
     sender = Sender()
     limits = broker.Limits(max_per_run=10, max_per_hour=3)
-    first = broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW)
+    first = broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW, run_id="scout-broker.a")
     assert [first.handle(_tg(f"a{i}")).exit for i in range(2)] == [0, 0]
-    second = broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW + timedelta(minutes=5))
-    assert [second.handle(_tg(f"b{i}")).exit for i in range(2)] == [0, broker.EXIT_LIMIT]
-    later = broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW + timedelta(minutes=61))
+    second = broker.Broker(
+        vault, _env(), limits=limits, sender=sender, clock=lambda: NOW + timedelta(minutes=5), run_id="scout-broker.b"
+    )
+    assert second.handle(_tg("b0")).exit == 0
+    full = second.handle(_tg("b1"))
+    assert full.exit == broker.EXIT_LIMIT and full.kind == broker.HOUR_LIMIT
+    later = broker.Broker(
+        vault, _env(), limits=limits, sender=sender, clock=lambda: NOW + timedelta(minutes=61), run_id="scout-broker.c"
+    )
     assert later.handle(_tg("c")).exit == 0
     assert len(sender.calls) == 4
 
@@ -293,6 +301,175 @@ def test_a_client_with_no_broker_queues_a_telegram_message_as_delivered_later(
     assert broker.pending(vault) == 1
 
 
+# -- the queue stays inside the vault (review of #648) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("folder", ["commit", "telegram", "failed", "broker-queue"])
+def test_the_drain_touches_nothing_outside_the_vaults_queue(vault: Path, tmp_path: Path, folder: str) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.json").write_text('{"message": "x", "paths": ["notes/a.md"]}')
+    before = sorted(p.name for p in outside.iterdir())
+    queue = vault / broker.QUEUE_DIR
+    queue.mkdir(parents=True)
+    broker.enqueue(vault, "commit", _commit(["notes/a.md"], message="real"), now=NOW)
+    if folder == "broker-queue":
+        shutil_move = queue.rename(vault / ".scout-state" / "moved")
+        del shutil_move
+        queue.symlink_to(outside)
+    else:
+        target = queue / folder
+        if target.exists():
+            for p in target.iterdir():
+                p.unlink()
+            target.rmdir()
+        target.symlink_to(outside)
+    rec = Recorder(vault, {})
+    result = broker.drain(vault, broker=rec)
+    assert result.unsafe and rec.seen == []
+    assert sorted(p.name for p in outside.iterdir()) == before
+    assert (outside / "keep.json").read_text().startswith('{"message"')
+    assert broker.queue_problem(vault) is not None
+    assert broker.pending(vault) == 0
+
+
+def test_a_queue_entry_that_isnt_a_regular_file_never_stalls_the_drain(vault: Path) -> None:
+    import threading
+
+    broker.enqueue(vault, "commit", _commit(["notes/a.md"], message="after"), now=NOW)
+    folder = broker.queue_dir(vault, "commit")
+    os.mkfifo(folder / "00000000000000000000000000.json")
+    (folder / "00000000000000000000000001.json").symlink_to(folder / "elsewhere.json")
+    rec = Recorder(vault, {})
+    results: list[broker.DrainResult] = []
+    t = threading.Thread(target=lambda: results.append(broker.drain(vault, broker=rec)), daemon=True)
+    t.start()
+    t.join(15)
+    assert not t.is_alive() and results
+    assert results[0].failed == 2 and results[0].done == 1
+    assert rec.seen == [("commit", "after")]
+
+
+def test_the_drain_stops_starting_entries_at_its_deadline(vault: Path) -> None:
+    for i in range(3):
+        broker.enqueue(vault, "commit", _commit(["notes/a.md"], message=f"c{i}"), now=NOW)
+    result = broker.drain(vault, broker=Recorder(vault, {}), deadline_s=0)
+    assert result.done == 0 and result.kept == 3 and broker.pending(vault) == 3
+
+
+def test_the_locks_are_write_only_to_the_owner(vault: Path) -> None:
+    broker.enqueue(vault, "commit", _commit(["notes/a.md"]), now=NOW)
+    broker.drain(vault, broker=Recorder(vault, {}))
+    broker.Broker(vault, _env(), sender=Sender()).handle(_tg("x"))
+    for name in (broker.DRAIN_LOCK_NAME, broker.TELEGRAM_LOCK_NAME):
+        path = broker.owner_dir(os.environ) / name
+        assert stat.S_IMODE(path.stat().st_mode) == 0o200
+        with pytest.raises(PermissionError):
+            path.open("rb")
+
+
+# -- requests that would crash a parser ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"[" * 200_000,
+        b'{"a":' * 100_000,
+        b"1" * 100_000,
+        b"\xff\xfe not utf-8",
+        b'{"v": 1, "verb": "commit", "message": NaN}',
+        b"",
+    ],
+)
+def test_a_malformed_request_is_refused_and_the_broker_keeps_answering(vault: Path, payload: bytes) -> None:
+    import socket
+    import threading
+
+    b = broker.Broker(vault, _env())
+    for data, want in ((payload + b"\n", broker.EXIT_REFUSED), (b'{"v": 1, "verb": "ping"}\n', 0)):
+        server, client = socket.socketpair()
+        with server, client:
+            answering = threading.Thread(target=broker._answer, args=(server, b), daemon=True)
+            answering.start()  # it reads while the request is written: a socketpair's buffer is small
+            client.sendall(data)
+            client.shutdown(socket.SHUT_WR)
+            answering.join(30)
+            assert not answering.is_alive()
+            reply = json.loads(client.recv(1 << 20))
+        assert reply["exit"] == want, payload[:20]
+
+
+# -- queued Telegram messages keep the run's limits and are sent once ---------------------------------------------
+
+
+def test_a_queued_message_that_breaks_the_rules_fails_at_once(vault: Path) -> None:
+    broker.enqueue(vault, "telegram", _tg(tier="loud"), now=NOW)
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=Sender(), clock=lambda: NOW))
+    assert result.failed == 1 and broker.pending(vault) == 0
+
+
+def test_a_full_hour_keeps_queued_messages_without_using_their_tries(vault: Path) -> None:
+    limits = broker.Limits(max_per_run=4, max_per_hour=1)
+    busy = broker.Broker(vault, _env(), limits=limits, sender=Sender(), clock=lambda: NOW, run_id="scout-broker.x")
+    assert busy.handle(_tg("first")).exit == 0
+    broker.enqueue(vault, "telegram", {**_tg("later"), "run": "scout-broker.y"}, now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW))
+    assert result.kept == 1 and sender.calls == []
+    (entry,) = broker._queued(vault, "telegram")
+    assert entry["attempts"] == 0
+    an_hour_on = broker.Broker(vault, _env(), limits=limits, sender=sender, clock=lambda: NOW + timedelta(minutes=61))
+    assert broker.drain(vault, broker=an_hour_on).done == 1 and len(sender.calls) == 1
+
+
+def test_a_run_sends_at_most_its_allowance_live_and_queued_together(
+    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = "scout-broker.r1"
+    live = broker.Broker(vault, _env(), sender=Sender(), run_id=run)
+    assert [live.handle(_tg(f"live{i}")).exit for i in range(3)] == [0, 0, 0]
+    gone = str(tmp_path / run / broker.SOCKET_NAME)  # the broker died: the client queues
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault), broker.ENV_SOCKET: gone}
+    fields = {"tier": "info", "parse_mode": "none", "allow_duplicate": False, "dry_run": False}
+    assert broker.client_telegram({**fields, "body": "queued0"}, env=env) == 0
+    assert broker.client_telegram({**fields, "body": "queued1"}, env=env) == broker.EXIT_LIMIT
+    assert "sent or queued its 4" in capsys.readouterr().err
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender))
+    assert result.done == 1 and [c["body"] for c in sender.calls] == ["queued0"]
+
+
+def test_a_message_the_broker_already_sent_is_not_sent_again_from_the_queue(vault: Path) -> None:
+    sender = Sender()
+    live = broker.Broker(vault, _env(), sender=sender, run_id="scout-broker.r2")
+    req = {**_tg("once"), "rid": "01REQUEST", "run": "scout-broker.r2"}
+    assert live.handle(req).exit == 0  # sent, then the reply was lost: the client queued it too
+    broker.enqueue(vault, "telegram", req, now=datetime.now(UTC))
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender))
+    assert result.done == 1 and len(sender.calls) == 1
+
+
+# -- leftovers ------------------------------------------------------------------------------------------------------
+
+
+def test_old_broker_folders_are_swept_and_nothing_else(tmp_path: Path) -> None:
+    old, recent, keep = tmp_path / "scout-broker.old", tmp_path / "scout-broker.new", tmp_path / "scout-broker.mine"
+    for d in (old, recent, keep):
+        d.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "x").write_text("x")
+    (old / "inside").symlink_to(other)
+    (tmp_path / "scout-broker.link").symlink_to(other)
+    day_ago = datetime.now(UTC).timestamp() - 2 * 86_400
+    for d in (old, keep):
+        os.utime(d, (day_ago, day_ago))
+    assert broker.sweep_stale(tmp_path, keep=keep.name) == 1
+    assert not old.exists() and recent.exists() and keep.exists()
+    assert (other / "x").exists() and (tmp_path / "scout-broker.link").is_symlink()
+
+
 # -- the profile rules -----------------------------------------------------------------------------------------------
 
 
@@ -359,6 +536,9 @@ def test_the_replay_names_a_replacement_for_every_in_vault_git_write(vault: Path
         ("u5", "Bash", {"command": 'git config user.email "alex@example.com"'}),
         ("u6", "Bash", {"command": "scoutctl notify telegram --body-file - <<'X'\nwrap\nX"}),
         ("u7", "Bash", {"command": "git -C /elsewhere/repo commit -qm other"}),
+        ("u8", "Bash", {"command": "echo x > notes/e.md\ngit add notes/e.md\nscripts/git-safe-commit.sh m notes/f.md"}),
+        ("u9", "Bash", {"command": "git rm -q --cached notes/g.md"}),
+        ("u10", "Bash", {"command": "git restore --source=HEAD --staged --worktree notes/h.md"}),
     ]
     rows = [json.dumps({"entrypoint": "sdk-cli", "type": "system"})]
     for cid, name, inp in calls:
@@ -370,10 +550,19 @@ def test_the_replay_names_a_replacement_for_every_in_vault_git_write(vault: Path
     (project / "s.jsonl").write_text("\n".join(rows) + "\n")
     report = replay.replay(project, vault, limit=5, brokers=True)
     b = report["brokers"]
-    assert b["helper_calls_kept"] == 1 and b["helper_commits_with_sha"] == 1
+    assert b["helper_calls_kept"] == 2 and b["helper_commits_with_sha"] == 1
     assert b["sessions_reusing_a_sha_mid_session"] == 1 and b["telegram_calls_kept"] == 1
     kinds = {k: v["calls"] for k, v in b["vault_git_writes"].items()}
-    assert kinds == {"add": 1, "commit": 1, "checkout --": 1, "restore --staged": 1, "config (write)": 1}
+    assert kinds == {
+        "add": 2,  # one on a later line of a multi-line command
+        "commit": 1,
+        "checkout --": 1,
+        "restore --staged": 1,
+        "restore --worktree": 1,  # --staged --worktree puts the file back: git show
+        "rm --cached": 1,
+        "config (write)": 1,
+    }
+    assert "gitignore" in b["vault_git_writes"]["rm --cached"]["instead"]
     assert b["vault_git_writes_without_a_replacement"] == 0
     assert b["newly_denied_writes_outside_the_git_dir"] == 0
     assert "with the run brokers" in replay.format_report(report)
@@ -399,3 +588,9 @@ def test_status_and_failed_entries_reach_health(vault: Path) -> None:
     assert ids == ["runs.broker_unavailable", "broker.queue_failed"]
     broker.write_status(vault, "on", "commits and Telegram go through the run's broker")
     assert [f.id for f in health.broker_findings([row], vault=vault)] == ["broker.queue_failed"]
+    telegram = broker.queue_dir(vault, "telegram")
+    if telegram.is_dir():
+        telegram.rmdir()  # the drain made it, empty
+    telegram.symlink_to(vault / "notes")
+    unsafe = [f for f in health.broker_findings([row], vault=vault) if f.id == "broker.queue_unsafe"]
+    assert unsafe and unsafe[0].severity == "red"

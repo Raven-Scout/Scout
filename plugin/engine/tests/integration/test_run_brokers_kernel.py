@@ -183,14 +183,14 @@ echo ok
 
 def test_the_engines_python_starts_inside_the_tightened_profile(world: World) -> None:
     """The session's first process can be scoutctl (`agent-runtime exec`): Python and the CLI start under it."""
-    assert broker.python_starts(world.profile) is None
+    assert broker.python_starts(world.profile, world.vault, world.env) is None
     res = world.sh(f'"{world.scoutctl}" version')
     assert res.returncode == 0, res.stderr
 
 
 def test_a_profile_python_cannot_start_under_is_not_used(world: World) -> None:
     blocked = world.profile + f'(deny process-exec (literal "{os.path.realpath(sys.executable)}"))\n'
-    reason = broker.python_starts(blocked)
+    reason = broker.python_starts(blocked, world.vault, world.env)
     assert reason is not None and "didn't start" in reason
 
 
@@ -311,6 +311,24 @@ def test_a_vault_with_an_older_helper_keeps_the_1c_sandbox(tmp_path: Path, broke
     assert "broker=\n" in ran and "helper=0" in ran, ran  # commits as under 1c
     status = json.loads((w.vault / ".scout-logs" / broker.STATUS_FILE).read_text())
     assert status["status"] == "unavailable" and "predates" in status["reason"]
+
+
+def test_a_tightened_profile_scoutctl_cant_start_under_keeps_the_1c_sandbox(tmp_path: Path, broker_dir: Path) -> None:
+    w = World(tmp_path.resolve(), broker_dir)
+    # A launcher whose `version` fails wherever the Telegram token can't be read: inside the tightened profile only.
+    w.scoutctl.write_text(
+        '#!/bin/sh\nif [ "$1" = version ] && ! cat "$HOME/.scout-secrets/telegram-bot-token" >/dev/null 2>&1; then\n'
+        f'  exit 7\nfi\nexec "{sys.executable}" -P -m scout "$@"\n'
+    )
+    log = w.vault / ".scout-logs" / "run.log"
+    res = subprocess.run(
+        [str(_wrapper(w)), str(log), str(_stub_claude(w)), "-p", "x"],
+        cwd=w.vault, env=_wrapper_env(w), capture_output=True, text=True, timeout=180,
+    )  # fmt: skip
+    assert res.returncode == 0, log.read_text()
+    assert "broker=\n" in (w.vault / "notes" / "ran.txt").read_text()  # the run went ahead under 1c
+    status = json.loads((w.vault / ".scout-logs" / broker.STATUS_FILE).read_text())
+    assert status["status"] == "unavailable" and "didn't start" in status["reason"]
 
 
 def test_a_commit_queued_mid_session_lands_when_the_wrapper_exits(tmp_path: Path, broker_dir: Path) -> None:

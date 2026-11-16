@@ -846,6 +846,24 @@ def broker_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 source="state",
             )
         )
+    problem = broker.queue_problem(vault)
+    if problem is not None:
+        findings.append(
+            Finding(
+                id="broker.queue_unsafe",
+                severity="red",
+                since=None,
+                summary=(
+                    "The run brokers' queue (.scout-state/broker-queue/) holds something other than plain folders "
+                    f"({problem}), so queued commits and Telegram messages aren't applied. Scout doesn't make that."
+                ),
+                fix=(
+                    "Look at .scout-state/broker-queue/ and replace what isn't a plain folder; then read the newest "
+                    "run's session to see what made it."
+                ),
+                source="state",
+            )
+        )
     failed = broker.failed_entries(vault)
     if failed:
         findings.append(

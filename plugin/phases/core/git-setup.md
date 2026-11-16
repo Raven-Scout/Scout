@@ -18,8 +18,6 @@ if [ "${SCOUT_SANDBOX_STATUS:-}" != enforced ]; then
 fi
 ```
 
-Inside the write sandbox (`SCOUT_SANDBOX_STATUS` is `enforced`) the vault's git config is read-only, so the block leaves it alone; commits there use the identity already set.
-
 Do not mention git setup in your output unless something goes wrong.
 
 ## Using Git History
@@ -34,13 +32,7 @@ The commit history is as valuable as the files themselves. When verifying KB cla
 
 ### Changing the vault's git
 
-Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`. In a scheduled run, git can read the vault's history (`log`, `show`, `diff`, `status`, `grep`) but can't change its repository: `git add`, `commit`, `mv`, `rm`, `checkout --`, `restore`, `stash` and `reset` fail with `Operation not permitted`. Instead:
-
-- move or delete a file with `mv` or `rm`, then name both paths (or the deleted one) to the helper;
-- put a file back with `git show HEAD:<path> > <path>`;
-- there is nothing to unstage or stash: the helper stages only what it commits.
-
-The helper prints `committed <sha>`. Exit 6 means the commit was queued and lands right after the session: there is no SHA yet, so don't write one down.
+Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`: it prints `committed <sha>` (exit 6: queued for after the session, no SHA yet). In a scheduled run git reads history but can't change the repository: to move or delete, `mv`/`rm` and pass every path to the helper; to restore, `git show HEAD:<path> > <path>`; to untrack, list it in `.gitignore`, move it aside, commit its path, move it back.
 
 ### Vault Git-Delta Narration (consolidation/briefing — mandatory before composing)
 

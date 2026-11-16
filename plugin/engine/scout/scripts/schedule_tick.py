@@ -788,11 +788,12 @@ def _spawn_broker_drain(vault: Path, log_dir: Path) -> int:
 
 def _drain_brokers(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path], int] | None = None) -> None:
     """Start a broker drain when a run left something queued. Never raises; an empty queue costs a few stats."""
-    queue = vault / _BROKER_QUEUE
-    if not queue.is_dir():
+    if not (vault / _BROKER_QUEUE).is_dir():
         return
     try:
-        if not any((queue / verb).glob("*.json") for verb in ("commit", "telegram")):
+        from scout.sandbox import broker
+
+        if broker.pending(vault) == 0:  # reads the queue without following a link
             return
         pid = (spawn or _spawn_broker_drain)(vault, log_dir)
         _emit_event(log_dir, kind="broker.drain_started", source="cli:schedule_tick", payload={"pid": pid})

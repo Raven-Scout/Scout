@@ -135,6 +135,7 @@ BROKER_REPLACEMENTS: dict[str, str] = {
     "commit": "scripts/git-safe-commit.sh (the broker commits)",
     "mv": "mv, then scripts/git-safe-commit.sh with both paths",
     "rm": "rm, then scripts/git-safe-commit.sh with the path",
+    "rm --cached": "list it in .gitignore, move it aside, commit its path with the helper (a deletion), move it back",
     "checkout --": "git show HEAD:<path> > <path> (read-only git, a work-tree write)",
     "restore --worktree": "git show <rev>:<path> > <path> (read-only git, a work-tree write)",
     "restore --staged": "nothing to undo: a run no longer stages anything",
@@ -147,7 +148,8 @@ ALREADY_REFUSED: dict[str, str] = {
     "config (write)": "refused since Phase 1c (.git/config is protected); the broker commits with the vault's identity",
 }
 _GIT_CMD = re.compile(
-    r"(?:^|[;&|(]\s*|\b(?:then|do|else)\s+)(?:\w+=\S+\s+)*git((?:\s+-[cC]\s+\S+)*)\s+([a-z][a-z-]*)([^;&|\n]*)"
+    r"(?:^|[;&|(]\s*|\b(?:then|do|else)\s+)(?:\w+=\S+\s+)*git((?:\s+-[cC]\s+\S+)*)\s+([a-z][a-z-]*)([^;&|\n]*)",
+    re.MULTILINE,  # each line of a multi-line command starts a command
 )
 _READ_ONLY = {
     "log", "status", "show", "diff", "grep", "rev-parse", "ls-files", "cat-file", "blame", "describe", "rev-list",
@@ -186,7 +188,13 @@ def _git_kind(sub: str, rest: str) -> str | None:
     if sub == "checkout" and "--" in words:
         return "checkout --"
     if sub == "restore":
-        return "restore --staged" if "--staged" in words or "-S" in words else "restore --worktree"
+        shorts = "".join(w[1:] for w in words if w.startswith("-") and not w.startswith("--"))
+        staged = "--staged" in words or "S" in shorts
+        worktree = "--worktree" in words or "W" in shorts or not staged
+        # Putting the work tree back needs `git show`; unstaging alone needs nothing.
+        return "restore --worktree" if worktree else "restore --staged"
+    if sub == "rm" and "--cached" in words:
+        return "rm --cached"
     if sub == "config":
         return "config (write)"
     if sub in BROKER_REPLACEMENTS:

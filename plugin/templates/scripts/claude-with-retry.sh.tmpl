@@ -273,7 +273,20 @@ stop_broker() {
         wait "$BROKER_PID" 2>/dev/null || true
     fi
     if [ -n "$BROKER_DIR" ]; then
-        "$SCOUTCTL_BIN" broker drain --vault "$BROKER_VAULT" >> "$LOG_FILE" 2>&1 || true
+        # The runner still holds the session lock: the drain starts no entry after 120 s, and a watchdog stops it
+        # at 480 s (one commit may take 300 s), so nothing it meets can hold the lock longer.
+        "$SCOUTCTL_BIN" broker drain --vault "$BROKER_VAULT" --deadline 120 >> "$LOG_FILE" 2>&1 &
+        local drain_pid=$! waited=0
+        while kill -0 "$drain_pid" 2>/dev/null; do
+            if [ "$waited" -ge 4800 ]; then
+                echo "=== claude-with-retry: the broker drain ran past 480 s and was stopped; the queue waits for the tick ===" >> "$LOG_FILE"
+                kill "$drain_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        wait "$drain_pid" 2>/dev/null || true
         rm -rf "$BROKER_DIR" 2>/dev/null || true
     fi
 }

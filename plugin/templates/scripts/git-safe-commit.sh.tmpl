@@ -195,8 +195,20 @@ for p in "$@"; do
 done
 [ "${#STAGE[@]}" -gt 0 ] || die 4 "nothing to commit — none of the given paths can be staged"
 
+# On a failed add or commit (a hook refusal), take back what this helper staged,
+# so the next bare `git commit` (the owner's) doesn't carry it. A scheduled run
+# can't unstage anything itself.
+unstage_ours() {
+  if [ "${#ADD[@]}" -gt 0 ]; then
+    git reset -q -- "${ADD[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
 if [ "${#ADD[@]}" -gt 0 ]; then
-  git add -- "${ADD[@]}" || die 5 "git add failed"
+  git add -- "${ADD[@]}" || {
+    unstage_ours
+    die 5 "git add failed"
+  }
 fi
 
 # Only the paths with staged changes: a peer's staged file is not ours to
@@ -209,5 +221,8 @@ done
 
 # A pathspec-scoped commit, not a bare `git commit`: the bare form writes the
 # whole index, so anything a peer left staged would ride along.
-git commit -q -m "$MSG" -- "${COMMIT[@]}" || die 5 "git commit failed"
+git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
+  unstage_ours
+  die 5 "git commit failed"
+}
 echo "git-safe-commit: committed $(git rev-parse --short HEAD) (${#COMMIT[@]} path(s))" >&2
