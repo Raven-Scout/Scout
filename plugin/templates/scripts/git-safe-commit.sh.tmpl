@@ -30,6 +30,8 @@
 #   3  could not take the commit mutex within LOCK_WAIT_SECS
 #   4  nothing to commit from the given paths (not an error for the caller)
 #   5  git failed: a lock that is not provably stale, a hook, a bad path
+#   6  (a scheduled run only) queued: the commit broker didn't answer, so the
+#      commit lands after the session; there is no SHA yet
 #
 # The mutex lives under .scout-cache/ (gitignored), so it never shows in
 # `git status`: `flock` on .scout-cache/commit.lock where flock exists, else an
@@ -72,6 +74,15 @@ for p in "$@"; do
       ;;
   esac
 done
+
+# A scheduled run with its commit broker (Phase 1d, spec 2026-11-16): the run's
+# sandbox can't write the git dir, so the broker, outside it, checks the paths and
+# runs this same script (its mutex, the pre-commit hook) with them. Same output,
+# SHA and exit codes; 6 means the broker didn't answer and the commit was queued
+# for after the session (no SHA yet). SCOUT_LINT_OVERRIDE goes along with it.
+if [ -n "${SCOUT_RUN_BROKER:-}" ]; then
+  exec "$VAULT/scripts/scoutctl" broker commit -- "$MSG" "$@"
+fi
 
 cd "$VAULT" 2>/dev/null || die 2 "vault not found: $VAULT"
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)" || die 5 "not a git repository: $VAULT"

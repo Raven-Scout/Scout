@@ -1,6 +1,7 @@
 # Phase 1d: a commit broker and a send-only Telegram broker for scheduled runs
 
-Status: **draft for Jordan's review** (2026-11-16). Follows Phase 1c (spec
+Status: **approved, built** (2026-11-16). Jordan accepted every §11 recommendation; the
+decisions are recorded there. Follows Phase 1c (spec
 `2026-11-15-run-write-sandbox-design.md`, PR #642, shipped in v0.18.14). Part of the
 runtime-agnostic hardening (spec `2026-11-13-runtime-agnostic-design.md`, #634).
 
@@ -220,19 +221,20 @@ chat id itself (owner files), so **the request names no recipient**. Limits:
 
 | Limit | Default | Where it is set |
 |---|---|---|
-| messages per run (per broker) | 4 (observed max 2) | `~/.local/state/scout/run-brokers.json` → `telegram.max_per_run` |
-| messages per rolling hour, all runs | 12 | `telegram.max_per_hour`; the count is kept in `~/.local/state/scout/broker-telegram.jsonl` |
+| messages per run (per broker) | 4 (observed max 2) | `~/.local/state/scout/run-brokers/config.json` → `telegram.max_per_run` |
+| messages per rolling hour, all runs | 12 | `telegram.max_per_hour`; the count is kept in `run-brokers/telegram-sent.jsonl` |
 | body size | 8,000 chars (observed max 1,134; Telegram splits at 4,096) | `telegram.max_chars` |
 
-`run-brokers.json` and the counter file join `hook_paths`' engine roots, next to the 1c switch
-file. Both layers then deny a run's write to them. Nothing in the vault, which a run can
-write, sets a limit. A missing or malformed owner file means the defaults.
+The `run-brokers/` folder (limits, hourly count, drain lock) is one of `hook_paths`' engine roots,
+next to the 1c switch file. Both layers then deny a run's write to it. Nothing in the vault, which a
+run can write, sets a limit. A missing or malformed owner file means the defaults. Dry runs send
+nothing and count against neither limit; the size limit applies to them too.
 
 ### 5.6 The queue: a broker that is down loses nothing
 
-If the client can't connect (no socket, refused, or a timeout on connect), it writes the request
-to `<vault>/.scout-state/broker-queue/<verb>/<ns-epoch>-<pid>-<rand>.json`, through a temp file
-and an atomic rename, mode 0600:
+If the client can't connect (no socket, refused, or a timeout on connect), or the broker goes away
+before replying, it writes the request to `<vault>/.scout-state/broker-queue/<verb>/<ulid>.json`
+(ULIDs sort by time), through a temp file and an atomic rename, mode 0600:
 
 ```json
 {"v": 1, "verb": "commit", "queued_at": "2026-11-16T09:00:00Z", "message": "…", "paths": ["…"], "override": null}
@@ -242,14 +244,18 @@ and an atomic rename, mode 0600:
   lands after this session (no SHA yet)` and exits **6** (new, "queued"). It is non-zero on
   purpose: no SHA exists yet, and the run must not write one down. A retry only queues a
   duplicate, which drains as "nothing to commit" (exit 4).
-- **telegram**: prints `queued <id>: Telegram sends it after this session` and exits **0**.
+- **telegram**: prints `id=<id>` first (the receipt line, as today), then `queued <id>: Telegram
+  sends it after this session`, and exits **0**. A dry run isn't queued.
   The message will be delivered, and the phase's rule ("non-zero means not delivered") stays
   true (Q5).
 
 **Drain** (`scoutctl broker drain --vault V`, outside the sandbox): the wrapper runs it as it
 exits, and the tick runs it detached, the same way it starts the delegate-mirror sync, when the
-queue isn't empty. A `flock`-style lock in `.scout-cache/broker-drain.lock` makes sure only one
-drain runs. Entries are handled in name order and each is validated exactly like a live request.
+queue isn't empty. A `flock` on `~/.local/state/scout/run-brokers/drain.lock` (owner-only, so a
+run's leftover process can't hold it) makes sure only one drain runs. Entries are handled in name
+order, the folder (not the file) names the verb, and each is validated exactly like a live request.
+One drain has one run's Telegram allowance. A broker only ever commits for a run, so a drained
+commit gets the scheduled-run checks too (`SCOUT_MODE` defaults to `scheduled`).
 A sent or committed entry is deleted. A transient failure (commit mutex timeout, network) stays
 queued with `attempts` + 1. An entry that fails validation, or is older than 24 h, or has had 10
 attempts, moves to `broker-queue/failed/` with an event and a health finding,
@@ -350,16 +356,44 @@ Affected tests only; CI is the gate. Defensive framing: each test asserts a posi
 
 - New: `plugin/engine/scout/sandbox/broker.py`; tests under `plugin/engine/tests/{unit,integration}/`.
 - `plugin/engine/scout/sandbox/profile.py` (`broker_rules`), `replay.py` (`--brokers`),
-  `kb/hook_paths.py` (owner files, `secret_read`), `cli.py` (`broker` group; the
-  `notify telegram` client branch), `scripts/schedule_tick.py` (drain spawn), `health.py`
+  `kb/hook_paths.py` (the `run-brokers` owner folder, `secret_read`), `cli.py` (`broker` group; the
+  `notify telegram` client branch), `scripts/notify_telegram.py` (`cli_send`, the CLI's exit-code
+  mapping, shared with the broker), `scripts/schedule_tick.py` (drain spawn), `health.py`
   (two findings), `scripts/bootstrap_doctor.py` (one line).
 - `plugin/templates/scripts/claude-with-retry.sh.tmpl`: one block next to WRITE SANDBOX, plus
   an exit trap. `plugin/templates/scripts/git-safe-commit.sh.tmpl`: the client branch.
 - Phase text: `write-protocol.md`, `kb-management.md`, `templates/docs/kb-page-standard.md`,
-  `git-setup.md`, `connectors/telegram.md`.
+  `git-setup.md`, `connectors/telegram.md`, `action-items.md` (a re-tag's `git mv`) and
+  `kb-deep-work.md` (filing loose files).
 - **Not touched:** `run-scout.sh`, `run-dreaming.sh`, `run-research.sh`, `run-outcome.sh`.
 
-## 11. Decisions for Jordan (recommendation first)
+## 10.1 What the build found
+
+- **The replay** (`scoutctl sandbox replay --brokers`, the 50 newest scheduled runs, 3,919 tool
+  calls, read-only, counts only): 0 in-vault git writes without a replacement; 0 writes newly denied
+  outside the git dir; 2 newly denied secret reads, both listings of `~/.scout-secrets` (the
+  Telegram phase now says `test -s`); 0 reads of the Telegram files themselves. Helper calls: 166
+  (126 printed a SHA); 40 sessions reuse a SHA mid-session, which the synchronous broker keeps.
+  Telegram: 16 calls. In-vault git writes, each with its replacement: `add` 14, `checkout --` 12,
+  `commit` 11, `restore --staged` 10, `rm` 8, `reset` 3, `mv` 1. §3's survey counted some calls
+  twice (it read every transcript row; the replay reads assistant and user rows only, as
+  `tool_calls` does).
+- **`git config user.email|user.name`** (Step 0 of `git-setup.md`): 64 calls in 28 sessions. They
+  write `.git/config`, which the 1c profile already refuses, so the brokers change nothing for them;
+  they have failed since v0.18.14. Follow-up: skip Step 0 in a sandboxed run.
+- **Unix sockets:** `(deny file-write* (subpath D))` leaves `connect()` to a socket in D allowed and
+  refuses removing or replacing it (checked against the kernel).
+- **Real claude** against the fake endpoint, through the wrapper, inside the tightened profile:
+  a note written, a helper commit with `committed <sha>` in the tool result, a Telegram dry run
+  through the broker to the owner's chat id, a direct `git commit` refused, the token unreadable.
+
+## 11. Decisions (Jordan accepted every recommendation, 2026-11-16, relayed by the Scout coordinator)
+
+Q1 synchronous broker with the queue as fallback; Q2 tighten only while the broker is up; Q3 refuse
+the other in-vault git writes, with the phase-text replacements; Q4 4 per run, 12 per hour, 8,000
+characters; Q5 a queued Telegram message exits 0; Q6 a queued commit exits 6; Q7 deny the folder
+listing too and update the phase text for the runs that listed it; Q8 keep the integrity check;
+Q9 the engine-PR broker is a follow-up. The questions as asked:
 
 - **Q1 Synchronous broker** on a socket, with the queue as fallback *(rec.)*, or a queue only,
   drained after the session? The queue-only option loses the SHA in 40 of 50 runs.

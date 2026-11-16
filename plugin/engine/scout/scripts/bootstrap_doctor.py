@@ -459,7 +459,28 @@ def _check_run_sandbox(*, vault: Path, home: Path | None = None) -> tuple[list[s
         )
     elif last is not None and last.sandbox == "off" and last.sandbox_source == "switch" and status != "off":
         notes.append("the last scheduled run ran with the write sandbox turned off (`scoutctl sandbox off`)")
+    notes.extend(_run_broker_notes(vault))
     return warnings, notes
+
+
+def _run_broker_notes(vault: Path) -> list[str]:
+    """One line on the last run's commit and Telegram broker (Phase 1d), and the queue it left, if any."""
+    try:
+        from scout.sandbox import broker
+
+        status = broker.read_status(vault)
+        waiting, failed = broker.pending(vault), len(broker.failed_entries(vault))
+    except Exception:  # noqa: BLE001 - a bug here must not break the doctor
+        return []
+    out: list[str] = []
+    if status is not None:
+        out.append(f"run brokers: {status['status']} on the last run ({status.get('reason') or 'no reason given'})")
+    if waiting or failed:
+        out.append(
+            f"run broker queue: {waiting} waiting for the next drain, {failed} failed "
+            "(.scout-state/broker-queue/failed/; `scoutctl broker drain` retries the waiting ones)"
+        )
+    return out
 
 
 def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:

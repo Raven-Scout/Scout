@@ -28,6 +28,16 @@ Git is a core part of the {{INSTANCE_NAME}} system — every change is committed
 
 The commit history is as valuable as the files themselves. When verifying KB claims or understanding what was already audited, check git before querying connectors.
 
+### Changing the vault's git
+
+Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`. In a scheduled run, git can read the vault's history (`log`, `show`, `diff`, `status`, `grep`) but can't change its repository: `git add`, `commit`, `mv`, `rm`, `checkout --`, `restore`, `stash` and `reset` fail with `Operation not permitted`. Instead:
+
+- move or delete a file with `mv` or `rm`, then name both paths (or the deleted one) to the helper;
+- put a file back with `git show HEAD:<path> > <path>`;
+- there is nothing to unstage or stash: the helper stages only what it commits.
+
+The helper prints `committed <sha>`. Exit 6 means the commit was queued and lands right after the session: there is no SHA yet, so don't write one down.
+
 ### Vault Git-Delta Narration (consolidation/briefing — mandatory before composing)
 
 Interactive sessions ({{INSTANCE_NAME}} work sessions, manual edits, `/scout-work`, audits) commit to the vault between scheduled runs. Those commits are a **primary signal source**, not background noise — a `work [HH:MM]:` commit may already have done the thing an action item is about. Before composing the run summary:

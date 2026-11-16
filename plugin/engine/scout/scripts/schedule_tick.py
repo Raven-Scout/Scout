@@ -760,6 +760,51 @@ def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path],
         )
 
 
+# The run brokers' queue (Phase 1d, scout.sandbox.broker): what a run asked for while its broker didn't answer.
+_BROKER_QUEUE = ".scout-state/broker-queue"
+_BROKER_LOG = "broker-drain.log"
+
+
+def _spawn_broker_drain(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl broker drain`` detached, outside any sandbox, so a slow commit never holds the tick lock."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_RUN_BROKER", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from scout._spawn import python_module_argv
+
+    with (log_dir / _BROKER_LOG).open("a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            python_module_argv("scout", "broker", "drain", "--vault", str(vault)),
+            cwd=str(Path.home()),
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _drain_brokers(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path], int] | None = None) -> None:
+    """Start a broker drain when a run left something queued. Never raises; an empty queue costs a few stats."""
+    queue = vault / _BROKER_QUEUE
+    if not queue.is_dir():
+        return
+    try:
+        if not any((queue / verb).glob("*.json") for verb in ("commit", "telegram")):
+            return
+        pid = (spawn or _spawn_broker_drain)(vault, log_dir)
+        _emit_event(log_dir, kind="broker.drain_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="broker.drain_spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
 def _evaluate_triggers(*, vault: Path, log_dir: Path) -> None:
     """Run trigger evaluation before schedule evaluation. Never raises.
 
@@ -794,6 +839,7 @@ def _do_tick(
     # Event triggers evaluate first (spec: docs/specs/event-triggers.md §Event flow).
     _evaluate_triggers(vault=vault, log_dir=log_dir)
     _sync_delegates(vault=vault, log_dir=log_dir)
+    _drain_brokers(vault=vault, log_dir=log_dir)
 
     schedule = _load_or_default(vault)
     last_fire = _get_last_fire_index(state_dir, tracker_path)
