@@ -1,10 +1,16 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @State private var selection: SidebarItem = .controlCenter
+    @State private var selection: SidebarItem
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
     @EnvironmentObject var updates: UpdateService
+
+    /// `initialSelection` lets the layout tests render the whole window on
+    /// any page; the app always opens on Control Center.
+    init(initialSelection: SidebarItem = .controlCenter) {
+        _selection = State(initialValue: initialSelection)
+    }
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not

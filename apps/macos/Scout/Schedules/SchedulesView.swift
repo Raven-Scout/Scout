@@ -14,23 +14,36 @@ struct SchedulesView: View {
     @State private var stalenessDetail: String?
     @State private var errorMessage: String?
     @State private var isInitialLoading = true
+    /// The page's width, for `DetailPaneLayout` (UI audit C6).
+    @State private var pageWidth: CGFloat?
 
     var body: some View {
+        let pane = DetailPaneLayout.layout(pageWidth: pageWidth, hasSelection: detailSlot != nil)
         HStack(spacing: 0) {
             masterPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            Divider()
-            SchedulesDetailPane(
-                slot: detailSlot,
-                isNewDraft: detailIsNewDraft,
-                onSave: handleSave,
-                onDelete: handleDelete,
-                onFireNow: handleFireNow,
-                onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil,
-                defaultModel: modelSettings.settings?.default.model
-            )
-            .frame(width: 380)
+            if case .shown(let width, let closable) = pane {
+                Divider()
+                SchedulesDetailPane(
+                    slot: detailSlot,
+                    isNewDraft: detailIsNewDraft,
+                    onSave: handleSave,
+                    onDelete: handleDelete,
+                    onFireNow: handleFireNow,
+                    onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil,
+                    defaultModel: modelSettings.settings?.default.model
+                )
+                .frame(width: width)
+                .overlay(alignment: .topTrailing) {
+                    // Never over an unsaved new slot: closing would drop it.
+                    if closable && !detailIsNewDraft {
+                        DetailPaneCloseButton(help: "Close slot details") { selectedSlotKey = nil }
+                    }
+                }
+            }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        .onExitCommand { if !detailIsNewDraft { selectedSlotKey = nil } }
         .background(DS.Paper.base)
         .task { await reload() }
     }

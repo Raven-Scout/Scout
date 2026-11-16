@@ -10,16 +10,31 @@ struct SessionsView: View {
     @SceneStorage("sessionsView") private var viewMode: SessionsViewMode = .board
     @State private var filter = SessionsFilter()
     @State private var selectedID: String?
+    /// The page's own width, for `DetailPane.layout`. nil until first laid out.
+    @State private var pageWidth: CGFloat?
+
+    /// The shared master–detail width rule (UI audit C6).
+    typealias DetailPane = DetailPaneLayout
 
     var body: some View {
         let now = Date()
+        let pane = DetailPane.layout(pageWidth: pageWidth, hasSelection: selected != nil)
         HStack(spacing: 0) {
             master(now: now)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            Divider()
-            SessionDetailView(session: selected, index: service.index, now: now) { selectedID = $0 }
-                .frame(width: 380)
+            if case .shown(let width, let closable) = pane {
+                Divider()
+                SessionDetailView(session: selected, index: service.index, now: now) { selectedID = $0 }
+                    .frame(width: width)
+                    .overlay(alignment: .topTrailing) {
+                        if closable {
+                            DetailPaneCloseButton(help: "Close session details") { selectedID = nil }
+                        }
+                    }
+            }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        .onExitCommand { selectedID = nil }
         .background(DS.Paper.base)
         .onAppear {
             service.setAppVisible(NSApp?.occlusionState.contains(.visible) ?? true)

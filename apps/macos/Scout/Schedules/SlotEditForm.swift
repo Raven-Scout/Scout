@@ -192,10 +192,11 @@ struct SlotEditForm: View {
                 .tracking(1)
                 .textCase(.uppercase)
                 .foregroundStyle(DS.Ink.p3)
-            EditorialSegmentedControl(
+            AdaptiveSegmentedControl(
                 selection: Binding(get: { current }, set: { draft.model = $0.model }),
                 options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
-                minSegmentWidth: 64
+                minSegmentWidth: 64,
+                accessibilityTitle: "Model"
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -233,9 +234,10 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
+                AdaptiveSegmentedControl(
                     selection: $draft.type,
-                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
+                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) },
+                    accessibilityTitle: "Type"
                 )
             }
             VStack(alignment: .leading, spacing: 4) {
