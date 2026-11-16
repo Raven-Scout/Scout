@@ -29,6 +29,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **When the check refuses.** The run is skipped as the new outcome `skipped_runtime`. Run health turns red (`agent_runtime.refused`), and the run never falls back to another runtime. Exit 4, past the runtime's daily token ceiling, is recorded as `skipped_budget`.
   - **An older engine** without the `agent-runtime` command (exit 2) launches claude directly, with today's line kept word for word in the runner's `else` branch.
   - **Other pieces.** `model resolve` takes `--runtime` for a runtime other than claude-code. The wrapper's auth banner names the real claude (`SCOUT_AGENT_BIN`, dropped before any attempt). `live_run` takes each registered runtime's argv markers from the registry, and Claude Code's are unchanged.
+  - **`run-research.sh` exports `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` before the gate probe**, as the other two runners already did. The probe then checks the session's own environment, and the `agent-runtime check` after it reads the same probe cache instead of probing again.
   - **Upgrading.** The new runner lines reach a vault with `/scout-update`. An unrendered or hand-edited runner keeps launching claude as before.
 
 ## [0.18.14] - 2026-11-16

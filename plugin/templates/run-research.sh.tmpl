@@ -100,6 +100,14 @@ if [ -x "$BUDGET_CHECK" ]; then
     fi
 fi
 
+# Claude Code otherwise sets its process title to "claude", which hides its argv
+# from ps. The commit hook reads that argv to tell this run's commits from the
+# owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
+# Before the gate probe, as in the other runners: the probe's cache is keyed on
+# every CLAUDE_* variable, so the probe must see the session's, and the agent-runtime
+# check after it reads that same cache.
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+
 # Gate probe: Scout's privacy gates are Claude Code hooks, and a claude that
 # doesn't load hooks (bare mode, which Claude Code's docs say will become the -p
 # default) would run with every gate off. Before each run, `scoutctl gates probe`
@@ -189,11 +197,6 @@ export SCOUT_MODE="$MODE"
 # SCOUT_MODE fallback, so the pre-session caches and every `scoutctl kb` call
 # in the session are labelled for that reader.
 export SCOUT_READER=autonomous
-
-# Claude Code otherwise sets its process title to "claude", which hides its argv
-# from ps. The commit hook reads that argv to tell this run's commits from the
-# owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
-export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
 # The agent CLI for this run (spec 2026-11-13 §8.2): SCOUT_AGENT_RUNTIME, else the slot's
 # `agent_runtime:` in .scout-state/schedule.yaml, else scout-config's agent_runtimes.default,

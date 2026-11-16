@@ -65,7 +65,9 @@ def _render(tmpl: Path, scout_dir: Path, scoutctl: str, claude: str) -> Path:
 
 
 def _env(slot_key: str, **extra: str) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("SCOUT_", "PYTEST_"))}
+    # No CLAUDE_* from the caller: a Claude Code shell sets some (CLAUDE_CODE_DISABLE_TERMINAL_TITLE …), a
+    # scheduler doesn't, and the gate probe's cache is keyed on them.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SCOUT_", "PYTEST_", "CLAUDE_", "CLAUDECODE"))}
     env.update(
         SCOUT_RUN_SANDBOX="off",  # the write sandbox has its own kernel tests; here it would need real claude
         SCOUT_FORCE_MODE=slot_key,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -357,9 +358,18 @@ _HOOK_NEUTRAL = {"--model", "--max-budget-usd", "--name", "-p"}
 
 
 def _launch_flags(template_text: str) -> list[str]:
-    """Every flag the runner passes claude, minus the hook-neutral ones and their values."""
-    launch = template_text[template_text.index('"$CLAUDE_BIN" \\') :].split("|| EXIT_CODE")[0]
-    words = launch.replace("\\\n", " ").split()[1:]  # drop "$CLAUDE_BIN"
+    """Every flag the runner passes claude directly, minus the hook-neutral ones and their values.
+
+    The direct launch is the line that starts with ``"$CLAUDE_BIN"`` (the runners' else branch since
+    `agent-runtime exec`; its own argv is pinned by test_the_exec_path_passes_claude_the_same_flags).
+    """
+    start = re.search(r'^\s+"\$CLAUDE_BIN" \\$', template_text, re.MULTILINE)
+    assert start, "no direct claude launch in the runner"
+    launch = template_text[start.start() :].split("|| EXIT_CODE")[0]
+    return _hook_flags(launch.replace("\\\n", " ").split()[1:])  # drop "$CLAUDE_BIN"
+
+
+def _hook_flags(words: list[str]) -> list[str]:
     kept: list[str] = []
     skip = False
     for word in words:
@@ -377,6 +387,15 @@ def test_probe_flags_match_the_runners_launch() -> None:
     templates = Path(gate_probe.default_plugin_root()) / "templates"
     for name in ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"):
         assert _launch_flags((templates / name).read_text(encoding="utf-8")) == list(gate_probe.PROBE_FLAGS), name
+
+
+def test_the_exec_path_passes_claude_the_same_flags() -> None:
+    """The runners' exec path: the claude-code adapter builds claude's argv (spec 2026-11-13 §8.2)."""
+    from scout.agent_runtimes.base import RunRequest
+    from scout.agent_runtimes.claude_code import ClaudeCode
+
+    req = RunRequest(Path("/v"), "m", "r", "p", "opus", "5", "autonomous", Path("/bin/claude"))
+    assert _hook_flags(list(ClaudeCode().headless_argv(req).argv[1:])) == list(gate_probe.PROBE_FLAGS)
 
 
 def test_the_flag_pin_catches_a_new_launch_flag() -> None:
