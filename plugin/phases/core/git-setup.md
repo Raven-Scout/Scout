@@ -89,7 +89,7 @@ TZ="$(scripts/scout-tz.sh)" date '+%Y-%m-%d'      # date for filenames
 As the very last action before exit, log this session's cost:
 
 ```bash
-{{SCOUT_DIR}}/scripts/write-session-cost.sh "$SESSION_TYPE" "${CLAUDE_MAX_BUDGET_USD:-0}" "${CLAUDE_BUDGET_SPENT_USD:-0}" 0
+{{SCOUT_DIR}}/scripts/write-session-cost.sh "$SESSION_TYPE" 0 0 0
 ```
 
-This feeds the budget-check system. If budget environment variables aren't available, pass `0` — the tracker still logs the timestamp and type.
+The arguments are the session type, budget cap, amount spent and exit code. Pass `0` for the cap and the amount: a session can't know its spend, and the runner records what the run cost after it ends. This row logs the session's timestamp, type and model.

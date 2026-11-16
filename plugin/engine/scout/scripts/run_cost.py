@@ -1,8 +1,8 @@
 """What a scheduled run cost, by claude's own figure, recorded by the runner.
 
-A scheduled session can't know its spend: the phases log it with
+A scheduled session can't know its spend: the phases logged it with
 ``write-session-cost.sh ... "${CLAUDE_BUDGET_SPENT_USD:-0}"``, a variable Claude
-Code never sets, and the runner's fallback row is $0. So every scheduled run
+Code never sets (they pass ``0`` now), and the runner's fallback row is $0. So every scheduled run
 reached ``usage-tracker.jsonl`` as $0 and the budget gate's window total
 stayed at $0.00, however much the runs spent.
 
