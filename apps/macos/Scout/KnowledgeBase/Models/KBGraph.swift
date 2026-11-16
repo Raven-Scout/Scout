@@ -54,6 +54,35 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
     }
 }
 
+/// Whether a note counts toward vault health. On a mature vault the health
+/// rows were dominated by notes nobody maintains as live knowledge: dangling
+/// links almost all came from one archived snapshot, and the orphans were
+/// receipts and invoices. Those are set aside and counted on their own.
+nonisolated enum KBNoteKind: String, Equatable, CaseIterable {
+    case live
+    /// Anything under a folder named `archive` or `archived`, at any depth.
+    case archived
+    /// A receipt or invoice: its frontmatter `type:` or a word of its path
+    /// (a folder or the file name) is receipt(s) or invoice(s).
+    case receipt
+
+    private static let receiptWords: Set<String> = ["receipt", "receipts", "invoice", "invoices"]
+
+    static func of(_ relPath: String, type: String? = nil) -> KBNoteKind {
+        let components = relPath.lowercased().split(separator: "/").map(String.init)
+        if components.dropLast().contains(where: { $0 == "archive" || $0 == "archived" }) { return .archived }
+        let stem = components.last.map { ($0 as NSString).deletingPathExtension } ?? ""
+        let pathWords = (components.dropLast() + [stem]).flatMap(words)
+        if pathWords.contains(where: receiptWords.contains) { return .receipt }
+        if let type, words(type.lowercased()).contains(where: receiptWords.contains) { return .receipt }
+        return .live
+    }
+
+    private static func words(_ s: String) -> [String] {
+        s.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+}
+
 /// One outgoing `[[wikilink]]` from a note, with its resolved target path (nil
 /// when the link points at a note that doesn't exist in the KB).
 nonisolated struct KBLink: Identifiable, Equatable {
@@ -261,6 +290,10 @@ nonisolated struct KBTypeCount: Identifiable, Equatable {
 /// Whole-KB network analysis for the overview: totals, actionable health
 /// signals, and read-only connectivity insight. Computed in one pass over the
 /// index + edges by `KnowledgeBaseService.networkStats()`.
+///
+/// `noteCount` and `linkCount` cover every note. Everything else — health,
+/// hubs, degree, components, by-type — covers live notes only (`KBNoteKind`),
+/// and the links between them; `archived` and `receipts` list the rest.
 nonisolated struct KBNetworkStats: Equatable {
     let noteCount: Int
     let linkCount: Int
@@ -274,6 +307,9 @@ nonisolated struct KBNetworkStats: Equatable {
     let byType: [KBTypeCount]            // every KBEntityGroup, in allCases order, 0s included
     let clusterCount: Int                // components with size >= 2
     let largestComponentSize: Int
+    /// Notes left out of the health and insight figures, path asc.
+    var archived: [String] = []
+    var receipts: [String] = []
 
     static let empty = KBNetworkStats(
         noteCount: 0, linkCount: 0, orphans: [], weaklyLinked: [], dangling: [], islands: [],
@@ -308,6 +344,15 @@ extension KBNetworkStats {
         let start = min(topN, count)
         let end = min(count, topN + cap)
         return (start..<end, count - end)
+    }
+
+    /// "Not counted: 112 archived notes · 20 receipts", or nil when nothing
+    /// was set aside.
+    var setAsideSummary: String? {
+        var parts: [String] = []
+        if !archived.isEmpty { parts.append("\(archived.count) archived note\(archived.count == 1 ? "" : "s")") }
+        if !receipts.isEmpty { parts.append("\(receipts.count) receipt\(receipts.count == 1 ? "" : "s")") }
+        return parts.isEmpty ? nil : "Not counted: " + parts.joined(separator: " · ")
     }
 
     /// A health row's title: "Orphaned notes: ✓ none", "1 orphaned note",

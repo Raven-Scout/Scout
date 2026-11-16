@@ -16,4 +16,107 @@ struct MarkdownBodyBlockTests {
     @Test func proseOnly() {
         #expect(MarkdownBodyBlock.blocks(from: "just text") == [.prose("just text")])
     }
+
+    // MARK: Headings
+
+    @Test func headingsAtEveryLevelEndTheParagraphBeforeThem() {
+        let body = "The request.\n## Status\nTwo of four done.\n### Notes ###\n###### Deep"
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .prose("The request."),
+            .heading(level: 2, text: "Status"),
+            .prose("Two of four done."),
+            .heading(level: 3, text: "Notes"),
+            .heading(level: 6, text: "Deep"),
+        ])
+    }
+
+    @Test func aHashWithoutASpaceIsNotAHeading() {
+        // A tag or a seven-hash run stays prose.
+        #expect(MarkdownBodyBlock.blocks(from: "#PROJ is next") == [.prose("#PROJ is next")])
+        #expect(MarkdownBodyBlock.blocks(from: "####### seven") == [.prose("####### seven")])
+    }
+
+    @Test func aTrailingHashNeedsASpaceToBeAClosingSequence() {
+        #expect(MarkdownBodyBlock.blocks(from: "## Learn C#") == [.heading(level: 2, text: "Learn C#")])
+    }
+
+    @Test func aHeadingKeepsItsInlineMarkup() {
+        #expect(MarkdownBodyBlock.blocks(from: "## Status of [[projects/demo|the demo]]")
+                == [.heading(level: 2, text: "Status of [[projects/demo|the demo]]")])
+    }
+
+    @Test func headingsInsideCodeStayCode() {
+        #expect(MarkdownBodyBlock.blocks(from: "```\n## not a heading\n- [ ] not a task\n```")
+                == [.code(language: nil, code: "## not a heading\n- [ ] not a task")])
+    }
+
+    // MARK: Task lists
+
+    @Test func consecutiveTaskLinesFormOneList() {
+        let body = "## Status\n- [x] Draft the template\n- [ ] Link it from the index\n* [X] Ask Priya"
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .heading(level: 2, text: "Status"),
+            .tasks([
+                MarkdownTask(checked: true, text: "Draft the template"),
+                MarkdownTask(checked: false, text: "Link it from the index"),
+                MarkdownTask(checked: true, text: "Ask Priya"),
+            ]),
+        ])
+    }
+
+    @Test func nestedTasksCarryTheirDepth() {
+        let body = "- [ ] Parent\n  - [x] Child\n\t- [ ] Tab child\n    - [ ] Grandchild\n1. [ ] Numbered"
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .tasks([
+                MarkdownTask(checked: false, text: "Parent", depth: 0),
+                MarkdownTask(checked: true, text: "Child", depth: 1),
+                MarkdownTask(checked: false, text: "Tab child", depth: 1),
+                MarkdownTask(checked: false, text: "Grandchild", depth: 2),
+                MarkdownTask(checked: false, text: "Numbered", depth: 0),
+            ]),
+        ])
+    }
+
+    @Test func aBlankLineInsideAListKeepsItTogetherAndProseEndsIt() {
+        let body = "Intro.\n- [ ] One\n\n- [ ] Two\nAfter the list."
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .prose("Intro."),
+            .tasks([MarkdownTask(checked: false, text: "One"), MarkdownTask(checked: false, text: "Two")]),
+            .prose("After the list."),
+        ])
+    }
+
+    @Test func aPlainBulletOrALinkIsNotATask() {
+        #expect(MarkdownBodyBlock.blocks(from: "- plain bullet\n- [a link](https://example.com)")
+                == [.prose("- plain bullet\n- [a link](https://example.com)")])
+    }
+
+    @Test func aTaskKeepsAnAliasedWikilinkForTheInlineRenderer() {
+        #expect(MarkdownBodyBlock.blocks(from: "- [ ] Read [[docs/wishlist/progress/item|Progress log]]")
+                == [.tasks([MarkdownTask(checked: false, text: "Read [[docs/wishlist/progress/item|Progress log]]")])])
+    }
+
+    /// The card shape the wishlist phase writes: request, status, open sub-tasks, a log link.
+    @Test func aWishlistCardRendersAsStructuredBlocks() {
+        let body = """
+        Add a template for architecture decisions.
+
+        ## Status
+        Two of four sub-tasks done; the index link is next.
+        - [ ] Link the template from the KB index
+        - [ ] Backfill the three existing decisions
+
+        [[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]
+        """
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .prose("Add a template for architecture decisions."),
+            .heading(level: 2, text: "Status"),
+            .prose("Two of four sub-tasks done; the index link is next."),
+            .tasks([
+                MarkdownTask(checked: false, text: "Link the template from the KB index"),
+                MarkdownTask(checked: false, text: "Backfill the three existing decisions"),
+            ]),
+            .prose("[[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]"),
+        ])
+    }
 }

@@ -87,7 +87,7 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 ## 🔴 Urgent
 
-- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
+- [ ] [#XXXX] **[Short natural imperative title, ≤ 80 chars — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
   - [Optional: the one blocker, or {{USER_NAME}}'s comment thread]
 
 ## 🟡 To Do
@@ -171,7 +171,7 @@ If that grep finds anything, the file is non-compliant and scout-app's writes wi
 
 ### Hard Rule — Clean Title, Prose Body, Refs Block
 
-The **bold segment is the human-readable title** and must read as a short natural imperative phrase — what to do, in plain words. Keep it scannable (aim for a single line).
+The **bold segment is the human-readable title** and must read as a short natural imperative phrase — what to do, in plain words. It is **one line of at most 80 characters** (about 12 words): the app shows it in bold, so a longer one turns a list into paragraphs. Detail goes in the body, evidence in the note.
 
 The bold title MUST NOT contain any of:
 - the `[#TAG]` (it sits *before* the bold, never inside it);
@@ -182,6 +182,8 @@ The bold title MUST NOT contain any of:
 - an internal ` — ` / ` – ` separator (that dash separates title from body).
 
 The **body** (after the ` — ` separator) is short human prose: the next step, with its status and dates, in at most two short sentences (about 25 words). A task stepped down under *Past-Due Tasks Step Down* carries its due date and "still want this?" instead. Write a date as a date (`due Oct 3`), never as an age that changes every day (`4 days overdue`, `now 5 days past`). Say what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…"). The `Action:` board field is only the 1–3-word form of that next step. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
+
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-titles --data-dir {{SCOUT_DIR}}` until it exits 0. Exit 1 names each title over 80 characters that is new or changed since yesterday's file, the 5 longest carried 🔴 titles, and a 💡 Today's Focus over 5 bullets or with a bullet over 300 characters. Shorten each named title, keeping its `[#TAG]` and every fact (move them into the body or the note). Leave other carried titles until a run touches the item for a real reason. Exit 2 (it couldn't check): add `title check could not run: <its message>` to this run's 🪵 Run notes entry and go on.
 
 **All machine refs go in ONE `- Refs:` sub-bullet** directly under the task line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks, cross-reference hashtags, and entity wikilinks that are pure references (not part of a sentence). Omit the sub-bullet when a task has no refs.
 
@@ -440,7 +442,7 @@ For each carryover item from the previous action-items file:
 2. **Changed context:** Did anything happen overnight (from the connector queries) that changes this item's priority or next step? A PR that was blocked yesterday may have merged; a "waiting on X" item may have gotten its reply.
 3. **Work trajectory:** Based on recent sessions, messages, and commits, what was {{USER_NAME}} MOST focused on? Today's briefing should build on that momentum, not ignore it.
 
-**Output: 2–3 "Today you should…" recommendations** at the TOP of the action items file, above the 🔴 section — synthesized guidance, not new action items:
+**Output: 2–3 "Today you should…" recommendations** at the TOP of the action items file, above the 🔴 section — synthesized guidance, not new action items. Each is one bullet: a bold lead of a few words and one sentence of reasoning, under 300 characters. Lists of tickets belong in the tasks they name.
 
 ```markdown
 ## 💡 Today's Focus (continuity from yesterday)

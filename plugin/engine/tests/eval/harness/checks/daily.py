@@ -5,6 +5,7 @@
 - ``waiting_format``: a 🟢 waiting item says ``waiting on <who> since <date>``.
 - ``no_collapse``: no open row summarises several items.
 - ``body_budget``: the body after `` — `` is short (about 25 words; 40 fails).
+- ``title_budget``: a title new or changed today is at most 80 characters.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from scout.action_items.parser import ActionItem
+from scout.action_items.titles import TITLE_MAX, title_of
 
 from . import CheckResult, by_tag
 from .placement import _find_by_ref
@@ -100,3 +102,22 @@ def body_budget(today: Sequence[ActionItem] | None) -> CheckResult:
         elif words > BODY_AIM:
             details.append(f"{i.short_prefix}: body is {words} words (aim for {BODY_AIM})")
     return CheckResult("body_budget", not failed, tuple(details))
+
+
+def title_budget(today: Sequence[ActionItem] | None, yesterday: Sequence[ActionItem]) -> CheckResult:
+    """A title new or changed today is at most ``TITLE_MAX`` characters (``action-items check-titles``).
+
+    A title carried verbatim from yesterday is not the run's to answer for: the rule leaves those
+    until a run touches the item, so a fixture's long carried title doesn't fail every run.
+    """
+    if today is None:
+        return CheckResult("title_budget", None, ("missing_output",))
+    before = {i.short_prefix: title_of(i.raw_line) for i in yesterday if i.short_prefix}
+    problems = []
+    for i in today:
+        if not (_task_row(i) and _open(i)):
+            continue
+        title = title_of(i.raw_line)
+        if len(title) > TITLE_MAX and before.get(i.short_prefix or "") != title:
+            problems.append(f"{i.short_prefix}: title is {len(title)} characters (limit {TITLE_MAX})")
+    return CheckResult("title_budget", not problems, tuple(problems))

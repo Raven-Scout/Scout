@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from scout.action_items.parser import parse_lines
-from tests.eval.harness.checks.daily import body_budget, context_note, no_collapse, waiting_format
+from tests.eval.harness.checks.daily import body_budget, context_note, no_collapse, title_budget, waiting_format
 from tests.eval.harness.checks.run import dropoff_caught, no_false_outage, outage_reported
 
 YESTERDAY = """## 🟡 To Do
@@ -71,11 +71,30 @@ def test_body_budget_fails_over_40_words_and_notes_over_25() -> None:
     assert body_budget(_items(f"## 🟡 To Do\n- [ ] [#MED] **Medium** — {medium}\n")).passed is True
 
 
+LONG_TITLE = "Answer the quota question for Priya and loop in Sam on the billing export before Friday"
+
+
+def test_title_budget_fails_a_new_or_changed_title_over_80_characters() -> None:
+    assert len(LONG_TITLE) > 80
+    r = title_budget(_items(f"## 🟡 To Do\n- [ ] [#NEW] **{LONG_TITLE}** — today.\n"), _items(YESTERDAY))
+    assert r.passed is False
+    assert r.details == (f"NEW: title is {len(LONG_TITLE)} characters (limit 80)",)
+    assert title_budget(_items(TODAY), _items(YESTERDAY)).passed is True
+
+
+def test_title_budget_leaves_a_title_carried_verbatim() -> None:
+    carried = f"## 🟡 To Do\n- [ ] [#OLD] **{LONG_TITLE}** — no news\n"
+    assert title_budget(_items(carried), _items(carried)).passed is True
+    changed = f"## 🟡 To Do\n- [ ] [#OLD] **{LONG_TITLE} now** — no news\n"
+    assert title_budget(_items(changed), _items(carried)).passed is False
+
+
 def test_missing_output_is_not_a_pass_for_any_daily_check() -> None:
     assert context_note(None, [], {}).passed is None
     assert waiting_format(None, ["X"]).passed is None
     assert no_collapse(None).passed is None
     assert body_budget(None).passed is None
+    assert title_budget(None, []).passed is None
 
 
 WRAP = (

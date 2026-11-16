@@ -207,10 +207,17 @@ struct InlineMarkdownText: View {
     }
 
     /// `[[target]]` / `[[target|alias]]` — compiled once; rewriteWikilinks runs
-    /// for every cache miss and regex compilation dominates its cost.
+    /// for every cache miss and regex compilation dominates its cost. The
+    /// alias separator may be escaped as `\|`, the form notes use inside table
+    /// cells (as `KnowledgeBaseService.extractWikilinks` reads it); without
+    /// that, the backslash stayed on the target and the link went nowhere.
     private static let wikilinkRe = try! NSRegularExpression(
-        pattern: #"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]"#
+        pattern: #"\[\[([^\]|]+?)(?:\\?\|([^\]]+))?\]\]"#
     )
+
+    /// An inline code span: a run of backticks, its text, and the same run
+    /// closing it. A wikilink inside one is code, not a link.
+    private static let codeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
 
     /// Linear issue key, e.g. `PROJ-1234`.
     private static let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
@@ -220,8 +227,10 @@ struct InlineMarkdownText: View {
     private static func rewriteWikilinks(_ s: String) -> String {
         let ns = s as NSString
         var result = s
-        let matches = wikilinkRe.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
-        for m in matches {
+        let whole = NSRange(location: 0, length: ns.length)
+        let code = codeSpanRe.matches(in: s, range: whole).map(\.range)
+        let matches = wikilinkRe.matches(in: s, range: whole).reversed()
+        for m in matches where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
             let target = ns.substring(with: m.range(at: 1))
             let label  = m.range(at: 2).location == NSNotFound ? target : ns.substring(with: m.range(at: 2))
             let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? target
