@@ -1061,7 +1061,6 @@ def test_short_n_is_named_where_it_means_no_verify(command: str) -> None:
         ("git -c $(cat /tmp/key) commit -m x", "-c <unknown>"),
         ("git --config-env=$K=D commit -m x", "--config-env <unknown>"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
-        ("git config core.hooksPath", "git config core.hooksPath"),
         ("git config --local core.hooksPath /dev/null", "git config core.hooksPath"),
         ("git config --global core.hookspath /dev/null", "git config core.hooksPath"),
         ("git config --file .git/config core.hooksPath /dev/null", "git config core.hooksPath"),
@@ -1125,6 +1124,20 @@ def test_setting_git_config_env_vars_is_named(command: str) -> None:
     ],
 )
 def test_commits_made_without_git_commit_are_named(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ('c=$(git commit-tree "$(git write-tree)" -p HEAD -m x) && git update-ref HEAD "$c"', "commit-tree"),
+        ('git update-ref HEAD "$(git commit-tree abc)"', "update-ref"),
+        ("echo `git commit-tree abc` && git commit --no-verify", "commit-tree"),
+        ('git commit --no-verify -m "$(git commit-tree abc)"', "--no-verify"),
+    ],
+)
+def test_the_first_form_in_the_text_names_the_deny(command: str, form: str) -> None:
+    """A substitution is judged where it sits: before what follows it, after the command it's an argument of."""
     assert run_escape(command) == form
 
 
@@ -1227,6 +1240,9 @@ def test_writes_into_the_git_dir_that_change_the_hooks_are_named(command: str, f
         "git config user.email alex@example.com",
         'git config user.name "Scout Bot"',
         "git config --get core.hooksPath",
+        "git config core.hooksPath",  # a key with no value reads it (review of #637)
+        "git config --global user.name",
+        "git config --file .gitmodules submodule.x.path",
         "git config --get-all core.hooksPath",
         "git config --get-regexp 'core.*'",
         "git config --list",
@@ -1325,6 +1341,12 @@ def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
         ("scoutctl --json delegate trust-state", True),
         ("/abs/plugin/engine/bin/scoutctl delegate key duet --revoke", True),
         ("python -m scout delegate unlink duet", True),
+        ("python3 -Pm scout delegate unlink duet", True),  # -m closing a short-option cluster
+        ("python3 -IPm scout delegate key duet --revoke", True),
+        ("python3 -mscout delegate link duet --remote x", True),
+        ("python3 -W ignore -m scout delegate trust-state", True),
+        ("python3 -Im scout delegate sync", False),
+        ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
         ("scoutctl delegate sync duet", False),
         ("scoutctl delegate preview duet", False),
         ("echo scoutctl delegate link", False),

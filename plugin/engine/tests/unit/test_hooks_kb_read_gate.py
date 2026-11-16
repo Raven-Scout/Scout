@@ -547,10 +547,8 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
         "git commit -q -m 'a; b' -- notes/a.md",
         "git commit --amend --no-edit",
         "git commit -F notes/msg.txt",
-        "git mv notes/a.md notes/b.md",
         "git merge -n feature",
         "git push origin main",
-        "git config user.email alex@example.com",
         "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
         "scripts/scoutctl kb search commit",
         "ls notes -n",
@@ -560,6 +558,14 @@ def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
+
+
+@pytest.mark.parametrize("command", ["git mv notes/a.md notes/b.md", "git config user.email alex@example.com"])
+def test_file_moves_and_config_writes_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
+    """A `mv` or a `git config` write may touch what decides which checks run (#637), so Python decides; these pass."""
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    assert _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing").returncode == 2
+    assert _decision(vault, "Bash", {"command": command}) is None
 
 
 def test_a_hook_skip_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
