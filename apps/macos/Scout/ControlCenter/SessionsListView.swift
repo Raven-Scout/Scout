@@ -16,6 +16,7 @@ struct SessionsListView: View {
 
     @State private var typeFilter: Set<RunType> = Set(RunType.allCases)
     @State private var search: String = ""
+    @State private var window = RunWindow()
 
     var filtered: [Run] {
         let cal = Calendar.current
@@ -33,20 +34,44 @@ struct SessionsListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if filtered.isEmpty {
+            let runs = filtered
+            if runs.isEmpty {
                 emptyState
             } else {
                 VStack(spacing: 0) {
-                    ForEach(filtered.prefix(30)) { run in
+                    ForEach(window.visible(runs)) { run in
                         Button { onSelect(run) } label: {
                             RunRow(run: run, isSelected: selectedRunID == run.id)
                         }
                         .buttonStyle(.plainHit)
                     }
                 }
+                showMoreRow(runs)
             }
         }
         .editorialCard(padding: 18)
+        .onChange(of: search) { window.reset() }
+        .onChange(of: typeFilter) { window.reset() }
+        .onChange(of: dayFilter) { window.reset() }
+    }
+
+    /// "Show 30 more" under the list while older runs are not built yet.
+    @ViewBuilder private func showMoreRow(_ runs: [Run]) -> some View {
+        if let summary = window.summary(in: runs) {
+            HStack(spacing: 10) {
+                Button { window.showMore() } label: {
+                    Label("Show \(window.nextPageCount(in: runs)) more", systemImage: "chevron.down")
+                        .font(DS.sans(11.5, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                Text(summary)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p4)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 10)
+            .padding(.horizontal, 4)
+        }
     }
 
     private var header: some View {
