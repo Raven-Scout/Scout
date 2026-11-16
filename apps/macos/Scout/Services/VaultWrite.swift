@@ -119,16 +119,25 @@ nonisolated enum VaultWrite {
     /// well past any write still in flight.
     static let staleTemporaryAge: TimeInterval = 60
 
-    /// Remove `.<name>.scout-<uuid>.tmp` files older than a minute from
-    /// `dir`: what an app killed between creating a temporary file and the
-    /// rename leaves behind. Hidden from the engine and Obsidian, but git
-    /// could commit one. Best effort; runs before each write into `dir`.
+    /// Exactly the name `write` gives its temporary file:
+    /// `.<name>.scout-<UUID>.tmp`, with `UUID().uuidString`'s uppercase form.
+    static let temporaryNamePattern = #/^\..+\.scout-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.tmp$/#
+
+    /// Remove this code's own leftover temporary files from `dir`: regular
+    /// files named exactly like `write`'s temporaries and older than a
+    /// minute — what an app killed between creating one and the rename
+    /// leaves behind. Hidden from the engine and Obsidian, but git could
+    /// commit one. Anything else (another tool's `.tmp`, a directory or a
+    /// symlink with a matching name) is left alone. Best effort; runs before
+    /// each write into `dir`.
     static func sweepStaleTemporaries(in dir: URL, now: Date = Date()) {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
-        for name in names where name.hasPrefix(".") && name.hasSuffix(".tmp") && name.contains(".scout-") {
+        for name in names where name.wholeMatch(of: temporaryNamePattern) != nil {
             let url = dir.appendingPathComponent(name)
-            guard let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+            guard let attrs = try? fm.attributesOfItem(atPath: url.path),   // lstat: a symlink reports .typeSymbolicLink
+                  attrs[.type] as? FileAttributeType == .typeRegular,
+                  let modified = attrs[.modificationDate] as? Date,
                   now.timeIntervalSince(modified) > staleTemporaryAge else { continue }
             try? fm.removeItem(at: url)
         }

@@ -208,16 +208,40 @@ struct VaultWriteTests {
         // What an app killed mid-write leaves behind is cleared by the next
         // write into the same folder; a write still in flight is not.
         let fm = FileManager.default
-        let stale = dir.appendingPathComponent(".a.md.scout-1111.tmp")
-        let fresh = dir.appendingPathComponent(".a.md.scout-2222.tmp")
-        let other = dir.appendingPathComponent(".obsidian-thing.tmp")
-        for url in [stale, fresh, other] { try Data("x".utf8).write(to: url) }
-        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: stale.path)
-        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: other.path)
+        let old = Date(timeIntervalSinceNow: -3600)
+        let stale = dir.appendingPathComponent(".a.md.scout-\(UUID().uuidString).tmp")
+        let fresh = dir.appendingPathComponent(".a.md.scout-\(UUID().uuidString).tmp")
+        for url in [stale, fresh] { try Data("x".utf8).write(to: url) }
+        try fm.setAttributes([.modificationDate: old], ofItemAtPath: stale.path)
 
         try VaultWrite.write(Data("one".utf8), to: dir.appendingPathComponent("a.md"))
         #expect(!fm.fileExists(atPath: stale.path))
         #expect(fm.fileExists(atPath: fresh.path))
-        #expect(fm.fileExists(atPath: other.path))
+    }
+
+    @Test func theSweepLeavesEverythingButItsOwnTemporaryFiles() throws {
+        // Only regular files named exactly like `write`'s temporaries go.
+        let fm = FileManager.default
+        let old = Date(timeIntervalSinceNow: -3600)
+        let noUUID = dir.appendingPathComponent(".notes.scout-config.tmp")
+        let lowercase = dir.appendingPathComponent(".a.md.scout-\(UUID().uuidString.lowercased()).tmp")
+        let otherTool = dir.appendingPathComponent(".obsidian-thing.tmp")
+        let directory = dir.appendingPathComponent(".a.md.scout-\(UUID().uuidString).tmp")
+        let symlink = dir.appendingPathComponent(".b.md.scout-\(UUID().uuidString).tmp")
+        let linkTarget = dir.appendingPathComponent("target.md")
+        for url in [noUUID, lowercase, otherTool, linkTarget] { try Data("x".utf8).write(to: url) }
+        try fm.createDirectory(at: directory.appendingPathComponent("inside"), withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: directory.appendingPathComponent("inside/file.md"))
+        try fm.createSymbolicLink(at: symlink, withDestinationURL: linkTarget)
+        for url in [noUUID, lowercase, otherTool, directory, linkTarget] {
+            try fm.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+        }
+
+        VaultWrite.sweepStaleTemporaries(in: dir)
+        for url in [noUUID, lowercase, otherTool, directory, linkTarget] {
+            #expect(fm.fileExists(atPath: url.path), "\(url.lastPathComponent) was removed")
+        }
+        #expect((try? fm.destinationOfSymbolicLink(atPath: symlink.path)) != nil)
+        #expect(fm.fileExists(atPath: directory.appendingPathComponent("inside/file.md").path))
     }
 }
