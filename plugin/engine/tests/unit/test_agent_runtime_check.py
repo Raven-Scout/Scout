@@ -153,6 +153,21 @@ def test_limits_default_on_for_a_runtime_without_a_cap(vault: Path) -> None:
     assert (lim.max_tokens_per_day, lim.ceiling_source) == (limits.FLOOR_TOKENS, "default")
 
 
+def test_a_research_slot_starts_at_90_minutes(vault: Path) -> None:
+    """Q6 as amended 2026-11-16 (spec §8.6): research runs usually take longer than 45 minutes."""
+    _schedule(vault, ("deep-dig", "research", ""), ("night", "dreaming", ""))
+    assert limits.limits_for(vault, DummyRuntime("d"), "deep-dig").run_timeout_s == 90 * 60
+    assert limits.limits_for(vault, DummyRuntime("d"), "night").run_timeout_s == 45 * 60
+    # A slot the schedule doesn't know is judged by its key's words (the runners' manual modes).
+    assert limits.limits_for(vault, DummyRuntime("d"), "research-manual").run_timeout_s == 90 * 60
+    assert limits.limits_for(vault, DummyRuntime("d"), "dreaming-manual").run_timeout_s == 45 * 60
+    assert limits.limits_for(vault, DummyRuntime("d"), None).run_timeout_s == 45 * 60
+    # A configured timeout applies to every slot; Claude Code stays off by default.
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 30\n")
+    assert limits.limits_for(vault, DummyRuntime("d"), "deep-dig").run_timeout_s == 30 * 60
+    assert limits.limits_for(vault, ClaudeCode(), "deep-dig").run_timeout_s is None
+
+
 def test_limits_default_off_for_claude_code(vault: Path) -> None:
     lim = limits.limits_for(vault, ClaudeCode())
     assert (lim.run_timeout_s, lim.max_tokens_per_day) == (None, None)

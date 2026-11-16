@@ -247,6 +247,10 @@ def test_a_runtime_without_a_cap_runs_under_the_timeout(vault: Path, monkeypatch
     assert code == 0 and calls == []
     assert seen["timeout_s"] == 45 * 60
     assert seen["mark"] == "1"
+    # The run's slot (SCOUT_MODE, which the runners export) picks the kind's default: research starts at 90.
+    with registered(DummyRuntime("dummy", binary=Path("/bin/dummy"))):
+        code, _, _ = _cli(*_exec_args(runtime="dummy"), env={"SCOUT_MODE": "research-manual"})
+    assert code == 0 and seen["timeout_s"] == 90 * 60
 
 
 # -- resolve / check / list / show ----------------------------------------------------------------------------

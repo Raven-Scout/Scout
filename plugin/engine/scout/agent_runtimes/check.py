@@ -146,7 +146,7 @@ def evaluate(
             )
 
         if not interactive:
-            lim = limits.limits_for(vault, runtime)
+            lim = limits.limits_for(vault, runtime, mode)
             if (why := limits.over_ceiling(lim, vault, now=now)) is not None:
                 return _report(runtime, found, version, tier, "token_ceiling", why)
     except Exception as e:  # noqa: BLE001 - rule 5: a check that can't run refuses

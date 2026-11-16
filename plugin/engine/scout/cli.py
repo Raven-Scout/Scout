@@ -2537,7 +2537,7 @@ def _register_agent_runtime() -> None:
         except ConfigError as e:
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
-        lim = _limits.limits_for(vault, _adapter(rt.runtime))
+        lim = _limits.limits_for(vault, _adapter(rt.runtime), slot)
         payload = {
             "slot": slot,
             "runtime": rt.runtime,
@@ -2667,9 +2667,11 @@ def _register_agent_runtime() -> None:
             typer.echo(_json.dumps(list(adapter.headless_argv(req).argv)))
             return
         try:
-            timeout_s = _limits.limits_for(vault, adapter).run_timeout_s
+            timeout_s = _limits.limits_for(vault, adapter, req.mode or None).run_timeout_s
         except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
-            timeout_s = None if adapter.caps_own_spend else _limits.DEFAULT_RUN_TIMEOUT_MINUTES * 60
+            timeout_s = (
+                None if adapter.caps_own_spend else _limits.default_timeout_minutes(_limits.kind_of(req.mode)) * 60
+            )
         try:
             code = _exec.run(adapter, req, timeout_s=timeout_s)
         except FileNotFoundError as e:

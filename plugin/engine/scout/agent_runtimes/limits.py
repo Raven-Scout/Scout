@@ -1,7 +1,7 @@
 """Per-runtime run limits: a wall-clock timeout and a daily token ceiling (spec 2026-11-13 §8.6, Q6).
 
 Both are **on by default for a runtime that can't cap its own spend** (no
-``budget_cap`` capability): a 45-minute timeout per run, and a daily token ceiling.
+``budget_cap`` capability): a 45-minute timeout per run (90 for a research slot), and a daily token ceiling.
 Claude Code caps itself (``--max-budget-usd``), so for it both are off unless the
 owner sets them, and its runs are unchanged.
 
@@ -10,7 +10,7 @@ owner sets them, and its runs are unchanged.
     budget:
       per_runtime:
         <runtime id>:
-          run_timeout_minutes: 45      # int > 0, or 0 / off for none
+          run_timeout_minutes: 45      # int > 0, or 0 / off for none (default 45; 90 for research)
           max_tokens_per_day: auto     # int > 0, auto (the default formula), or 0 / off
 
 The ceiling counts the usage tracker's rows for that runtime (``agent_runtime``, a
@@ -44,6 +44,9 @@ from scout import paths
 from scout.agent_runtimes.base import AgentRuntime
 
 DEFAULT_RUN_TIMEOUT_MINUTES = 45
+# A slot kind whose runs usually take longer starts higher (spec §8.6, Q6 as amended 2026-11-16: Claude research runs'
+# p90 is 111 min).
+DEFAULT_TIMEOUT_BY_KIND: dict[str, int] = {"research": 90}
 CEILING_WINDOW = timedelta(hours=24)
 # The default ceiling's formula (Phase 0, #650 §3). K is derived from USD at list prices, not measured
 # (about ±25%), which is why a runtime's own rows replace the bootstrap after OWN_ROWS_AFTER.
@@ -76,7 +79,7 @@ def _percentile(values: list[float], q: float = PCTL) -> float:
     return float(ordered[int(rank) - 1])
 
 
-def _kind(text: object) -> str | None:
+def kind_of(text: object) -> str | None:
     if not isinstance(text, str):
         return None
     for kind in SLOT_KINDS:
@@ -118,7 +121,7 @@ def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: 
                 ts = _row_ts(row)
                 if ts is None or ts < since:
                     continue
-                kind = _kind(row.get("type"))
+                kind = kind_of(row.get("type"))
                 if row.get("agent_runtime") == runtime_id and runtime_id != "claude-code":
                     if (n := _row_tokens(row)) > 0:
                         own.setdefault(kind, []).append(float(n))
@@ -167,8 +170,32 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
-def limits_for(data_dir: Path | None, adapter: AgentRuntime) -> RuntimeLimits:
-    """The limits for a run on *adapter*.
+def slot_kind(data_dir: Path | None, slot: str | None) -> str | None:
+    """The kind (dreaming, research, briefing, consolidation) of the run's slot: the schedule's ``type``, else the
+    slot key's own words (``research-manual``), else None. Never raises."""
+    if not slot:
+        return None
+    try:
+        from scout.schedule import load_default_schedule, load_schedule
+
+        vault_schedule = paths.state_dir(data_dir) / "schedule.yaml"
+        schedule = load_schedule(vault_schedule) if vault_schedule.exists() else load_default_schedule()
+        if slot in schedule:
+            return schedule[slot].type.value
+    except Exception:  # noqa: BLE001 - fall back to the key's words
+        pass
+    return kind_of(slot)
+
+
+def default_timeout_minutes(kind: str | None) -> int:
+    return DEFAULT_TIMEOUT_BY_KIND.get(kind or "", DEFAULT_RUN_TIMEOUT_MINUTES)
+
+
+def limits_for(data_dir: Path | None, adapter: AgentRuntime, slot: str | None = None) -> RuntimeLimits:
+    """The limits for a run on *adapter*, of *slot* (the slot key, the runners' ``$MODE``) when given.
+
+    The timeout's default depends on the slot's kind (``DEFAULT_TIMEOUT_BY_KIND``); a configured
+    ``run_timeout_minutes`` applies to every slot.
 
     A value that isn't valid is ignored in favour of the default, which is the safe
     side for a runtime without a cap (the default is on) and today's behaviour for
@@ -187,7 +214,7 @@ def limits_for(data_dir: Path | None, adapter: AgentRuntime) -> RuntimeLimits:
     elif self_capped:
         timeout_s, t_src = None, "off"
     else:
-        timeout_s, t_src = DEFAULT_RUN_TIMEOUT_MINUTES * 60, "default"
+        timeout_s, t_src = default_timeout_minutes(slot_kind(data_dir, slot)) * 60, "default"
 
     raw_c = block.get("max_tokens_per_day")
     ceiling: int | None
@@ -266,6 +293,10 @@ def dumps(limits: RuntimeLimits) -> str:
 __all__ = [
     "CEILING_WINDOW",
     "DEFAULT_RUN_TIMEOUT_MINUTES",
+    "DEFAULT_TIMEOUT_BY_KIND",
+    "default_timeout_minutes",
+    "kind_of",
+    "slot_kind",
     "FLOOR_TOKENS",
     "H_HEADROOM",
     "K_TOKENS_PER_USD",
