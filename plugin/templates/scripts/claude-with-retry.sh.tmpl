@@ -51,7 +51,8 @@
 #                              sandbox-exec profile (see WRITE SANDBOX below)
 #   SCOUTCTL_BIN, SCOUT_RUN_TYPE, SCOUT_RUN_STARTED
 #                              set by the runners: record each failed attempt's
-#                              spend and budget the retry by it (see ATTEMPT COST below)
+#                              spend and budget the retry by it (see ATTEMPT COST below);
+#                              SCOUTCTL_BIN also runs the run brokers (see RUN BROKERS below)
 #
 # Exit code: the exit code of the final attempt.
 
@@ -260,6 +261,72 @@ if [ -n "$SANDBOX_PROFILE" ]; then
 elif [ "${SCOUT_SANDBOX_STATUS:-}" = "enforced" ]; then
     echo "=== claude-with-retry: the runner asked for the write sandbox but passed no profile — not starting claude ===" >> "$LOG_FILE"
     exit 3
+fi
+
+# RUN BROKERS (Phase 1d, spec 2026-11-16). In a sandboxed run, a broker outside
+# the sandbox makes the run's commits (scripts/git-safe-commit.sh hands over to
+# it) and sends its Telegram messages (scoutctl notify telegram), so the profile
+# can deny every write in the vault's git dir and every read in ~/.scout-secrets.
+# It starts once and outlives retries; on exit it is stopped, and whatever a
+# client queued while it didn't answer is applied (`scoutctl broker drain`). If it
+# doesn't answer, or the vault's helper predates it, the run keeps the 1c profile
+# and .scout-logs/.run-broker.json says why (`scoutctl health`).
+BROKER_DIR=""
+BROKER_PID=""
+BROKER_VAULT="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+stop_broker() {
+    if [ -n "$BROKER_PID" ]; then
+        kill "$BROKER_PID" 2>/dev/null || true
+        wait "$BROKER_PID" 2>/dev/null || true
+    fi
+    if [ -n "$BROKER_DIR" ]; then
+        # The runner still holds the session lock: the drain starts no entry after 120 s, and a watchdog stops it
+        # at 480 s (one commit may take 300 s; SCOUT_BROKER_DRAIN_WATCHDOG_S, for tests), taking the commit helper
+        # it is running with it, so nothing it meets can hold the lock longer.
+        "$SCOUTCTL_BIN" broker drain --vault "$BROKER_VAULT" --deadline 120 --run "$(basename "$BROKER_DIR")" >> "$LOG_FILE" 2>&1 &
+        local drain_pid=$! waited=0 limit="${SCOUT_BROKER_DRAIN_WATCHDOG_S:-480}"
+        case "$limit" in ''|*[!0-9]*) limit=480 ;; esac
+        limit=$((limit * 10))
+        while kill -0 "$drain_pid" 2>/dev/null; do
+            if [ "$waited" -ge "$limit" ]; then
+                echo "=== claude-with-retry: the broker drain ran past its watchdog and was stopped; the queue waits for the tick ===" >> "$LOG_FILE"
+                kill "$drain_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        wait "$drain_pid" 2>/dev/null || true
+        rm -rf "$BROKER_DIR" 2>/dev/null || true
+    fi
+}
+broker_status() {  # status reason: what the health check reads when `broker profile` can't say it itself
+    printf '{"at": %s, "status": "%s", "reason": "%s"}\n' "$(date +%s)" "$1" "$2" \
+        > "$(dirname "$LOG_FILE")/.run-broker.json" 2>/dev/null || true
+}
+if [ -n "$SANDBOX_PROFILE" ]; then
+    if [ -n "${SCOUTCTL_BIN:-}" ] && [ -x "$SCOUTCTL_BIN" ]; then
+        BROKER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scout-broker.XXXXXX" 2>/dev/null)" || BROKER_DIR=""
+    fi
+    [ -n "$BROKER_DIR" ] || broker_status unavailable "the runner passed no scoutctl, or no temp folder could be made"
+else
+    broker_status off "the run has no write sandbox"
+fi
+if [ -n "$BROKER_DIR" ]; then
+    trap stop_broker EXIT
+    "$SCOUTCTL_BIN" broker serve --vault "$BROKER_VAULT" --dir "$BROKER_DIR" --parent $$ >> "$LOG_FILE" 2>&1 &
+    BROKER_PID=$!
+    broker_rc=0
+    BROKER_PROFILE="$(printf '%s' "$SANDBOX_PROFILE" | "$SCOUTCTL_BIN" broker profile --vault "$BROKER_VAULT" --dir "$BROKER_DIR" 2>>"$LOG_FILE")" || broker_rc=$?
+    if [ "$broker_rc" -eq 0 ] && [ -n "$BROKER_PROFILE" ]; then
+        SANDBOX=(/usr/bin/sandbox-exec -p "$BROKER_PROFILE")
+        # GIT_OPTIONAL_LOCKS=0: `git status` skips its optional index refresh, which the git dir now refuses.
+        export SCOUT_RUN_BROKER="$BROKER_DIR/b.sock" GIT_OPTIONAL_LOCKS=0
+        echo "=== claude-with-retry: run brokers on: commits and Telegram go through the broker ===" >> "$LOG_FILE"
+    else
+        echo "=== claude-with-retry: run brokers unavailable (exit $broker_rc); the run keeps the 1c sandbox ===" >> "$LOG_FILE"
+    fi
+    unset broker_rc BROKER_PROFILE
 fi
 
 # ATTEMPT COST (#561). The budget gate runs once, before this wrapper, and the

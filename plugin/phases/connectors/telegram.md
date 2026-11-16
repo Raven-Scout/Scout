@@ -8,7 +8,7 @@ requires: telegram
 
 ## Telegram Notification
 
-Send the wrap notification to {{USER_NAME}}'s Telegram chat, summarizing the run results. The bot token and chat ID live in `~/.scout-secrets/`; never print or log them.
+Send the wrap notification to {{USER_NAME}}'s Telegram chat, summarizing the run results. The bot token and chat ID live in `~/.scout-secrets/`; never print or log them. A scheduled run can't read or list them (a broker sends for it); check setup with `test -s ~/.scout-secrets/telegram-bot-token`.
 
 **Telegram is sent alongside any Slack DM, not instead of it.** If this file also has a Slack Notification section, send both: the Slack DM through its outbound check, and this one here. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a notification section, so if this section is here, send it. This is {{USER_NAME}}'s private chat, an owner-only surface: unlike the Slack DM, it may name `[private]` items, by their exact title. Never copy that private content into the Slack DM.
 
@@ -27,7 +27,7 @@ SCOUT_WRAP
 - **Tier:** `action_required` (a loud push) when the run surfaced 🔴 urgent items; `info` (silent) otherwise.
 - **HTML:** use only `<b> <i> <u> <s> <a href="…"> <code> <pre> <blockquote>`. Escape `&` as `&amp;`, `<` as `&lt;` and `>` as `&gt;` in **every** piece of text you did not write yourself (Slack messages, PR titles, mail subjects, file names). If Telegram refuses the HTML, Scout resends the message as plain text, so a mistake costs the formatting, not the message.
 - **Links:** only `http(s)://` and `mailto:` links survive; Scout drops any other scheme and keeps its label. An `obsidian://` link will not be clickable, so name the file instead: `action-items/action-items-YYYY-MM-DD.md` in `<code>`.
-- A non-zero exit means the Telegram wrap was not delivered: say so in your final message. Do not fall back to Slack: never resend this message, or anything only it carried, as a Slack DM. A Slack Notification section in this file is sent on its own terms either way.
+- A non-zero exit means the Telegram wrap was not delivered: say so in your final message. Exit 5: a limit refused it (shorten it, or fold it into the wrap). Exit 0 with `queued`: it goes out after the session. Do not fall back to Slack: never resend this message, or anything only it carried, as a Slack DM. A Slack Notification section in this file is sent on its own terms either way.
 
 ### Consolidation Notification (3-5 lines)
 
