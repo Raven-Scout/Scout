@@ -6,6 +6,14 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **A Help menu** (app audit C11; `Scout/Help/HelpCommands.swift`, `Scout/ScoutApp.swift`). Help ▸ Scout Help no longer shows the system's "Help isn't available". The menu has Scout Help (the website), Scout on GitHub, Privacy Policy, Run Doctor…, Show Logs Folder (`<vault>/.scout-logs`), Export Diagnostics…, and a Troubleshooting group: the troubleshooting guide, Engine Settings… and Report an Issue…. Settings ▸ Engine has a Troubleshooting row with the same three tools under the same names.
+- **Run Doctor… shows the results in the app** (`Scout/Help/DoctorView.swift`). It runs `scoutctl bootstrap doctor` and lists every problem, warning and run-health finding with its fix, not only the first one, or says plainly that the engine isn't installed, needs repair, or that the doctor couldn't run.
+- **Export Diagnostics…: one text file to attach to a bug report** (`Scout/Help/DiagnosticsBundle.swift`, `DiagnosticsExportView.swift`, `DiagnosticsScrubber.swift`). It holds the app and engine versions, `scoutctl diagnostics` (doctor, run health, sandbox and runtime status, recent run outcomes), the app's view of recent runs, and the app's own log from this launch. The window lists what's included and shows the whole text; Save… writes exactly that text and nothing is sent anywhere. It never holds note text, note or folder names, vault paths outside Scout's own folders, secrets, tokens, transcripts or run logs: the engine's report is redacted, and the app scrubs every line again with the same rules (the vault's note and folder names, the owner's name and email, credential shapes, emails, other URLs). Log messages from categories that can quote notes (KB privacy labels) are withheld. With an engine that has no `scoutctl diagnostics`, the section holds only the doctor's severity and finding ids. A test builds a synthetic vault full of canary strings and checks none reaches the bundle.
+
+### Fixed
+- **The run-log parse cache is per build and per vault** (`Scout/Services/SessionLogParseCache.swift`). It lived at one fixed path, `~/Library/Caches/Scout/session-parse-cache.json`, shared by every build and vault, so a dev build or a second vault overwrote the installed app's cache and the next launch re-parsed the whole log history. It is now `~/Library/Caches/<bundle ID>/session-parse-cache-<vault key>.json`, where the key is a hash of the vault path. The shipping app deletes the old shared file once; a dev build leaves it alone.
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

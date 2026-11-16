@@ -528,6 +528,9 @@ The heartbeat system opportunistically triggers extra sessions (dreaming or rese
 
 ## FAQ / Troubleshooting
 
+**Reporting a bug.**
+In Scout.app, use Help ▸ Export Diagnostics…; it shows you the whole file before you save it. Without the app, run `scoutctl diagnostics` (add `--json` for the full report). Either way the report holds versions, health checks and recent run outcomes, never your notes: no note text, note or folder names, secrets, tokens, transcripts or run logs.
+
 **Scout stopped running (it's gone quiet).**
 Almost always, your Claude Code login has expired. Every scheduled run then fails within seconds, before it can tell you anything. Open Terminal and run:
 

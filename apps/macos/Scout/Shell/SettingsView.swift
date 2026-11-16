@@ -70,6 +70,7 @@ struct SettingsView: View {
                         bundledVersion: appState.engineRelease?.engine.version,
                         isUpdating: appState.isUpgradingEngine,
                         unfinishedSwitch: appState.engineSwitchUnfinished,
+                        vault: appState.scoutDirectory,
                         onUpdate: { Task { await appState.runEngineUpgrade() } },
                         onSetUp: {
                             if appState.beginOnboarding() != nil { showingSetup = true }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Persistent parse cache for session run logs.
@@ -89,17 +90,53 @@ extension SessionLogService {
 
     /// Default cache location: the per-user caches directory, kept OUT of the
     /// logs directory so writing it never trips that directory's file watcher.
-    /// A single fixed file is fine — the cache self-validates per entry (name +
-    /// size + mtime), so a stale or shared file degrades to a cache miss, never
-    /// to wrong data.
-    nonisolated static func defaultParseCacheURL() -> URL? {
+    /// Keyed by bundle ID and vault (app audit C11): one fixed file used to be
+    /// shared by every build and vault, so a dev build or a second vault
+    /// overwrote the installed app's cache and each relaunch re-parsed the
+    /// whole log history. The cache still self-validates per entry (name +
+    /// size + mtime), so a stale file degrades to a miss, never to wrong data.
+    nonisolated static func defaultParseCacheURL(
+        vault: URL, bundleID: String? = Bundle.main.bundleIdentifier
+    ) -> URL? {
         let fm = FileManager.default
         guard let base = try? fm.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ) else { return nil }
-        let dir = base.appendingPathComponent("Scout", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("session-parse-cache.json")
+        let url = parseCacheURL(cachesDirectory: base, bundleID: bundleID, vault: vault)
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return url
+    }
+
+    /// `<caches>/<bundle ID>/session-parse-cache-<vault key>.json`. Pure, for tests.
+    /// A missing bundle ID (a bare test binary) falls back to "Scout".
+    nonisolated static func parseCacheURL(cachesDirectory: URL, bundleID: String?, vault: URL) -> URL {
+        let folder = (bundleID?.isEmpty == false ? bundleID! : "Scout")
+            .replacingOccurrences(of: "/", with: "_")
+        return cachesDirectory
+            .appendingPathComponent(folder, isDirectory: true)
+            .appendingPathComponent("session-parse-cache-\(vaultKey(vault)).json")
+    }
+
+    /// A short, stable key for a vault path: the first 16 hex digits of the
+    /// SHA-256 of its standardized, symlink-resolved path. The path itself
+    /// never appears in the file name.
+    nonisolated static func vaultKey(_ vault: URL) -> String {
+        let path = vault.standardizedFileURL.resolvingSymlinksInPath().path
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The one shared file every build used before C11. Only the shipping
+    /// app removes it, so a dev build can't delete the installed app's file.
+    nonisolated static func removeLegacySharedParseCache(
+        bundleID: String? = Bundle.main.bundleIdentifier, cachesDirectory: URL? = nil
+    ) {
+        guard bundleID == "com.scout.Scout" else { return }
+        let fm = FileManager.default
+        guard let base = cachesDirectory
+            ?? (try? fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false))
+        else { return }
+        try? fm.removeItem(at: base.appendingPathComponent("Scout/session-parse-cache.json"))
     }
 
     /// Load the cache, or an empty one if absent/unreadable/corrupt (any failure

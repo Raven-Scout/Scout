@@ -46,6 +46,9 @@ struct ScoutApp: App {
             CommandGroup(after: .appInfo) {        // app menu ▸ Check for Updates… (under About Scout)
                 CheckForUpdatesView(updates: updates)
             }
+            CommandGroup(replacing: .help) {       // Help ▸ docs, doctor, logs, diagnostics (audit C11)
+                HelpCommands(vault: appState.scoutDirectory)
+            }
         }
         // "Start in menu bar": suppress the window at launch instead of
         // creating it and hiding it a run-loop later (which raced scene
@@ -67,6 +70,20 @@ struct ScoutApp: App {
                 .environmentObject(appState)
                 .environmentObject(updates)
         }
+
+        // Help ▸ Run Doctor… and Help ▸ Export Diagnostics… (audit C11).
+        Window("Scout Doctor", id: HelpWindow.doctor) {
+            DoctorView(health: appState.engineHealth)
+        }
+        .windowResizability(.contentMinSize)
+        .restorationBehavior(.disabled)
+
+        Window("Export Diagnostics", id: HelpWindow.diagnostics) {
+            DiagnosticsExportView()
+                .environmentObject(appState)
+        }
+        .windowResizability(.contentMinSize)
+        .restorationBehavior(.disabled)
     }
 }
 

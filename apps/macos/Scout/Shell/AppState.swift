@@ -713,7 +713,8 @@ final class AppState: ObservableObject {
         /// the configuration so a test graph never reads the real home.
         var claudeSessionsDirectory: URL
         /// Where `SessionLogService` memoises parsed log bodies
-        /// (`~/Library/Caches/Scout/session-parse-cache.json` in production).
+        /// (`~/Library/Caches/<bundle ID>/session-parse-cache-<vault key>.json`
+        /// in production, so builds and vaults never share one).
         /// Configured for the same reason as `claudeSessionsDirectory`: the
         /// service's own default is the per-user path, so a test graph that
         /// left this to the default rewrote the *running app's* cache with
@@ -759,6 +760,8 @@ final class AppState: ObservableObject {
             let vault = AppState.resolveScoutDirectory(
                 defaults: .standard, pointer: locator.pointer(), home: layout.home
             )
+            // The cache moved to a per-build, per-vault file; drop the old shared one.
+            SessionLogService.removeLegacySharedParseCache()
             return Configuration(
                 scoutDirectory: vault,
                 // Every scoutctl/git call must see the vault the app is
@@ -778,7 +781,7 @@ final class AppState: ObservableObject {
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: vault),
-                parseCacheURL: SessionLogService.defaultParseCacheURL(),
+                parseCacheURL: SessionLogService.defaultParseCacheURL(vault: vault),
                 engineLayout: layout,
                 initialEngineState: state,
                 startsBackgroundWork: true,
