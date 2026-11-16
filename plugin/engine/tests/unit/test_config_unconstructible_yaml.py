@@ -780,7 +780,6 @@ def installed(tmp_path: Path) -> Path:
             enabled_connectors={"slack"},
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
     assert _custom_add(v, RESTRICTED).status == "applied"
@@ -862,7 +861,7 @@ def test_custom_load_marks_an_unbuildable_value(tmp_path: Path, body: str) -> No
 def test_an_upgrade_stops_rather_than_drop_the_custom_sections(installed: Path, body: str) -> None:
     _break_custom(installed, lambda t: t + body + "\n")
     cfg = bootstrap.config_from_vault(
-        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True, skip_claude=True
+        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True
     )
     with pytest.raises(ConfigError, match="could not be read") as raised:
         bootstrap.upgrade(cfg)
@@ -874,7 +873,7 @@ def test_an_upgrade_still_runs_past_a_syntax_error(installed: Path, capsys: pyte
     """Main's documented behaviour for a file that isn't YAML ("skipped until fixed"), unchanged here."""
     _break_custom(installed, lambda t: t + SYNTAX_ERROR)
     cfg = bootstrap.config_from_vault(
-        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True, skip_claude=True
+        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True
     )
     bootstrap.upgrade(cfg)
     assert "could not be read: ParserError at line" in capsys.readouterr().err
@@ -975,7 +974,7 @@ def test_config_from_vault_names_the_line_not_the_text(tmp_path: Path) -> None:
 def test_bootstrap_upgrade_prints_the_line_not_the_text(installed: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (installed / "scout-config.yaml").write_text(SYNTAX_ERROR, encoding="utf-8")
     monkeypatch.setenv("SCOUT_DATA_DIR", str(installed))
-    result = CliRunner().invoke(app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
+    result = CliRunner().invoke(app, ["bootstrap", "upgrade", "--no-jobs"])
     assert result.exit_code == ConfigError.exit_code
     assert "is malformed: ParserError at line" in result.stderr
     assert SYNTAX_CANARY not in result.output

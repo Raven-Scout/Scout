@@ -34,7 +34,6 @@ def _config(vault: Path) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 
@@ -140,7 +139,7 @@ def _cli_install(target: Path, monkeypatch, *extra: str):
 
     monkeypatch.setenv("SCOUT_DATA_DIR", str(target))
     argv = ["bootstrap", "install", "--user-name", "Alex", "--user-email", "alex@example.com"]
-    result = CliRunner().invoke(cli.app, [*argv, "--no-jobs", "--skip-claude", *extra])
+    result = CliRunner().invoke(cli.app, [*argv, "--no-jobs", *extra])
     assert result.exit_code in (0, 1), result.output  # the doctor's verdict
     return result
 
@@ -150,7 +149,7 @@ def _cli_upgrade():
 
     from scout import cli
 
-    result = CliRunner().invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
+    result = CliRunner().invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
     assert result.exit_code in (0, 1), result.output
     return result
 
@@ -174,8 +173,8 @@ _FOLLOW_THE_HOST_NOTE = "# timezone: unset on purpose — follow this computer's
 @pytest.mark.parametrize(
     "command",
     [
-        ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"],
-        ["bootstrap", "auto", "--yes", "--no-jobs", "--skip-claude"],  # what the desktop app runs
+        ["bootstrap", "upgrade", "--no-jobs"],
+        ["bootstrap", "auto", "--yes", "--no-jobs"],  # what the desktop app runs
     ],
     ids=["upgrade", "auto"],
 )

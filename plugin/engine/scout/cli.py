@@ -3578,6 +3578,14 @@ def _register_bootstrap() -> None:
         "set that with `scoutctl budget set --daily-usd`."
     )
 
+    # Deprecated (spec 2026-11-13 §8.9): bootstrap never starts Claude, so the flag did nothing. Still
+    # accepted, hidden, so a script that passes it keeps working.
+    _SKIP_CLAUDE_HELP = "Deprecated and ignored: bootstrap never starts Claude."
+
+    def _warn_skip_claude(skip_claude: bool) -> None:
+        if skip_claude:
+            typer.echo("note: --skip-claude is deprecated and does nothing (bootstrap never starts Claude)", err=True)
+
     def _resolve_managed_by(value: str) -> str:
         """`preserve` → the concrete manager (engine_pointer.resolve_managed_by);
         an explicit value outside MANAGED_BY_VALUES is a usage error (exit 2)."""
@@ -3648,7 +3656,7 @@ def _register_bootstrap() -> None:
             for e in doctor["errors"]:
                 typer.echo(f"  error: {e}", err=True)
 
-    def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, skip_claude: bool, managed_by: str):
+    def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, managed_by: str):
         """BootstrapConfig for an existing vault, read back from scout-config.yaml
         (shared with the custom-connector commands via bootstrap.config_from_vault)."""
         import yaml as _yaml
@@ -3662,7 +3670,6 @@ def _register_bootstrap() -> None:
                 plugin_root=Path(__file__).parent.parent.parent,
                 plugin_version=__version__,
                 skip_jobs=skip_jobs,
-                skip_claude=skip_claude,
                 managed_by=managed_by,
             )
         except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
@@ -3678,7 +3685,7 @@ def _register_bootstrap() -> None:
         ),
         platform: str = typer.Option("macos", "--platform"),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
         # Per-connector inputs collected by /scout-setup. Mirroring the
         # migrate-legacy flags keeps the two entrypoints symmetric and
@@ -3702,6 +3709,7 @@ def _register_bootstrap() -> None:
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Install Scout into the user's vault directory."""
+        _warn_skip_claude(skip_claude)
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import BootstrapConfig, install, resolve_claude_bin
@@ -3729,7 +3737,6 @@ def _register_bootstrap() -> None:
                 "max_budget": max_budget,
             },
             skip_jobs=skip_jobs,
-            skip_claude=skip_claude,
             auto_update=auto_update,
             managed_by=managed_by,
         )
@@ -3743,11 +3750,12 @@ def _register_bootstrap() -> None:
     @bootstrap_app.command("upgrade")
     def cli_bootstrap_upgrade(
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Upgrade an existing vault against the current plugin templates."""
+        _warn_skip_claude(skip_claude)
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import upgrade
@@ -3765,7 +3773,7 @@ def _register_bootstrap() -> None:
             raise typer.Exit(code=2)
         try:
             cfg = _config_from_existing_vault(
-                vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
+                vault, skip_jobs=skip_jobs, managed_by=managed_by
             )
         except ConfigError as e:
             # Preserve the pre-E3 exit code (10) for a malformed scout-config.yaml —
@@ -4013,7 +4021,6 @@ def _register_bootstrap() -> None:
                 "max_budget": max_budget,
             },
             skip_jobs=skip_jobs,
-            skip_claude=True,
             managed_by=managed_by,
         )
         result = migrate_legacy(cfg)
@@ -4058,7 +4065,7 @@ def _register_bootstrap() -> None:
         claude_bin: str = typer.Option("auto", "--claude-bin", help="Absolute path, or auto (`command -v claude`)"),
         max_budget: str = typer.Option("5.00", "--max-budget", help=_MAX_BUDGET_HELP),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         interactive: bool | None = typer.Option(
             None,
@@ -4075,6 +4082,7 @@ def _register_bootstrap() -> None:
         ),
     ) -> None:
         """Detect the vault's state and run install, upgrade or migrate-legacy accordingly (#26)."""
+        _warn_skip_claude(skip_claude)
         import platform as _platform
 
         from scout import __version__
@@ -4155,7 +4163,7 @@ def _register_bootstrap() -> None:
                 typer.echo(f"note: ignored on upgrade (read from scout-config.yaml): {', '.join(ignored)}", err=True)
             try:
                 cfg = _config_from_existing_vault(
-                    vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
+                    vault, skip_jobs=skip_jobs, managed_by=managed_by
                 )
             except (ConfigError, OSError) as e:
                 _emit(
@@ -4194,7 +4202,6 @@ def _register_bootstrap() -> None:
                     "max_budget": max_budget,
                 },
                 skip_jobs=skip_jobs,
-                skip_claude=skip_claude,
                 managed_by=managed_by,
             )
         cfg.auto_update = auto_update
