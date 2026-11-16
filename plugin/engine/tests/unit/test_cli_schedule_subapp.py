@@ -49,8 +49,9 @@ def test_schedule_list_json_emits_full_slot_records():
     assert morning["budget_usd"] is None
     assert morning["tz"] is None
     assert morning["runtime"] == "local"
-    # Unset agent runtime is emitted as null, not omitted, so the app can tell
-    # "inherits the default" from "engine too old to say".
+    # Unset agent runtime is emitted as an explicit null so the key is always
+    # present. The app decodes null and absent the same way (inherit the
+    # default); it does not use the difference to detect an older engine.
     assert "agent_runtime" in morning
     assert morning["agent_runtime"] is None
 
