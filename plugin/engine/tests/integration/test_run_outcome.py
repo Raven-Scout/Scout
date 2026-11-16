@@ -167,6 +167,25 @@ def test_the_row_records_the_model_the_runner_used(vault: Path, outcome: Path) -
     assert row["model"] == "sonnet"
 
 
+def test_the_row_records_awake_length_and_agent_runtime(vault: Path, outcome: Path) -> None:
+    """Spec 2026-11-13 §8.2, §8.6: the runner's awake length and runtime reach the row; junk never does."""
+    _record(
+        outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="2712", SCOUT_AGENT_RUNTIME="claude-code"
+    )
+    _record(outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="12 x", SCOUT_AGENT_RUNTIME='a", "b')
+    first, second = _ledger(vault)
+    assert (first["awake_s"], first["agent_runtime"]) == (2712, "claude-code")
+    assert "awake_s" not in second and "agent_runtime" not in second
+
+
+def test_a_run_stopped_at_its_timeout_is_class_timeout(vault: Path, outcome: Path) -> None:
+    banner = "=== Scout run timeout: Dummy CLI ran past 45 min of awake time (budget.per_runtime) — stopping it ===\n"
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "working\n" + banner))
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "some other exit 124\n"))
+    _record(outcome, "dreaming-nightly", 1, _log(vault, banner))
+    assert [r["failure_class"] for r in _ledger(vault)] == ["timeout", "unknown", "unknown"]
+
+
 def test_a_row_without_a_model_leaves_it_out(vault: Path, outcome: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODEL"}
     subprocess.run(

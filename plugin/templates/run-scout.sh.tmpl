@@ -292,6 +292,12 @@ if [ -x "$SCOUTCTL_BIN" ]; then
     SCOUT_INTEGRITY_START="$("$SCOUTCTL_BIN" sandbox snapshot --vault "$SCOUT_DIR" 2>>"$LOG_FILE" || true)"
 fi
 START_TIME=$(date +%s)
+# The run's start on a clock that stops while the host sleeps (scout-lock.sh's
+# _scout_awake_now): `agent-runtime exec` counts a run timeout in awake time from
+# here (spec 2026-11-13 §8.6, Jordan 2026-11-16), and the run-outcome row records
+# the run's awake length. Exported, so every retry attempt shares this one start.
+SCOUT_RUN_AWAKE_STARTED="$(_scout_awake_now)"
+export SCOUT_RUN_AWAKE_STARTED
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
@@ -326,6 +332,18 @@ else
 fi
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
+# The run's awake length, for the run-outcome row (the doctor compares it with the
+# slot's timeout). Left empty when either reading isn't on the awake clock.
+SCOUT_RUN_AWAKE_S=""
+read -r AWAKE_CLOCK0 AWAKE_T0 <<<"$SCOUT_RUN_AWAKE_STARTED" || true
+read -r AWAKE_CLOCK1 AWAKE_T1 <<<"$(_scout_awake_now)" || true
+if [ "${AWAKE_CLOCK0:-}" = awake ] && [ "${AWAKE_CLOCK1:-}" = awake ]; then
+    case "${AWAKE_T0:-}${AWAKE_T1:-}" in
+        ''|*[!0-9]*) ;;
+        *) [ "$AWAKE_T1" -ge "$AWAKE_T0" ] && SCOUT_RUN_AWAKE_S=$((AWAKE_T1 - AWAKE_T0)) ;;
+    esac
+fi
+export SCOUT_RUN_AWAKE_S
 
 # Post-run integrity check (spec 2026-11-15 §13), outside the sandbox and before any
 # post-session step: the sandbox keeps the session from writing a protected file, but

@@ -76,6 +76,9 @@ SANDBOX_SWITCH_NAME = "run-sandbox.json"
 # The owner's model-provider consent (scout.agent_runtimes.consent, spec 2026-11-13 §8.4), also in
 # ~/.local/state/scout/: a run that could write it could consent to a provider for the next run.
 PROVIDER_CONSENT_NAME = "provider-consent.json"
+# The owner's run limits (scout.agent_runtimes.limits): raising a run's timeout or token ceiling, or turning
+# one off, is the owner's alone, so a run can't loosen its own or the next run's.
+RUN_LIMITS_NAME = "run-limits.json"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
@@ -257,6 +260,7 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     # it could turn the sandbox off for the next run.
     roots.append(state / SANDBOX_SWITCH_NAME)
     roots.append(state / PROVIDER_CONSENT_NAME)
+    roots.append(state / RUN_LIMITS_NAME)
     return roots
 
 
@@ -586,6 +590,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     ".scoutctl-py-cache",
     "engine.json",
     "provider-consent.json",
+    "run-limits.json",
     "hooks.json",
     "pyvenv.cfg",
     ".scout-secrets",

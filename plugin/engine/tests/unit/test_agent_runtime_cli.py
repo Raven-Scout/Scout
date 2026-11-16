@@ -341,3 +341,103 @@ def test_model_resolve_for_another_runtime(vault: Path) -> None:
         assert code == 0 and json.loads(out) == {"model": "dm-default", "source": "builtin"}
     code, out, _ = _cli("model", "resolve", "--runtime", "nope")
     assert code == 1 and "nope" in out
+
+
+# -- the run timeout counts awake time (Jordan, 2026-11-16, option A) --------------------------------------------
+
+
+def _script(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "cli.sh"
+    script.write_text("#!/bin/bash\n" + body, encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def test_time_asleep_doesnt_count(tmp_path: Path) -> None:
+    """The host "sleeps" for hours on the wall clock while the awake clock stands still: the run isn't stopped."""
+    script = _script(tmp_path, "sleep 1\nexit 5\n")
+    env = {**os.environ, "SCOUT_RUN_AWAKE_STARTED": "awake 1000", "SCOUT_RUN_STARTED": str(int(time.time()))}
+    wall = iter(range(0, 10**9, 3600))  # every look at the wall clock is an hour later
+    code = rt_exec.run_with_timeout(
+        Launch(argv=(str(script),)),
+        env,
+        timeout_s=60,
+        runtime_name="Q",
+        awake_now=lambda: ("awake", 1010),
+        wall_now=lambda: float(next(wall)),
+        poll_s=0.05,
+    )
+    assert code == 5
+
+
+def test_awake_time_does_count(tmp_path: Path) -> None:
+    script = _script(tmp_path, "sleep 30\n")
+    env = {**os.environ, "SCOUT_RUN_AWAKE_STARTED": "awake 1000"}
+    ticks = iter(range(1000, 10**6, 20))  # 20 s of awake time per look
+    t0 = time.monotonic()
+    code = rt_exec.run_with_timeout(
+        Launch(argv=(str(script),)),
+        env,
+        timeout_s=60,
+        runtime_name="Q",
+        awake_now=lambda: ("awake", next(ticks)),
+        poll_s=0.05,
+        grace_s=2,
+    )
+    assert code == rt_exec.TIMEOUT_EXIT
+    assert time.monotonic() - t0 < 10
+
+
+def test_spent_falls_back_to_wall_time_and_never_mixes_clocks() -> None:
+    assert rt_exec.spent_s({"SCOUT_RUN_AWAKE_STARTED": "awake 100"}, awake_now=lambda: ("awake", 160)) == 60
+    assert rt_exec.spent_s({"SCOUT_RUN_AWAKE_STARTED": "wall 100"}, wall_now=lambda: 400.0) == 300
+    assert rt_exec.spent_s({"SCOUT_RUN_STARTED": "100"}, wall_now=lambda: 130.0) == 30
+    assert (
+        rt_exec.spent_s({"SCOUT_RUN_AWAKE_STARTED": "junk", "SCOUT_RUN_STARTED": "100"}, wall_now=lambda: 130.0) == 30
+    )
+    assert rt_exec.spent_s({}) == 0
+
+
+def test_the_awake_clock_matches_the_runners_shell() -> None:
+    """scout-lock.sh's _scout_awake_now and scout.agent_runtimes.awake read the same clock, in the same format."""
+    from scout.agent_runtimes import awake
+
+    lock = (Path(__file__).resolve().parents[3] / "templates" / "scripts" / "scout-lock.sh.tmpl").read_text()
+    assert 'getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC)' in lock
+    assert 'print("awake", int(time.clock_gettime(c)))' in lock
+    shell = subprocess.run(
+        [sys.executable, "-I", "-c", lock.split("python3 -I -c '")[1].split("'")[0]], capture_output=True, text=True
+    ).stdout.split()
+    clock, here = awake.now()
+    assert shell[0] == clock == "awake"
+    assert abs(int(shell[1]) - here) <= 2
+
+
+def test_set_limit_is_the_owners_alone(vault: Path) -> None:
+    from scout.agent_runtimes import limits
+
+    code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--run-timeout-minutes", "45")
+    assert code == 0 and '"run_timeout_minutes": "45"' in out
+    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": "45"}
+    for env in ({"SCOUT_MODE": "dreaming"}, {"SCOUT_READER": "autonomous"}):
+        code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--run-timeout-minutes", "off", env=env)
+        assert code == 2 and "refused" in out
+    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": "45"}
+    code, _, _ = _cli("agent-runtime", "set-limit", "claude-code")
+    assert code == 1
+    code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--clear")
+    assert code == 0 and "defaults" in out
+
+
+def test_exec_reads_the_slot_kind_from_the_runners_run_type(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(launch: Launch, env: dict[str, str], *, timeout_s: int, runtime_name: str) -> int:
+        seen["timeout_s"] = timeout_s
+        return 0
+
+    monkeypatch.setattr(rt_exec, "run_with_timeout", fake_run)
+    _capture_execve(monkeypatch)
+    with registered(DummyRuntime("dummy", binary=Path("/bin/dummy"))):
+        _cli(*_exec_args(runtime="dummy"), env={"SCOUT_MODE": "midday-x", "SCOUT_RUN_TYPE": "research"})
+    assert seen["timeout_s"] == 90 * 60

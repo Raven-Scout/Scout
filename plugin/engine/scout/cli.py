@@ -2562,12 +2562,54 @@ def _register_agent_runtime() -> None:
             "timeout_source": lim.timeout_source,
             "max_tokens_per_day": lim.max_tokens_per_day,
             "ceiling_source": lim.ceiling_source,
+            "ignored": list(lim.ignored),
         }
         if as_json:
             typer.echo(_json.dumps(payload))
             return
         for key, value in payload.items():
             typer.echo(f"{key}: {value}")
+
+    @agent_runtime_app.command("set-limit")
+    def cli_agent_runtime_set_limit(
+        runtime: str = typer.Argument(..., help="The runtime id, e.g. claude-code."),
+        run_timeout_minutes: str | None = typer.Option(
+            None, "--run-timeout-minutes", help="Minutes of awake time per run, or off."
+        ),
+        max_tokens_per_day: str | None = typer.Option(
+            None, "--max-tokens-per-day", help="Tokens per 24 hours, auto (the default formula), or off."
+        ),
+        clear: bool = typer.Option(False, "--clear", help="Drop this runtime's limits, back to the defaults."),
+    ) -> None:
+        """Set the owner's run limits for RUNTIME on this vault. The owner only, never a run (exit 2).
+
+        Kept in ~/.local/state/scout/run-limits.json, which runs can't write. This is the only way to raise a
+        limit or turn it off; scout-config.yaml's budget.per_runtime can only make one stricter.
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import limits as _limits
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(_os.environ)
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may set run limits; nothing was changed.", err=True)
+            raise typer.Exit(2)
+        _adapter(runtime)
+        if not clear and run_timeout_minutes is None and max_tokens_per_day is None:
+            typer.echo("error: give --run-timeout-minutes, --max-tokens-per-day or --clear", err=True)
+            raise typer.Exit(1)
+        try:
+            block = _limits.set_owner_limit(
+                _paths.data_dir(),
+                runtime,
+                run_timeout_minutes=run_timeout_minutes,
+                max_tokens_per_day=max_tokens_per_day,
+                clear=clear,
+            )
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{runtime}: {_json.dumps(block, sort_keys=True) if block else 'defaults'}")
 
     @agent_runtime_app.command("resolve")
     def cli_agent_runtime_resolve(
@@ -2689,11 +2731,11 @@ def _register_agent_runtime() -> None:
             typer.echo(_json.dumps(list(adapter.headless_argv(req).argv)))
             return
         try:
-            timeout_s = _limits.limits_for(vault, adapter, req.mode or None).run_timeout_s
+            run_type = _os.environ.get("SCOUT_RUN_TYPE") or None
+            timeout_s = _limits.limits_for(vault, adapter, req.mode or None, run_type).run_timeout_s
         except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
-            timeout_s = (
-                None if adapter.caps_own_spend else _limits.default_timeout_minutes(_limits.kind_of(req.mode)) * 60
-            )
+            kind = _limits.kind_of(_os.environ.get("SCOUT_RUN_TYPE")) or _limits.kind_of(req.mode)
+            timeout_s = None if adapter.caps_own_spend else _limits.default_timeout_minutes(kind) * 60
         try:
             code = _exec.run(adapter, req, timeout_s=timeout_s)
         except FileNotFoundError as e:
