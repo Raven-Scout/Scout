@@ -272,7 +272,7 @@ missing scoutctl.
   - unit tests in `test_hooks_kb_read_gate.py`.
 - It ships as its own fix, before Phase 1, so Phase 1's byte-identical
   `hooks.json` golden pins the hardened file.
-- **Status: in progress, draft #637** (`fix/gate-write-edit-config-paths`).
+- **Status: merged as #637** (f1f9dba6, 2026-11-16).
   The build departs from this card in two ways, both from review (spec §8.5).
   - The protected list is wider: `scout/kb/hook_paths.py`.
   - Every run write goes to Python, rather than a prefilter on `.git/` and
@@ -286,14 +286,14 @@ missing scoutctl.
 
 ## Phase 1c — OS write sandbox for scheduled runs (added 2026-11-15)
 
-- **Why:** a hook only sees the tool call. A run can write a script and run
-  it, or write through `tar -C`, `find -exec` or an MCP server, and #637's
-  gate can't see the path.
+- **Why:** a hook only sees the tool call, so #637's gate covers only paths
+  the command's text spells out. It is defense in depth, not the boundary.
+  The kernel sees every write and read the run's processes make.
 - **What:** the runners start the session inside an OS write sandbox (macOS:
   SBPL) generated from `hook_paths.protected_specs()`, the same list as
   #637, so the two layers can't drift.
-- **Status: in progress, draft #642** (`feat/run-write-sandbox`), stacked on
-  #637's `hook_paths`. Details, tests and acceptance are in #642.
+- **Status: in progress, draft #642** (`feat/run-write-sandbox`), built on
+  #637's `hook_paths` (now on main). Details, tests and acceptance are in #642.
 
 ---
 

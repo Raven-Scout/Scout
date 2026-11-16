@@ -5,14 +5,14 @@ unanswered. Implementation starts per phase (§12) on Jordan's go. The
 coordinator cuts implementation cards from the plan
 (`docs/superpowers/plans/2026-11-13-runtime-agnostic.md`).
 
-Progress (2026-11-15). Only the Claude Code hardening has started; nothing in
+Progress (2026-11-16). Only the Claude Code hardening has started; nothing in
 the adapter phases (1 to 4) is built.
 
 - **Phase 1a, the bare-mode guard: merged** as #635 (3b30ed1b, 2026-11-15).
   Two follow-ups also merged: #638 and #640 keep the vault's working
   directory off `sys.path` in Scout's Python processes.
-- **Phase 1b, the run write gate: in progress,** as draft #637. Its scope grew
-  past this spec's first card; see §8.5 and §12.
+- **Phase 1b, the run write gate: merged** as #637 (f1f9dba6, 2026-11-16).
+  Its scope grew past this spec's first card; see §8.5 and §12.
 - **Phase 1c, an OS-level write sandbox for runs: in progress,** as draft #642.
   This phase was added after the first draft (§12).
 
@@ -796,7 +796,7 @@ this, because it never had to.
       ships as a normal fix. It isn't a Phase 1 change, so G4's
       byte-identical `hooks.json` pins the file as it is when Phase 1
       starts.
-    - **Being closed by #637 (Phase 1b, draft).** In review it grew from
+    - **Closed by #637 (Phase 1b, merged as f1f9dba6).** In review it grew from
       `.git/hooks` and agent config to everything that decides whether
       Scout's checks run. `scout/kb/hook_paths.py` is the one list:
       - the vault's git dir, and git's hooks dir however `core.hooksPath`
@@ -818,15 +818,17 @@ this, because it never had to.
       - An inline program is judged on its own text, when it writes.
     - Every run write goes to Python. A watchdog denies before the 15 s
       hook timeout, which would count as an allow.
-    - Before each round ships, the gate is replayed in-process over the last
-      50 scheduled runs' tool calls. At round 3 it denies nothing that main
-      allows.
-    - **What it can't see** goes to Phase 1c, an OS write sandbox
-      generated from `hook_paths.protected_specs()` (draft #642):
-      - a script file the run writes and then runs;
-      - `tar -C`, `find -exec`, `xargs`;
-      - a name built with `chr()` or base64;
-      - an MCP filesystem server's writes.
+    - Before each round shipped, the gate was replayed in-process over the
+      last 50 scheduled runs' tool calls. When it merged, it denied nothing
+      that main allowed.
+    - **Scope: the hook gate is defense in depth with clear messages, not the
+      security boundary.** It covers the file tools, and the shell commands
+      whose target path can be read from the command's text. Everything else a
+      run's processes do belongs to Phase 1c (draft #642): a kernel sandbox
+      generated from `hook_paths.protected_specs()`. It denies writes to the
+      protected roots, and reads of `~/.scout-secrets` apart from the two
+      Telegram files. A post-run integrity check outside the sandbox judges
+      what the run left in git (Jordan's choice, 2026-11-16).
     - Any future runtime's gate config path joins the same list.
   - Where a runtime only loads hooks from the project directory (inside the
     vault), the run's gate denies writes to that file. The adapter is still
@@ -1170,7 +1172,7 @@ and per-PR checks are in the plan.
 |---|---|---|---|
 | **0 Answers and facts** | Jordan answers §14. A throwaway spike per CLI checks the §3 **[unknown]**s that change the design: hooks under headless mode, fail-closed behaviour, env passthrough, custom endpoint, launchd login, and each vendor's consumer data terms. Spec updated | §3 has no unknown that changes a tier | 1–2 (no merge but the spec update) |
 | **1a Bare-mode guard (urgent, Claude Code only)** — *merged, #635* | **Prevention before launch,** because a bare session fires no hook that could detect it from inside. A free pre-launch probe runs `claude` with the run's own flags against a local fake Anthropic endpoint (`ANTHROPIC_BASE_URL`). A scripted tool call reads a fixture KB file, and the probe passes only if Scout's kb-read-gate denied it. Cached by Claude version + `hooks.json` hash + flags. The runners skip the run (`skipped_gates`) on a failed or unrunnable probe; health and doctor report `gates.not_loaded`. If Claude Code later ships an opt-out flag, the runners pass it too | Unit tests; the manual probe passes with today's flags and fails with `--bare` added | 2–3 |
-| **1b Claude run write gate (separate privacy fix)** — *in progress, draft #637* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; three review rounds so far |
+| **1b Claude run write gate (separate privacy fix)** — *merged, #637 (f1f9dba6)* | First card: `hooks.json` and `decide()` deny a run's Write/Edit into `.git/hooks`, `.git/config` and agent-config paths in the vault. As built (§8.5): one protected list (`scout/kb/hook_paths.py`) covering git, agent config, the engine, runner scripts, startup files, secrets and delegate state. A `kb-write-gate` hook for the file tools; the shell gate on the same list, denying unresolved paths; inline programs judged on their own text when they write; secrets read-gated | Unit tests; real `claude` against the fake endpoint is denied on each bypass the reviews found; replaying the last 50 scheduled runs' tool calls finds no deny that main doesn't make. Every run write goes to Python (about 40 ms), since a symlink can hide a path from the shell | 1–2 planned; four review rounds |
 | **1c OS write sandbox for runs (Claude Code; added 2026-11-15)** — *in progress, draft #642* | The scheduled session runs inside an OS-level write sandbox (macOS: an SBPL profile) generated from `hook_paths.protected_specs()`, so what the hooks can't see is still refused by the kernel: script files a run writes and runs, `tar -C`, `find -exec`, MCP servers' writes. An owner switch (`~/.local/state/scout/run-sandbox.json`) is itself protected | Per #642's own description. A later runtime adapter could reuse the same profile (see Q10) | Per #642 |
 | **1 Interface, Claude Code behind it** | `agent_runtimes` package, `claude_code` adapter, `agent-runtime` CLI, runner plumbing, refusal rule with only Claude registered, ledger keys, normalised events (eval metrics and Stop-hook accounting onto them), `verified.json` for Claude, doctor loop, vestigial-variable cleanup | Golden argv identical; `hooks.json` byte-identical; full plugin CI green; one week of Jordan's live runs unchanged (run health green); `kb-gate` passes on Claude through the new path | 6–9 |
 | **2 Codex CLI** | `codex` adapter; gate translation + generated config; fake-model conformance; provider consent; per-runtime models; neutral connector keys (contract change); eval shim; app runtime picker and onboarding; generated Codex commands/skills | Conformance at Tier F (or L) for a pinned version; `kb-gate` + privacy scenario pass on Codex; one slot live for a week | 8–12 |
@@ -1179,8 +1181,8 @@ and per-PR checks are in the plan.
 | **5 Track B: Grokbot and Claude Duet** | #550's own track, owned there and only tracked here: V2a mirror (#632), then V2 sync hooks, V3 bootstrap, V4 inbox; Duet reads its mirror through the GitHub connector first, with V5 MCP only if needed | #550's "done when" lines; Grokbot and Duet each answer a scout-ask question from their mirror; V6 live | Per #550's plan, not estimated here |
 | **6 Marketing** | Copy changes per §13, one PR per claim change, each citing its evidence row | Claims match `docs/runtimes.md` | 1–2 per step |
 
-Phase 1a didn't wait for this spec's approval of the rest, and has shipped;
-1b and 1c don't wait for it either. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
+Phases 1a and 1b didn't wait for this spec's approval of the rest, and have
+shipped; 1c doesn't wait for it either. Phase 1 doesn't depend on any open question. Phases 2 and 3 are
 independent of each other once Phase 1 lands. Track B (Phase 5) runs on
 #550's own schedule, in parallel.
 
