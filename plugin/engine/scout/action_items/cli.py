@@ -889,12 +889,12 @@ def cli_check_titles(
 ) -> None:
     """Check task titles and Today's Focus in today's file against *Clean Title, Prose Body, Refs Block*.
 
-    A task title (the bold segment) that is new or changed must be at most 80
-    characters. A title is carried when it matches the newest earlier daily
-    file, or today's file as last committed. Of the carried titles over the
-    limit, the 5 longest in 🔴 Urgent in that baseline (today's committed file,
-    else the earlier one) are named, so re-running the check after shortening
-    them doesn't name the next 5. Other carried ones are left until a run
+    A task title (the bold segment) that is new or changed since the newest
+    earlier daily file must be at most 80 characters; a title committed earlier
+    today is still new. Of the carried titles over the limit, the 5 longest in
+    🔴 Urgent in the baseline (today's file as last committed, else the earlier
+    one) are named, so re-running the check after shortening them doesn't name
+    the next 5. Other carried ones are left until a run
     touches them for a real reason, since every rewording restarts the item's
     stale clock. Today's Focus holds at most 5 bullets of at most 300
     characters each.

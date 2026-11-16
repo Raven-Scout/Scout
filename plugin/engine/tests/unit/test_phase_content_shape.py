@@ -33,7 +33,7 @@ def test_action_items_phase_states_the_title_limit_the_check_enforces() -> None:
     assert f"at most {TITLE_MAX} characters" in text
     assert f"≤ {TITLE_MAX} chars" in text  # the file-format template
     assert f"this run's {LEGACY_PER_RUN} longest carried 🔴 titles" in text
-    assert "or today's file as last committed" in text
+    assert "new or changed since the most recent earlier daily file" in text
     assert "`check-titles` (*Clean Title, Prose Body, Refs Block*)" in _text(RUN_MODES)
     assert f"over {FOCUS_MAX_BULLETS} bullets" in text and f"over {FOCUS_MAX_CHARS} characters" in text
 

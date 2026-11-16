@@ -158,12 +158,13 @@ def test_a_later_run_the_same_day_takes_the_next_titles_from_the_committed_file(
     assert result.long_carried == 0
 
 
-def test_a_title_edited_and_committed_today_counts_as_carried() -> None:
-    edited = LONG + " (as the owner wrote it)"
-    yesterday = _lines(yellow=_task("QMIG", LONG))
-    committed = _lines(yellow=_task("QMIG", edited))
-    result = judge(_lines(yellow=_task("QMIG", edited)), earlier=yesterday, committed=committed)
-    assert result.passed and result.long_carried == 1
+def test_a_long_title_a_run_committed_today_is_still_new() -> None:
+    # A run that committed a long new title (it skipped the check, or the check couldn't run)
+    # must not have it pass a later check that day: only the earlier file makes a title carried.
+    yesterday = _lines(yellow=_task("QMIG", SHORT))
+    committed = _lines(yellow=_task("QMIG", LONG), red=_task("NEW", LONG + " too"))
+    result = judge(committed, earlier=yesterday, committed=committed)
+    assert sorted((f.tag, f.carried) for f in result.findings) == [("NEW", False), ("QMIG", False)]
 
 
 def test_nested_and_closed_rows_are_not_checked() -> None:
@@ -233,14 +234,12 @@ def test_today_as_last_committed_is_read_from_git(vault: Path) -> None:
     git("init", "-q")
     git("config", "user.email", "alex@example.com")
     git("config", "user.name", "Alex")
-    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("QMIG", LONG))
-    edited = LONG + " (edited)"
-    _file(vault, TODAY, yellow=_task("QMIG", edited))
+    _file(vault, TODAY - dt.timedelta(days=1), red=_reds(7))
+    _file(vault, TODAY, red=_reds(7, shortened=LEGACY_PER_RUN))  # the morning run's work
     git("add", "-A")
-    git("commit", "-q", "-m", "owner edit")
-    assert check_titles(today=TODAY.isoformat()).passed
-    _file(vault, TODAY, yellow=_task("QMIG", edited + " again"))
-    assert [f.tag for f in check_titles(today=TODAY.isoformat()).findings] == ["QMIG"]
+    git("commit", "-q", "-m", "morning")
+    # The next run that day takes its quota from the committed file: the 2 still long.
+    assert [f.tag for f in check_titles(today=TODAY.isoformat()).findings] == ["R1", "R0"]
 
 
 def _cli(*args: str) -> Any:

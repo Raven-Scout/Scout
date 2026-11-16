@@ -11,10 +11,11 @@ paragraphs per bullet.
 What is checked, in today's file:
 
 - every open top-level task whose title is **new or changed**: it must be at
-  most :data:`TITLE_MAX` characters. A title is *carried* when it matches the
-  same tag's title in the most recent earlier daily file, or in today's file as
-  last committed (so a title the owner edited and committed today isn't the
-  run's to answer for);
+  most :data:`TITLE_MAX` characters. A title is *carried* only when it matches
+  the same tag's title in the most recent earlier daily file. Today's own
+  commits never make a title carried: a run that committed a long new title
+  (it skipped the check, or the check couldn't run) must not have it pass a
+  later check that day;
 - the :data:`LEGACY_PER_RUN` longest carried titles over the limit in 🔴
   Urgent, so the list people read first converges a few at a time. They are
   picked from the *baseline* (today's file as last committed, else the most
@@ -120,20 +121,24 @@ def _focus_bullets(lines: Sequence[str]) -> list[str]:
 def judge(lines: Sequence[str], *, earlier: Sequence[str] = (), committed: Sequence[str] = ()) -> TitleCheck:
     """Check today's ``lines`` against the title and focus limits.
 
-    ``earlier`` is the most recent earlier daily file and ``committed`` today's
-    file as last committed (empty when it has never been committed). A title
-    either one already had under the same tag is *carried*; anything else is
-    new or changed. The 🔴 quota comes from ``committed`` when there is one,
-    else from ``earlier``, so it can't move while a run re-checks.
+    ``earlier`` is the most recent earlier daily file: a title it already had
+    under the same tag is *carried*; anything else is new or changed.
+    ``committed`` is today's file as last committed (empty when it has never
+    been committed). It only fixes the 🔴 quota, which comes from it when there
+    is one, else from ``earlier``, so the quota can't move while a run
+    re-checks, and each later run that day gets its next few.
     """
-    before = _titles(earlier)
-    at_commit = _titles(committed)
-    base = at_commit if committed else before
-    # The quota: the longest over-limit 🔴 titles in the baseline, by their baseline length.
+    before = {tag: title for tag, (_section, title) in _titles(earlier).items()}
+    base = _titles(committed) if committed else _titles(earlier)
+    # The quota: the longest over-limit carried 🔴 titles in the baseline, by their baseline length.
     quota = {
         tag
         for tag, _title in sorted(
-            ((tag, title) for tag, (section, title) in base.items() if section == _RED and len(title) > TITLE_MAX),
+            (
+                (tag, title)
+                for tag, (section, title) in base.items()
+                if section == _RED and len(title) > TITLE_MAX and before.get(tag) == title
+            ),
             key=lambda t: (-len(t[1]), t[0]),
         )[:LEGACY_PER_RUN]
     }
@@ -145,8 +150,7 @@ def judge(lines: Sequence[str], *, earlier: Sequence[str] = (), committed: Seque
         n = len(title)
         if n <= TITLE_MAX:
             continue
-        carried = title in (before.get(tag, ("", ""))[1], at_commit.get(tag, ("", ""))[1])
-        if not carried:
+        if before.get(tag) != title:
             findings.append(TitleFinding(f"[#{tag}]", f"title is {n} characters, over {TITLE_MAX}", tag=tag, chars=n))
         elif tag in quota:
             named_red.append(
