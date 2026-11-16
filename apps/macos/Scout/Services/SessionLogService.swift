@@ -418,9 +418,7 @@ final class SessionLogService: ObservableObject {
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
         let tz = timeZone
-        // The logs live at <vault>/.scout-logs, so the vault keys the default cache.
-        let cacheURL = parseCacheURLOverride
-            ?? Self.defaultParseCacheURL(vault: logsDirectory.deletingLastPathComponent())
+        let cacheURL = parseCacheURLOverride ?? Self.defaultParseCacheURL()
         let assembled = await Task.detached { () -> [Run] in
             // Reuse cached parses for unchanged logs; parse only the rest.
             let cache = Self.loadParseCache(at: cacheURL)
