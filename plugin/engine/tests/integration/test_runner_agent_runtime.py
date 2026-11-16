@@ -117,7 +117,8 @@ def _stub_wrapper(scout_dir: Path) -> Path:
     stub.write_text(
         "#!/bin/bash\n"
         f'printf \'%s\\n\' "$@" > "{argv_file}"\n'
-        f'printf \'%s\\n\' "${{SCOUT_AGENT_BIN-<unset>}}" "${{SCOUT_AGENT_RUNTIME-<unset>}}" > "{argv_file}.env"\n'
+        f'printf \'%s\\n\' "${{SCOUT_AGENT_BIN-<unset>}}" "${{SCOUT_AGENT_RUNTIME-<unset>}}" '
+        f'"${{SCOUT_RUN_AWAKE_STARTED-<unset>}}" > "{argv_file}.env"\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -156,8 +157,9 @@ def test_runner_launches_through_exec(tmp_path: Path, name: str, slot_key: str) 
     assert argv[11] == "25"
     assert argv[12] == "--name" and argv[13].startswith(f"scout-{slot_key}-")
     assert argv[14] == "-p"
-    agent_bin, runtime = Path(f"{argv_file}.env").read_text(encoding="utf-8").splitlines()
+    agent_bin, runtime, awake_start = Path(f"{argv_file}.env").read_text(encoding="utf-8").splitlines()
     assert (agent_bin, runtime) == ("/opt/claude/bin/claude", "claude-code")
+    assert awake_start.split()[0] == "awake" and awake_start.split()[1].isdigit()
     log_calls = calls.read_text(encoding="utf-8")
     assert f"agent-runtime resolve --slot {slot_key}" in log_calls
     assert f"agent-runtime check --slot {slot_key} --runtime claude-code --bin /opt/claude/bin/claude" in log_calls
@@ -165,6 +167,10 @@ def test_runner_launches_through_exec(tmp_path: Path, name: str, slot_key: str) 
     assert log_calls.index("gates probe") < log_calls.index("agent-runtime check")
     assert f"model resolve --slot {slot_key}\n" in log_calls
     assert "=== agent runtime: claude-code ===" in _log(scout_dir)
+    # The run-outcome row names the runtime and the run's awake length (spec §8.2, §8.6).
+    row = _outcomes(scout_dir)[-1]
+    assert row["agent_runtime"] == "claude-code"
+    assert isinstance(row["awake_s"], int) and 0 <= row["awake_s"] < 120
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)
@@ -321,7 +327,7 @@ def test_live_run_still_matches_exec_launched_claude(tmp_path: Path, name: str, 
     assert d_argv[:2] == ["--permission-mode", "auto"]  # bash's "$@": argv[0] is the stub itself
     assert x_cwd == d_cwd == str(scout_dir)
     for env in (x_env, d_env):
-        for noise in ("_", "SCOUT_RUN_STARTED", "SCOUT_TEST_OLD_ENGINE"):  # bash's own, the start time, the switch
+        for noise in ("_", "SCOUT_RUN_STARTED", "SCOUT_RUN_AWAKE_STARTED", "SCOUT_TEST_OLD_ENGINE"):
             env.pop(noise, None)
         env.pop("CLAUDE_OUT")
     assert x_env == d_env

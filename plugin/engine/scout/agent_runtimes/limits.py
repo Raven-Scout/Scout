@@ -1,17 +1,27 @@
-"""Per-runtime run limits: a wall-clock timeout and a daily token ceiling (spec 2026-11-13 §8.6, Q6).
+"""Per-runtime run limits: a run timeout in awake time and a daily token ceiling (spec 2026-11-13 §8.6, Q6).
 
 Both are **on by default for a runtime that can't cap its own spend** (no
 ``budget_cap`` capability): a 45-minute timeout per run (90 for a research slot), and a daily token ceiling.
-Claude Code caps itself (``--max-budget-usd``), so for it both are off unless the
-owner sets them, and its runs are unchanged.
+Claude Code caps itself (``--max-budget-usd``), so for it both are off by default (Jordan, 2026-11-16: its
+timeout comes on, at the same 45/90, once the doctor's awake-time measurements say runs fit).
 
-``scout-config.yaml``::
+The timeout counts **awake** time (``scout.agent_runtimes.awake``; time the host sleeps doesn't count).
 
-    budget:
-      per_runtime:
-        <runtime id>:
-          run_timeout_minutes: 45      # int > 0, or 0 / off for none (default 45; 90 for research)
-          max_tokens_per_day: auto     # int > 0, auto (the default formula), or 0 / off
+Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, meaning the formula below):
+
+1. **The default** above.
+2. **The owner's limits**, ``~/.local/state/scout/run-limits.json`` (``scoutctl agent-runtime set-limit``,
+   owner only), which a run can't write (the write gate and the OS sandbox protect it). They replace the
+   default: this is the only way to raise a limit or turn it off.
+3. **scout-config.yaml**, which a run *can* write, so it can only make a limit stricter::
+
+       budget:
+         per_runtime:
+           <runtime id>:
+             run_timeout_minutes: 30     # applies only below the limit above
+             max_tokens_per_day: 2000000 # likewise; `auto` applies where it is lower
+
+   A value that would loosen a limit is ignored, and ``agent-runtime show`` says so.
 
 The ceiling counts the usage tracker's rows for that runtime (``agent_runtime``, a
 missing key meaning ``claude-code``) over the last 24 hours, summing their
@@ -35,6 +45,9 @@ lacks ``budget_cap``, so the ceiling can't skip a run yet.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -58,7 +71,8 @@ OWN_ROWS_AFTER = timedelta(days=7)
 PCTL = 0.90
 SLOT_KINDS = ("dreaming", "research", "briefing", "consolidation")
 
-Source = Literal["config", "default", "off"]
+Source = Literal["config", "default", "off", "owner"]
+RUN_LIMITS_SCHEMA = 1
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,7 @@ class RuntimeLimits:
     timeout_source: Source
     max_tokens_per_day: int | None
     ceiling_source: Source
+    ignored: tuple[str, ...] = ()  # scout-config.yaml values that would have loosened a limit
 
 
 def _percentile(values: list[float], q: float = PCTL) -> float:
@@ -170,9 +185,12 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
-def slot_kind(data_dir: Path | None, slot: str | None) -> str | None:
-    """The kind (dreaming, research, briefing, consolidation) of the run's slot: the schedule's ``type``, else the
-    slot key's own words (``research-manual``), else None. Never raises."""
+def slot_kind(data_dir: Path | None, slot: str | None, run_type: str | None = None) -> str | None:
+    """The kind (dreaming, research, briefing, consolidation) of the run: the runner's own ``SCOUT_RUN_TYPE``
+    first, then the schedule's ``type`` for the slot, then the slot key's own words (``research-manual``),
+    else None. Never raises."""
+    if kind := kind_of(run_type):
+        return kind
     if not slot:
         return None
     try:
@@ -191,45 +209,164 @@ def default_timeout_minutes(kind: str | None) -> int:
     return DEFAULT_TIMEOUT_BY_KIND.get(kind or "", DEFAULT_RUN_TIMEOUT_MINUTES)
 
 
-def limits_for(data_dir: Path | None, adapter: AgentRuntime, slot: str | None = None) -> RuntimeLimits:
-    """The limits for a run on *adapter*, of *slot* (the slot key, the runners' ``$MODE``) when given.
+# -- the owner's limits (protected) -----------------------------------------------------------------------------
 
-    The timeout's default depends on the slot's kind (``DEFAULT_TIMEOUT_BY_KIND``); a configured
-    ``run_timeout_minutes`` applies to every slot.
 
-    A value that isn't valid is ignored in favour of the default, which is the safe
-    side for a runtime without a cap (the default is on) and today's behaviour for
-    Claude Code (the default is off).
-    """
+def run_limits_path(env: Mapping[str, str] | None = None) -> Path:
+    from scout.kb.hook_paths import RUN_LIMITS_NAME
+
+    env = os.environ if env is None else env
+    return Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / RUN_LIMITS_NAME
+
+
+def _vault_key(data_dir: Path | None) -> str:
+    vault = paths.data_dir(data_dir)
+    try:
+        return str(vault.resolve())
+    except OSError:
+        return str(vault.absolute())
+
+
+def _read_owner(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"schema": RUN_LIMITS_SCHEMA, "vaults": {}}
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != RUN_LIMITS_SCHEMA
+        or not isinstance(data.get("vaults"), dict)
+    ):
+        return {"schema": RUN_LIMITS_SCHEMA, "vaults": {}}
+    return data
+
+
+def owner_limits(data_dir: Path | None, runtime_id: str, *, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The owner's limits for *runtime_id* on this vault: ``{run_timeout_minutes?, max_tokens_per_day?}``."""
+    try:
+        entry = _read_owner(run_limits_path(env))["vaults"].get(_vault_key(data_dir), {})
+        block = entry.get(runtime_id) if isinstance(entry, dict) else None
+    except Exception:  # noqa: BLE001 - an unreadable record means the defaults
+        return {}
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def _valid_timeout(value: Any) -> bool:
+    return _off(value) or _positive_int(value) is not None
+
+
+def _valid_ceiling(value: Any) -> bool:
+    return _valid_timeout(value) or (isinstance(value, str) and value.strip().lower() == "auto")
+
+
+def set_owner_limit(
+    data_dir: Path | None,
+    runtime_id: str,
+    *,
+    run_timeout_minutes: Any = None,
+    max_tokens_per_day: Any = None,
+    clear: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Write the owner's limits for *runtime_id* on this vault; return what is recorded now. Raises ValueError."""
+    if run_timeout_minutes is not None and not _valid_timeout(run_timeout_minutes):
+        raise ValueError(f"run timeout {run_timeout_minutes!r} is not a number of minutes or off")
+    if max_tokens_per_day is not None and not _valid_ceiling(max_tokens_per_day):
+        raise ValueError(f"token ceiling {max_tokens_per_day!r} is not a number of tokens, auto or off")
+    path = run_limits_path(env)
+    data = _read_owner(path)
+    vaults = data.setdefault("vaults", {})
+    entry = vaults.setdefault(_vault_key(data_dir), {})
+    block = {} if clear else dict(entry.get(runtime_id) or {})
+    if run_timeout_minutes is not None:
+        block["run_timeout_minutes"] = run_timeout_minutes
+    if max_tokens_per_day is not None:
+        block["max_tokens_per_day"] = max_tokens_per_day
+    if block:
+        entry[runtime_id] = block
+    else:
+        entry.pop(runtime_id, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return block
+
+
+# -- the three layers -------------------------------------------------------------------------------------------
+
+
+def limits_for(
+    data_dir: Path | None,
+    adapter: AgentRuntime,
+    slot: str | None = None,
+    run_type: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> RuntimeLimits:
+    """The limits for a run on *adapter*, of *slot* (the runners' ``$MODE``) and *run_type*
+    (``SCOUT_RUN_TYPE``) when given: the default, replaced by the owner's limits, narrowed by
+    scout-config.yaml. Never raises; an invalid or unreadable value is skipped."""
     self_capped = adapter.caps_own_spend
-    block = _block(data_dir, adapter.id)
+    owner = owner_limits(data_dir, adapter.id, env=env)
+    config = _block(data_dir, adapter.id)
+    ignored: list[str] = []
 
-    raw_t = block.get("run_timeout_minutes")
+    # The timeout: default, then the owner's value, then the config's if stricter.
     timeout_s: int | None
     t_src: Source
-    if raw_t is not None and _off(raw_t):
-        timeout_s, t_src = None, "off"
-    elif (minutes := _positive_int(raw_t)) is not None:
-        timeout_s, t_src = minutes * 60, "config"
-    elif self_capped:
+    if self_capped:
         timeout_s, t_src = None, "off"
     else:
-        timeout_s, t_src = default_timeout_minutes(slot_kind(data_dir, slot)) * 60, "default"
+        timeout_s, t_src = default_timeout_minutes(slot_kind(data_dir, slot, run_type)) * 60, "default"
+    raw = owner.get("run_timeout_minutes")
+    if raw is not None and _off(raw):
+        timeout_s, t_src = None, "owner"
+    elif (minutes := _positive_int(raw)) is not None:
+        timeout_s, t_src = minutes * 60, "owner"
+    raw = config.get("run_timeout_minutes")
+    if (minutes := _positive_int(raw)) is not None:
+        if timeout_s is None or minutes * 60 < timeout_s:
+            timeout_s, t_src = minutes * 60, "config"
+        elif minutes * 60 > timeout_s:
+            ignored.append(f"run_timeout_minutes: {minutes}")
+    elif raw is not None and _off(raw) and timeout_s is not None:
+        ignored.append("run_timeout_minutes: off")
 
-    raw_c = block.get("max_tokens_per_day")
+    # The ceiling: likewise.
     ceiling: int | None
     c_src: Source
-    if raw_c is not None and _off(raw_c):
-        ceiling, c_src = None, "off"
-    elif (n := _positive_int(raw_c)) is not None:
-        ceiling, c_src = n, "config"
-    elif isinstance(raw_c, str) and raw_c.strip().lower() == "auto":
-        ceiling, c_src = default_daily_token_ceiling(data_dir, adapter.id), "config"
-    elif self_capped:
+    if self_capped:
         ceiling, c_src = None, "off"
     else:
         ceiling, c_src = default_daily_token_ceiling(data_dir, adapter.id), "default"
-    return RuntimeLimits(adapter.id, timeout_s, t_src, ceiling, c_src)
+    raw = owner.get("max_tokens_per_day")
+    if raw is not None and _off(raw):
+        ceiling, c_src = None, "owner"
+    elif (n := _positive_int(raw)) is not None:
+        ceiling, c_src = n, "owner"
+    elif isinstance(raw, str) and raw.strip().lower() == "auto":
+        ceiling, c_src = default_daily_token_ceiling(data_dir, adapter.id), "owner"
+    raw = config.get("max_tokens_per_day")
+    wanted: int | None = None
+    if (n := _positive_int(raw)) is not None:
+        wanted = n
+    elif isinstance(raw, str) and raw.strip().lower() == "auto":
+        wanted = default_daily_token_ceiling(data_dir, adapter.id)
+    elif raw is not None and _off(raw) and ceiling is not None:
+        ignored.append("max_tokens_per_day: off")
+    if wanted is not None:
+        if ceiling is None or wanted < ceiling:
+            ceiling, c_src = wanted, "config"
+        elif wanted > ceiling:
+            ignored.append(f"max_tokens_per_day: {raw}")
+    return RuntimeLimits(adapter.id, timeout_s, t_src, ceiling, c_src, tuple(ignored))
 
 
 def _row_tokens(row: dict[str, Any]) -> int:
@@ -304,6 +441,9 @@ __all__ = [
     "default_daily_token_ceiling",
     "dumps",
     "limits_for",
+    "owner_limits",
+    "run_limits_path",
+    "set_owner_limit",
     "over_ceiling",
     "tokens_used",
 ]

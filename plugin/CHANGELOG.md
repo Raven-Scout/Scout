@@ -31,6 +31,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **Other pieces.** `model resolve` takes `--runtime` for a runtime other than claude-code. The wrapper's auth banner names the real claude (`SCOUT_AGENT_BIN`, dropped before any attempt). `live_run` takes each registered runtime's argv markers from the registry, and Claude Code's are unchanged.
   - **`run-research.sh` exports `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` before the gate probe**, as the other two runners already did. The probe then checks the session's own environment, and the `agent-runtime check` after it reads the same probe cache instead of probing again.
   - **Upgrading.** The new runner lines reach a vault with `/scout-update`. An unrendered or hand-edited runner keeps launching claude as before.
+- **Run timeouts count awake time, and only the owner can loosen a run limit** (spec §8.6; Jordan's decision of 2026-11-16, option A; Phase 1, PR D1; `engine/scout/agent_runtimes/{awake,exec,limits}.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/kb/hook_paths.py`, `engine/scout/cli.py`, `templates/run-{scout,dreaming,research}.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`). Claude Code's timeout stays off, and nothing changes for a Claude run beyond the new row fields.
+  - **The awake clock.** Each runner takes the run's start on the clock `scout-lock.sh` already uses for stalls (`_scout_awake_now`: CLOCK_UPTIME_RAW on macOS, CLOCK_MONOTONIC on Linux; neither counts sleep) and exports it as `SCOUT_RUN_AWAKE_STARTED`. A run timeout counts from there, re-read every 5 seconds, so a Mac that sleeps mid-run spends none of it and every retry shares one budget. Without it (an older runner), the timeout falls back to wall time.
+  - **The run-outcome row** gains `awake_s` (the run's awake length) and `agent_runtime`.
+  - **A run stopped at its timeout** gets the failure class `timeout`.
+  - **Only the owner can loosen a limit.**
+    - `scoutctl agent-runtime set-limit <runtime> --run-timeout-minutes N|off --max-tokens-per-day N|auto|off` is the owner's only way to raise a limit or turn one off.
+    - It writes `~/.local/state/scout/run-limits.json`, which the write gate and the OS sandbox protect, and refuses a run (exit 2).
+    - `budget.per_runtime` in `scout-config.yaml`, which a run can write, can now only make a limit stricter. A value that would loosen one is ignored, and `agent-runtime show` lists it under `ignored`.
+  - **A slot's kind** (research gets 90 minutes) comes from the runner's own `SCOUT_RUN_TYPE` first, then the schedule, then the slot key's words.
+  - **The doctor** warns when a slot's 90th-percentile awake run length over 30 days (at least 5 runs) is above its run timeout. While Claude Code's timeout is off, it notes how each slot compares with the planned 45 minutes (90 for research). That is the measurement for turning Claude Code's timeout on. Both are silent until runs carry `awake_s`.
 
 ## [0.18.14] - 2026-11-16
 
