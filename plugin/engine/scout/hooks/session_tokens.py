@@ -376,6 +376,16 @@ def _make_event(record: dict[str, Any]) -> Event:
     )
 
 
+def _record_reliance(payload: dict[str, Any], transcript_path: Path | None, ctx: run_context.RunContext) -> None:
+    """Count which Scout surfaces an owner session used. A side effect: nothing it raises escapes the hook."""
+    try:
+        from scout.changes import reliance
+
+        reliance.record_reliance(payload, transcript_path, ctx, os.environ, now=datetime.now(UTC))
+    except Exception:
+        pass
+
+
 def run(*, stdin: IO[str] | None = None) -> Event | None:
     """Read Stop-hook payload, sum transcript usage, append one row, return Event.
 
@@ -401,6 +411,7 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
         transcript_path = None
     ctx = run_context.resolve(payload, transcript_path)
     scout_mode = ctx.mode or "manual"
+    _record_reliance(payload, transcript_path, ctx)
 
     # Guard 1 + 2: missing / empty transcript path (bash line 40 `[ -z ... ]`), or no such
     # file. Don't poll — go straight to the error row.
