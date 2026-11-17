@@ -6,6 +6,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A slot's `agent_runtime` survives a schedule save in the app** (`engine/scout/cli.py`). `scoutctl schedule list --json` and `schedule show` now include `agent_runtime` (null when the slot inherits), and `schedule show` also gains the `runtime` field `list` already had. The app rewrites `.scout-state/schedule.yaml` from the list, so a field missing there was dropped from every slot on the next in-app save. `schedule.snapshot.json` is unchanged.
+
+## [0.18.15] - 2026-11-16
+
 ### Added
 - **The agent-runtime interface, with Claude Code behind it** (spec `docs/superpowers/specs/2026-11-13-runtime-agnostic-design.md` §8.2, §8.3, §8.7; Phase 1, tasks 1.1–1.3; `engine/scout/agent_runtimes/{base,registry,claude_code,resolve}.py`, `engine/scout/schedule.py`, `engine/scout/models.py`, `engine/scout/defaults/scout-config.yaml`). Nothing a run does changes yet: no runner calls any of it. `base.py` holds the adapter protocol, the capability list, the privacy tiers (F, L, S on paper only, D) and `tier_for`. `registry.py` registers `claude-code` only. The `claude-code` adapter builds today's launch line word for word, passing the budget cap as the runner wrote it. A test reads the flags out of each runner template. Its failure classes are the retry wrapper's own patterns, which a test reads out of `claude-with-retry.sh.tmpl`. Its hook capabilities hold only while the gate probe (#635) passes for the installed `claude`; otherwise it is Tier D. A slot may name `agent_runtime:` in `.scout-state/schedule.yaml`, and `scout-config.yaml` may set `agent_runtimes.default` and `agent_runtimes.<id>.model`. Precedence: `SCOUT_AGENT_RUNTIME`, the slot, the config, then `claude-code`. A slot's `model:` must fit the slot's own runtime. An unknown runtime is a schedule error naming the slot and the value. `models.default` stays Claude Code's. `agent_runtime` stays out of `schedule.snapshot.json`, so no contract file changes.
 - **`scoutctl agent-runtime list|show|resolve|check|exec`, model-provider consent, and per-runtime run limits** (spec §8.2–§8.4, §8.6; Phase 1, tasks 1.4 engine side and 1.7; `engine/scout/agent_runtimes/{check,consent,exec,limits}.py`, `engine/scout/cli.py`, `engine/scout/kb/hook_paths.py`). The runners don't call these yet.
@@ -47,7 +52,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **A sandboxed run no longer starts by failing to set the vault's git identity** (`phases/core/git-setup.md`). Step 0 ran `git config user.email|user.name`, which writes `.git/config`. The Phase 1c sandbox refuses that write, so since v0.18.14 the step failed in every sandboxed run: 64 calls in 28 of the last 50 runs. It now runs only outside the sandbox (`SCOUT_SANDBOX_STATUS` isn't `enforced`), and sandboxed commits use the identity already set.
-- **A slot's `agent_runtime` survives a schedule save in the app** (`engine/scout/cli.py`). `scoutctl schedule list --json` and `schedule show` now include `agent_runtime` (null when the slot inherits), and `schedule show` also gains the `runtime` field `list` already had. The app rewrites `.scout-state/schedule.yaml` from the list, so a field missing there was dropped from every slot on the next in-app save. `schedule.snapshot.json` is unchanged.
 
 ## [0.18.14] - 2026-11-16
 
