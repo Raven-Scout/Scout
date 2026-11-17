@@ -27,8 +27,10 @@ struct HealthPanelModelTests {
         #expect(model.runs.count == 13)
         let gates = try #require(model.runs.first)
         #expect(gates.title == "Morning briefing")
-        #expect(gates.outcome == "Skipped: privacy checks didn't load")
-        #expect(gates.reason == "Scout's privacy checks didn't load, so the run didn't start.")
+        #expect(gates.outcome == DisplayName.runStatus("skipped_gates"))
+        // C4's advice for this cause (`gates_unsafe_endpoint`), via Problem(failureClass:).
+        #expect(gates.reason == DisplayName.failureClass("gates_unsafe_endpoint").why)
+        #expect(gates.fix == DisplayName.failureClass("gates_unsafe_endpoint").fix)
         #expect(gates.length == nil)
         #expect(gates.tone == .warning)
 
@@ -43,6 +45,8 @@ struct HealthPanelModelTests {
         #expect(timeout.length == "1 h 30 min")
         #expect(timeout.agent == "Claude Code · opus")
         #expect(timeout.tone == .problem)
+        #expect(timeout.reason == "The run reached its time limit and Scout stopped it.")
+        #expect(timeout.fix != nil)
 
         let limited = try #require(model.runs.first { $0.resetsAt != nil })
         #expect(limited.outcome == "Paused: usage limit")
@@ -72,13 +76,6 @@ struct HealthPanelModelTests {
 
 @Suite("Run outcome wording")
 struct RunOutcomeDisplayTests {
-    @Test func everyRunStatusHasWording() {
-        for status in RunStatus.allCases {
-            let text = RunOutcomeDisplay.status(status)
-            #expect(text != status.rawValue && !text.isEmpty, "\(status)")
-        }
-    }
-
     @Test func sandboxAndIntegrityWording() {
         #expect(RunOutcomeDisplay.sandbox(nil) == nil)
         #expect(RunOutcomeDisplay.sandbox("enforced") == "Write protection on")
@@ -86,7 +83,7 @@ struct RunOutcomeDisplayTests {
         #expect(RunOutcomeDisplay.sandbox("unavailable") == "Write protection isn't available on this Mac")
         #expect(RunOutcomeDisplay.sandbox("conflict") != nil)
         #expect(RunOutcomeDisplay.sandbox("failed") == "Write protection couldn't start")
-        #expect(RunOutcomeDisplay.sandbox("partial_mode") == "Write protection: Partial mode")
+        #expect(RunOutcomeDisplay.sandbox("partial_mode") == "Write protection: partial mode")
         #expect(!RunOutcomeDisplay.sandboxIsConcern("enforced") && RunOutcomeDisplay.sandboxIsConcern("off"))
         #expect(RunOutcomeDisplay.integrity("unrestored") == "A protected file changed and couldn't be put back")
         #expect(RunOutcomeDisplay.integrity("error") != nil && RunOutcomeDisplay.integrity("unchecked") != nil)
@@ -94,14 +91,17 @@ struct RunOutcomeDisplayTests {
         #expect(!RunOutcomeDisplay.integrityIsConcern("clean") && RunOutcomeDisplay.integrityIsConcern("restored"))
     }
 
-    @Test func failureClassesExplainAndFix() {
-        for raw in ["oauth_expired", "network", "git_lock", "rate_limited", "budget", "timeout",
-                    "lease_held", "lease_unavailable", "gates_unsafe_endpoint", "gates_unsafe_launcher", "unknown"] {
-            let e = RunOutcomeDisplay.explanation(failureClass: raw)
-            #expect(!e.title.contains("_") && e.fix != nil, "\(raw)")
-        }
-        #expect(RunOutcomeDisplay.explanation(failureClass: "brand_new").title == "Brand new")
-        #expect(RunOutcomeDisplay.humanize("skippedTokenCeiling") == "Skipped token ceiling")
+    /// Each ledger row's problem comes from C4's `Problem`: a cause-carrying
+    /// skip from its failure class, any other skip from its status.
+    @Test func rowsExplainThemselvesThroughProblem() throws {
+        let runs = try RunLedgerContractTests.fixture().runs
+        let gates = try #require(runs.first { $0.outcome == "skipped_gates" })
+        #expect(gates.problem == Problem(failureClass: "gates_unsafe_endpoint", details: "Log: .scout-logs/\(gates.log!)"))
+        let redundant = try #require(runs.first { $0.outcome == "skipped_redundant" })
+        #expect(redundant.problem?.severity == .info)
+        #expect(redundant.problem?.title == "Evening consolidation: Skipped: already done")
+        let ok = try #require(runs.first { $0.outcome == "ok" })
+        #expect(ok.problem == nil && ok.displayStatus == "Finished")
     }
 
     @Test func groupsAndHeadlines() {

@@ -1,43 +1,11 @@
 import Foundation
 
-/// Plain-language wording for everything the run ledger and run health name:
-/// outcomes, failure classes, write protection (the sandbox), the integrity
-/// check, and finding severities. The one place for it, so the plain-language
-/// pass (card C4, `Utilities/PlainLanguage/DisplayName.swift` on its branch) can
-/// absorb it: the outcome and failure-class strings below are C4's, verbatim.
-/// Engine words ("sandbox", "seatbelt", "gates", "lease") never reach the owner.
+/// The Health panel's own wording: write protection (the sandbox), the
+/// integrity check, finding groups and the overall headline. Outcomes and
+/// failure classes are `DisplayName`'s (card C4) and problems are `Problem`'s;
+/// this adds only what the run ledger has that nothing else shows. Engine
+/// words ("sandbox", "seatbelt", "gates", "lease") never reach the owner.
 nonisolated enum RunOutcomeDisplay {
-
-    // MARK: Outcomes
-
-    /// "Finished", "Skipped: privacy checks didn't load", … for a ledger
-    /// `outcome` (+ `failure_class`, which tells a timeout from a failure).
-    static func outcome(_ outcome: String, failureClass: String? = nil) -> String {
-        if outcome == "failed", let failureClass, let special = statuses[normalized(failureClass)] { return special }
-        return statuses[normalized(outcome)] ?? statuses["failed"]!
-    }
-
-    /// Same table, keyed by the app's `RunStatus`.
-    static func status(_ status: RunStatus) -> String {
-        statuses[normalized(status.rawValue)] ?? humanize(status.rawValue)
-    }
-
-    /// One sentence on why a run ended that way; nil when nothing needs saying.
-    static func reason(outcome: String, failureClass: String?) -> String? {
-        if outcome.hasPrefix("skipped_") {
-            if let failureClass, let why = failureClasses[normalized(failureClass)]?.why { return why }
-            return statusReasons[normalized(outcome)]
-        }
-        guard outcome != "ok" else { return nil }
-        return explanation(failureClass: failureClass ?? "unknown").why
-    }
-
-    /// Title, why and what to do for a `failure_class`.
-    static func explanation(failureClass: String) -> PlainReason {
-        failureClasses[normalized(failureClass)]
-            ?? PlainReason(title: humanize(failureClass), why: "The run stopped with an error.",
-                           fix: "Open the run's log for details.")
-    }
 
     // MARK: Write protection and the integrity check
 
@@ -55,7 +23,7 @@ nonisolated enum RunOutcomeDisplay {
         case "conflict": return "Write protection clashed with another setting"
         case "failed": return "Write protection couldn't start"
         case nil: return nil
-        case let other?: return "Write protection: \(humanize(other))"
+        case let other?: return "Write protection: \(DisplayName.humanize(other).lowercased())"
         }
     }
 
@@ -72,7 +40,7 @@ nonisolated enum RunOutcomeDisplay {
         case "error": return "Couldn't check protected files"
         case "unchecked": return "Protected files weren't checked"
         case nil: return nil
-        case let other?: return "Protected files: \(humanize(other))"
+        case let other?: return "Protected files: \(DisplayName.humanize(other).lowercased())"
         }
     }
 
@@ -111,115 +79,33 @@ nonisolated enum RunOutcomeDisplay {
         case nil: return "Run health unknown"
         }
     }
+}
 
-    // MARK: Tables (C4's wording)
-
-    struct PlainReason: Equatable, Sendable {
-        let title: String
-        let why: String
-        let fix: String?
-    }
-
-    /// Lower-cased with `_` dropped, so `rateLimited` and `rate_limited` share an entry.
-    static func normalized(_ raw: String) -> String {
-        raw.lowercased().replacingOccurrences(of: "_", with: "")
-    }
-
-    /// `skipped_gates` → "Skipped gates": never the raw key.
-    static func humanize(_ raw: String) -> String {
-        var words: [String] = []
-        var current = ""
-        for ch in raw {
-            if ch == "_" || ch == "-" || ch == " " {
-                if !current.isEmpty { words.append(current); current = "" }
-            } else if ch.isUppercase, !current.isEmpty {
-                words.append(current); current = String(ch)
-            } else {
-                current.append(ch)
-            }
+extension RunLedgerEntry {
+    /// "Finished", "Stopped: took too long", "Skipped: privacy checks didn't
+    /// load", in `DisplayName`'s words. A failed row says how it failed when
+    /// the failure class has its own status (timeout, usage limit); an outcome
+    /// this build doesn't know reads as "Failed", never as the raw value.
+    var displayStatus: String {
+        let known = DisplayName.runStatuses
+        if outcome == "failed", let failureClass, known[DisplayName.normalized(failureClass)] != nil {
+            return DisplayName.runStatus(failureClass)
         }
-        if !current.isEmpty { words.append(current) }
-        let sentence = words.map { $0.lowercased() }.joined(separator: " ")
-        return sentence.prefix(1).uppercased() + sentence.dropFirst()
+        return known[DisplayName.normalized(outcome)] != nil ? DisplayName.runStatus(outcome) : DisplayName.runStatus("failed")
     }
 
-    static let statuses: [String: String] = [
-        "scheduled": "Scheduled",
-        "running": "Running",
-        "success": "Finished",
-        "ok": "Finished",
-        "failure": "Failed",
-        "failed": "Failed",
-        "timeout": "Stopped: took too long",
-        "orphaned": "Didn't finish",
-        "ratelimited": "Paused: usage limit",
-        "skippedbudget": "Skipped: over budget",
-        "skippedconcurrency": "Skipped: another run was going",
-        "skippedlock": "Skipped: another run was going",
-        "skippedredundant": "Skipped: already done",
-        "skippedgates": "Skipped: privacy checks didn't load",
-        "skippedsandbox": "Skipped: couldn't protect this run",
-        "skippedruntime": "Skipped: agent not allowed",
-        "skippedlease": "Skipped: another app was writing",
-        "skippedtokenceiling": "Skipped: daily usage cap",
-    ]
-
-    private static let statusReasons: [String: String] = [
-        "skippedbudget": "Running it would have gone over the budget you set.",
-        "skippedconcurrency": "Another Scout run was still going, so this one waited for the next time.",
-        "skippedlock": "Another Scout run was still going, so this one waited for the next time.",
-        "skippedredundant": "An earlier run already covered this time.",
-        "skippedgates": "Scout's privacy checks didn't load for this version of Claude Code, so the run didn't start.",
-        "skippedsandbox": "Scout couldn't turn on write protection for this run, so it didn't start.",
-        "skippedruntime": "The agent this schedule uses isn't allowed to run, or it's past its daily limit.",
-        "skippedlease": "Another app was writing to the Scout folder, so this run waited.",
-        "skippedtokenceiling": "The agent reached its daily usage cap.",
-    ]
-
-    private static let failureClasses: [String: PlainReason] = [
-        "oauthexpired": PlainReason(
-            title: "Signed out of Claude",
-            why: "Scheduled runs can't start until Claude Code is signed in again.",
-            fix: "Open Claude Code in a terminal and sign in."),
-        "network": PlainReason(
-            title: "Network problem",
-            why: "The run couldn't reach Claude or a connected service.",
-            fix: "Check your internet connection. Scout tries again at the next scheduled time."),
-        "gitlock": PlainReason(
-            title: "Scout folder was busy",
-            why: "Another program was saving changes to the Scout folder at the same time.",
-            fix: "This usually clears by itself. If it keeps happening, close other apps that save to the folder."),
-        "ratelimited": PlainReason(
-            title: "Usage limit reached",
-            why: "Your Claude plan's usage limit was reached, so the run stopped.",
-            fix: "Nothing to do: Scout tries again after the limit resets."),
-        "budget": PlainReason(
-            title: "Over budget",
-            why: "The run used up the budget set for it.",
-            fix: "Raise the budget in Settings ▸ Budget, or leave it: the next run starts with a fresh budget."),
-        "timeout": PlainReason(
-            title: "Took too long",
-            why: "The run reached its time limit and Scout stopped it.",
-            fix: "If this keeps happening, give this schedule a longer time limit."),
-        "leaseheld": PlainReason(
-            title: "Another app was writing",
-            why: "Another app was writing to the Scout folder, so the run waited.",
-            fix: "Nothing to do: the next run tries again."),
-        "leaseunavailable": PlainReason(
-            title: "Couldn't check who is writing",
-            why: "Scout couldn't check whether another app was writing to the Scout folder, so the run waited.",
-            fix: "If this keeps happening, check Settings ▸ Engine."),
-        "gatesunsafeendpoint": PlainReason(
-            title: "Privacy checks didn't load",
-            why: "Scout's privacy checks didn't load, so the run didn't start.",
-            fix: "Update Claude Code and Scout, then check Settings ▸ Engine."),
-        "gatesunsafelauncher": PlainReason(
-            title: "Privacy checks didn't load",
-            why: "Scout's privacy checks didn't load, so the run didn't start.",
-            fix: "Update Claude Code and Scout, then check Settings ▸ Engine."),
-        "unknown": PlainReason(
-            title: "Unrecognised error",
-            why: "The run stopped with an error Scout doesn't recognise.",
-            fix: "Open the run's log for details."),
-    ]
+    /// What went wrong and what to do, or nil for a run that finished. A
+    /// failure (or a skip with its own cause, like the privacy check's) is
+    /// explained by its failure class; any other skip by its status.
+    var problem: Problem? {
+        guard outcome != "ok" else { return nil }
+        let details = log.map { "Log: .scout-logs/\($0)" }
+        if let failureClass, failureClass != "ok" {
+            return Problem(failureClass: failureClass, details: details)
+        }
+        if isSkip {
+            return Problem(runStatus: outcome, runName: DisplayName.slotKey(slot), details: details)
+        }
+        return Problem(failureClass: "unknown", details: details)
+    }
 }

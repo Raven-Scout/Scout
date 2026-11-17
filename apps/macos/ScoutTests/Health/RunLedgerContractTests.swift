@@ -78,8 +78,8 @@ struct RunLedgerContractTests {
     @Test func everyValueHasPlainWording() throws {
         for run in try Self.fixture().runs {
             let words = [
-                RunOutcomeDisplay.outcome(run.outcome, failureClass: run.failureClass),
-                RunOutcomeDisplay.reason(outcome: run.outcome, failureClass: run.failureClass),
+                run.displayStatus,
+                run.problem?.title, run.problem?.impact, run.problem?.fix,
                 RunOutcomeDisplay.sandbox(run.sandbox, source: run.sandboxSource),
                 RunOutcomeDisplay.integrity(run.integrity),
             ].compactMap { $0 }
@@ -87,7 +87,9 @@ struct RunLedgerContractTests {
                 #expect(!text.contains("_"), "\(text)")
                 #expect(!text.lowercased().contains("sandbox"), "\(text)")
             }
-            #expect(RunOutcomeDisplay.status(run.runStatus) != run.runStatus.rawValue)
+            #expect(DisplayName.runStatus(run.runStatus) != run.runStatus.rawValue)
+            // Every run that didn't finish cleanly explains itself; a finished one has no problem.
+            #expect((run.problem == nil) == (run.outcome == "ok"))
         }
     }
 
@@ -170,9 +172,8 @@ struct RunLedgerParseTests {
         let ledger = try parse(#"{"schema_version":1,"runs":[\#(row("exploded", failure: "meteor"))]}"#).get()
         let run = try #require(ledger.runs.first)
         #expect(run.runStatus == .failure)
-        #expect(RunOutcomeDisplay.outcome(run.outcome, failureClass: run.failureClass) == "Failed")
-        #expect(RunOutcomeDisplay.reason(outcome: run.outcome, failureClass: run.failureClass)
-                == "The run stopped with an error.")
+        #expect(run.displayStatus == "Failed")
+        #expect(run.problem?.impact == "The run stopped with an error.")
         #expect(run.needsAttention)
     }
 

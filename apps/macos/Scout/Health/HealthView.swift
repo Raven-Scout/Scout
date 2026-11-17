@@ -184,36 +184,20 @@ struct FindingRow: View {
     var vaultDirectory: URL? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 1.5).fill(tone).frame(width: 3)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(finding.summary)
-                    .font(DS.sans(13, weight: .medium))
-                    .foregroundStyle(DS.Ink.p1)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let detail = finding.detail {
-                    Text(detail).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
-                }
-                if !finding.fix.isEmpty {
-                    (Text("How to fix: ").font(DS.sans(12, weight: .medium)) + Text(finding.fix).font(DS.sans(12)))
-                        .foregroundStyle(DS.Ink.p2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                if let url = Self.logURL(finding.log, vault: vaultDirectory) {
-                    Button("Show log") {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
-                    .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
-                }
+        // C4's one way to show a problem: what happened, what to do, and the
+        // run's own error line behind "Details" with "Copy details".
+        ProblemView(problem: Problem(finding: finding), actions: actions, style: .inline)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk))
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.5).fill(tone).frame(width: 3).accessibilityHidden(true)
             }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk))
-        .accessibilityElement(children: .contain)
+    }
+
+    private var actions: [ProblemAction] {
+        guard let url = Self.logURL(finding.log, vault: vaultDirectory) else { return [] }
+        return [ProblemAction("Show log") { NSWorkspace.shared.activateFileViewerSelecting([url]) }]
     }
 
     /// A finding's log on disk: vault-relative from the run ledger, absolute from older engines'
@@ -253,6 +237,11 @@ struct RunLedgerRow: View {
                 }
                 if let reason = line.reason {
                     Text(reason).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let fix = line.fix {
+                    (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let resets = line.resetsAt {

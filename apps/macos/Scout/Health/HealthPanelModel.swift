@@ -16,6 +16,8 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
         let finished: Date
         let outcome: String
         let reason: String?
+        /// What to do, for a run that needs the owner (from its `Problem`).
+        let fix: String?
         /// "6 min", "1 h 30 min"; nil when the row has no length (a skip).
         let length: String?
         /// "Claude Code · sonnet"; nil when the row names neither.
@@ -84,14 +86,16 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
             if e.isSkip { return e.needsAttention ? .warning : .skipped }
             return .problem
         }()
-        let agentName: String? = e.agentRuntime.map { $0 == "claude-code" ? "Claude Code" : RunOutcomeDisplay.humanize($0) }
+        let agentName: String? = e.agentRuntime.map { $0 == "claude-code" ? "Claude Code" : DisplayName.humanize($0) }
+        let problem = e.problem
         let agent = [agentName, e.model].compactMap { $0 }.joined(separator: " · ")
         return RunLine(
             id: e.id,
-            title: RunOutcomeDisplay.humanize(e.slot),
+            title: DisplayName.slotKey(e.slot),
             finished: e.finishedAt,
-            outcome: RunOutcomeDisplay.outcome(e.outcome, failureClass: e.failureClass),
-            reason: RunOutcomeDisplay.reason(outcome: e.outcome, failureClass: e.failureClass),
+            outcome: e.displayStatus,
+            reason: problem?.impact,
+            fix: tone == .problem || tone == .warning ? problem?.fix : nil,
             length: e.isSkip ? nil : length(e.awakeSeconds ?? e.durationSeconds),
             agent: agent.isEmpty ? nil : agent,
             // Only worth a line when it isn't the normal "on" / "clean".
