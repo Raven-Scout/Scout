@@ -20,10 +20,15 @@ struct SchedulesView: View {
     @State private var pageWidth: CGFloat?
     /// The open slot form has unsaved edits: the pane must not close over it.
     @State private var detailIsDirty = false
+    /// Unsaved slot-form drafts outlive the form (see `SlotDraftStore`), so
+    /// switching slots or leaving the page keeps them. Observed for the
+    /// notice when a reload drops edits to a slot that left the schedule.
+    @ObservedObject private var drafts = SlotDraftStore.shared
 
     /// Whether the close button or Esc may hide the detail pane. Only a
     /// compact pane closes, and never over a new slot or unsaved edits:
-    /// `SlotEditForm` keeps its draft in `@State`, so closing would drop it.
+    /// `SlotDraftStore` would keep them, but a pane that vanishes over them
+    /// leaves no sign they exist.
     nonisolated static func canCloseDetail(pane: DetailPaneLayout, isNewDraft: Bool, isDirty: Bool) -> Bool {
         guard case .shown(_, closable: true) = pane else { return false }
         return !isNewDraft && !isDirty
@@ -42,7 +47,7 @@ struct SchedulesView: View {
                     onSave: handleSave,
                     onDelete: handleDelete,
                     onFireNow: handleFireNow,
-                    onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil,
+                    onRevertNewDraft: detailIsNewDraft ? { finishNewDraft(key: newDraftSlot?.key); selectedSlotKey = nil } : nil,
                     defaultModel: modelSettings.settings?.default.model,
                     onDirtyChange: { detailIsDirty = $0 }
                 )
@@ -55,14 +60,32 @@ struct SchedulesView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        .onChange(of: selectedSlotKey) { _, _ in detailIsDirty = false }
+        // The next form reports its own state on appear; until then, go by
+        // whether that slot has a stored draft.
+        .onChange(of: selectedSlotKey) { _, key in
+            detailIsDirty = key.map { drafts.hasDraft(for: $0) } ?? false
+        }
         .onExitCommand {
             if Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
                 selectedSlotKey = nil
             }
         }
         .background(DS.Paper.base)
-        .task { await reload() }
+        .task {
+            // A new slot added before leaving the page comes back with it.
+            // (ScheduleEditService reconciles stored drafts on every load.)
+            if newDraftSlot == nil { newDraftSlot = drafts.pendingNewSlot }
+            await reload()
+        }
+    }
+
+    /// The notice for edits a reload dropped because their slot left the
+    /// schedule (deleted elsewhere, or an undone add).
+    static func droppedEditsText(_ names: [String]) -> String {
+        let list = names.joined(separator: ", ")
+        return names.count == 1
+            ? "Unsaved edits to \(list) were dropped: that schedule no longer exists."
+            : "Unsaved edits to \(list) were dropped: those schedules no longer exist."
     }
 
     // MARK: - Master pane
@@ -84,6 +107,9 @@ struct SchedulesView: View {
             }
             if let err = errorMessage {
                 errorBanner(err)
+            }
+            if !drafts.droppedSlotNames.isEmpty {
+                droppedEditsBanner
             }
 
             SchedulesFilterChips(filterMode: $filterMode, slots: service.slots)
@@ -235,6 +261,22 @@ struct SchedulesView: View {
         .background(DS.Status.warn.opacity(0.15))
     }
 
+    private var droppedEditsBanner: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
+            Text(Self.droppedEditsText(drafts.droppedSlotNames))
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p1)
+            Spacer()
+            Button("Dismiss") { drafts.clearDropped() }
+                .buttonStyle(.plainHit)
+                .foregroundStyle(DS.Ink.p3)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(DS.Status.warn.opacity(0.15))
+    }
+
     @ViewBuilder
     private func errorBanner(_ text: String) -> some View {
         HStack {
@@ -311,6 +353,7 @@ struct SchedulesView: View {
         let key = Self.nextNewSlotKey(existing: existing)
         let draft = Self.makeNewDraftSlot(key: key)
         newDraftSlot = draft
+        drafts.pendingNewSlot = draft
         selectedSlotKey = key
     }
 
@@ -334,17 +377,33 @@ struct SchedulesView: View {
         }
     }
 
+    /// The new slot is done with (saved or reverted). Cleared in the store
+    /// directly, by the key it had when the save started: a save that ends
+    /// after the page closed must not leave it behind as an unsaved new slot
+    /// that would then fail to save as a duplicate.
+    private func finishNewDraft(key: String?) {
+        if let key { drafts.finishNewSlot(key: key) }
+        newDraftSlot = nil
+    }
+
     private func saveNewDraft(_ slot: Slot) async {
+        let draftKey = newDraftSlot?.key
         do {
             let change = try await service.update(actionName: "Add Slot") { $0 + [slot] }
-            newDraftSlot = nil
+            finishNewDraft(key: draftKey)
             selectedSlotKey = slot.key
             registerUndo(change)
+        } catch let written as ScheduleReloadAfterWriteError {
+            // The slot is in the file; only the reload failed.
+            finishNewDraft(key: draftKey)
+            selectedSlotKey = nil
+            registerUndo(written.change)
+            errorMessage = Self.problemText(written, action: "add the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "add the slot")
+            errorMessage = Self.problemText(error, action: "add the schedule")
         }
     }
 
@@ -360,27 +419,54 @@ struct SchedulesView: View {
             registerUndo(try await service.update(actionName: "Edit Slot") { slots in
                 slots.map { $0.key == original.key ? saved : $0 }
             })
+        } catch let written as ScheduleReloadAfterWriteError {
+            // Saved; the next successful load settles the form's draft.
+            registerUndo(written.change)
+            errorMessage = Self.problemText(written, action: "save the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "save the slot")
+            errorMessage = Self.problemText(error, action: "save the schedule")
         }
     }
 
     private func handleDelete() async {
         guard let key = selectedSlotKey,
               let slot = service.slots.first(where: { $0.key == key }) else { return }
+        // The user chose to delete the slot, edits and all: set its draft
+        // aside so the reload doesn't report it as dropped, and put it back
+        // if the delete fails.
+        let setAside = drafts.entry(for: slot.key)
+        drafts.discard(for: slot.key)
         do {
             let change = try await service.delete(slotKey: slot.key)
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
             registerUndo(change)
+        } catch let written as ScheduleReloadAfterWriteError {
+            // The slot is gone from the file; only the reload failed. Its
+            // draft stays discarded: putting it back would have the next
+            // load report it as dropped.
+            if selectedSlotKey == slot.key { selectedSlotKey = nil }
+            registerUndo(written.change)
+            errorMessage = Self.problemText(written, action: "delete the schedule")
         } catch let stale as StaleScheduleError {
+            restoreIfStillThere(setAside, key: slot.key)
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "delete the slot")
+            restoreIfStillThere(setAside, key: slot.key)
+            errorMessage = Self.problemText(error, action: "delete the schedule")
         }
+    }
+
+    /// Put a set-aside draft back after a delete that wrote nothing. (A
+    /// delete that wrote but couldn't reload throws
+    /// `ScheduleReloadAfterWriteError` and never gets here; the check is a
+    /// backstop in case the slot is gone anyway.)
+    private func restoreIfStillThere(_ entry: SlotFormDraft?, key: String) {
+        guard service.slots.contains(where: { $0.key == key }) else { return }
+        drafts.restore(entry, for: key)
     }
 
     /// Edit ▸ Undo for a schedule save: restores the schedule file's bytes,

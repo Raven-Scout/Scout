@@ -36,17 +36,24 @@ final class ScheduleEditService: ObservableObject {
     private let runner: any ProcessRunner
     private let argumentsPrefix: [String]
     let canonicalSchedulePath: URL
+    /// Unsaved slot-form drafts to reconcile after every successful load, so
+    /// a saved or orphaned draft is settled even while the Schedules page is
+    /// off screen (an undo from another page, a save that finished after the
+    /// page closed). nil: none (tests that don't need it).
+    private let drafts: SlotDraftStore?
 
     init(
         scoutctl: URL,
         runner: any ProcessRunner,
         canonicalSchedulePath: URL,
-        argumentsPrefix: [String] = []
+        argumentsPrefix: [String] = [],
+        drafts: SlotDraftStore? = nil
     ) {
         self.scoutctl = scoutctl
         self.runner = runner
         self.argumentsPrefix = argumentsPrefix
         self.canonicalSchedulePath = canonicalSchedulePath
+        self.drafts = drafts
     }
 
     /// Reads the live schedule via `scoutctl schedule list --json`, decodes,
@@ -83,6 +90,7 @@ final class ScheduleEditService: ObservableObject {
             self.loadedMtime = mtimeBeforeRead
             self.loadedSnapshot = snapshotBeforeRead
             self.loadState = .loaded
+            drafts?.reconcile(with: decoded)
         } catch {
             let message = ScheduleService.formatDecodeFailure(
                 stdout: result.stdout, stderr: result.stderr
@@ -222,8 +230,13 @@ final class ScheduleEditService: ObservableObject {
         let change = VaultChange(actionName: actionName, before: [before],
                                  after: [FileSnapshot(url: canonicalSchedulePath, data: Data(body.utf8))])
 
-        // 6. Reload + recapture mtime.
-        try await loadAll()
+        // 6. Reload + recapture mtime. The write has landed by now, so a
+        // failed reload says so instead of passing for a failed write.
+        do {
+            try await loadAll()
+        } catch {
+            throw ScheduleReloadAfterWriteError(change: change, reason: error.localizedDescription)
+        }
         return change
     }
 
