@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.16] - 2026-11-17
+
 ### Added
 - **`scoutctl runs --json`: the run ledger for the app** (UI audit card C8; `engine/scout/run_ledger.py`, `engine/scout/health.py`, `engine/scout/cli.py`). One read-only, versioned document (`schema_version: 1`): the recent rows of `.scout-logs/run-outcomes.jsonl`, newest first, plus the run-health report `scoutctl health --json` prints. Each row covers:
   - slot, runner and trigger;

@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.18.16] - 2026-11-17
+
 ### Added
 - **A Health page that reads the run ledger** (UI audit card C8; `Scout/Health/*`, `Shell/MainWindowView.swift`, `Shell/SidebarView.swift`, `Shell/AppState.swift`). A new sidebar row, Health, gets a warning dot when run health is red. The page reads `scoutctl runs --json` at launch, whenever `.scout-logs/run-outcomes.jsonl` changes, and every 5 minutes.
   - **Findings.** Every run-health finding is grouped as "Needs fixing" or "Worth a look". Each shows the run's own error line, "How to fix" and Show log. Notes and the doctor's informational lines go under a collapsed "Everything else".
