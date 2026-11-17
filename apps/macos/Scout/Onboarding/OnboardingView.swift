@@ -97,11 +97,19 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 12) {
-            bullet("The Scout engine (a Claude Code plugin) goes to ~/.local/share/scout.")
-            bullet("A private Python environment is built with uv — nothing system-wide changes.")
-            bullet("Claude Code learns the /scout-* commands; scheduled sessions run via launchd.")
-            bullet("Your knowledge base and action items live in the vault folder below.")
-            field("Vault folder", text: $model.vaultPath, placeholder: "~/Scout")
+            bullet("Scout reads your work tools on a schedule and writes a short list of what needs your attention each day.")
+            bullet("It keeps everything, your action items and notes, in the Scout folder below, on this Mac.")
+            DisclosureGroup("What gets installed?") {
+                VStack(alignment: .leading, spacing: 6) {
+                    bullet("The Scout engine, a Claude Code plugin, in ~/.local/share/scout.")
+                    bullet("A private Python environment built with uv. Nothing system-wide changes.")
+                    bullet("Claude Code learns the /scout-* commands, and macOS (launchd) starts the scheduled runs.")
+                }
+                .padding(.top, 4)
+            }
+            .font(DS.sans(13))
+            field("Scout folder", text: $model.vaultPath, placeholder: "~/Scout")
+                .glossaryHelp(.scoutFolder)
             if !model.vaultPathIsValid {
                 Text("Use a full path that starts with / or ~, such as ~/Scout.").font(DS.sans(11.5)).foregroundStyle(DS.Status.warn)
             }

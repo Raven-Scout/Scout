@@ -22,6 +22,7 @@ struct SchedulesHeader: View {
                 Text("Schedules")
                     .font(DS.serif(28, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.schedule)
                 Text(subtitle)
                     .font(DS.sans(12))
                     .foregroundStyle(DS.Ink.p3)

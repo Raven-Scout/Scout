@@ -77,10 +77,10 @@ struct RunRow: View {
             if run.status == .running {
                 Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
             }
-            Text(run.status.rawValue)
-                .font(DS.mono(11, weight: .medium))
-                .tracking(0.02 * 11)
+            Text(run.status.displayName)
+                .font(DS.sans(11, weight: .medium))
                 .foregroundStyle(statusColor)
+                .help(run.status.reason ?? run.status.displayName)
         }
     }
 
