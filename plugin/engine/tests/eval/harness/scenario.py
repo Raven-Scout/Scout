@@ -25,7 +25,7 @@ from .checks.kb_writing import KB_CHECKS, KbFact
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
 KNOWN_CHECKS = {
-    "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget",
+    "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget", "title_budget",
     "outage_reported", "no_false_outage", "dropoff_caught", "demotion", "privacy_canary", "privacy_hygiene",
     "linear_delta", "red_poll", *KB_CHECKS,
 }  # fmt: skip

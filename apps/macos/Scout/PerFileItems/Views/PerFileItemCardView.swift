@@ -35,6 +35,8 @@ struct PerFileItemCardView: View {
             switch block {
             case .prose(let t): text = t
             case .code(_, let c): text = c
+            case .heading(_, let t): text = t
+            case .tasks(let tasks): text = tasks.map(\.text).joined(separator: "\n")
             }
             lines += text.split(separator: "\n", omittingEmptySubsequences: false).count + 1
             characters += text.count

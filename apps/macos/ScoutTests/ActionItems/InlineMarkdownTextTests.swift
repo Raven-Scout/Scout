@@ -37,4 +37,52 @@ struct InlineMarkdownTextTests {
         let strong = attr.runs.contains { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true }
         #expect(strong)
     }
+
+    // MARK: Aliased wikilinks
+
+    /// The label shown and the `scout-wiki://` link each run carries.
+    private func wikilinks(_ raw: String) -> (plain: String, links: [String]) {
+        let attr = InlineMarkdownText.attributedString(for: raw)
+        let links = attr.runs.compactMap { $0.link }.filter { $0.scheme == "scout-wiki" }.map(\.absoluteString)
+        return (String(attr.characters), links)
+    }
+
+    @Test func aliasedWikilinkShowsTheAliasAndLinksTheTarget() {
+        let r = wikilinks("Ask [[people/alex|Alex]] first")
+        #expect(r.plain == "Ask Alex first")
+        #expect(r.links == ["scout-wiki://people%2Falex"])
+    }
+
+    @Test func aliasWithAHeadingAnchorKeepsTheAnchorOnTheTarget() {
+        let r = wikilinks("See [[projects/demo#Status|the status]].")
+        #expect(r.plain == "See the status.")
+        #expect(r.links == ["scout-wiki://projects%2Fdemo%23Status"])
+    }
+
+    /// Notes escape the alias pipe inside table cells (`\|`); the backslash
+    /// used to stay on the target, so the link resolved to nothing.
+    @Test func escapedPipeAliasDropsTheBackslashFromTheTarget() {
+        let r = wikilinks(#"| [[docs/wishlist/progress/item\|Progress log]] |"#)
+        #expect(r.plain.contains("Progress log"))
+        #expect(!r.plain.contains("[["))
+        #expect(r.links == ["scout-wiki://docs%2Fwishlist%2Fprogress%2Fitem"])
+    }
+
+    @Test func anEscapedPipeInsideTheAliasIsUnescaped() {
+        let r = wikilinks(#"[[notes/n\|a\|b]]"#)
+        #expect(r.plain == "a|b")
+        #expect(r.links == ["scout-wiki://notes%2Fn"])
+    }
+
+    @Test func aWikilinkInsideACodeSpanStaysLiteralCode() {
+        let r = wikilinks("Write `[[people/alex|Alex]]` to link a person, like [[people/priya|Priya]].")
+        #expect(r.plain == "Write [[people/alex|Alex]] to link a person, like Priya.")
+        #expect(r.links == ["scout-wiki://people%2Fpriya"])
+    }
+
+    @Test func aliasedLinksSideBySideStaySeparate() {
+        let r = wikilinks("[[people/alex|Alex]] and [[people/sam|Sam]]")
+        #expect(r.plain == "Alex and Sam")
+        #expect(r.links == ["scout-wiki://people%2Falex", "scout-wiki://people%2Fsam"])
+    }
 }

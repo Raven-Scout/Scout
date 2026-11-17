@@ -37,6 +37,26 @@ struct KBStatsView: View {
                                            singular: "weakly linked note", plural: "weakly linked notes"),
                 icon: "link",
                 labels: stats.weaklyLinked.map(KBNode.displayName(forPath:)), paths: stats.weaklyLinked)
+            setAsideRow
+        }
+    }
+
+    /// Archive copies and receipts aren't live notes, so they're left out of
+    /// the rows above and the insight below; this line says how many.
+    @ViewBuilder
+    private var setAsideRow: some View {
+        if let summary = stats.setAsideSummary {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: "archivebox").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .accessibilityHidden(true)
+                    Text(summary).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                }
+                Text("Notes in archive folders, and receipts and invoices, aren't checked for links.")
+                    .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 
