@@ -9,10 +9,10 @@ nonisolated enum PerFileItemParser {
         let fields = parseFrontmatterFields(frontmatter)
         let stem = fileURL.deletingPathExtension().lastPathComponent
 
-        let date = fields["date"]?.nonEmpty ?? datePrefix(of: stem) ?? ""
+        let date = keyword(fields["date"]).nonEmpty ?? datePrefix(of: stem) ?? ""
         let title = fields["title"]?.nonEmpty ?? stem
-        let status = ItemStatus.parse(fields["status"] ?? "")
-        let priority = ItemPriority.parse(fields["priority"] ?? "")
+        let status = ItemStatus.parse(keyword(fields["status"]))
+        let priority = ItemPriority.parse(keyword(fields["priority"]))
         let source = fields["source"]?.nonEmpty
         let area = fields["area"]?.nonEmpty
         let cleanBody = stripLeadingHeading(body).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,6 +51,26 @@ nonisolated enum PerFileItemParser {
             out[key] = value
         }
         return out
+    }
+
+    /// A keyword field's value (`status`, `priority`, `date`) without a YAML
+    /// inline comment: a `#` that opens the value or follows whitespace starts
+    /// a comment, as in YAML. Without this, `status: done   # retired …` parsed
+    /// as an unknown — so active — status (#85).
+    ///
+    /// Only keyword fields get this. Free text keeps its `#` (`source: Pattern
+    /// #197`, `title: C# notes`) — the app has always shown it verbatim, and a
+    /// `#` can never be part of a valid keyword.
+    static func keyword(_ raw: String?) -> String {
+        guard let raw else { return "" }
+        var previous: Character = " "
+        for index in raw.indices {
+            if raw[index] == "#", previous.isWhitespace {
+                return raw[..<index].trimmingCharacters(in: .whitespaces)
+            }
+            previous = raw[index]
+        }
+        return raw
     }
 
     static func stripLeadingHeading(_ body: String) -> String {

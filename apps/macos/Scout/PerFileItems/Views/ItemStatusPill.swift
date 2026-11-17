@@ -5,8 +5,20 @@ import SwiftUI
 struct ItemStatusPill: View {
     let status: ItemStatus
 
+    /// Longest label the pill shows. An unrecognized `status:` is free text —
+    /// one was a 250-character comment — and this pill is `fixedSize`, so an
+    /// unbounded label widened its card past the window.
+    static let maxLabelLength = 24
+
+    nonisolated static func label(for status: ItemStatus) -> String {
+        let name = status.displayName.uppercased()
+        guard name.count > maxLabelLength else { return name }
+        return name.prefix(maxLabelLength - 1).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
     var body: some View {
-        Text(status.displayName.uppercased())
+        Text(Self.label(for: status))
+            .help(status.displayName)
             .font(DS.sans(10, weight: .semibold))
             .tracking(0.06 * 10)
             .foregroundStyle(tint)

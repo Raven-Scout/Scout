@@ -150,4 +150,40 @@ struct MarkdownBodyBlockTests {
             .prose("[[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]"),
         ])
     }
+
+    // MARK: - prefix(_:characters:)
+
+    @Test func prefixKeepsEverythingUnderBudget() {
+        let blocks: [MarkdownBodyBlock] = [.heading(level: 2, text: "Status"), .prose("Short.")]
+        let shown = MarkdownBodyBlock.prefix(blocks, characters: 100)
+        #expect(shown.blocks == blocks)
+        #expect(shown.truncated == false)
+    }
+
+    @Test func prefixCutsTheOverflowingBlockAndDropsTheRest() {
+        let blocks: [MarkdownBodyBlock] = [.prose("abcde"), .prose("fghij"), .prose("klmno")]
+        let shown = MarkdownBodyBlock.prefix(blocks, characters: 7)
+        #expect(shown.blocks == [.prose("abcde"), .prose("fg…")])
+        #expect(shown.truncated)
+    }
+
+    @Test func prefixBoundsAHugeSingleParagraph() {
+        // One 9,000-character line, as a long-running lane accumulates.
+        let shown = MarkdownBodyBlock.prefix([.prose(String(repeating: "x", count: 9_000))], characters: 1_500)
+        #expect(shown.blocks.reduce(0) { $0 + $1.characterCount } <= 1_501)   // + the ellipsis
+        #expect(shown.truncated)
+    }
+
+    @Test func prefixKeepsWholeTasksOnly() {
+        let tasks = [MarkdownTask(checked: true, text: "aaaa"), MarkdownTask(checked: false, text: "bbbb")]
+        let shown = MarkdownBodyBlock.prefix([.tasks(tasks)], characters: 6)
+        #expect(shown.blocks == [.tasks([tasks[0]])])
+        #expect(shown.truncated)
+    }
+
+    @Test func prefixWithNoRoomDropsTheBlock() {
+        let shown = MarkdownBodyBlock.prefix([.prose("abc"), .code(language: nil, code: "x")], characters: 3)
+        #expect(shown.blocks == [.prose("abc")])
+        #expect(shown.truncated)
+    }
 }

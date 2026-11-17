@@ -24,6 +24,11 @@ struct PerFileItemCardView: View {
     /// one card carried its whole progress log and filled the window (UI
     /// audit C6).
     static let collapsedBodyHeight: CGFloat = 180
+    /// Text built while collapsed — comfortably more than 180 pt shows.
+    static let collapsedCharacterBudget = 1_500
+    /// Text built when expanded. Past this the card links to the file: a
+    /// standing research lane grew to 220 KB, and the list builds every card.
+    static let expandedCharacterBudget = 20_000
 
     /// Whether `blocks` are long enough to collapse: many lines, or a lot of
     /// text that wraps into many.
@@ -45,6 +50,7 @@ struct PerFileItemCardView: View {
     }
 
     var body: some View {
+        let blocks = item.bodyBlocks
         VStack(alignment: .leading, spacing: 12) {
             header
             if let label = optionalLabel, let value = optionalValue, !value.isEmpty {
@@ -52,8 +58,8 @@ struct PerFileItemCardView: View {
                     .font(DS.mono(11))
                     .foregroundStyle(DS.Ink.p4)
             }
-            if !item.bodyBlocks.isEmpty {
-                bodyContent(item.bodyBlocks)
+            if !blocks.isEmpty {
+                bodyContent(blocks)
             }
             actions
             if let errorText {
@@ -76,8 +82,12 @@ struct PerFileItemCardView: View {
     @ViewBuilder
     private func bodyContent(_ blocks: [MarkdownBodyBlock]) -> some View {
         if Self.isLongBody(blocks) {
+            let shown = MarkdownBodyBlock.prefix(
+                blocks,
+                characters: bodyExpanded ? Self.expandedCharacterBudget : Self.collapsedCharacterBudget
+            )
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownBodyView(blocks: blocks)
+                MarkdownBodyView(blocks: shown.blocks)
                     .frame(maxHeight: bodyExpanded ? nil : Self.collapsedBodyHeight, alignment: .top)
                     .clipped()
                     .overlay(alignment: .bottom) {
@@ -88,11 +98,19 @@ struct PerFileItemCardView: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                Button(bodyExpanded ? "Show less" : "Show more") { bodyExpanded.toggle() }
-                    .buttonStyle(.plainHit)
-                    .font(DS.sans(11.5, weight: .medium))
-                    .foregroundStyle(DS.Accent.ink)
-                    .accessibilityLabel(bodyExpanded ? "Show less of this item" : "Show all of this item")
+                HStack(spacing: 14) {
+                    Button(bodyExpanded ? "Show less" : "Show more") { bodyExpanded.toggle() }
+                        .accessibilityLabel(bodyExpanded ? "Show less of this item" : "Show more of this item")
+                    if bodyExpanded && shown.truncated {
+                        Button("Too long for a card — open the file") {
+                            NSWorkspace.shared.open(item.fileURL)
+                        }
+                        .help(item.fileURL.path)
+                    }
+                }
+                .buttonStyle(.plainHit)
+                .font(DS.sans(11.5, weight: .medium))
+                .foregroundStyle(DS.Accent.ink)
             }
         } else {
             MarkdownBodyView(blocks: blocks)
