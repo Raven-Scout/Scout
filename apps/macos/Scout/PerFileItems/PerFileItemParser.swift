@@ -7,12 +7,15 @@ nonisolated enum PerFileItemParser {
     static func parseFile(contents: String, fileURL: URL) -> PerFileItem? {
         guard let (frontmatter, body) = splitFrontmatter(contents) else { return nil }
         let fields = parseFrontmatterFields(frontmatter)
+        // Keyword fields need the value as written: whether it was quoted
+        // decides whether a `#` in it is a comment.
+        let raw = parseFrontmatterFields(frontmatter, unquote: false)
         let stem = fileURL.deletingPathExtension().lastPathComponent
 
-        let date = keyword(fields["date"]).nonEmpty ?? datePrefix(of: stem) ?? ""
+        let date = keyword(raw["date"]).nonEmpty ?? datePrefix(of: stem) ?? ""
         let title = fields["title"]?.nonEmpty ?? stem
-        let status = ItemStatus.parse(keyword(fields["status"]))
-        let priority = ItemPriority.parse(keyword(fields["priority"]))
+        let status = ItemStatus.parse(keyword(raw["status"]))
+        let priority = ItemPriority.parse(keyword(raw["priority"]))
         let source = fields["source"]?.nonEmpty
         let area = fields["area"]?.nonEmpty
         let cleanBody = stripLeadingHeading(body).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -38,14 +41,14 @@ nonisolated enum PerFileItemParser {
         return nil
     }
 
-    static func parseFrontmatterFields(_ frontmatter: String) -> [String: String] {
+    static func parseFrontmatterFields(_ frontmatter: String, unquote: Bool = true) -> [String: String] {
         var out: [String: String] = [:]
         for line in frontmatter.components(separatedBy: "\n") {
             guard let colon = line.firstIndex(of: ":") else { continue }
             let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
             guard !key.isEmpty else { continue }
             var value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+            if unquote, value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }
             out[key] = value
@@ -53,24 +56,37 @@ nonisolated enum PerFileItemParser {
         return out
     }
 
-    /// A keyword field's value (`status`, `priority`, `date`) without a YAML
-    /// inline comment: a `#` that opens the value or follows whitespace starts
-    /// a comment, as in YAML. Without this, `status: done   # retired …` parsed
-    /// as an unknown — so active — status (#85).
+    /// A keyword field's value (`status`, `priority`, `date`), read as YAML
+    /// reads a scalar, from the value as written:
+    /// - Unquoted: a `#` that opens the value or follows whitespace starts a
+    ///   comment. Without this, `status: done   # retired …` parsed as an
+    ///   unknown — so active — status (#85).
+    /// - Quoted (`"…"` or `'…'`): the value is what's inside the quotes, `#`
+    ///   included, and anything after the closing quote is a comment. So
+    ///   `"done # pending review"` stays an unknown, active status rather than
+    ///   hiding unfinished work as done.
+    /// - An unterminated quote is kept verbatim (an unknown, active status).
     ///
     /// Only keyword fields get this. Free text keeps its `#` (`source: Pattern
     /// #197`, `title: C# notes`) — the app has always shown it verbatim, and a
-    /// `#` can never be part of a valid keyword.
+    /// `#` can never be part of a valid keyword. The engine's first-token rule
+    /// (`heartbeat.py` `_item_status`) agrees on bare keywords; the
+    /// differences are pinned in `PerFileItemParserTests`.
     static func keyword(_ raw: String?) -> String {
-        guard let raw else { return "" }
-        var previous: Character = " "
-        for index in raw.indices {
-            if raw[index] == "#", previous.isWhitespace {
-                return raw[..<index].trimmingCharacters(in: .whitespaces)
-            }
-            previous = raw[index]
+        guard let value = raw?.trimmingCharacters(in: .whitespaces) else { return "" }
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            let inner = value.dropFirst()
+            guard let close = inner.firstIndex(of: quote) else { return value }
+            return String(inner[..<close])
         }
-        return raw
+        var previous: Character = " "
+        for index in value.indices {
+            if value[index] == "#", previous.isWhitespace {
+                return value[..<index].trimmingCharacters(in: .whitespaces)
+            }
+            previous = value[index]
+        }
+        return value
     }
 
     static func stripLeadingHeading(_ body: String) -> String {

@@ -92,7 +92,9 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
     ///
     /// Clipping a view does not stop SwiftUI laying out what it hides: a card
     /// that clipped a 220 KB body still measured all of it. Cards render this
-    /// prefix instead, so their cost is bounded by the budget, not the file.
+    /// prefix instead, so their text layout is bounded by the budget, not the
+    /// file. (Splitting the body into blocks happens once per file read, in
+    /// `PerFileItem.init`; `prefix` itself is one linear pass.)
     static func prefix(_ blocks: [MarkdownBodyBlock], characters budget: Int)
         -> (blocks: [MarkdownBodyBlock], truncated: Bool) {
         var out: [MarkdownBodyBlock] = []

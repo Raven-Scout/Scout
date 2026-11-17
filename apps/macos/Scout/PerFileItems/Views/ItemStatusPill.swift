@@ -19,6 +19,7 @@ struct ItemStatusPill: View {
     var body: some View {
         Text(Self.label(for: status))
             .help(status.displayName)
+            .accessibilityLabel(status.displayName)
             .font(DS.sans(10, weight: .semibold))
             .tracking(0.06 * 10)
             .foregroundStyle(tint)

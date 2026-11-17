@@ -87,6 +87,53 @@ struct PerFileItemParserTests {
         #expect(item.priority == .medium)
     }
 
+    private func status(_ line: String) throws -> ItemStatus {
+        try #require(PerFileItemParser.parseFile(contents: "---\ntitle: T\nstatus: \(line)\n---\n\nbody",
+                                                 fileURL: url("x.md"))).status
+    }
+
+    /// In YAML a `#` inside quotes is content, not a comment. A quoted
+    /// `"done # pending review"` is not `done`, so it is an unknown status and
+    /// stays active (#85) — reading it as done would hide unfinished work.
+    @Test func quotedKeywordKeepsItsHash() throws {
+        #expect(try status(#""done # pending review""#) == .unknown("done # pending review"))
+        #expect(try status("'done # pending review'") == .unknown("done # pending review"))
+        #expect(try status(#""done # pending review""#).isActive)
+    }
+
+    /// After a closing quote, the rest of the line is a comment.
+    @Test func quotedKeywordWithTrailingComment() throws {
+        #expect(try status(#""done" # retired"#) == .done)
+        #expect(try status("'done' # retired") == .done)
+        #expect(try status("'in-progress'") == .inProgress)
+        #expect(try status(#""done"#) == .unknown(#""done"#))   // unterminated: verbatim, so active
+    }
+
+    /// The engine (`plugin/engine/scout/scripts/heartbeat.py` `_item_status`)
+    /// reads a status as the first non-space token after `status:`. Where the
+    /// value is a bare keyword, with or without a spaced comment, both sides
+    /// must read the same status. Known differences are pinned below.
+    @Test func agreesWithEngineFirstToken() throws {
+        func engineToken(_ value: String) -> String {
+            String(value.drop(while: \.isWhitespace).prefix(while: { !$0.isWhitespace })).lowercased()
+        }
+        for value in ["done   # retired, expires reached", "open # c", "in-progress # c",
+                      "dropped", "Done", "p#1", "dropped#x"] {
+            #expect(try status(value) == ItemStatus.parse(engineToken(value)), "status: \(value)")
+        }
+    }
+
+    /// Where the app departs from the engine's first-token rule, on purpose:
+    /// it follows YAML, which the engine only approximates.
+    @Test func knownDifferencesFromEngine() throws {
+        // A value that is wholly a comment is blank (engine reads `#`): open.
+        #expect(try status("# TODO decide") == .open)
+        // A spaced keyword is whole (engine reads `in`).
+        #expect(try status("in progress # c") == .inProgress)
+        // Quotes are YAML quoting (engine keeps them, so `"open"` isn't open there).
+        #expect(try status(#""open""#) == .open)
+    }
+
     /// Free-text fields keep their `#`: `Pattern #197` and `C#` are content,
     /// and the app has always shown these values verbatim.
     @Test func freeTextFieldsKeepHashes() throws {
