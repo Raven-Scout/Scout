@@ -43,6 +43,18 @@ def version() -> None:
     print(__version__)
 
 
+@app.command("diagnostics")
+def cli_diagnostics(
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON."),
+    no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip the scheduler registration check."),
+) -> None:
+    """A redacted report for a bug report: versions, doctor, sandbox, runtime, recent runs. Never vault content."""
+    from scout import diagnostics
+    from scout import paths as _paths
+
+    typer.echo(diagnostics.main(_paths.data_dir(), as_json=as_json, check_jobs=not no_jobs))
+
+
 manifest_app = typer.Typer(help="Engine capability manifest operations.")
 app.add_typer(manifest_app, name="manifest")
 
@@ -1360,6 +1372,23 @@ def budget_record_run_cmd(
         )
     else:
         typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+
+
+@budget_app.command("usage")
+def budget_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the summary the app's usage card reads, as JSON."),
+) -> None:
+    """What Scout's own scheduled runs used today and this week: tokens and cost.
+
+    Counts finished scheduled runs only (the usage tracker's runner rows), never
+    interactive Claude sessions. Tokens come from those runs' transcripts, each
+    message counted once; cost is the budget gate's figure, with how it was found
+    (cost_kind: reported, priced, unpriced, partial or none). Read-only.
+    """
+    from scout.scripts.usage_summary import describe, dumps, summarize
+
+    summary = summarize()
+    typer.echo(dumps(summary) if as_json else describe(summary), nl=not as_json)
 
 
 @budget_app.command("record-attempt")
@@ -3372,6 +3401,58 @@ def _register_health() -> None:
 
 
 _register_health()
+
+
+def _register_runs() -> None:
+    """scoutctl runs [--json] [--since 7d] [--limit N] — the run ledger plus run health, for the app."""
+
+    @app.command("runs")
+    def cli_runs(
+        json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+        since: str = typer.Option("7d", "--since", help="How far back: 7d, 48h, 90m, or an ISO time."),
+        limit: int = typer.Option(200, "--limit", min=1, max=2000, help="At most this many runs, newest first."),
+    ) -> None:
+        """Recent scheduled runs (outcome, skip reason, sandbox, integrity) and run-health findings.
+
+        Read-only. Exits 0 whatever the runs' health is (use `scoutctl health` for an exit code);
+        2 on a bad --since or a missing vault.
+        """
+        import json as _json
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from scout import paths as _paths
+        from scout import run_ledger as _rl
+
+        now = _dt.now(UTC)
+        try:
+            cutoff = _rl.parse_since(since, now=now)
+        except ValueError as e:
+            typer.echo(f"scoutctl runs: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            error = f"vault directory missing: {vault}"
+            typer.echo(f"scoutctl runs: {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"schema_version": _rl.SCHEMA_VERSION, "error": error}))
+            raise typer.Exit(code=2)
+        doc = _rl.ledger_report(vault, now=now, since=cutoff, limit=limit)
+        if json_out:
+            typer.echo(_json.dumps(doc))
+            return
+        typer.echo(f"run health: {doc['health']['severity']}")
+        for run in doc["runs"]:
+            why = run["failure_class"] if run["outcome"] != "ok" else ""
+            extra = " ".join(
+                f"{k}={run[k]}" for k in ("sandbox", "integrity") if run[k] and run[k] not in ("enforced", "clean")
+            )
+            typer.echo(f"{run['finished_at']}  {run['slot']:<24} {run['outcome']:<16} {why} {extra}".rstrip())
+        if doc["truncated"]:
+            typer.echo(f"(showing the newest {limit}; use --limit for more)")
+
+
+_register_runs()
 
 
 def _register_auth() -> None:

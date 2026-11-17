@@ -11,12 +11,16 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
     /// The run-health block (engines that emit `run_health`); nil for older
     /// engines, legacy text, a missing vault, or a block this app can't read.
     let runHealth: RunHealth?
+    /// Informational lines (write protection, privacy checks, sign-in, …);
+    /// empty for engines that don't emit them.
+    let notes: [String]
 
-    init(severity: Severity, errors: [String], warnings: [String], runHealth: RunHealth? = nil) {
+    init(severity: Severity, errors: [String], warnings: [String], runHealth: RunHealth? = nil, notes: [String] = []) {
         self.severity = severity; self.errors = errors; self.warnings = warnings; self.runHealth = runHealth
+        self.notes = notes
     }
 
-    private enum CodingKeys: String, CodingKey { case severity, errors, warnings, runHealth = "run_health" }
+    private enum CodingKeys: String, CodingKey { case severity, errors, warnings, notes, runHealth = "run_health" }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -26,6 +30,7 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
         // A run_health this build can't decode (a future severity, a changed
         // shape) costs only that block — never the install health beside it.
         runHealth = try? c.decodeIfPresent(RunHealth.self, forKey: .runHealth)
+        notes = (try? c.decodeIfPresent([String].self, forKey: .notes)) ?? []
     }
 
     /// JSON is read from `stdout` only. The legacy text form is split across

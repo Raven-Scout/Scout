@@ -327,7 +327,7 @@ struct ComponentSmokeTests {
             size: CGSize(width: 700, height: 300))
         ViewHost.render(
             CommentListView(comments: SmokeFixtures.comments,
-                            onEdit: { _, _ in }, onDelete: { _ in }),
+                            onEdit: { _, _ in true }, onDelete: { _ in }),
             size: CGSize(width: 700, height: 300))
         ViewHost.render(CommentListView(comments: []), size: CGSize(width: 700, height: 80))
     }
@@ -335,7 +335,7 @@ struct ComponentSmokeTests {
     @Test("the comment composer renders")
     func commentComposerRenders() {
         ViewHost.render(
-            CommentComposerView(task: SmokeFixtures.task(), displayedDate: SmokeFixtures.day) { _ in },
+            CommentComposerView(task: SmokeFixtures.task(), displayedDate: SmokeFixtures.day) { _ in true },
             size: CGSize(width: 700, height: 80))
     }
 

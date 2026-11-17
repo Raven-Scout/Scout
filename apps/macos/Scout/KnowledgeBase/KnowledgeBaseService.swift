@@ -46,7 +46,11 @@ final class KnowledgeBaseService: ObservableObject {
     /// read by the detached tree build in `buildChildren`.
     private nonisolated static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
 
-    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
+    /// Unsaved editor drafts, kept across navigation (see `KBDraftStore`).
+    let drafts: KBDraftStore
+
+    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource, drafts: KBDraftStore? = nil) {
+        self.drafts = drafts ?? .shared
         // `contentsOfDirectory(at:)` returns symlink-resolved file URLs, so
         // resolve the root too. Otherwise, when ~/Scout is a symlink, the tree's
         // node URLs (real path) and this root (symlink path) mismatch — breaking
@@ -403,11 +407,26 @@ final class KnowledgeBaseService: ObservableObject {
     /// Totals, orphans / weakly-linked / dangling / islands (health) and
     /// hubs / degree / per-type / components (insight), in one pass over the
     /// index's precomputed resolution and edges — pure, so `reparse` runs it
-    /// off the main actor.
+    /// off the main actor. Totals count every note; the rest counts live notes
+    /// only, so an archived snapshot's links or a folder of receipts can't
+    /// swamp the rows (see `KBNoteKind`).
     nonisolated static func computeNetworkStats(tree: [KBNode], index: KBIndex, hubCap: Int) -> KBNetworkStats {
-        let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
-        guard !notes.isEmpty else { return .empty }
-        let edgeSet = index.edges
+        let allNotes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
+        guard !allNotes.isEmpty else { return .empty }
+        // Health and insight cover live notes and the links between them; archive
+        // copies and receipts are counted on their own (`KBNoteKind`).
+        var archived: [String] = []
+        var receipts: [String] = []
+        var notes: [String] = []
+        for n in allNotes {
+            switch KBNoteKind.of(n, type: index.typeByFile[n]) {
+            case .live: notes.append(n)
+            case .archived: archived.append(n)
+            case .receipt: receipts.append(n)
+            }
+        }
+        let live = Set(notes)
+        let edgeSet = index.edges.filter { live.contains($0.from) && live.contains($0.to) }
         let adj = adjacency(of: edgeSet)
         let degree: (String) -> Int = { adj[$0]?.count ?? 0 }
 
@@ -420,7 +439,7 @@ final class KnowledgeBaseService: ObservableObject {
         // count. `extractWikilinks` already de-dups targets per note, so each
         // (source, target) appears once.
         var dangling: [KBDanglingLink] = []
-        for (source, targets) in index.outByFile {
+        for (source, targets) in index.outByFile where live.contains(source) {
             let resolved = index.resolvedOut[source] ?? []
             for (t, to) in zip(targets, resolved) where to == nil
                 && !KBIndex.isTicketID(t) && !index.existsInVault(t) {
@@ -459,18 +478,20 @@ final class KnowledgeBaseService: ObservableObject {
         for n in notes { counts[KBEntityGroup.of(n, type: index.typeByFile[n]), default: 0] += 1 }
 
         return KBNetworkStats(
-            noteCount: notes.count,
-            linkCount: edgeSet.count,
+            noteCount: allNotes.count,
+            linkCount: index.edges.count,
             orphans: orphans,
             weaklyLinked: weaklyLinked,
             dangling: dangling,
             islands: Array(clusters.dropFirst()),
             topHubs: Array(topHubs),
-            avgDegree: Double(2 * edgeSet.count) / Double(notes.count),
+            avgDegree: notes.isEmpty ? 0 : Double(2 * edgeSet.count) / Double(notes.count),
             maxDegree: notes.map(degree).max() ?? 0,
             byType: KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: counts[$0] ?? 0) },
             clusterCount: clusters.count,
-            largestComponentSize: components.first?.count ?? 0)
+            largestComponentSize: components.first?.count ?? 0,
+            archived: archived.sorted(),
+            receipts: receipts.sorted())
     }
 
     /// Full-text search across note names and contents (from the index's cached

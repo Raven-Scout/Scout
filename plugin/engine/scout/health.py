@@ -101,23 +101,41 @@ _AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-to
 # The line that names a failed run's error, per ledger failure class, best first (#445). Each is
 # a narrower cut of run-outcome.sh's class pattern (a test holds every pick to it), aimed at the
 # CLI's own message rather than the runner's banners, which repeat or merely name the class.
+#
+# Each pattern must match at the START of a (stripped) line, in the shape Claude Code, git or the
+# retry wrapper prints. The log also holds the session's own output, which can quote vault notes,
+# so a line that merely mentions a limit or a lock is never quoted (C8 review: a model line
+# "Drafting reply about <note>: …hit your monthly limit, resets in May" used to come out verbatim).
+_ERR = r"(?:Error: )?"
+_NET_CODES = r"(?:ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ConnectionRefused|FailedToOpenSocket)"
+_NET_STREAM = (
+    r"(?:Stream idle timeout|Connection closed mid-response|(?:The )?socket connection was closed unexpectedly)"
+)
 FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "oauth_expired": (re.compile(CLI_AUTH_FAILURE_ERE),),
     "network": (
         re.compile(
-            r"ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up"
-            r"|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response"
-            r"|FailedToOpenSocket",
+            r"(?:API Error: .{0,80}?(?:" + _NET_CODES + r"|socket hang up|Connection error|" + _NET_STREAM + r")"
+            r"|" + _NET_STREAM + r"|socket hang up"
+            # Bun's error object, one field per line: `code: "ConnectionRefused",`
+            r'|code: "' + _NET_CODES + r'"'
+            r"|" + _ERR + r"(?:getaddrinfo |connect |read )?" + _NET_CODES + r"\b)",
             re.IGNORECASE,
         ),
     ),
-    "git_lock": (re.compile(r"index\.lock|HEAD\.lock", re.IGNORECASE),),
+    "git_lock": (re.compile(r"(?:fatal|error): .{0,240}?\b(?:index|HEAD)\.lock\b"),),
     "rate_limited": (
-        re.compile(r"hit your .{0,20}limit|limit.{0,20}resets", re.IGNORECASE),
-        re.compile(r"API Error: 429|too many requests|overloaded", re.IGNORECASE),
+        re.compile(
+            _ERR + r"(?:You(?:'ve| have) (?:hit|reached) your\b.{0,40}?\blimit"
+            r"|Claude (?:AI )?usage limit reached"
+            # "5-hour limit reached ∙ resets 1am", "Opus weekly limit reached ∙ resets Mon"
+            r"|(?:(?:\d+-hour|weekly|daily|session|Opus|Sonnet|Haiku)\s+){0,2}limit reached\s*[·∙•|-]\s*resets)",
+            re.IGNORECASE,
+        ),
+        re.compile(r"(?:API )?Error: (?:429|529)\b|API Error: .{0,40}?(?:overloaded|too many requests)", re.IGNORECASE),
     ),
     # claude's cap message, or the engine's line when the retry wrapper withheld a retry (#561).
-    "budget": (re.compile(r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),
+    "budget": (re.compile(_ERR + r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),
 }
 FAILURE_LINE_MAX = 300
 
@@ -152,6 +170,16 @@ class OutcomeRow:
     sandbox_source: str | None = None
     # The post-run integrity check: clean | restored | unrestored | error | unchecked; None for older runners.
     integrity: str | None = None
+    # Wall-clock length, and length in awake time (time the host slept doesn't count); None for older runners.
+    duration_s: int | None = None
+    awake_s: int | None = None
+    # The agent runtime that ran the session (spec 2026-11-13 §8.2), e.g. "claude-code".
+    agent_runtime: str | None = None
+    # The model the runner passed to the agent (scoutctl model resolve).
+    model: str | None = None
+    # Which runner wrote the row (scout | dreaming | research) and what started it (schedule | heartbeat | manual).
+    runner: str | None = None
+    trigger: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,7 +308,29 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
         sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
         integrity=str(obj["integrity"]) if isinstance(obj.get("integrity"), str) else None,
+        duration_s=_opt_nonneg(obj.get("duration_s")),
+        awake_s=_opt_nonneg(obj.get("awake_s")),
+        agent_runtime=_opt_token(obj.get("agent_runtime"), _RUNTIME_RE),
+        model=_opt_token(obj.get("model"), _MODEL_RE),
+        runner=obj["runner"] if obj.get("runner") in _RUNNERS else None,
+        trigger=obj["trigger"] if obj.get("trigger") in _TRIGGERS else None,
     )
+
+
+# The same shapes run-outcome.sh writes, so a hand-edited row can't carry free text into a client.
+_RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
+_RUNNERS = frozenset({"scout", "dreaming", "research"})
+_TRIGGERS = frozenset({"schedule", "heartbeat", "manual"})
+
+
+def _opt_nonneg(value: object) -> int | None:
+    n = _opt_int(value) if not isinstance(value, bool) else None
+    return n if n is not None and n >= 0 else None
+
+
+def _opt_token(value: object, pattern: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
 
 
 def read_outcomes(vault: Path) -> list[OutcomeRow]:
@@ -321,18 +371,31 @@ def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
 def failure_line(log: Path, failure_class: str) -> str | None:
     """The newest line in ``log``'s tail that names its ``failure_class`` error, or None.
 
-    Patterns are tried best first; runner banners (``=== … ===``) never count, so
-    the line is the CLI's own words. Read over the same tail run-outcome.sh classifies.
+    Patterns are tried best first and must open the line; runner banners (``=== … ===``)
+    never count, so the line is the CLI's own words, never the session's prose. Read over
+    the same tail run-outcome.sh classifies.
     """
     patterns = FAILURE_LINE_RES.get(failure_class, ())
     if not patterns:
         return None
-    lines = [ln for ln in _tail_text(log, max_bytes=LOG_TAIL_BYTES).splitlines() if not ln.lstrip().startswith("===")]
+    lines = [ln.strip() for ln in _tail_text(log, max_bytes=LOG_TAIL_BYTES).splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("===")]
     for pattern in patterns:
-        hit = next((ln.strip() for ln in reversed(lines) if pattern.search(ln)), None)
+        # match(), not search(): the error shape must open the line (see FAILURE_LINE_RES).
+        hit = next((ln for ln in reversed(lines) if pattern.match(ln)), None)
         if hit:
+            hit = _home_relative(hit)
             return hit if len(hit) <= FAILURE_LINE_MAX else hit[: FAILURE_LINE_MAX - 1] + "…"
     return None
+
+
+def _home_relative(text: str) -> str:
+    """``text`` with the user's home directory written as ``~`` (a git lock error names the vault's path)."""
+    try:
+        home = str(Path.home())
+    except RuntimeError:
+        return text
+    return text.replace(home + "/", "~/") if home and home != "/" else text
 
 
 def _run_log(vault: Path, row: OutcomeRow) -> Path | None:

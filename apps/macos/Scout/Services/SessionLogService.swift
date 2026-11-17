@@ -14,6 +14,11 @@ final class SessionLogService: ObservableObject {
     private let timeZone: TimeZone
     private var watchTask: Task<Void, Never>?
     private var sweepTimer: Timer?
+    /// Statuses from the run ledger (`scoutctl runs --json`), by log file name.
+    /// A ledger row is the record of a finished run, so it wins over what the
+    /// log's lines suggested; runs without a row (older engines, a run still
+    /// going) keep their log-derived status.
+    private var ledgerStatuses: [String: RunStatus] = [:]
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -185,8 +190,11 @@ final class SessionLogService: ObservableObject {
     // wrapper case-insensitively and without pinning the instance name.
     // (`finishRegex` still pins the literal "Scout" instance name — correct for
     // the default install, but the same latent limitation for custom instances.)
+    // The line must say "skipping": the lock library also writes
+    // `=== Another … session running (PID …) — waiting up to Ns for the lock ===`
+    // for a run that then gets the lock and runs (card C3).
     private static let concurrencyRegex = try! NSRegularExpression(
-        pattern: #"=== Another .+? session running"#,
+        pattern: #"=== Another .+? session running.*skipping"#,
         options: [.caseInsensitive]
     )
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
@@ -228,6 +236,8 @@ final class SessionLogService: ObservableObject {
             status = .timeout
         } else if hasBudgetSkip {
             status = .skippedBudget
+        } else if let skip = RunSkipLine.status(in: text) {
+            status = skip
         } else if hasConcurrencySkip {
             status = .skippedConcurrency
         } else if hasRateLimit {
@@ -308,6 +318,26 @@ final class SessionLogService: ObservableObject {
             else { return r }
             return r.with(status: .orphaned)
         }
+    }
+
+    /// Replace each run's status with its ledger row's, matched by log file name.
+    ///
+    /// Known gap: logs are named to the minute, so two runs started in the same minute share a log
+    /// (and the newest ledger row for it wins). Unique log names are a separate change to the
+    /// runners' log-name format, which the engine and this parser both read.
+    nonisolated static func overlayLedger(_ runs: [Run], statuses: [String: RunStatus]) -> [Run] {
+        guard !statuses.isEmpty else { return runs }
+        return runs.map { run in
+            guard let status = statuses[run.logPath.lastPathComponent], status != run.status else { return run }
+            return run.with(status: status)
+        }
+    }
+
+    /// Adopt the run ledger's statuses (from `RunLedgerService`) and republish.
+    func applyLedger(_ entries: [String: RunLedgerEntry]) {
+        ledgerStatuses = entries.mapValues(\.runStatus)
+        let updated = Self.resolveStaleRunning(Self.overlayLedger(runs, statuses: ledgerStatuses))
+        if updated != runs { runs = updated }
     }
 
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
@@ -418,7 +448,8 @@ final class SessionLogService: ObservableObject {
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
         let tz = timeZone
-        let cacheURL = parseCacheURLOverride ?? Self.defaultParseCacheURL()
+        let cacheURL = parseCacheURLOverride
+            ?? Self.defaultParseCacheURL(scoutDirectory: logsDirectory.deletingLastPathComponent())
         let assembled = await Task.detached { () -> [Run] in
             // Reuse cached parses for unchanged logs; parse only the rest.
             let cache = Self.loadParseCache(at: cacheURL)
@@ -471,7 +502,7 @@ final class SessionLogService: ObservableObject {
         }.value
         // Cross-run reconciliation: a `.running` entry that has a newer
         // same-type terminal sibling is by definition stale → orphan.
-        runs = Self.resolveStaleRunning(assembled)
+        runs = Self.resolveStaleRunning(Self.overlayLedger(assembled, statuses: ledgerStatuses))
         startWatching()
         startStaleSweep()
         return runs
@@ -564,7 +595,7 @@ final class SessionLogService: ObservableObject {
         }
         // Reconcile after every change — a newly-terminal run may now
         // invalidate an older same-type `.running` entry.
-        runs = Self.resolveStaleRunning(updated)
+        runs = Self.resolveStaleRunning(Self.overlayLedger(updated, statuses: ledgerStatuses))
     }
 
     /// Re-applies orphan/stale rules against the current snapshot. Used by
@@ -582,7 +613,7 @@ final class SessionLogService: ObservableObject {
             )
             return promoted == run.status ? run : run.with(status: promoted)
         }
-        let resolved = Self.resolveStaleRunning(resweeped)
+        let resolved = Self.resolveStaleRunning(Self.overlayLedger(resweeped, statuses: ledgerStatuses))
         // Only republish if anything actually changed — avoids needless
         // SwiftUI re-renders on every tick.
         if resolved != runs { runs = resolved }

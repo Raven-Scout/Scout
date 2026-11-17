@@ -23,7 +23,9 @@ private let sampleListJSON = """
 private func makeServiceOnDisk(
     listJSON: String = sampleListJSON,
     validateExitCode: Int32 = 0,
-    validateStderr: Data = Data()
+    validateStderr: Data = Data(),
+    drafts: SlotDraftStore? = nil,
+    reloadJSON: String? = nil
 ) throws -> (ScheduleEditService, QueueProcessRunner, URL) {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("schedule-edit-test-\(UUID().uuidString)")
@@ -56,7 +58,7 @@ private func makeServiceOnDisk(
 
     // Two queued stdouts: one for loadAll(), one for the post-save reload.
     let runner = QueueProcessRunner(
-        stdouts: [listJSON, listJSON],
+        stdouts: [listJSON, reloadJSON ?? listJSON],
         exitCode: 0,
         validateExitCode: validateExitCode,
         validateStderr: validateStderr
@@ -65,7 +67,8 @@ private func makeServiceOnDisk(
         scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
         runner: runner,
         canonicalSchedulePath: canonical,
-        argumentsPrefix: ["scoutctl"]
+        argumentsPrefix: ["scoutctl"],
+        drafts: drafts
     )
     return (service, runner, dir)
 }
@@ -380,5 +383,73 @@ actor QueueProcessRunner: ProcessRunner {
 
     private func validateResult() -> ProcessResult {
         ProcessResult(exitCode: validateExitCode, stdout: Data(), stderr: validateStderr)
+    }
+}
+
+/// Unsaved slot-form drafts are settled by the service itself after every
+/// load, so it happens whether or not the Schedules page is on screen.
+@Suite("ScheduleEditService + SlotDraftStore")
+@MainActor
+struct ScheduleEditServiceDraftTests {
+    @Test("every load reconciles stored drafts: saved ones quietly, orphans reported")
+    func loadReconcilesDrafts() async throws {
+        let store = SlotDraftStore()
+        let (service, _, _) = try makeServiceOnDisk(drafts: store)
+        try await service.loadAll()
+        let morning = try #require(service.slots.first { $0.key == "morning-briefing" })
+
+        // A draft typed against an older morning slot that the file now
+        // matches (its save landed with the page closed)…
+        var older = SlotDraft(from: morning)
+        older.cooldownMinutes = 15
+        store.update(SlotDraft(from: morning), baseline: older.toSlot(), for: morning.key)
+        // …and an edit to a slot the file no longer has.
+        var gone = SlotDraft(from: morning)
+        gone.key = "evening-run"
+        gone.firesAtLocal = "18:00"
+        store.update(gone, baseline: morning, for: "evening-run")
+        #expect(store.unsavedSlotNames.count == 2)
+
+        try await service.loadAll()
+        #expect(!store.hasUnsavedDrafts)
+        #expect(store.droppedSlotNames == ["Evening run"])
+    }
+
+    @Test("a failed save keeps the draft")
+    func failedSaveKeepsDraft() async throws {
+        let store = SlotDraftStore()
+        let (service, _, _) = try makeServiceOnDisk(validateExitCode: 1, drafts: store)
+        try await service.loadAll()
+        let morning = try #require(service.slots.first { $0.key == "morning-briefing" })
+        var draft = SlotDraft(from: morning)
+        draft.firesAtLocal = "07:30"
+        store.update(draft, baseline: morning, for: morning.key)
+
+        await #expect(throws: (any Error).self) {
+            try await service.update(actionName: "Edit Slot") { slots in
+                slots.map { $0.key == morning.key ? draft.toSlot() : $0 }
+            }
+        }
+        #expect(store.entry(for: morning.key)?.draft == draft)
+        #expect(store.droppedSlotNames.isEmpty)
+    }
+
+    @Test("a write that lands but can't reload says so, with its change for undo")
+    func reloadFailureAfterWriteIsDistinct() async throws {
+        let (service, _, dir) = try makeServiceOnDisk(reloadJSON: "not json")
+        try await service.loadAll()
+
+        do {
+            try await service.delete(slotKey: "research")
+            Issue.record("expected ScheduleReloadAfterWriteError")
+        } catch let written as ScheduleReloadAfterWriteError {
+            #expect(written.change?.actionName == "Delete Slot")
+        }
+        // The delete is on disk.
+        let onDisk = try String(contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8)
+        #expect(!onDisk.contains("research:"))
+        #expect(SchedulesView.problemText(
+            ScheduleReloadAfterWriteError(change: nil, reason: "bad output"),
+            action: "delete the schedule").hasPrefix("Saved, but the page didn't update."))
     }
 }

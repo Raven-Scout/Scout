@@ -124,7 +124,8 @@ struct RunDisplayTests {
     @Test("run status raw values are the persisted contract")
     func runStatus_rawValues() {
         let expected = ["scheduled", "running", "success", "failure", "timeout",
-                        "orphaned", "skippedBudget", "skippedConcurrency", "rateLimited"]
+                        "orphaned", "skippedBudget", "skippedConcurrency", "rateLimited",
+                        "skippedGates", "skippedSandbox", "skippedRuntime", "skippedLease", "skippedRedundant"]
         for raw in expected {
             #expect(RunStatus(rawValue: raw) != nil, "missing status \(raw)")
         }
@@ -134,8 +135,7 @@ struct RunDisplayTests {
     @Test("run source and status round-trip through Codable")
     func runEnums_codableRoundTrip() throws {
         let encoder = JSONEncoder(), decoder = JSONDecoder()
-        for status in [RunStatus.scheduled, .running, .success, .failure, .timeout,
-                       .orphaned, .skippedBudget, .skippedConcurrency, .rateLimited] {
+        for status in RunStatus.allCases {
             let data = try encoder.encode(status)
             #expect(try decoder.decode(RunStatus.self, from: data) == status)
         }
