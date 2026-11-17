@@ -21,8 +21,8 @@ struct OnMissPill: View {
 
     private var background: Color {
         switch policy {
-        case .skip:     return DS.Ink.p4.opacity(0.18)
-        case .fire:     return DS.Status.warn.opacity(0.20)
+        case .skip:     return DS.Ink.decorative.opacity(0.18)
+        case .fire:     return DS.Status.warn.opacity(DS.Status.washOpacity)
         case .collapse: return DS.Accent.wash
         }
     }

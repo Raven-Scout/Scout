@@ -148,12 +148,12 @@ struct SlotDraft: Equatable {
     // MARK: - Static field validators (for unit tests + live form errors).
 
     static func validateSlotKey(_ s: String) -> String? {
-        guard !s.isEmpty else { return "Slot key required" }
+        guard !s.isEmpty else { return "Enter a name" }
         // kebab-case: lowercase letter, then lowercase letters/digits/hyphens.
         let re = try! NSRegularExpression(pattern: #"^[a-z][a-z0-9-]*$"#)
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
         return re.firstMatch(in: s, range: range) == nil
-            ? "Slot key must be lowercase kebab-case (a-z, 0-9, hyphens; first char a letter)"
+            ? "Use lowercase letters, digits and dashes, starting with a letter, like evening-research"
             : nil
     }
 

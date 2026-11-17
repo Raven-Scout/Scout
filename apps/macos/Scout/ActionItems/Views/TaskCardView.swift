@@ -150,7 +150,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -181,17 +181,19 @@ struct TaskCardView: View {
     private var chevron: some View {
         Button { toggle() } label: {
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 11, weight: .medium))
+                .font(DS.sans(11, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
         .help(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityLabel("Action item details")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
     private func toggle() {
-        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        withMotion(.easeInOut(duration: 0.15)) { expanded.toggle() }
         if !expanded { onCollapse?() }
     }
 
@@ -287,7 +289,7 @@ struct TaskCardView: View {
     private func chipBody(for chip: TaskChip) -> some View {
         HStack(spacing: 4) {
             Image(systemName: chipGlyph(chip.glyph))
-                .font(.system(size: 9))
+                .font(DS.sans(9))
             Text(chip.label)
                 .font(DS.mono(10.5))
                 .lineLimit(1)
@@ -344,7 +346,7 @@ struct TaskCardView: View {
     private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11))
+                .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.base))
@@ -353,6 +355,7 @@ struct TaskCardView: View {
         }
         .buttonStyle(.plainHit)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder
@@ -575,7 +578,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(13.5))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {
@@ -609,7 +612,7 @@ struct TaskCardView: View {
             }
         } label: {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 15, weight: .medium))
+                .font(DS.sans(15, weight: .medium))
                 .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 28, height: 28)

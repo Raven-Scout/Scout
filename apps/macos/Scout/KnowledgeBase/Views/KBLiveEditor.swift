@@ -121,18 +121,22 @@ struct KBLiveEditor: NSViewRepresentable {
 
         // MARK: - Fonts & colors
 
-        static let bodyFont = serif(14)
-        static let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1),
-        ]
+        // Computed, not stored: sizes follow Settings ▸ General ▸ Text size
+        // (`TextScale`), applied on the next restyle.
+        static var bodyFont: NSFont { serif(14) }
+        static var baseAttributes: [NSAttributedString.Key: Any] {
+            [.font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1)]
+        }
 
         static func serif(_ size: CGFloat) -> NSFont {
-            NSFont(name: "Newsreader", size: size)
+            let size = DS.scaled(size)
+            return NSFont(name: "Newsreader", size: size)
                 ?? NSFont(name: "New York", size: size)
                 ?? NSFont.systemFont(ofSize: size)
         }
         static func mono(_ size: CGFloat) -> NSFont {
-            NSFont(name: "JetBrains Mono", size: size)
+            let size = DS.scaled(size)
+            return NSFont(name: "JetBrains Mono", size: size)
                 ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         }
         static func bold(_ font: NSFont) -> NSFont {

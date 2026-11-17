@@ -68,6 +68,9 @@ final class AppState: ObservableObject {
     // Engine discovery (spec §4.4)
     let engineLayout: EngineLayout
     let engineHealth: EngineHealthService
+    /// Settings ▸ Engine ▸ Run protection (card C9): `scoutctl protection status`, the privacy-check
+    /// re-check and the owner's write-protection switch.
+    let runProtection: RunProtectionService
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
@@ -168,6 +171,17 @@ final class AppState: ObservableObject {
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             initialState: configuration.initialEngineState
+        )
+
+        // Asks the engine health for scoutctl each time, so it follows the engine that's found; none while setup gates the tabs.
+        let runProtection = RunProtectionService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
         )
 
         let runLedger = RunLedgerService(
@@ -355,6 +369,7 @@ final class AppState: ObservableObject {
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
+        self.runProtection = runProtection
         self.runLedgerService = runLedger
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL

@@ -4,6 +4,46 @@ import SwiftUI
 // `internal` rather than `private` for exactly that reason — BudgetSettingsSection
 // composes the same atoms. Behavior is unchanged from the original.
 
+// MARK: - Accessibility
+
+extension EnvironmentValues {
+    /// The visible title of the settings row or field a control sits in.
+    /// `SettingsRow` and `SettingsField` set it, and `SettingsToggle` /
+    /// `SettingsInput` use it as their VoiceOver label, so a control is
+    /// announced by the words next to it ("Launch at login, switch, on")
+    /// without every call site repeating them.
+    @Entry var settingsControlLabel: String? = nil
+}
+
+/// Set by a control that took the row's title as its VoiceOver label, so the
+/// row can hide its own title text and VoiceOver doesn't read it twice. Rows
+/// whose trailing item is plain text or a button keep the title readable.
+struct SettingsRowTitleUsedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct SettingsRowAccessibilityLabel: ViewModifier {
+    @Environment(\.settingsControlLabel) private var label
+
+    func body(content: Content) -> some View {
+        if let label {
+            content.accessibilityLabel(label)
+                .preference(key: SettingsRowTitleUsedKey.self, value: true)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    /// Labels a stock control (a `Picker("")` with hidden labels) with the
+    /// title of the settings row it sits in, for VoiceOver.
+    func labelledBySettingsRow() -> some View {
+        modifier(SettingsRowAccessibilityLabel())
+    }
+}
+
 // MARK: - Building blocks
 
 /// Recessed paper card holding a stack of settings rows separated by hairlines.
@@ -31,6 +71,8 @@ struct SettingsRow<Trailing: View>: View {
     let title: String
     let help: String
     @ViewBuilder var trailing: () -> Trailing
+    /// True once the trailing control has taken `title` as its label.
+    @State private var titleUsedByControl = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,6 +81,7 @@ struct SettingsRow<Trailing: View>: View {
                     Text(title)
                         .font(DS.sans(13, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
+                        .accessibilityHidden(titleUsedByControl)
                     Text(help)
                         .font(DS.sans(11.5))
                         .foregroundStyle(DS.Ink.p3)
@@ -46,6 +89,8 @@ struct SettingsRow<Trailing: View>: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 trailing()
+                    .environment(\.settingsControlLabel, title)
+                    .onPreferenceChange(SettingsRowTitleUsedKey.self) { titleUsedByControl = $0 }
             }
             .padding(.vertical, 14)
             Rectangle().fill(DS.Rule.soft).frame(height: 0.5)
@@ -66,7 +111,9 @@ struct SettingsField<Input: View>: View {
                 .font(DS.sans(11, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
+                .accessibilityHidden(true)   // the input below is labelled with it
             input()
+                .environment(\.settingsControlLabel, label)
             Text(parseHelp(help))
                 .font(DS.sans(11.5))
                 .foregroundStyle(DS.Ink.p3)
@@ -96,9 +143,14 @@ struct SettingsField<Input: View>: View {
 struct SettingsInput: View {
     @Binding var text: String
     let placeholder: String
+    /// VoiceOver label; defaults to the enclosing row's or field's title.
+    var accessibilityLabel: String? = nil
+    @Environment(\.settingsControlLabel) private var rowLabel
 
     var body: some View {
         TextField(placeholder, text: $text)
+            .accessibilityLabel(accessibilityLabel ?? rowLabel ?? placeholder)
+            .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
             .textFieldStyle(.plain)
             .font(DS.sans(13, weight: .medium))
             .foregroundStyle(DS.Ink.p1)
@@ -114,8 +166,13 @@ struct SettingsInput: View {
 }
 
 /// Pill toggle that visually echoes the design's `.set-switch.on` accent fill.
+/// A button underneath, so it carries the toggle trait, an On/Off value and
+/// the row's title for VoiceOver (it used to be an unnamed button).
 struct SettingsToggle: View {
     @Binding var isOn: Bool
+    /// VoiceOver label; defaults to the enclosing row's title.
+    var accessibilityLabel: String? = nil
+    @Environment(\.settingsControlLabel) private var rowLabel
 
     var body: some View {
         Button { isOn.toggle() } label: {
@@ -130,8 +187,12 @@ struct SettingsToggle: View {
                     .padding(2)
             }
             .frame(width: 36, height: 20)
-            .animation(.easeInOut(duration: 0.15), value: isOn)
+            .motionAnimation(.easeInOut(duration: 0.15), value: isOn)
         }
         .buttonStyle(.plainHit)
+        .accessibilityLabel(ifPresent: accessibilityLabel ?? rowLabel)
+        .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 }

@@ -100,6 +100,7 @@ struct ActionItemsView: View {
                     Image(systemName: "folder")
                 }
                 .help("Reveal in Finder")
+                .accessibilityLabel("Reveal in Finder")
             }
         }
         .overlay(alignment: .top) {
@@ -453,7 +454,7 @@ struct ActionItemsView: View {
         let isFuture = displayedDate > Self.today()
         return VStack(spacing: 14) {
             Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
-                .font(.largeTitle)
+                .font(DS.sans(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(isFuture
                  ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."
@@ -617,6 +618,7 @@ struct ActionItemsView: View {
             .menuIndicator(.hidden)
             .disabled(selectedTaskIDs.isEmpty)
             .help("Choose a concise or Markdown copy format")
+            .accessibilityLabel("Copy format")
 
             Button("Done") { endSelectionMode() }
                 .buttonStyle(.borderless)

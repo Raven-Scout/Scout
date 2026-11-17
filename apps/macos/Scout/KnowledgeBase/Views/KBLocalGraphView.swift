@@ -12,17 +12,25 @@ struct KBGraphCanvas: View {
     let labelMinDegree: Int
 
     @State private var state: ForceDirectedGraphState
+    /// VoiceOver's list of notes, sorted once per graph — not on every
+    /// simulation tick or zoom, which re-run `body`.
+    private let accessibleNodes: [KBGraphNode]
 
     init(graph: KBGraph, onNavigate: @escaping (String) -> Void,
          labelMinDegree: Int = 1, initialScale: Double = 1.8) {
         self.graph = graph
         self.onNavigate = onNavigate
         self.labelMinDegree = labelMinDegree
+        self.accessibleNodes = Self.accessibleNodes(graph)
         // Start zoomed in so node labels are legible without manual pinching;
         // the simulation runs (initialIsRunning) and the user can pan/zoom.
+        // Under Reduce Motion the layout is computed up front and the graph
+        // appears settled instead of drifting into place.
+        let reduceMotion = Motion.reduceMotion
         _state = State(initialValue: ForceDirectedGraphState(
-            initialIsRunning: true,
-            initialModelTransform: .identity.scale(by: initialScale)
+            initialIsRunning: !reduceMotion,
+            initialModelTransform: .identity.scale(by: initialScale),
+            ticksOnAppear: reduceMotion ? .iteration(300) : .iteration(0)
         ))
     }
 
@@ -63,6 +71,36 @@ struct KBGraphCanvas: View {
                 .withGraphMagnifyGesture(proxy)
                 .withGraphTapGesture(proxy, of: String.self) { onNavigate($0) }
         }
+        // The canvas is pixels to VoiceOver. Give it a list of its notes
+        // instead, most-linked first, each one a button that opens the note.
+        .accessibilityRepresentation {
+            VStack(alignment: .leading) {
+                ForEach(accessibleNodes) { node in
+                    Button(Self.accessibilityLabel(for: node)) { onNavigate(node.id) }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Link graph, \(graph.nodes.count) notes")
+        }
+    }
+
+    /// At most this many notes in VoiceOver's list (the map already shows
+    /// at most 40; this bounds any larger graph handed to the canvas).
+    static let accessibleNodeLimit = 60
+
+    /// Nodes in VoiceOver order: the centre note first, then by link count,
+    /// then by name; capped at `accessibleNodeLimit`.
+    static func accessibleNodes(_ graph: KBGraph) -> [KBGraphNode] {
+        Array(graph.nodes.sorted { a, b in
+            if a.isCenter != b.isCenter { return a.isCenter }
+            if a.degree != b.degree { return a.degree > b.degree }
+            return a.label.localizedStandardCompare(b.label) == .orderedAscending
+        }.prefix(accessibleNodeLimit))
+    }
+
+    static func accessibilityLabel(for node: KBGraphNode) -> String {
+        let links = "\(node.degree) link\(node.degree == 1 ? "" : "s")"
+        return node.isCenter ? "\(node.label), this note, \(links)" : "\(node.label), \(links)"
     }
 
     /// Base node radius (multiplied by the live zoom in `body`). Kept generous
@@ -112,7 +150,7 @@ struct KBLocalGraphView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+                .font(DS.sans(22)).foregroundStyle(DS.Ink.p4)
             Text("No linked notes")
                 .font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             Text("This note has no [[wikilinks]] to or from other notes.")

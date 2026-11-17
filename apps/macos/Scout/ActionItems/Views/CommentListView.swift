@@ -108,22 +108,24 @@ private struct CommentRow: View {
                     DispatchQueue.main.async { editorFocused = true }
                 } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
                 .help("Edit comment")
+                .accessibilityLabel("Edit comment")
             }
             if onDelete != nil {
                 Button {
                     confirmingDelete = true
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
                 .help("Delete comment")
+                .accessibilityLabel("Delete comment")
             }
         }
     }

@@ -72,7 +72,7 @@ struct PerFileItemDetailView: View {
             Button { toggle(entry.id) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
+                        .font(DS.sans(9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(entry.source.label).font(DS.sans(11, weight: .semibold))

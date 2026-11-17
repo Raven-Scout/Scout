@@ -61,7 +61,7 @@ struct SchedulesView: View {
                 .frame(width: width)
                 .overlay(alignment: .topTrailing) {
                     if closable && Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
-                        DetailPaneCloseButton(help: "Close slot details") { selectedSlotKey = nil }
+                        DetailPaneCloseButton(help: "Close schedule details") { selectedSlotKey = nil }
                     }
                 }
             }
@@ -197,7 +197,7 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Status.err)
             Text("Couldn't load the schedule")
                 .font(DS.serif(20, weight: .medium))
@@ -225,7 +225,7 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "calendar.badge.plus")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("No schedules yet")
                 .font(DS.serif(20, weight: .medium))
@@ -398,7 +398,7 @@ struct SchedulesView: View {
     private func saveNewDraft(_ slot: Slot) async {
         let draftKey = newDraftSlot?.key
         do {
-            let change = try await service.update(actionName: "Add Slot") { $0 + [slot] }
+            let change = try await service.update(actionName: "Add Schedule") { $0 + [slot] }
             finishNewDraft(key: draftKey)
             selectedSlotKey = slot.key
             registerUndo(change)
@@ -425,7 +425,7 @@ struct SchedulesView: View {
 
     private func saveExistingSlot(_ saved: Slot, original: Slot) async {
         do {
-            registerUndo(try await service.update(actionName: "Edit Slot") { slots in
+            registerUndo(try await service.update(actionName: "Edit Schedule") { slots in
                 slots.map { $0.key == original.key ? saved : $0 }
             })
         } catch let written as ScheduleReloadAfterWriteError {

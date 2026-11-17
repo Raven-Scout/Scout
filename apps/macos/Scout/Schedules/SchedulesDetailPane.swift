@@ -63,9 +63,9 @@ struct SchedulesDetailPane: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "cursorarrow.click")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
-            Text("Pick a slot to edit")
+            Text("Pick a schedule to edit")
                 .font(DS.serif(18, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
             Text("Click a row in the list to edit its time, weekdays, cooldown, and other settings.")

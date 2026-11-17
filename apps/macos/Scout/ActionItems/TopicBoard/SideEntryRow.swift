@@ -30,7 +30,7 @@ struct SideEntryRow: View {
             if let onClose {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }

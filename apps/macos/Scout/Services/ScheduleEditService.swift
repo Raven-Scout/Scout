@@ -270,7 +270,7 @@ final class ScheduleEditService: ObservableObject {
         }
         return try await serialized {
             let remaining = self.slots.filter { $0.key != slotKey }
-            return try await self.performSave(allSlots: remaining, actionName: "Delete Slot")
+            return try await self.performSave(allSlots: remaining, actionName: "Delete Schedule")
         }
     }
 

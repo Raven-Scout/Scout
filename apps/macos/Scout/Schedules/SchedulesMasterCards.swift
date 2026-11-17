@@ -36,5 +36,6 @@ struct SchedulesMasterCards: View {
             SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [])
         }
         .buttonStyle(.plainHit)
+        .accessibilitySelected(isSelected)
     }
 }
