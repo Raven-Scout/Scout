@@ -658,20 +658,22 @@ struct SessionLogServiceTests {
         #expect(stillRunning?.status == .running)
     }
 
-    /// A skipped run never started a session, so it is no evidence that an
-    /// earlier one died; a lock skip is evidence that it is alive.
-    @Test(arguments: RunStatus.allCases.filter(\.isSkip))
-    func resolveStaleRunning_aLaterSkipDoesNotOrphan(_ skip: RunStatus) {
+    /// The runner skips on the session lock before it holds it: a lock skip
+    /// is evidence that the earlier run is alive, so it orphans nothing.
+    @Test func resolveStaleRunning_aLaterLockSkipDoesNotOrphan() {
         let now = Date()
         let live = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-600), status: .running)
-        let skipped = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-300), status: skip)
+        let skipped = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-300), status: .skippedConcurrency)
         let out = SessionLogService.resolveStaleRunning([skipped, live])
         #expect(out.first { $0.id == live.id }?.status == .running)
-        #expect(out.first { $0.id == skipped.id }?.status == skip)
+        #expect(out.first { $0.id == skipped.id }?.status == .skippedConcurrency)
     }
 
-    @Test(arguments: [RunStatus.success, .failure, .timeout])
-    func resolveStaleRunning_aLaterRealRunStillOrphans(_ status: RunStatus) {
+    /// Every other skip happens after the runner took the lock, and so does a
+    /// finished run: either shows the earlier run no longer holds it.
+    @Test(arguments: [RunStatus.success, .failure, .timeout]
+          + RunStatus.allCases.filter { $0.isSkip && $0 != .skippedConcurrency })
+    func resolveStaleRunning_aLaterRunPastTheLockStillOrphans(_ status: RunStatus) {
         let now = Date()
         let stuck = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-600), status: .running)
         let later = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-300), status: status)

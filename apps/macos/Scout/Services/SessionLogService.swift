@@ -322,10 +322,12 @@ final class SessionLogService: ObservableObject {
     ///
     /// Logic:
     /// - Find, per `RunType`, the most-recent run whose status is **terminal**
-    ///   (anything except `.running`), leaving out skips: a skipped run never
-    ///   started a session, so it is no evidence that an earlier one died. A
-    ///   run skipped by the session lock is usually the proof that the
-    ///   earlier one is still alive.
+    ///   (anything except `.running`), leaving out lock skips
+    ///   (`.skippedConcurrency`): the runner skips on the session lock before
+    ///   it holds it, so a lock skip is evidence that an earlier run is still
+    ///   alive, not that it died. Every other skip happens after the runner
+    ///   took the lock, so, like a finished run, it shows the earlier run no
+    ///   longer holds it.
     /// - For every still-`.running` run, if a terminal run of the same type
     ///   started strictly later than this one, this run is stale → `.orphaned`.
     ///
@@ -335,7 +337,7 @@ final class SessionLogService: ObservableObject {
     /// first, then this reconciles cross-run.
     nonisolated static func resolveStaleRunning(_ runs: [Run]) -> [Run] {
         var latestTerminal: [RunType: Date] = [:]
-        for r in runs where r.status != .running && !r.status.isSkip {
+        for r in runs where r.status != .running && r.status != .skippedConcurrency {
             let prev = latestTerminal[r.type] ?? .distantPast
             if r.startedAt > prev { latestTerminal[r.type] = r.startedAt }
         }
