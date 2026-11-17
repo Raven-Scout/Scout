@@ -9,6 +9,8 @@ struct PerFileListView: View {
     @EnvironmentObject var docService: PerFileDocumentService
     @EnvironmentObject var writerBox: PerFileItemWriterBox
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     @State private var resolvedExpanded = false
     @State private var showingAdd = false
@@ -327,20 +329,29 @@ struct PerFileListView: View {
     }
 
     private func resolve(_ item: PerFileItem, _ resolution: ItemResolution) async throws {
-        try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.title)
-        docService.reload()
-        historyWriteToken += 1
+        try await reflecting { try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.title) }
     }
 
     private func changePriority(_ item: PerFileItem, _ priority: ItemPriority) async throws {
-        try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.title)
-        docService.reload()
-        historyWriteToken += 1
+        try await reflecting { try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.title) }
     }
 
     private func changeStatus(_ item: PerFileItem, _ status: ItemStatus) async throws {
-        try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.title)
-        docService.reload()
-        historyWriteToken += 1
+        try await reflecting { try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.title) }
+    }
+
+    /// Run a field write, reload from disk whether it worked or not (C10), and
+    /// register the change for Edit ▸ Undo.
+    private func reflecting(_ write: () async throws -> VaultChange?) async throws {
+        defer {
+            docService.reload()
+            historyWriteToken += 1
+        }
+        guard let change = try await write() else { return }
+        let writer = writerBox.writer
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await writer.restore(change, direction) },
+            with: undoManager
+        ) { [docService] in docService.reload() }
     }
 }

@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-04-29T19:00:00Z",
+  "schema_version": 1,
+  "scope": "scheduled-runs",
+  "timezone": "America/New_York",
+  "today": {
+    "cost_kind": "priced",
+    "cost_usd": 3.35,
+    "end": "2026-04-30T00:00:00-04:00",
+    "priced_runs": 2,
+    "runs": 2,
+    "runs_with_tokens": 2,
+    "sessions": 3,
+    "start": "2026-04-29T00:00:00-04:00",
+    "tokens": {
+      "cache_creation": 2500,
+      "cache_read": 25100,
+      "input": 133,
+      "output": 89
+    }
+  },
+  "week": {
+    "cost_kind": "partial",
+    "cost_usd": 4.85,
+    "end": "2026-05-04T00:00:00-04:00",
+    "priced_runs": 3,
+    "runs": 4,
+    "runs_with_tokens": 3,
+    "sessions": 4,
+    "start": "2026-04-27T00:00:00-04:00",
+    "tokens": {
+      "cache_creation": 2500,
+      "cache_read": 25100,
+      "input": 1133,
+      "output": 1089
+    }
+  }
+}

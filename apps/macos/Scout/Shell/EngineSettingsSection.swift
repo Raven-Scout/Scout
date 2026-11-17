@@ -36,43 +36,27 @@ struct EngineSettingsSection: View {
             SettingsField(label: "Scout vault", help: model.vaultHelp) {
                 SettingsInput(text: $scoutDataDir, placeholder: health.state.install?.vault?.path ?? "~/Scout")
             }
-            SettingsRow(title: "Health", help: model.messages.first ?? "Last checked \(health.lastChecked.map { $0.formatted(date: .omitted, time: .shortened) } ?? "never")") {
+            SettingsRow(title: "Health", help: healthHelp) {
                 HStack(spacing: 10) {
                     Text(model.healthLabel)
                         .font(DS.sans(12, weight: .medium))
-                        .foregroundStyle(model.healthIsOK ? DS.Status.ok : DS.Status.warn)
+                        .foregroundStyle(model.healthIsOK && !model.healthHasWarnings ? DS.Status.ok : DS.Status.warn)
                     Button("Check now") { Task { await health.refresh() } }
                         .buttonStyle(.plainHit)
                         .font(DS.sans(12))
                 }
             }
             if model.showsRuns {
+                // The findings list below has each finding's fix and log.
                 SettingsRow(title: "Runs", help: model.runsHelp) {
-                    HStack(spacing: 10) {
-                        Text(model.runsLabel)
-                            .font(DS.sans(12, weight: .medium))
-                            .foregroundStyle(model.runsIsOK ? DS.Status.ok : model.runsIsPaused ? DS.Ink.p2 : DS.Status.warn)
-                        if let log = model.runsLogURL {
-                            Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
-                                .buttonStyle(.plainHit)
-                                .font(DS.sans(12))
-                        }
-                    }
-                }
-                if model.runsDetail != nil || model.runsFix != nil {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let detail = model.runsDetail {
-                            Text(detail).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
-                        }
-                        if let fix = model.runsFix {
-                            Text(fix).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 10)
+                    Text(model.runsLabel)
+                        .font(DS.sans(12, weight: .medium))
+                        .foregroundStyle(model.runsIsOK ? DS.Status.ok : model.runsIsPaused ? DS.Ink.p2 : DS.Status.warn)
                 }
             }
-            if model.messages.count > 1 {
+            if !model.findingGroups.isEmpty {
+                DoctorFindingsList(groups: model.findingGroups)
+            } else if model.messages.count > 1 {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(model.messages.dropFirst(), id: \.self) { Text($0).font(DS.mono(11)).foregroundStyle(DS.Ink.p3) }
                 }.padding(.vertical, 10)
@@ -108,6 +92,14 @@ struct EngineSettingsSection: View {
         }
     }
 
+    /// A broken engine or an unreadable doctor says why; a doctor that
+    /// answered gives its counts (the list below has every finding).
+    private var healthHelp: String {
+        let checked = "Last checked \(health.lastChecked.map { $0.formatted(date: .omitted, time: .shortened) } ?? "never")"
+        if let counts = model.findingCountsLabel { return "\(counts) · \(checked)" }
+        return model.messages.first ?? checked
+    }
+
     private func upgradeHelp(_ action: EngineUpgradeAction) -> String {
         switch action {
         case .update: return "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade the vault."
@@ -124,5 +116,66 @@ struct EngineSettingsSection: View {
     private var versionText: String {
         guard let bundled = model.bundledVersionLabel, bundled != model.installedVersionLabel else { return model.installedVersionLabel }
         return "\(model.installedVersionLabel) → \(bundled)"
+    }
+}
+
+/// Every doctor finding, worst first: Problems, then Warnings, then Notes.
+/// Each shows its summary, the failing run's own line, the fix and its log.
+struct DoctorFindingsList: View {
+    let groups: [DoctorFindingGroup]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(groups, id: \.severity) { group in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(group.severity.title.uppercased()) · \(group.items.count)")
+                        .font(DS.sans(10, weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(color(group.severity))
+                        .accessibilityAddTraits(.isHeader)
+                    ForEach(group.items) { item in row(item, severity: group.severity) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+    }
+
+    private func row(_ item: DoctorFindingItem, severity: DoctorFindingGroup.Severity) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(color(severity)).frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.summary)
+                    .font(DS.sans(12))
+                    .foregroundStyle(DS.Ink.p1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if let detail = item.detail {
+                    Text(detail).font(DS.mono(11)).foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                if let fix = item.fix {
+                    Text(fix).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let log = item.logURL {
+                    Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+                        .buttonStyle(.plainHit)
+                        .font(DS.sans(11))
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(severity.singular.capitalized): \(item.summary)")
+    }
+
+    private func color(_ severity: DoctorFindingGroup.Severity) -> Color {
+        switch severity {
+        case .problem: return DS.Status.err
+        case .warning: return DS.Status.warn
+        case .note:    return DS.Ink.p3
+        }
     }
 }

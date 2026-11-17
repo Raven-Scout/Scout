@@ -26,6 +26,8 @@ struct ScoutApp: App {
             pluginChecker: pluginChecker,
             engineStates: state.engineHealth.$state.eraseToAnyPublisher(),
             makeAppController: { AppUpdater(onEvent: $0) }))
+        // A clicked run notification opens that run (card C3).
+        AppDelegate.openRun = { [weak state] id in state?.openRun(id: id) }
     }
 
     var body: some Scene {
@@ -61,7 +63,7 @@ struct ScoutApp: App {
                 .environmentObject(appState)
                 .environmentObject(updates)
         } label: {
-            MenuBarIcon(status: appState.menuBarStatus, updateAvailable: updates.anyUpdateAvailable)
+            MenuBarIcon(status: appState.status, updateAvailable: updates.anyUpdateAvailable)
         }
         .menuBarExtraStyle(.window)
 

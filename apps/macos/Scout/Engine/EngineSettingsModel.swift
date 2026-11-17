@@ -31,6 +31,32 @@ nonisolated enum EngineUpgradeAction: Equatable, Sendable {
     }
 }
 
+/// One severity's worth of doctor findings in Settings ▸ Engine.
+nonisolated struct DoctorFindingGroup: Equatable, Sendable {
+    nonisolated enum Severity: Int, CaseIterable, Comparable, Sendable {
+        case problem, warning, note
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+        var title: String {
+            switch self { case .problem: "Problems"; case .warning: "Warnings"; case .note: "Notes" }
+        }
+        var singular: String {
+            switch self { case .problem: "problem"; case .warning: "warning"; case .note: "note" }
+        }
+    }
+    let severity: Severity
+    let items: [DoctorFindingItem]
+}
+
+/// One doctor finding: an install error or warning (summary only), or a
+/// run-health finding with its fix, the failing run's own line and its log.
+nonisolated struct DoctorFindingItem: Equatable, Sendable, Identifiable {
+    let id: String
+    let summary: String
+    var fix: String? = nil
+    var detail: String? = nil
+    var logURL: URL? = nil
+}
+
 /// Pure presentation model for Settings ▸ Engine (spec §5). Views stay thin;
 /// this is what the tests pin.
 nonisolated struct EngineSettingsModel: Equatable, Sendable {
@@ -125,6 +151,46 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     private static func relative(_ iso: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: iso) else { return iso }
         return relative(date)
+    }
+
+    /// Green health with warnings beside it: still usable, but not "OK" green.
+    var healthHasWarnings: Bool { healthIsOK && !(findingGroups.first { $0.severity == .warning }?.items.isEmpty ?? true) }
+
+    /// Every finding the doctor reported, install and run health together,
+    /// grouped worst first (card C3: Settings used to show only the first).
+    /// Empty groups are left out. A run-health severity this build doesn't
+    /// know is shown as a warning rather than hidden.
+    var findingGroups: [DoctorFindingGroup] {
+        guard let doctor, !state.gatesTabs else { return [] }
+        var bySeverity: [DoctorFindingGroup.Severity: [DoctorFindingItem]] = [:]
+        for (i, text) in doctor.errors.enumerated() {
+            bySeverity[.problem, default: []].append(DoctorFindingItem(id: "error.\(i)", summary: text))
+        }
+        for (i, text) in doctor.warnings.enumerated() {
+            bySeverity[.warning, default: []].append(DoctorFindingItem(id: "warning.\(i)", summary: text))
+        }
+        for (i, f) in (doctor.runHealth?.findings ?? []).enumerated() {
+            let severity: DoctorFindingGroup.Severity = switch f.severity {
+            case "red": .problem
+            case "note": .note
+            default: .warning
+            }
+            bySeverity[severity, default: []].append(DoctorFindingItem(
+                id: "\(f.id).\(i)", summary: f.summary, fix: f.fix.isEmpty ? nil : f.fix,
+                detail: f.detail, logURL: f.log.map { URL(fileURLWithPath: $0) }))
+        }
+        return DoctorFindingGroup.Severity.allCases.compactMap { severity in
+            bySeverity[severity].map { DoctorFindingGroup(severity: severity, items: $0) }
+        }
+    }
+
+    /// "2 problems · 1 warning", for the Health row; nil when there is nothing.
+    var findingCountsLabel: String? {
+        let parts = findingGroups.map { g -> String in
+            let n = g.items.count
+            return "\(n) \(n == 1 ? g.severity.singular : g.severity.title.lowercased())"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     var messages: [String] {

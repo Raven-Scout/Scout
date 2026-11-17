@@ -4,6 +4,9 @@ import SwiftUI
 
 @MainActor
 final class UsageTrackerService: ObservableObject {
+    /// Re-assigned on every change to the tracker file, even when the kept
+    /// `session` rows are equal: AppState re-reads Scout's usage on each
+    /// publish, since a runner row changes the file but not this list.
     @Published private(set) var entries: [UsageEntry] = []
 
     private let trackerURL: URL
