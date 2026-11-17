@@ -87,7 +87,7 @@ struct FeedbackTab: View {
     private var feedbackURL: URL {
         state.scoutDirectory
             .appendingPathComponent(".scout-feedback")
-            .appendingPathComponent("\(slug(for: run)).md")
+            .appendingPathComponent("\(Self.slug(for: run)).md")
     }
 
     enum LoadOutcome: Equatable {
@@ -180,10 +180,15 @@ struct FeedbackTab: View {
         }
     }
 
-    private func slug(for run: Run) -> String {
+    /// The feedback file's name: `<yyyy-MM-dd_HH-mm>_<type>`, with the log's
+    /// `-SS-PID` after the minute for a later run in the same minute.
+    static func slug(for run: Run) -> String {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd_HH-mm"
-        return "\(fmt.string(from: run.startedAt))_\(run.type.rawValue)"
+        // A later run in the same minute (seconds+PID log name) gets its own
+        // file; a minute-named run keeps the name its notes always had.
+        let suffix = SessionLogService.parseFilename(run.logPath)?.uniqueSuffix ?? ""
+        return "\(fmt.string(from: run.startedAt))\(suffix)_\(run.type.rawValue)"
     }
 
     private func makeFile(body: String, run: Run) -> String {

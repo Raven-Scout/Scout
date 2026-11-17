@@ -42,6 +42,121 @@ struct SessionLogServiceTests {
         #expect(SessionLogService.parseFilename(URL(fileURLWithPath: "/x/failures.log")) == nil)
     }
 
+    // MARK: - Unique log names (a later run in the same minute)
+
+    @Test func parseFilename_minuteNameKeepsItsIdentity() throws {
+        let parsed = try #require(SessionLogService.parseFilename(
+            URL(fileURLWithPath: "/x/scout-2026-04-20_08-03.log"), timeZone: Self.ny))
+        #expect(parsed.pid == nil)
+        #expect(parsed.uniqueSuffix == nil)
+        #expect(Calendar(identifier: .gregorian).dateComponents(in: Self.ny, from: parsed.startedAt).second == 0)
+        // The id every older app, feedback file and mobile client already knows.
+        #expect(Run.makeId(type: parsed.type, startedAt: parsed.startedAt, pid: parsed.pid)
+                == "morningBriefing-2026-04-20T12:03:00Z")
+    }
+
+    @Test func parseFilename_secondsAndPidName() throws {
+        let parsed = try #require(SessionLogService.parseFilename(
+            URL(fileURLWithPath: "/x/dreaming-2026-04-18_22-00-31-4242.log"), timeZone: Self.ny))
+        #expect(parsed.runnerScript == "run-dreaming.sh")
+        #expect(parsed.type == .dreaming)
+        #expect(parsed.pid == 4242)
+        #expect(parsed.uniqueSuffix == "-31-4242")
+        let comps = Calendar(identifier: .gregorian).dateComponents(in: Self.ny, from: parsed.startedAt)
+        #expect([comps.hour, comps.minute, comps.second] == [22, 0, 31])
+        #expect(Run.makeId(type: parsed.type, startedAt: parsed.startedAt, pid: parsed.pid)
+                == "dreaming-2026-04-19T02:00:31Z-4242")
+    }
+
+    @Test func parseFilename_rejectsMalformedUniqueNames() {
+        for name in ["scout-2026-04-20_08-03-25", "scout-2026-04-20_08-03-5-4242", "scout-2026-04-20_08-03-25-0",
+                     "scout-2026-04-20_08-03-61-4242", "scout-2026-04-20_08-03-25-42a", "scout-2026-04-20_08-03-25-4242-1",
+                     "scout-2026-04-20_08-xx"] {
+            #expect(SessionLogService.parseFilename(URL(fileURLWithPath: "/x/\(name).log")) == nil, "\(name)")
+        }
+    }
+
+    @Test func sameMinuteRunsGetDistinctIds() throws {
+        let names = ["scout-2026-04-20_08-03", "scout-2026-04-20_08-03-31-4242", "scout-2026-04-20_08-03-31-4243"]
+        let ids = try names.map { name in
+            let p = try #require(SessionLogService.parseFilename(URL(fileURLWithPath: "/x/\(name).log"), timeZone: Self.ny))
+            return Run.makeId(type: p.type, startedAt: p.startedAt, pid: p.pid)
+        }
+        #expect(Set(ids).count == 3)
+    }
+
+    /// The runner claims its log as an empty file before it writes the start
+    /// line (before unique names, the timezone step already created it empty).
+    @Test func parseBody_justClaimedEmptyLogIsRunning() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-04-19_15-00-07-4242.log")
+        try "".write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = try #require(SessionLogService.parseFilename(tmp))
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.status == .running)
+        #expect(body.exitCode == nil)
+    }
+
+    /// The bug this guards: a run skipped by the session lock in the live
+    /// run's minute used to append its skip line to the live run's log, and
+    /// the app showed the live run as skipped.
+    @Test func loadInitial_aSameMinuteSkipIsItsOwnRun() async throws {
+        let tempDir = try FileManager.default.url(
+            for: .itemReplacementDirectory, in: .userDomainMask,
+            appropriateFor: FileManager.default.temporaryDirectory, create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try "=== SCOUT run starting at Mon Apr 20 08:03:02 EDT 2026 ===\n"
+            .write(to: tempDir.appendingPathComponent("scout-2026-04-20_08-03.log"), atomically: true, encoding: .utf8)
+        try """
+        === SCOUT run starting at Mon Apr 20 08:03:31 EDT 2026 ===
+        === Another SCOUT session running (PID 4100) — skipping ===
+        """.write(to: tempDir.appendingPathComponent("scout-2026-04-20_08-03-31-4242.log"), atomically: true, encoding: .utf8)
+
+        var comps = DateComponents()
+        comps.year = 2026; comps.month = 4; comps.day = 20; comps.hour = 8; comps.minute = 6
+        comps.timeZone = Self.ny
+        let now = Calendar(identifier: .gregorian).date(from: comps)!
+        // A cost row inside both runs' match window belongs to the live run only.
+        let trackerURL = tempDir.appendingPathComponent("usage-tracker.jsonl")
+        try #"{"ts":"2026-04-20T12:04:30Z","ts_et":"t","type":"briefing","budget_cap":10,"budget_spent":0.5,"exit_code":0,"source":"session"}"#
+            .appending("\n").write(to: trackerURL, atomically: true, encoding: .utf8)
+        let tracker = await UsageTrackerService(trackerURL: trackerURL, fileEvents: NoopFS())
+        _ = try await tracker.loadInitial()
+        let service = await SessionLogService(
+            logsDirectory: tempDir, trackerService: tracker, fileEvents: NoopFS(),
+            clock: FixedClock(date: now), timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
+        )
+
+        let runs = try await service.loadInitial()
+
+        #expect(runs.count == 2)
+        #expect(Set(runs.map(\.id)).count == 2)
+        let live = try #require(runs.first { $0.logPath.lastPathComponent == "scout-2026-04-20_08-03.log" })
+        let skip = try #require(runs.first { $0.logPath.lastPathComponent == "scout-2026-04-20_08-03-31-4242.log" })
+        #expect(live.status == .running, "a skip in the live run's minute must not orphan or relabel it")
+        #expect(live.id == "morningBriefing-2026-04-20T12:03:00Z")
+        #expect(skip.status == .skippedConcurrency)
+        #expect(live.cost == Decimal(string: "0.5"))
+        #expect(skip.cost == nil)
+    }
+
+    @Test func overlayLedger_matchesEachSameMinuteRunToItsOwnRow() {
+        let t = Date(timeIntervalSince1970: 1_800_000_000)
+        let runs = [
+            Run.make(startedAt: t, status: .running, logPath: URL(fileURLWithPath: "/x/scout-2026-04-20_08-03.log")),
+            Run.make(startedAt: t.addingTimeInterval(31), status: .running,
+                     logPath: URL(fileURLWithPath: "/x/scout-2026-04-20_08-03-31-4242.log")),
+        ]
+        let out = SessionLogService.overlayLedger(runs, statuses: [
+            "scout-2026-04-20_08-03.log": .success,
+            "scout-2026-04-20_08-03-31-4242.log": .skippedConcurrency,
+        ])
+        #expect(out.map(\.status) == [.success, .skippedConcurrency])
+    }
+
     // MARK: - Body parsing
 
     @Test func parseBody_stillRunning() throws {
@@ -541,6 +656,27 @@ struct SessionLogServiceTests {
         let out = SessionLogService.resolveStaleRunning([differentTypeTerminal, onlyRunning])
         let stillRunning = out.first { $0.id == onlyRunning.id }
         #expect(stillRunning?.status == .running)
+    }
+
+    /// A skipped run never started a session, so it is no evidence that an
+    /// earlier one died; a lock skip is evidence that it is alive.
+    @Test(arguments: RunStatus.allCases.filter(\.isSkip))
+    func resolveStaleRunning_aLaterSkipDoesNotOrphan(_ skip: RunStatus) {
+        let now = Date()
+        let live = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-600), status: .running)
+        let skipped = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-300), status: skip)
+        let out = SessionLogService.resolveStaleRunning([skipped, live])
+        #expect(out.first { $0.id == live.id }?.status == .running)
+        #expect(out.first { $0.id == skipped.id }?.status == skip)
+    }
+
+    @Test(arguments: [RunStatus.success, .failure, .timeout])
+    func resolveStaleRunning_aLaterRealRunStillOrphans(_ status: RunStatus) {
+        let now = Date()
+        let stuck = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-600), status: .running)
+        let later = Run.make(type: .consolidation, startedAt: now.addingTimeInterval(-300), status: status)
+        let out = SessionLogService.resolveStaleRunning([later, stuck])
+        #expect(out.first { $0.id == stuck.id }?.status == .orphaned)
     }
 
     // MARK: - reconcile (file-event path)

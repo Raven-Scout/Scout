@@ -11,8 +11,16 @@ export SCOUT_DATA_DIR="$SCOUT_DIR"
 LOG_DIR="$SCOUT_DIR/.scout-logs"
 CLAUDE_BIN="{{CLAUDE_BIN}}"
 SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
-TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
-LOG_FILE="$LOG_DIR/scout-$TIMESTAMP.log"
+# One log per run. The run claims the minute-named log atomically (noclobber,
+# so an existing file is never truncated); if another run in the same minute
+# already holds it, this run logs to a seconds+PID name instead. Readers parse
+# both forms (scout/health.py, the app's SessionLogService).
+mkdir -p "$LOG_DIR"
+STAMP=$(date +%Y-%m-%d_%H-%M-%S)
+LOG_FILE="$LOG_DIR/scout-${STAMP%-*}.log"
+if ! ( set -C; : >"$LOG_FILE" ) 2>/dev/null; then
+    LOG_FILE="$LOG_DIR/scout-$STAMP-$$.log"
+fi
 LOCK_FILE="$LOG_DIR/.scout-session.lock"
 
 # Ensure log directory exists
