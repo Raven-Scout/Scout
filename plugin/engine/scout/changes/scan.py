@@ -48,6 +48,8 @@ def lane_of(subject: str) -> str | None:
 def classify(paths: list[tuple[str, str]], subject: str, diff_of: Callable[[str], str]) -> str | None:
     if lane_of(subject) == "update":
         return "upgrade"
+    if subject.startswith("Revert "):
+        return "rollback"
     if any(p in BRAIN_FILES and s[:1] in ("A", "M") for s, p in paths):
         return "brain-edit"
     if any(p.startswith("scripts/") and s[:1] in ("A", "M") for s, p in paths):
@@ -57,8 +59,6 @@ def classify(paths: list[tuple[str, str]], subject: str, diff_of: Callable[[str]
     for s, p in paths:
         if p.startswith("docs/wishlist/") and s[:1] in ("A", "M") and _STATUS_DONE_RE.search(diff_of(p)):
             return "wishlist-done"
-    if subject.startswith("Revert "):
-        return "rollback"
     return None
 
 
@@ -88,7 +88,14 @@ def _summary(subject: str, trailers: dict[str, str]) -> str:
 
 def _git(vault: Path, *args: str) -> str | None:
     try:
-        proc = subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
     except OSError:
         return None
     return proc.stdout if proc.returncode == 0 else None

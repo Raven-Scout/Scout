@@ -143,6 +143,18 @@ def test_revert_update_and_summary_cap(repo):
     assert len(got["brain-edit"].summary) == 120
 
 
+def test_revert_touching_brain_file_is_rollback(repo):
+    commit(repo, "SKILL.md", 'Revert "dreaming [22:12]: SKILL.md self-edit"')
+    [c] = scan(repo, since=None)
+    assert c.kind == "rollback"
+
+
+def test_non_ascii_path_is_recorded_unquoted(repo):
+    commit(repo, "scripts/café.py", "dreaming [22:16]: driver — café")
+    [c] = scan(repo, since=None)
+    assert c.files == ("scripts/café.py",)
+
+
 def test_helpers():
     assert parse_trailers("s\n\nScout-Change-Targets: a, b\nScout-Change-Governance: yes") == {
         "targets": "a, b",
