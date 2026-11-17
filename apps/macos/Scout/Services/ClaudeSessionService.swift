@@ -97,6 +97,10 @@ actor ClaudeSessionService {
     /// `customTitle` time fragment first (HHmm), then fall back to whichever
     /// session's first timestamp is closest within ±10 minutes.
     func activity(for run: Run) async -> ClaudeSessionActivity? {
+        // A skipped run never started a session. Matching by time would hand
+        // it the session of the run it was skipped for (the one holding the
+        // lock), often started in the same minute.
+        if run.status.isSkip { return nil }
         let sorted = sortedTranscripts()
 
         // Build the title fragment we expect: scout-<mode>-YYYYMMDD-HHMM.
