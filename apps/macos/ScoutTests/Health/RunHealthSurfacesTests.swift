@@ -25,6 +25,16 @@ enum RunHealthSamples {
     static let never = finding("slot.never_fired:my-own-slot")
     static let gates = finding("gates.probe_unsafe", "red", summary: "Runs were skipped: the privacy check couldn't run.")
     static let note = finding("slot.stale:evening-consolidation", "note")
+    static let stalled = RunHealth.Finding(
+        id: "scheduler.stalled", severity: "red", since: "2026-11-17T09:00:00Z",
+        summary: "The scheduler has not completed a tick since 2026-11-17T09:00:00Z.",
+        fix: "Reinstall the scheduler job: scoutctl schedule install-plist --force (macOS)", source: "events")
+    static let unknownKind = finding("slot.too_slow:morning-briefing", "red", summary: "morning-briefing ran long.")
+
+    /// Every graced id first seen `minutes` before `now`.
+    static func seen(_ ids: [String], minutesAgo minutes: Double) -> [String: Date] {
+        Dictionary(uniqueKeysWithValues: ids.map { ($0, now.addingTimeInterval(-minutes * 60)) })
+    }
 }
 
 @Suite("Run health — slot findings")
@@ -48,7 +58,7 @@ struct SlotFindingTests {
     @Test func linesSpeakPlainly() {
         #expect(RunOutcomeDisplay.slotLine(S.stale, now: S.now) == "Hasn't run for 3 days")
         #expect(RunOutcomeDisplay.slotLine(S.silent, now: S.now)
-                == "Started 5 hours ago, but Scout has no record of how the run ended")
+                == "Ran 5 hours ago, but Scout has no record of how the run ended")
         #expect(RunOutcomeDisplay.slotLine(S.never, now: S.now) == "Hasn't run yet")
         #expect(RunOutcomeDisplay.slotLine(S.finding("slot.stale:x"), now: S.now) == "Hasn't run lately")
         // A kind this build doesn't know keeps the engine's sentence, with the schedule's name.
@@ -74,6 +84,16 @@ struct SlotFindingTests {
         #expect(warnings["morning-briefing"]?.first?.text == "Hasn't run for 3 days")
         #expect(warnings["my-own-slot"]?.map(\.text) == ["Hasn't run yet"])
         #expect(RunOutcomeDisplay.slotWarnings(nil).isEmpty)
+    }
+
+    /// The Schedules views look warnings up by `Slot.key`: the key in a
+    /// `slot.*` id is that same string.
+    @Test func warningsAreKeyedBySlotKey() {
+        let findings = SmokeFixtures.slots.map { S.finding("slot.never_fired:\($0.key)") }
+        let warnings = RunOutcomeDisplay.slotWarnings(S.health(.yellow, findings), now: S.now)
+        for slot in SmokeFixtures.slots {
+            #expect(warnings[slot.key]?.map(\.text) == ["Hasn't run yet"])
+        }
     }
 
     /// The shared fixture has no `slot.*` findings: no schedule gets a line.
@@ -103,10 +123,72 @@ struct RunHealthBannerModelTests {
         #expect(p.details?.contains("Finding: gates.probe_unsafe") == true)
     }
 
-    @Test func aSlotFindingNamesItsSchedule() throws {
-        let p = try #require(RunOutcomeDisplay.bannerProblem(S.health(.red, [S.stale, S.silent, S.never]), now: S.now))
+    @Test func aSlotFindingNamesItsScheduleInPlainWords() throws {
+        let health = S.health(.red, [S.stale, S.silent, S.never])
+        let p = try #require(RunOutcomeDisplay.bannerProblem(health, firstSeen: S.seen([S.stale.id], minutesAgo: 21),
+                                                             now: S.now))
         #expect(p.title == "Morning briefing: Hasn't run for 3 days")
         #expect(p.impact == "2 more problems are on the Health page.")
+        #expect(p.fix == "Make sure the Mac is awake at schedule times, then choose Check now in Settings ▸ Engine.")
+        // The engine's own sentence and fix stay under Details.
+        #expect(p.details?.contains(S.stale.summary) == true)
+        #expect(p.details?.contains("Engine fix: \(S.stale.fix)") == true)
+    }
+
+    /// At wake the first read can see a scheduler that only looks stalled:
+    /// `scheduler.stalled` and `slot.stale:*` wait 20 minutes, as the
+    /// engine's notifier does.
+    @Test(arguments: [nil, 0.0, 5, 19.9])
+    func wakeSensitiveRedsWait(minutesAgo: Double?) {
+        let health = S.health(.red, [S.stalled, S.stale])
+        let seen = minutesAgo.map { S.seen([S.stalled.id, S.stale.id], minutesAgo: $0) } ?? [:]
+        #expect(RunOutcomeDisplay.bannerProblem(health, firstSeen: seen, now: S.now) == nil)
+    }
+
+    @Test func wakeSensitiveRedsShowOnceTheyPersist() throws {
+        let health = S.health(.red, [S.stalled, S.stale])
+        let p = try #require(RunOutcomeDisplay.bannerProblem(
+            health, firstSeen: S.seen([S.stalled.id, S.stale.id], minutesAgo: 20), now: S.now))
+        #expect(p.title == "Scout's scheduler hasn't run for 3 hours")
+        #expect(p.fix?.contains("install-plist") == false)
+        #expect(p.details?.contains("scoutctl schedule install-plist --force") == true)
+        #expect(p.impact == "1 more problem is on the Health page.")
+    }
+
+    /// A held finding doesn't hide another red, and isn't counted beside it.
+    @Test func otherRedsShowWhileOneWaits() throws {
+        let p = try #require(RunOutcomeDisplay.bannerProblem(S.health(.red, [S.stalled, S.gates]), now: S.now))
+        #expect(p.title == S.gates.summary)
+        #expect(p.impact == nil)
+    }
+
+    @Test func neverTickedScheduler() {
+        let never = RunHealth.Finding(id: "scheduler.stalled", severity: "red", since: nil,
+                                      summary: "The scheduler has never recorded a tick.", fix: "x", source: "events")
+        #expect(RunOutcomeDisplay.plainProblem(never, now: S.now).title == "Scout's scheduler has never run")
+    }
+
+    /// A schedule finding this build doesn't know: the engine's sentence,
+    /// named once, with the engine's fix.
+    @Test func anUnknownSlotKindIsNamedOnce() throws {
+        let p = try #require(RunOutcomeDisplay.bannerProblem(S.health(.red, [S.unknownKind]), now: S.now))
+        #expect(p.title == "Morning briefing ran long.")
+        #expect(p.fix == S.unknownKind.fix)
+    }
+
+    @Test func recoveryClearsTheBanner() {
+        let seen = S.seen([S.stale.id], minutesAgo: 30)
+        #expect(RunOutcomeDisplay.bannerProblem(S.health(.red, [S.stale]), firstSeen: seen, now: S.now) != nil)
+        #expect(RunOutcomeDisplay.bannerProblem(S.health(.yellow, [S.silent]), firstSeen: seen, now: S.now) == nil)
+        #expect(RunOutcomeDisplay.bannerProblem(S.health(.green, []), firstSeen: [:], now: S.now) == nil)
+    }
+
+    @Test func firstSeenCarriesForward() {
+        let earlier = S.now.addingTimeInterval(-3600)
+        let next = RunLedgerService.firstSeen([S.stale.id: earlier, "cleared": earlier],
+                                              health: S.health(.red, [S.stale, S.gates]), now: S.now)
+        #expect(next == [S.stale.id: earlier, S.gates.id: S.now])
+        #expect(RunLedgerService.firstSeen(next, health: nil, now: S.now).isEmpty)
     }
 
     @Test func redWithoutFindingsStillSaysSo() throws {
@@ -132,8 +214,10 @@ struct RunHealthSurfacesSmokeTests {
     @Test("the banner renders when red and is empty otherwise")
     func bannerRenders() throws {
         let red = try RunLedgerContractTests.fixture().health
-        for health in [red, S.health(.red, [S.stale, S.silent]), S.health(.yellow, [S.silent]), nil] {
-            ViewHost.render(RunHealthBanner(health: health, openHealth: {}, now: S.now),
+        let seen = S.seen([S.stale.id, S.stalled.id], minutesAgo: 30)
+        for health in [red, S.health(.red, [S.stale, S.silent]), S.health(.red, [S.stalled]),
+                       S.health(.yellow, [S.silent]), nil] {
+            ViewHost.render(RunHealthBanner(health: health, firstSeen: seen, openHealth: {}, now: S.now),
                             size: CGSize(width: 900, height: 200))
         }
     }

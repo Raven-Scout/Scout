@@ -96,7 +96,7 @@ nonisolated enum RunOutcomeDisplay {
     struct SlotWarning: Equatable, Sendable, Identifiable {
         let text: String
         let severity: Problem.Severity
-        /// The finding's id, for `Identifiable` and for the tooltip.
+        /// The finding's id, for `Identifiable`.
         let id: String
     }
 
@@ -112,8 +112,9 @@ nonisolated enum RunOutcomeDisplay {
         case "never_fired":
             return "Hasn't run yet"
         case "fired_silent":
-            guard let since else { return "Started, but Scout has no record of how the run ended" }
-            return "Started \(age(now.timeIntervalSince(since))) ago, but Scout has no record of how the run ended"
+            // `since` is the last fire: usually the session's end, not its start.
+            guard let since else { return "Ran, but Scout has no record of how the run ended" }
+            return "Ran \(age(now.timeIntervalSince(since))) ago, but Scout has no record of how the run ended"
         default:
             // A kind this build doesn't know: the engine's own sentence, with
             // the schedule's name in place of its key.
@@ -149,27 +150,89 @@ nonisolated enum RunOutcomeDisplay {
 
     // MARK: The Control Center banner
 
+    /// How long a wake-sensitive finding must persist before the banner
+    /// shows it. At wake, launchd fires the missed heartbeat and the schedule
+    /// tick together, and the first read can see a scheduler that only looks
+    /// stalled. Mirrors the engine notifier's `GRACE` (`health_notify.py`).
+    static let bannerGrace: TimeInterval = 20 * 60
+
+    /// Findings the banner holds back for `bannerGrace`: the engine
+    /// notifier's `GRACED_PREFIXES`.
+    static func isGraced(_ id: String) -> Bool {
+        id.hasPrefix("scheduler.stalled") || id.hasPrefix("slot.stale:")
+    }
+
     /// The red run-health problem the Control Center leads with, or nil
     /// unless run health is red. The worst finding speaks; the rest are
-    /// counted and left to the Health page.
-    static func bannerProblem(_ health: RunHealth?, now: Date = Date()) -> Problem? {
+    /// counted and left to the Health page. A graced finding is left out
+    /// until `firstSeen` (`RunLedgerService.firstSeen`) says it has persisted
+    /// for `bannerGrace`; while only graced reds make health red, there is
+    /// no banner. The Health page and its sidebar dot don't wait.
+    static func bannerProblem(_ health: RunHealth?, firstSeen: [String: Date] = [:],
+                              now: Date = Date()) -> Problem? {
         guard let health, health.severity == .red else { return nil }
         let actionable = health.findings.filter { Group(severity: $0.severity) != .note }
-        guard let worst = actionable.first(where: { Group(severity: $0.severity) == .red }) ?? actionable.first
+        func held(_ f: RunHealth.Finding) -> Bool {
+            guard isGraced(f.id) else { return false }
+            guard let seen = firstSeen[f.id] else { return true }
+            return now.timeIntervalSince(seen) < bannerGrace
+        }
+        let shown = actionable.filter { !held($0) }
+        let anyHeld = shown.count < actionable.count
+        guard let worst = shown.first(where: { Group(severity: $0.severity) == .red })
+                ?? (anyHeld ? nil : shown.first)
         else {
+            if anyHeld { return nil }
             return Problem(severity: .error, title: overall(.red),
                            fix: "Open the Health page to see what went wrong.")
         }
-        var problem = Problem(finding: worst)
+        var problem = plainProblem(worst, now: now)
         problem.severity = .error
-        if let (_, key) = slotFinding(worst.id) {
-            problem.title = "\(DisplayName.slotKey(key)): \(slotLine(worst, now: now))"
-        }
-        let more = actionable.count - 1
+        let more = shown.count - 1
         if more > 0 {
             problem.impact = more == 1 ? "1 more problem is on the Health page."
                                        : "\(more) more problems are on the Health page."
         }
+        return problem
+    }
+
+    /// `Problem(finding:)` in plain words for the findings the engine words
+    /// in its own terms (raw times, `scoutctl` commands): the scheduler and
+    /// the three schedule kinds. The engine's sentence and fix stay under
+    /// Details. Any other finding is `Problem(finding:)` as it is.
+    static func plainProblem(_ finding: RunHealth.Finding, now: Date = Date()) -> Problem {
+        var problem = Problem(finding: finding)
+        let awakeFix = "Make sure the Mac is awake at schedule times, then choose Check now in Settings ▸ Engine."
+        let plain: (title: String, fix: String)?
+        if finding.id == "scheduler.stalled" {
+            let title = RunLedgerTime.parse(finding.since).map {
+                "Scout's scheduler hasn't run for \(age(now.timeIntervalSince($0)))"
+            } ?? "Scout's scheduler has never run"
+            plain = (title, "Choose Check now in Settings ▸ Engine. If the scheduler still hasn't run, reinstall it: the command is under Details.")
+        } else if let (kind, key) = slotFinding(finding.id) {
+            let name = DisplayName.slotKey(key)
+            let line = slotLine(finding, now: now)
+            switch kind {
+            case "stale", "never_fired":
+                plain = ("\(name): \(line)", awakeFix)
+            case "fired_silent":
+                plain = ("\(name): \(line)",
+                         "Open the run's log from the Health page to see how far it got. If it keeps happening, update Scout.")
+            default:
+                // A kind this build doesn't know: `slotLine` is the engine's
+                // sentence with the name already in it, and the engine's fix
+                // is the only one there is.
+                problem.title = line
+                return problem
+            }
+        } else {
+            plain = nil
+        }
+        guard let plain else { return problem }
+        problem.title = plain.title
+        problem.fix = plain.fix
+        problem.details = [finding.summary, finding.fix.isEmpty ? nil : "Engine fix: \(finding.fix)", problem.details]
+            .compactMap { $0 }.joined(separator: "\n")
         return problem
     }
 }

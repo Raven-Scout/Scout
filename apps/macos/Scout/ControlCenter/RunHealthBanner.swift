@@ -7,12 +7,15 @@ import SwiftUI
 /// audit C8).
 struct RunHealthBanner: View {
     let health: RunHealth?
+    /// `RunLedgerService.firstSeen`: holds wake-sensitive findings back
+    /// until they have persisted.
+    var firstSeen: [String: Date] = [:]
     let openHealth: @MainActor () -> Void
     /// The clock the finding's age is read against; tests pin it.
     var now: Date = Date()
 
     var body: some View {
-        if let problem = RunOutcomeDisplay.bannerProblem(health, now: now) {
+        if let problem = RunOutcomeDisplay.bannerProblem(health, firstSeen: firstSeen, now: now) {
             ProblemView(problem: problem,
                         actions: [ProblemAction("Open Health", perform: openHealth)],
                         style: .banner)

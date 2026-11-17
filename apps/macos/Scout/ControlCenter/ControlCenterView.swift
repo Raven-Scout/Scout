@@ -76,7 +76,8 @@ struct ControlCenterView: View {
             VStack(alignment: .leading, spacing: 0) {
                 PowerStateBanner(service: state.powerStateService)
                 ConnectorAlertBanner()
-                RunHealthBanner(health: state.runLedgerService.health) {
+                RunHealthBanner(health: state.runLedgerService.health,
+                                firstSeen: state.runLedgerService.firstSeen) {
                     state.requestedSidebar = .health
                 }
                 header
