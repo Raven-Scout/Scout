@@ -217,7 +217,15 @@ struct KnowledgeBaseView: View {
                     selectedPath = KnowledgeBaseService.relativePath(of: url, in: service.scoutDirectory)
                 },
                 onRenameProblem: { renameProblem = $0 },
-                onOverview: { selectedPath = nil }
+                onOverview: { selectedPath = nil },
+                onMoved: { from, to in
+                    // Follow an undone or redone rename only if the note is
+                    // still the one on screen.
+                    let fromPath = KnowledgeBaseService.relativePath(of: from, in: service.scoutDirectory)
+                    if selectedPath == fromPath {
+                        selectedPath = KnowledgeBaseService.relativePath(of: to, in: service.scoutDirectory)
+                    }
+                }
             )
             .id(node.id)
         } else {

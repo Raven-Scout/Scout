@@ -653,18 +653,11 @@ struct TaskCardView: View {
             .textSelection(.enabled)
     }
 
+    /// The shared write-problem wording (C10): what happened and what to do.
+    /// Raw engine output stays behind the problem's details.
     private func describe(_ err: ActionItemsWriterError) -> String {
-        switch err {
-        case .cliNonZeroExit(_, let stderr, let kind):
-            switch kind {
-            case .noMatch:     return "Task may have been edited externally — refreshing.\n\(stderr)"
-            case .ambiguous:   return "Subject matched multiple tasks.\n\(stderr)"
-            case .environment: return "Python environment problem.\n\(stderr)"
-            case .other:       return stderr.isEmpty ? "Write failed." : stderr
-            }
-        case .processFailed(let e):
-            return "Process failed: \(e.localizedDescription)"
-        }
+        let problem = WriteProblem.from(err, action: "save that change")
+        return "\(problem.title). \(problem.message)"
     }
 
     /// Shared "MMM d" formatter — DateFormatter init is expensive, and this

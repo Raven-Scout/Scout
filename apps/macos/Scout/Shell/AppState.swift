@@ -104,6 +104,8 @@ final class AppState: ObservableObject {
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
     let actionItemsWriterBox: ActionItemsWriterBox
+    /// Undo for vault writes, shared by every page in the main window (C10).
+    let vaultUndo = VaultUndoController()
     let actionItemsEnvState: ActionItemsEnvironmentState
     let scoutDirectory: URL
     let actionItemsDirectory: URL

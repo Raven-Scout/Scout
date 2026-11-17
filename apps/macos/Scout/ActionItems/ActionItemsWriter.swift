@@ -44,6 +44,76 @@ enum WriteOp: Sendable {
         }
     }
 
+    /// Edit-menu name: "Undo Mark Done".
+    var actionName: String {
+        switch self {
+        case .addComment:    return "Add Comment"
+        case .deleteComment: return "Delete Comment"
+        case .editComment:   return "Edit Comment"
+        case .markDone:      return "Mark Done"
+        case .reopen:        return "Reopen"
+        case .snooze:        return "Snooze"
+        }
+    }
+
+    /// The engine's own inverse, when it has one: mark-done and reopen undo
+    /// each other by `[#TAG]`, which stays correct even after a scheduled run
+    /// rewrote other lines of the file. Every other op is undone by restoring
+    /// the file's bytes.
+    var inverse: WriteOp? {
+        guard shortPrefix != nil else { return nil }
+        switch self {
+        case .markDone(let s, let p): return .reopen(subject: s, shortPrefix: p)
+        case .reopen(let s, let p):   return .markDone(subject: s, shortPrefix: p)
+        default: return nil
+        }
+    }
+
+    /// The line change this op makes to the day file: one line inserted
+    /// (snooze marker, new comment), changed (checkbox, edited comment) or
+    /// removed (deleted comment). A before/after pair that differs by
+    /// anything else also holds someone else's edit, made while scoutctl ran,
+    /// so it isn't byte-undone. nil: no shape is known (multi-line text).
+    var expectedLineDelta: LineDelta? {
+        switch self {
+        case .snooze:
+            return LineDelta(removed: 0, added: 1)
+        case .addComment(_, _, let text, _):
+            return text.contains(where: \.isNewline) ? nil : LineDelta(removed: 0, added: 1)
+        case .editComment(_, _, _, let text):
+            return text.contains(where: \.isNewline) ? nil : LineDelta(removed: 1, added: 1)
+        case .markDone, .reopen:
+            return LineDelta(removed: 1, added: 1)
+        case .deleteComment:
+            return LineDelta(removed: 1, added: 0)
+        }
+    }
+
+    /// Whether the changed lines are this op's own: the checkbox line holds
+    /// the task's tag (or text), the inserted line is this snooze marker or
+    /// this comment, the deleted line holds the selected text. Closes the
+    /// cases a line count alone can't: a run editing a line at the same
+    /// moment as an op that changed nothing, or as one of the same shape.
+    func isOwnText(_ delta: LineDelta) -> Bool {
+        func has(_ lines: [String], _ needle: String) -> Bool {
+            lines.contains { $0.localizedCaseInsensitiveContains(needle) }
+        }
+        let task = shortPrefix.map { "[#\($0)]" } ?? subject
+        switch self {
+        case .markDone, .reopen:
+            return has(delta.removedLines, task) && has(delta.addedLines, task)
+        case .snooze(_, _, let until, _):
+            return has(delta.addedLines, "snoozed-until: \(ActionItemsDay.stem(for: until))")
+        case .addComment(_, _, let text, _):
+            return has(delta.addedLines, text)
+        case .editComment(_, _, _, let text):
+            return has(delta.addedLines, text) && !has(delta.removedLines, text)
+        case .deleteComment(_, _, let selector):
+            if case .text(let text) = selector { return has(delta.removedLines, text) }
+            return true
+        }
+    }
+
     var shortPrefix: String? {
         switch self {
         case .addComment(_, let p, _, _),
@@ -83,10 +153,8 @@ enum WriteOp: Sendable {
     ///   comment from the app read `scout: <author>: <text>` and parsed as a
     ///   comment from Scout. The name is folded by `CommentAuthor.handle`
     ///   into the shape both parsers accept.
-    /// - Reopen routes through `mark-done --undo`. scoutctl doesn't currently
-    ///   expose `--undo` (BACKLOG: add scoutctl mark-done --undo); the call
-    ///   will fail with a clear "no such option" error until the plugin
-    ///   catches up.
+    /// - Reopen routes through `mark-done --undo`, which flips `[x]` back to
+    ///   `[ ]` and refuses an ambiguous match rather than guessing.
     fileprivate func scoutctlArguments(dailyFilePath: URL) -> [String] {
         var args = ["action-items", scoutctlSubcommand, dailyFilePath.path]
         if let prefix = shortPrefix {
@@ -127,12 +195,17 @@ enum ActionItemsWriterError: Error, Equatable {
     enum Classification: Equatable { case noMatch, ambiguous, environment, other }
     case cliNonZeroExit(exitCode: Int32, stderr: String, classification: Classification)
     case processFailed(Error)
+    /// A task with no `[#TAG]` is found by its text, so a day file that
+    /// changed since the list was shown could hand the write a different
+    /// line. Refused instead (C10).
+    case stale(file: String)
 
     static func == (lhs: ActionItemsWriterError, rhs: ActionItemsWriterError) -> Bool {
         switch (lhs, rhs) {
         case let (.cliNonZeroExit(a, b, c), .cliNonZeroExit(d, e, f)):
             return a == d && b == e && c == f
         case (.processFailed, .processFailed): return true
+        case let (.stale(a), .stale(b)): return a == b
         default: return false
         }
     }
@@ -140,6 +213,11 @@ enum ActionItemsWriterError: Error, Equatable {
 
 struct WriteResult: Sendable {
     let stderr: String
+    /// The day file's bytes before and after, for undo. nil when the op
+    /// changed nothing, or the file couldn't be read back.
+    var change: VaultChange? = nil
+    /// Set when the write changed the file but has no undo, saying why.
+    var undoUnavailable: UndoUnavailable? = nil
 }
 
 /// Serializes action-item mutations through `scoutctl action-items <op>`.
@@ -186,14 +264,20 @@ actor ActionItemsWriter {
 
     /// Submit a write. Submissions are strictly serialized — only one CLI
     /// runs end-to-end at a time, even across concurrent callers.
+    ///
+    /// `shownDigest` is the SHA-256 of the day file the list was parsed from.
+    /// An op without a `[#TAG]` is refused with `.stale` when the file no
+    /// longer hashes to it; a tagged op is resolved by scoutctl on the current
+    /// bytes, so it needs no such check.
     @discardableResult
-    func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
+    func submit(_ op: WriteOp, displayedDate: Date, shownDigest: Data? = nil) async throws -> WriteResult {
         let previous = tail
         let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
+                shownDigest: shownDigest,
                 scoutctl: scoutctl,
                 argumentsPrefix: argumentsPrefix,
                 actionItemsDirectory: actionItemsDirectory,
@@ -206,9 +290,22 @@ actor ActionItemsWriter {
         return try await task.value
     }
 
+    /// Undo or redo a change this writer made, in the same serial queue as
+    /// its writes, then commit the file.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [gitService, scoutDirectory] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
+    }
+
     private static func perform(
         op: WriteOp,
         displayedDate: Date,
+        shownDigest: Data?,
         scoutctl: URL,
         argumentsPrefix: [String],
         actionItemsDirectory: URL,
@@ -218,6 +315,13 @@ actor ActionItemsWriter {
     ) async throws -> WriteResult {
         let dateISO = ActionItemsDay.stem(for: displayedDate)
         let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
+
+        // Stale check and undo baseline. A file we can't read here is left to
+        // scoutctl to report; the write just won't be undoable.
+        let before = try? FileSnapshot.capture(dailyFile)
+        if op.shortPrefix == nil, let shownDigest, let before, before.digest != shownDigest {
+            throw ActionItemsWriterError.stale(file: dailyFile.lastPathComponent)
+        }
 
         let result: ProcessResult
         do {
@@ -241,11 +345,32 @@ actor ActionItemsWriter {
                 exitCode: result.exitCode, stderr: stderr, classification: cls)
         }
 
+        // Read "after" the moment scoutctl exits, before the commit, and keep
+        // the change only if it is exactly this op's own line edit: a run that
+        // wrote the day while scoutctl ran would otherwise be in the pair, and
+        // undo would drop its edit along with ours.
+        let after = try? FileSnapshot.capture(dailyFile)
+        let (change, unavailable) = Self.undoCapture(op: op, before: before, after: after)
+
         let slug = Self.slugify(op.subject)
         let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
 
-        return WriteResult(stderr: stderr)
+        return WriteResult(stderr: stderr, change: change, undoUnavailable: unavailable)
+    }
+
+    /// The byte-undoable change for `op`, or why there is none. (nil, nil)
+    /// when nothing changed.
+    static func undoCapture(op: WriteOp, before: FileSnapshot?, after: FileSnapshot?)
+        -> (change: VaultChange?, unavailable: UndoUnavailable?)
+    {
+        guard let before, let after else { return (nil, .unreadable) }
+        guard let change = VaultChange(actionName: op.actionName, before: [before], after: [after]) else {
+            return (nil, nil)
+        }
+        guard let expected = op.expectedLineDelta else { return (nil, .multiLineText) }
+        let own = before.exists && change.files.allSatisfy { $0.lineDelta == expected && op.isOwnText($0.lineDelta) }
+        return own ? (change, nil) : (nil, .mixedEdit)
     }
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last

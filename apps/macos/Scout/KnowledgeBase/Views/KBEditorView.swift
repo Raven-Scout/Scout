@@ -21,6 +21,13 @@ struct KBEditorView: View {
     /// Called when the user clicks the breadcrumb root — parent clears the
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
+    /// Called when an undo or redo of a rename moves a note from the first
+    /// URL to the second, so the parent can follow it if it's still showing
+    /// the note.
+    var onMoved: ((URL, URL) -> Void)? = nil
+
+    @EnvironmentObject private var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     private enum Mode: String { case read, rich, source }
 
@@ -136,7 +143,7 @@ struct KBEditorView: View {
             Button("Delete", role: .destructive) { performDelete() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes \(node.relativePath) and commits the deletion. This can't be undone from the app.")
+            Text("This removes \(node.relativePath) and commits the deletion. You can undo it with Edit ▸ Undo.")
         }
         .sheet(isPresented: $showRename) { renameSheet }
     }
@@ -365,9 +372,12 @@ struct KBEditorView: View {
         let contents = draft
         Task {
             do {
-                try await writer.save(fileURL: node.url, contents: contents,
-                                      baselineContents: captured, label: node.displayName)
-                await MainActor.run { markSaved(contents) }
+                let change = try await writer.save(fileURL: node.url, contents: contents,
+                                                   baselineContents: captured, label: node.displayName)
+                await MainActor.run {
+                    markSaved(contents)
+                    registerUndo(change)
+                }
             } catch KBWriterError.conflict {
                 await MainActor.run { isSaving = false; showConflict = true }
             } catch {
@@ -379,10 +389,51 @@ struct KBEditorView: View {
                     } else {
                         isSaving = false
                     }
-                    errorMessage = KBWriterError.message(for: error)
+                    errorMessage = WriteProblem.from(error, action: "change the note").message
                 }
             }
         }
+    }
+
+    private func registerUndo(_ change: VaultChange?) {
+        guard let change else { return }
+        let writer = writer
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await writer.restore(change, direction) },
+            with: undoManager
+        ) { [service] in service.reload() }
+    }
+
+    /// Undo of a rename moves the note back; its unsaved draft and the
+    /// selection follow it, so a dirty draft can't be saved to the old name
+    /// and recreate it. Redo moves both forward again.
+    private func registerRenameUndo(_ change: VaultChange?, from original: URL, to dest: URL) {
+        guard let change else { return }
+        vaultUndo.register(
+            Self.renameUndoStep(change, from: original, to: dest, writer: writer,
+                                drafts: service.drafts, onMoved: onMoved),
+            with: undoManager
+        ) { [service] in service.reload() }
+    }
+
+    /// The undo step for a rename: the file, its draft and (through
+    /// `onMoved`) the selection move back on undo and forward on redo.
+    static func renameUndoStep(
+        _ change: VaultChange, from original: URL, to dest: URL,
+        writer: KnowledgeBaseFileWriter, drafts: KBDraftStore, onMoved: ((URL, URL) -> Void)?
+    ) -> UndoStep {
+        UndoStep(
+            actionName: change.actionName,
+            undo: {
+                try await writer.restore(change, .undo)
+                drafts.move(from: dest, to: original)
+                onMoved?(dest, original)
+            },
+            redo: {
+                try await writer.restore(change, .redo)
+                drafts.move(from: original, to: dest)
+                onMoved?(original, dest)
+            })
     }
 
     /// The user deleted the file on purpose: drop its draft, and stop the
@@ -403,13 +454,13 @@ struct KBEditorView: View {
     private func performDelete() {
         Task {
             do {
-                try await writer.delete(fileURL: node.url, label: node.displayName)
-                await MainActor.run { forgetDraft(); service.reload(); onDeleted() }
+                let change = try await writer.delete(fileURL: node.url, label: node.displayName)
+                await MainActor.run { forgetDraft(); service.reload(); onDeleted(); registerUndo(change) }
             } catch {
                 await MainActor.run {
                     // The removal itself succeeded when only the commit failed.
                     if case KBWriterError.commitFailed = error { forgetDraft(); service.reload(); onDeleted() }
-                    errorMessage = KBWriterError.message(for: error)
+                    errorMessage = WriteProblem.from(error, action: "change the note").message
                 }
             }
         }
@@ -421,8 +472,14 @@ struct KBEditorView: View {
         let planned = try? KnowledgeBaseFileWriter.renameDestination(for: source, to: newName)
         Task {
             do {
-                let dest = try await writer.rename(fileURL: source, to: newName)
-                await MainActor.run { finishRename(from: source, to: dest) }
+                let (dest, change) = try await writer.renameReturningChange(fileURL: source, to: newName)
+                await MainActor.run {
+                    finishRename(from: source, to: dest)
+                    // Undo only when the rename fully succeeded: a rename
+                    // whose commit failed threw before its change was
+                    // captured, so it has nothing safe to restore.
+                    registerRenameUndo(change, from: source, to: dest)
+                }
             } catch {
                 await MainActor.run {
                     switch Self.renameOutcome(after: error, planned: planned) {
