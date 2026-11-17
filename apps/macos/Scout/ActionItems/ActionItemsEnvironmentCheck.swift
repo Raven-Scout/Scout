@@ -12,6 +12,8 @@ struct ActionItemsEnvironmentResult: Equatable, Sendable {
     let ok: Bool
     /// One-line diagnostic shown in the env banner when `ok == false`.
     let message: String?
+    /// The engine runs but predates `action-items`: an update fixes it.
+    var engineTooOld: Bool = false
 
     /// Convenience for view code that just wants a yes/no.
     static let okResult = ActionItemsEnvironmentResult(ok: true, message: nil)
@@ -62,7 +64,8 @@ final class ActionItemsEnvironmentCheck: @unchecked Sendable {
                 ok: false,
                 message: stale
                     ? "scoutctl is too old — update scout-plugin to use Action Items writes."
-                    : "scoutctl action-items unavailable: \(detail)"
+                    : "scoutctl action-items unavailable: \(detail)",
+                engineTooOld: stale
             )
         }
         return .okResult

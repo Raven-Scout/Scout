@@ -55,6 +55,7 @@ struct SessionsHeader: View {
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .fixedSize()
+                .glossaryHelp(.session)
             TimelineView(.periodic(from: .now, by: 10)) { context in
                 Text(SessionsFormat.freshness(
                     lastRefreshAt: service.lastRefreshAt,

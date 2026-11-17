@@ -11,7 +11,7 @@ struct TypePill: View {
             Circle()
                 .fill(DS.SlotType.color(for: type))
                 .frame(width: 6, height: 6)
-            Text(type.rawValue.capitalized)
+            Text(type.displayName)
                 .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p2)
         }

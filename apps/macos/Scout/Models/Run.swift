@@ -54,37 +54,22 @@ extension RunStatus {
     /// run, never a running or orphaned one.
     var isSkip: Bool { skipReason != nil }
 
-    /// Why a skipped run didn't run, in the owner's words; nil for every
-    /// status that isn't a skip.
+    /// Why a skipped run didn't run, in the owner's words ("Over budget");
+    /// nil for every status that isn't a skip. The words come from
+    /// `DisplayName.skipReason`, so they match the run's status name
+    /// ("Skipped: over budget") everywhere.
     var skipReason: String? {
         switch self {
-        case .skippedBudget:      return "Budget limit reached"
-        case .skippedConcurrency: return "Another session was running"
-        case .skippedGates:       return "Privacy checks didn't load"
-        case .skippedSandbox:     return "Couldn't protect this run"
-        case .skippedRuntime:     return "Agent wasn't allowed to run"
-        case .skippedLease:       return "Another app was using the vault"
-        case .skippedRedundant:   return "A run had just finished"
+        case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox,
+             .skippedRuntime, .skippedLease, .skippedRedundant:
+            return DisplayName.skipReason(rawValue)
         case .scheduled, .running, .success, .failure, .timeout, .orphaned, .rateLimited: return nil
         }
     }
 }
 
-extension RunType {
-    /// Human-readable name without embedded times — the schedule rows already
-    /// show the time, so the display label only needs to convey the kind of
-    /// work ("Consolidation", "Briefing").
-    var displayName: String {
-        switch self {
-        case .morningBriefing:    return "Morning briefing"
-        case .weekendBriefing:    return "Weekend briefing"
-        case .consolidation:      return "Consolidation"
-        case .dreaming:           return "Dreaming"
-        case .research:           return "Research"
-        case .manual:             return "Manual run"
-        }
-    }
-}
+// `RunType.displayName` and `RunStatus.displayName` live in
+// `Utilities/PlainLanguage/DisplayName.swift`, with every other engine label.
 
 extension RunType {
     /// Map a slot key (emitted by `scoutctl schedule list-upcoming`) to a

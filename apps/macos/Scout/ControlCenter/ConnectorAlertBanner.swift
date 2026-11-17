@@ -49,12 +49,10 @@ struct ConnectorAlertBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(alerts, id: \.fingerprint) { alert in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(alert.level.rawValue) · \(alert.connector)")
-                        .font(DS.sans(12, weight: .semibold))
-                        .foregroundStyle(DS.Ink.p1)
-                    Text(alert.reason)
-                        .font(DS.mono(11.5))
-                        .foregroundStyle(DS.Ink.p3)
+                    // Per-connector fix (claude.ai, gh, the Chrome extension…)
+                    // from `DisplayName.connectorFix`; the roster's own
+                    // command-level advice is behind Details.
+                    ProblemView(problem: Problem(connectorAlert: alert), style: .inline)
                     Button("Acknowledge") {
                         state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
                     }
@@ -69,28 +67,8 @@ struct ConnectorAlertBanner: View {
     }
 
     private func summary(for alert: ConnectorAlert, moreCount: Int) -> String {
-        let base = "\(displayName(for: alert.connector)) connector: \(alert.level.rawValue) — \(alert.reason)"
+        let p = Problem(connectorAlert: alert)
+        let base = "\(p.title): \(p.impact ?? "")"
         return moreCount > 0 ? "\(base)  (+\(moreCount) more)" : base
-    }
-
-    private func displayName(for connector: String) -> String {
-        // Same labels as the rail card's header row, duplicated locally;
-        // anything unlisted gets the rail card's prettifier rather than the
-        // raw key.
-        // Alert keys are pre-canonicalized by `ConnectorAlert.parseFile`, so
-        // we only need the canonical entries here.
-        switch connector {
-        case "mcp:claude_ai_Slack":             return "Slack"
-        case "mcp:claude_ai_Linear":            return "Linear"
-        case "mcp:claude_ai_Gmail":             return "Gmail"
-        case "mcp:claude_ai_Google_Calendar":   return "Calendar"
-        case "mcp:claude_ai_Granola":           return "Granola"
-        case "mcp:fathom":                      return "Fathom"
-        case "mcp:claude_ai_Google_Drive":      return "Drive"
-        case "github":                          return "GitHub"
-        case "mcp:claude-in-chrome":            return "Chrome"
-        default:
-            return ConnectorHealthRailCard.heuristicLabel(for: connector)
-        }
     }
 }

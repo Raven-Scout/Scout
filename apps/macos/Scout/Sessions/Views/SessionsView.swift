@@ -6,6 +6,7 @@ import SwiftUI
 /// the Schedules page. Watching runs only while this page is on screen.
 struct SessionsView: View {
     @EnvironmentObject var service: SessionIndexService
+    @Environment(\.openSettings) private var openSettings
 
     @SceneStorage("sessionsView") private var viewMode: SessionsViewMode = .board
     @State private var filter = SessionsFilter()
@@ -101,34 +102,56 @@ struct SessionsView: View {
 
     @ViewBuilder
     private var banner: some View {
-        switch service.availability {
-        case .engineTooOld:
-            bannerRow("Sessions needs scout-plugin 0.11.0 or later. Run /scout-update, then come back.",
-                      symbol: "exclamationmark.triangle.fill", tint: DS.Status.warn)
-        case .engineMissing:
-            bannerRow(service.lastError ?? "scoutctl not found — check that scout-plugin is installed.",
-                      symbol: "xmark.octagon.fill", tint: DS.Status.err)
-        case .unsupportedSchema(let version):
-            bannerRow("The session index is schema v\(version); this Scout reads v\(SessionIndex.supportedSchemaVersion). Update Scout. Showing the last index it could read.",
-                      symbol: "exclamationmark.triangle.fill", tint: DS.Status.warn)
-        case .ok:
-            if let error = service.lastError {
-                bannerRow(error, symbol: "xmark.octagon.fill", tint: DS.Status.err)
-            } else if let unreadable = service.index?.unreadableSessions, unreadable > 0 {
-                bannerRow("\(unreadable) session\(unreadable == 1 ? "" : "s") in the index couldn't be read and \(unreadable == 1 ? "is" : "are") not shown.",
-                          symbol: "info.circle", tint: DS.Ink.p3)
-            }
+        if let problem = Self.problem(availability: service.availability,
+                                      lastError: service.lastError,
+                                      unreadable: service.index?.unreadableSessions ?? 0) {
+            ProblemView(problem: problem, actions: actions(for: problem))
+                .padding(.horizontal, 24)
+                .padding(.vertical, 8)
         }
     }
 
-    private func bannerRow(_ text: String, symbol: String, tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            Text(text).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1).textSelection(.enabled)
-            Spacer(minLength: 0)
+    private func actions(for problem: Problem) -> [ProblemAction] {
+        switch problem.severity {
+        case .info: return []
+        default:
+            return [.retry { Task { await service.refreshFast() } },
+                    ProblemAction("Open Settings") { openSettings() }]
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 9)
-        .background(tint.opacity(0.12))
+    }
+
+    /// What the banner says, in plain words; the engine's own message goes
+    /// to Details.
+    static func problem(availability: SessionIndexService.Availability,
+                        lastError: String?, unreadable: Int) -> Problem? {
+        switch availability {
+        case .engineTooOld:
+            return .engineTooOld("Sessions", details: lastError
+                ?? "Sessions needs scout-plugin 0.11.0 or later (scoutctl session index). In Claude Code: /scout-update")
+        case .engineMissing:
+            return .engineUnavailable("Sessions", details: lastError ?? "scoutctl not found")
+        case .unsupportedSchema(let version):
+            return Problem(
+                severity: .warning,
+                title: "This version of Scout can't read the newest session list",
+                impact: "You're seeing the last list it could read.",
+                fix: "Update Scout from Scout ▸ Check for Updates….",
+                details: "Session index schema v\(version); this app reads v\(SessionIndex.supportedSchemaVersion).")
+        case .ok:
+            if let lastError {
+                return Problem(
+                    severity: .error,
+                    title: "Couldn't refresh the session list",
+                    impact: "The list may be out of date.",
+                    fix: "Try again. If it keeps failing, copy the details when asking for help.",
+                    details: lastError)
+            }
+            if unreadable > 0 {
+                return Problem(
+                    severity: .info,
+                    title: "\(unreadable) session\(unreadable == 1 ? "" : "s") couldn't be read and \(unreadable == 1 ? "isn't" : "aren't") shown.")
+            }
+            return nil
+        }
     }
 }
