@@ -11,6 +11,18 @@ struct ControlCenterView: View {
     @EnvironmentObject var state: AppState
     @State private var dayFilter: Date? = nil
     @State private var detail: DetailPresentation? = nil
+    /// The page's width, for `railBelow(pageWidth:)`.
+    @State private var pageWidth: CGFloat?
+
+    /// Below this page width the rail moves under the main column. Beside it,
+    /// a 320 pt rail left the Now / Today / Next strip about 450 pt at the
+    /// minimum window, which cut each value to a few letters (UI audit C6).
+    static let railBesideFrom: CGFloat = 1000
+
+    nonisolated static func railBelow(pageWidth: CGFloat?) -> Bool {
+        guard let pageWidth else { return false }
+        return pageWidth < railBesideFrom
+    }
 
     /// How the right-side detail panel is being shown — collapsed (alongside
     /// the rail), side (alongside the primary column), or full (overlays the
@@ -65,16 +77,27 @@ struct ControlCenterView: View {
                 PowerStateBanner(service: state.powerStateService)
                 ConnectorAlertBanner()
                 header
-                HStack(alignment: .top, spacing: 28) {
-                    primaryColumn
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    // The side run-detail is rendered inside primaryColumn next
-                    // to the Sessions list (issue #54) so it tracks that section
-                    // rather than anchoring to the top of the whole column. The
-                    // rail therefore shows whenever a side detail isn't open.
-                    if !isShowingSideDetail {
-                        rail
-                            .frame(width: 320)
+                if Self.railBelow(pageWidth: pageWidth) {
+                    VStack(alignment: .leading, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The side run-detail is rendered inside primaryColumn next
+                        // to the Sessions list (issue #54) so it tracks that section
+                        // rather than anchoring to the top of the whole column. The
+                        // rail therefore shows whenever a side detail isn't open.
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(width: 320)
+                        }
                     }
                 }
             }
@@ -85,6 +108,7 @@ struct ControlCenterView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(DS.Paper.base)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
     }
 
     // MARK: - Detail panels

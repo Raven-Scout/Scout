@@ -92,7 +92,7 @@ struct StatusBarView: View {
 
     private var todayCost: some View {
         HStack(spacing: 6) {
-            Text("today")
+            Text("runs today")
                 .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p4)
             Text(todayCostValue)
@@ -130,16 +130,12 @@ struct StatusBarView: View {
         return "\(next.type.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
     }
 
+    /// Today's cost of Scout's scheduled runs, from the same engine summary as
+    /// the usage card, so the two never disagree. "≥" or "unknown" when some or
+    /// all runs reported no cost, instead of a $0 that was never measured.
     private var todayCostValue: String {
-        let cal = Calendar.current
-        let runs = state.sessionLogService.runs.filter { cal.isDateInToday($0.startedAt) }
-        let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
-        let nsTotal = NSDecimalNumber(decimal: total)
-        let fmt = NumberFormatter()
-        fmt.numberStyle = .currency
-        fmt.currencyCode = "USD"
-        fmt.maximumFractionDigits = 2
-        return fmt.string(from: nsTotal) ?? "$0.00"
+        guard let today = state.scoutUsageService.summary?.today else { return "—" }
+        return UsageFormat.shortCost(today)
     }
 }
 

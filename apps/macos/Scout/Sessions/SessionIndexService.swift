@@ -38,8 +38,18 @@ final class SessionIndexService: ObservableObject {
         /// What `scoutctl` runs with; puts the user's tool directories (and
         /// so `gh`) on PATH even when Scout was launched from the Dock.
         var environment: [String: String] = SessionsRefresh.engineEnvironment()
+        /// Where the index comes from. nil (the default) is `scoutctl session
+        /// index` with the fields above; a test, the big-vault fixture or a
+        /// dev build on a synthetic vault passes a `FileSessionIndexSource`
+        /// so nothing reads the Mac's real Claude sessions.
+        var source: (any SessionIndexSource)? = nil
 
         var cacheDirectory: URL { indexFile.deletingLastPathComponent() }
+
+        var resolvedSource: any SessionIndexSource {
+            source ?? ScoutctlSessionIndexSource(
+                scoutctl: scoutctl, argumentsPrefix: argumentsPrefix, runner: runner, environment: environment)
+        }
     }
 
     /// Republished only when the content (everything but `generated_at`) changes.
@@ -181,12 +191,7 @@ final class SessionIndexService: ObservableObject {
     private func runFastBuild() async {
         let result: ProcessResult
         do {
-            result = try await config.runner.run(
-                executable: config.scoutctl,
-                arguments: SessionsRefresh.fastArguments(prefix: config.argumentsPrefix),
-                environment: config.environment,
-                workingDirectory: nil
-            )
+            result = try await config.resolvedSource.build(.fast)
         } catch {
             availability = .engineMissing
             lastError = Self.describeLaunchFailure(error)
@@ -218,12 +223,7 @@ final class SessionIndexService: ObservableObject {
     private func runPRBuild() async {
         let result: ProcessResult
         do {
-            result = try await config.runner.run(
-                executable: config.scoutctl,
-                arguments: SessionsRefresh.prArguments(prefix: config.argumentsPrefix),
-                environment: config.environment,
-                workingDirectory: nil
-            )
+            result = try await config.resolvedSource.build(.prs)
         } catch {
             prStatus = PRStatus(finishedAt: config.clock.now(), refreshed: 0,
                                 errors: [SessionSourceError(source: "gh", message: Self.describeLaunchFailure(error))])

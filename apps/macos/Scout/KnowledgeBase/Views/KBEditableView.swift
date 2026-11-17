@@ -9,8 +9,8 @@ struct KBEditableView: View {
     @Binding var source: String
 
     private let readingWidth: CGFloat = 760
-    @State private var editing: Int? = nil        // lineStart of the segment being edited
-    @State private var buffer: String = ""
+    /// The in-place edit in progress, if any. See `InlineEdit`.
+    @State private var inline: InlineEdit? = nil
     @State private var showMeta = false
     @State private var cache = SegmentCache()
 
@@ -37,8 +37,41 @@ struct KBEditableView: View {
         }
     }
 
+    /// One in-place edit in Read mode (a block or a table cell). Every
+    /// keystroke is applied to the note's draft (`source`), so an unfinished
+    /// inline edit survives navigating away, counts in the quit prompt, and
+    /// Esc never throws it away. `snapshot` is the note when the edit began:
+    /// the page keeps rendering from it, so the block being typed into isn't
+    /// re-parsed under the cursor, and Discard restores it byte for byte.
+    struct InlineEdit: Equatable {
+        enum Target: Equatable {
+            case block(lineStart: Int, lineEnd: Int)
+            case cell(segmentID: Int, row: Int, col: Int, sourceLine: Int)
+        }
+        let target: Target
+        let snapshot: String
+        let original: String
+        var buffer: String
+
+        /// The note with this edit applied. Untouched text gives back the
+        /// snapshot exactly, so opening an editor never marks the note dirty.
+        var applied: String {
+            guard buffer != original else { return snapshot }
+            switch target {
+            case .block(let start, let end):
+                return KBDocSegment.replaceLines(in: snapshot, start: start, end: end, with: buffer)
+            case .cell(_, _, let col, let line):
+                return KBDocSegment.replaceCell(in: snapshot, sourceLine: line, col: col, value: buffer)
+            }
+        }
+
+        /// Whether `source` is still this edit's own output. Anything else
+        /// (Reload, another file, a Scout comment) ends the edit.
+        func owns(_ source: String) -> Bool { source == applied }
+    }
+
     var body: some View {
-        let segs = cache.segments(for: source)
+        let segs = cache.segments(for: inline?.snapshot ?? source)
         let parts = KBDocSegment.partition(segs)
         ScrollView {
             HStack(spacing: 0) {
@@ -53,6 +86,9 @@ struct KBEditableView: View {
             }
             .padding(.horizontal, 24).padding(.vertical, 18)
         }
+        .onChange(of: source) { _, new in
+            if let edit = inline, !edit.owns(new) { inline = nil }
+        }
     }
 
     // MARK: - Segment view (rendered or editing)
@@ -61,12 +97,14 @@ struct KBEditableView: View {
     private func segmentView(_ seg: KBDocSegment) -> some View {
         if case .scoutComment = seg.kind {
             scoutCommentChip(seg)
-        } else if editing == seg.id {
+        } else if case .block(let start, _) = inline?.target, start == seg.id {
             inlineEditor(seg)
         } else if case .table = seg.kind {
-            KBEditableTableView(headers: seg.headers, rows: seg.rows, rowLines: seg.rowLines) { line, col, value in
-                source = KBDocSegment.replaceCell(in: source, sourceLine: line, col: col, value: value)
-            }
+            KBEditableTableView(
+                headers: seg.headers, rows: seg.rows,
+                editingCell: editingCell(in: seg), buffer: bufferBinding,
+                onBeginEdit: { row, col, value in beginCellEdit(seg, row: row, col: col, value: value) },
+                onFinishEdit: finishInline)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 rendered(seg)
@@ -76,7 +114,7 @@ struct KBEditableView: View {
                     .help("Double-click to edit")
                 if commentingOn == seg.id {
                     scoutCommentComposer(seg)
-                } else if hovering == seg.id {
+                } else if hovering == seg.id && inline == nil {
                     commentAffordance(seg)
                 }
             }
@@ -86,7 +124,7 @@ struct KBEditableView: View {
 
     private func inlineEditor(_ seg: KBDocSegment) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextEditor(text: $buffer)
+            TextEditor(text: bufferBinding)
                 .font(DS.mono(12.5)).foregroundStyle(DS.Ink.p1)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: editorHeight(seg))
@@ -95,17 +133,24 @@ struct KBEditableView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Accent.fill.opacity(0.6), lineWidth: 1))
             HStack(spacing: 8) {
                 Spacer()
-                Button("Cancel") { editing = nil }
+                Button(Self.inlineDiscardTitle) { discardInline() }
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
-                    .keyboardShortcut(.cancelAction)
-                Button("Save") { commit(seg) }
+                    .help("Put this block back the way it was")
+                Button(Self.inlineCommitTitle) { finishInline() }
                     .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
+                    .help("Close the editor. The change is already in the note; Save (⌘S) writes it to disk.")
             }
         }
         .padding(.vertical, 2)
+        // Esc closes the editor and keeps the change, like Done. Only the
+        // Discard button throws an inline edit away.
+        .background {
+            Button("", action: finishInline).keyboardShortcut(.cancelAction)
+                .opacity(0).accessibilityHidden(true)
+        }
     }
 
     private func editorHeight(_ seg: KBDocSegment) -> CGFloat {
@@ -113,14 +158,55 @@ struct KBEditableView: View {
         return min(360, max(40, CGFloat(lines) * 20 + 16))
     }
 
-    private func startEdit(_ seg: KBDocSegment) {
-        buffer = seg.raw
-        editing = seg.id
+    /// The inline editor's confirm button only closes the editor (the change
+    /// is already in the note's draft); the header's Save writes the file.
+    /// Calling it "Save" made people think the change was on disk.
+    static let inlineCommitTitle = "Done"
+    static let inlineDiscardTitle = "Discard"
+
+    /// Typing goes into the edit's buffer and straight into the note's draft.
+    private var bufferBinding: Binding<String> {
+        Binding(
+            get: { inline?.buffer ?? "" },
+            set: { new in
+                guard var edit = inline else { return }
+                edit.buffer = new
+                inline = edit
+                source = edit.applied
+            })
     }
 
-    private func commit(_ seg: KBDocSegment) {
-        source = KBDocSegment.replaceLines(in: source, start: seg.lineStart, end: seg.lineEnd, with: buffer)
-        editing = nil
+    private func startEdit(_ seg: KBDocSegment) {
+        // Segments come from the snapshot while an edit is open, so their line
+        // numbers may not match the draft: close the open edit first.
+        guard inline == nil else { finishInline(); return }
+        closeEmptyComposer()
+        inline = InlineEdit(target: .block(lineStart: seg.lineStart, lineEnd: seg.lineEnd),
+                            snapshot: source, original: seg.raw, buffer: seg.raw)
+    }
+
+    private func beginCellEdit(_ seg: KBDocSegment, row: Int, col: Int, value: String) {
+        guard inline == nil else { finishInline(); return }
+        guard row < seg.rowLines.count else { return }
+        closeEmptyComposer()
+        inline = InlineEdit(
+            target: .cell(segmentID: seg.id, row: row, col: col, sourceLine: seg.rowLines[row]),
+            snapshot: source, original: value, buffer: value)
+    }
+
+    private func editingCell(in seg: KBDocSegment) -> KBEditableTableView.CellKey? {
+        guard case .cell(let id, let row, let col, _) = inline?.target, id == seg.id else { return nil }
+        return KBEditableTableView.CellKey(row: row, col: col)
+    }
+
+    /// Close the editor. The change is already in the draft.
+    private func finishInline() { inline = nil }
+
+    /// Put the note back exactly as it was when the edit began.
+    private func discardInline() {
+        guard let edit = inline else { return }
+        inline = nil
+        source = edit.snapshot
     }
 
     // MARK: - Comment for Scout
@@ -149,13 +235,15 @@ struct KBEditableView: View {
                 Spacer()
                 Button("Cancel") { commentingOn = nil }
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
-                    .keyboardShortcut(.cancelAction)
+                    // While an inline edit is open, Esc belongs to it.
+                    .keyboardShortcut(inline == nil ? .cancelAction : nil)
                 Button("Send to Scout") { submitComment(seg) }
                     .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(commentBuffer.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!Self.canSendComment(commentBuffer, inlineEditOpen: inline != nil))
+                    .help(inline == nil ? "" : "Finish the edit you have open first")
             }
         }
         .padding(.vertical, 4)
@@ -174,6 +262,8 @@ struct KBEditableView: View {
                 Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(DS.Ink.p4)
             }
             .buttonStyle(.plain).help("Retract this comment (removes the marker)")
+            // Its line numbers come from the snapshot while an edit is open.
+            .disabled(inline != nil)
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -181,11 +271,26 @@ struct KBEditableView: View {
     }
 
     private func submitComment(_ seg: KBDocSegment) {
-        guard let marker = ScoutMarker.format(commentBuffer) else { return }
+        guard Self.canSendComment(commentBuffer, inlineEditOpen: inline != nil),
+              let marker = ScoutMarker.format(commentBuffer) else { return }
         source = KBDocSegment.insertLine(in: source, afterLineEnd: seg.lineEnd, line: marker)
         commentingOn = nil
         commentBuffer = ""
         onRequestSave()
+    }
+
+    /// Sending a comment inserts a marker by line number and saves the note at
+    /// once. While an inline edit is open the line numbers come from its
+    /// snapshot and the draft holds an unfinished edit, so sending waits.
+    static func canSendComment(_ text: String, inlineEditOpen: Bool) -> Bool {
+        !inlineEditOpen && !text.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Starting an inline edit closes an empty comment composer. One with
+    /// text stays open (Send is off until the edit is done), so the typed
+    /// comment isn't lost.
+    private func closeEmptyComposer() {
+        if commentBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commentingOn = nil }
     }
 
     private func retractComment(_ seg: KBDocSegment) {
@@ -296,18 +401,19 @@ struct KBEditableView: View {
 }
 
 /// A table whose cells you edit by double-clicking. Renders like the read-only
-/// table but swaps the double-clicked cell for a text field; committing calls
-/// back with the cell's source line + column so only that cell is rewritten.
+/// table but swaps the edited cell for a text field. The edit itself lives in
+/// `KBEditableView.InlineEdit`, which writes each keystroke into that one cell
+/// of the note's draft; Return and Esc both just close the field.
 struct KBEditableTableView: View {
     let headers: [String]
     let rows: [[String]]
-    let rowLines: [Int]
-    let onEditCell: (_ sourceLine: Int, _ col: Int, _ value: String) -> Void
+    /// The cell being edited, owned by the parent.
+    let editingCell: CellKey?
+    @Binding var buffer: String
+    let onBeginEdit: (_ row: Int, _ col: Int, _ value: String) -> Void
+    let onFinishEdit: () -> Void
 
-    @State private var editing: EditKey? = nil
-    @State private var buffer = ""
-
-    private struct EditKey: Equatable { let row: Int; let col: Int }
+    struct CellKey: Equatable { let row: Int; let col: Int }
 
     private let minColumnWidth: CGFloat = 70
     private let maxColumnWidth: CGFloat = 300
@@ -354,29 +460,24 @@ struct KBEditableTableView: View {
 
     @ViewBuilder
     private func cellView(_ r: Int, _ c: Int, value: String, width: CGFloat) -> some View {
-        if editing == EditKey(row: r, col: c) {
+        if editingCell == CellKey(row: r, col: c) {
             TextField("", text: $buffer)
                 .textFieldStyle(.plain).font(DS.serif(12.5)).foregroundStyle(DS.Ink.p1)
                 .padding(.horizontal, hPad - 2).padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 4).fill(DS.Paper.base))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(DS.Accent.fill.opacity(0.6), lineWidth: 1))
                 .frame(width: width, alignment: .topLeading)
-                .onSubmit { commit(r, c) }
-                .onExitCommand { editing = nil }
+                .onSubmit(onFinishEdit)
+                .onExitCommand(perform: onFinishEdit)
         } else {
             InlineMarkdownText(value)
                 .font(DS.serif(12.5)).foregroundStyle(DS.Ink.p2)
                 .padding(.horizontal, hPad).padding(.vertical, 6)
                 .frame(width: width, alignment: .topLeading)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2) { buffer = value; editing = EditKey(row: r, col: c) }
+                .onTapGesture(count: 2) { onBeginEdit(r, c, value) }
                 .help("Double-click to edit")
         }
-    }
-
-    private func commit(_ r: Int, _ c: Int) {
-        if r < rowLines.count { onEditCell(rowLines[r], c, buffer) }
-        editing = nil
     }
 
     private func columnWidths() -> [CGFloat] {
