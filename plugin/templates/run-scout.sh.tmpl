@@ -391,6 +391,10 @@ if [ -x "$POST_BACKFILL" ]; then
     "$POST_BACKFILL" >> "$LOG_FILE" 2>&1 || true
 fi
 
+# Record what this session changed in Scout's own brain (the changes map). Reads the
+# vault's git log; idempotent, never fatal, and it writes no session content.
+"$SCOUTCTL_BIN" changes scan --since 2d >> "$LOG_FILE" 2>&1 || true
+
 # Record how this run ended, out-of-band. This has to be a runner step, not a
 # session step: the failure being watched for is a run that never reaches its
 # phases (an expired login, a dead network), and nothing the session writes can

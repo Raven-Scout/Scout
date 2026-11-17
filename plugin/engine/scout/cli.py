@@ -406,6 +406,107 @@ def cli_broker_drain(
         typer.echo(f"  failed: {reason}")
 
 
+changes_app = typer.Typer(
+    help="The changes map: what changed in Scout's own brain, and why.", invoke_without_command=True
+)
+engagement_app = typer.Typer(
+    help="Engagement signals for the changes map, and the owner's consent.", invoke_without_command=True
+)
+app.add_typer(changes_app, name="changes")
+app.add_typer(engagement_app, name="engagement")
+
+
+@changes_app.callback()
+def cli_changes(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+
+@engagement_app.callback()
+def cli_engagement(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+
+@changes_app.command("scan")
+def cli_changes_scan(
+    since: str | None = typer.Option(None, "--since", help="How far back: 2d, 48h, 90m, or an ISO time."),
+    backfill: bool = typer.Option(False, "--backfill", help="Mark rows as backfilled; --since defaults to 2026-06-01."),
+) -> None:
+    """Read the vault's git log and record any new changes (idempotent)."""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths
+    from scout.changes.scan import scan
+    from scout.run_ledger import parse_since
+
+    try:
+        cutoff = parse_since(since or "2026-06-01", now=_dt.now(UTC)) if (since or backfill) else None
+    except ValueError as e:
+        typer.echo(f"scoutctl changes scan: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"{len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill))} new change(s)")
+
+
+@engagement_app.command("record")
+def cli_engagement_record(
+    kind: str = typer.Argument(
+        ..., help="session-reliance, app-edit, inline-comment, approval (owner only) or a run kind."
+    ),
+    surface: str = typer.Option(
+        ..., "--surface", help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app."
+    ),
+    ref: str | None = typer.Option(None, "--ref", help="A pointer (Slack ts, path), never content."),
+    sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
+    ts: str | None = typer.Option(None, "--ts", help="ISO time; default now."),
+) -> None:
+    """Append one engagement row. Owner kinds are refused (exit 2) in a scheduled run."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths
+    from scout.changes.models import Signal
+    from scout.changes.store import append_signal
+
+    try:
+        when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
+        signal = Signal.from_row(
+            {"ts": when.isoformat(), "kind": kind, "surface": surface, "ref": ref, "sentiment": sentiment}
+        )
+        append_signal(signal, vault=paths.require_data_dir(), env=os.environ)
+    except (ValueError, PermissionError) as e:
+        typer.echo(f"scoutctl engagement record: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@engagement_app.command("consent")
+def cli_engagement_consent(
+    out_of_vault: str | None = typer.Option(
+        None, "--out-of-vault", help="yes or no: may Scout read activity outside the vault?"
+    ),
+    show: bool = typer.Option(False, "--show", help="Print yes, no or 'not asked'."),
+) -> None:
+    """The owner's out-of-vault answer. Only an owner session may set it."""
+    import os
+
+    from scout.changes import consent
+
+    if show:
+        answer = consent.out_of_vault_answer(os.environ)
+        typer.echo("not asked" if answer is None else "yes" if answer else "no")
+        return
+    if out_of_vault not in ("yes", "no"):
+        typer.echo("scoutctl engagement consent: pass --out-of-vault yes|no or --show", err=True)
+        raise typer.Exit(2)
+    try:
+        consent.set_out_of_vault(out_of_vault == "yes", os.environ)
+    except PermissionError as e:
+        typer.echo(f"scoutctl engagement consent: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
 @hook_app.command("connector-log")
 def hook_connector_log() -> None:
     """PostToolUse hook: log one JSONL row per tool call to .scout-logs/."""
