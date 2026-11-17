@@ -233,7 +233,8 @@ final class AppState: ObservableObject {
             runner: runner,
             fileEvents: events,
             indexFile: scoutDir.appendingPathComponent(".scout-cache/sessions-index.json"),
-            watchRoots: configuration.agentSessionWatchRoots
+            watchRoots: configuration.agentSessionWatchRoots,
+            source: configuration.agentSessionSource
         ))
 
         let docService = ActionItemsDocumentService(
@@ -765,6 +766,14 @@ final class AppState: ObservableObject {
         /// production). Defaults to none, so a test graph never watches the
         /// real `~/.claude` or the desktop app's store.
         var agentSessionWatchRoots: [URL] = []
+        /// Where the Sessions page's index comes from. nil is `scoutctl
+        /// session index`, which reads the Mac's real `~/.claude` whatever
+        /// vault the app points at; a `FileSessionIndexSource` reads a fixed
+        /// file instead (tests, the big-vault fixture, a Debug build on a
+        /// synthetic vault via the `sessionsIndexFile` default). This covers
+        /// the Sessions page only: `claudeSessionsDirectory` (Action Items'
+        /// Launch Claude) still reads `~/.claude/projects/<encoded vault>`.
+        var agentSessionSource: (any SessionIndexSource)? = nil
         /// The engine this build ships (spec §5). The bundle's in production;
         /// nil in every test configuration unless a test passes one, so no
         /// test can install or upgrade an engine by accident (Ruling 46).
@@ -788,6 +797,14 @@ final class AppState: ObservableObject {
             let vault = AppState.resolveScoutDirectory(
                 defaults: .standard, pointer: locator.pointer(), home: layout.home
             )
+            // A Debug build pointed at a synthetic vault reads its sessions
+            // from a fixture file and watches nothing under the real home. A
+            // Release build ignores the default: it always asks scoutctl.
+            #if DEBUG
+            let sessionsFile = FileSessionIndexSource.configured(in: .standard)
+            #else
+            let sessionsFile: FileSessionIndexSource? = nil
+            #endif
             return Configuration(
                 scoutDirectory: vault,
                 // Every scoutctl/git call must see the vault the app is
@@ -811,7 +828,8 @@ final class AppState: ObservableObject {
                 engineLayout: layout,
                 initialEngineState: state,
                 startsBackgroundWork: true,
-                agentSessionWatchRoots: SessionsRefresh.productionWatchRoots(),
+                agentSessionWatchRoots: sessionsFile == nil ? SessionsRefresh.productionWatchRoots() : [],
+                agentSessionSource: sessionsFile,
                 engineRelease: release,
                 engineTarballURL: release?.bundledTarballURL(bundle: .main),
                 resolveClaude: PrerequisiteChecker.defaultResolveClaude,

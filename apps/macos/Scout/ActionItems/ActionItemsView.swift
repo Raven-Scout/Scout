@@ -43,29 +43,35 @@ struct ActionItemsView: View {
             if !envCheck.result.ok {
                 environmentBanner
             }
+            // The view switch, View menu and Select keep their size; the
+            // filters take what is left and step down into menus to fit it
+            // (`FilterChipsView`), so nothing is pushed off either edge.
             HStack(spacing: 10) {
                 if viewMode == .topics {
                     Spacer(minLength: 0)
                 } else {
                     FilterChipsView(filter: $filter)
                 }
-                EditorialSegmentedControl(
-                    selection: $displayProfile.currentView,
-                    options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
-                )
-                if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
-                    ActionItemsDisplayMenu(mode: viewMode)
-                }
-                if viewMode == .list, case .loaded = docService.state {
-                    Button {
-                        toggleSelectionMode()
-                    } label: {
-                        Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
-                            .font(DS.sans(11.5, weight: .medium))
+                HStack(spacing: 10) {
+                    EditorialSegmentedControl(
+                        selection: $displayProfile.currentView,
+                        options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
+                    )
+                    if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
+                        ActionItemsDisplayMenu(mode: viewMode)
                     }
-                    .buttonStyle(.borderless)
-                    .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    if viewMode == .list, case .loaded = docService.state {
+                        Button {
+                            toggleSelectionMode()
+                        } label: {
+                            Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
+                                .font(DS.sans(11.5, weight: .medium))
+                        }
+                        .buttonStyle(.borderless)
+                        .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    }
                 }
+                .fixedSize()
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)

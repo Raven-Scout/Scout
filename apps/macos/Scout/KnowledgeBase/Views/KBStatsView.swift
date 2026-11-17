@@ -141,10 +141,12 @@ struct KBStatsView: View {
             ForEach(Array(zip(labels, paths).enumerated()), id: \.offset) { _, pair in
                 Button { onOpen(pair.1) } label: {
                     Text(pair.0).font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
+                        .lineLimit(1).truncationMode(.middle)
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(Capsule().fill(DS.Paper.sunk))
                 }
                 .buttonStyle(.plainHit)
+                .help(pair.0)
             }
         }
     }
