@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import getpass
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -492,3 +494,203 @@ def test_report_uses_only_known_keys(tmp_path: Path) -> None:
         return out
 
     assert keys(report, set()) <= diagnostics.REPORT_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Fallback and error paths. None is platform-specific: each is reached on any
+# OS by monkeypatching the helper that would fail (pwd, getpass, the ledgers).
+# ---------------------------------------------------------------------------
+
+
+def test_context_ignores_empty_and_too_short_values() -> None:
+    ctx = ScrubContext()
+    ctx.add_path("/", "<root>")  # one character: never a path to hide
+    ctx.add("ab", "<name>")  # too short even for a path segment
+    ctx.finish()
+    assert ctx.paths == [] and "ab" not in ctx.names and "ab" not in ctx.segments
+    assert ctx._path_pattern is None
+    assert scrub("", ctx) == ""
+    assert scrub("/ab/cd and ab", ctx) == "/ab/cd and ab"
+
+
+def test_percent_encoded_text_is_decoded_then_scrubbed(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, "Zephyrine Canarywood")
+    assert scrub("open Zephyrine%20Canarywood now", ctx) == "open <name> now"
+
+
+def test_home_and_users_paths_with_nothing_after_them() -> None:
+    m = diagnostics._HOME_PATH.search("see ~/<path> here")
+    assert m is not None and diagnostics._home_path(m) == m.group(0)
+    m = diagnostics._USERS_PATH.search("owner /Users/zephyrine")
+    assert m is not None and diagnostics._users_path(m) == "/Users/<user>"
+    m = diagnostics._USERS_PATH.search("owner /home/zephyrine/")
+    assert m is not None and diagnostics._users_path(m) == "/home/<user>/"
+
+
+def test_vault_on_an_external_volume_hides_the_volume_name(tmp_path: Path) -> None:
+    ctx = diagnostics.build_context(Path("/Volumes/Zephyr Drive/Scout"), tmp_path)
+    assert scrub("disk Zephyr Drive is full", ctx) == "disk <volume> is full"
+
+
+def test_generic_home_folder_names_are_not_hidden() -> None:
+    ctx = diagnostics.build_context(None, Path("/home"))
+    assert "home" not in ctx.names
+
+
+def test_login_and_home_lookups_that_fail_are_skipped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import pwd
+
+    def no_entry(_uid: int) -> object:
+        raise KeyError("uid not in the password database")
+
+    def no_login() -> str:
+        raise OSError("no login name")
+
+    monkeypatch.setattr(pwd, "getpwuid", no_entry)
+    monkeypatch.setattr(getpass, "getuser", no_login)
+    assert diagnostics._login_names() == []
+    assert diagnostics._homes(tmp_path) == list(dict.fromkeys([tmp_path, Path.home()]))
+
+
+def test_walk_skips_unreadable_folders_and_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = tmp_path / "Scout"
+    for rel in ("Locked Folder Zephyr/inner-note-zq.md", "Flaky Folder Zephyr/x.md", "node_modules/pkgzq/i.js"):
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vault / rel).write_text("x")
+    real_iterdir, real_is_dir = Path.iterdir, Path.is_dir
+
+    def iterdir(self: Path) -> Iterator[Path]:
+        if self.name == "Locked Folder Zephyr":
+            raise PermissionError(self)
+        return real_iterdir(self)
+
+    def is_dir(self: Path) -> bool:
+        if self.name == "Flaky Folder Zephyr":
+            raise OSError(self)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    ctx = ScrubContext()
+    diagnostics._walk_names(vault, ctx)
+    assert "Locked Folder Zephyr" in ctx.names and "Flaky Folder Zephyr" in ctx.names
+    assert "inner-note-zq" not in ctx.names, "an unreadable folder's contents can't be listed"
+    assert "pkgzq" not in ctx.names and "node_modules" not in ctx.names, "skipped folders aren't walked"
+
+
+def _identity_ctx(tmp_path: Path, files: dict[str, str]) -> ScrubContext:
+    vault = tmp_path / "Scout"
+    for rel, text in files.items():
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vault / rel).write_text(text)
+    ctx = ScrubContext()
+    diagnostics._identity_names(vault, ctx)
+    return ctx
+
+
+def test_identity_without_a_name_or_email(tmp_path: Path) -> None:
+    ctx = _identity_ctx(tmp_path / "a", {"scout-config.yaml": "user:\n  name: ''\n  email: al.zq@example.com\n"})
+    assert "al.zq@example.com" in ctx.names
+    assert "al" not in ctx.names and "zq" not in ctx.names, "local-part pieces under 3 characters stay"
+    ctx = _identity_ctx(tmp_path / "b", {"scout-config.yaml": "user:\n  name: Ottoline Zephyrsmith\n"})
+    assert "Ottoline Zephyrsmith" in ctx.names and "Zephyrsmith" in ctx.names
+
+
+def test_custom_connectors_in_either_shape(tmp_path: Path) -> None:
+    ctx = _identity_ctx(tmp_path / "a", {"connectors.custom.yaml": "schema_version: 1\nzephyrconn: {}\n"})
+    assert "zephyrconn" in ctx.names and "schema_version" not in ctx.names
+    ctx = _identity_ctx(tmp_path / "b", {"connectors.custom.yaml": "connectors:\n  - zephyrlist\n"})
+    assert ctx.names == {}
+
+
+def test_delegate_keys_from_every_ledger_shape() -> None:
+    assert list(diagnostics._delegate_keys(["not", "a", "dict"])) == []
+    data = {"links": {"dlg-a": {}}, "body": {"links": {"dlg-b": {}}}, "privacy": {"delegates": {"dlg-c": {}}}}
+    assert sorted(diagnostics._delegate_keys(data)) == ["dlg-a", "dlg-b", "dlg-c"]
+
+
+def test_unreadable_ledgers_quote_nothing_and_lose_only_recent_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scout.health
+    import scout.update_outcomes
+
+    def broken(_vault: Path) -> list[object]:
+        raise OSError("ledger unreadable")
+
+    vault, home = _synthetic_vault(tmp_path)
+    monkeypatch.setattr(scout.update_outcomes, "read", broken)
+    monkeypatch.setattr(scout.health, "read_outcomes", broken)
+    assert diagnostics._ledger_free_text(vault) == ([], [])
+    report = build_report(vault, home=home, now=NOW, check_jobs=False, sandbox=_raw_sandbox, runtime=_raw_runtime)
+    assert report["recent_runs"] == {"unavailable": "OSError"}
+    _assert_no_canary(json.dumps(report))
+
+
+def test_blank_self_update_details_are_not_hidden(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.update_outcomes
+
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    rows = [SimpleNamespace(detail="   "), SimpleNamespace(detail="fetch failed for Zephyr mirror")]
+    monkeypatch.setattr(scout.update_outcomes, "read", lambda _v: rows)
+    ctx = diagnostics.build_context(vault, tmp_path)
+    assert list(ctx.exact) == ["fetch failed for Zephyr mirror"]
+
+
+def test_schedule_without_a_slot_map_has_no_custom_slots(tmp_path: Path) -> None:
+    vault = tmp_path / "Scout"
+    (vault / ".scout-state").mkdir(parents=True)
+    (vault / ".scout-state" / "schedule.yaml").write_text("slots:\n  - morning-briefing\n")
+    assert diagnostics.slot_aliases(vault) == {}
+    assert diagnostics.slot_aliases(vault, ["acme-prep"]) == {"acme-prep": "custom-1"}
+
+
+def test_doctor_slots_are_allowlisted_field_by_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.scripts.bootstrap_doctor as bootstrap_doctor
+
+    rh = {
+        "severity": "yellow",
+        "evaluated_at": "2026-11-16T12:00:00Z",
+        "last_ok_at": None,
+        "findings": [],
+        "slots": [
+            {
+                "key": "acme-prep",
+                "type": "research",
+                "last_fire": "2026-11-16T08:00:00Z",
+                "last_outcome": {"outcome": "Zephyr odd", "finished_at": "x", "failure_class": "oauth_expired"},
+            },
+            {"key": "morning-briefing", "type": "Zephyr type", "last_fire": None, "last_outcome": None},
+        ],
+    }
+    fake = SimpleNamespace(
+        run_health=SimpleNamespace(to_dict=lambda: rh),
+        severity=SimpleNamespace(value="yellow"),
+        errors=[],
+        warnings=[],
+        notes=[],
+    )
+    monkeypatch.setattr(bootstrap_doctor, "run_doctor", lambda **_kw: fake)
+    section = diagnostics._doctor_section(tmp_path, {"acme-prep": "custom-1"}, home=tmp_path, now=NOW, check_jobs=False)
+    slots = section["run_health"]["slots"]
+    assert slots[0] == {
+        "key": "custom-1",
+        "type": "research",
+        "last_fire": "2026-11-16T08:00:00Z",
+        "last_outcome": {"outcome": "<other>", "finished_at": "x", "failure_class": "oauth_expired"},
+    }
+    assert slots[1]["key"] == "morning-briefing" and slots[1]["type"] == "<other>"
+    assert slots[1]["last_outcome"] is None
+
+
+def test_text_form_when_sections_are_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    report = {
+        "engine": {"version": "9.9.9", "python": "3.12.0"},
+        "doctor": {"unavailable": "RuntimeError"},
+        "sandbox": None,
+        "runtime": None,
+        "recent_runs": {"unavailable": "OSError"},
+    }
+    monkeypatch.setattr(diagnostics, "build_report", lambda *_a, **_kw: report)
+    assert diagnostics.main(tmp_path, as_json=False) == "scout engine 9.9.9 · python 3.12.0\nrecent runs: 0"
