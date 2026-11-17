@@ -85,6 +85,20 @@ struct LedgerOverlayTests {
         #expect(out.map(\.status) == [.skippedGates, .skippedSandbox])
     }
 
+    /// Logs are named to the minute: a Run-now in the same minute as a scheduled fire shares the live
+    /// run's log, and its lock-skip row must not mark the live run as skipped (C8 review).
+    @Test func aLockSkipSharingALiveRunsLogLeavesItRunning() {
+        let t = Date(timeIntervalSince1970: 1_800_000_000)
+        let live = run("scout-a.log", status: .running, startedAt: t)
+        #expect(SessionLogService.overlayLedger([live], statuses: ["scout-a.log": .skippedConcurrency]) == [live])
+        // Any other row still lands on a running log: a safety skip, or the run's own finish.
+        #expect(SessionLogService.overlayLedger([live], statuses: ["scout-a.log": .skippedGates]).map(\.status) == [.skippedGates])
+        #expect(SessionLogService.overlayLedger([live], statuses: ["scout-a.log": .success]).map(\.status) == [.success])
+        // An orphaned log with a lock-skip row is the skip.
+        let stale = run("scout-b.log", status: .orphaned, startedAt: t)
+        #expect(SessionLogService.overlayLedger([stale], statuses: ["scout-b.log": .skippedConcurrency]).map(\.status) == [.skippedConcurrency])
+    }
+
     @Test func runsWithoutARowKeepTheirLogStatus() {
         let t = Date(timeIntervalSince1970: 1_800_000_000)
         let runs = [run("scout-a.log", status: .running, startedAt: t), run("scout-b.log", status: .rateLimited, startedAt: t)]

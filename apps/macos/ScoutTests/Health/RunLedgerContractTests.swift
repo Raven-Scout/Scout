@@ -97,6 +97,25 @@ struct RunLedgerContractTests {
         #expect(health.findings.map(\.id) == ["gates.probe_unsafe", "run.integrity_restored", "lease.held"])
         #expect(health.findings.map(\.severity) == ["red", "red", "note"])
         #expect(health.findings.allSatisfy { !$0.fix.isEmpty })
+        // Vault-relative, never an absolute path (C8 review).
+        #expect(health.findings.compactMap(\.log) == [".scout-logs/scout-2026-11-16_08-30.log",
+                                                       ".scout-logs/scout-2026-11-14_08-56.log"])
+    }
+
+    @Test func findingLogsResolveInsideTheVault() throws {
+        let vault = FileManager.default.temporaryDirectory.appendingPathComponent("finding-log-\(UUID().uuidString)")
+        let logs = vault.appendingPathComponent(".scout-logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let file = logs.appendingPathComponent("scout-1.log")
+        try "x\n".write(to: file, atomically: true, encoding: .utf8)
+
+        #expect(FindingRow.logURL(".scout-logs/scout-1.log", vault: vault)?.standardizedFileURL == file.standardizedFileURL)
+        #expect(FindingRow.logURL(file.path, vault: nil) != nil)               // an older engine's absolute path
+        #expect(FindingRow.logURL(".scout-logs/missing.log", vault: vault) == nil)
+        #expect(FindingRow.logURL("../outside.log", vault: vault) == nil)
+        #expect(FindingRow.logURL(".scout-logs/scout-1.log", vault: nil) == nil)
+        #expect(FindingRow.logURL(nil, vault: vault) == nil)
     }
 
     @Test func indexesRowsByLogName() throws {

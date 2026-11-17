@@ -195,3 +195,36 @@ def test_cli_bad_since_and_missing_vault_exit_2(tmp_path, monkeypatch):
     assert runner.invoke(app, ["runs", "--since", "soon"]).exit_code == 2
     result = runner.invoke(app, ["runs", "--json"])
     assert result.exit_code == 2 and "error" in json.loads(result.stdout)
+
+
+def test_no_note_text_or_absolute_path_reaches_findings(tmp_path, monkeypatch):
+    """C8 review must-fix: findings[].detail quoted the session's prose, and findings[].log was absolute."""
+    monkeypatch.setattr(health.Path, "home", classmethod(lambda cls: tmp_path))
+    minutes = (5, 15, 25)
+    rows = [_row(m, exit_code=1, outcome="failed", failure_class="rate_limited") for m in minutes]
+    v = _vault(tmp_path, rows)
+    for m in minutes:
+        (v / ".scout-logs" / f"scout-{m}.log").write_text(
+            "=== Scout run starting ===\n"
+            "Drafting reply about CANARY_PRIVATE_NOTE: …hit your monthly limit, resets in May\n"
+            f"Read {v}/projects/CANARY_PRIVATE_NOTE.md\n",
+            encoding="utf-8",
+        )
+    doc = run_ledger.ledger_report(v, now=NOW, home=tmp_path / "home")
+    text = json.dumps(doc)
+    assert doc["health"]["findings"], "the failing runs should produce a finding"
+    assert "CANARY_PRIVATE_NOTE" not in text
+    assert str(tmp_path) not in text
+    logs = [f["log"] for f in doc["health"]["findings"] if f["log"]]
+    assert logs and all(log.startswith(".scout-logs/") for log in logs)
+
+
+def test_a_real_cli_error_line_still_comes_through(tmp_path):
+    minutes = (5, 15, 25)
+    v = _vault(tmp_path, [_row(m, exit_code=1, outcome="failed", failure_class="network") for m in minutes])
+    for m in minutes:
+        (v / ".scout-logs" / f"scout-{m}.log").write_text(
+            "API Error: Connection error (ECONNRESET)\n", encoding="utf-8"
+        )
+    doc = run_ledger.ledger_report(v, now=NOW, home=tmp_path / "home")
+    assert "API Error: Connection error (ECONNRESET)" in {f["detail"] for f in doc["health"]["findings"]}

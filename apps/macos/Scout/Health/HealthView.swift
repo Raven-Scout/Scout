@@ -94,7 +94,8 @@ struct HealthView: View {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel(group.group.title)
                 ForEach(group.findings, id: \.id) { finding in
-                    FindingRow(finding: finding, tone: group.group == .red ? DS.Status.err : DS.Status.warn)
+                    FindingRow(finding: finding, tone: group.group == .red ? DS.Status.err : DS.Status.warn,
+                               vaultDirectory: logsDirectory?.deletingLastPathComponent())
                 }
             }
         }
@@ -176,9 +177,11 @@ struct HealthView: View {
 }
 
 /// One run-health finding: what's wrong, the run's own error line, and the fix.
-private struct FindingRow: View {
+struct FindingRow: View {
     let finding: RunHealth.Finding
     let tone: Color
+    /// The vault root: `scoutctl runs --json` gives a finding's log vault-relative (`.scout-logs/<name>`).
+    var vaultDirectory: URL? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -198,9 +201,9 @@ private struct FindingRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                if let log = finding.log {
+                if let url = Self.logURL(finding.log, vault: vaultDirectory) {
                     Button("Show log") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: log)])
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                     .buttonStyle(.plainHit)
                     .font(DS.sans(12))
@@ -211,6 +214,20 @@ private struct FindingRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk))
         .accessibilityElement(children: .contain)
+    }
+
+    /// A finding's log on disk: vault-relative from the run ledger, absolute from older engines'
+    /// doctor output. nil when it can't be placed inside the vault or isn't there.
+    nonisolated static func logURL(_ log: String?, vault: URL?) -> URL? {
+        guard let log, !log.isEmpty else { return nil }
+        let url: URL
+        if log.hasPrefix("/") {
+            url = URL(fileURLWithPath: log)
+        } else {
+            guard let vault, !log.contains("..") else { return nil }
+            url = vault.appendingPathComponent(log)
+        }
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 }
 

@@ -225,3 +225,36 @@ def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, va
     assert shell is not None and re.search(shell.group(1), line, re.IGNORECASE)
 
     assert health.failure_line(_log(_vault(tmp_path), f"{line}\n"), klass) == line
+
+
+@pytest.mark.parametrize(
+    ("klass", "prose"),
+    [
+        ("rate_limited", "Drafting reply about CANARY_PRIVATE_NOTE: …hit your monthly limit, resets in May"),
+        ("rate_limited", "Summary: CANARY_PRIVATE_NOTE says the API was overloaded last week"),
+        ("rate_limited", "CANARY_PRIVATE_NOTE: too many requests from the vendor"),
+        ("network", "Noted in CANARY_PRIVATE_NOTE: the ECONNRESET bug is fixed"),
+        ("git_lock", "CANARY_PRIVATE_NOTE mentions index.lock in the runbook"),
+        ("budget", "CANARY_PRIVATE_NOTE: we exceeded USD budget in Q3"),
+        ("oauth_expired", "  CANARY_PRIVATE_NOTE: OAuth token has expired for the vendor"),
+    ],
+)
+def test_failure_line_never_quotes_the_sessions_own_prose(tmp_path, klass, prose):
+    """The log holds the session's output too, which can quote vault notes: a line only counts when
+    the error shape opens it (C8 review canary)."""
+    log = _log(_vault(tmp_path), f"starting\n{prose}\n=== Scout run finished ===\n")
+
+    assert health.failure_line(log, klass) is None
+
+
+def test_failure_line_prefers_the_cli_line_over_later_prose(tmp_path):
+    tail = "API Error: 429 Too Many Requests\nI was rate limited; CANARY_PRIVATE_NOTE hit your limit, resets soon\n"
+
+    assert health.failure_line(_log(_vault(tmp_path), tail), "rate_limited") == "API Error: 429 Too Many Requests"
+
+
+def test_failure_line_writes_home_as_tilde(tmp_path, monkeypatch):
+    monkeypatch.setattr(health.Path, "home", classmethod(lambda cls: tmp_path))
+    log = _log(_vault(tmp_path), f"fatal: Unable to create '{tmp_path}/Scout/.git/index.lock': File exists.\n")
+
+    assert health.failure_line(log, "git_lock") == "fatal: Unable to create '~/Scout/.git/index.lock': File exists."

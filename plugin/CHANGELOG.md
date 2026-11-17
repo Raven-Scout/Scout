@@ -18,6 +18,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - The ledger reader (`health.read_outcomes`) now also parses `duration_s`, `awake_s`, `agent_runtime`, `model`, `runner` and `trigger`.
   - The canonical example is the generated contract fixture `engine/tests/fixtures/contract/run-ledger.json` (`SCOUT_REGEN_CONTRACT=1`). The app keeps a byte copy, and `contract.yml` compares the two.
 
+### Fixed
+- **A failed run's quoted error line is the CLI's, never the session's prose** (`engine/scout/health.py`). The `detail` that `scoutctl health --json`, the doctor and `scoutctl runs --json` give for a failed run now comes only from a line that opens with a Claude Code, git or retry-wrapper error shape (`FAILURE_LINE_RES`, matched at the line's start).
+  - Before, a line in the run log that merely mentioned a limit, a lock or a connection reset could be quoted, and the log also holds the session's own output, which can quote vault notes.
+  - The home directory in a quoted line is written as `~`.
+  - In `scoutctl runs --json`, a finding's `log` is vault-relative (`.scout-logs/<name>`), and no finding text carries an absolute vault or home path.
+
 ## [0.18.15] - 2026-11-16
 
 ### Added

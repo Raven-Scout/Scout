@@ -185,5 +185,9 @@ def test_the_fixture_carries_findings_with_fixes(tmp_path, monkeypatch):
 def test_no_machine_or_vault_content_leaks(tmp_path, monkeypatch):
     text = _render(tmp_path, monkeypatch)
     assert "pytest" not in text and str(Path.home()) not in text
-    for run in json.loads(text)["runs"]:
+    doc = json.loads(text)
+    assert "/Users/" not in text, "finding logs are vault-relative, never absolute"
+    for run in doc["runs"]:
         assert run["log"] is None or "/" not in run["log"]
+    finding_logs = [f["log"] for f in doc["health"]["findings"] if f["log"]]
+    assert finding_logs and all(log.startswith(".scout-logs/") for log in finding_logs)

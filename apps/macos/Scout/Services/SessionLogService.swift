@@ -316,10 +316,17 @@ final class SessionLogService: ObservableObject {
     }
 
     /// Replace each run's status with its ledger row's, matched by log file name.
+    ///
+    /// One exception: a log that still reads as running keeps that status against a lock skip. Logs
+    /// are named to the minute, so a Run-now in the same minute as a scheduled fire shares the live
+    /// run's log; its `skipped_lock` row is about the second run, not the one still going. (A lone
+    /// lock skip's log already parses as `.skippedConcurrency`.) The live run's own row, once it
+    /// finishes, is the newer one and wins.
     nonisolated static func overlayLedger(_ runs: [Run], statuses: [String: RunStatus]) -> [Run] {
         guard !statuses.isEmpty else { return runs }
         return runs.map { run in
             guard let status = statuses[run.logPath.lastPathComponent], status != run.status else { return run }
+            if run.status == .running && status == .skippedConcurrency { return run }
             return run.with(status: status)
         }
     }
