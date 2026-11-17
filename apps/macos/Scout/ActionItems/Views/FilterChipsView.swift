@@ -13,10 +13,17 @@ struct ActionItemsFilter: Equatable {
 /// Editorial filter bar. Left: segmented All/Open/Done/Snoozed.
 /// Right: flat chip filters for section kinds, each with a kind marker
 /// and a small count badge.
+///
+/// The full row (status segments plus nine chips) needs about 1,000 pt, more
+/// than the page gets below a ~1,500 pt window (UI audit C6: at 1280 pt it
+/// ran off the left edge, at 1100 pt it clipped on both sides). So it steps
+/// down: first the chips fold into a "Sections" menu, then the status
+/// segments fold into a "Show" menu too. Whatever is chosen stays visible in
+/// the menu labels.
 struct FilterChipsView: View {
     @Binding var filter: ActionItemsFilter
 
-    private static let kindOptions: [(kind: ActionSection.Kind, label: String)] = [
+    static let kindOptions: [(kind: ActionSection.Kind, label: String)] = [
         (.urgent,   "Urgent"),
         (.todo,     "To Do"),
         (.watching, "Watching"),
@@ -28,16 +35,89 @@ struct FilterChipsView: View {
     ]
 
     var body: some View {
-        HStack(spacing: 4) {
-            statusSegment
-                .padding(.trailing, 8)
-
-            allChip
-            ForEach(Self.kindOptions, id: \.kind) { opt in
-                kindChip(opt.kind, label: opt.label)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) {
+                statusSegment
+                    .padding(.trailing, 8)
+                allChip
+                ForEach(Self.kindOptions, id: \.kind) { opt in
+                    kindChip(opt.kind, label: opt.label)
+                }
             }
-            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                statusSegment
+                kindMenu
+            }
+            HStack(spacing: 8) {
+                statusMenu
+                kindMenu
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Compact menus
+
+    /// "Sections: All", "Sections: Urgent", "Sections: Urgent + 2".
+    static func kindMenuTitle(for kinds: Set<ActionSection.Kind>) -> String {
+        let chosen = kindOptions.filter { kinds.contains($0.kind) }.map(\.label)
+        switch chosen.count {
+        case 0:  return "Sections: All"
+        case 1:  return "Sections: \(chosen[0])"
+        default: return "Sections: \(chosen[0]) + \(chosen.count - 1)"
+        }
+    }
+
+    static func statusTitle(_ status: ActionItemsFilter.Status) -> String {
+        status.rawValue.capitalized
+    }
+
+    private var kindMenu: some View {
+        Menu {
+            Toggle("All sections", isOn: Binding(
+                get: { filter.kinds.isEmpty },
+                set: { if $0 { filter.kinds = [] } }
+            ))
+            Divider()
+            ForEach(Self.kindOptions, id: \.kind) { opt in
+                Toggle(opt.label, isOn: Binding(
+                    get: { filter.kinds.contains(opt.kind) },
+                    set: { _ in toggle(opt.kind) }
+                ))
+            }
+            Divider()
+            // The chips' right-click "Only X", for the folded row.
+            Menu("Show only") {
+                ForEach(Self.kindOptions, id: \.kind) { opt in
+                    Button(opt.label) { filter.kinds = [opt.kind] }
+                }
+            }
+        } label: {
+            Text(Self.kindMenuTitle(for: filter.kinds))
+                .font(DS.sans(12, weight: .medium))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Choose which sections to show")
+        .accessibilityLabel("Sections")
+        .accessibilityValue(Self.kindMenuTitle(for: filter.kinds))
+    }
+
+    private var statusMenu: some View {
+        Menu {
+            Picker("Show", selection: $filter.status) {
+                ForEach(ActionItemsFilter.Status.allCases) { Text(Self.statusTitle($0)).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text("Show: \(Self.statusTitle(filter.status))")
+                .font(DS.sans(12, weight: .medium))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Show all, open, done or snoozed action items")
     }
 
     // MARK: - Segmented status
@@ -63,8 +143,10 @@ struct FilterChipsView: View {
         return Button {
             filter.status = s
         } label: {
-            Text(s.rawValue.capitalized)
+            Text(Self.statusTitle(s))
                 .font(DS.sans(12, weight: .medium))
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p2)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
@@ -125,6 +207,8 @@ struct FilterChipsView: View {
                 }
                 Text(label)
                     .font(DS.sans(12, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize()
                 if let count {
                     Text("\(count)")
                         .font(DS.mono(10.5, weight: .medium))

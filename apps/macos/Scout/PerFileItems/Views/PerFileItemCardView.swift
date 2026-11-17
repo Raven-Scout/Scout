@@ -18,6 +18,31 @@ struct PerFileItemCardView: View {
 
     @State private var isWriting = false
     @State private var errorText: String?
+    @State private var bodyExpanded = false
+
+    /// A body taller than this is clipped behind "Show more". On a real vault
+    /// one card carried its whole progress log and filled the window (UI
+    /// audit C6).
+    static let collapsedBodyHeight: CGFloat = 180
+
+    /// Whether `blocks` are long enough to collapse: many lines, or a lot of
+    /// text that wraps into many.
+    nonisolated static func isLongBody(_ blocks: [MarkdownBodyBlock]) -> Bool {
+        var lines = 0
+        var characters = 0
+        for block in blocks {
+            let text: String
+            switch block {
+            case .prose(let t): text = t
+            case .code(_, let c): text = c
+            case .heading(_, let t): text = t
+            case .tasks(let tasks): text = tasks.map(\.text).joined(separator: "\n")
+            }
+            lines += text.split(separator: "\n", omittingEmptySubsequences: false).count + 1
+            characters += text.count
+        }
+        return lines > 10 || characters > 900
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -28,7 +53,7 @@ struct PerFileItemCardView: View {
                     .foregroundStyle(DS.Ink.p4)
             }
             if !item.bodyBlocks.isEmpty {
-                MarkdownBodyView(blocks: item.bodyBlocks)
+                bodyContent(item.bodyBlocks)
             }
             actions
             if let errorText {
@@ -43,6 +68,34 @@ struct PerFileItemCardView: View {
                 RoundedRectangle(cornerRadius: 2).fill(DS.Ink.p1)
                     .frame(width: 3).padding(.vertical, 6)
             }
+        }
+    }
+
+    // MARK: - Body
+
+    @ViewBuilder
+    private func bodyContent(_ blocks: [MarkdownBodyBlock]) -> some View {
+        if Self.isLongBody(blocks) {
+            VStack(alignment: .leading, spacing: 6) {
+                MarkdownBodyView(blocks: blocks)
+                    .frame(maxHeight: bodyExpanded ? nil : Self.collapsedBodyHeight, alignment: .top)
+                    .clipped()
+                    .overlay(alignment: .bottom) {
+                        if !bodyExpanded {
+                            LinearGradient(colors: [DS.Paper.raised.opacity(0), DS.Paper.raised],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: 36)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                Button(bodyExpanded ? "Show less" : "Show more") { bodyExpanded.toggle() }
+                    .buttonStyle(.plainHit)
+                    .font(DS.sans(11.5, weight: .medium))
+                    .foregroundStyle(DS.Accent.ink)
+                    .accessibilityLabel(bodyExpanded ? "Show less of this item" : "Show all of this item")
+            }
+        } else {
+            MarkdownBodyView(blocks: blocks)
         }
     }
 

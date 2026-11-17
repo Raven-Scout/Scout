@@ -8,6 +8,7 @@ nonisolated extension SidebarItem {
     var title: String {
         switch self {
         case .controlCenter: return "Control Center"
+        case .health:        return "Health"
         case .sessions:      return "Sessions"
         case .actionItems:   return "Action Items"
         case .schedules:     return "Schedules"
@@ -22,6 +23,7 @@ nonisolated extension SidebarItem {
     var systemImage: String {
         switch self {
         case .controlCenter: return "chart.bar.doc.horizontal"
+        case .health:        return "heart.text.square"
         case .sessions:      return "rectangle.stack.badge.person.crop"
         case .actionItems:   return "checklist"
         case .schedules:     return "calendar.badge.clock"
@@ -40,6 +42,7 @@ nonisolated extension SidebarItem {
     var goShortcutKey: Character? {
         switch self {
         case .controlCenter: return "1"
+        case .health:        return nil   // no free key; Go ▸ Health is a menu item only
         case .sessions:      return "2"
         case .actionItems:   return "3"
         case .schedules:     return "4"
@@ -55,6 +58,7 @@ nonisolated extension SidebarItem {
     var accessibilityIdentifier: String {
         switch self {
         case .controlCenter: return "sidebar-control-center"
+        case .health:        return "sidebar-health"
         case .sessions:      return "sidebar-sessions"
         case .actionItems:   return "sidebar-action-items"
         case .schedules:     return "sidebar-schedules"

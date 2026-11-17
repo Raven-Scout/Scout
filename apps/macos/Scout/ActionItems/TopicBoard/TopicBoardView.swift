@@ -13,6 +13,8 @@ struct TopicBoardView: View {
     var search: String = ""
 
     @EnvironmentObject private var writerBox: ActionItemsWriterBox
+    @EnvironmentObject private var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
     @State private var topics: [TopicMeta] = []
     @State private var doneDates: [String: Date] = [:]
     @State private var dismissed: Set<String> = []
@@ -130,10 +132,18 @@ struct TopicBoardView: View {
 
     private func write(_ op: BoardWriteOp) {
         writeError = nil
+        let writer = writerBox.boardWriter
         Task {
             do {
-                try await writerBox.boardWriter.submit(op)
+                let result = try await writer.submit(op)
                 reloadBoardFiles()
+                if let why = result.undoUnavailable { vaultUndo.noteNotUndoable(op.actionName, why) }
+                if let change = result.change {
+                    vaultUndo.register(
+                        .restoring(change) { change, direction in try await writer.restore(change, direction) },
+                        with: undoManager
+                    ) { reloadBoardFiles() }
+                }
             } catch {
                 reloadBoardFiles()
                 await show(op.failureMessage(for: error))

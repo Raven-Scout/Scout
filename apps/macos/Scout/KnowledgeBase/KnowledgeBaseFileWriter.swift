@@ -61,12 +61,17 @@ actor KnowledgeBaseFileWriter {
     /// it). Comparing content — not mtime — stays correct on filesystems with
     /// coarse timestamp granularity. A `nil` baseline means "the file didn't
     /// exist (or wasn't readable) at load". Commits the single path on success.
+    ///
+    /// Returns the bytes before and after for undo (nil for an unchanged save).
+    /// A `.commitFailed` error still means the file was written; the change
+    /// is then not undoable from the app.
+    @discardableResult
     func save(
         fileURL: URL,
         contents: String,
         baselineContents: String?,
         label: String
-    ) async throws {
+    ) async throws -> VaultChange? {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -97,7 +102,9 @@ actor KnowledgeBaseFileWriter {
     }
 
     /// Delete `fileURL` and commit the removal.
-    func delete(fileURL: URL, label: String) async throws {
+    /// Returns the deleted bytes for undo, which writes the note back.
+    @discardableResult
+    func delete(fileURL: URL, label: String) async throws -> VaultChange? {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -114,6 +121,12 @@ actor KnowledgeBaseFileWriter {
     /// URL. Fails if the destination already exists.
     @discardableResult
     func rename(fileURL: URL, to newName: String) async throws -> URL {
+        try await renameReturningChange(fileURL: fileURL, to: newName).url
+    }
+
+    /// `rename`, plus both paths' bytes before and after for undo (which moves
+    /// the note back).
+    func renameReturningChange(fileURL: URL, to newName: String) async throws -> (url: URL, change: VaultChange?) {
         try ensureInsideKB(fileURL)
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
@@ -124,6 +137,19 @@ actor KnowledgeBaseFileWriter {
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
+    }
+
+    /// Undo or redo a change this writer made, in its serial queue. Only
+    /// paths inside the knowledge base are ever restored.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        for url in change.urls { try ensureInsideKB(url) }
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
     }
 
     // MARK: - Guard
@@ -144,28 +170,36 @@ actor KnowledgeBaseFileWriter {
     private static func performSave(
         fileURL: URL, contents: String, baselineContents: String?, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws {
-        let fm = FileManager.default
-        let exists = fm.fileExists(atPath: fileURL.path)
-        if exists {
-            // Conflict check: what's on disk must still be what the editor
-            // loaded. A nil baseline on an existing file means the caller
-            // couldn't read it at load — treat as a conflict to be safe.
-            guard let baselineContents,
-                  let current = try? String(contentsOf: fileURL, encoding: .utf8),
-                  current == baselineContents else {
-                throw KBWriterError.conflict(file: fileURL.lastPathComponent)
-            }
+    ) async throws -> VaultChange? {
+        // Conflict check: the bytes on disk must still be exactly what the
+        // editor loaded. Bytes, not `String`s: `String ==` treats NFC and NFD
+        // spellings of the same text as equal. A nil baseline on an existing
+        // file means the caller couldn't read it at load, and a file that
+        // can't be read now is not "missing": both are conflicts.
+        let onDisk: Data?
+        do { onDisk = try FileSnapshot.capture(fileURL).data }
+        catch { throw KBWriterError.conflict(file: fileURL.lastPathComponent) }
+        if let onDisk, !Self.bytes(onDisk, match: baselineContents) {
+            throw KBWriterError.conflict(file: fileURL.lastPathComponent)
+        }
+        // Keep a UTF-8 byte-order mark the file had: the editor's text was
+        // decoded without it.
+        var written = Data(contents.utf8)
+        if let onDisk, onDisk.starts(with: Self.utf8BOM), !written.starts(with: Self.utf8BOM) {
+            written = Self.utf8BOM + written
         }
         do {
-            try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
-                                   withIntermediateDirectories: true)
-            try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+            try VaultWrite.replace(fileURL, expecting: onDisk, with: written)
+        } catch VaultWriteError.stale {
+            throw KBWriterError.conflict(file: fileURL.lastPathComponent)
         } catch {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try await commitOrThrow(gitService, paths: [rel], message: "app: edit \(label)")
+        return VaultChange(actionName: "Edit Note",
+                           before: [FileSnapshot(url: fileURL, data: onDisk)],
+                           after: [FileSnapshot(url: fileURL, data: written)])
     }
 
     private static func performCreate(
@@ -179,8 +213,9 @@ actor KnowledgeBaseFileWriter {
             throw KBWriterError.alreadyExists(fileName)
         }
         do {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            try initialContents.write(to: dest, atomically: true, encoding: .utf8)
+            try VaultWrite.replace(dest, expecting: nil, with: Data(initialContents.utf8))
+        } catch VaultWriteError.stale {
+            throw KBWriterError.alreadyExists(fileName)
         } catch {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }
@@ -192,42 +227,60 @@ actor KnowledgeBaseFileWriter {
     private static func performDelete(
         fileURL: URL, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws {
+    ) async throws -> VaultChange? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
         }
+        let before = try? FileSnapshot.capture(fileURL)
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         do { try fm.removeItem(at: fileURL) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         // `git add -- <path>` stages the deletion (git ≥ 2.0).
         try await commitOrThrow(gitService, paths: [rel], message: "app: delete \(label)")
+        return before.flatMap {
+            VaultChange(actionName: "Delete Note", before: [$0], after: [FileSnapshot(url: fileURL, data: nil)])
+        }
     }
 
     private static func performRename(
         fileURL: URL, newName: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws -> URL {
+    ) async throws -> (url: URL, change: VaultChange?) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
         }
-        // Preserve the original extension if the new name doesn't carry one.
-        let originalExt = fileURL.pathExtension
-        var fileName = try normalizedFileName(newName, defaultExtension: originalExt)
-        if (fileName as NSString).pathExtension.isEmpty && !originalExt.isEmpty {
-            fileName += ".\(originalExt)"
-        }
-        let dest = fileURL.deletingLastPathComponent().appendingPathComponent(fileName)
+        let dest = try renameDestination(for: fileURL, to: newName)
+        let fileName = dest.lastPathComponent
         if fm.fileExists(atPath: dest.path) {
             throw KBWriterError.alreadyExists(fileName)
         }
         let oldRel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         let newRel = relativePathInRepo(fileURL: dest, repo: scoutDirectory)
+        let moved = try? FileSnapshot.capture(fileURL)
         do { try fm.moveItem(at: fileURL, to: dest) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         try await commitOrThrow(gitService, paths: [oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
-        return dest
+        let change = moved.flatMap {
+            VaultChange(actionName: "Rename Note",
+                        before: [$0, FileSnapshot(url: dest, data: nil)],
+                        after: [FileSnapshot(url: fileURL, data: nil), FileSnapshot(url: dest, data: $0.data)])
+        }
+        return (dest, change)
+    }
+
+    /// Where `rename(fileURL:to:)` moves the file: same directory, the new
+    /// name normalized, the original extension kept when the new name has
+    /// none. Callers use it to follow a rename whose commit failed, since the
+    /// file has moved even though `rename` threw.
+    static func renameDestination(for fileURL: URL, to newName: String) throws -> URL {
+        let originalExt = fileURL.pathExtension
+        var fileName = try normalizedFileName(newName, defaultExtension: originalExt)
+        if (fileName as NSString).pathExtension.isEmpty && !originalExt.isEmpty {
+            fileName += ".\(originalExt)"
+        }
+        return fileURL.deletingLastPathComponent().appendingPathComponent(fileName)
     }
 
     /// Commit the given paths, converting a git failure into `.commitFailed`
@@ -242,6 +295,18 @@ actor KnowledgeBaseFileWriter {
     }
 
     // MARK: - pure helpers
+
+    static let utf8BOM = Data([0xEF, 0xBB, 0xBF])
+
+    /// Whether `disk` holds exactly the text the editor loaded. Byte-exact
+    /// (`String ==` would equate NFC and NFD spellings), except for a UTF-8
+    /// byte-order mark: decoding drops it, so a note starting with one would
+    /// otherwise never match its own text and could never be saved.
+    static func bytes(_ disk: Data, match baseline: String?) -> Bool {
+        guard let baseline else { return false }
+        let text = Data(baseline.utf8)
+        return disk == text || (disk.starts(with: utf8BOM) && disk.dropFirst(utf8BOM.count) == text)
+    }
 
     /// Validate and normalize a user-entered file name. Rejects empty names and
     /// path separators (no creating files outside the chosen directory). Adds a

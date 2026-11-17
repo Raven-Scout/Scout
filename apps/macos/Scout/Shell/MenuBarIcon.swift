@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 
 struct MenuBarIcon: View {
-    let status: AppState.MenuBarStatus
+    /// `AppState.status`, the same status the panel and the status bar show.
+    let status: ScoutStatus
     /// Draws a small dot on the icon when either update track is behind, so
     /// an update reads as a notification even with the window closed.
     var updateAvailable: Bool = false
@@ -11,21 +12,26 @@ struct MenuBarIcon: View {
         // A `MenuBarExtra` label keeps only its Image/Text — SwiftUI overlays
         // and offsets are dropped — so the badged variant is one AppKit-drawn
         // template image with the dot baked in.
-        if updateAvailable, let badged = Self.badgedImage(symbolName: Self.symbolName(for: status)) {
+        if updateAvailable, let badged = Self.badgedImage(symbolName: Self.symbolName(for: status.kind)) {
             Image(nsImage: badged)
-                .accessibilityLabel("Scout — update available")
-                .help("Scout — update available")
+                .accessibilityLabel("Scout — \(status.title), update available")
+                .help("Scout — \(status.title) · update available")
         } else {
-            Image(systemName: Self.symbolName(for: status))
+            Image(systemName: Self.symbolName(for: status.kind))
+                .accessibilityLabel("Scout — \(status.title)")
+                .help("Scout — \(status.title)")
         }
     }
 
-    static func symbolName(for status: AppState.MenuBarStatus) -> String {
-        switch status {
-        case .idle:          "bolt"
-        case .running:       "circle.dotted"
-        case .lastFailed:    "exclamationmark.triangle"
-        case .budgetSkipped: "pause.circle"
+    /// Only a usable engine with nothing wrong gets the plain bolt.
+    static func symbolName(for kind: ScoutStatus.Kind) -> String {
+        switch kind {
+        case .checking, .ready: "bolt"
+        case .needsSetup:       "bolt.slash"
+        case .needsAttention,
+             .lastFailed:       "exclamationmark.triangle"
+        case .running:          "circle.dotted"
+        case .paused, .skipped: "pause.circle"
         }
     }
 

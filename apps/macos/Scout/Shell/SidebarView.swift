@@ -4,7 +4,7 @@ import SwiftUI
 /// style, so arrow keys move between pages, VoiceOver reads each row as a
 /// selectable item with its badge, and the row highlight follows the system.
 /// (It was a hand-built stack of buttons with none of that, C7.) The Go menu
-/// (`GoCommands`) reaches the same pages with ⌘1–⌘9.
+/// (`GoCommands`) reaches the same pages, all but Health with ⌘1–⌘9.
 struct SidebarView: View {
     @Binding var selection: SidebarItem
     /// Count of agent sessions that need you — drives the badge on the
@@ -23,6 +23,8 @@ struct SidebarView: View {
     /// True when the engine needs the user's attention (spec §5) — draws a
     /// warning symbol on the Settings row, labelled for VoiceOver.
     var settingsAttention: Bool = false
+    /// True when run health is red — draws the warning dot on the Health row.
+    var healthAttention: Bool = false
     /// True while the engine gates the tabs (spec §5): every row but Settings
     /// has nothing to show, so it renders dimmed — still selectable (it lands
     /// on the engine gate). Settings stays live and undimmed.
@@ -78,9 +80,14 @@ struct SidebarView: View {
         return parts.joined(separator: ", ")
     }
 
-    /// Whether a row carries the attention mark.
+    /// Whether a row carries the attention mark: Settings when the engine
+    /// needs the user, Health when run health is red.
     private func hasAttention(_ item: SidebarItem) -> Bool {
-        item == .settings && settingsAttention
+        switch item {
+        case .settings: return settingsAttention
+        case .health:   return healthAttention
+        default:        return false
+        }
     }
 
     private func row(_ item: SidebarItem) -> some View {
@@ -92,7 +99,7 @@ struct SidebarView: View {
                 if attention {
                     // A symbol, not a colour-only dot, so it reads without colour too.
                     Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(DS.Status.warn)
+                        .foregroundStyle(item == .health ? DS.Status.err : DS.Status.warn)
                         .help("Needs attention")
                 }
             }

@@ -243,7 +243,7 @@ struct SessionDetailView: View {
                         .foregroundStyle(DS.Ink.p4)
                 }
             } else {
-                Text("Scout builds it with `scoutctl session index`.")
+                Text("Scout updates this list in the background.")
                     .font(DS.sans(12.5))
                     .foregroundStyle(DS.Ink.p3)
             }

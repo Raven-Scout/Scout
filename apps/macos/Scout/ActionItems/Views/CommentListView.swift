@@ -13,7 +13,7 @@ struct CommentListView: View {
     let comments: [TaskComment]
     /// Invoked when the user clicks edit on a comment. The closure receives
     /// the 1-based index of the comment and the new body text.
-    var onEdit: ((Int, String) async -> Void)? = nil
+    var onEdit: ((Int, String) async -> Bool)? = nil
     /// Invoked when the user clicks delete on a comment. The closure
     /// receives the 1-based index of the comment.
     var onDelete: ((Int) async -> Void)? = nil
@@ -46,7 +46,7 @@ struct CommentListView: View {
 private struct CommentRow: View {
     let index: Int
     let comment: TaskComment
-    let onEdit: ((Int, String) async -> Void)?
+    let onEdit: ((Int, String) async -> Bool)?
     let onDelete: ((Int) async -> Void)?
 
     @State private var hovering = false
@@ -157,8 +157,10 @@ private struct CommentRow: View {
         guard !trimmed.isEmpty, !submitting, trimmed != comment.text, let onEdit else { return }
         submitting = true
         Task { @MainActor in
-            await onEdit(index, trimmed)
+            // A failed write keeps the editor open with the text intact.
+            let landed = await onEdit(index, trimmed)
             submitting = false
+            guard landed else { return }
             editing = false
             draft = ""
         }

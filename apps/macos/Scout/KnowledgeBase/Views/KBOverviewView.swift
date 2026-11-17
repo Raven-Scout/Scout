@@ -38,6 +38,7 @@ struct KBOverviewView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Knowledge Base")
                         .font(DS.serif(24, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                        .glossaryHelp(.knowledgeBase)
                     Text("\(net.noteCount) notes · \(net.linkCount) connections")
                         .font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
                 }

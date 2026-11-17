@@ -61,7 +61,7 @@ set `EXPECTED_SHA256` in that test to the new `shasum -a 256`; regenerate
 `scout/privacy.snapshot.json` if the policy moved (`python -m scout.scripts.privacy_snapshot`);
 all in ONE commit, and tell the indexer owners.
 
-`engine/tests/fixtures/contract/doctor-run-health.json` is a generated contract fixture with an app byte copy too — regenerate it with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
+`engine/tests/fixtures/contract/doctor-run-health.json`, `engine/tests/fixtures/contract/usage-summary.json`, `engine/tests/fixtures/contract/protection-status.json` (`scoutctl protection status --json`) and `engine/tests/fixtures/contract/run-ledger.json` (`scoutctl runs --json`) are generated contract fixtures with app byte copies too — regenerate them with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
 
 ## A behavioural rule in `phases/` gets an eval seed
 

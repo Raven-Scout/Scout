@@ -17,8 +17,8 @@ struct SlotCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 topRow
                 HStack(spacing: 6) {
-                    Text(slot.key)
-                        .font(DS.mono(12))
+                    Text(slot.displayName)
+                        .font(DS.sans(12))
                         .foregroundStyle(DS.Ink.p2)
                     if let model = slot.model {
                         SlotModelTag(model: model)

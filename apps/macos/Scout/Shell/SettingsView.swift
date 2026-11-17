@@ -7,16 +7,17 @@ import ServiceManagement
 ///
 /// Real preference values (launch-at-login, linear workspace, author name) keep
 /// the same `@AppStorage` keys as the old form so existing user defaults
-/// round-trip without migration. Notification toggles are new and persist
-/// alongside.
+/// round-trip without migration. The notification toggles are read by
+/// `RunNotificationPolicy`.
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("launchMinimized") private var launchMinimized: Bool = false
     @AppStorage("linearWorkspace") private var linearWorkspace: String = ""
     @AppStorage("authorName")      private var authorName: String = "user"
-    @AppStorage("notifyOnFailure")   private var notifyOnFailure: Bool = true
-    @AppStorage("notifyOnRateLimit") private var notifyOnRateLimit: Bool = true
+    // Read by `RunNotificationPolicy` before each run notification.
+    @AppStorage(RunNotificationPolicy.failureKey)   private var notifyOnFailure: Bool = true
+    @AppStorage(RunNotificationPolicy.rateLimitKey) private var notifyOnRateLimit: Bool = true
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
@@ -33,6 +34,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -40,7 +42,7 @@ struct SettingsView: View {
                     SettingsCard {
                         SettingsRow(
                             title: "Launch Scout at login",
-                            help: "Start the app automatically so it's watching your Scout instance all day."
+                            help: "Start the app automatically so it's watching your Scout folder all day."
                         ) {
                             SettingsToggle(isOn: $launchAtLogin)
                                 .onChange(of: launchAtLogin) { _, newValue in
@@ -76,11 +78,16 @@ struct SettingsView: View {
                         bundledVersion: appState.engineRelease?.engine.version,
                         isUpdating: appState.isUpgradingEngine,
                         unfinishedSwitch: appState.engineSwitchUnfinished,
+                        vault: appState.scoutDirectory,
                         onUpdate: { Task { await appState.runEngineUpgrade() } },
                         onSetUp: {
                             if appState.beginOnboarding() != nil { showingSetup = true }
                         })
+                    if !appState.engineHealth.state.gatesTabs {
+                        RunProtectionSection(service: appState.runProtection, vault: appState.scoutDirectory)
+                    }
                 }
+                .id(SettingsAnchor.engine)
 
                 section(label: "Action Items") {
                     ActionItemsDisplaySection()
@@ -200,13 +207,13 @@ struct SettingsView: View {
                     SettingsCard {
                         SettingsRow(
                             title: "Notify on failed runs",
-                            help: "Send a system notification when a scheduled run ends in failure or timeout."
+                            help: "Notify when a run fails, runs out of time or stops without finishing, or is skipped because Scout couldn't run it safely. Click the notification to open the run."
                         ) {
                             SettingsToggle(isOn: $notifyOnFailure)
                         }
                         SettingsRow(
                             title: "Notify on rate-limit",
-                            help: "Surface 429 / overload signals from the Anthropic API immediately."
+                            help: "Notify when a run stops because it hit a Claude usage limit."
                         ) {
                             SettingsToggle(isOn: $notifyOnRateLimit)
                         }
@@ -247,6 +254,14 @@ struct SettingsView: View {
             }.value
             detectedClaudePath = detected
         }
+        // Help ▸ Engine Settings… (audit C11): open at the Engine section.
+        .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
+            withAnimation { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
+        .onAppear {
+            if HelpActions.takeEngineSettingsRequest() { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
+        }
     }
 
     // MARK: - Atoms
@@ -256,7 +271,7 @@ struct SettingsView: View {
             Text("Settings")
                 .font(DS.serif(24, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
-            Text("Preferences for this Scout instance.")
+            Text("How Scout looks and runs on this Mac.")
                 .font(DS.sans(12.5))
                 .foregroundStyle(DS.Ink.p3)
         }

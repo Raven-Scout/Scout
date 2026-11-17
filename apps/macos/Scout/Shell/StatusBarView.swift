@@ -1,7 +1,7 @@
 import Combine
 import SwiftUI
 
-/// Persistent bottom strip across the main window — daemon health, next-run
+/// Persistent bottom strip across the main window — Scout's status, next-run
 /// ETA, today's cost, and the active view label. Matches the design's
 /// .statusbar language from Scout.html (the handoff bundle).
 ///
@@ -40,24 +40,43 @@ struct StatusBarView: View {
 
     // MARK: - Cells
 
+    /// `AppState.status`, the same status as the menu-bar icon and panel.
+    /// When it has a fix, the cell is a button to Settings, where both
+    /// "Set up…" and the engine details live.
     private var health: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(daemonColor)
-                .frame(width: 6, height: 6)
-                .shadow(color: daemonColor.opacity(0.4), radius: 0)
-                .overlay(
-                    Circle()
-                        .strokeBorder(daemonColor.opacity(0.22), lineWidth: 2)
-                        .frame(width: 10, height: 10)
-                )
-            Text("Scout daemon ·")
-                .font(DS.sans(11))
-                .foregroundStyle(DS.Ink.p3)
-            Text(daemonLabel)
-                .font(DS.mono(11))
-                .foregroundStyle(DS.Ink.p2)
+        let status = state.status
+        let color = status.tone.color
+        return Button {
+            state.requestedSidebar = .settings
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(color.opacity(0.22), lineWidth: 2)
+                            .frame(width: 10, height: 10)
+                    )
+                Text("Scout ·")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p3)
+                Text(status.title)
+                    .font(DS.sans(11, weight: .medium))
+                    .foregroundStyle(DS.Ink.p2)
+                    .lineLimit(1)
+                if let fix = status.fix {
+                    Text(fix.title)
+                        .font(DS.sans(11, weight: .medium))
+                        .foregroundStyle(DS.Accent.ink)
+                }
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(status.fix == nil)
+        .help(status.detail)
+        .accessibilityLabel("Scout: \(status.title). \(status.detail)")
     }
 
     private var nextRun: some View {
@@ -73,7 +92,7 @@ struct StatusBarView: View {
 
     private var todayCost: some View {
         HStack(spacing: 6) {
-            Text("today")
+            Text("runs today")
                 .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p4)
             Text(todayCostValue)
@@ -101,24 +120,6 @@ struct StatusBarView: View {
 
     // MARK: - Derived values
 
-    private var daemonColor: Color {
-        switch state.menuBarStatus {
-        case .running:        return DS.Status.warn
-        case .lastFailed:     return DS.Status.err
-        case .budgetSkipped:  return DS.Status.warn
-        case .idle:           return DS.Status.ok
-        }
-    }
-
-    private var daemonLabel: String {
-        switch state.menuBarStatus {
-        case .running:        return "running"
-        case .lastFailed:     return "last run failed"
-        case .budgetSkipped:  return "budget skip"
-        case .idle:           return "healthy"
-        }
-    }
-
     private var nextRunValue: String {
         guard let next = state.scheduleService.upcoming.first(where: { $0.type != .manual }) else {
             return "—"
@@ -129,15 +130,24 @@ struct StatusBarView: View {
         return "\(next.type.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
     }
 
+    /// Today's cost of Scout's scheduled runs, from the same engine summary as
+    /// the usage card, so the two never disagree. "≥" or "unknown" when some or
+    /// all runs reported no cost, instead of a $0 that was never measured.
     private var todayCostValue: String {
-        let cal = Calendar.current
-        let runs = state.sessionLogService.runs.filter { cal.isDateInToday($0.startedAt) }
-        let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
-        let nsTotal = NSDecimalNumber(decimal: total)
-        let fmt = NumberFormatter()
-        fmt.numberStyle = .currency
-        fmt.currencyCode = "USD"
-        fmt.maximumFractionDigits = 2
-        return fmt.string(from: nsTotal) ?? "$0.00"
+        guard let today = state.scoutUsageService.summary?.today else { return "—" }
+        return UsageFormat.shortCost(today)
+    }
+}
+
+extension ScoutStatus.Tone {
+    /// The one colour per tone the icon's panel and the status bar share.
+    var color: Color {
+        switch self {
+        case .ok:      return DS.Status.ok
+        case .warn:    return DS.Status.warn
+        case .err:     return DS.Status.err
+        case .active:  return DS.Accent.fill
+        case .neutral: return DS.Ink.p4
+        }
     }
 }

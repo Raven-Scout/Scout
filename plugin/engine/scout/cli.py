@@ -43,6 +43,18 @@ def version() -> None:
     print(__version__)
 
 
+@app.command("diagnostics")
+def cli_diagnostics(
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON."),
+    no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip the scheduler registration check."),
+) -> None:
+    """A redacted report for a bug report: versions, doctor, sandbox, runtime, recent runs. Never vault content."""
+    from scout import diagnostics
+    from scout import paths as _paths
+
+    typer.echo(diagnostics.main(_paths.data_dir(), as_json=as_json, check_jobs=not no_jobs))
+
+
 manifest_app = typer.Typer(help="Engine capability manifest operations.")
 app.add_typer(manifest_app, name="manifest")
 
@@ -184,9 +196,19 @@ def cli_sandbox_status(
 
 @sandbox_app.command("off")
 def cli_sandbox_off() -> None:
-    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so."""
-    from scout.sandbox import launch
+    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so.
 
+    The owner only: a scheduled or engine-launched run is refused (exit 2), as for `agent-runtime set-limit`.
+    """
+    import os
+
+    from scout.sandbox import launch
+    from scout.scripts.privacy_migrate import headless_reason
+
+    why = headless_reason(os.environ)
+    if why:
+        typer.echo(f"refused: {why}. Only the owner may turn the run sandbox off; nothing was changed.", err=True)
+        raise typer.Exit(2)
     path = launch.set_switch(False)
     typer.echo(f"run sandbox: off (wrote {path}); turn it back on with `scoutctl sandbox on`")
 
@@ -198,6 +220,35 @@ def cli_sandbox_on() -> None:
 
     path = launch.set_switch(True)
     typer.echo(f"run sandbox: on (wrote {path})")
+
+
+protection_app = typer.Typer(help="What protects scheduled runs: sandbox, privacy-check probe, integrity, limits.")
+app.add_typer(protection_app, name="protection")
+
+
+@protection_app.command("status")
+def cli_protection_status(
+    vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the summary as JSON (the app's contract)."),
+    check_sandbox: bool = typer.Option(
+        False,
+        "--check-sandbox",
+        help="Build and self-test the write sandbox's profile now (runs sandbox-exec in a temp dir) instead of "
+        "taking its status from the last run.",
+    ),
+) -> None:
+    """The write sandbox, the last privacy-check probe, the last run's integrity check, the broker, and each slot's
+    runtime and limits, with what needs fixing. Always exits 0; never starts claude.
+
+    Read-only: it starts no process and writes nothing, so whether the sandbox works comes from the newest run that
+    recorded it. --check-sandbox self-tests it instead, as `scoutctl sandbox status` does.
+    """
+    import json
+
+    from scout import paths, run_protection
+
+    data = run_protection.report(paths.data_dir(vault), check_sandbox=check_sandbox)
+    typer.echo(json.dumps(data, indent=2) if as_json else run_protection.format_text(data))
 
 
 @sandbox_app.command("snapshot")
@@ -254,14 +305,105 @@ def cli_sandbox_replay(
     vault: str = typer.Option(..., "--vault", help="The vault those sessions ran in (their paths resolve here)."),
     limit: int = typer.Option(50, "--limit", help="How many of the newest scheduled-run sessions to read."),
     as_json: bool = typer.Option(False, "--json", help="Print the counts as JSON."),
+    brokers: bool = typer.Option(
+        False,
+        "--brokers",
+        help="Judge against the profile the run brokers tighten (Phase 1d); say what replaces each refused call.",
+    ),
 ) -> None:
     """Read-only: which tool calls of past scheduled runs the sandbox would refuse. Prints counts and forms only."""
     import json
 
     from scout.sandbox import replay
 
-    report = replay.replay(Path(transcripts).expanduser(), Path(vault).expanduser(), limit=limit)
+    report = replay.replay(Path(transcripts).expanduser(), Path(vault).expanduser(), limit=limit, brokers=brokers)
     typer.echo(json.dumps(report, indent=2) if as_json else replay.format_report(report))
+
+
+broker_app = typer.Typer(help="The scheduled runs' commit and Telegram brokers (spec 2026-11-16, Phase 1d).")
+app.add_typer(broker_app, name="broker")
+
+
+@broker_app.command("serve")
+def cli_broker_serve(
+    vault: str = typer.Option(..., "--vault", help="The run's vault."),
+    broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder (mode 0700); the socket goes here."),
+    parent: int | None = typer.Option(None, "--parent", help="Stop when this process (the wrapper) is gone."),
+) -> None:
+    """Outside the sandbox: commit and send for one run until SIGTERM. claude-with-retry.sh starts it."""
+    from scout.sandbox import broker
+
+    try:
+        code = broker.serve(Path(vault), Path(broker_dir), parent=parent)
+    except (broker.BrokerError, OSError) as e:
+        typer.echo(f"broker: not started: {e}", err=True)
+        raise typer.Exit(1) from None
+    raise typer.Exit(code)
+
+
+@broker_app.command("profile")
+def cli_broker_profile(
+    vault: str = typer.Option(..., "--vault", help="The run's vault."),
+    broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder."),
+) -> None:
+    """Read the run's 1c profile on stdin; print it tightened for a run whose brokers answer (exit 0).
+
+    Exit 1 (reason on stderr, `.scout-logs/.run-broker.json` says unavailable) when the broker doesn't answer, the
+    vault's git-safe-commit.sh predates it, or the tightened profile fails its self-test: the run keeps the 1c
+    profile then.
+    """
+    import sys
+
+    from scout.sandbox import broker
+
+    data_dir = Path(vault)
+    try:
+        text = broker.build_profile(data_dir, Path(broker_dir), sys.stdin.read())
+    except broker.BrokerError as e:
+        broker.write_status(data_dir, "unavailable", str(e))
+        typer.echo(f"[scout:broker] unavailable: {e}", err=True)
+        raise typer.Exit(1) from None
+    broker.write_status(data_dir, "on", "commits and Telegram go through the run's broker")
+    typer.echo(text, nl=False)
+
+
+@broker_app.command("commit", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+def cli_broker_commit(
+    args: list[str] = typer.Argument(None, help="MESSAGE PATH…, as git-safe-commit.sh takes them."),
+) -> None:
+    """In-session client for scripts/git-safe-commit.sh: the run's broker commits (exit 6: queued, no SHA yet)."""
+    from scout.sandbox import broker
+
+    args = list(args or [])
+    if args and args[0] == "--":
+        args = args[1:]
+    if len(args) < 2:
+        typer.echo('git-safe-commit: usage: git-safe-commit.sh "commit message" <path> [<path> ...]', err=True)
+        raise typer.Exit(2)
+    raise typer.Exit(broker.client_commit(args[0], args[1:]))
+
+
+@broker_app.command("drain")
+def cli_broker_drain(
+    vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    deadline: float = typer.Option(120.0, "--deadline", help="Start no entry after this many seconds; the rest wait."),
+    run: str | None = typer.Option(None, "--run", help="The wrapper's drain: close this run afterwards."),
+) -> None:
+    """Outside the sandbox: apply what runs queued while their broker didn't answer, each checked like a live one."""
+    import signal
+
+    from scout import paths
+    from scout.sandbox import broker
+
+    def stopped(_sig: int, _frame: object) -> None:
+        raise SystemExit(143)  # unwinds through run_commit, which stops the helper's process group first
+
+    signal.signal(signal.SIGTERM, stopped)
+    result = broker.drain(paths.data_dir(vault), deadline_s=deadline, run=run)
+    if result.done or result.kept or result.failed or result.busy or result.unsafe:
+        typer.echo(result.line())
+    for reason in result.reasons:
+        typer.echo(f"  failed: {reason}")
 
 
 @hook_app.command("connector-log")
@@ -1232,6 +1374,23 @@ def budget_record_run_cmd(
         typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
 
 
+@budget_app.command("usage")
+def budget_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the summary the app's usage card reads, as JSON."),
+) -> None:
+    """What Scout's own scheduled runs used today and this week: tokens and cost.
+
+    Counts finished scheduled runs only (the usage tracker's runner rows), never
+    interactive Claude sessions. Tokens come from those runs' transcripts, each
+    message counted once; cost is the budget gate's figure, with how it was found
+    (cost_kind: reported, priced, unpriced, partial or none). Read-only.
+    """
+    from scout.scripts.usage_summary import describe, dumps, summarize
+
+    summary = summarize()
+    typer.echo(dumps(summary) if as_json else describe(summary), nl=not as_json)
+
+
 @budget_app.command("record-attempt")
 def budget_record_attempt_cmd(
     run_type: str = typer.Argument(..., help="The row's type: the slot (run-scout.sh), dreaming or research."),
@@ -1903,8 +2062,8 @@ def _register_schedule() -> None:
             help=(
                 "Emit a JSON array of full slot records (key/type/runner/"
                 "fires_at_local/weekdays/missed_window_hours/on_miss/"
-                "cooldown_minutes/budget_usd/tz/runtime/model) instead of "
-                "tab-separated lines. Plan 6's ScheduleEditService consumes "
+                "cooldown_minutes/budget_usd/tz/runtime/model/agent_runtime) "
+                "instead of tab-separated lines. Plan 6's ScheduleEditService consumes "
                 "this for the in-app editor."
             ),
         ),
@@ -1933,6 +2092,9 @@ def _register_schedule() -> None:
                     "tz": sched[key].tz,
                     "runtime": sched[key].runtime.value,
                     "model": sched[key].model,
+                    # The app rewrites schedule.yaml from this list, so every Slot
+                    # field must appear here or an in-app save drops it.
+                    "agent_runtime": sched[key].agent_runtime,
                 }
                 for key in sorted(sched.keys())
             ]
@@ -1970,7 +2132,9 @@ def _register_schedule() -> None:
             "cooldown_minutes": slot.cooldown_minutes,
             "budget_usd": slot.budget_usd,
             "tz": slot.tz,
+            "runtime": slot.runtime.value,
             "model": slot.model,
+            "agent_runtime": slot.agent_runtime,
         }
         typer.echo(_json.dumps(record, indent=2))
 
@@ -3127,13 +3291,9 @@ def _register_notify() -> None:
 
         The receipt is `id=<ulid>` on the first line of stderr; stdout is the Event JSON.
         """
-        import json as _json
-        from dataclasses import asdict
+        import os as _os
 
-        import requests as _requests
-
-        from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import DuplicateSendError, OutboundBlockedError, send
+        from scout.scripts.notify_telegram import cli_send
 
         if body is not None and body_file is None:
             text = body
@@ -3147,69 +3307,30 @@ def _register_notify() -> None:
             typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
             raise typer.Exit(code=1)
 
-        try:
-            ev = send(
-                tier=tier,
-                body=text,
-                parse_mode=parse_mode,
-                dry_run=dry_run,
-                allow_duplicate=allow_duplicate,
-                receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
-            )
-        except DuplicateSendError as e:
-            # Receipt first (the earlier send's id), so a caller filtering
-            # stderr still finds it; then the refusal and how to override.
-            typer.echo(f"id={e.original_id}", err=True)
-            typer.echo(
-                f"scoutctl notify telegram: refused — byte-identical message sent at {e.sent_at} "
-                f"(id {e.original_id}); pass --allow-duplicate to send it again",
-                err=True,
-            )
-            raise typer.Exit(code=DuplicateSendError.exit_code) from e
-        except OutboundBlockedError as e:
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
-        except _ConfigError as e:
-            # Map ScoutError exit codes at the command boundary so the CLI
-            # surface stays consistent with cli.main()'s ScoutError handler.
-            # The runner relies on exit 10 to know secrets are missing.
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=_ConfigError.exit_code) from e
-        except ValueError as e:
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=1) from e
-        except _requests.HTTPError as e:
-            # ``str(HTTPError)`` includes the request URL, and the Telegram
-            # URL embeds the bot token in its path
-            # (``/bot<token>/sendMessage``). On a 401 (revoked token) or
-            # any 4xx/5xx the raw token would dump to stderr — the worst
-            # leak path because it's exactly what operators debug live.
-            # Rebuild the message from status_code + reason instead of
-            # ``str(e)`` so the URL never appears.
-            status = getattr(e.response, "status_code", "?")
-            reason = getattr(e.response, "reason", "Unknown")
-            typer.echo(
-                f"scoutctl notify telegram: HTTP {status} {reason} (token redacted in URL)",
-                err=True,
-            )
-            raise typer.Exit(code=2) from e
-        except _requests.RequestException as e:
-            # Non-HTTP failures during a live send: timeout, DNS, connection
-            # refused, SSL. ``str()`` of a ConnectionError DOES include the
-            # request path (``Max retries exceeded with url: /bot<token>/…``).
-            # send() scrubs it; redact again here so this line can never
-            # carry the token. Exit non-zero with a clear stderr line instead
-            # of dumping a stack trace into the runner's prompt.
-            from scout.redact import redact_secrets
+        if _os.environ.get("SCOUT_RUN_BROKER"):
+            # A scheduled run with its send-only broker (Phase 1d): the broker sends it to the owner's chat, within
+            # the owner's limits, and the run never reads the token. Same output and exit codes, plus 5 (limits).
+            from scout.sandbox import broker
 
-            typer.echo(f"scoutctl notify telegram: HTTP error: {redact_secrets(str(e))}", err=True)
-            raise typer.Exit(code=2) from None
-
-        # Print the resulting Event JSON to stdout. Dry-run preamble (the
-        # [dry-run] lines) is intentionally routed through stderr inside
-        # send() so this stdout is always pure JSON and parsable by tests
-        # / downstream scripts.
-        typer.echo(_json.dumps(asdict(ev), indent=2))
+            fields = {
+                "tier": tier,
+                "parse_mode": parse_mode,
+                "body": text,
+                "allow_duplicate": allow_duplicate,
+                "dry_run": dry_run,
+            }
+            raise typer.Exit(code=broker.client_telegram(fields))
+        code = cli_send(
+            tier=tier,
+            text=text,
+            parse_mode=parse_mode,
+            dry_run=dry_run,
+            allow_duplicate=allow_duplicate,
+            echo_out=typer.echo,
+            echo_err=lambda line: typer.echo(line, err=True),
+        )
+        if code:
+            raise typer.Exit(code=code)
 
 
 _register_notify()
@@ -3280,6 +3401,58 @@ def _register_health() -> None:
 
 
 _register_health()
+
+
+def _register_runs() -> None:
+    """scoutctl runs [--json] [--since 7d] [--limit N] — the run ledger plus run health, for the app."""
+
+    @app.command("runs")
+    def cli_runs(
+        json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+        since: str = typer.Option("7d", "--since", help="How far back: 7d, 48h, 90m, or an ISO time."),
+        limit: int = typer.Option(200, "--limit", min=1, max=2000, help="At most this many runs, newest first."),
+    ) -> None:
+        """Recent scheduled runs (outcome, skip reason, sandbox, integrity) and run-health findings.
+
+        Read-only. Exits 0 whatever the runs' health is (use `scoutctl health` for an exit code);
+        2 on a bad --since or a missing vault.
+        """
+        import json as _json
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from scout import paths as _paths
+        from scout import run_ledger as _rl
+
+        now = _dt.now(UTC)
+        try:
+            cutoff = _rl.parse_since(since, now=now)
+        except ValueError as e:
+            typer.echo(f"scoutctl runs: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            error = f"vault directory missing: {vault}"
+            typer.echo(f"scoutctl runs: {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"schema_version": _rl.SCHEMA_VERSION, "error": error}))
+            raise typer.Exit(code=2)
+        doc = _rl.ledger_report(vault, now=now, since=cutoff, limit=limit)
+        if json_out:
+            typer.echo(_json.dumps(doc))
+            return
+        typer.echo(f"run health: {doc['health']['severity']}")
+        for run in doc["runs"]:
+            why = run["failure_class"] if run["outcome"] != "ok" else ""
+            extra = " ".join(
+                f"{k}={run[k]}" for k in ("sandbox", "integrity") if run[k] and run[k] not in ("enforced", "clean")
+            )
+            typer.echo(f"{run['finished_at']}  {run['slot']:<24} {run['outcome']:<16} {why} {extra}".rstrip())
+        if doc["truncated"]:
+            typer.echo(f"(showing the newest {limit}; use --limit for more)")
+
+
+_register_runs()
 
 
 def _register_auth() -> None:

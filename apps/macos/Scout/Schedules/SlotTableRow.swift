@@ -42,14 +42,12 @@ struct SlotTableRow: View {
 
     private var nameCell: some View {
         HStack(spacing: 6) {
-            Text(slot.key)
-                .font(DS.mono(13))
+            Text(slot.displayName)
+                .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Image(systemName: "lock.fill")
-                .font(DS.sans(10))
-                .foregroundStyle(DS.Ink.p4)
+                .help(slot.key)
             if let model = slot.model {
                 SlotModelTag(model: model)
             }

@@ -12,6 +12,12 @@ struct FeedbackTab: View {
     @State private var saveError: String? = nil
     @State private var didLoad = false
     @State private var saveTask: Task<Void, Never>? = nil
+    /// The body as loaded for this run. Saving only happens when the text
+    /// differs, so opening a note (or switching runs) never rewrites it.
+    @State private var loadedText: String = ""
+    /// The note exists but couldn't be read. Editing is off: saving an empty
+    /// or retyped body would delete or replace the note.
+    @State private var isUnreadable = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -23,6 +29,10 @@ struct FeedbackTab: View {
                     Text("Saved \(s.formatted(.relative(presentation: .named)))")
                         .font(DS.sans(10))
                         .foregroundStyle(.secondary)
+                } else if isUnreadable {
+                    Text("Couldn't read the saved note")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 } else if let err = saveError {
                     Text("Error: \(err)")
                         .font(DS.sans(10))
@@ -41,9 +51,14 @@ struct FeedbackTab: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.3))
                 )
-                .onChange(of: text) { _, _ in
+                .disabled(isUnreadable)
+                .onChange(of: text) { _, new in
+                    guard Self.shouldSave(text: new, loadedText: loadedText, isUnreadable: isUnreadable) else { return }
                     saveTask?.cancel()
-                    saveTask = Task { await debouncedSave() }
+                    // Capture the target now: if the user switches runs before
+                    // the debounce fires, this edit still lands in its own note.
+                    let target = SaveTarget(url: feedbackURL, run: run, body: new)
+                    saveTask = Task { await debouncedSave(target) }
                 }
 
             HStack {
@@ -56,8 +71,13 @@ struct FeedbackTab: View {
                 }
                 .disabled(text.isEmpty && savedAt == nil)
                 Spacer()
-                Button("Save") { Task { save() } }
-                    .keyboardShortcut("s", modifiers: [.command])
+                Button("Save") {
+                    guard Self.shouldSave(text: text, loadedText: loadedText, isUnreadable: isUnreadable) else { return }
+                    saveTask?.cancel()
+                    save(SaveTarget(url: feedbackURL, run: run, body: text))
+                }
+                .keyboardShortcut("s", modifiers: [.command])
+                .disabled(isUnreadable)
             }
         }
         .padding(16)
@@ -70,53 +90,93 @@ struct FeedbackTab: View {
             .appendingPathComponent("\(slug(for: run)).md")
     }
 
+    enum LoadOutcome: Equatable {
+        case missing
+        case loaded(String)
+        case unreadable
+    }
+
+    /// A note that exists but can't be read (I/O error, not UTF-8) is
+    /// `.unreadable`, never an empty body.
+    static func loadOutcome(data: Data?, fileExists: Bool) -> LoadOutcome {
+        guard let data else { return fileExists ? .unreadable : .missing }
+        guard let s = String(data: data, encoding: .utf8) else { return .unreadable }
+        return .loaded(stripFrontmatter(s))
+    }
+
+    static func shouldSave(text: String, loadedText: String, isUnreadable: Bool) -> Bool {
+        !isUnreadable && text != loadedText
+    }
+
+    private struct SaveTarget {
+        let url: URL
+        let run: Run
+        let body: String
+    }
+
     private func load() {
         let url = feedbackURL
-        if let data = try? Data(contentsOf: url),
-           let s = String(data: data, encoding: .utf8) {
-            // Strip the YAML frontmatter we wrote so the user only edits the
-            // body. We re-add it on save so the file stays self-describing.
-            text = stripFrontmatter(s)
-            didLoad = true
+        let outcome = Self.loadOutcome(
+            data: try? Data(contentsOf: url),
+            fileExists: FileManager.default.fileExists(atPath: url.path))
+        didLoad = true
+        saveError = nil
+        switch outcome {
+        case .loaded(let body):
+            // Frontmatter was stripped so the user only edits the body. We
+            // re-add it on save so the file stays self-describing.
+            isUnreadable = false
+            loadedText = body
+            text = body
             savedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        } else {
+        case .missing:
+            isUnreadable = false
+            loadedText = ""
             text = ""
-            didLoad = true
+            savedAt = nil
+        case .unreadable:
+            isUnreadable = true
+            loadedText = ""
+            text = ""
             savedAt = nil
         }
     }
 
-    private func debouncedSave() async {
+    private func debouncedSave(_ target: SaveTarget) async {
         do {
             try await Task.sleep(nanoseconds: 600_000_000)
         } catch {
             return // cancelled by next keystroke
         }
-        save()
+        save(target)
     }
 
-    private func save() {
-        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let url = feedbackURL
-        let dir = url.deletingLastPathComponent()
+    private func save(_ target: SaveTarget) {
+        let body = target.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = target.url
+        // A debounced save can land after the user switched runs: it still
+        // writes its own note, but only the visible run's status changes.
+        let isCurrent = url == feedbackURL
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if body.isEmpty {
                 // No content: remove any prior file so we don't ship stale
                 // empty notes back through downstream consumers.
                 if FileManager.default.fileExists(atPath: url.path) {
                     try FileManager.default.removeItem(at: url)
                 }
+            } else {
+                try makeFile(body: body, run: target.run)
+                    .write(to: url, atomically: true, encoding: .utf8)
+            }
+            if isCurrent {
                 savedAt = Date()
                 saveError = nil
-                return
+                loadedText = target.body
             }
-            let content = makeFile(body: body)
-            try content.write(to: url, atomically: true, encoding: .utf8)
-            savedAt = Date()
-            saveError = nil
         } catch {
-            saveError = error.localizedDescription
+            if isCurrent { saveError = error.localizedDescription }
         }
     }
 
@@ -126,7 +186,7 @@ struct FeedbackTab: View {
         return "\(fmt.string(from: run.startedAt))_\(run.type.rawValue)"
     }
 
-    private func makeFile(body: String) -> String {
+    private func makeFile(body: String, run: Run) -> String {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         var out = "---\n"
@@ -140,7 +200,7 @@ struct FeedbackTab: View {
         return out
     }
 
-    private func stripFrontmatter(_ s: String) -> String {
+    static func stripFrontmatter(_ s: String) -> String {
         guard s.hasPrefix("---\n") else { return s }
         let after = s.dropFirst(4)
         guard let endRange = after.range(of: "\n---\n") else { return s }

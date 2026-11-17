@@ -1,10 +1,17 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @State private var selection: SidebarItem = .controlCenter
+    @State private var selection: SidebarItem
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
     @EnvironmentObject var updates: UpdateService
+    @Environment(\.openWindow) private var openWindow
+
+    /// `initialSelection` lets the layout tests render the whole window on
+    /// any page; the app always opens on Control Center.
+    init(initialSelection: SidebarItem = .controlCenter) {
+        _selection = State(initialValue: initialSelection)
+    }
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not
@@ -24,6 +31,7 @@ struct MainWindowView: View {
                         researchBadge: appState.researchDocumentService.activeCount,
                         settingsBadge: updates.availableCount,
                         settingsAttention: appState.engineHealth.needsAttention,
+                        healthAttention: appState.runLedgerService.needsAttention,
                         tabsGated: appState.engineHealth.state.gatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
@@ -43,6 +51,10 @@ struct MainWindowView: View {
                 }
             }
             .background(PaperBackdrop())
+            .environmentObject(appState.vaultUndo)
+            .overlay(alignment: .bottomTrailing) {
+                WriteFeedbackOverlay(controller: appState.vaultUndo)
+            }
             .sheet(isPresented: upgradeSheetPresented) {
                 EngineUpgradeSheet(
                     progress: appState.engineUpgradeProgress ?? [:],
@@ -56,6 +68,12 @@ struct MainWindowView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
+        }
+        .onAppear {
+            // So a notification click can reopen this window once it's closed (card C3).
+            if appState.openMainWindow == nil {
+                appState.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            }
         }
         .onChange(of: appState.requestedSidebar) { _, requested in
             guard let requested else { return }
@@ -91,6 +109,11 @@ struct MainWindowView: View {
         switch selection {
         case .controlCenter:
             ControlCenterView()
+        case .health:
+            HealthView(openSettings: { appState.requestedSidebar = .settings },
+                       logsDirectory: appState.scoutDirectory.appendingPathComponent(".scout-logs"))
+                .environmentObject(appState.runLedgerService)
+                .environmentObject(appState.engineHealth)
         case .sessions:
             SessionsView()
                 .environmentObject(appState.sessionIndexService)
@@ -133,12 +156,13 @@ struct MainWindowView: View {
 /// `nonisolated`: a plain value the pure gate/dimming rules
 /// (`showsOnboarding`, `SidebarView.isDimmed`) compare off the main actor.
 nonisolated enum SidebarItem: Hashable, CaseIterable {
-    case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
+    case controlCenter, health, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
         switch self {
         case .controlCenter: return "control"
+        case .health:        return "health"
         case .sessions:      return "sessions"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
