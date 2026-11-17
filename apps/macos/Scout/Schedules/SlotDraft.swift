@@ -56,8 +56,79 @@ struct SlotDraft: Equatable {
         )
     }
 
+    /// Whether the draft differs from `live`. Compared as drafts, so weekdays
+    /// compare as a set: the engine keeps schedule.yaml's order (a hand-edited
+    /// `[Fri, Mon]`), while `toSlot()` writes Mon–Sun, and order alone must
+    /// not make a slot look edited.
     func isDirty(against live: Slot) -> Bool {
-        toSlot() != live
+        self != SlotDraft(from: live)
+    }
+
+    /// One editable field: its label in conflict notes, and how to compare
+    /// and copy it. Every field but the key, which never moves.
+    private struct Field {
+        let label: String
+        let equal: (SlotDraft, SlotDraft) -> Bool
+        let copy: (inout SlotDraft, SlotDraft) -> Void
+
+        init<T: Equatable>(_ path: WritableKeyPath<SlotDraft, T>, _ label: String) {
+            self.label = label
+            equal = { $0[keyPath: path] == $1[keyPath: path] }
+            copy = { $0[keyPath: path] = $1[keyPath: path] }
+        }
+    }
+
+    private static var fields: [Field] {
+        [
+            Field(\.type, SlotFieldLabel.kind),
+            Field(\.runner, SlotFieldLabel.script),
+            Field(\.firesAtLocal, SlotFieldLabel.time),
+            Field(\.weekdays, SlotFieldLabel.weekdays),
+            Field(\.missedWindowHours, SlotFieldLabel.catchUpWindow),
+            Field(\.onMiss, SlotFieldLabel.ifAsleep),
+            Field(\.cooldownMinutes, SlotFieldLabel.waitBetweenRuns),
+            Field(\.budgetUsd, SlotFieldLabel.budget),
+            Field(\.tz, SlotFieldLabel.timeZone),
+            Field(\.runtime, SlotFieldLabel.runtime),
+            Field(\.model, SlotFieldLabel.model),
+            Field(\.agentRuntime, SlotFieldLabel.agent),
+        ]
+    }
+
+    /// Labels of the fields where this draft and `other` differ, in form order.
+    func differingFields(from other: SlotDraft) -> [String] {
+        Self.fields.filter { !$0.equal(self, other) }.map(\.label)
+    }
+
+    /// This draft, typed against `baseline`, carried onto the slot as it is
+    /// now (`live`): fields the user changed keep their value, the others
+    /// take `live`'s, so a change made elsewhere (another device, undo, a
+    /// reload) to a field the user didn't touch isn't written back over on
+    /// save. `conflicts` names the fields both sides changed to different
+    /// values; the user's value is kept there. The key never moves.
+    func rebased(from baseline: Slot, onto live: Slot) -> (draft: SlotDraft, conflicts: [String]) {
+        let base = SlotDraft(from: baseline)
+        let theirs = SlotDraft(from: live)
+        var out = self
+        var conflicts: [String] = []
+        for field in Self.fields {
+            if field.equal(self, base) {
+                field.copy(&out, theirs)
+            } else if !field.equal(self, theirs) && !field.equal(base, theirs) {
+                conflicts.append(field.label)
+            }
+        }
+        return (out, conflicts)
+    }
+
+    /// The conflict note to show: earlier conflicts plus `new` ones, kept
+    /// until Save or Revert, so a note survives a later change to the slot
+    /// and a trip through `SlotDraftStore`. Only fields where the draft still
+    /// differs from `live` stay (a save, or the user typing the file's value
+    /// back, settles one). In form order.
+    static func stickyConflicts(previous: [String], new: [String], draft: SlotDraft, live: Slot) -> [String] {
+        let wanted = Set(previous).union(new)
+        return draft.differingFields(from: SlotDraft(from: live)).filter { wanted.contains($0) }
     }
 
     /// Returns the first per-field validation error, or nil if all clean.
@@ -97,4 +168,24 @@ struct SlotDraft: Equatable {
     static func validateWeekdays(_ days: [String]) -> String? {
         days.isEmpty ? "Pick at least one weekday" : nil
     }
+}
+
+/// The schedule form's field names (UI audit C4's wording), shared by the
+/// form's headings and the conflict note that names fields, so the two
+/// can't drift apart. Units stay with the form's headings.
+nonisolated enum SlotFieldLabel {
+    static let name = "Name"
+    static let time = "Time"
+    static let weekdays = "Weekdays"
+    static let ifAsleep = "If the Mac was asleep"
+    static let waitBetweenRuns = "Wait between runs"
+    static let model = "Model"
+    static let agent = "Agent"
+    static let script = "Script"
+    static let catchUpWindow = "Catch-up window"
+    static let kind = "Kind of work"
+    /// Not shown in the form; named only if it ever conflicts.
+    static let budget = "Budget"
+    static let timeZone = "Time zone"
+    static let runtime = "Where it runs"
 }
