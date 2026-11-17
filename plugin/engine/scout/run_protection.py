@@ -71,7 +71,9 @@ _LEDGER_ACTIONS: dict[str, str | None] = {
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")  # a slot, mode or runtime
 _WORD_RE = re.compile(r"[a-z][a-z0-9_.-]{0,40}")  # an outcome or a source
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,80}")
-_VERSION_RE = re.compile(r"\d{1,4}(?:\.\d{1,6}){1,3}(?:[-+][0-9A-Za-z.]{1,20})?")
+# `claude --version`'s first line, as the probe stores it: "2.1.318 (Claude Code)". Keep the version; anything but a
+# space or "(" right after it isn't one.
+_VERSION_RE = re.compile(r"\s*(\d{1,4}(?:\.\d{1,6}){1,3}(?:-[0-9A-Za-z.]{1,20})?)(?=\s|\(|$)")
 _LOG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
 _PATH_PART_RE = re.compile(r"\.?[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 _RUN_SANDBOX = frozenset({"enforced", "unavailable", "off", "conflict", "failed"})
@@ -79,34 +81,62 @@ _RUN_SANDBOX_SOURCE = frozenset({"env", "switch"})
 _RUN_INTEGRITY = frozenset({"clean", "restored", "unrestored", "error", "unchecked"})
 
 _REDACTED = "[redacted]"
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # key=value / key: value, for the names a secret goes by
+
+
+def _secret_value(m: re.Match[str]) -> str:
+    """``name=value`` for a secret's name: redact the value when it looks like one (so ``token: expired`` stays)."""
+    value = m.group(3)
+    looks_secret = len(value) >= 6 and (any(c.isdigit() for c in value) or len(value) >= 16)
+    return f"{m.group(1)}{m.group(2)}{_REDACTED}" if looks_secret else m.group(0)
+
+
+def _opaque(m: re.Match[str]) -> str:
+    """A long run of token characters is a secret only when it mixes upper case, lower case and digits, as random
+    keys do; a commit SHA, a log name or ``morning-briefing-and-more`` doesn't."""
+    t = m.group(0)
+    mixed = any(c.isupper() for c in t) and any(c.islower() for c in t) and any(c.isdigit() for c in t)
+    return _REDACTED if mixed else t
+
+
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...] = (
+    # name=value / name: value, for the names a secret goes by (not "key", "auth" or "session", which label
+    # ordinary things)
     (
         re.compile(
-            r"(?i)\b(api[_-]?key|access[_-]?key|key|token|secret|password|passwd|pwd|auth|authorization|"
-            r"cookie|credentials?|session)(\s*[=:]\s*)\S+"
+            r"(?i)\b((?:api|access|secret|private)[_-]?key|client[_-]?secret|(?:[a-z]+[_-])?token|secret|password|"
+            r"passwd|pwd|authorization|cookie|credentials?)(\s*[=:]\s*)(\S+)"
         ),
-        rf"\1\2{_REDACTED}",
+        _secret_value,
     ),
-    (re.compile(r"(?i)\bbearer\s+\S+"), f"Bearer {_REDACTED}"),
-    # well-known token prefixes, whatever surrounds them
-    (re.compile(r"(?:sk-|xox[abprs]-|gh[pousr]_|github_pat_|glpat-|AKIA|ASIA)[A-Za-z0-9_\-]*"), _REDACTED),
-    # any long opaque run of token characters
-    (re.compile(r"[A-Za-z0-9+/_=-]{32,}"), _REDACTED),
+    (re.compile(r"(?i)\bbearer\s+\S{8,}"), f"Bearer {_REDACTED}"),
+    # well-known token prefixes
+    (re.compile(r"\b(?:sk-|xox[abprs]-|gh[pousr]_|github_pat_|glpat-|AKIA|ASIA)[A-Za-z0-9_\-]{8,}"), _REDACTED),
+    # a long opaque run of token characters (no "/", so paths and URLs stay)
+    (re.compile(r"[A-Za-z0-9+_=-]{32,}"), _opaque),
 )
 _HOME_RE = re.compile(r"/(?:Users|home)/[^/\s]+")
 
 
+def _line(value: str, limit: int = 240) -> str:
+    """One line of at most ``limit`` characters (control characters become spaces)."""
+    out = " ".join(re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", value).split())
+    return out if len(out) <= limit else out[: limit - 1].rstrip() + "\u2026"
+
+
 def _text(value: object, limit: int = 240) -> str:
-    """Free text a run could have written, made safe to show: one line, no secret-looking tokens, ``~`` for home."""
+    """Free text a run could have written (the broker's and the probe's reasons, a slot's error), made safe to show:
+    one line, no secret-looking tokens, ``~`` for home. Engine-authored text gets :func:`_line` only."""
     if not isinstance(value, str):
         return ""
-    out = re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", value)
-    out = _HOME_RE.sub("~", out)
+    out = _HOME_RE.sub("~", value)
     for pattern, replacement in _SECRET_PATTERNS:
         out = pattern.sub(replacement, out)
-    out = " ".join(out.split())
-    return out if len(out) <= limit else out[: limit - 1].rstrip() + "\u2026"
+    return _line(out, limit)
+
+
+def _version(value: object) -> str | None:
+    m = _VERSION_RE.match(value) if isinstance(value, str) else None
+    return m.group(1) if m else None
 
 
 def _match(value: object, pattern: re.Pattern[str]) -> str | None:
@@ -135,12 +165,13 @@ def _rel(vault: Path, path: str | None) -> str | None:
 def _problem(
     id: str, severity: str, summary: str, fix: str, action: str | None, log: str | None = None
 ) -> dict[str, Any]:
-    # Summaries quote reasons a run could have written (the ledger's, the probe's, the broker's).
+    # Engine-authored. Where one quotes a reason a run could have written (the probe's, the broker's), the caller
+    # passes it through _text first.
     return {
         "id": id,
         "severity": severity,
-        "summary": _text(summary, 600),
-        "fix": _text(fix, 600),
+        "summary": _line(summary, 600),
+        "fix": _line(fix, 600),
         "action": action,
         "log": log,
     }
@@ -185,7 +216,7 @@ def sandbox_part(
         if result is None and check:
             result, checked_by = (prepare or launch.prepare)(vault, sched_env), "self_test"
     except Exception as e:  # noqa: BLE001 - a bug here must not hide the rest of the card
-        block["reason"] = _text(f"couldn't check: {e}")
+        block["reason"] = _line(f"couldn't check: {e}")
         return block, [
             _problem(
                 "sandbox.unchecked",
@@ -213,7 +244,7 @@ def sandbox_part(
             result = launch.Prepared("failed", f"the last run ({name}, {when}) couldn't set it up; its log says why")
         checked_by = "last_run"
     # "turned off (<the switch file's absolute path>)" says where; the card only needs who.
-    reason = "turned off by the owner (scoutctl sandbox off)" if result.status == "off" else _text(result.reason)
+    reason = "turned off by the owner (scoutctl sandbox off)" if result.status == "off" else _line(result.reason)
     block.update(status=result.status, reason=reason, checked_by=checked_by)
     problems: list[dict[str, Any]] = []
     if result.status == "off":
@@ -288,7 +319,7 @@ def gate_probe_part(vault: Path, *, now: datetime) -> tuple[dict[str, Any], list
         "status": status,
         "reason": reason,
         "checked_at": checked_at,
-        "claude_version": _match(cached.claude_version, _VERSION_RE),
+        "claude_version": _version(cached.claude_version),
         "unsafe": cached.unsafe,  # read_cache keeps only gate_probe.UNSAFE_EXIT's keys
         "stale": stale,
     }

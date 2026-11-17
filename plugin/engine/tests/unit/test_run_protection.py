@@ -66,7 +66,7 @@ def _probe(vault: Path, *, ok: bool, unsafe: str = "", at: datetime = NOW - time
     data = {
         "ok": ok,
         "reason": "the reason",
-        "claude_version": "2.9.0",
+        "claude_version": "2.9.0 (Claude Code)",  # `claude --version`'s first line, as the probe stores it
         "hooks_sha256": "a",
         "flags": [],
         "env_key": "b",
@@ -257,21 +257,22 @@ def test_status_starts_no_process_and_writes_nothing(
     def no_process(*a, **_k):
         raise AssertionError(f"started a process: {a[:1]}")
 
-    for mod, name in [
-        (subprocess, "Popen"),
-        (os, "posix_spawn"),
-        (os, "posix_spawnp"),
-        (os, "fork"),
-        (os, "system"),
-        (tempfile, "mkdtemp"),
-        (tempfile, "mkstemp"),
-    ]:
+    starters = [n for n in dir(os) if n.startswith(("exec", "spawn", "posix_spawn")) and callable(getattr(os, n))]
+    assert {"execv", "execve", "spawnv", "posix_spawn"} <= set(starters)
+    targets = [(subprocess, "Popen"), (os, "fork"), (os, "system"), (os, "popen"), (tempfile, "mkdtemp")]
+    targets += [(tempfile, "mkstemp"), *((os, n) for n in starters)]
+    for mod, name in targets:
         monkeypatch.setattr(mod, name, no_process)
+    # A temp folder of the test's own, so anything that writes to "the temp dir" shows up in the snapshot.
+    tmp = vault.parent / "tmp"
+    tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp))
     # As on a Mac with sandbox-exec, so nothing stops short of where a build would start.
     monkeypatch.setattr(launch, "precheck", lambda v, e: real_precheck(v, e, available=lambda: True))
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    before = _tree(vault, Path(env["HOME"]))
+    before = _tree(vault, Path(env["HOME"]), tmp)
 
     doc = run_protection.report(vault, now=NOW, env=env)
     result = runner.invoke(app, ["protection", "status", "--vault", str(vault), "--json"])
@@ -279,7 +280,7 @@ def test_status_starts_no_process_and_writes_nothing(
     assert result.exit_code == 0, result.output
     assert (doc["sandbox"]["status"], doc["sandbox"]["checked_by"]) == ("enforced", "last_run")
     assert doc["slots"] and doc["slots"][0]["runtime"] == "claude-code"
-    assert _tree(vault, Path(env["HOME"])) == before
+    assert _tree(vault, Path(env["HOME"]), tmp) == before
 
 
 def test_only_check_sandbox_self_tests(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -306,6 +307,7 @@ def test_a_passed_probe_is_no_problem_and_ages(vault: Path, env: dict[str, str])
     _probe(vault, ok=True)
     doc = _report(vault, env)
     assert doc["gate_probe"]["status"] == "passed" and doc["gate_probe"]["stale"] is False
+    assert doc["gate_probe"]["claude_version"] == "2.9.0"
     assert doc["problems"] == []
     _probe(vault, ok=True, at=NOW - timedelta(days=2))
     assert _report(vault, env)["gate_probe"]["stale"] is True
@@ -402,7 +404,7 @@ def test_text_a_run_can_write_is_shape_checked(vault: Path, env: dict[str, str])
     assert doc["broker"]["reason"].startswith("token=[redacted] x x")
     assert len(doc["broker"]["reason"]) <= 240
     assert doc["gate_probe"]["claude_version"] is None
-    assert doc["gate_probe"]["reason"].startswith("Authorization: [redacted]")
+    assert doc["gate_probe"]["reason"].startswith("Authorization: Bearer [redacted]")
     last = doc["last_run"]
     assert (last["slot"], last["mode"]) == ("unknown", "unknown")
     assert last["integrity"] is None and last["log"] is None
@@ -454,6 +456,61 @@ def test_sandbox_on_stays_open_to_a_run(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
     assert runner.invoke(app, ["sandbox", "on"]).exit_code == 0
     assert launch.switch()[0] is True
+
+
+@pytest.mark.parametrize(
+    "ordinary",
+    [
+        ".scout-logs/scout-2026-11-16_08-30-morning-briefing-and-more.log",
+        "Look in .scout-state/broker-queue/failed/ for the entry",
+        "the commit 3f9a1c0b7e2d4a6f8b1c3e5d7f9a0b2c4d6e8f0a was refused",
+        "session: morning-briefing",
+        "Key: the vault's helper",
+        "auth: expired",
+        "token: missing",
+        "see https://example.com/docs/scout/run-protection/what-the-broker-does-and-why for more",
+        "task-1234 in desk-queue",
+    ],
+)
+def test_ordinary_text_survives_redaction(ordinary: str) -> None:
+    assert run_protection._text(ordinary) == ordinary
+
+
+@pytest.mark.parametrize(
+    ("secret", "kept"),
+    [
+        ("password=hunter22 then", "password=[redacted] then"),
+        ("bot_token: 123456:AAHk9xZ", "bot_token: [redacted]"),
+        ("Authorization: Bearer abcdefgh1234", "Authorization: Bearer [redacted]"),
+        ("key xoxb-1234567890-abcdefghij here", "key [redacted] here"),
+        ("blob aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM end", "blob [redacted] end"),
+        ("in /Users/alex/Scout/.scout-logs", "in ~/Scout/.scout-logs"),
+    ],
+)
+def test_secret_looking_text_is_redacted(secret: str, kept: str) -> None:
+    assert run_protection._text(secret) == kept
+
+
+@pytest.mark.parametrize(
+    ("raw", "version"),
+    [
+        ("2.1.318 (Claude Code)", "2.1.318"),
+        ("2.9.0", "2.9.0"),
+        (" 3.0.0-beta.2 (Claude Code)", "3.0.0-beta.2"),
+        ("2.9.0; curl evil", None),
+        ("Claude Code 2.9.0", None),
+        (None, None),
+    ],
+)
+def test_the_claude_version_keeps_its_leading_version(raw: str | None, version: str | None) -> None:
+    assert run_protection._version(raw) == version
+
+
+def test_engine_authored_text_is_not_redacted(vault: Path, env: dict[str, str]) -> None:
+    """Only what a run can write goes through redaction; the engine's own summaries and fixes keep their paths."""
+    _ledger(vault, {"sandbox": "enforced", "integrity": "restored"})
+    (p,) = _report(vault, env)["problems"]
+    assert "[redacted]" not in p["summary"] + p["fix"]
 
 
 # -- odd input reads as unknown, never as a crash -------------------------------------------------------------------

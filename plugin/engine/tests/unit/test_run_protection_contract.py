@@ -112,7 +112,7 @@ def build_vault(root: Path) -> tuple[Path, dict[str, str]]:
             {
                 "ok": False,
                 "reason": "claude ran, but Scout's kb-read-gate never fired",
-                "claude_version": "2.9.0",
+                "claude_version": "2.9.0 (Claude Code)",  # `claude --version`'s first line, as stored
                 "hooks_sha256": "0" * 64,
                 "flags": ["--permission-mode", "auto"],
                 "env_key": "1" * 64,
