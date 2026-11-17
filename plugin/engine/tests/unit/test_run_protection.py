@@ -454,3 +454,48 @@ def test_sandbox_on_stays_open_to_a_run(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
     assert runner.invoke(app, ["sandbox", "on"]).exit_code == 0
     assert launch.switch()[0] is True
+
+
+# -- odd input reads as unknown, never as a crash -------------------------------------------------------------------
+
+
+def test_paths_outside_the_vault_or_oddly_shaped_are_not_shown(vault: Path) -> None:
+    assert run_protection._rel(vault, str(vault / ".scout-logs" / "scout-1.log")) == ".scout-logs/scout-1.log"
+    assert run_protection._rel(vault, "/elsewhere/scout-2.log") == "scout-2.log"
+    assert run_protection._rel(vault, str(vault / "a b" / "scout-3.log")) is None
+    assert run_protection._rel(vault, str(vault / "a" / "b" / "c" / "d" / "scout-4.log")) is None
+    assert run_protection._rel(vault, None) is None
+
+
+def test_odd_times_and_text_read_as_unknown(vault: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.agent_runtimes import gate_probe
+
+    cached = gate_probe.ProbeResult(False, "the reason", "2.9.0", "a", (), "b", "c", "not a time", "")
+    monkeypatch.setattr(gate_probe, "read_cache", lambda _v: cached)
+    for at, reason in ((10**20, 42), ("yesterday", None)):
+        broker = {"at": at, "status": "unavailable", "reason": reason}
+        (vault / ".scout-logs" / ".run-broker.json").write_text(json.dumps(broker), encoding="utf-8")
+        doc = _report(vault, env)
+        assert doc["broker"] == {"status": "unavailable", "reason": "", "recorded_at": None}
+        assert doc["gate_probe"]["checked_at"] is None and doc["gate_probe"]["stale"] is True
+
+
+def test_an_unreadable_ledger_reads_as_no_runs(
+    vault: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout import health
+
+    def boom(_v):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(health, "read_outcomes", boom)
+    doc = _report(vault, env)
+    assert doc["last_run"] is None and doc["severity"] == "green"
+
+
+def test_the_text_form_names_the_last_run_and_a_broken_slot(vault: Path, env: dict[str, str]) -> None:
+    _ledger(vault, {"sandbox": "enforced", "integrity": "clean"})
+    (vault / "scout-config.yaml").write_text("agent_runtimes:\n  default: nope\n", encoding="utf-8")
+    text = run_protection.format_text(_report(vault, env))
+    assert "last run: morning-briefing at " in text and "integrity clean" in text
+    assert "nope" in text
