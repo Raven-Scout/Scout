@@ -6,6 +6,8 @@ struct ActionItemsView: View {
     @EnvironmentObject var writerBox: ActionItemsWriterBox
     @EnvironmentObject var envCheck: ActionItemsEnvironmentState
     @EnvironmentObject var displayProfile: DisplayProfileService
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
@@ -499,18 +501,44 @@ struct ActionItemsView: View {
     // MARK: - Actions
 
     private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
+        let writer = writerBox.writer
+        let date = displayedDate
         do {
-            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate)
+            let result = try await writer.submit(op, displayedDate: date, shownDigest: docService.shownDigest)
             await docService.reparseCurrent()
             if case .reopen(let subject, let shortPrefix) = op {
                 revealReopened(subject: subject, shortPrefix: shortPrefix)
             }
+            if let step = Self.undoStep(for: op, result: result, writer: writer, date: date) {
+                vaultUndo.register(step, with: undoManager) { [docService] in
+                    await docService.reparseCurrent()
+                }
+            } else if let why = result.undoUnavailable {
+                vaultUndo.noteNotUndoable(op.actionName, why)
+            }
         } catch let err as ActionItemsWriterError {
+            // Whatever happened, show what's in the file now (C10).
+            await docService.reparseCurrent()
             if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {
                 await MainActor.run { setToast("Environment problem — check python3 install.") }
             }
             throw err
         }
+    }
+
+    /// How a completed write is undone: the engine's inverse when the op has
+    /// one (mark done ↔ reopen, by `[#TAG]`), otherwise restoring the day
+    /// file's bytes. nil when the write changed nothing.
+    static func undoStep(for op: WriteOp, result: WriteResult, writer: ActionItemsWriter, date: Date) -> UndoStep? {
+        if let inverse = op.inverse {
+            return UndoStep(
+                actionName: op.actionName,
+                undo: { _ = try await writer.submit(inverse, displayedDate: date) },
+                redo: { _ = try await writer.submit(op, displayedDate: date) }
+            )
+        }
+        guard let change = result.change else { return nil }
+        return .restoring(change) { change, direction in try await writer.restore(change, direction) }
     }
 
     private func setToast(_ text: String) {

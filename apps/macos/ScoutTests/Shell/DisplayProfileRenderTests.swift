@@ -69,6 +69,7 @@ struct DisplayProfileRenderTests {
                 .environmentObject(vault.state.actionItemsWriterBox)
                 .environmentObject(vault.state.actionItemsEnvState)
                 .environmentObject(vault.state.displayProfileService)
+                .environmentObject(vault.state.vaultUndo)
                 .environment(\.colorScheme, c.dark ? .dark : .light))
     }
 }

@@ -44,6 +44,10 @@ struct MainWindowView: View {
                 }
             }
             .background(PaperBackdrop())
+            .environmentObject(appState.vaultUndo)
+            .overlay(alignment: .bottomTrailing) {
+                WriteFeedbackOverlay(controller: appState.vaultUndo)
+            }
             .sheet(isPresented: upgradeSheetPresented) {
                 EngineUpgradeSheet(
                     progress: appState.engineUpgradeProgress ?? [:],

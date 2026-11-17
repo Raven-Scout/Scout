@@ -85,6 +85,11 @@ final class ActionItemsDocumentService: ObservableObject {
     /// looking at, so ``publish(_:)`` drops it on every other state.
     private var publishedFingerprint: SourceFingerprint?
 
+    /// SHA-256 of the day file behind the list on screen, or nil when no
+    /// document is shown. A write addressed by task text checks it, so a file
+    /// that changed since the list was shown can't hand it the wrong line.
+    var shownDigest: Data? { publishedFingerprint?.digest }
+
     /// Bumped on every reparse request. A parse runs off the main actor, so
     /// two can overlap — a slow day switching to a fast one, or a write landing
     /// mid-load. The result of a parse whose generation is no longer current is
