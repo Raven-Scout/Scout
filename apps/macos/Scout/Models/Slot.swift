@@ -21,8 +21,22 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
     /// `claude-…` ID). nil = inherit scout-config's `models.default`. Must
     /// round-trip through the YAML emitter, or saving any slot would drop it.
     let model: String?
+    /// The agent runtime this slot runs on (`claude-code`, …). nil = inherit
+    /// (`SCOUT_AGENT_RUNTIME`, then scout-config's `agent_runtimes.default`,
+    /// then Claude Code). Read-only in the app until Phase 2 adds a picker, but
+    /// it must round-trip through the YAML emitter, or saving any slot drops it.
+    let agentRuntime: String?
 
     var id: String { key }
+
+    /// Owner-facing name of the slot's own agent runtime, or nil when it inherits.
+    var agentRuntimeDisplayName: String? {
+        guard let agentRuntime else { return nil }
+        switch agentRuntime {
+        case "claude-code": return "Claude Code"
+        default: return agentRuntime
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case key
@@ -37,6 +51,7 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         case tz
         case runtime
         case model
+        case agentRuntime = "agent_runtime"
     }
 
     init(
@@ -51,7 +66,8 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         budgetUsd: Double? = nil,
         tz: String? = nil,
         runtime: SlotRuntime = .local,
-        model: String? = nil
+        model: String? = nil,
+        agentRuntime: String? = nil
     ) {
         self.key = key
         self.type = type
@@ -65,6 +81,7 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         self.tz = tz
         self.runtime = runtime
         self.model = model
+        self.agentRuntime = agentRuntime
     }
 
     init(from decoder: Decoder) throws {
@@ -83,6 +100,8 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         self.runtime = try c.decodeIfPresent(SlotRuntime.self, forKey: .runtime) ?? .local
         // Absent on engines before per-slot models, and null when the slot inherits.
         self.model = try c.decodeIfPresent(String.self, forKey: .model)
+        // Absent on engines before the round-trip fix, and null when the slot inherits.
+        self.agentRuntime = try c.decodeIfPresent(String.self, forKey: .agentRuntime)
     }
 }
 
