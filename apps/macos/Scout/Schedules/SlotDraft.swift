@@ -80,18 +80,18 @@ struct SlotDraft: Equatable {
 
     private static var fields: [Field] {
         [
-            Field(\.type, "Type"),
-            Field(\.runner, "Runner"),
-            Field(\.firesAtLocal, "Time"),
-            Field(\.weekdays, "Weekdays"),
-            Field(\.missedWindowHours, "Missed window"),
-            Field(\.onMiss, "On miss"),
-            Field(\.cooldownMinutes, "Cooldown"),
-            Field(\.budgetUsd, "Budget"),
-            Field(\.tz, "Time zone"),
-            Field(\.runtime, "Runtime"),
-            Field(\.model, "Model"),
-            Field(\.agentRuntime, "Agent"),
+            Field(\.type, SlotFieldLabel.kind),
+            Field(\.runner, SlotFieldLabel.script),
+            Field(\.firesAtLocal, SlotFieldLabel.time),
+            Field(\.weekdays, SlotFieldLabel.weekdays),
+            Field(\.missedWindowHours, SlotFieldLabel.catchUpWindow),
+            Field(\.onMiss, SlotFieldLabel.ifAsleep),
+            Field(\.cooldownMinutes, SlotFieldLabel.waitBetweenRuns),
+            Field(\.budgetUsd, SlotFieldLabel.budget),
+            Field(\.tz, SlotFieldLabel.timeZone),
+            Field(\.runtime, SlotFieldLabel.runtime),
+            Field(\.model, SlotFieldLabel.model),
+            Field(\.agentRuntime, SlotFieldLabel.agent),
         ]
     }
 
@@ -168,4 +168,24 @@ struct SlotDraft: Equatable {
     static func validateWeekdays(_ days: [String]) -> String? {
         days.isEmpty ? "Pick at least one weekday" : nil
     }
+}
+
+/// The schedule form's field names (UI audit C4's wording), shared by the
+/// form's headings and the conflict note that names fields, so the two
+/// can't drift apart. Units stay with the form's headings.
+nonisolated enum SlotFieldLabel {
+    static let name = "Name"
+    static let time = "Time"
+    static let weekdays = "Weekdays"
+    static let ifAsleep = "If the Mac was asleep"
+    static let waitBetweenRuns = "Wait between runs"
+    static let model = "Model"
+    static let agent = "Agent"
+    static let script = "Script"
+    static let catchUpWindow = "Catch-up window"
+    static let kind = "Kind of work"
+    /// Not shown in the form; named only if it ever conflicts.
+    static let budget = "Budget"
+    static let timeZone = "Time zone"
+    static let runtime = "Where it runs"
 }

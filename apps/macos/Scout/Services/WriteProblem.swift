@@ -67,8 +67,8 @@ struct WriteProblem: Equatable, Identifiable {
                 details: e.errorDescription, retryable: false)
         case let e as ScheduleReloadAfterWriteError:
             return WriteProblem(
-                kind: .failed, title: "Saved, but the page couldn't reload",
-                message: "The change is in the schedule. Scout couldn't read the schedule back afterwards, so this page may be out of date. Retry loading it.",
+                kind: .failed, title: "Saved, but the page didn't update",
+                message: "Your change is saved. Scout couldn't read the schedules back afterwards, so this page may be out of date. Reload to see them.",
                 details: e.reason, retryable: false)
         case let e as ScheduleNotLoadedError:
             return WriteProblem(

@@ -104,17 +104,18 @@ final class SlotDraftStore: ObservableObject {
 
     func clearDropped() { droppedSlotNames = [] }
 
-    /// Slot names with unsaved drafts, sorted, for the quit prompt. A new
-    /// slot is named by the key typed into it, or "a new slot" when that's
-    /// blank.
-    var unsavedSlotKeys: [String] {
+    /// Names of schedules with unsaved drafts, sorted, for the quit prompt.
+    /// A new schedule is named by the key typed into it, or "a new
+    /// schedule" when that's blank.
+    var unsavedSlotNames: [String] {
         drafts.values.map { Self.displayName($0.draft.key) }.sorted()
     }
 
     var hasUnsavedDrafts: Bool { !drafts.isEmpty }
 
+    /// A schedule's name as the owner reads it (C4's `DisplayName`).
     nonisolated static func displayName(_ key: String) -> String {
         let trimmed = key.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? "a new slot" : trimmed
+        return trimmed.isEmpty ? "a new schedule" : DisplayName.slotKey(trimmed)
     }
 }

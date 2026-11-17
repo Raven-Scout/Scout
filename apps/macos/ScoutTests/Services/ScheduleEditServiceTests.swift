@@ -408,11 +408,11 @@ struct ScheduleEditServiceDraftTests {
         gone.key = "evening-run"
         gone.firesAtLocal = "18:00"
         store.update(gone, baseline: morning, for: "evening-run")
-        #expect(store.unsavedSlotKeys.count == 2)
+        #expect(store.unsavedSlotNames.count == 2)
 
         try await service.loadAll()
         #expect(!store.hasUnsavedDrafts)
-        #expect(store.droppedSlotNames == ["evening-run"])
+        #expect(store.droppedSlotNames == ["Evening run"])
     }
 
     @Test("a failed save keeps the draft")
@@ -450,6 +450,6 @@ struct ScheduleEditServiceDraftTests {
         #expect(!onDisk.contains("research:"))
         #expect(SchedulesView.problemText(
             ScheduleReloadAfterWriteError(change: nil, reason: "bad output"),
-            action: "delete the slot").hasPrefix("Saved, but the page couldn't reload."))
+            action: "delete the schedule").hasPrefix("Saved, but the page didn't update."))
     }
 }

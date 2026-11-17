@@ -52,7 +52,7 @@ struct SlotDraftSafetyTests {
         store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
         #expect(store.hasDraft(for: Self.morning.key))
         #expect(!store.hasDraft(for: Self.evening.key))
-        #expect(store.unsavedSlotKeys == ["morning-briefing"])
+        #expect(store.unsavedSlotNames == ["Morning briefing"])
 
         // Revert: the form's draft matches the slot again.
         store.update(SlotDraft(from: Self.morning), baseline: Self.morning, for: Self.morning.key)
@@ -153,12 +153,12 @@ struct SlotDraftSafetyTests {
         store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
 
         let dropped = store.reconcile(with: [Self.evening])
-        #expect(dropped == ["morning-briefing"])
-        #expect(store.droppedSlotNames == ["morning-briefing"])
+        #expect(dropped == ["Morning briefing"])
+        #expect(store.droppedSlotNames == ["Morning briefing"])
         #expect(!store.hasDraft(for: Self.morning.key))
         #expect(store.hasDraft(for: newSlot.key))
         // The quit prompt names the new slot by the key typed into it.
-        #expect(store.unsavedSlotKeys == ["night-review"])
+        #expect(store.unsavedSlotNames == ["Night review"])
 
         store.clearDropped()
         #expect(store.droppedSlotNames.isEmpty)
@@ -171,7 +171,7 @@ struct SlotDraftSafetyTests {
         store.reconcile(with: [Self.evening])
         store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
         store.reconcile(with: [Self.evening])
-        #expect(store.droppedSlotNames == ["morning-briefing"])
+        #expect(store.droppedSlotNames == ["Morning briefing"])
     }
 
     @Test("a saved new slot is finished in the store: no ghost new slot comes back")
@@ -216,10 +216,10 @@ struct SlotDraftSafetyTests {
 
     @Test("the dropped-edits notice names the slots")
     func droppedEditsText() {
-        #expect(SchedulesView.droppedEditsText(["morning-briefing"])
-            == "Unsaved edits to morning-briefing were dropped: the slot is no longer in the schedule.")
-        #expect(SchedulesView.droppedEditsText(["evening-run", "morning-briefing"])
-            == "Unsaved edits to evening-run, morning-briefing were dropped: the slots are no longer in the schedule.")
+        #expect(SchedulesView.droppedEditsText(["Morning briefing"])
+            == "Unsaved edits to Morning briefing were dropped: that schedule no longer exists.")
+        #expect(SchedulesView.droppedEditsText(["Evening run", "Morning briefing"])
+            == "Unsaved edits to Evening run, Morning briefing were dropped: those schedules no longer exist.")
     }
 
     // MARK: - Weekday order
@@ -307,7 +307,7 @@ struct SlotDraftSafetyTests {
 
     // MARK: - Quit prompt names
 
-    @Test("a new slot with a blank key is named 'a new slot'")
+    @Test("a new schedule with a blank key is named 'a new schedule'")
     func blankKeyName() {
         let store = SlotDraftStore()
         let newSlot = SchedulesView.makeNewDraftSlot(key: "new-slot-1")
@@ -316,7 +316,7 @@ struct SlotDraftSafetyTests {
         draft.key = ""
         store.update(draft, baseline: newSlot, for: newSlot.key)
         store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
-        #expect(store.unsavedSlotKeys == ["a new slot", "morning-briefing"])
+        #expect(store.unsavedSlotNames == ["Morning briefing", "a new schedule"])
     }
 
     @Test("an untouched new slot holds no edits, so the quit prompt doesn't count it")
@@ -342,10 +342,30 @@ struct SlotDraftSafetyTests {
 
     @Test("quitting with a dirty slot form asks, naming the slot")
     func quitMessageNamesSlots() {
-        #expect(AppDelegate.unsavedDraftsMessage(notes: [], slots: ["morning-briefing"])
-            == "1 schedule slot has unsaved edits (morning-briefing). Quitting discards them.")
-        #expect(AppDelegate.unsavedDraftsMessage(notes: ["alex.md"], slots: ["evening-run", "morning-briefing"])
-            == "1 knowledge-base note has unsaved edits (alex.md), and 2 schedule slots have unsaved edits (evening-run, morning-briefing). Quitting discards them.")
+        #expect(AppDelegate.unsavedDraftsMessage(notes: [], slots: ["Morning briefing"])
+            == "1 schedule has unsaved edits (Morning briefing). Quitting discards them.")
+        #expect(AppDelegate.unsavedDraftsMessage(notes: ["alex.md"], slots: ["Evening run", "Morning briefing"])
+            == "1 knowledge-base note has unsaved edits (alex.md), and 2 schedules have unsaved edits (Evening run, Morning briefing). Quitting discards them.")
+    }
+
+    @Test("schedules are named as the owner reads them, not by key")
+    func namesUseDisplayName() {
+        let store = SlotDraftStore()
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        #expect(store.unsavedSlotNames == [DisplayName.slotKey("morning-briefing")])
+        #expect(!store.unsavedSlotNames.contains("morning-briefing"))
+    }
+
+    @Test("the conflict note names the form's fields and never the file")
+    func conflictNoteWording() {
+        let text = SlotEditForm.conflictNoteText([SlotFieldLabel.time, SlotFieldLabel.ifAsleep])
+        #expect(text == "Changed outside the app since you edited this schedule: “Time”, “If the Mac was asleep”. The form shows your values: Save keeps them, Revert takes the saved ones.")
+        #expect(!text.contains("schedule.yaml"))
+        // Conflicts are reported with the form's labels.
+        var mine = SlotDraft(from: Self.morning)
+        mine.onMiss = .skip
+        let theirs = Self.morningChanged({ $0.onMiss = .collapse })
+        #expect(mine.rebased(from: Self.morning, onto: theirs).conflicts == [SlotFieldLabel.ifAsleep])
     }
 
     @Test("KB-only quit wording is unchanged")

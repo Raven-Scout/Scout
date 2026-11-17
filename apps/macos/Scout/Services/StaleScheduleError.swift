@@ -30,6 +30,6 @@ nonisolated struct ScheduleReloadAfterWriteError: Error, LocalizedError {
     let reason: String
 
     var errorDescription: String? {
-        "The change was saved, but reloading the schedule failed: \(reason)"
+        "Your change is saved, but Scout couldn't read the schedules back afterwards: \(reason)"
     }
 }

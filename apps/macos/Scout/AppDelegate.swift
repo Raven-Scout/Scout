@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// first.
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         let notes = KBDraftStore.shared.unsavedFileNames
-        let slots = SlotDraftStore.shared.unsavedSlotKeys
+        let slots = SlotDraftStore.shared.unsavedSlotNames
         guard !notes.isEmpty || !slots.isEmpty else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             parts.append(listed(notes, one: "knowledge-base note has", many: "knowledge-base notes have"))
         }
         if !slots.isEmpty {
-            parts.append(listed(slots, one: "schedule slot has", many: "schedule slots have"))
+            parts.append(listed(slots, one: "schedule has", many: "schedules have"))
         }
         return parts.joined(separator: ", and ") + ". Quitting discards them."
     }

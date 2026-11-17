@@ -84,8 +84,8 @@ struct SchedulesView: View {
     static func droppedEditsText(_ names: [String]) -> String {
         let list = names.joined(separator: ", ")
         return names.count == 1
-            ? "Unsaved edits to \(list) were dropped: the slot is no longer in the schedule."
-            : "Unsaved edits to \(list) were dropped: the slots are no longer in the schedule."
+            ? "Unsaved edits to \(list) were dropped: that schedule no longer exists."
+            : "Unsaved edits to \(list) were dropped: those schedules no longer exist."
     }
 
     // MARK: - Master pane
@@ -398,12 +398,12 @@ struct SchedulesView: View {
             finishNewDraft(key: draftKey)
             selectedSlotKey = nil
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "add the slot")
+            errorMessage = Self.problemText(written, action: "add the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "add the slot")
+            errorMessage = Self.problemText(error, action: "add the schedule")
         }
     }
 
@@ -422,12 +422,12 @@ struct SchedulesView: View {
         } catch let written as ScheduleReloadAfterWriteError {
             // Saved; the next successful load settles the form's draft.
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "save the slot")
+            errorMessage = Self.problemText(written, action: "save the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "save the slot")
+            errorMessage = Self.problemText(error, action: "save the schedule")
         }
     }
 
@@ -449,14 +449,14 @@ struct SchedulesView: View {
             // load report it as dropped.
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "delete the slot")
+            errorMessage = Self.problemText(written, action: "delete the schedule")
         } catch let stale as StaleScheduleError {
             restoreIfStillThere(setAside, key: slot.key)
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
             restoreIfStillThere(setAside, key: slot.key)
-            errorMessage = Self.problemText(error, action: "delete the slot")
+            errorMessage = Self.problemText(error, action: "delete the schedule")
         }
     }
 

@@ -68,6 +68,12 @@ struct SlotEditForm: View {
     /// What the form opens with: the slot's unsaved draft if there is one,
     /// rebased onto the slot as it is now, else the slot itself. Pure, so
     /// tests can pin it.
+    /// The note over the form when fields changed both here and elsewhere.
+    static func conflictNoteText(_ fields: [String]) -> String {
+        let named = fields.map { "“\($0)”" }.joined(separator: ", ")
+        return "Changed outside the app since you edited this schedule: \(named). The form shows your values: Save keeps them, Revert takes the saved ones."
+    }
+
     static func initialDraft(live: Slot, stashed: SlotFormDraft?) -> (draft: SlotDraft, conflicts: [String]) {
         guard let stashed, stashed.isDirty else { return (SlotDraft(from: live), []) }
         let rebased = stashed.draft.rebased(from: stashed.baseline, onto: live)
@@ -119,7 +125,7 @@ struct SlotEditForm: View {
     private var conflictNote: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            Text("schedule.yaml changed \(conflictingFields.joined(separator: ", ")) since you edited this slot. The form shows your values; Save writes them, Revert takes the file's.")
+            Text(Self.conflictNoteText(conflictingFields))
                 .font(DS.sans(12))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -141,7 +147,7 @@ struct SlotEditForm: View {
     private var slotKeyField: some View {
         if isNewDraft {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Name")
+                Text(SlotFieldLabel.name)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -169,7 +175,7 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var timeAndWeekdaysSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Time")
+            Text(SlotFieldLabel.time)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -182,7 +188,7 @@ struct SlotEditForm: View {
             }
         }
         VStack(alignment: .leading, spacing: 4) {
-            Text("Weekdays")
+            Text(SlotFieldLabel.weekdays)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -219,7 +225,7 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var onMissSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("If the Mac was asleep")
+            Text(SlotFieldLabel.ifAsleep)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -242,7 +248,7 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var cooldownSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Wait between runs (minutes)")
+            Text("\(SlotFieldLabel.waitBetweenRuns) (minutes)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -260,7 +266,7 @@ struct SlotEditForm: View {
     private func modelSection(defaultModel: String) -> some View {
         let current = ModelChoice(model: draft.model)
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Model")
+            Text(SlotFieldLabel.model)
                 .font(DS.sans(11, weight: .medium))
                 .tracking(1)
                 .textCase(.uppercase)
@@ -269,7 +275,7 @@ struct SlotEditForm: View {
                 selection: Binding(get: { current }, set: { draft.model = $0.model }),
                 options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
                 minSegmentWidth: 64,
-                accessibilityTitle: "Model"
+                accessibilityTitle: SlotFieldLabel.model
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -281,7 +287,7 @@ struct SlotEditForm: View {
     /// through `draft` untouched, so saving never changes it.
     private var agentSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Agent")
+            Text(SlotFieldLabel.agent)
                 .font(DS.sans(11, weight: .medium))
                 .tracking(1)
                 .textCase(.uppercase)
@@ -298,7 +304,7 @@ struct SlotEditForm: View {
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Script")
+                Text(SlotFieldLabel.script)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -311,7 +317,7 @@ struct SlotEditForm: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Catch-up window (hours)")
+                Text("\(SlotFieldLabel.catchUpWindow) (hours)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -325,7 +331,7 @@ struct SlotEditForm: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Kind of work")
+                Text(SlotFieldLabel.kind)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -333,7 +339,7 @@ struct SlotEditForm: View {
                 AdaptiveSegmentedControl(
                     selection: $draft.type,
                     options: SlotType.allCases.map { ($0.displayName, $0) },
-                    accessibilityTitle: "Kind of work"
+                    accessibilityTitle: SlotFieldLabel.kind
                 )
             }
             // No Runtime row: every slot runs locally, so there is nothing to
