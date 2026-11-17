@@ -6,6 +6,8 @@ import SwiftUI
 struct SlotCard: View {
     let slot: Slot
     let isSelected: Bool
+    /// Run-health warnings about this schedule, shown at the foot of the card.
+    var warnings: [RunOutcomeDisplay.SlotWarning] = []
 
     private var typeColor: Color { DS.SlotType.color(for: slot.type) }
 
@@ -31,6 +33,7 @@ struct SlotCard: View {
                 )
                 cooldownRow
                 OnMissPill(policy: slot.onMiss)
+                SlotWarningLines(warnings: warnings)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
