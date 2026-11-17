@@ -1323,6 +1323,23 @@ def budget_record_run_cmd(
         typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
 
 
+@budget_app.command("usage")
+def budget_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the summary the app's usage card reads, as JSON."),
+) -> None:
+    """What Scout's own scheduled runs used today and this week: tokens and cost.
+
+    Counts finished scheduled runs only (the usage tracker's runner rows), never
+    interactive Claude sessions. Tokens come from those runs' transcripts, each
+    message counted once; cost is the budget gate's figure, with how it was found
+    (cost_kind: reported, priced, unpriced, partial or none). Read-only.
+    """
+    from scout.scripts.usage_summary import describe, dumps, summarize
+
+    summary = summarize()
+    typer.echo(dumps(summary) if as_json else describe(summary), nl=not as_json)
+
+
 @budget_app.command("record-attempt")
 def budget_record_attempt_cmd(
     run_type: str = typer.Argument(..., help="The row's type: the slot (run-scout.sh), dreaming or research."),

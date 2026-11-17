@@ -88,6 +88,15 @@ first.** The two have different languages, test runners, and release flows.
   then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
   update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
   — all in one commit. `connector-alerts.log` is for people; neither side parses it.
+- **The usage summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/usage-summary.json`, the output of
+  `scoutctl budget usage --json` (`scout/scripts/usage_summary.py`), which the
+  app's `ScoutUsageService` decodes for the usage card and status bar. Generate
+  it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_usage_summary.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/usage-summary.json` and
+  update the pins in `apps/macos/ScoutTests/Services/ScoutUsageServiceTests.swift`
+  — all in one commit.
 - **The run ledger has one canonical copy too:**
   `plugin/engine/tests/fixtures/contract/run-ledger.json`, the output of
   `scoutctl runs --json` (`scout/run_ledger.py`; recent `run-outcomes.jsonl`

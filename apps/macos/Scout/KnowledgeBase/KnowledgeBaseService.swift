@@ -46,7 +46,11 @@ final class KnowledgeBaseService: ObservableObject {
     /// read by the detached tree build in `buildChildren`.
     private nonisolated static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
 
-    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
+    /// Unsaved editor drafts, kept across navigation (see `KBDraftStore`).
+    let drafts: KBDraftStore
+
+    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource, drafts: KBDraftStore? = nil) {
+        self.drafts = drafts ?? .shared
         // `contentsOfDirectory(at:)` returns symlink-resolved file URLs, so
         // resolve the root too. Otherwise, when ~/Scout is a symlink, the tree's
         // node URLs (real path) and this root (symlink path) mismatch — breaking

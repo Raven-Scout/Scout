@@ -443,7 +443,8 @@ final class SessionLogService: ObservableObject {
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
         let tz = timeZone
-        let cacheURL = parseCacheURLOverride ?? Self.defaultParseCacheURL()
+        let cacheURL = parseCacheURLOverride
+            ?? Self.defaultParseCacheURL(scoutDirectory: logsDirectory.deletingLastPathComponent())
         let assembled = await Task.detached { () -> [Run] in
             // Reuse cached parses for unchanged logs; parse only the rest.
             let cache = Self.loadParseCache(at: cacheURL)
