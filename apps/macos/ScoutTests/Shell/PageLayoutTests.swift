@@ -225,6 +225,10 @@ struct PageLayoutTests {
         let log = (1...18).map { "- 2026-06-\($0): \(BigVault.longTitle($0))." }.joined(separator: "\n")
         #expect(PerFileItemCardView.isLongBody([.prose("Context."), .prose(log)]))
         #expect(PerFileItemCardView.isLongBody([.prose(String(repeating: "word ", count: 200))]))
+        // Headings and task lists count too: a card's status is short, its sub-tasks can be many.
+        #expect(!PerFileItemCardView.isLongBody([.heading(level: 2, text: "Status"), .prose("Two of four done.")]))
+        let tasks = (1...10).map { MarkdownTask(checked: false, text: "Sub-task \($0)") }
+        #expect(PerFileItemCardView.isLongBody([.heading(level: 2, text: "Status"), .tasks(tasks)]))
     }
 
     @Test("the adaptive control names the chosen option")

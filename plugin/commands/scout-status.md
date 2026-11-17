@@ -73,6 +73,12 @@ The "Last briefing / consolidation / dreaming / research" lines come from `slots
 find "SCOUT_DIR/knowledge-base" -type f -name "*.md" | sort
 ```
 
+Set two kinds of file aside before checking: they are not live notes, and counting them hides the notes that need work. Paths here are relative to `knowledge-base/`, and matching ignores case. The words of a name are its parts split at every character that isn't a letter or a digit (`2026-03-invoice` → `2026`, `03`, `invoice`).
+- **Archived:** any file under a folder named exactly `archive` or `archived`, at any depth.
+- **Receipts:** otherwise, a file under a folder named exactly `receipt`, `receipts`, `invoice` or `invoices`, or whose file name (without `.md`) or frontmatter `type:` has one of those four as a word.
+
+Count each kind, and don't check its files for staleness. Check every other file as below.
+
 For each file found, read it and take its date from the first of:
 - the frontmatter `last_verified:` or `last_updated:` key (the newer of the two)
 - a `**Last verified:**` line (older files)
@@ -105,7 +111,7 @@ Count how many Pending and Approved proposals exist.
 
 ### 3d. Wishlist
 
-Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists). Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
+Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists), not its `progress/` folder, which holds each item's progress log. Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
 
 Collect the active items: `status: open` (new) and `status: in-progress`. Exclude `done` and `dropped`.
 
@@ -324,11 +330,14 @@ The first four come from `slots[]` (3a, 3g): the newest `last_fire` among the sl
 ### KB Health
 
 ```
-  Total files:    X
+  Live notes:     X
   Up to date:     Y
   Need attention: Z
   Unknown dates:  W
+  Not counted:    A archived, R receipts
 ```
+
+Leave out the `Not counted` line when both are 0.
 
 If any files need attention, list them:
 

@@ -18,3 +18,18 @@ struct StaleScheduleError: Error, LocalizedError {
         return "The schedule changed outside the app at \(modifiedAt.formatted(date: .omitted, time: .shortened)). Reload to see the changes before saving."
     }
 }
+
+/// Thrown by `ScheduleEditService` when a write landed in schedule.yaml but
+/// the reload after it failed. Unlike every other save error, the change
+/// IS on disk: callers must treat the write as done (register its undo,
+/// don't restore what it replaced, don't offer to write it again).
+nonisolated struct ScheduleReloadAfterWriteError: Error, LocalizedError {
+    /// The write that landed, for undo (nil when it changed no bytes).
+    let change: VaultChange?
+    /// Why the reload failed.
+    let reason: String
+
+    var errorDescription: String? {
+        "Your change is saved, but Scout couldn't read the schedules back afterwards: \(reason)"
+    }
+}
