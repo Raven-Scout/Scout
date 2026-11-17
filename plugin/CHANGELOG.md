@@ -33,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`scoutctl sandbox off` is the owner's only** (`engine/scout/cli.py`). A scheduled or engine-launched run (`SCOUT_MODE` set, or a reader other than the owner) is refused with exit 2 and nothing changes, as for `agent-runtime set-limit`. `scoutctl sandbox on` stays open to everyone.
 
 ### Fixed
+- **`2>/dev/null` is no longer a "git config" write when `GIT_CONFIG_GLOBAL=/dev/null`** (`engine/scout/kb/hook_paths.py`). The run gates protect the file `$GIT_CONFIG_GLOBAL` names. When it names `/dev/null`, as in the eval harness's sessions, every command that sent output to `/dev/null` was refused as a hook skip. The v0.18.16 KB-writing gate's session gave up at its first step because of this. The gates now protect no device (`/dev/…`), as the write sandbox's profile already did. Live runs, which don't set the variable, were never affected.
 - **A failed run's quoted error line is the CLI's, never the session's prose** (`engine/scout/health.py`). The `detail` that `scoutctl health --json`, the doctor and `scoutctl runs --json` give for a failed run now comes only from a line that opens with a Claude Code, git or retry-wrapper error shape (`FAILURE_LINE_RES`, matched at the line's start).
   - Before, a line in the run log that merely mentioned a limit, a lock or a connection reset could be quoted, and the log also holds the session's own output, which can quote vault notes.
   - The home directory in a quoted line is written as `~`.
