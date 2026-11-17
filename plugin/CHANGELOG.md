@@ -6,6 +6,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Each run gets its own log, even two runs in one minute** (`templates/run-scout.sh.tmpl`, `templates/run-dreaming.sh.tmpl`, `templates/run-research.sh.tmpl`, `engine/scout/health.py`, `templates/scripts/session-lane-liveness.py`). Run logs were named to the minute, so a second run in the same minute, usually one the session lock skipped, wrote its skip line into the running session's log, and the app showed the running session as skipped.
+  - A runner now claims `<stem>-YYYY-MM-DD_HH-MM.log` atomically (noclobber, so an existing log is never truncated) and keeps that name when it is first in its minute, which is almost always. When another run already holds it, the runner logs to `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log` instead.
+  - The run ledger's `log` field, `scoutctl health` and `session-lane-liveness.py` read both names. The newest log is picked by start time, then PID, never by text order, in which `…_09-03-25-4242.log` sorts before `…_09-03.log`.
+  - **Upgrading.** The runners and `scripts/session-lane-liveness.py` reach a vault with `/scout-update`. A vault edit far from the runners' log-name lines merges. An edit right next to them (the `SCOUTCTL_BIN` or `LOCK_FILE` line) parks the update for `scoutctl bootstrap drift`, and that runner keeps working with minute-named logs until it is merged.
+
 ## [0.18.16] - 2026-11-17
 
 ### Added

@@ -229,22 +229,43 @@ def recent_commits(vault: Path) -> list[tuple[datetime, str]]:
     return out
 
 
+# A runner log is <stem>-YYYY-MM-DD_HH-MM.log for the run that claimed the
+# minute (and every log from before unique names), or
+# <stem>-YYYY-MM-DD_HH-MM-SS-PID.log for a later run in the same minute.
+RUN_LOG_TAIL = r"-(\d{4}-\d{2}-\d{2}_\d{2}-\d{2})(?:-(\d{2})-(\d+))?\.log"
+ANY_RUN_LOG_RE = re.compile(r"[a-z]+" + RUN_LOG_TAIL)
+
+
+def run_log_sort_key(name: str) -> tuple[str, int, int, str]:
+    """Orders runner log names by start: minute, then second, then PID.
+
+    Plain text order would put ..._09-03-25-4242.log before ..._09-03.log. The
+    minute-named log sorts first in its minute, since its run claimed it first.
+    Names in neither form sort before all others, by text.
+    """
+    m = ANY_RUN_LOG_RE.fullmatch(name)
+    if m is None:
+        return ("", -1, -1, name)
+    return (m.group(1), int(m.group(2) or 0), int(m.group(3) or 0), name)
+
+
 def newest_log_outcome(vault: Path, runner: str | None, ledger_logs: list[str], *, shared: bool) -> str | None:
     """Why the lane's newest run produced nothing, read from its runner log.
 
     The logs the run ledger recorded for this lane are always the lane's own. A
-    runner's other logs (named <stem>-YYYY-MM-DD_HH-MM.log, including runs that
-    stopped before the ledger step, such as a budget skip) count only when no
-    other lane uses the same runner: run-scout.sh serves both briefing and
-    consolidation, and its log names do not say which one ran.
+    runner's other logs (named <stem>-YYYY-MM-DD_HH-MM.log, or
+    <stem>-YYYY-MM-DD_HH-MM-SS-PID.log for a later run in the same minute,
+    including runs that stopped before the ledger step, such as a budget skip)
+    count only when no other lane uses the same runner: run-scout.sh serves both
+    briefing and consolidation, and its log names do not say which one ran.
     """
     log_dir = vault / ".scout-logs"
     names = {name for name in ledger_logs if (log_dir / name).is_file()}
     m = re.fullmatch(r"run-(.+)\.sh", runner or "")
     if m and not shared:
-        pattern = re.compile(re.escape(m.group(1)) + r"-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.log")
+        pattern = re.compile(re.escape(m.group(1)) + RUN_LOG_TAIL)
         names |= {p.name for p in log_dir.glob("*.log") if pattern.fullmatch(p.name)}
-    logs = [log_dir / name for name in sorted(names)]
+    logs = [log_dir / name for name in sorted(names, key=run_log_sort_key)]
     if not logs:
         return None
     text = logs[-1].read_text(encoding="utf-8", errors="replace")

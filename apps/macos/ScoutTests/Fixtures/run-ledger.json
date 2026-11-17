@@ -316,6 +316,28 @@
       "trigger": "schedule"
     },
     {
+      "agent_runtime": null,
+      "awake_s": null,
+      "commits_in_window": 0,
+      "duration_s": 0,
+      "exit_code": 0,
+      "failure_class": "ok",
+      "finished_at": "2026-11-13T17:57:30Z",
+      "integrity": null,
+      "log": "scout-2026-11-13_17-57-30-48213.log",
+      "mode": "scout",
+      "model": null,
+      "newest_commit": null,
+      "outcome": "skipped_lock",
+      "resets_at": null,
+      "runner": "scout",
+      "sandbox": null,
+      "sandbox_source": null,
+      "slot": "evening-consolidation",
+      "started_at": "2026-11-13T17:57:30Z",
+      "trigger": null
+    },
+    {
       "agent_runtime": "claude-code",
       "awake_s": 5400,
       "commits_in_window": 0,

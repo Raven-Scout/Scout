@@ -6,6 +6,13 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **A run started in the same minute as another shows as its own run** (`Scout/Services/SessionLogService.swift`, `Scout/Models/Run.swift`, `Scout/Services/ClaudeSessionService.swift`, `Scout/ControlCenter/Detail/FeedbackTab.swift`). The runners now give a later run in the same minute its own log, `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log`, and the app reads it.
+  - A run with a minute-named log keeps the id it always had, so saved feedback still matches. A seconds+PID log gets an id with its seconds and PID, and its own feedback file.
+  - The run ledger's status reaches each of the two runs from its own row.
+  - A skipped run gets no Claude session and no cost. It used to pick up the session and cost of the run it was skipped for, started the same minute.
+- **A lock skip no longer marks the running session as orphaned** (`Scout/Services/SessionLogService.swift`). A later run of the same type that finished counted as proof that an earlier `.running` run had died, and a run skipped on the session lock counted too, although it is proof of the opposite: the runner skips there because the lock is held. This happened before unique log names whenever a lock skip landed in a later minute. Lock skips no longer count. Every other skip (budget, privacy checks, write protection, agent runtime, writer lease, redundant) happens after the runner took the lock, so it still counts, as does a later run that succeeded, failed or timed out.
+
 ## [0.18.16] - 2026-11-17
 
 ### Added

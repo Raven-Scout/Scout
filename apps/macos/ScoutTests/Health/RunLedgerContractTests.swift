@@ -26,7 +26,7 @@ struct RunLedgerContractTests {
         let ledger = try Self.fixture()
         #expect(ledger.schemaVersion == 1)
         #expect(ledger.truncated == false)
-        #expect(ledger.runs.count == 13)
+        #expect(ledger.runs.count == 14)
         #expect(ledger.generatedAt == RunLedgerTime.parse("2026-11-16T12:00:00Z"))
         #expect(ledger.since == RunLedgerTime.parse("2026-11-09T12:00:00Z"))
         // Newest first.
@@ -126,8 +126,11 @@ struct RunLedgerContractTests {
 
     @Test func indexesRowsByLogName() throws {
         let ledger = try Self.fixture()
-        #expect(ledger.entriesByLog.count == 13)
+        #expect(ledger.entriesByLog.count == 14)
         #expect(ledger.entriesByLog["scout-2026-11-16_08-30.log"]?.outcome == "skipped_gates")
+        // A lock skip started in the same minute as the run it was skipped for has its own log and row.
+        #expect(ledger.entriesByLog["scout-2026-11-13_17-57.log"]?.outcome == "ok")
+        #expect(ledger.entriesByLog["scout-2026-11-13_17-57-30-48213.log"]?.outcome == "skipped_lock")
     }
 }
 
