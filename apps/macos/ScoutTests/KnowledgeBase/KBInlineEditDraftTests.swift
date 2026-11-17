@@ -39,8 +39,13 @@ struct KBInlineEditDraftTests {
         do { _ = try await writer.rename(fileURL: file, to: "alex-renamed") } catch { thrown = error }
 
         let error = try #require(thrown)
-        let moved = try #require(KBEditorView.movedLocation(after: error, planned: planned))
+        guard case .movedButUncommitted(let moved, let problem) =
+                KBEditorView.renameOutcome(after: error, planned: planned) else {
+            Issue.record("expected movedButUncommitted"); return
+        }
         #expect(moved == planned)
+        // The git problem is handed to the parent, which outlives the editor.
+        #expect(problem.contains("git commit failed"))
         #expect(FileManager.default.fileExists(atPath: moved.path))
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
@@ -53,8 +58,10 @@ struct KBInlineEditDraftTests {
         store.update(KBDraft(text: "edited", originalText: "body",
                              baselineContents: "body", baselineDate: nil), for: old)
 
-        let moved = try #require(KBEditorView.movedLocation(
-            after: KBWriterError.commitFailed("index.lock"), planned: planned))
+        guard case .movedButUncommitted(let moved, _) = KBEditorView.renameOutcome(
+            after: KBWriterError.commitFailed("index.lock"), planned: planned) else {
+            Issue.record("expected movedButUncommitted"); return
+        }
         store.move(from: old, to: moved)
 
         #expect(store.draft(for: old) == nil)
@@ -65,8 +72,13 @@ struct KBInlineEditDraftTests {
     @Test("any other rename failure leaves the file, and its draft, where they were")
     func otherRenameFailures_doNotMove() {
         let planned = URL(fileURLWithPath: "/tmp/vault/knowledge-base/b.md")
-        #expect(KBEditorView.movedLocation(after: KBWriterError.alreadyExists("b.md"), planned: planned) == nil)
-        #expect(KBEditorView.movedLocation(after: KBWriterError.writeFailed("x"), planned: planned) == nil)
+        #expect(KBEditorView.renameOutcome(after: KBWriterError.alreadyExists("b.md"), planned: planned)
+                == .notMoved(problem: "A file named b.md already exists."))
+        #expect(KBEditorView.renameOutcome(after: KBWriterError.writeFailed("x"), planned: planned)
+                == .notMoved(problem: "x"))
+        // No planned destination (the name didn't normalize): nothing to follow.
+        #expect(KBEditorView.renameOutcome(after: KBWriterError.commitFailed("x"), planned: nil)
+                == .notMoved(problem: "The change was written, but the git commit failed: x"))
     }
 
     @Test("renameDestination keeps the original extension, like rename does")
@@ -137,6 +149,15 @@ struct KBInlineEditDraftTests {
         #expect(edit.owns(edit.applied))
         #expect(!edit.owns(note))            // reloaded from disk
         #expect(!edit.owns("# Priya\n"))     // a different note
+    }
+
+    @Test("Send to Scout waits while an inline edit is open")
+    func commentSendWaitsForInlineEdit() {
+        // Its marker goes in by line number from the edit's snapshot, and
+        // sending saves the note with the unfinished edit in it.
+        #expect(!KBEditableView.canSendComment("Check this", inlineEditOpen: true))
+        #expect(KBEditableView.canSendComment("Check this", inlineEditOpen: false))
+        #expect(!KBEditableView.canSendComment("   ", inlineEditOpen: false))
     }
 
     @Test("the inline editor's buttons say what they do")

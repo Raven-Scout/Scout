@@ -180,6 +180,7 @@ struct KBEditableView: View {
         // Segments come from the snapshot while an edit is open, so their line
         // numbers may not match the draft: close the open edit first.
         guard inline == nil else { finishInline(); return }
+        closeEmptyComposer()
         inline = InlineEdit(target: .block(lineStart: seg.lineStart, lineEnd: seg.lineEnd),
                             snapshot: source, original: seg.raw, buffer: seg.raw)
     }
@@ -187,6 +188,7 @@ struct KBEditableView: View {
     private func beginCellEdit(_ seg: KBDocSegment, row: Int, col: Int, value: String) {
         guard inline == nil else { finishInline(); return }
         guard row < seg.rowLines.count else { return }
+        closeEmptyComposer()
         inline = InlineEdit(
             target: .cell(segmentID: seg.id, row: row, col: col, sourceLine: seg.rowLines[row]),
             snapshot: source, original: value, buffer: value)
@@ -233,13 +235,15 @@ struct KBEditableView: View {
                 Spacer()
                 Button("Cancel") { commentingOn = nil }
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
-                    .keyboardShortcut(.cancelAction)
+                    // While an inline edit is open, Esc belongs to it.
+                    .keyboardShortcut(inline == nil ? .cancelAction : nil)
                 Button("Send to Scout") { submitComment(seg) }
                     .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(commentBuffer.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!Self.canSendComment(commentBuffer, inlineEditOpen: inline != nil))
+                    .help(inline == nil ? "" : "Finish the edit you have open first")
             }
         }
         .padding(.vertical, 4)
@@ -267,11 +271,26 @@ struct KBEditableView: View {
     }
 
     private func submitComment(_ seg: KBDocSegment) {
-        guard let marker = ScoutMarker.format(commentBuffer) else { return }
+        guard Self.canSendComment(commentBuffer, inlineEditOpen: inline != nil),
+              let marker = ScoutMarker.format(commentBuffer) else { return }
         source = KBDocSegment.insertLine(in: source, afterLineEnd: seg.lineEnd, line: marker)
         commentingOn = nil
         commentBuffer = ""
         onRequestSave()
+    }
+
+    /// Sending a comment inserts a marker by line number and saves the note at
+    /// once. While an inline edit is open the line numbers come from its
+    /// snapshot and the draft holds an unfinished edit, so sending waits.
+    static func canSendComment(_ text: String, inlineEditOpen: Bool) -> Bool {
+        !inlineEditOpen && !text.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Starting an inline edit closes an empty comment composer. One with
+    /// text stays open (Send is off until the edit is done), so the typed
+    /// comment isn't lost.
+    private func closeEmptyComposer() {
+        if commentBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commentingOn = nil }
     }
 
     private func retractComment(_ seg: KBDocSegment) {

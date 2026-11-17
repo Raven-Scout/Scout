@@ -14,6 +14,10 @@ struct KBEditorView: View {
     let onDeleted: () -> Void
     /// Called after a rename — parent re-selects the file at its new URL.
     let onRenamed: (URL) -> Void
+    /// Called when a rename moved the file but couldn't commit it. The parent
+    /// shows it: reopening the note at its new path replaces this view, so an
+    /// alert here would never appear.
+    let onRenameProblem: (String) -> Void
     /// Called when the user clicks the breadcrumb root — parent clears the
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
@@ -421,21 +425,33 @@ struct KBEditorView: View {
                 await MainActor.run { finishRename(from: source, to: dest) }
             } catch {
                 await MainActor.run {
-                    if let moved = Self.movedLocation(after: error, planned: planned) {
+                    switch Self.renameOutcome(after: error, planned: planned) {
+                    case .movedButUncommitted(let moved, let problem):
                         finishRename(from: source, to: moved)
+                        onRenameProblem(problem)
+                    case .notMoved(let problem):
+                        errorMessage = problem
+                        showRename = false
                     }
-                    errorMessage = KBWriterError.message(for: error)
-                    showRename = false
                 }
             }
         }
     }
 
-    /// Where the file is after a rename that threw: only a failed commit
-    /// means the move itself happened. Pure, so tests can pin it.
-    static func movedLocation(after error: Error, planned: URL?) -> URL? {
-        guard case KBWriterError.commitFailed = error else { return nil }
-        return planned
+    /// What a rename that threw left behind. Only a failed commit means the
+    /// move itself happened; its message then goes to the parent, because
+    /// this view is replaced when the note reopens at its new path.
+    enum RenameOutcome: Equatable {
+        case movedButUncommitted(URL, problem: String)
+        case notMoved(problem: String)
+    }
+
+    static func renameOutcome(after error: Error, planned: URL?) -> RenameOutcome {
+        let problem = KBWriterError.message(for: error)
+        if case KBWriterError.commitFailed = error, let planned {
+            return .movedButUncommitted(planned, problem: problem)
+        }
+        return .notMoved(problem: problem)
     }
 
     /// The file now lives at `dest`: carry its unsaved draft over and reopen it
