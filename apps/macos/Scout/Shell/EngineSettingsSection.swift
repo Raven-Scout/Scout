@@ -12,6 +12,8 @@ struct EngineSettingsSection: View {
     var isUpdating: Bool = false
     /// `AppState.engineSwitchUnfinished` (Ruling 69 I1).
     var unfinishedSwitch: Bool = false
+    /// The vault the app shows; set, it adds the Troubleshooting row (Help menu's tools, audit C11).
+    var vault: URL? = nil
     var onUpdate: (() -> Void)? = nil
     var onSetUp: (() -> Void)? = nil
     @AppStorage("scoutDataDir") private var scoutDataDir: String = ""
@@ -83,6 +85,9 @@ struct EngineSettingsSection: View {
                     Button("Copy /scout-update") { Self.copyToPasteboard("/scout-update") }
                         .buttonStyle(.plainHit)
                 }
+            }
+            if let vault {
+                TroubleshootingRow(vault: vault)
             }
         }
     }
