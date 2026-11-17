@@ -142,20 +142,160 @@ struct SlotDraftSafetyTests {
         #expect(store.hasDraft(for: Self.morning.key))
     }
 
-    @Test("a deleted slot's draft is dropped; the unsaved new slot's is kept")
+    @Test("a deleted slot's draft is dropped and reported; the unsaved new slot's is kept")
     func reconcileDropsMissingSlotsButKeepsNewSlot() {
         let store = SlotDraftStore()
         let newSlot = SchedulesView.makeNewDraftSlot(key: "new-slot-1")
+        store.pendingNewSlot = newSlot
         var newDraft = SlotDraft(from: newSlot)
         newDraft.key = "night-review"
         store.update(newDraft, baseline: newSlot, for: newSlot.key)
         store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
 
-        store.reconcile(with: [Self.evening], keeping: [newSlot.key])
+        let dropped = store.reconcile(with: [Self.evening])
+        #expect(dropped == ["morning-briefing"])
+        #expect(store.droppedSlotNames == ["morning-briefing"])
         #expect(!store.hasDraft(for: Self.morning.key))
         #expect(store.hasDraft(for: newSlot.key))
         // The quit prompt names the new slot by the key typed into it.
         #expect(store.unsavedSlotKeys == ["night-review"])
+
+        store.clearDropped()
+        #expect(store.droppedSlotNames.isEmpty)
+    }
+
+    @Test("a saved draft is dropped quietly, not reported as lost")
+    func reconcileSavedDraftNotReported() {
+        let store = SlotDraftStore()
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        #expect(store.reconcile(with: [editedMorning().toSlot()]).isEmpty)
+        #expect(store.droppedSlotNames.isEmpty)
+    }
+
+    @Test("a draft set aside for a delete the user chose isn't reported; a failed delete puts it back")
+    func deleteSetsDraftAside() {
+        let store = SlotDraftStore()
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        let setAside = store.entry(for: Self.morning.key)
+        store.discard(for: Self.morning.key)
+        #expect(store.reconcile(with: [Self.evening]).isEmpty)
+
+        store.restore(setAside, for: Self.morning.key)
+        #expect(store.entry(for: Self.morning.key) == SlotFormDraft(draft: editedMorning(), baseline: Self.morning))
+    }
+
+    @Test("the dropped-edits notice names the slots")
+    func droppedEditsText() {
+        #expect(SchedulesView.droppedEditsText(["morning-briefing"])
+            == "Unsaved edits to morning-briefing were dropped: the slot is no longer in the schedule.")
+        #expect(SchedulesView.droppedEditsText(["evening-run", "morning-briefing"])
+            == "Unsaved edits to evening-run, morning-briefing were dropped: the slots are no longer in the schedule.")
+    }
+
+    // MARK: - Weekday order
+
+    /// A slot whose weekdays the file lists out of Mon–Sun order, as a
+    /// hand-edited schedule.yaml can (the engine keeps the file's order).
+    private static let handOrdered = Slot(
+        key: "weekly-review",
+        type: .research,
+        runner: "run-research.sh",
+        firesAtLocal: "16:00",
+        weekdays: ["Fri", "Mon"],
+        missedWindowHours: 4,
+        onMiss: .skip,
+        cooldownMinutes: 120
+    )
+
+    @Test("weekday order alone doesn't make a slot dirty")
+    func weekdayOrderIsNotAnEdit() {
+        let draft = SlotDraft(from: Self.handOrdered)
+        #expect(!draft.isDirty(against: Self.handOrdered))
+        #expect(draft.toSlot().weekdays == ["Mon", "Fri"])  // saves in Mon–Sun order
+
+        let store = SlotDraftStore()
+        store.update(draft, baseline: Self.handOrdered, for: Self.handOrdered.key)
+        #expect(!store.hasUnsavedDrafts)
+    }
+
+    @Test("a saved edit to an out-of-order slot settles on reload")
+    func weekdayOrderSavedDraftSettles() {
+        let store = SlotDraftStore()
+        var draft = SlotDraft(from: Self.handOrdered)
+        draft.cooldownMinutes = 60
+        store.update(draft, baseline: Self.handOrdered, for: Self.handOrdered.key)
+        #expect(store.hasDraft(for: Self.handOrdered.key))
+
+        // The engine reports the saved slot (written Mon–Sun); the file's
+        // order could come back either way.
+        let savedSlot = draft.toSlot()
+        store.reconcile(with: [savedSlot])
+        #expect(!store.hasDraft(for: Self.handOrdered.key))
+    }
+
+    // MARK: - Conflict notes
+
+    @Test("conflicts on an optional field and on weekdays are named")
+    func conflictsOnOptionalAndWeekdays() {
+        var mine = SlotDraft(from: Self.morning)
+        mine.model = "sonnet"
+        mine.weekdays = ["Mon", "Wed"]
+        let theirs = Self.morningChanged({ $0.model = "haiku"; $0.weekdays = ["Tue"] })
+        let rebased = mine.rebased(from: Self.morning, onto: theirs)
+        #expect(rebased.conflicts == ["Weekdays", "Model"])
+        #expect(rebased.draft.model == "sonnet")
+        #expect(rebased.draft.weekdays == ["Mon", "Wed"])
+    }
+
+    @Test("a conflict note survives a later change and a trip through the store")
+    func conflictNoteIsSticky() {
+        let theirs = Self.morningChanged({ $0.firesAtLocal = "09:15" })
+        let first = editedMorning().rebased(from: Self.morning, onto: theirs)
+        let note = SlotDraft.stickyConflicts(previous: [], new: first.conflicts, draft: first.draft, live: theirs)
+        #expect(note == ["Time"])
+
+        // Another change elsewhere (cooldown) brings no new conflict; the
+        // Time note stays.
+        let later = Self.morningChanged({ $0.firesAtLocal = "09:15"; $0.cooldownMinutes = 90 })
+        let second = first.draft.rebased(from: theirs, onto: later)
+        #expect(second.conflicts.isEmpty)
+        #expect(SlotDraft.stickyConflicts(previous: note, new: second.conflicts,
+                                          draft: second.draft, live: later) == ["Time"])
+
+        // Stashed with the draft, it comes back when the slot reopens.
+        let stash = SlotFormDraft(draft: second.draft, baseline: later, conflicts: ["Time"])
+        #expect(SlotEditForm.initialDraft(live: later, stashed: stash).conflicts == ["Time"])
+    }
+
+    @Test("a conflict settles when the draft matches the file again")
+    func conflictNoteSettles() {
+        let theirs = Self.morningChanged({ $0.firesAtLocal = "09:15" })
+        var draft = editedMorning()
+        draft.firesAtLocal = "09:15"  // the user types the file's value back
+        #expect(SlotDraft.stickyConflicts(previous: ["Time"], new: [], draft: draft, live: theirs).isEmpty)
+    }
+
+    // MARK: - Quit prompt names
+
+    @Test("a new slot with a blank key is named 'a new slot'")
+    func blankKeyName() {
+        let store = SlotDraftStore()
+        let newSlot = SchedulesView.makeNewDraftSlot(key: "new-slot-1")
+        store.pendingNewSlot = newSlot
+        var draft = SlotDraft(from: newSlot)
+        draft.key = ""
+        store.update(draft, baseline: newSlot, for: newSlot.key)
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        #expect(store.unsavedSlotKeys == ["a new slot", "morning-briefing"])
+    }
+
+    @Test("an untouched new slot holds no edits, so the quit prompt doesn't count it")
+    func untouchedNewSlotNotCounted() {
+        let store = SlotDraftStore()
+        let newSlot = SchedulesView.makeNewDraftSlot(key: "new-slot-1")
+        store.pendingNewSlot = newSlot
+        store.update(SlotDraft(from: newSlot), baseline: newSlot, for: newSlot.key)
+        #expect(!store.hasUnsavedDrafts)
     }
 
     // MARK: - Closing the pane

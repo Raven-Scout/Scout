@@ -56,8 +56,48 @@ struct SlotDraft: Equatable {
         )
     }
 
+    /// Whether the draft differs from `live`. Compared as drafts, so weekdays
+    /// compare as a set: the engine keeps schedule.yaml's order (a hand-edited
+    /// `[Fri, Mon]`), while `toSlot()` writes Mon–Sun, and order alone must
+    /// not make a slot look edited.
     func isDirty(against live: Slot) -> Bool {
-        toSlot() != live
+        self != SlotDraft(from: live)
+    }
+
+    /// One editable field: its label in conflict notes, and how to compare
+    /// and copy it. Every field but the key, which never moves.
+    private struct Field {
+        let label: String
+        let equal: (SlotDraft, SlotDraft) -> Bool
+        let copy: (inout SlotDraft, SlotDraft) -> Void
+
+        init<T: Equatable>(_ path: WritableKeyPath<SlotDraft, T>, _ label: String) {
+            self.label = label
+            equal = { $0[keyPath: path] == $1[keyPath: path] }
+            copy = { $0[keyPath: path] = $1[keyPath: path] }
+        }
+    }
+
+    private static var fields: [Field] {
+        [
+            Field(\.type, "Type"),
+            Field(\.runner, "Runner"),
+            Field(\.firesAtLocal, "Time"),
+            Field(\.weekdays, "Weekdays"),
+            Field(\.missedWindowHours, "Missed window"),
+            Field(\.onMiss, "On miss"),
+            Field(\.cooldownMinutes, "Cooldown"),
+            Field(\.budgetUsd, "Budget"),
+            Field(\.tz, "Time zone"),
+            Field(\.runtime, "Runtime"),
+            Field(\.model, "Model"),
+            Field(\.agentRuntime, "Agent"),
+        ]
+    }
+
+    /// Labels of the fields where this draft and `other` differ, in form order.
+    func differingFields(from other: SlotDraft) -> [String] {
+        Self.fields.filter { !$0.equal(self, other) }.map(\.label)
     }
 
     /// This draft, typed against `baseline`, carried onto the slot as it is
@@ -71,27 +111,24 @@ struct SlotDraft: Equatable {
         let theirs = SlotDraft(from: live)
         var out = self
         var conflicts: [String] = []
-        func merge<T: Equatable>(_ field: WritableKeyPath<SlotDraft, T>, _ label: String) {
-            let mine = self[keyPath: field]
-            if mine == base[keyPath: field] {
-                out[keyPath: field] = theirs[keyPath: field]
-            } else if mine != theirs[keyPath: field] && base[keyPath: field] != theirs[keyPath: field] {
-                conflicts.append(label)
+        for field in Self.fields {
+            if field.equal(self, base) {
+                field.copy(&out, theirs)
+            } else if !field.equal(self, theirs) && !field.equal(base, theirs) {
+                conflicts.append(field.label)
             }
         }
-        merge(\.type, "Type")
-        merge(\.runner, "Runner")
-        merge(\.firesAtLocal, "Time")
-        merge(\.weekdays, "Weekdays")
-        merge(\.missedWindowHours, "Missed window")
-        merge(\.onMiss, "On miss")
-        merge(\.cooldownMinutes, "Cooldown")
-        merge(\.budgetUsd, "Budget")
-        merge(\.tz, "Time zone")
-        merge(\.runtime, "Runtime")
-        merge(\.model, "Model")
-        merge(\.agentRuntime, "Agent")
         return (out, conflicts)
+    }
+
+    /// The conflict note to show: earlier conflicts plus `new` ones, kept
+    /// until Save or Revert, so a note survives a later change to the slot
+    /// and a trip through `SlotDraftStore`. Only fields where the draft still
+    /// differs from `live` stay (a save, or the user typing the file's value
+    /// back, settles one). In form order.
+    static func stickyConflicts(previous: [String], new: [String], draft: SlotDraft, live: Slot) -> [String] {
+        let wanted = Set(previous).union(new)
+        return draft.differingFields(from: SlotDraft(from: live)).filter { wanted.contains($0) }
     }
 
     /// Returns the first per-field validation error, or nil if all clean.

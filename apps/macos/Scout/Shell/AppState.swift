@@ -203,7 +203,8 @@ final class AppState: ObservableObject {
             scoutctl: scoutctlExe,
             runner: runner,
             canonicalSchedulePath: canonical,
-            argumentsPrefix: scoutctlArgsPrefix
+            argumentsPrefix: scoutctlArgsPrefix,
+            drafts: .shared
         )
         // Budget config is read and written through `scoutctl budget show/set`,
         // never by parsing scout-config.yaml here — that file doubles as

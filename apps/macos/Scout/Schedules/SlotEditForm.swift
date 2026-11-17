@@ -38,7 +38,7 @@ struct SlotEditForm: View {
         onRevertNewDraft: (() -> Void)? = nil,
         defaultModel: String? = nil,
         onDirtyChange: @escaping (Bool) -> Void = { _ in },
-        drafts: SlotDraftStore = .shared
+        drafts: SlotDraftStore? = nil
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -48,6 +48,7 @@ struct SlotEditForm: View {
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
         self.onDirtyChange = onDirtyChange
+        let drafts = drafts ?? .shared
         self.drafts = drafts
         let initial = Self.initialDraft(live: liveSlot, stashed: drafts.entry(for: liveSlot.key))
         _draft = State(initialValue: initial.draft)
@@ -63,9 +64,12 @@ struct SlotEditForm: View {
     /// What the form opens with: the slot's unsaved draft if there is one,
     /// rebased onto the slot as it is now, else the slot itself. Pure, so
     /// tests can pin it.
-    nonisolated static func initialDraft(live: Slot, stashed: SlotFormDraft?) -> (draft: SlotDraft, conflicts: [String]) {
+    static func initialDraft(live: Slot, stashed: SlotFormDraft?) -> (draft: SlotDraft, conflicts: [String]) {
         guard let stashed, stashed.isDirty else { return (SlotDraft(from: live), []) }
-        return stashed.draft.rebased(from: stashed.baseline, onto: live)
+        let rebased = stashed.draft.rebased(from: stashed.baseline, onto: live)
+        let conflicts = SlotDraft.stickyConflicts(
+            previous: stashed.conflicts, new: rebased.conflicts, draft: rebased.draft, live: live)
+        return (rebased.draft, conflicts)
     }
 
     // MARK: - Body
@@ -89,16 +93,20 @@ struct SlotEditForm: View {
         .padding(20)
         .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
         .onChange(of: draft) { _, newDraft in
-            drafts.update(newDraft, baseline: liveSlot, for: liveSlot.key)
+            // Typing a field back to the file's value settles its conflict.
+            conflictingFields = SlotDraft.stickyConflicts(
+                previous: conflictingFields, new: [], draft: newDraft, live: liveSlot)
+            drafts.update(newDraft, baseline: liveSlot, conflicts: conflictingFields, for: liveSlot.key)
             onDirtyChange(newDraft.isDirty(against: liveSlot))
         }
         .onChange(of: liveSlot) { oldLive, newLive in
             // The slot changed under the form (a save, undo, reload): keep
             // the user's edits, take the new values for everything else.
             let rebased = draft.rebased(from: oldLive, onto: newLive)
-            conflictingFields = rebased.draft.isDirty(against: newLive) ? rebased.conflicts : []
+            conflictingFields = SlotDraft.stickyConflicts(
+                previous: conflictingFields, new: rebased.conflicts, draft: rebased.draft, live: newLive)
             draft = rebased.draft
-            drafts.update(rebased.draft, baseline: newLive, for: newLive.key)
+            drafts.update(rebased.draft, baseline: newLive, conflicts: conflictingFields, for: newLive.key)
             onDirtyChange(rebased.draft.isDirty(against: newLive))
         }
     }

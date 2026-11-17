@@ -21,8 +21,9 @@ struct SchedulesView: View {
     /// The open slot form has unsaved edits: the pane must not close over it.
     @State private var detailIsDirty = false
     /// Unsaved slot-form drafts outlive the form (see `SlotDraftStore`), so
-    /// switching slots or leaving the page keeps them.
-    private let drafts = SlotDraftStore.shared
+    /// switching slots or leaving the page keeps them. Observed for the
+    /// notice when a reload drops edits to a slot that left the schedule.
+    @ObservedObject private var drafts = SlotDraftStore.shared
 
     /// Whether the close button or Esc may hide the detail pane. Only a
     /// compact pane closes, and never over a new slot or unsaved edits:
@@ -69,7 +70,6 @@ struct SchedulesView: View {
             // Reverted, or saved: its draft is done with.
             if new == nil, let old { drafts.discard(for: old.key) }
         }
-        .onChange(of: service.slots) { _, _ in reconcileDrafts() }
         .onExitCommand {
             if Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
                 selectedSlotKey = nil
@@ -78,17 +78,19 @@ struct SchedulesView: View {
         .background(DS.Paper.base)
         .task {
             // A new slot added before leaving the page comes back with it.
+            // (ScheduleEditService reconciles stored drafts on every load.)
             if newDraftSlot == nil { newDraftSlot = drafts.pendingNewSlot }
             await reload()
-            reconcileDrafts()
         }
     }
 
-    /// Drop stored drafts the schedule as loaded has made moot (saved, or
-    /// their slot is gone). Only against a successful load.
-    private func reconcileDrafts() {
-        guard service.loadState == .loaded else { return }
-        drafts.reconcile(with: service.slots, keeping: Set([newDraftSlot?.key].compactMap { $0 }))
+    /// The notice for edits a reload dropped because their slot left the
+    /// schedule (deleted elsewhere, or an undone add).
+    static func droppedEditsText(_ names: [String]) -> String {
+        let list = names.joined(separator: ", ")
+        return names.count == 1
+            ? "Unsaved edits to \(list) were dropped: the slot is no longer in the schedule."
+            : "Unsaved edits to \(list) were dropped: the slots are no longer in the schedule."
     }
 
     // MARK: - Master pane
@@ -110,6 +112,9 @@ struct SchedulesView: View {
             }
             if let err = errorMessage {
                 errorBanner(err)
+            }
+            if !drafts.droppedSlotNames.isEmpty {
+                droppedEditsBanner
             }
 
             SchedulesFilterChips(filterMode: $filterMode, slots: service.slots)
@@ -261,6 +266,22 @@ struct SchedulesView: View {
         .background(DS.Status.warn.opacity(0.15))
     }
 
+    private var droppedEditsBanner: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
+            Text(Self.droppedEditsText(drafts.droppedSlotNames))
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p1)
+            Spacer()
+            Button("Dismiss") { drafts.clearDropped() }
+                .buttonStyle(.plainHit)
+                .foregroundStyle(DS.Ink.p3)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(DS.Status.warn.opacity(0.15))
+    }
+
     @ViewBuilder
     private func errorBanner(_ text: String) -> some View {
         HStack {
@@ -397,16 +418,30 @@ struct SchedulesView: View {
     private func handleDelete() async {
         guard let key = selectedSlotKey,
               let slot = service.slots.first(where: { $0.key == key }) else { return }
+        // The user chose to delete the slot, edits and all: set its draft
+        // aside so the reload doesn't report it as dropped, and put it back
+        // if the delete fails.
+        let setAside = drafts.entry(for: slot.key)
+        drafts.discard(for: slot.key)
         do {
             let change = try await service.delete(slotKey: slot.key)
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
             registerUndo(change)
         } catch let stale as StaleScheduleError {
+            restoreIfStillThere(setAside, key: slot.key)
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
+            restoreIfStillThere(setAside, key: slot.key)
             errorMessage = Self.problemText(error, action: "delete the slot")
         }
+    }
+
+    /// Put a set-aside draft back after a failed delete, unless the slot is
+    /// gone after all (the write landed but the reload failed).
+    private func restoreIfStillThere(_ entry: SlotFormDraft?, key: String) {
+        guard service.slots.contains(where: { $0.key == key }) else { return }
+        drafts.restore(entry, for: key)
     }
 
     /// Edit ▸ Undo for a schedule save: restores the schedule file's bytes,
