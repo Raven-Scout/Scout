@@ -216,7 +216,7 @@ struct BudgetSettingsSection: View {
         } label: {
             Text(isSaving ? "Saving…" : "Save")
                 .font(DS.sans(12.5, weight: .medium))
-                .foregroundStyle(disabled ? DS.Ink.p4 : .white)
+                .foregroundStyle(disabled ? DS.Ink.p4 : DS.Accent.onFill)
                 .padding(.horizontal, 14)
                 .frame(height: 28)
                 .background(

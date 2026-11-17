@@ -165,7 +165,7 @@ struct SectionView: View {
             .padding(.top, 6)
         } label: {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isOpen.wrappedValue.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { isOpen.wrappedValue.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
@@ -343,7 +343,7 @@ struct SectionView: View {
             .padding(.top, 6)
         } label: {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { completedExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { completedExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Text("RECENTLY COMPLETED")
@@ -367,18 +367,18 @@ struct SectionView: View {
                 completedSelectionButton(t)
             }
             Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .medium))
+                .font(DS.sans(10, weight: .medium))
                 .foregroundStyle(DS.Priority.done)
             InlineMarkdownText(t.subject)
                 .font(DS.serif(13))
-                .strikethrough(color: DS.Ink.p4)
+                .strikethrough(color: DS.Ink.decorative)
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if !t.comments.isEmpty {
                 HStack(spacing: 3) {
                     Image(systemName: "text.bubble")
-                        .font(.system(size: 9))
+                        .font(DS.sans(9))
                     Text("\(t.comments.count)")
                         .font(DS.mono(10.5))
                 }
@@ -400,7 +400,7 @@ struct SectionView: View {
             }
         } label: {
             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14, weight: .medium))
+                .font(DS.sans(14, weight: .medium))
                 .foregroundStyle(selected ? DS.Accent.ink : DS.Ink.p4)
                 .frame(width: 26, height: 24)
                 .contentShape(Rectangle())

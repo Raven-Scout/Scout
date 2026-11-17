@@ -14,7 +14,7 @@ struct RunRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             Image(systemName: iconName)
-                .font(.system(size: 12))
+                .font(DS.sans(12))
                 .foregroundStyle(iconColor)
                 .frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
@@ -42,7 +42,7 @@ struct RunRow: View {
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 80, alignment: .trailing)
             Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .medium))
+                .font(DS.sans(10, weight: .medium))
                 .foregroundStyle(hovering || isSelected ? DS.Ink.p2 : DS.Ink.p4.opacity(0.5))
                 .frame(width: 16, alignment: .trailing)
         }

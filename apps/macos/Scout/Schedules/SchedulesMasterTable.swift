@@ -73,8 +73,14 @@ struct SchedulesMasterTable: View {
     @ViewBuilder
     private func row(for slot: Slot, nameWidth: CGFloat) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth)
-            .contentShape(Rectangle())
-            .onTapGesture { selectedSlotKey = slot.key }
+        // A button, not a tap gesture, so rows take keyboard focus and
+        // VoiceOver reads each one as a selectable button.
+        Button { selectedSlotKey = slot.key } label: {
+            SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .accessibilitySelected(isSelected)
+        .accessibilityIdentifier("schedules-row-\(slot.key)")
     }
 }

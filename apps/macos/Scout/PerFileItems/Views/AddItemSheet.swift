@@ -12,6 +12,8 @@ struct AddItemSheet: View {
     let onSubmit: (String, ItemPriority, String, String?) async throws -> Void
     let onCancel: () -> Void
 
+    @FocusState private var titleFocused: Bool
+
     @State private var title: String = ""
     @State private var priority: ItemPriority
     @State private var bodyText: String = ""
@@ -41,6 +43,8 @@ struct AddItemSheet: View {
             field("Title") {
                 TextField("", text: $title)
                     .textFieldStyle(.roundedBorder)
+                    .focused($titleFocused)
+                    .onAppear { titleFocused = true }
             }
 
             field("Priority") {
@@ -100,7 +104,9 @@ struct AddItemSheet: View {
                 .font(DS.mono(10))
                 .tracking(0.6)
                 .foregroundStyle(DS.Ink.p3)
+                .accessibilityHidden(true)   // the control below carries it
             content()
+                .accessibilityLabel(label)
         }
     }
 

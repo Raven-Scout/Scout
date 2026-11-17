@@ -127,7 +127,7 @@ struct KBStatsView: View {
 
     private func rowHeader(_ title: String, icon: String, clean: Bool) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 12))
+            Image(systemName: icon).font(DS.sans(12))
                 .foregroundStyle(clean ? DS.Status.ok : DS.Status.warn)
             Text(title).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
         }
