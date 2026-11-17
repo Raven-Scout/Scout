@@ -212,13 +212,8 @@ actor KnowledgeBaseFileWriter {
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
         }
-        // Preserve the original extension if the new name doesn't carry one.
-        let originalExt = fileURL.pathExtension
-        var fileName = try normalizedFileName(newName, defaultExtension: originalExt)
-        if (fileName as NSString).pathExtension.isEmpty && !originalExt.isEmpty {
-            fileName += ".\(originalExt)"
-        }
-        let dest = fileURL.deletingLastPathComponent().appendingPathComponent(fileName)
+        let dest = try renameDestination(for: fileURL, to: newName)
+        let fileName = dest.lastPathComponent
         if fm.fileExists(atPath: dest.path) {
             throw KBWriterError.alreadyExists(fileName)
         }
@@ -228,6 +223,19 @@ actor KnowledgeBaseFileWriter {
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         try await commitOrThrow(gitService, paths: [oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
         return dest
+    }
+
+    /// Where `rename(fileURL:to:)` moves the file: same directory, the new
+    /// name normalized, the original extension kept when the new name has
+    /// none. Callers use it to follow a rename whose commit failed, since the
+    /// file has moved even though `rename` threw.
+    static func renameDestination(for fileURL: URL, to newName: String) throws -> URL {
+        let originalExt = fileURL.pathExtension
+        var fileName = try normalizedFileName(newName, defaultExtension: originalExt)
+        if (fileName as NSString).pathExtension.isEmpty && !originalExt.isEmpty {
+            fileName += ".\(originalExt)"
+        }
+        return fileURL.deletingLastPathComponent().appendingPathComponent(fileName)
     }
 
     /// Commit the given paths, converting a git failure into `.commitFailed`

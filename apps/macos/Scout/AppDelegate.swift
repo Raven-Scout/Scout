@@ -18,6 +18,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         false
     }
 
+    /// Unsaved KB drafts live in memory (`KBDraftStore`), so quitting would
+    /// lose them. Ask first.
+    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
+        let names = KBDraftStore.shared.unsavedFileNames
+        guard !names.isEmpty else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "You have unsaved changes"
+        alert.informativeText = Self.unsavedDraftsMessage(names)
+        alert.addButton(withTitle: "Keep Editing")   // first = default, Return
+        alert.addButton(withTitle: "Quit Anyway")
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+
+    static func unsavedDraftsMessage(_ names: [String]) -> String {
+        let shown = names.prefix(5).joined(separator: ", ")
+        let more = names.count > 5 ? " and \(names.count - 5) more" : ""
+        let noun = names.count == 1 ? "note has" : "notes have"
+        return "\(names.count) knowledge-base \(noun) unsaved edits (\(shown)\(more)). Quitting discards them."
+    }
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
