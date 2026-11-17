@@ -299,6 +299,10 @@ def _build_roots(vault: Path | None, env: Mapping[str, str], *, deadline: float 
     roots: list[Root] = []
     for spec in protected_specs(vault, env, deadline=deadline):
         for key in {canon(spec.path, env), spelled(spec.path, env)}:
+            if key == "/dev" or key.startswith("/dev/"):
+                # GIT_CONFIG_GLOBAL=/dev/null (the eval harness sets it) names no file a run could change, and
+                # protecting it would refuse every `2>/dev/null`. The sandbox profile skips devices the same way.
+                continue
             roots.append(Root(key, spec.form, spec.tree))
     return roots
 
