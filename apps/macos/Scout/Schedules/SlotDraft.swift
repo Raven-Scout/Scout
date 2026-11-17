@@ -16,6 +16,8 @@ struct SlotDraft: Equatable {
     var tz: String?
     var runtime: SlotRuntime
     var model: String?
+    /// Carried through unchanged; the form shows it read-only (Phase 2 adds a picker).
+    var agentRuntime: String?
 
     init(from slot: Slot) {
         self.key = slot.key
@@ -30,6 +32,7 @@ struct SlotDraft: Equatable {
         self.tz = slot.tz
         self.runtime = slot.runtime
         self.model = slot.model
+        self.agentRuntime = slot.agentRuntime
     }
 
     /// Materialize back to a Slot for the save path. Weekdays come out in
@@ -48,7 +51,8 @@ struct SlotDraft: Equatable {
             budgetUsd: budgetUsd,
             tz: tz,
             runtime: runtime,
-            model: model
+            model: model,
+            agentRuntime: agentRuntime
         )
     }
 

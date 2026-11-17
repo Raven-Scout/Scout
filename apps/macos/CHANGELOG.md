@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Saving a schedule slot keeps its agent runtime** (`Scout/Models/Slot.swift`, `Scout/Schedules/SlotDraft.swift`, `Scout/Services/ScheduleEditService.swift`). The app rewrote `schedule.yaml` without the `agent_runtime:` a slot may name, so any save in Schedules silently reset every slot to the default agent. The slot now carries it from `scoutctl schedule list --json` through the editor and writes it back unchanged; a slot without one stays without one. The slot form shows it read-only as "Runs on Claude Code" (or "Runs on Scout's default agent"); choosing an agent comes later. It needs an engine with this release: an older engine doesn't report the field, so a save there still drops it.
+
 ## [0.18.15] - 2026-11-16
 
 ## [0.18.14] - 2026-11-16

@@ -248,6 +248,45 @@ struct ScheduleEditServiceTests {
         }
     }
 
+    @Test("agent_runtime survives load → edit another field → save (C2)")
+    @MainActor
+    func test_save_keeps_agent_runtime_when_another_field_is_edited() async throws {
+        let listJSON = """
+        [
+          {"key":"morning-briefing","type":"briefing","runner":"run-scout.sh",
+           "fires_at_local":"08:00","weekdays":["Mon","Tue","Wed","Thu","Fri"],
+           "missed_window_hours":4,"on_miss":"fire","cooldown_minutes":60,
+           "budget_usd":null,"tz":null,"runtime":"local","model":null,
+           "agent_runtime":"claude-code"},
+          {"key":"research","type":"research","runner":"run-research.sh",
+           "fires_at_local":"14:00","weekdays":["Mon","Tue","Wed","Thu","Fri"],
+           "missed_window_hours":4,"on_miss":"skip","cooldown_minutes":240,
+           "budget_usd":null,"tz":null,"runtime":"local","model":null,
+           "agent_runtime":null}
+        ]
+        """
+        let (service, _, dir) = try makeServiceOnDisk(listJSON: listJSON)
+        try await service.loadAll()
+        #expect(service.slots[0].agentRuntime == "claude-code")
+
+        // Edit the cooldown through the same draft path the form uses.
+        var draft = SlotDraft(from: service.slots[0])
+        draft.cooldownMinutes = 90
+        var updated = service.slots
+        updated[0] = draft.toSlot()
+        try await service.save(allSlots: updated)
+
+        let written = try String(
+            contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8
+        )
+        let blocks = written.components(separatedBy: "\n  research:\n")
+        #expect(blocks.count == 2)
+        #expect(blocks[0].contains("cooldown_minutes: 90"))
+        #expect(blocks[0].contains("\n    agent_runtime: claude-code"))
+        // An unset agent runtime stays unset: no key, so the slot keeps inheriting.
+        #expect(!blocks[1].contains("agent_runtime"))
+    }
+
     @Test("save falls back to header-less emit when canonical has no slots: anchor")
     @MainActor
     func test_save_falls_back_to_pure_yaml_when_no_slots_anchor() async throws {
