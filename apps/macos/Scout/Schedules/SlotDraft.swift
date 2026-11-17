@@ -60,6 +60,40 @@ struct SlotDraft: Equatable {
         toSlot() != live
     }
 
+    /// This draft, typed against `baseline`, carried onto the slot as it is
+    /// now (`live`): fields the user changed keep their value, the others
+    /// take `live`'s, so a change made elsewhere (another device, undo, a
+    /// reload) to a field the user didn't touch isn't written back over on
+    /// save. `conflicts` names the fields both sides changed to different
+    /// values; the user's value is kept there. The key never moves.
+    func rebased(from baseline: Slot, onto live: Slot) -> (draft: SlotDraft, conflicts: [String]) {
+        let base = SlotDraft(from: baseline)
+        let theirs = SlotDraft(from: live)
+        var out = self
+        var conflicts: [String] = []
+        func merge<T: Equatable>(_ field: WritableKeyPath<SlotDraft, T>, _ label: String) {
+            let mine = self[keyPath: field]
+            if mine == base[keyPath: field] {
+                out[keyPath: field] = theirs[keyPath: field]
+            } else if mine != theirs[keyPath: field] && base[keyPath: field] != theirs[keyPath: field] {
+                conflicts.append(label)
+            }
+        }
+        merge(\.type, "Type")
+        merge(\.runner, "Runner")
+        merge(\.firesAtLocal, "Time")
+        merge(\.weekdays, "Weekdays")
+        merge(\.missedWindowHours, "Missed window")
+        merge(\.onMiss, "On miss")
+        merge(\.cooldownMinutes, "Cooldown")
+        merge(\.budgetUsd, "Budget")
+        merge(\.tz, "Time zone")
+        merge(\.runtime, "Runtime")
+        merge(\.model, "Model")
+        merge(\.agentRuntime, "Agent")
+        return (out, conflicts)
+    }
+
     /// Returns the first per-field validation error, or nil if all clean.
     /// Used by the form to disable the Save button.
     var firstError: String? {

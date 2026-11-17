@@ -20,10 +20,14 @@ struct SchedulesView: View {
     @State private var pageWidth: CGFloat?
     /// The open slot form has unsaved edits: the pane must not close over it.
     @State private var detailIsDirty = false
+    /// Unsaved slot-form drafts outlive the form (see `SlotDraftStore`), so
+    /// switching slots or leaving the page keeps them.
+    private let drafts = SlotDraftStore.shared
 
     /// Whether the close button or Esc may hide the detail pane. Only a
     /// compact pane closes, and never over a new slot or unsaved edits:
-    /// `SlotEditForm` keeps its draft in `@State`, so closing would drop it.
+    /// `SlotDraftStore` would keep them, but a pane that vanishes over them
+    /// leaves no sign they exist.
     nonisolated static func canCloseDetail(pane: DetailPaneLayout, isNewDraft: Bool, isDirty: Bool) -> Bool {
         guard case .shown(_, closable: true) = pane else { return false }
         return !isNewDraft && !isDirty
@@ -55,14 +59,36 @@ struct SchedulesView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        .onChange(of: selectedSlotKey) { _, _ in detailIsDirty = false }
+        // The next form reports its own state on appear; until then, go by
+        // whether that slot has a stored draft.
+        .onChange(of: selectedSlotKey) { _, key in
+            detailIsDirty = key.map { drafts.hasDraft(for: $0) } ?? false
+        }
+        .onChange(of: newDraftSlot) { old, new in
+            drafts.pendingNewSlot = new
+            // Reverted, or saved: its draft is done with.
+            if new == nil, let old { drafts.discard(for: old.key) }
+        }
+        .onChange(of: service.slots) { _, _ in reconcileDrafts() }
         .onExitCommand {
             if Self.canCloseDetail(pane: pane, isNewDraft: detailIsNewDraft, isDirty: detailIsDirty) {
                 selectedSlotKey = nil
             }
         }
         .background(DS.Paper.base)
-        .task { await reload() }
+        .task {
+            // A new slot added before leaving the page comes back with it.
+            if newDraftSlot == nil { newDraftSlot = drafts.pendingNewSlot }
+            await reload()
+            reconcileDrafts()
+        }
+    }
+
+    /// Drop stored drafts the schedule as loaded has made moot (saved, or
+    /// their slot is gone). Only against a successful load.
+    private func reconcileDrafts() {
+        guard service.loadState == .loaded else { return }
+        drafts.reconcile(with: service.slots, keeping: Set([newDraftSlot?.key].compactMap { $0 }))
     }
 
     // MARK: - Master pane

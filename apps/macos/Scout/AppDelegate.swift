@@ -18,25 +18,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         false
     }
 
-    /// Unsaved KB drafts live in memory (`KBDraftStore`), so quitting would
-    /// lose them. Ask first.
+    /// Unsaved KB drafts (`KBDraftStore`) and slot-form drafts
+    /// (`SlotDraftStore`) live in memory, so quitting would lose them. Ask
+    /// first.
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-        let names = KBDraftStore.shared.unsavedFileNames
-        guard !names.isEmpty else { return .terminateNow }
+        let notes = KBDraftStore.shared.unsavedFileNames
+        let slots = SlotDraftStore.shared.unsavedSlotKeys
+        guard !notes.isEmpty || !slots.isEmpty else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "You have unsaved changes"
-        alert.informativeText = Self.unsavedDraftsMessage(names)
+        alert.informativeText = Self.unsavedDraftsMessage(notes: notes, slots: slots)
         alert.addButton(withTitle: "Keep Editing")   // first = default, Return
         alert.addButton(withTitle: "Quit Anyway")
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
 
     static func unsavedDraftsMessage(_ names: [String]) -> String {
+        unsavedDraftsMessage(notes: names, slots: [])
+    }
+
+    static func unsavedDraftsMessage(notes: [String], slots: [String]) -> String {
+        var parts: [String] = []
+        if !notes.isEmpty {
+            parts.append(listed(notes, one: "knowledge-base note has", many: "knowledge-base notes have"))
+        }
+        if !slots.isEmpty {
+            parts.append(listed(slots, one: "schedule slot has", many: "schedule slots have"))
+        }
+        return parts.joined(separator: ", and ") + ". Quitting discards them."
+    }
+
+    private static func listed(_ names: [String], one: String, many: String) -> String {
         let shown = names.prefix(5).joined(separator: ", ")
         let more = names.count > 5 ? " and \(names.count - 5) more" : ""
-        let noun = names.count == 1 ? "note has" : "notes have"
-        return "\(names.count) knowledge-base \(noun) unsaved edits (\(shown)\(more)). Quitting discards them."
+        return "\(names.count) \(names.count == 1 ? one : many) unsaved edits (\(shown)\(more))"
     }
 
     func userNotificationCenter(

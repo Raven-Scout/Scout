@@ -17,8 +17,14 @@ struct SlotEditForm: View {
     /// Told whether the draft differs from `liveSlot`, so the page can refuse
     /// to close the pane over unsaved edits (UI audit C6).
     let onDirtyChange: (Bool) -> Void
+    /// Where unsaved edits outlive this view: the page tears the form down on
+    /// every slot switch (`.id(slot.key)`), so `@State` alone would drop them.
+    private let drafts: SlotDraftStore
 
     @State private var draft: SlotDraft
+    /// Fields changed both here and in schedule.yaml since the draft was
+    /// typed; the form keeps the user's value and says so.
+    @State private var conflictingFields: [String]
     @State private var isConfirmingTypeChange = false
     @State private var isConfirmingDelete = false
     @State private var isSaving = false
@@ -31,7 +37,8 @@ struct SlotEditForm: View {
         onFireNow: @escaping (String) async -> Void,
         onRevertNewDraft: (() -> Void)? = nil,
         defaultModel: String? = nil,
-        onDirtyChange: @escaping (Bool) -> Void = { _ in }
+        onDirtyChange: @escaping (Bool) -> Void = { _ in },
+        drafts: SlotDraftStore = .shared
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -41,7 +48,10 @@ struct SlotEditForm: View {
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
         self.onDirtyChange = onDirtyChange
-        _draft = State(initialValue: SlotDraft(from: liveSlot))
+        self.drafts = drafts
+        let initial = Self.initialDraft(live: liveSlot, stashed: drafts.entry(for: liveSlot.key))
+        _draft = State(initialValue: initial.draft)
+        _conflictingFields = State(initialValue: initial.conflicts)
     }
 
     // MARK: - Static helpers
@@ -50,10 +60,21 @@ struct SlotEditForm: View {
         draft.type != live.type
     }
 
+    /// What the form opens with: the slot's unsaved draft if there is one,
+    /// rebased onto the slot as it is now, else the slot itself. Pure, so
+    /// tests can pin it.
+    nonisolated static func initialDraft(live: Slot, stashed: SlotFormDraft?) -> (draft: SlotDraft, conflicts: [String]) {
+        guard let stashed, stashed.isDirty else { return (SlotDraft(from: live), []) }
+        return stashed.draft.rebased(from: stashed.baseline, onto: live)
+    }
+
     // MARK: - Body
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !conflictingFields.isEmpty {
+                conflictNote
+            }
             slotKeyField
             timeAndWeekdaysSection
             onMissSection
@@ -67,8 +88,30 @@ struct SlotEditForm: View {
         }
         .padding(20)
         .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
-        .onChange(of: draft) { _, newDraft in onDirtyChange(newDraft.isDirty(against: liveSlot)) }
-        .onChange(of: liveSlot) { _, newLive in onDirtyChange(draft.isDirty(against: newLive)) }
+        .onChange(of: draft) { _, newDraft in
+            drafts.update(newDraft, baseline: liveSlot, for: liveSlot.key)
+            onDirtyChange(newDraft.isDirty(against: liveSlot))
+        }
+        .onChange(of: liveSlot) { oldLive, newLive in
+            // The slot changed under the form (a save, undo, reload): keep
+            // the user's edits, take the new values for everything else.
+            let rebased = draft.rebased(from: oldLive, onto: newLive)
+            conflictingFields = rebased.draft.isDirty(against: newLive) ? rebased.conflicts : []
+            draft = rebased.draft
+            drafts.update(rebased.draft, baseline: newLive, for: newLive.key)
+            onDirtyChange(rebased.draft.isDirty(against: newLive))
+        }
+    }
+
+    private var conflictNote: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
+            Text("schedule.yaml changed \(conflictingFields.joined(separator: ", ")) since you edited this slot. The form shows your values; Save writes them, Revert takes the file's.")
+                .font(DS.sans(12))
+                .foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Private helpers
@@ -306,6 +349,7 @@ struct SlotEditForm: View {
                     onRevertNewDraft?()
                 } else {
                     draft = SlotDraft(from: liveSlot)
+                    conflictingFields = []
                 }
             }
             .disabled(!isNewDraft && !draft.isDirty(against: liveSlot))
