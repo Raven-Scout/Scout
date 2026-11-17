@@ -224,7 +224,7 @@ struct FindingRow: View {
         if log.hasPrefix("/") {
             url = URL(fileURLWithPath: log)
         } else {
-            guard let vault, !log.contains("..") else { return nil }
+            guard let vault, !log.split(separator: "/").contains("..") else { return nil }
             url = vault.appendingPathComponent(log)
         }
         return FileManager.default.fileExists(atPath: url.path) ? url : nil

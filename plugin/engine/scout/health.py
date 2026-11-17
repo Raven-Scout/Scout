@@ -107,16 +107,19 @@ _AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-to
 # so a line that merely mentions a limit or a lock is never quoted (C8 review: a model line
 # "Drafting reply about <note>: …hit your monthly limit, resets in May" used to come out verbatim).
 _ERR = r"(?:Error: )?"
+_NET_CODES = r"(?:ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ConnectionRefused|FailedToOpenSocket)"
+_NET_STREAM = (
+    r"(?:Stream idle timeout|Connection closed mid-response|(?:The )?socket connection was closed unexpectedly)"
+)
 FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "oauth_expired": (re.compile(CLI_AUTH_FAILURE_ERE),),
     "network": (
         re.compile(
-            r"(?:API Error: .{0,80}?(?:ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ConnectionRefused"
-            r"|FailedToOpenSocket|socket hang up|Connection error)"
-            r"|Stream idle timeout|Connection closed mid-response|(?:The )?socket connection was closed unexpectedly"
-            r"|socket hang up|"
-            + _ERR
-            + r"(?:getaddrinfo |connect |read )?(?:ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b)",
+            r"(?:API Error: .{0,80}?(?:" + _NET_CODES + r"|socket hang up|Connection error|" + _NET_STREAM + r")"
+            r"|" + _NET_STREAM + r"|socket hang up"
+            # Bun's error object, one field per line: `code: "ConnectionRefused",`
+            r'|code: "' + _NET_CODES + r'"'
+            r"|" + _ERR + r"(?:getaddrinfo |connect |read )?" + _NET_CODES + r"\b)",
             re.IGNORECASE,
         ),
     ),
@@ -125,10 +128,11 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(
             _ERR + r"(?:You(?:'ve| have) (?:hit|reached) your\b.{0,40}?\blimit"
             r"|Claude (?:AI )?usage limit reached"
-            r"|(?:\d+-hour |weekly |session |Opus |Sonnet )?limit reached\s*[·∙•|-]\s*resets)",
+            # "5-hour limit reached ∙ resets 1am", "Opus weekly limit reached ∙ resets Mon"
+            r"|(?:(?:\d+-hour|weekly|daily|session|Opus|Sonnet|Haiku)\s+){0,2}limit reached\s*[·∙•|-]\s*resets)",
             re.IGNORECASE,
         ),
-        re.compile(r"API Error: (?:429|529)\b|API Error: .{0,40}?(?:overloaded|too many requests)", re.IGNORECASE),
+        re.compile(r"(?:API )?Error: (?:429|529)\b|API Error: .{0,40}?(?:overloaded|too many requests)", re.IGNORECASE),
     ),
     # claude's cap message, or the engine's line when the retry wrapper withheld a retry (#561).
     "budget": (re.compile(_ERR + r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),

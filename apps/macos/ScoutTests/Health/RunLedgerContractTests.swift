@@ -114,6 +114,10 @@ struct RunLedgerContractTests {
         #expect(FindingRow.logURL(file.path, vault: nil) != nil)               // an older engine's absolute path
         #expect(FindingRow.logURL(".scout-logs/missing.log", vault: vault) == nil)
         #expect(FindingRow.logURL("../outside.log", vault: vault) == nil)
+        #expect(FindingRow.logURL(".scout-logs/../../outside.log", vault: vault) == nil)
+        let dotted = logs.appendingPathComponent("scout..1.log")
+        try "x\n".write(to: dotted, atomically: true, encoding: .utf8)
+        #expect(FindingRow.logURL(".scout-logs/scout..1.log", vault: vault) != nil)   // ".." inside a name is fine
         #expect(FindingRow.logURL(".scout-logs/scout-1.log", vault: nil) == nil)
         #expect(FindingRow.logURL(nil, vault: vault) == nil)
     }
