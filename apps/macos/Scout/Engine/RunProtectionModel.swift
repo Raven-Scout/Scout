@@ -50,13 +50,17 @@ nonisolated struct RunProtectionModel: Equatable, Sendable {
 
     var headline: String {
         if pausedByPrivacyChecks { return "Scheduled runs are paused" }
+        if status.severity == "green" && status.sandbox.status == "not_checked" { return "Write protection not tested yet" }
         switch status.severity {
         case "green": return "Scheduled runs are protected"
         case "red": return "Run protection needs attention"
         default: return "Scheduled runs are partly protected"
         }
     }
-    var headlineTone: Tone { Self.tone(severity: status.severity) }
+    var headlineTone: Tone {
+        if status.severity == "green" && status.sandbox.status == "not_checked" { return .neutral }
+        return Self.tone(severity: status.severity)
+    }
 
     private var pausedByPrivacyChecks: Bool {
         status.problems.contains { ["gates.probe_failed", "gates.not_loaded", "gates.probe_unsafe"].contains($0.id) }
@@ -68,11 +72,19 @@ nonisolated struct RunProtectionModel: Equatable, Sendable {
 
     var writeProtection: Line {
         let s = status.sandbox
+        let seen: String = {
+            switch s.checkedBy {
+            case "last_run": return " The last scheduled run says so; Check now tests it again."
+            case "self_test": return " Tested just now."
+            default: return ""
+            }
+        }()
         let (value, help, tone): (String, String, Tone) = {
             switch s.status {
-            case "enforced": return ("On", "Scheduled runs can't change the files that decide which of Scout's checks run.", .ok)
+            case "enforced": return ("On", "Scheduled runs can't change the files that decide which of Scout's checks run.\(seen)", .ok)
+            case "not_checked": return ("On, not tested yet", "No scheduled run has used it since it was turned on. Check now tests it without starting a run.", .neutral)
             case "off": return ("Off", "You turned it off. Runs can change Scout's own scripts and settings; the privacy checks still run.", .warn)
-            case "failed": return ("Couldn't start", "Expected on this Mac but couldn't be set up, so scheduled runs are skipped until it can.", .bad)
+            case "failed": return ("Couldn't start", "Expected on this Mac but couldn't be set up, so scheduled runs are skipped until it can.\(seen)", .bad)
             case "unavailable": return ("Not available here", "This system has no write protection for Scout yet; runs go ahead without it.", .warn)
             case "conflict": return ("Claude Code's sandbox instead", "Claude Code's own sandbox is on in your Claude settings, and the two can't run together.", .warn)
             default: return ("Unknown", "Scout couldn't tell whether runs get write protection.", .neutral)
@@ -203,7 +215,9 @@ nonisolated struct RunProtectionModel: Equatable, Sendable {
         case "check_sandbox": return .checkProtectionAgain
         case "check_gates": return .checkPrivacyAgain
         case "show_log":
-            guard let rel = problem.log, let vault else { return nil }
+            // The engine shape-checks it; refuse anything that would leave the vault anyway.
+            guard let rel = problem.log, let vault, !rel.hasPrefix("/"),
+                  !rel.split(separator: "/").contains("..") else { return nil }
             return .showLog(vault.appendingPathComponent(rel))
         default: return nil
         }
@@ -212,7 +226,9 @@ nonisolated struct RunProtectionModel: Equatable, Sendable {
     // MARK: - The owner's switch
 
     /// Offered when protection is on, or would be but couldn't start: "Turn off…", behind the confirmation.
-    var offersTurnOff: Bool { status.sandbox.switch == "on" && ["enforced", "failed"].contains(status.sandbox.status) }
+    var offersTurnOff: Bool {
+        status.sandbox.switch == "on" && ["enforced", "failed", "not_checked"].contains(status.sandbox.status)
+    }
     /// Offered when the owner turned it off.
     var offersTurnOn: Bool { status.sandbox.switch == "off" }
 

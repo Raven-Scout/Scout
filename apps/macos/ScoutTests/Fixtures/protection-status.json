@@ -6,7 +6,8 @@
     "status": "off",
     "reason": "turned off by the owner (scoutctl sandbox off)",
     "switch": "off",
-    "switch_source": "owner"
+    "switch_source": "owner",
+    "checked_by": "settings"
   },
   "gate_probe": {
     "status": "failed",

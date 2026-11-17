@@ -156,6 +156,7 @@ def test_the_fixture_exercises_every_block(doc: dict) -> None:
         "reason": doc["sandbox"]["reason"],
         "switch": "off",
         "switch_source": "owner",
+        "checked_by": "settings",
     }
     assert doc["gate_probe"]["status"] == "failed"
     assert doc["gate_probe"]["checked_at"] == "2026-11-16T11:00:00Z"

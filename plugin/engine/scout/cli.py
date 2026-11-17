@@ -218,14 +218,24 @@ app.add_typer(protection_app, name="protection")
 def cli_protection_status(
     vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
     as_json: bool = typer.Option(False, "--json", help="Print the summary as JSON (the app's contract)."),
+    check_sandbox: bool = typer.Option(
+        False,
+        "--check-sandbox",
+        help="Build and self-test the write sandbox's profile now (runs sandbox-exec in a temp dir) instead of "
+        "taking its status from the last run.",
+    ),
 ) -> None:
-    """Read-only: the write sandbox, the last privacy-check probe, the last run's integrity check, the broker,
-    and each slot's runtime and limits, with what needs fixing. Always exits 0; never starts claude."""
+    """The write sandbox, the last privacy-check probe, the last run's integrity check, the broker, and each slot's
+    runtime and limits, with what needs fixing. Always exits 0; never starts claude.
+
+    Read-only: it starts no process and writes nothing, so whether the sandbox works comes from the newest run that
+    recorded it. --check-sandbox self-tests it instead, as `scoutctl sandbox status` does.
+    """
     import json
 
     from scout import paths, run_protection
 
-    data = run_protection.report(paths.data_dir(vault))
+    data = run_protection.report(paths.data_dir(vault), check_sandbox=check_sandbox)
     typer.echo(json.dumps(data, indent=2) if as_json else run_protection.format_text(data))
 
 

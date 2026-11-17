@@ -6,8 +6,11 @@ card reads only this, so it is a contract: ``tests/fixtures/contract/protection-
 
 It gathers what other commands already decide, and decides nothing new:
 
-- **sandbox**: whether the next scheduled run gets the OS write sandbox (:func:`scout.sandbox.launch.prepare`, judged
-  as the scheduler sees it, so ``SCOUT_RUN_SANDBOX`` in the caller's shell is left out, as the doctor does);
+- **sandbox**: whether scheduled runs get the OS write sandbox, judged as the scheduler sees it (so
+  ``SCOUT_RUN_SANDBOX`` in the caller's shell is left out, as the doctor does). ``off``, ``unavailable`` and
+  ``conflict`` come from :func:`scout.sandbox.launch.precheck`, which only reads files. Telling ``enforced`` from
+  ``failed`` takes building and self-testing the profile (``sandbox-exec`` and a temp dir), so the plain report takes
+  that from the newest run that recorded it, and only ``--check-sandbox`` (an owner's click in the app) self-tests;
 - **gate_probe**: the last privacy-check probe the runners ran (the ``.scout-state/gate-probe.json`` cache; reading
   it never starts claude);
 - **last_run**: the newest run that wasn't skipped, from the run ledger (:func:`scout.health.read_outcomes`), with
@@ -17,13 +20,19 @@ It gathers what other commands already decide, and decides nothing new:
 - **problems**: what needs the owner, each with the fix and an ``action`` the app turns into a button.
 
 Paths in the output are relative to the vault, so the fixture doesn't depend on where a test's vault lives.
-It never writes anything.
+Without ``--check-sandbox`` it starts no process and writes nothing.
+
+Most of what it reads lives in ``.scout-logs`` and ``.scout-state``, which a scheduled run can write. So every field
+taken from those files is shape-checked before it is shown: a value that isn't one of its known words reads as
+``null`` or ``"unknown"``, names must fit a fixed pattern, and free text is trimmed, stripped of control characters
+and secret-looking tokens, and has home folders replaced by ``~``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,7 +48,7 @@ BROKER_STATUSES = ("on", "unavailable", "off")
 
 # What the app offers for a problem, as a button. A problem with none shows its fix text only.
 ACTION_TURN_ON_SANDBOX = "turn_on_sandbox"  # scoutctl sandbox on
-ACTION_CHECK_SANDBOX = "check_sandbox"  # re-read this report (the sandbox status self-tests every time)
+ACTION_CHECK_SANDBOX = "check_sandbox"  # scoutctl protection status --json --check-sandbox (self-tests the profile)
 ACTION_CHECK_GATES = "check_gates"  # scoutctl gates probe --cached --json (free: a local fake endpoint)
 ACTION_SHOW_LOG = "show_log"  # reveal the problem's log
 ACTIONS = (ACTION_TURN_ON_SANDBOX, ACTION_CHECK_SANDBOX, ACTION_CHECK_GATES, ACTION_SHOW_LOG)
@@ -57,30 +66,104 @@ _LEDGER_ACTIONS: dict[str, str | None] = {
 }
 
 
+# ----- shapes for what a run can write --------------------------------------------------------------------------
+
+_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")  # a slot, mode or runtime
+_WORD_RE = re.compile(r"[a-z][a-z0-9_.-]{0,40}")  # an outcome or a source
+_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,80}")
+_VERSION_RE = re.compile(r"\d{1,4}(?:\.\d{1,6}){1,3}(?:[-+][0-9A-Za-z.]{1,20})?")
+_LOG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+_PATH_PART_RE = re.compile(r"\.?[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
+_RUN_SANDBOX = frozenset({"enforced", "unavailable", "off", "conflict", "failed"})
+_RUN_SANDBOX_SOURCE = frozenset({"env", "switch"})
+_RUN_INTEGRITY = frozenset({"clean", "restored", "unrestored", "error", "unchecked"})
+
+_REDACTED = "[redacted]"
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # key=value / key: value, for the names a secret goes by
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?key|key|token|secret|password|passwd|pwd|auth|authorization|"
+            r"cookie|credentials?|session)(\s*[=:]\s*)\S+"
+        ),
+        rf"\1\2{_REDACTED}",
+    ),
+    (re.compile(r"(?i)\bbearer\s+\S+"), f"Bearer {_REDACTED}"),
+    # well-known token prefixes, whatever surrounds them
+    (re.compile(r"(?:sk-|xox[abprs]-|gh[pousr]_|github_pat_|glpat-|AKIA|ASIA)[A-Za-z0-9_\-]*"), _REDACTED),
+    # any long opaque run of token characters
+    (re.compile(r"[A-Za-z0-9+/_=-]{32,}"), _REDACTED),
+)
+_HOME_RE = re.compile(r"/(?:Users|home)/[^/\s]+")
+
+
+def _text(value: object, limit: int = 240) -> str:
+    """Free text a run could have written, made safe to show: one line, no secret-looking tokens, ``~`` for home."""
+    if not isinstance(value, str):
+        return ""
+    out = re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", value)
+    out = _HOME_RE.sub("~", out)
+    for pattern, replacement in _SECRET_PATTERNS:
+        out = pattern.sub(replacement, out)
+    out = " ".join(out.split())
+    return out if len(out) <= limit else out[: limit - 1].rstrip() + "\u2026"
+
+
+def _match(value: object, pattern: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+
+def _pick(value: object, allowed: frozenset[str]) -> str | None:
+    return value if isinstance(value, str) and value in allowed else None
+
+
 def _rel(vault: Path, path: str | None) -> str | None:
-    """``path`` relative to the vault when it's inside it, else its basename (never an absolute path)."""
+    """``path`` relative to the vault when it's inside it, else its basename; None for anything oddly shaped."""
     if not path:
         return None
     p = Path(path)
     try:
-        return p.resolve().relative_to(vault.resolve()).as_posix()
-    except ValueError:
-        return p.name
+        rel = p.resolve().relative_to(vault.resolve()).as_posix()
+    except (ValueError, OSError):
+        rel = p.name
+    parts = rel.split("/")
+    if len(parts) > 4 or not all(_PATH_PART_RE.fullmatch(part) and part != ".." for part in parts):
+        return None
+    return rel
 
 
 def _problem(
     id: str, severity: str, summary: str, fix: str, action: str | None, log: str | None = None
 ) -> dict[str, Any]:
-    return {"id": id, "severity": severity, "summary": summary, "fix": fix, "action": action, "log": log}
+    # Summaries quote reasons a run could have written (the ledger's, the probe's, the broker's).
+    return {
+        "id": id,
+        "severity": severity,
+        "summary": _text(summary, 600),
+        "fix": _text(fix, 600),
+        "action": action,
+        "log": log,
+    }
 
 
 # ----- the parts ------------------------------------------------------------------------------------------------
 
 
 def sandbox_part(
-    vault: Path, env: Mapping[str, str], *, prepare: Callable[..., Any] | None = None
+    vault: Path,
+    env: Mapping[str, str],
+    rows: list[health.OutcomeRow],
+    *,
+    check: bool = False,
+    precheck: Callable[..., Any] | None = None,
+    prepare: Callable[..., Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """(the sandbox block, its problems now). ``prepare`` stands in for :func:`launch.prepare` in tests."""
+    """(the sandbox block, its problems now).
+
+    Read-only unless ``check``: off / unavailable / conflict come from :func:`launch.precheck` (files only), and
+    enforced / failed from the newest run that recorded a sandbox status. ``check`` (an owner's click) builds and
+    self-tests the profile with :func:`launch.prepare` instead. ``precheck`` and ``prepare`` stand in for them in tests.
+    """
     from scout.sandbox import launch
 
     # Scheduled runs don't inherit this shell's SCOUT_RUN_SANDBOX (bootstrap_doctor._check_run_sandbox).
@@ -91,14 +174,18 @@ def sandbox_part(
         "reason": "",
         "switch": "on" if on else "off",
         "switch_source": "default" if source == "default" else "owner",
+        "checked_by": None,
     }
     if env.get("SCOUT_SANDBOX_STATUS") == "enforced":
-        block.update(status="enforced", reason="this session runs inside it")
+        block.update(status="enforced", reason="this session runs inside it", checked_by="this_run")
         return block, []
     try:
-        result = (prepare or launch.prepare)(vault, sched_env)
+        result = (precheck or launch.precheck)(vault, sched_env)
+        checked_by = "settings"
+        if result is None and check:
+            result, checked_by = (prepare or launch.prepare)(vault, sched_env), "self_test"
     except Exception as e:  # noqa: BLE001 - a bug here must not hide the rest of the card
-        block["reason"] = f"couldn't check: {e}"
+        block["reason"] = _text(f"couldn't check: {e}")
         return block, [
             _problem(
                 "sandbox.unchecked",
@@ -108,9 +195,26 @@ def sandbox_part(
                 ACTION_CHECK_SANDBOX,
             )
         ]
+    if result is None:
+        # Read-only: what the newest run that recorded a sandbox status found (a skipped run counts: a sandbox that
+        # can't be set up skips the run).
+        newest = next((r for r in reversed(rows) if _pick(r.sandbox, _RUN_SANDBOX)), None)
+        if newest is None or newest.sandbox not in ("enforced", "failed"):
+            block.update(
+                status="not_checked",
+                reason="no scheduled run has used it since it was last turned on; Check now tests it",
+            )
+            return block, []
+        name = _match(newest.slot, _NAME_RE) or "a scheduled run"
+        when = health.iso_z(newest.finished_at)
+        if newest.sandbox == "enforced":
+            result = launch.Prepared("enforced", f"the last run ({name}, {when}) ran inside it")
+        else:
+            result = launch.Prepared("failed", f"the last run ({name}, {when}) couldn't set it up; its log says why")
+        checked_by = "last_run"
     # "turned off (<the switch file's absolute path>)" says where; the card only needs who.
-    reason = "turned off by the owner (scoutctl sandbox off)" if result.status == "off" else result.reason
-    block.update(status=result.status, reason=reason)
+    reason = "turned off by the owner (scoutctl sandbox off)" if result.status == "off" else _text(result.reason)
+    block.update(status=result.status, reason=reason, checked_by=checked_by)
     problems: list[dict[str, Any]] = []
     if result.status == "off":
         problems.append(
@@ -129,7 +233,7 @@ def sandbox_part(
                 "sandbox.not_ready",
                 "red",
                 "Write protection is expected on this Mac but couldn't be set up, so scheduled runs are skipped "
-                f"until it can ({result.reason}).",
+                f"until it can ({reason}).",
                 "Check again. Runs resume on their own once it works. To run without it meanwhile, turn it off.",
                 ACTION_CHECK_SANDBOX,
             )
@@ -139,7 +243,7 @@ def sandbox_part(
             _problem(
                 "sandbox.unavailable",
                 "yellow",
-                f"Scheduled runs run without write protection: there is none for Scout here yet ({result.reason}).",
+                f"Scheduled runs run without write protection: there is none for Scout here yet ({reason}).",
                 "Nothing to do until Scout ships it for this system. On macOS, /usr/bin/sandbox-exec must exist.",
                 ACTION_CHECK_SANDBOX,
             )
@@ -179,24 +283,21 @@ def gate_probe_part(vault: Path, *, now: datetime) -> tuple[dict[str, Any], list
     except ValueError:
         stale, checked_at = True, None
     status = "passed" if cached.ok else ("unsafe" if cached.unsafe else "failed")
+    reason = _text(cached.reason)
     block = {
         "status": status,
-        "reason": cached.reason,
+        "reason": reason,
         "checked_at": checked_at,
-        "claude_version": cached.claude_version,
-        "unsafe": cached.unsafe,
+        "claude_version": _match(cached.claude_version, _VERSION_RE),
+        "unsafe": cached.unsafe,  # read_cache keeps only gate_probe.UNSAFE_EXIT's keys
         "stale": stale,
     }
     if cached.ok:
         return block, []
     if cached.unsafe:
-        summary = (
-            f"Scheduled runs are paused: Scout couldn't check its privacy checks safely on this Mac ({cached.reason})."
-        )
+        summary = f"Scheduled runs are paused: Scout couldn't check its privacy checks safely on this Mac ({reason})."
     else:
-        summary = (
-            f"Scheduled runs are paused: the Claude Code they use didn't load Scout's privacy checks ({cached.reason})."
-        )
+        summary = f"Scheduled runs are paused: the Claude Code they use didn't load Scout's privacy checks ({reason})."
     return block, [
         _problem(
             "gates.probe_failed",
@@ -212,15 +313,16 @@ def last_run_part(rows: list[health.OutcomeRow]) -> dict[str, Any] | None:
     last = next((r for r in reversed(rows) if r.outcome not in health.SKIP_OUTCOMES), None)
     if last is None:
         return None
+    log = _match(Path(last.log).name, _LOG_RE) if last.log else None
     return {
-        "slot": last.slot,
-        "mode": last.mode,
+        "slot": _match(last.slot, _NAME_RE) or "unknown",
+        "mode": _match(last.mode, _NAME_RE) or "unknown",
         "finished_at": health.iso_z(last.finished_at),
-        "outcome": last.outcome,
-        "sandbox": last.sandbox,
-        "sandbox_source": last.sandbox_source,
-        "integrity": last.integrity,
-        "log": f".scout-logs/{Path(last.log).name}" if last.log else None,
+        "outcome": _match(last.outcome, _WORD_RE) or "unknown",
+        "sandbox": _pick(last.sandbox, _RUN_SANDBOX),
+        "sandbox_source": _pick(last.sandbox_source, _RUN_SANDBOX_SOURCE),
+        "integrity": _pick(last.integrity, _RUN_INTEGRITY),
+        "log": f".scout-logs/{log}" if log else None,
     }
 
 
@@ -239,7 +341,7 @@ def broker_part(vault: Path, *, last_run_sandbox: str | None) -> tuple[dict[str,
             recorded_at = health.iso_z(datetime.fromtimestamp(at, UTC))
         except (OverflowError, OSError, ValueError):
             recorded_at = None
-    reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
+    reason = _text(data.get("reason"))
     block = {"status": data["status"], "reason": reason, "recorded_at": recorded_at}
     # The status describes the newest run; a run without the sandbox never had a broker to miss.
     if data["status"] != "unavailable" or last_run_sandbox != "enforced":
@@ -272,7 +374,7 @@ def slots_part(vault: Path, env: Mapping[str, str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for key, slot in schedule.items():
         row: dict[str, Any] = {
-            "key": key,
+            "key": _match(key, _NAME_RE) or "unknown",
             "type": str(slot.type.value),
             "runtime": None,
             "runtime_source": None,
@@ -290,19 +392,19 @@ def slots_part(vault: Path, env: Mapping[str, str]) -> list[dict[str, Any]]:
             model = resolve_model_for(vault, key, rt.runtime, environ=env)
             lim = _limits.limits_for(vault, registry.get(rt.runtime), key, env=env)
         except (ConfigError, KeyError) as e:
-            row["error"] = str(e.args[0] if isinstance(e, KeyError) and e.args else e)
+            row["error"] = _text(str(e.args[0] if isinstance(e, KeyError) and e.args else e))
             out.append(row)
             continue
         row.update(
-            runtime=rt.runtime,
-            runtime_source=rt.source,
-            model=model.model,
-            model_source=model.source,
+            runtime=_match(rt.runtime, _NAME_RE),
+            runtime_source=_match(rt.source, _WORD_RE),
+            model=_match(model.model, _MODEL_RE),
+            model_source=_match(model.source, _WORD_RE),
             run_timeout_s=lim.run_timeout_s,
-            timeout_source=lim.timeout_source,
+            timeout_source=_match(lim.timeout_source, _WORD_RE),
             max_tokens_per_day=lim.max_tokens_per_day,
-            ceiling_source=lim.ceiling_source,
-            ignored=list(lim.ignored),
+            ceiling_source=_match(lim.ceiling_source, _WORD_RE),
+            ignored=[_text(i, 160) for i in lim.ignored],
         )
         out.append(row)
     return out
@@ -331,16 +433,21 @@ def report(
     *,
     now: datetime | None = None,
     env: Mapping[str, str] | None = None,
+    check_sandbox: bool = False,
+    precheck: Callable[..., Any] | None = None,
     prepare: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """The run-protection summary for ``vault``. Read-only; never raises for a missing or broken part."""
+    """The run-protection summary for ``vault``; never raises for a missing or broken part.
+
+    Read-only (no process, no write) unless ``check_sandbox``, which self-tests the sandbox profile.
+    """
     now = now or datetime.now(UTC)
     env = dict(os.environ if env is None else env)
     try:
         rows = health.read_outcomes(vault)
     except Exception:  # noqa: BLE001 - an unreadable ledger reads as no runs
         rows = []
-    sandbox, sandbox_now = sandbox_part(vault, env, prepare=prepare)
+    sandbox, sandbox_now = sandbox_part(vault, env, rows, check=check_sandbox, precheck=precheck, prepare=prepare)
     gates, gates_now = gate_probe_part(vault, now=now)
     last_run = last_run_part(rows)
     broker, broker_now = broker_part(vault, last_run_sandbox=last_run["sandbox"] if last_run else None)

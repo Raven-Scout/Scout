@@ -11,15 +11,20 @@ import Foundation
 /// Paths (`log`) are relative to the vault.
 nonisolated struct RunProtectionStatus: Equatable, Sendable, Decodable {
     nonisolated struct Sandbox: Equatable, Sendable, Decodable {
-        /// enforced | failed | unavailable | off | conflict | unknown
+        /// enforced | failed | unavailable | off | conflict | not_checked | unknown
         let status: String
         let reason: String
         /// on | off — the owner's switch (`scoutctl sandbox on|off`).
         let `switch`: String
         /// default | owner
         let switchSource: String
+        /// Where `status` came from: settings (off, unavailable, conflict), last_run (enforced or failed, from the
+        /// newest run; the plain report never self-tests), self_test (`--check-sandbox`), this_run; nil when unknown.
+        let checkedBy: String?
 
-        private enum CodingKeys: String, CodingKey { case status, reason, `switch`, switchSource = "switch_source" }
+        private enum CodingKeys: String, CodingKey {
+            case status, reason, `switch`, switchSource = "switch_source", checkedBy = "checked_by"
+        }
     }
 
     nonisolated struct GateProbe: Equatable, Sendable, Decodable {

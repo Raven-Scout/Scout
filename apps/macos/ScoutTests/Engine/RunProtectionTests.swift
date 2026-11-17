@@ -149,6 +149,42 @@ struct RunProtectionTests {
         #expect(on.writeProtection.value == "On")
     }
 
+    @Test func untestedProtectionSaysSoAndNeverClaimsProtected() throws {
+        var obj = try #require(try JSONSerialization.jsonObject(with: try Self.enforcedJSON()) as? [String: Any])
+        obj["sandbox"] = ["status": "not_checked", "reason": "", "switch": "on", "switch_source": "default", "checked_by": NSNull()]
+        let model = RunProtectionModel(status: try #require(RunProtectionStatus.parse(try JSONSerialization.data(withJSONObject: obj))),
+                                       vault: vault, now: now)
+        #expect(model.headline == "Write protection not tested yet")
+        #expect(model.headlineTone == .neutral)
+        #expect(model.writeProtection.value == "On, not tested yet")
+        #expect(model.writeProtection.help.contains("Check now tests it"))
+        #expect(model.offersTurnOff && !model.offersTurnOn)
+    }
+
+    @Test func protectionFromTheLastRunSaysWhereItCameFrom() throws {
+        var obj = try #require(try JSONSerialization.jsonObject(with: try Self.enforcedJSON()) as? [String: Any])
+        obj["sandbox"] = ["status": "enforced", "reason": "the last run ran inside it", "switch": "on",
+                          "switch_source": "default", "checked_by": "last_run"]
+        let fromRun = RunProtectionModel(status: try #require(RunProtectionStatus.parse(try JSONSerialization.data(withJSONObject: obj))),
+                                         vault: vault, now: now)
+        #expect(fromRun.status.sandbox.checkedBy == "last_run")
+        #expect(fromRun.writeProtection.help.contains("The last scheduled run says so"))
+        #expect(fromRun.headline == "Scheduled runs are protected")
+    }
+
+    @Test func aLogOutsideTheVaultGetsNoButton() throws {
+        var obj = try #require(try JSONSerialization.jsonObject(with: try Self.sharedFixture()) as? [String: Any])
+        var problems = try #require(obj["problems"] as? [[String: Any]])
+        problems[0]["log"] = "../../etc/scout.log"
+        problems[1]["log"] = "/etc/scout.log"
+        problems[1]["action"] = "show_log"
+        obj["problems"] = problems
+        let model = RunProtectionModel(status: try #require(RunProtectionStatus.parse(try JSONSerialization.data(withJSONObject: obj))),
+                                       vault: vault, now: now)
+        #expect(model.problems[0].action == nil)
+        #expect(model.problems[1].action == nil)
+    }
+
     @Test func theTurnOffConfirmationExplainsTheRisk() {
         let text = RunProtectionModel.turnOffMessage
         #expect(text.contains("privacy checks run at all"))
@@ -190,6 +226,16 @@ struct RunProtectionTests {
         #expect(svc.lastError == nil)
         #expect(svc.work == nil)
         #expect(runner.calls.first?.environment["SCOUT_DATA_DIR"] == "/v")
+        // What the card runs on its own only reads: no self-test of write protection.
+        #expect(runner.calls(to: "scoutctl") == [["protection", "status", "--json"]])
+    }
+
+    @Test func checkNowSelfTestsWriteProtection() async throws {
+        let runner = try runnerWithStatus()
+        let svc = service(runner)
+        await svc.checkWriteProtection()
+        #expect(runner.calls(to: "scoutctl") == [["protection", "status", "--json", "--check-sandbox"]])
+        #expect(svc.status != nil && svc.work == nil)
     }
 
     @Test func anEngineFromBeforeTheCommandSaysToUpdate() async {
@@ -224,7 +270,7 @@ struct RunProtectionTests {
         runner.on(tool: "scoutctl", prefix: ["sandbox", "on"], stdout: "run sandbox: on")
         let svc = service(runner)
         await svc.turnSandboxOn()
-        #expect(runner.calls(to: "scoutctl").first == ["sandbox", "on"])
+        #expect(runner.calls(to: "scoutctl") == [["sandbox", "on"], ["protection", "status", "--json", "--check-sandbox"]])
         #expect(svc.lastError == nil)
     }
 
@@ -260,5 +306,24 @@ struct RunProtectionTests {
         #expect(info["OSAScriptingDefinition"] == nil)
         #expect(info["NSServices"] == nil)
         #expect(info["NSUserActivityTypes"] == nil)
+    }
+
+    /// The same in code: no App Intent (Shortcuts, Siri), URL handler, Apple Event handler or user activity.
+    @Test func theAppSourceHasNoAutomationEntryPoint() throws {
+        let source = URL(fileURLWithPath: #filePath)   // …/apps/macos/ScoutTests/Engine/RunProtectionTests.swift
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scout")
+        let files = try #require(FileManager.default.enumerator(at: source, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        #expect(files.count > 20)   // found the app's source, not an empty folder
+        let entryPoints = ["AppIntent", "AppShortcutsProvider", "onOpenURL", "handlesExternalEvents", "onContinueUserActivity",
+                           "NSAppleEventManager", "NSScriptCommand", "NSUserActivity", "application(_ application: NSApplication, open",
+                           "func application(_ sender: NSApplication, openFile", "NSServices", "servicesProvider"]
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for word in entryPoints {
+                #expect(!text.contains(word), "\(file.lastPathComponent) mentions \(word)")
+            }
+        }
     }
 }

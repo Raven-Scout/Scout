@@ -24,6 +24,7 @@ struct RunProtectionSection: View {
                 }
             }
         }
+        // On its own the card only reads (no process, no write); testing write protection takes a click.
         .task { if service.status == nil && service.work == nil { await service.refresh() } }
         .confirmationDialog(RunProtectionModel.turnOffTitle, isPresented: $confirmingTurnOff, titleVisibility: .visible) {
             Button(RunProtectionModel.turnOffConfirm, role: .destructive) {
@@ -71,7 +72,9 @@ struct RunProtectionSection: View {
     }
 
     private var checkButton: some View {
-        Button(service.work == .checking ? "Checking…" : "Check now") { Task { await service.refresh() } }
+        Button([.checking, .checkingProtection].contains(service.work) ? "Checking…" : "Check now") {
+            Task { await service.checkWriteProtection() }
+        }
             .buttonStyle(.plainHit)
             .font(DS.sans(12))
             .disabled(service.work != nil)
@@ -116,7 +119,7 @@ struct RunProtectionSection: View {
     private func perform(_ action: RunProtectionModel.Action) {
         switch action {
         case .turnOnProtection: Task { await service.turnSandboxOn() }
-        case .checkProtectionAgain: Task { await service.refresh() }
+        case .checkProtectionAgain: Task { await service.checkWriteProtection() }
         case .checkPrivacyAgain: Task { await service.checkPrivacyChecks() }
         case .showLog(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
         }

@@ -15,7 +15,7 @@ struct OwnerConfirmation: Sendable {
 /// Runs the engine's run-protection commands and publishes the summary for Settings ▸ Engine.
 @MainActor
 final class RunProtectionService: ObservableObject {
-    nonisolated enum Work: Equatable, Sendable { case checking, checkingPrivacy, turningOn, turningOff }
+    nonisolated enum Work: Equatable, Sendable { case checking, checkingProtection, checkingPrivacy, turningOn, turningOff }
 
     @Published private(set) var status: RunProtectionStatus?
     /// Why there is no summary, or why the last action failed, in plain words.
@@ -35,15 +35,23 @@ final class RunProtectionService: ObservableObject {
         self.scoutctl = scoutctl
     }
 
-    /// Re-read `scoutctl protection status --json`. Read-only (it self-tests the sandbox profile, never starts claude).
+    /// Re-read `scoutctl protection status --json`. Read-only: it starts no process and writes nothing, so it is
+    /// what the card runs on its own (whenever Settings ▸ Engine appears). Whether write protection works comes
+    /// from the newest run; `checkWriteProtection()` tests it now.
     func refresh() async {
-        await perform(.checking) { _ in }
+        await perform(.checking, selfTest: false) { _ in }
+    }
+
+    /// `scoutctl protection status --json --check-sandbox`: builds and self-tests the write-protection profile
+    /// (`sandbox-exec` in a temp folder; never starts claude). Only on the owner's click: Check now or Check again.
+    func checkWriteProtection() async {
+        await perform(.checkingProtection, selfTest: true) { _ in }
     }
 
     /// `scoutctl gates probe --cached --json`: reuses a fresh pass, else checks again against a local
     /// stand-in endpoint (no model, no spend, never your credentials). Then refreshes.
     func checkPrivacyChecks() async {
-        await perform(.checkingPrivacy) { [self] exe in
+        await perform(.checkingPrivacy, selfTest: false) { [self] exe in
             let result = try await runner.run(executable: exe, arguments: ["gates", "probe", "--cached", "--json"],
                                               environment: environment, workingDirectory: nil)
             // Exit 3–5 is a failed or refused check: the summary says so. Only output that isn't a result is an error.
@@ -53,15 +61,15 @@ final class RunProtectionService: ObservableObject {
         }
     }
 
-    /// `scoutctl sandbox on` — always safe, so no confirmation.
+    /// `scoutctl sandbox on` — always safe, so no confirmation. Then tests it, so the card says whether it works.
     func turnSandboxOn() async {
-        await perform(.turningOn) { [self] exe in try await switchSandbox(exe, "on") }
+        await perform(.turningOn, selfTest: true) { [self] exe in try await switchSandbox(exe, "on") }
     }
 
     /// `scoutctl sandbox off`, after the owner confirmed the risk (see `OwnerConfirmation`).
     func turnSandboxOff(_ confirmation: OwnerConfirmation) async {
         _ = confirmation
-        await perform(.turningOff) { [self] exe in try await switchSandbox(exe, "off") }
+        await perform(.turningOff, selfTest: false) { [self] exe in try await switchSandbox(exe, "off") }
     }
 
     // MARK: -
@@ -76,8 +84,9 @@ final class RunProtectionService: ObservableObject {
         }
     }
 
-    /// Run `action` (if any), then re-read the summary. Overlapping calls: only the newest publishes.
-    private func perform(_ kind: Work, _ action: @escaping (URL) async throws -> Void) async {
+    /// Run `action` (if any), then re-read the summary (self-testing write protection when `selfTest`).
+    /// Overlapping calls: only the newest publishes.
+    private func perform(_ kind: Work, selfTest: Bool, _ action: @escaping (URL) async throws -> Void) async {
         generation += 1
         let mine = generation
         guard let exe = scoutctl() else {
@@ -92,7 +101,8 @@ final class RunProtectionService: ObservableObject {
             actionError = "Couldn't run scoutctl: \(String(describing: error).prefix(160))"
         }
         do {
-            let result = try await runner.run(executable: exe, arguments: ["protection", "status", "--json"],
+            let args = ["protection", "status", "--json"] + (selfTest ? ["--check-sandbox"] : [])
+            let result = try await runner.run(executable: exe, arguments: args,
                                               environment: environment, workingDirectory: nil)
             guard mine == generation else { return }
             if let parsed = RunProtectionStatus.parse(result.stdout) {
