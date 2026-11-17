@@ -27,10 +27,11 @@ struct RunDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            EditorialSegmentedControl(
+            AdaptiveSegmentedControl(
                 selection: $tab,
                 options: RunDetailTab.allCases.map { ($0.displayName, $0) },
-                minSegmentWidth: 70
+                minSegmentWidth: 70,
+                accessibilityTitle: "Run detail tab"
             )
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -62,7 +63,7 @@ struct RunDetailView: View {
             HStack(spacing: 8) {
                 Text(run.displayName).font(.title2).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
-                    Text("manual")
+                    Text("Started by you")
                         .font(.caption.monospaced())
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -76,9 +77,6 @@ struct RunDetailView: View {
                 if let end = run.endedAt {
                     Text("· Ended \(end.formatted(date: .omitted, time: .shortened))")
                 }
-                if let exit = run.exitCode {
-                    Text("· Exit \(exit)")
-                }
                 if let cost = run.cost {
                     Text("· Cost $\(cost as NSDecimalNumber)")
                 }
@@ -89,14 +87,18 @@ struct RunDetailView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if let problem = Problem(run: run) {
+                ProblemView(problem: problem)
+                    .padding(.top, 4)
+            }
         }
     }
 
     private var statusPill: some View {
         HStack(spacing: 5) {
             Circle().fill(statusColor).frame(width: 6, height: 6)
-            Text(run.status.rawValue)
-                .font(.caption.monospaced())
+            Text(run.status.displayName)
+                .font(.caption)
                 .foregroundStyle(statusColor)
         }
     }
@@ -112,9 +114,9 @@ struct RunDetailView: View {
 
     private var actionBar: some View {
         HStack(spacing: 8) {
-            Button("Retry") { confirmRetry = true }
+            Button("Run again") { confirmRetry = true }
                 .disabled(run.status == .running)
-            Button("Open log file") {
+            Button("Open log") {
                 NSWorkspace.shared.open(run.logPath)
             }
             Button("Reveal in Finder") {
@@ -123,14 +125,14 @@ struct RunDetailView: View {
             Spacer()
         }
         .confirmationDialog(
-            "Retry \(run.displayName)?",
+            "Run \(run.displayName) again?",
             isPresented: $confirmRetry,
             titleVisibility: .visible
         ) {
-            Button("Retry") {
+            Button("Run again") {
                 Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: false) }
             }
-            Button("Retry (bypass budget)") {
+            Button("Run anyway (ignore budget)") {
                 Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: true) }
             }
             Button("Cancel", role: .cancel) { }

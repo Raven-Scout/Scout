@@ -43,6 +43,18 @@ def version() -> None:
     print(__version__)
 
 
+@app.command("diagnostics")
+def cli_diagnostics(
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON."),
+    no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip the scheduler registration check."),
+) -> None:
+    """A redacted report for a bug report: versions, doctor, sandbox, runtime, recent runs. Never vault content."""
+    from scout import diagnostics
+    from scout import paths as _paths
+
+    typer.echo(diagnostics.main(_paths.data_dir(), as_json=as_json, check_jobs=not no_jobs))
+
+
 manifest_app = typer.Typer(help="Engine capability manifest operations.")
 app.add_typer(manifest_app, name="manifest")
 
@@ -1321,6 +1333,23 @@ def budget_record_run_cmd(
         )
     else:
         typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+
+
+@budget_app.command("usage")
+def budget_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the summary the app's usage card reads, as JSON."),
+) -> None:
+    """What Scout's own scheduled runs used today and this week: tokens and cost.
+
+    Counts finished scheduled runs only (the usage tracker's runner rows), never
+    interactive Claude sessions. Tokens come from those runs' transcripts, each
+    message counted once; cost is the budget gate's figure, with how it was found
+    (cost_kind: reported, priced, unpriced, partial or none). Read-only.
+    """
+    from scout.scripts.usage_summary import describe, dumps, summarize
+
+    summary = summarize()
+    typer.echo(dumps(summary) if as_json else describe(summary), nl=not as_json)
 
 
 @budget_app.command("record-attempt")

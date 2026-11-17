@@ -21,6 +21,15 @@ struct NowStripView: View {
         .editorialCard(padding: 14)
     }
 
+    /// "cost $1.20 · budget $8/day": the budget comes from the vault's own
+    /// budget settings (`scoutctl budget show`), and is left off until they
+    /// have loaded — never a made-up figure (card C3).
+    nonisolated static func costLine(total: Decimal, dailyBudgetUSD: Double?) -> String {
+        let cost = "cost $\(total as NSDecimalNumber)"
+        guard let daily = dailyBudgetUSD, daily > 0 else { return cost }
+        return "\(cost) · budget \(daily.formatted(.currency(code: "USD").precision(.fractionLength(0...2))))/day"
+    }
+
     // MARK: - Column layout helper
 
     private func column<Content: View>(label: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -61,7 +70,7 @@ struct NowStripView: View {
                 bigName(r.displayName)
                 HStack(spacing: 4) {
                     Image(systemName: statusIcon(for: r.status)).imageScale(.small)
-                    Text("\(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
+                    Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
                 .font(DS.mono(12))
                 .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)
@@ -83,7 +92,8 @@ struct NowStripView: View {
         let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
         VStack(alignment: .leading, spacing: 4) {
             bigName("\(runs.count) runs · \(failures) failed")
-            sub("cost $\(total as NSDecimalNumber) · budget $8.00", color: DS.Ink.p3)
+            sub(Self.costLine(total: total, dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
+                color: DS.Ink.p3)
         }
     }
 

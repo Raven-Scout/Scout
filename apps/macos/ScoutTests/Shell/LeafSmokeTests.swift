@@ -15,8 +15,7 @@ struct LeafSmokeTests {
 
     @Test("a run row renders for every status, selected and not")
     func runRowRendersEveryStatus() {
-        for status in [RunStatus.scheduled, .running, .success, .failure, .timeout,
-                       .orphaned, .skippedBudget, .skippedConcurrency, .rateLimited] {
+        for status in RunStatus.allCases {
             for selected in [false, true] {
                 ViewHost.render(
                     RunRow(run: Run.make(status: status), isSelected: selected),
