@@ -25,6 +25,13 @@ struct SchedulesView: View {
     /// notice when a reload drops edits to a slot that left the schedule.
     @ObservedObject private var drafts = SlotDraftStore.shared
 
+    /// Run health's `slot.*` findings ("hasn't run for 3 days"), by slot
+    /// key. `AppState` re-publishes the run ledger's changes, so this page
+    /// redraws when they arrive.
+    private var slotWarnings: [String: [RunOutcomeDisplay.SlotWarning]] {
+        RunOutcomeDisplay.slotWarnings(appState.runLedgerService.health)
+    }
+
     /// Whether the close button or Esc may hide the detail pane. Only a
     /// compact pane closes, and never over a new slot or unsaved edits:
     /// `SlotDraftStore` would keep them, but a pane that vanishes over them
@@ -166,13 +173,15 @@ struct SchedulesView: View {
                 SchedulesMasterTable(
                     slots: filteredSlots,
                     newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey
+                    selectedSlotKey: $selectedSlotKey,
+                    warnings: slotWarnings
                 )
             case .cards:
                 SchedulesMasterCards(
                     slots: filteredSlots,
                     newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey
+                    selectedSlotKey: $selectedSlotKey,
+                    warnings: slotWarnings
                 )
             case .timeline:
                 SchedulesTimelineView(

@@ -13,6 +13,8 @@ struct SchedulesMasterTable: View {
     let slots: [Slot]
     let newDraftSlot: Slot?
     @Binding var selectedSlotKey: String?
+    /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
+    var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
     var body: some View {
         GeometryReader { geo in
@@ -73,7 +75,8 @@ struct SchedulesMasterTable: View {
     @ViewBuilder
     private func row(for slot: Slot, nameWidth: CGFloat) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth)
+        SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth,
+                     warnings: warnings[slot.key] ?? [])
             .contentShape(Rectangle())
             .onTapGesture { selectedSlotKey = slot.key }
     }

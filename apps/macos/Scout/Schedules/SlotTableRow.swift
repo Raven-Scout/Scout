@@ -9,15 +9,20 @@ struct SlotTableRow: View {
     /// Width of the flexible NAME column, computed by `SchedulesMasterTable`
     /// from the available pane width so rows align with the header.
     let nameWidth: CGFloat
+    /// Run-health warnings about this schedule, shown on a line under the row.
+    var warnings: [RunOutcomeDisplay.SlotWarning] = []
 
     var body: some View {
-        HStack(spacing: SchedulesColumns.spacing) {
-            nameCell.frame(width: nameWidth, alignment: .leading)
-            typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
-            timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
-            daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
-            onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
-            cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: SchedulesColumns.spacing) {
+                nameCell.frame(width: nameWidth, alignment: .leading)
+                typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
+                timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
+                daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
+                onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
+                cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
+            }
+            SlotWarningLines(warnings: warnings)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, SchedulesColumns.hPadding)
