@@ -100,7 +100,10 @@ struct RunRow: View {
         case .orphaned:           return "questionmark.circle"
         case .rateLimited:        return "hourglass"
         case .skippedBudget:      return "pause.circle"
-        case .skippedConcurrency: return "lock.circle"
+        case .skippedConcurrency, .skippedLease: return "lock.circle"
+        case .skippedGates, .skippedSandbox: return "shield.slash"
+        case .skippedRuntime:     return "nosign"
+        case .skippedRedundant:   return "arrow.uturn.right.circle"
         case .scheduled:          return "clock"
         }
     }

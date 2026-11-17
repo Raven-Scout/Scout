@@ -185,8 +185,11 @@ final class SessionLogService: ObservableObject {
     // wrapper case-insensitively and without pinning the instance name.
     // (`finishRegex` still pins the literal "Scout" instance name — correct for
     // the default install, but the same latent limitation for custom instances.)
+    // The line must say "skipping": the lock library also writes
+    // `=== Another … session running (PID …) — waiting up to Ns for the lock ===`
+    // for a run that then gets the lock and runs (card C3).
     private static let concurrencyRegex = try! NSRegularExpression(
-        pattern: #"=== Another .+? session running"#,
+        pattern: #"=== Another .+? session running.*skipping"#,
         options: [.caseInsensitive]
     )
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
@@ -228,6 +231,8 @@ final class SessionLogService: ObservableObject {
             status = .timeout
         } else if hasBudgetSkip {
             status = .skippedBudget
+        } else if let skip = RunSkipLine.status(in: text) {
+            status = skip
         } else if hasConcurrencySkip {
             status = .skippedConcurrency
         } else if hasRateLimit {
