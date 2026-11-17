@@ -40,8 +40,8 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case rateLimited
     /// The runner skipped the run on purpose. One case per run-ledger
     /// outcome (`skipped_gates`, `skipped_sandbox`, …), so the ledger
-    /// (card C8) maps onto these directly. Until then `RunSkipLine` reads
-    /// them from the log.
+    /// (card C8) maps onto these directly (`RunLedgerEntry.runStatus`);
+    /// `RunSkipLine` reads them from the log for runs without a ledger row.
     case skippedGates
     case skippedSandbox
     case skippedRuntime

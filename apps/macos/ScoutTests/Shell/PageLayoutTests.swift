@@ -23,6 +23,10 @@ struct PageLayoutTests {
         switch item {
         case .controlCenter:
             view = AnyView(ControlCenterView())
+        case .health:
+            view = AnyView(HealthView(logsDirectory: state.scoutDirectory.appendingPathComponent(".scout-logs"))
+                .environmentObject(state.runLedgerService)
+                .environmentObject(state.engineHealth))
         case .sessions:
             view = AnyView(SessionsView().environmentObject(state.sessionIndexService))
         case .actionItems:
