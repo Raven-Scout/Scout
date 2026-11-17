@@ -394,6 +394,8 @@ struct PlainLanguageSurfaceTests {
             "Text(run.status.rawValue)", "Text(policy.rawValue", "type.rawValue.capitalized",
             "latest.status.rawValue", "next evening run", "Connector roster fallback warning", "Budget limit reached",
             "Another session was running", "Privacy checks didn't load", "type /mcp in a Claude Code session), then wait",
+            "Close slot details", "\"Add Slot\"", "\"Edit Slot\"", "\"Delete Slot\"", "Schedule slot",
+            "Pick a slot to edit", "Slots without a tag", "Slot key required", "Slot key must be",
         ]
         let files = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         var hits: [String] = []

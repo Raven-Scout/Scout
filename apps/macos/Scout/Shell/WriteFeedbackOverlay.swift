@@ -96,9 +96,9 @@ struct WriteFeedbackOverlay: View {
         case "Edit Note":       return "Note saved"
         case "Delete Note":     return "Note deleted"
         case "Rename Note":     return "Note renamed"
-        case "Add Slot":        return "Schedule slot added"
-        case "Edit Slot":       return "Schedule slot saved"
-        case "Delete Slot":     return "Schedule slot deleted"
+        case "Add Schedule":    return "Schedule added"
+        case "Edit Schedule":   return "Schedule saved"
+        case "Delete Schedule": return "Schedule deleted"
         default:                return actionName
         }
     }

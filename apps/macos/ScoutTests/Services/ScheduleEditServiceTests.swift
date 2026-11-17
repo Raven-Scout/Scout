@@ -426,7 +426,7 @@ struct ScheduleEditServiceDraftTests {
         store.update(draft, baseline: morning, for: morning.key)
 
         await #expect(throws: (any Error).self) {
-            try await service.update(actionName: "Edit Slot") { slots in
+            try await service.update(actionName: "Edit Schedule") { slots in
                 slots.map { $0.key == morning.key ? draft.toSlot() : $0 }
             }
         }
@@ -443,7 +443,7 @@ struct ScheduleEditServiceDraftTests {
             try await service.delete(slotKey: "research")
             Issue.record("expected ScheduleReloadAfterWriteError")
         } catch let written as ScheduleReloadAfterWriteError {
-            #expect(written.change?.actionName == "Delete Slot")
+            #expect(written.change?.actionName == "Delete Schedule")
         }
         // The delete is on disk.
         let onDisk = try String(contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8)
