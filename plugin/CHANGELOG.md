@@ -14,6 +14,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **Eval:** the harness gains a `title_budget` check (a new or changed title over 80 characters fails), scored in `busy-weekday`.
   - **Upgrading.** The phase text reaches a vault with `/scout-update`. Existing titles and wishlist cards are not rewritten in bulk: they converge as runs touch them.
 
+### Fixed
+- **A slot's `agent_runtime` survives a schedule save in the app** (`engine/scout/cli.py`). `scoutctl schedule list --json` and `schedule show` now include `agent_runtime` (null when the slot inherits), and `schedule show` also gains the `runtime` field `list` already had. The app rewrites `.scout-state/schedule.yaml` from the list, so a field missing there was dropped from every slot on the next in-app save. `schedule.snapshot.json` is unchanged.
+
 ## [0.18.15] - 2026-11-16
 
 ### Added
