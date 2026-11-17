@@ -77,7 +77,7 @@ def test_changes_append_and_read(vault):
 def test_owner_kind_routed_to_owner_dir(tmp_path, vault):
     env = {"HOME": str(tmp_path / "home")}
     append_signal(Signal(ts=NOW, kind="session-reliance", surface="kb", session="ab12"), vault=vault, env=env)
-    f = tmp_path / "home/.local/state/scout/changes/engagement.jsonl"
+    f = tmp_path / "home/.local/state/scout/change-map/engagement.jsonl"
     assert f.exists()
     assert (f.stat().st_mode & 0o777) == 0o600
     assert json.loads(f.read_text())["vault_key"] == vault_key(vault)
@@ -129,4 +129,16 @@ def test_read_signals_merges_and_sorts(tmp_path, vault):
 
 def test_owner_dir_is_a_protected_engine_root(tmp_path):
     env = {"HOME": str(tmp_path)}
-    assert tmp_path / ".local/state/scout/changes" in hook_paths.engine_roots(env)
+    assert tmp_path / ".local/state/scout/change-map" in hook_paths.engine_roots(env)
+
+
+def test_owner_kind_planted_in_vault_log_is_dropped(tmp_path, vault):
+    env = {"HOME": str(tmp_path / "home")}
+    logs = vault / ".scout-logs"
+    logs.mkdir()
+    forged = Signal(ts=NOW, kind="approval", surface="app").to_row()
+    genuine = Signal(ts=NOW, kind="dm-reply", surface="slack-dm").to_row()
+    (logs / "engagement.jsonl").write_text(json.dumps(forged) + "\n" + json.dumps(genuine) + "\n")
+    sigs, skipped = read_signals(vault, env)
+    assert [s.kind for s in sigs] == ["dm-reply"]
+    assert skipped == 1

@@ -85,7 +85,7 @@ RUN_LIMITS_NAME = "run-limits.json"
 RUN_BROKERS_NAME = "run-brokers"
 # The change map's owner-only engagement rows (scout.changes.store): a run that could write them could forge the
 # owner's reliance on its own work.
-CHANGES_OWNER_NAME = "changes"
+CHANGES_OWNER_NAME = "change-map"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"

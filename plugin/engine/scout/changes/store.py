@@ -1,5 +1,5 @@
 """The two stores. Run-writable rows live in ``<vault>/.scout-logs/``; owner-sourced rows live only in the
-owner-only ``~/.local/state/scout/changes/`` (a protected engine root a run can't write)."""
+owner-only ``~/.local/state/scout/change-map/`` (a protected engine root a run can't write)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ ENGAGEMENT_NAME = "engagement.jsonl"
 
 
 def owner_dir(env: Mapping[str, str]) -> Path:
-    """``~/.local/state/scout/changes/``: owner-sourced engagement rows. A protected engine root."""
+    """``~/.local/state/scout/change-map/``: owner-sourced engagement rows. A protected engine root."""
     return Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
 
 
@@ -102,6 +102,10 @@ def read_signals(vault: Path, env: Mapping[str, str]) -> tuple[list[Signal], int
         skipped += bad
         for row in raw:
             if owned and row.get("vault_key") != key:
+                continue
+            if not owned and row.get("kind") in OWNER_KINDS:
+                # A run writes this file; an owner-sourced kind here is a forgery, never engagement.
+                skipped += 1
                 continue
             try:
                 out.append(Signal.from_row(row))
