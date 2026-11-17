@@ -82,14 +82,14 @@ struct LogViewer: View {
                 HStack(spacing: 8) {
                     Image(systemName: kind.icon)
                         .foregroundStyle(kind.color)
-                        .font(.caption)
+                        .font(DS.sans(10))
                     Text(section.title)
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(DS.mono(11))
                         .fontWeight(.semibold)
                         .foregroundStyle(kind.color)
                     if let when = section.timestamp {
                         Text(when, format: .dateTime.hour().minute().second())
-                            .font(.caption.monospaced())
+                            .font(DS.mono(10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -113,7 +113,7 @@ struct LogViewer: View {
     private func lineView(_ line: String) -> some View {
         let highlighted = highlight(line: line)
         Text(highlighted)
-            .font(.system(.callout, design: .monospaced))
+            .font(DS.mono(12))
             .textSelection(.enabled)
             .lineLimit(nil)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -150,7 +150,7 @@ struct LogViewer: View {
     private var rawView: some View {
         ScrollView {
             Text(rawText.isEmpty ? "(empty log)" : rawText)
-                .font(.system(.callout, design: .monospaced))
+                .font(DS.mono(12))
                 .textSelection(.enabled)
                 .lineLimit(nil)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -599,7 +599,7 @@ struct ScheduleWritePathTests {
         let vault = try TempVault()
         let s = try service(vault)
         try await s.loadAll()
-        let change = try #require(try await s.save(allSlots: edited(s), actionName: "Edit Slot"))
+        let change = try #require(try await s.save(allSlots: edited(s), actionName: "Edit Schedule"))
         #expect(vault.read("schedule.yaml")?.contains("new-slot-1") == true)
 
         try await s.restore(change, .undo)
@@ -654,8 +654,8 @@ struct ScheduleWritePathTests {
             argumentsPrefix: ["scoutctl"])
         try await s.loadAll()
 
-        async let first = s.update(actionName: "Add Slot") { $0 + [SchedulesView.makeNewDraftSlot(key: "new-slot-1")] }
-        async let second = s.update(actionName: "Add Slot") { $0 + [SchedulesView.makeNewDraftSlot(key: "new-slot-2")] }
+        async let first = s.update(actionName: "Add Schedule") { $0 + [SchedulesView.makeNewDraftSlot(key: "new-slot-1")] }
+        async let second = s.update(actionName: "Add Schedule") { $0 + [SchedulesView.makeNewDraftSlot(key: "new-slot-2")] }
         _ = try await (first, second)
 
         let yaml = try #require(vault.read("schedule.yaml"))
@@ -683,7 +683,7 @@ struct ScheduleWritePathTests {
         let s = try service(vault)
         try await s.loadAll()
         let change = try #require(try await s.delete(slotKey: "morning-briefing"))
-        #expect(change.actionName == "Delete Slot")
+        #expect(change.actionName == "Delete Schedule")
         try await s.restore(change, .undo)
         #expect(vault.read("schedule.yaml") == scheduleYAML)
     }

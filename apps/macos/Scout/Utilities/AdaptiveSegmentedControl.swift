@@ -17,7 +17,8 @@ struct AdaptiveSegmentedControl<Value: Hashable>: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            EditorialSegmentedControl(selection: $selection, options: options, minSegmentWidth: minSegmentWidth)
+            EditorialSegmentedControl(selection: $selection, options: options, minSegmentWidth: minSegmentWidth,
+                                      accessibilityLabel: accessibilityTitle)
             menu
         }
     }

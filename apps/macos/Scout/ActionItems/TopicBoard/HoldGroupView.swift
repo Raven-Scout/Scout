@@ -13,7 +13,7 @@ struct HoldGroupView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(DS.sans(9, weight: .semibold))
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                     Text("\(BoardState.hold.label) · \(steps.count)")
                 }

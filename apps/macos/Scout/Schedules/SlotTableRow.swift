@@ -87,7 +87,7 @@ struct SlotTableRow: View {
                 .font(DS.mono(13))
                 .foregroundStyle(DS.Ink.p2)
             Image(systemName: "bolt.fill")
-                .font(.system(size: 8))
+                .font(DS.sans(8))
                 .foregroundStyle(DS.Ink.p4)
         }
     }

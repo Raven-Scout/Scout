@@ -97,6 +97,13 @@ first.** The two have different languages, test runners, and release flows.
   then `cp` it to `apps/macos/ScoutTests/Fixtures/usage-summary.json` and
   update the pins in `apps/macos/ScoutTests/Services/ScoutUsageServiceTests.swift`
   — all in one commit.
+- **The run protection summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/protection-status.json`, the output of
+  `scoutctl protection status --json`, which the app's Run protection card reads.
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_protection_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/protection-status.json` and update
+  the pins in `apps/macos/ScoutTests/Engine/RunProtectionTests.swift` — all in one commit.
 - **The run ledger has one canonical copy too:**
   `plugin/engine/tests/fixtures/contract/run-ledger.json`, the output of
   `scoutctl runs --json` (`scout/run_ledger.py`; recent `run-outcomes.jsonl`

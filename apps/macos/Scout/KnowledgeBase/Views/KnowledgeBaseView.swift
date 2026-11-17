@@ -127,16 +127,18 @@ struct KnowledgeBaseView: View {
                 Spacer()
                 if selectedPath != nil {
                     Button { selectedPath = nil } label: {
-                        Image(systemName: "house").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "house").font(DS.sans(11, weight: .semibold))
                             .foregroundStyle(DS.Ink.p3)
                     }
                     .buttonStyle(.plainHit).help("Back to overview")
+                    .accessibilityLabel("Back to overview")
                 }
                 Button { showNewFile = true } label: {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
                 .buttonStyle(.plainHit).help("New note")
+                .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
@@ -159,13 +161,14 @@ struct KnowledgeBaseView: View {
 
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             TextField("Search notes…", text: $searchQuery)
                 .textFieldStyle(.plain).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
             if !searchQuery.isEmpty {
                 Button { searchQuery = "" } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+                    Image(systemName: "xmark.circle.fill").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -262,7 +265,7 @@ struct KnowledgeBaseView: View {
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: icon).font(DS.sans(30)).foregroundStyle(DS.Ink.p4)
             Text(title).font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p2)
             Text(detail).font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
@@ -411,7 +414,8 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("FOLDER").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
-                Picker("", selection: $directoryPath) {
+                    .accessibilityHidden(true)
+                Picker("Folder", selection: $directoryPath) {
                     ForEach(directories, id: \.url.path) { dir in
                         Text(dir.label).tag(dir.url.path)
                     }
@@ -421,7 +425,9 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("NAME").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                    .accessibilityHidden(true)
                 TextField("my-note", text: $name)
+                    .accessibilityLabel("Name")
                     .textFieldStyle(.roundedBorder).font(DS.sans(13))
                     .onSubmit(create)
                 Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)

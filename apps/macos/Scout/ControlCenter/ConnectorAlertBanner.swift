@@ -26,18 +26,19 @@ struct ConnectorAlertBanner: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle").font(DS.mono(13))
+                    .foregroundStyle(DS.Status.onFill).accessibilityHidden(true)
                 Text(summary(for: head, moreCount: more))
                     .font(DS.mono(12))
                     .lineLimit(1)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(DS.Status.onFill)
                 Spacer()
                 Text("Details")
                     .font(DS.mono(11))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(DS.Status.onFill)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(Color(red: 0.75, green: 0.15, blue: 0.15))
+            .background(DS.Status.err)
         }
         .buttonStyle(.plainHit)
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {

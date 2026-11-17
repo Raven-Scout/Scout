@@ -137,7 +137,7 @@ struct KBEditableView: View {
                     .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                     .help("Put this block back the way it was")
                 Button(Self.inlineCommitTitle) { finishInline() }
-                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
+                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.onFill)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
@@ -238,7 +238,7 @@ struct KBEditableView: View {
                     // While an inline edit is open, Esc belongs to it.
                     .keyboardShortcut(inline == nil ? .cancelAction : nil)
                 Button("Send to Scout") { submitComment(seg) }
-                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
+                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.onFill)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(DS.Accent.fill))
                     .keyboardShortcut(.return, modifiers: .command)
@@ -252,16 +252,17 @@ struct KBEditableView: View {
     private func scoutCommentChip(_ seg: KBDocSegment) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 10)).foregroundStyle(DS.Accent.ink)
+                .font(DS.sans(10)).foregroundStyle(DS.Accent.ink)
             Text(ScoutMarker.body(of: seg.raw) ?? seg.raw)
                 .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
             Text("for Scout · pending").font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
             Spacer(minLength: 8)
             Button { retractComment(seg) } label: {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(DS.Ink.p4)
+                Image(systemName: "xmark.circle.fill").font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
             }
             .buttonStyle(.plain).help("Retract this comment (removes the marker)")
+            .accessibilityLabel("Retract comment")
             // Its line numbers come from the snapshot while an edit is open.
             .disabled(inline != nil)
         }
@@ -356,10 +357,10 @@ struct KBEditableView: View {
     @ViewBuilder
     private func metadataDisclosure(_ history: [KBDocSegment]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { withAnimation(.easeInOut(duration: 0.15)) { showMeta.toggle() } } label: {
+            Button { withMotion(.easeInOut(duration: 0.15)) { showMeta.toggle() } } label: {
                 HStack(spacing: 6) {
                     Image(systemName: showMeta ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
+                        .font(DS.sans(9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
                     Text("History & properties").font(DS.sans(11, weight: .medium)).foregroundStyle(DS.Ink.p3)
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())

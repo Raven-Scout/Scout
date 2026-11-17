@@ -203,6 +203,7 @@ struct ActivityHeatmapView: View {
         }
         .keyWindowPointingHand(enabled: total > 0)
         .help(tooltip(for: cell))
+        .modifier(dayCellAccessibility(cell, isSelected: isSelected))
     }
 
     private func cellView(_ cell: HeatmapCell, size: CGFloat) -> some View {
@@ -230,6 +231,27 @@ struct ActivityHeatmapView: View {
             }
             .keyWindowPointingHand(enabled: total > 0)
             .help(tooltip(for: cell))
+            .modifier(dayCellAccessibility(cell, isSelected: isSelected))
+    }
+
+    /// A day cell is a tap target with no text of its own; for VoiceOver it is
+    /// one button that says the day and its runs, reports Selected while it
+    /// filters the run list, and toggles that filter when activated.
+    private func dayCellAccessibility(_ cell: HeatmapCell, isSelected: Bool) -> HeatmapDayAccessibility {
+        HeatmapDayAccessibility(
+            label: Self.accessibilityLabel(date: cell.date, successes: cell.successes, failures: cell.failures),
+            isSelected: isSelected,
+            toggle: { dayFilter = isSelected ? nil : cell.date })
+    }
+
+    /// "Wednesday, November 12, 3 runs, 1 failed" / "…, no runs". Pure.
+    nonisolated static func accessibilityLabel(date: Date, successes: Int, failures: Int) -> String {
+        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let runs = successes + failures
+        guard runs > 0 else { return "\(day), no runs" }
+        var label = "\(day), \(runs) run\(runs == 1 ? "" : "s")"
+        if failures > 0 { label += ", \(failures) failed" }
+        return label
     }
 
     private func tooltip(for cell: HeatmapCell) -> String {
@@ -385,4 +407,20 @@ enum HeatmapRange: String, CaseIterable, Identifiable {
     }
 
     var shortLabel: String { segmentLabel }
+}
+
+private struct HeatmapDayAccessibility: ViewModifier {
+    let label: String
+    let isSelected: Bool
+    let toggle: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilitySelected(isSelected)
+            .accessibilityHint(isSelected ? "Shows runs from every day" : "Shows only this day's runs")
+            .accessibilityAction { toggle() }
+    }
 }

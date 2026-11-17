@@ -146,6 +146,12 @@ struct VaultUndoControllerTests {
         #expect(WriteFeedbackOverlay.doneLine(for: "Approve") == "Proposal approved")
     }
 
+    @Test func scheduleWritesSaySchedule() {
+        #expect(WriteFeedbackOverlay.doneLine(for: "Add Schedule") == "Schedule added")
+        #expect(WriteFeedbackOverlay.doneLine(for: "Edit Schedule") == "Schedule saved")
+        #expect(WriteFeedbackOverlay.doneLine(for: "Delete Schedule") == "Schedule deleted")
+    }
+
     @Test func undoStaysAvailableAfterManyLaterActions() async {
         // The first action's token must stay alive while its menu entry does.
         let c = VaultUndoController(), m = manager()

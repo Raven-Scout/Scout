@@ -10,11 +10,33 @@ import SwiftUI
 /// (issue #16). Wrapping the label in `.contentShape(Rectangle())` makes the
 /// whole frame hittable. The press-dim matches `.plain`'s feedback so this is a
 /// faithful swap.
+///
+/// It also draws the keyboard focus ring (C7): custom-styled buttons get no
+/// system focus indicator, so with Keyboard navigation on, Tab moved focus
+/// through the app's chips, segments and toggles invisibly.
 struct PlainHitButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        PlainHitButtonBody(configuration: configuration)
+    }
+}
+
+private struct PlainHitButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    /// Inside a button style this is the button's own focus.
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
         configuration.label
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.75 : 1)
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
+                        .padding(-2)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 }
 

@@ -48,6 +48,7 @@ struct ScoutApp: App {
             CommandGroup(after: .appInfo) {        // app menu ▸ Check for Updates… (under About Scout)
                 CheckForUpdatesView(updates: updates)
             }
+            GoCommands(appState: appState)         // Go ▸ each page, ⌘1–⌘9
             CommandGroup(replacing: .help) {       // Help ▸ docs, doctor, logs, diagnostics (audit C11)
                 HelpCommands(vault: appState.scoutDirectory)
             }

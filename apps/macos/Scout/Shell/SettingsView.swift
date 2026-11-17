@@ -63,6 +63,12 @@ struct SettingsView: View {
                         ) {
                             SettingsToggle(isOn: $launchMinimized)
                         }
+                        SettingsRow(
+                            title: "Text size",
+                            help: "Make the app's text larger. Applies to every window right away."
+                        ) {
+                            TextSizePicker()
+                        }
                     }
                 }
 
@@ -77,6 +83,9 @@ struct SettingsView: View {
                         onSetUp: {
                             if appState.beginOnboarding() != nil { showingSetup = true }
                         })
+                    if !appState.engineHealth.state.gatesTabs {
+                        RunProtectionSection(service: appState.runProtection, vault: appState.scoutDirectory)
+                    }
                 }
                 .id(SettingsAnchor.engine)
 
@@ -105,6 +114,7 @@ struct SettingsView: View {
                                 }
                             }
                             .labelsHidden()
+                            .labelledBySettingsRow()
                             .pickerStyle(.menu)
                             .fixedSize()
                         }
@@ -323,5 +333,22 @@ struct SettingsView: View {
 
     private var bundleId: String {
         Bundle.main.bundleIdentifier ?? "com.scout.Scout"
+    }
+}
+
+/// Settings ▸ General ▸ Text size. macOS has no system text size for apps
+/// to follow, so this is Scout's own; see `TextScale`.
+private struct TextSizePicker: View {
+    @Bindable private var scale = TextScale.shared
+
+    var body: some View {
+        Picker("Text size", selection: $scale.size) {
+            ForEach(TextScale.Size.allCases) { Text($0.title).tag($0) }
+        }
+        .labelsHidden()
+        .labelledBySettingsRow()
+        .pickerStyle(.menu)
+        .fixedSize()
+        .accessibilityIdentifier("settings-text-size")
     }
 }

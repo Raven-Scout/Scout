@@ -155,22 +155,25 @@ struct SlotEditForm: View {
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
                 if let err = SlotDraft.validateSlotKey(draft.key) {
-                    Text(err).font(.caption).foregroundStyle(.red)
+                    Text(err).font(DS.sans(10)).foregroundStyle(.red)
                 } else {
                     Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DS.sans(10)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             HStack {
-                Text(DisplayName.slotKey(draft.key)).font(.body.weight(.medium))
-                Text(draft.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(DisplayName.slotKey(draft.key)).font(DS.sans(13, weight: .medium))
+                Text(draft.key).font(DS.mono(10)).foregroundStyle(.secondary)
                     .help("This schedule's key. It can't be changed after the first save.")
                 Spacer()
             }
         }
     }
+
+    private static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                                       "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
 
     @ViewBuilder
     private var timeAndWeekdaysSection: some View {
@@ -182,9 +185,10 @@ struct SlotEditForm: View {
                     .foregroundStyle(DS.Ink.p3)
             TextField("HH:MM", text: $draft.firesAtLocal)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Time")
                 .frame(width: 120)
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
         VStack(alignment: .leading, spacing: 4) {
@@ -214,10 +218,15 @@ struct SlotEditForm: View {
                             .foregroundStyle(isOn ? DS.Paper.base : DS.Ink.p2)
                     }
                     .buttonStyle(.plainHit)
+                    .accessibilityLabel(Self.weekdayNames[day] ?? day)
+                    .accessibilityValue(isOn ? "On" : "Off")
+                    .accessibilityAddTraits(.isToggle)
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Weekdays")
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
     }
@@ -240,7 +249,7 @@ struct SlotEditForm: View {
                 minSegmentWidth: 70
             )
             Text(draft.onMiss.explanation)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -258,7 +267,7 @@ struct SlotEditForm: View {
             }
             .frame(width: 200)
             Text("After this schedule runs, it won't run again for at least this long.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -278,7 +287,7 @@ struct SlotEditForm: View {
                 accessibilityTitle: SlotFieldLabel.model
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -313,7 +322,7 @@ struct SlotEditForm: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -327,7 +336,7 @@ struct SlotEditForm: View {
                 }
                 .frame(width: 200)
                 Text("How late a missed run may still start after the Mac wakes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -381,7 +390,7 @@ struct SlotEditForm: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
-                    .foregroundStyle(DS.Paper.base)
+                    .foregroundStyle(DS.Accent.onFill)
             }
             .buttonStyle(.plainHit)
             .keyboardShortcut(.return, modifiers: [.command])

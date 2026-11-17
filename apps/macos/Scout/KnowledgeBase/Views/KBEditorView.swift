@@ -184,7 +184,7 @@ struct KBEditorView: View {
                     .font(DS.sans(12, weight: .semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isDirty && !isSaving ? .white : DS.Ink.p4)
+            .foregroundStyle(isDirty && !isSaving ? DS.Accent.onFill : DS.Ink.p4)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(isDirty && !isSaving ? DS.Accent.fill : DS.Paper.sunk))
             .disabled(!isDirty || isSaving || isUnreadable)
@@ -196,9 +196,10 @@ struct KBEditorView: View {
                 Divider()
                 Button("Delete…", role: .destructive) { showDeleteConfirm = true }
             } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(DS.Ink.p3)
+                Image(systemName: "ellipsis.circle").font(DS.sans(15)).foregroundStyle(DS.Ink.p3)
             }
             .menuStyle(.borderlessButton).frame(width: 28)
+            .accessibilityLabel("Note actions")
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
     }
@@ -246,7 +247,7 @@ struct KBEditorView: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28)).foregroundStyle(DS.Status.warn)
+                .font(DS.sans(28)).foregroundStyle(DS.Status.warn)
             Text("Couldn't read \(node.name)")
                 .font(DS.serif(17, weight: .medium)).foregroundStyle(DS.Ink.p2)
             Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")
