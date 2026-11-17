@@ -9,6 +9,8 @@ import SwiftUI
 struct ProposalsView: View {
     @EnvironmentObject var docService: ProposalsDocumentService
     @EnvironmentObject var writerBox: ProposalsWriterBox
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     @State private var resolvedExpanded = false
 
@@ -180,11 +182,17 @@ struct ProposalsView: View {
     // MARK: - Actions
 
     private func decide(_ proposal: Proposal, _ decision: ProposalDecision) async throws {
-        try await writerBox.writer.decide(
+        // Show the file as it is now, whether the write worked or not (C10).
+        defer { docService.reload() }
+        let writer = writerBox.writer
+        guard let change = try await writer.decide(
             decision,
             fileURL: proposal.fileURL,
             label: proposal.title
-        )
-        docService.reload()
+        ) else { return }
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await writer.restore(change, direction) },
+            with: undoManager
+        ) { [docService] in docService.reload() }
     }
 }

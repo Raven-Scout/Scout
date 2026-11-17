@@ -9,6 +9,9 @@ struct SchedulesHeader: View {
     let typeCount: Int
     @Binding var viewMode: SchedulesViewMode
     let onAddSlot: () -> Void
+    /// False until the schedule has loaded: adding a slot to a page that
+    /// failed to load would save a file holding only that slot.
+    var canAddSlot: Bool = true
 
     @State private var now: Date = Date()
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -68,5 +71,7 @@ struct SchedulesHeader: View {
             .foregroundStyle(DS.Paper.base)
         }
         .buttonStyle(.plainHit)
+        .disabled(!canAddSlot)
+        .opacity(canAddSlot ? 1 : 0.4)
     }
 }

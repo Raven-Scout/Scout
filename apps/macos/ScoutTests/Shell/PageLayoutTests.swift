@@ -58,6 +58,7 @@ struct PageLayoutTests {
         return AnyView(view
             .environmentObject(state)
             .environmentObject(state.proposalsDocumentService)
+            .environmentObject(state.vaultUndo)
             .environmentObject(vault.updates))
     }
 

@@ -8,6 +8,8 @@ enum ProposalDecision: Sendable, Equatable {
 
     /// Leading status word — what a dreaming run keys on.
     var statusWord: String { self == .approve ? "Approved" : "Rejected" }
+    /// Edit-menu name: "Undo Approve".
+    var actionName: String { self == .approve ? "Approve" : "Decline" }
     /// Verb used in the git commit message.
     var verb: String { self == .approve ? "approve" : "decline" }
 }
@@ -51,8 +53,13 @@ actor ProposalsWriter {
 
     /// Apply a decision to the proposal at `fileURL`. `label` is used only for
     /// the git commit message. Returns after the file is written and the git
-    /// commit (best-effort) completes.
-    func decide(_ decision: ProposalDecision, fileURL: URL, label: String) async throws {
+    /// commit (best-effort) completes, with the file's bytes before and after
+    /// for undo (nil when the status was already exactly this).
+    ///
+    /// Undo restores the previous `status:`; it is refused once a dreaming run
+    /// has acted on the decision and rewritten the file.
+    @discardableResult
+    func decide(_ decision: ProposalDecision, fileURL: URL, label: String) async throws -> VaultChange? {
         let previous = tail
         let task = Task { [scoutDirectory, gitService, now] in
             _ = await previous?.value
@@ -69,6 +76,17 @@ actor ProposalsWriter {
         return try await task.value
     }
 
+    /// Undo or redo a change this writer made, in its serial queue.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
+    }
+
     private static func perform(
         decision: ProposalDecision,
         fileURL: URL,
@@ -76,16 +94,16 @@ actor ProposalsWriter {
         scoutDirectory: URL,
         gitService: GitServiceProtocol?,
         now: @Sendable () -> Date
-    ) async throws {
+    ) async throws -> VaultChange? {
         let stamp = isoDate(now())
         let newStatusValue = "\(decision.statusWord) (\(stamp), via Scout app)"
 
         // Read-modify-write guarded against a concurrent plugin write clobbering
         // the file in our read→write window (issue #48): re-reads and reapplies
         // the status rewrite if the file changes mid-flight.
-        let didWrite: Bool
+        let written: (before: String, after: String)?
         do {
-            didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
+            written = try GuardedFileWrite.applyCapturing(to: fileURL) { text in
                 try rewriteFrontmatterStatus(
                     text: text,
                     newStatusValue: newStatusValue,
@@ -102,13 +120,16 @@ actor ProposalsWriter {
         }
 
         // Nothing to do if the status is already exactly what we'd write.
-        guard didWrite else { return }
+        guard let written else { return nil }
 
         let relativePath = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths(
             [relativePath],
             message: "app: \(decision.verb) proposal \(label)"
         )
+        return VaultChange(actionName: decision.actionName,
+                           before: [.text(fileURL, written.before)],
+                           after: [.text(fileURL, written.after)])
     }
 
     // MARK: - Pure rewrite (unit-tested directly)

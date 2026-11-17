@@ -4,6 +4,8 @@ struct SchedulesView: View {
     @EnvironmentObject var service: ScheduleEditService
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var modelSettings: ModelSettingsService
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     @SceneStorage("schedulesView") private var viewMode: SchedulesViewMode = .table
     @State private var filterMode: SchedulesFilterMode = .all
@@ -72,7 +74,8 @@ struct SchedulesView: View {
                 slotCount: service.slots.count,
                 typeCount: typeCount,
                 viewMode: $viewMode,
-                onAddSlot: addDraftSlot
+                onAddSlot: addDraftSlot,
+                canAddSlot: service.loadState == .loaded
             )
             Divider().background(DS.Rule.hard)
 
@@ -90,18 +93,48 @@ struct SchedulesView: View {
         }
     }
 
+    /// What the master pane shows. A failed load is its own state: showing the
+    /// empty state there would offer "+ Add slot" on a page that doesn't know
+    /// what schedule.yaml holds.
+    enum ContentState: Equatable {
+        case loading
+        case loadFailed(String)
+        case empty
+        case slots
+    }
+
+    static func contentState(
+        isInitialLoading: Bool,
+        loadState: ScheduleLoadState,
+        hasVisibleSlots: Bool,
+        hasNewDraft: Bool
+    ) -> ContentState {
+        if case .failed(let message) = loadState { return .loadFailed(message) }
+        if isInitialLoading || loadState == .notLoaded { return .loading }
+        if !hasVisibleSlots && !hasNewDraft { return .empty }
+        return .slots
+    }
+
     @ViewBuilder
     private var content: some View {
-        if isInitialLoading {
+        switch Self.contentState(
+            isInitialLoading: isInitialLoading,
+            loadState: service.loadState,
+            hasVisibleSlots: !filteredSlots.isEmpty,
+            hasNewDraft: newDraftSlot != nil
+        ) {
+        case .loading:
             VStack {
                 Spacer()
                 ProgressView()
                 Spacer()
             }
             .frame(maxWidth: .infinity)
-        } else if filteredSlots.isEmpty && newDraftSlot == nil {
+        case .loadFailed(let message):
+            loadFailedState(message)
+        case .empty:
             emptyState
-        } else {
+        case .slots:
             switch viewMode {
             case .table:
                 SchedulesMasterTable(
@@ -122,6 +155,34 @@ struct SchedulesView: View {
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func loadFailedState(_ message: String) -> some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 36))
+                .foregroundStyle(DS.Status.err)
+            Text("Couldn't load the schedule")
+                .font(DS.serif(20, weight: .medium))
+                .foregroundStyle(DS.Ink.p2)
+            Text("Scout won't change the schedule until it can read it.")
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p3)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Text(message)
+                .font(DS.mono(11))
+                .foregroundStyle(DS.Ink.p3)
+                .lineLimit(6)
+                .textSelection(.enabled)
+                .frame(maxWidth: 420)
+            Button("Retry") { Task { await reload() } }
+                .buttonStyle(.borderedProminent)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -241,6 +302,7 @@ struct SchedulesView: View {
     // MARK: - Actions
 
     private func addDraftSlot() {
+        guard service.loadState == .loaded else { return }
         guard newDraftSlot == nil else {
             selectedSlotKey = newDraftSlot?.key
             return
@@ -256,13 +318,10 @@ struct SchedulesView: View {
         // Best effort: an engine without `scoutctl model` leaves the settings
         // nil and the model picker hidden. Never blocks the schedule load.
         try? await modelSettings.load()
-        do {
-            try await service.loadAll()
-            isInitialLoading = false
-        } catch {
-            errorMessage = error.localizedDescription
-            isInitialLoading = false
-        }
+        // A failure lands in `service.loadState`, which the master pane
+        // shows as the load-failed state (with Retry) instead of a banner.
+        try? await service.loadAll()
+        isInitialLoading = false
     }
 
     private func handleSave(_ saved: Slot) async {
@@ -276,32 +335,36 @@ struct SchedulesView: View {
     }
 
     private func saveNewDraft(_ slot: Slot) async {
-        var combined = service.slots
-        combined.append(slot)
         do {
-            try await service.save(allSlots: combined)
+            let change = try await service.update(actionName: "Add Slot") { $0 + [slot] }
             newDraftSlot = nil
             selectedSlotKey = slot.key
+            registerUndo(change)
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "add the slot")
         }
     }
 
+    /// Shared write-problem wording (C10) for the error banner.
+    static func problemText(_ error: Error, action: String) -> String {
+        let problem = WriteProblem.from(error, action: action)
+        guard let details = problem.details else { return "\(problem.title). \(problem.message)" }
+        return "\(problem.title). \(problem.message)\n\(details)"
+    }
+
     private func saveExistingSlot(_ saved: Slot, original: Slot) async {
-        var updated = service.slots
-        if let idx = updated.firstIndex(where: { $0.key == original.key }) {
-            updated[idx] = saved
-        }
         do {
-            try await service.save(allSlots: updated)
+            registerUndo(try await service.update(actionName: "Edit Slot") { slots in
+                slots.map { $0.key == original.key ? saved : $0 }
+            })
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "save the slot")
         }
     }
 
@@ -309,14 +372,26 @@ struct SchedulesView: View {
         guard let key = selectedSlotKey,
               let slot = service.slots.first(where: { $0.key == key }) else { return }
         do {
-            try await service.delete(slotKey: slot.key)
+            let change = try await service.delete(slotKey: slot.key)
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
+            registerUndo(change)
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = Self.problemText(error, action: "delete the slot")
         }
+    }
+
+    /// Edit ▸ Undo for a schedule save: restores the schedule file's bytes,
+    /// refused if it changed since (C10). The service reloads either way.
+    private func registerUndo(_ change: VaultChange?) {
+        guard let change else { return }
+        let service = service
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await service.restore(change, direction) },
+            with: undoManager
+        ) {}
     }
 
     private func handleFireNow(_ key: String) async {
