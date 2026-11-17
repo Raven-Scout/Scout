@@ -150,6 +150,17 @@ nonisolated enum DisplayName {
         runStatus(status.rawValue)
     }
 
+    /// The reason half of a skip's name, as a phrase that stands alone:
+    /// `skippedBudget` → "Over budget" (its name is "Skipped: over budget").
+    /// nil for anything that isn't a skip.
+    static func skipReason(_ raw: String) -> String? {
+        let name = runStatus(raw)
+        let prefix = "Skipped: "
+        guard name.hasPrefix(prefix) else { return nil }
+        let reason = name.dropFirst(prefix.count)
+        return reason.prefix(1).uppercased() + reason.dropFirst()
+    }
+
     /// One sentence on why a run ended up in this status, for tooltips and the
     /// problem component. nil for statuses that need no explanation.
     static func runStatusReason(_ raw: String) -> String? {

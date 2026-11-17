@@ -14,6 +14,8 @@ struct SchedulesDetailPane: View {
     /// The model slots without their own run on; nil hides the model picker
     /// (an engine before per-slot models).
     var defaultModel: String? = nil
+    /// Whether the open form has unsaved edits (see `SlotEditForm`).
+    var onDirtyChange: (Bool) -> Void = { _ in }
 
     var body: some View {
         if let slot {
@@ -36,7 +38,8 @@ struct SchedulesDetailPane: View {
                     onDelete: onDelete,
                     onFireNow: onFireNow,
                     onRevertNewDraft: onRevertNewDraft,
-                    defaultModel: defaultModel
+                    defaultModel: defaultModel,
+                    onDirtyChange: onDirtyChange
                 )
                 .id(slot.key)
             }

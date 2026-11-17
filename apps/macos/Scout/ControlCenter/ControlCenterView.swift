@@ -11,6 +11,18 @@ struct ControlCenterView: View {
     @EnvironmentObject var state: AppState
     @State private var dayFilter: Date? = nil
     @State private var detail: DetailPresentation? = nil
+    /// The page's width, for `railBelow(pageWidth:)`.
+    @State private var pageWidth: CGFloat?
+
+    /// Below this page width the rail moves under the main column. Beside it,
+    /// a 320 pt rail left the Now / Today / Next strip about 450 pt at the
+    /// minimum window, which cut each value to a few letters (UI audit C6).
+    static let railBesideFrom: CGFloat = 1000
+
+    nonisolated static func railBelow(pageWidth: CGFloat?) -> Bool {
+        guard let pageWidth else { return false }
+        return pageWidth < railBesideFrom
+    }
 
     /// How the right-side detail panel is being shown — collapsed (alongside
     /// the rail), side (alongside the primary column), or full (overlays the
@@ -65,16 +77,27 @@ struct ControlCenterView: View {
                 PowerStateBanner(service: state.powerStateService)
                 ConnectorAlertBanner()
                 header
-                HStack(alignment: .top, spacing: 28) {
-                    primaryColumn
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    // The side run-detail is rendered inside primaryColumn next
-                    // to the Sessions list (issue #54) so it tracks that section
-                    // rather than anchoring to the top of the whole column. The
-                    // rail therefore shows whenever a side detail isn't open.
-                    if !isShowingSideDetail {
-                        rail
-                            .frame(width: 320)
+                if Self.railBelow(pageWidth: pageWidth) {
+                    VStack(alignment: .leading, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The side run-detail is rendered inside primaryColumn next
+                        // to the Sessions list (issue #54) so it tracks that section
+                        // rather than anchoring to the top of the whole column. The
+                        // rail therefore shows whenever a side detail isn't open.
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(width: 320)
+                        }
                     }
                 }
             }
@@ -85,6 +108,7 @@ struct ControlCenterView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(DS.Paper.base)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
     }
 
     // MARK: - Detail panels
@@ -240,10 +264,31 @@ struct RepoStateRailCard: View {
         VStack(alignment: .leading, spacing: 6) {
             RailCardHeader(title: "Repo state")
             row("path",     Self.displayPath(state.scoutDirectory, home: FileManager.default.homeDirectoryForCurrentUser), DS.Ink.p1)
-            row("branch",   "main",     DS.Ink.p1)
-            row("obsidian", "mirrored", DS.Status.ok)
+            // Read from the vault's own .git/HEAD; no row when there is no
+            // repository. (The hard-coded "branch main" and "obsidian
+            // mirrored" rows were placeholders: card C3.)
+            if let branch = Self.currentBranch(vault: state.scoutDirectory) {
+                row("branch", branch, DS.Ink.p1)
+            }
         }
         .editorialCard(padding: 16)
+    }
+
+    /// The vault repository's checked-out branch, from `.git/HEAD`: the
+    /// branch name, or a short commit id when HEAD is detached; nil without
+    /// a readable repository. No `git` process, so it's cheap on every render.
+    nonisolated static func currentBranch(vault: URL) -> String? {
+        let head = vault.appendingPathComponent(".git/HEAD")
+        guard let raw = try? String(contentsOf: head, encoding: .utf8) else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("ref: ") {
+            let ref = String(text.dropFirst("ref: ".count))
+            let name = ref.hasPrefix("refs/heads/") ? String(ref.dropFirst("refs/heads/".count)) : ref
+            return name.isEmpty ? nil : name
+        }
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        guard text.count >= 7, text.unicodeScalars.allSatisfy(hex.contains) else { return nil }
+        return "detached at \(text.prefix(7))"
     }
 
     /// The vault path as the card shows it: `~`-abbreviated when it lives
@@ -454,15 +499,21 @@ struct SignalsRailCard: View {
     }
 }
 
+/// Only shortcuts that exist on this page (bound in `ControlCenterView`'s
+/// background buttons), plus the system Settings one. The card used to list
+/// ⌘1, ⌘2, ⌘R, ⌘K and ⌘↵, none of which were bound (card C3). Add a row
+/// here only together with its `.keyboardShortcut`.
 struct KeyboardRailCard: View {
+    static let shortcuts: [(keys: String, label: String)] = [
+        ("⌘.", "Close run details"),
+        ("⇧⌘F", "Expand run details"),
+        ("⌘,", "Settings"),
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             RailCardHeader(title: "Keyboard")
-            kb("⌘1", "Control Center")
-            kb("⌘2", "Action Items")
-            kb("⌘R", "Run briefing now")
-            kb("⌘K", "Quick find")
-            kb("⌘↵", "Mark done (on task)")
+            ForEach(Self.shortcuts, id: \.keys) { kb($0.keys, $0.label) }
         }
         .editorialCard(padding: 16)
     }

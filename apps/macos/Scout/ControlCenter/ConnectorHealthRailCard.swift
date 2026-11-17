@@ -90,6 +90,10 @@ struct ConnectorHealthRailCard: View {
             Text(label(for: key))
                 .font(DS.mono(11.5))
                 .foregroundStyle(DS.Ink.p2)
+                // A long connector name stays on one line instead of making
+                // the row many lines tall; the full key is in the tooltip.
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(width: 80, alignment: .leading)
                 .help(key)
             ForEach(visibleSessions, id: \.id) { session in

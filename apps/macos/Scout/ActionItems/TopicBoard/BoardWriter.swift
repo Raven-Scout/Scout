@@ -46,6 +46,27 @@ enum BoardWriteOp: Sendable, Equatable {
         return text
     }
 
+    /// Edit-menu name: "Undo Dismiss Entry".
+    var actionName: String {
+        switch self {
+        case .renameTopic: "Rename Topic"
+        case .dismiss: "Dismiss Entry"
+        }
+    }
+
+    /// Whether a before/after line change is this op's own. Dismiss appends
+    /// exactly one line holding the key. A rename may also prune lines for
+    /// topics that no longer exist, so any change to `topic-names.md` is
+    /// accepted: only the app's `rename-topic` writes that file, never a run.
+    func isOwnChange(_ delta: LineDelta) -> Bool {
+        switch self {
+        case .dismiss(let key):
+            delta == LineDelta(removed: 0, added: 1) && delta.addedLines.contains { $0.contains(key) }
+        case .renameTopic:
+            true
+        }
+    }
+
     var commitMessage: String {
         switch self {
         case .renameTopic(let tag, let name): name.isEmpty ? "action-items: clear topic name #\(tag)" : "action-items: rename topic #\(tag)"
@@ -85,11 +106,33 @@ actor BoardWriter {
         self.git = git
     }
 
-    func submit(_ op: BoardWriteOp) async throws {
+    /// What a write left for undo.
+    struct Result: Sendable {
+        /// nil when nothing changed, the file couldn't be read, or the change
+        /// wasn't only this op's (see `undoUnavailable`).
+        var change: VaultChange?
+        /// Set when the write changed the file but has no undo, saying why.
+        var undoUnavailable: UndoUnavailable? = nil
+    }
+
+    /// Run `op`, and return how the touched file changed, for undo.
+    @discardableResult
+    func submit(_ op: BoardWriteOp) async throws -> Result {
         let previous = tail
         let task = Task { [self] in
             _ = await previous?.value
-            try await perform(op)
+            return try await perform(op)
+        }
+        tail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    /// Undo or redo a change this writer made, in its serial queue.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [git, scoutDirectory] in
+            _ = await previous?.value
+            try await change.apply(direction, git: git, repo: scoutDirectory)
         }
         tail = Task { _ = try? await task.value }
         try await task.value
@@ -111,18 +154,32 @@ actor BoardWriter {
         return supportsWrites
     }
 
-    private func perform(_ op: BoardWriteOp) async throws {
-        try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
+    private func perform(_ op: BoardWriteOp) async throws -> Result {
         let file = actionItemsDirectory.appendingPathComponent(op.fileName)
+        let before = try? FileSnapshot.capture(file)
+        try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
+        // Read "after" as soon as scoutctl exits, before the commit, and keep
+        // it only if the change is this op's own (see `isOwnChange`).
+        let after = try? FileSnapshot.capture(file)
+        let captured = before.flatMap { before in
+            after.flatMap { VaultChange(actionName: op.actionName, before: [before], after: [$0]) }
+        }
+        let own = captured.flatMap { change in
+            change.files.allSatisfy { !$0.before.exists || op.isOwnChange($0.lineDelta) } ? change : nil
+        }
+        let unavailable: UndoUnavailable? = (before == nil || after == nil) ? .unreadable
+            : (captured != nil && own == nil) ? .mixedEdit : nil
+        let result = Result(change: own, undoUnavailable: unavailable)
         guard let path = Self.relativePath(of: file, in: scoutDirectory) else {
             Self.log.debug("Not committing \(file.path, privacy: .public): outside \(self.scoutDirectory.path, privacy: .public)")
-            return
+            return result
         }
         do {
             try await git?.commitPaths([path], message: op.commitMessage)
         } catch {
             Self.log.debug("Commit of \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
+        return result
     }
 
     private func run(_ arguments: [String]) async throws {

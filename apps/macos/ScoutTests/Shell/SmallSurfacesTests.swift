@@ -61,6 +61,14 @@ struct StaleScheduleErrorTests {
         #expect(error.loadedAt == loaded)
         #expect(error.modifiedAt == modified)
     }
+
+    @Test("a schedule removed outside the app says so, without the file name")
+    func describesRemoval() throws {
+        let text = try #require(StaleScheduleError(loadedAt: Date(), modifiedAt: nil).errorDescription)
+        #expect(text.contains("removed outside the app"))
+        #expect(text.contains("Reload"))
+        #expect(!text.contains("schedule.yaml"))
+    }
 }
 
 @Suite("ItemStatus display + parsing edges")

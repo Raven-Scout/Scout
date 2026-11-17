@@ -75,6 +75,21 @@ struct DisplayNameTests {
         }
     }
 
+    @Test("a skip's reason is the second half of its status name, so both read the same")
+    func skipReasonMatchesStatusName() throws {
+        for s in RunStatus.allCases {
+            guard let reason = s.skipReason else {
+                #expect(!s.displayName.hasPrefix("Skipped"), "\(s) needs a skipReason")
+                continue
+            }
+            #expect(s.displayName == "Skipped: " + reason.prefix(1).lowercased() + reason.dropFirst(), "\(s)")
+        }
+        #expect(RunStatus.skippedBudget.skipReason == "Over budget")
+        #expect(RunStatus.skippedGates.skipReason == "Privacy checks not confirmed")
+        #expect(DisplayName.skipReason("skipped_lock") == "Another run was going")
+        #expect(DisplayName.skipReason("failed") == nil)
+    }
+
     @Test("run-ledger outcomes share the app's wording", arguments: [
         ("ok", "Finished"),
         ("failed", "Failed"),
@@ -377,7 +392,8 @@ struct PlainLanguageSurfaceTests {
             "scoutctl schedule init", "Dreaming-generated SKILL.md", "single-fire-per-tick",
             "Removes this slot from schedule.yaml", "No upcoming runs returned by scoutctl",
             "Text(run.status.rawValue)", "Text(policy.rawValue", "type.rawValue.capitalized",
-            "latest.status.rawValue", "next evening run", "Connector roster fallback warning", "Budget limit reached", "type /mcp in a Claude Code session), then wait",
+            "latest.status.rawValue", "next evening run", "Connector roster fallback warning", "Budget limit reached",
+            "Another session was running", "Privacy checks didn't load", "type /mcp in a Claude Code session), then wait",
         ]
         let files = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         var hits: [String] = []

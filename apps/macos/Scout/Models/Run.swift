@@ -22,13 +22,12 @@ enum RunSource: String, Codable, Sendable {
 
 /// Run outcome classification consumed by the Control Center.
 ///
-/// Exhaustive switches: `RunRow.iconName`. All other consumers
-/// (`RunRow.iconColor`, `RunRow.statusColor`, `NotificationService.verb`,
-/// `AppState.recomputeMenuStatus`) fall through `default` branches to
-/// muted/idle/generic treatment — intentional for statuses that should
-/// de-emphasize in the UI (`.orphaned`, `.skippedBudget`,
-/// `.skippedConcurrency`). When adding a new case, audit those consumers
-/// to decide whether `default` is still correct.
+/// Exhaustive switches: `RunRow.iconName`, `RunStatus.skipReason`,
+/// `ScoutStatus.derive` and `RunNotificationPolicy`. Other consumers
+/// (`RunRow.iconColor`, `RunRow.statusColor`) fall through `default`
+/// branches to muted treatment — intentional for statuses that should
+/// de-emphasize in the UI (`.orphaned` and the skips). When adding a new
+/// case, audit those consumers to decide whether `default` is still correct.
 enum RunStatus: String, Codable, Sendable, CaseIterable {
     case scheduled
     case running
@@ -39,6 +38,34 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case skippedBudget
     case skippedConcurrency
     case rateLimited
+    /// The runner skipped the run on purpose. One case per run-ledger
+    /// outcome (`skipped_gates`, `skipped_sandbox`, …), so the ledger
+    /// (card C8) maps onto these directly. Until then `RunSkipLine` reads
+    /// them from the log.
+    case skippedGates
+    case skippedSandbox
+    case skippedRuntime
+    case skippedLease
+    case skippedRedundant
+}
+
+extension RunStatus {
+    /// The runner decided not to run this session. A skip is a finished
+    /// run, never a running or orphaned one.
+    var isSkip: Bool { skipReason != nil }
+
+    /// Why a skipped run didn't run, in the owner's words ("Over budget");
+    /// nil for every status that isn't a skip. The words come from
+    /// `DisplayName.skipReason`, so they match the run's status name
+    /// ("Skipped: over budget") everywhere.
+    var skipReason: String? {
+        switch self {
+        case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox,
+             .skippedRuntime, .skippedLease, .skippedRedundant:
+            return DisplayName.skipReason(rawValue)
+        case .scheduled, .running, .success, .failure, .timeout, .orphaned, .rateLimited: return nil
+        }
+    }
 }
 
 // `RunType.displayName` and `RunStatus.displayName` live in

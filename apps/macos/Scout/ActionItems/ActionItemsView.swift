@@ -6,6 +6,8 @@ struct ActionItemsView: View {
     @EnvironmentObject var writerBox: ActionItemsWriterBox
     @EnvironmentObject var envCheck: ActionItemsEnvironmentState
     @EnvironmentObject var displayProfile: DisplayProfileService
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
@@ -41,29 +43,35 @@ struct ActionItemsView: View {
             if !envCheck.result.ok {
                 environmentBanner
             }
+            // The view switch, View menu and Select keep their size; the
+            // filters take what is left and step down into menus to fit it
+            // (`FilterChipsView`), so nothing is pushed off either edge.
             HStack(spacing: 10) {
                 if viewMode == .topics {
                     Spacer(minLength: 0)
                 } else {
                     FilterChipsView(filter: $filter)
                 }
-                EditorialSegmentedControl(
-                    selection: $displayProfile.currentView,
-                    options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
-                )
-                if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
-                    ActionItemsDisplayMenu(mode: viewMode)
-                }
-                if viewMode == .list, case .loaded = docService.state {
-                    Button {
-                        toggleSelectionMode()
-                    } label: {
-                        Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
-                            .font(DS.sans(11.5, weight: .medium))
+                HStack(spacing: 10) {
+                    EditorialSegmentedControl(
+                        selection: $displayProfile.currentView,
+                        options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
+                    )
+                    if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
+                        ActionItemsDisplayMenu(mode: viewMode)
                     }
-                    .buttonStyle(.borderless)
-                    .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    if viewMode == .list, case .loaded = docService.state {
+                        Button {
+                            toggleSelectionMode()
+                        } label: {
+                            Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
+                                .font(DS.sans(11.5, weight: .medium))
+                        }
+                        .buttonStyle(.borderless)
+                        .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    }
                 }
+                .fixedSize()
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
@@ -503,18 +511,44 @@ struct ActionItemsView: View {
     // MARK: - Actions
 
     private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
+        let writer = writerBox.writer
+        let date = displayedDate
         do {
-            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate)
+            let result = try await writer.submit(op, displayedDate: date, shownDigest: docService.shownDigest)
             await docService.reparseCurrent()
             if case .reopen(let subject, let shortPrefix) = op {
                 revealReopened(subject: subject, shortPrefix: shortPrefix)
             }
+            if let step = Self.undoStep(for: op, result: result, writer: writer, date: date) {
+                vaultUndo.register(step, with: undoManager) { [docService] in
+                    await docService.reparseCurrent()
+                }
+            } else if let why = result.undoUnavailable {
+                vaultUndo.noteNotUndoable(op.actionName, why)
+            }
         } catch let err as ActionItemsWriterError {
+            // Whatever happened, show what's in the file now (C10).
+            await docService.reparseCurrent()
             if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {
                 await MainActor.run { setToast("Environment problem — check python3 install.") }
             }
             throw err
         }
+    }
+
+    /// How a completed write is undone: the engine's inverse when the op has
+    /// one (mark done ↔ reopen, by `[#TAG]`), otherwise restoring the day
+    /// file's bytes. nil when the write changed nothing.
+    static func undoStep(for op: WriteOp, result: WriteResult, writer: ActionItemsWriter, date: Date) -> UndoStep? {
+        if let inverse = op.inverse {
+            return UndoStep(
+                actionName: op.actionName,
+                undo: { _ = try await writer.submit(inverse, displayedDate: date) },
+                redo: { _ = try await writer.submit(op, displayedDate: date) }
+            )
+        }
+        guard let change = result.change else { return nil }
+        return .restoring(change) { change, direction in try await writer.restore(change, direction) }
     }
 
     private func setToast(_ text: String) {
