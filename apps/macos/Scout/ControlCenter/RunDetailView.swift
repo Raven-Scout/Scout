@@ -64,7 +64,7 @@ struct RunDetailView: View {
                 Text(run.displayName).font(DS.sans(17)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
                     Text("Started by you")
-                        .font(.caption.monospaced())
+                        .font(DS.mono(10))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
@@ -98,7 +98,7 @@ struct RunDetailView: View {
         HStack(spacing: 5) {
             Circle().fill(statusColor).frame(width: 6, height: 6)
             Text(run.status.displayName)
-                .font(.caption)
+                .font(DS.sans(10))
                 .foregroundStyle(statusColor)
         }
     }

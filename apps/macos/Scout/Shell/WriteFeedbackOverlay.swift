@@ -62,7 +62,7 @@ struct WriteFeedbackOverlay: View {
                 .foregroundStyle(DS.Accent.ink)
                 .help("Undo (⌘Z)")
             Button { controller.dismissLatest() } label: {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
@@ -153,7 +153,7 @@ struct WriteProblemBanner: View {
             }
             Spacer(minLength: 0)
             Button(action: onDismiss) {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)

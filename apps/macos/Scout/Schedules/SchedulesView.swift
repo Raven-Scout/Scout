@@ -188,7 +188,7 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Status.err)
             Text("Couldn't load the schedule")
                 .font(DS.serif(20, weight: .medium))

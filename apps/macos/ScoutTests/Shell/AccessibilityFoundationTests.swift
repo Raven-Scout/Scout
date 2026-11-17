@@ -84,6 +84,8 @@ struct AccessibilityFoundationTests {
         #expect(keys.allSatisfy { "123456789".contains($0) })
         #expect(SidebarItem.controlCenter.goShortcutKey == "1")
         #expect(SidebarItem.settings.goShortcutKey == "9")
+        // Health (C8) came after the nine digits were given out: menu item only.
+        #expect(SidebarItem.health.goShortcutKey == nil)
         // In sidebar order, so ⌘-numbers count down the list.
         #expect(keys == keys.sorted())
     }

@@ -31,7 +31,7 @@ struct FeedbackTab: View {
                         .foregroundStyle(.secondary)
                 } else if isUnreadable {
                     Text("Couldn't read the saved note")
-                        .font(.caption)
+                        .font(DS.sans(10))
                         .foregroundStyle(.red)
                 } else if let err = saveError {
                     Text("Error: \(err)")

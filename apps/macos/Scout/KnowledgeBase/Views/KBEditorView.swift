@@ -247,7 +247,7 @@ struct KBEditorView: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28)).foregroundStyle(DS.Status.warn)
+                .font(DS.sans(28)).foregroundStyle(DS.Status.warn)
             Text("Couldn't read \(node.name)")
                 .font(DS.serif(17, weight: .medium)).foregroundStyle(DS.Ink.p2)
             Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")

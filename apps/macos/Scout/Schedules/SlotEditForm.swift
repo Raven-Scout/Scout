@@ -158,14 +158,14 @@ struct SlotEditForm: View {
                     Text(err).font(DS.sans(10)).foregroundStyle(.red)
                 } else {
                     Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DS.sans(10)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             HStack {
-                Text(DisplayName.slotKey(draft.key)).font(.body.weight(.medium))
-                Text(draft.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(DisplayName.slotKey(draft.key)).font(DS.sans(13, weight: .medium))
+                Text(draft.key).font(DS.mono(10)).foregroundStyle(.secondary)
                     .help("This schedule's key. It can't be changed after the first save.")
                 Spacer()
             }
@@ -249,7 +249,7 @@ struct SlotEditForm: View {
                 minSegmentWidth: 70
             )
             Text(draft.onMiss.explanation)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -267,7 +267,7 @@ struct SlotEditForm: View {
             }
             .frame(width: 200)
             Text("After this schedule runs, it won't run again for at least this long.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -287,7 +287,7 @@ struct SlotEditForm: View {
                 accessibilityTitle: SlotFieldLabel.model
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -322,7 +322,7 @@ struct SlotEditForm: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -336,7 +336,7 @@ struct SlotEditForm: View {
                 }
                 .frame(width: 200)
                 Text("How late a missed run may still start after the Mac wakes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
