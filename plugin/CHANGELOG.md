@@ -23,6 +23,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - Before, a line in the run log that merely mentioned a limit, a lock or a connection reset could be quoted, and the log also holds the session's own output, which can quote vault notes.
   - The home directory in a quoted line is written as `~`.
   - In `scoutctl runs --json`, a finding's `log` is vault-relative (`.scout-logs/<name>`), and no finding text carries an absolute vault or home path.
+- **A slot's `agent_runtime` survives a schedule save in the app** (`engine/scout/cli.py`). `scoutctl schedule list --json` and `schedule show` now include `agent_runtime` (null when the slot inherits), and `schedule show` also gains the `runtime` field `list` already had. The app rewrites `.scout-state/schedule.yaml` from the list, so a field missing there was dropped from every slot on the next in-app save. `schedule.snapshot.json` is unchanged.
 
 ## [0.18.15] - 2026-11-16
 
