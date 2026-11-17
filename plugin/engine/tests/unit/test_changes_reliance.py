@@ -159,3 +159,52 @@ def test_stop_hook_records_reliance_and_survives_failure(vault, home, tmp_path, 
 
     monkeypatch.setattr("scout.changes.reliance.record_reliance", boom)
     assert session_tokens.run(stdin=io.StringIO(body)) is not None
+
+
+def _rows(home: Path) -> list[dict]:
+    path = owner_dir({"HOME": str(home)}) / "engagement.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_repeated_stops_count_each_surface_once(vault, home):
+    t = transcript(cwd=vault, tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})])
+    env = {"HOME": str(home)}
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 0
+    assert len(_rows(home)) == 2
+
+
+def test_later_turn_writes_only_the_new_surface(vault, home):
+    env = {"HOME": str(home)}
+    t = transcript(cwd=vault, tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})])
+    record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW)
+    t = transcript(
+        cwd=vault,
+        tool_uses=[
+            ("Read", {"file_path": str(vault / "knowledge-base/people.md")}),
+            ("Bash", {"command": "scoutctl status"}),
+        ],
+    )
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 1
+    assert [r["surface"] for r in _rows(home)][-1] == "scoutctl"
+
+
+def test_corrupt_marker_is_treated_as_empty(vault, home):
+    env = {"HOME": str(home)}
+    marker = owner_dir(env) / "reliance-seen.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{not json")
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
+    assert json.loads(marker.read_text())["schema"] == 1
+
+
+def test_stale_marker_entries_are_pruned(vault, home):
+    env = {"HOME": str(home)}
+    marker = owner_dir(env) / "reliance-seen.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    old = {"surfaces": ["kb"], "at": "2026-11-01T00:00:00+00:00"}
+    marker.write_text(json.dumps({"schema": 1, "sessions": {"oldsession0000000": old}}))
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW)
+    assert "oldsession0000000" not in json.loads(marker.read_text())["sessions"]
