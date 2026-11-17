@@ -89,15 +89,18 @@ class Prepared:
         return STATUS_EXIT[self.status]
 
 
-def prepare(
+def precheck(
     vault: Path | None,
     env: Mapping[str, str] | None = None,
     *,
     available: Callable[[], bool] = sbx.available,
-    self_test: Callable[[str], str | None] = sbx.self_test,
     platform: str | None = None,
-) -> Prepared:
-    """Decide the run's sandbox status and, when it's ``enforced``, build and self-test the profile."""
+) -> Prepared | None:
+    """The status when it's decided without building anything (``off``, ``unavailable``, ``conflict``), else None.
+
+    Reads the switch and the Claude settings files only: no subprocess, no temp files. None means the profile has to
+    be built and self-tested to tell ``enforced`` from ``failed`` (:func:`prepare`).
+    """
     import sys
 
     env = os.environ if env is None else env
@@ -110,6 +113,22 @@ def prepare(
         return Prepared("unavailable", why)
     if sbx.claude_sandbox_enabled(vault, env):
         return Prepared("conflict", "Claude Code's own Bash sandbox is on (sandbox.enabled), and the two can't nest")
+    return None
+
+
+def prepare(
+    vault: Path | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    available: Callable[[], bool] = sbx.available,
+    self_test: Callable[[str], str | None] = sbx.self_test,
+    platform: str | None = None,
+) -> Prepared:
+    """Decide the run's sandbox status and, when it's ``enforced``, build and self-test the profile."""
+    env = os.environ if env is None else env
+    decided = precheck(vault, env, available=available, platform=platform)
+    if decided is not None:
+        return decided
     try:
         text = sbx.build_profile(vault, env)
     except sbx.ProfileError as e:
