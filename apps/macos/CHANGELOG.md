@@ -14,6 +14,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 - **The Keyboard card lists only real shortcuts** (`Scout/ControlCenter/ControlCenterView.swift`): ⌘. (close run details), ⇧⌘F (expand run details) and ⌘, (Settings). ⌘1, ⌘2, ⌘R, ⌘K and ⌘↵ were listed but never bound.
 - **The notification settings now work, and clicking a notification opens the run** (`Scout/Services/NotificationService.swift`, `Scout/AppDelegate.swift`, `Scout/Shell/SettingsView.swift`). "Notify on failed runs" and "Notify on rate-limit" were saved but never read. Failed, timed-out and unfinished runs, and runs skipped because Scout couldn't run them safely, now follow the first switch; usage limits follow the second. Routine skips (budget, lock, lease) no longer notify. A run that fails or is skipped before the app sees it running now notifies too; runs already on disk at launch don't. Notifications read "Research was skipped / Couldn't protect this run" instead of "Scout — research state changed", and clicking one opens that run in the Control Center.
 
+## [0.18.15] - 2026-11-16
+
 ## [0.18.14] - 2026-11-16
 
 ### Fixed

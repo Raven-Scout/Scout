@@ -12,8 +12,10 @@ Silently ensure git is ready. Run every time without commentary:
 
 ```bash
 cd {{SCOUT_DIR}}
-git config user.email "{{USER_EMAIL}}"
-git config user.name "{{INSTANCE_NAME}} Bot"
+if [ "${SCOUT_SANDBOX_STATUS:-}" != enforced ]; then
+  git config user.email "{{USER_EMAIL}}"
+  git config user.name "{{INSTANCE_NAME}} Bot"
+fi
 ```
 
 Do not mention git setup in your output unless something goes wrong.
@@ -27,6 +29,10 @@ Git is a core part of the {{INSTANCE_NAME}} system — every change is committed
 - `scripts/scoutctl kb delta --since 8h` — understand what happened today
 
 The commit history is as valuable as the files themselves. When verifying KB claims or understanding what was already audited, check git before querying connectors.
+
+### Changing the vault's git
+
+Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`: it prints `committed <sha>` (exit 6: queued for after the session, no SHA yet). In a scheduled run git reads history but can't change the repository: to move or delete, `mv`/`rm` and pass every path to the helper; to restore, `git show HEAD:<path> > <path>`; to untrack, list it in `.gitignore`, move it aside, commit its path, move it back.
 
 ### Vault Git-Delta Narration (consolidation/briefing — mandatory before composing)
 
