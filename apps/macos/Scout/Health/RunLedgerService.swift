@@ -18,6 +18,11 @@ final class RunLedgerService: ObservableObject {
 
     @Published private(set) var state: State = .loading
     @Published private(set) var lastChecked: Date?
+    /// When each run-health finding id was first seen, among the findings in
+    /// the latest read. The Control Center banner holds wake-sensitive
+    /// findings until they have persisted (`RunOutcomeDisplay.bannerGrace`).
+    /// A finding that clears is forgotten; a read that fails keeps the record.
+    @Published private(set) var firstSeen: [String: Date] = [:]
 
     /// How far back the panel looks.
     static let window = "14d"
@@ -71,8 +76,21 @@ final class RunLedgerService: ObservableObject {
             return
         }
         guard mine == generation else { return }
-        lastChecked = clock.now()
-        state = Self.state(for: result)
+        let now = clock.now()
+        lastChecked = now
+        let next = Self.state(for: result)
+        if case .loaded(let ledger) = next {
+            firstSeen = Self.firstSeen(firstSeen, health: ledger.health, now: now)
+        }
+        state = next
+    }
+
+    /// Pure: `old` carried forward to one read's findings. Ids still present
+    /// keep their first-seen time, new ids get `now`, cleared ids go.
+    nonisolated static func firstSeen(_ old: [String: Date], health: RunHealth?, now: Date) -> [String: Date] {
+        var out: [String: Date] = [:]
+        for finding in health?.findings ?? [] { out[finding.id] = old[finding.id] ?? now }
+        return out
     }
 
     /// Pure: what one `scoutctl runs --json` result means for the panel.

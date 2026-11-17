@@ -13,6 +13,8 @@ struct SchedulesMasterTable: View {
     let slots: [Slot]
     let newDraftSlot: Slot?
     @Binding var selectedSlotKey: String?
+    /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
+    var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
     var body: some View {
         GeometryReader { geo in
@@ -76,7 +78,8 @@ struct SchedulesMasterTable: View {
         // A button, not a tap gesture, so rows take keyboard focus and
         // VoiceOver reads each one as a selectable button.
         Button { selectedSlotKey = slot.key } label: {
-            SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth)
+            SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth,
+                         warnings: warnings[slot.key] ?? [])
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)

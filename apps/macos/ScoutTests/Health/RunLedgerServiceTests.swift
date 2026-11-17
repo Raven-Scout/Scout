@@ -4,7 +4,7 @@ import Testing
 
 /// Records each call and returns a canned result (or throws).
 private final class LedgerRecordingRunner: ProcessRunner, @unchecked Sendable {
-    let result: ProcessResult?
+    var result: ProcessResult?
     private(set) var calls: [[String]] = []
     init(result: ProcessResult?) { self.result = result }
     func run(executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?) async throws -> ProcessResult {
@@ -32,6 +32,26 @@ struct RunLedgerServiceTests {
         #expect(svc.ledger?.runs.count == 14)
         #expect(svc.needsAttention)
         #expect(svc.lastChecked != nil)
+        // Each finding's first-seen time is the read's time, and survives a re-read.
+        let ids = Set(svc.health?.findings.map(\.id) ?? [])
+        #expect(!ids.isEmpty && Set(svc.firstSeen.keys) == ids)
+        let first = svc.firstSeen
+        await svc.refresh()
+        #expect(svc.firstSeen == first)
+    }
+
+    /// A read that fails keeps the first-seen record, so a transient engine
+    /// error doesn't restart the banner's wait.
+    @Test func aFailedReadKeepsFirstSeen() async throws {
+        let runner = LedgerRecordingRunner(result: ProcessResult(exitCode: 0, stdout: try RunLedgerContractTests.fixtureData(), stderr: Data()))
+        let svc = service(runner)
+        await svc.refresh()
+        let first = svc.firstSeen
+        #expect(!first.isEmpty)
+        runner.result = nil
+        await svc.refresh()
+        guard case .failed = svc.state else { Issue.record("got \(svc.state)"); return }
+        #expect(svc.firstSeen == first)
     }
 
     @Test func anOlderEngineIsUnsupportedNotBroken() async {
