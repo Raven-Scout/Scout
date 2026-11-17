@@ -300,6 +300,9 @@ final class ScheduleEditService: ObservableObject {
             if let model = slot.model {
                 out += "    model: \(yamlScalar(model))\n"
             }
+            if let agentRuntime = slot.agentRuntime {
+                out += "    agent_runtime: \(yamlScalar(agentRuntime))\n"
+            }
         }
         return out
     }

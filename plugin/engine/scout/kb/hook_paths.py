@@ -34,7 +34,8 @@ Protected (each with the form name a deny and the audit row use):
 - ``ssh config``: ``~/.ssh`` (its config and keys decide what ``git push`` over ssh runs after a run; the OS
   sandbox lets ssh itself add to ``known_hosts``);
 - ``Scout's secrets``: ``~/.scout-secrets`` and ``$SCOUT_SECRETS_DIR`` (also read-gated in runs: Read, Grep, Glob,
-  and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS`);
+  and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS` when the run has no send-only
+  broker);
 - ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json`` and ``.scout-state/delegate-scan/``.
 
 :func:`protected_specs` is the list as built (before resolving and case-folding), for the OS write sandbox
@@ -79,6 +80,9 @@ PROVIDER_CONSENT_NAME = "provider-consent.json"
 # The owner's run limits (scout.agent_runtimes.limits): raising a run's timeout or token ceiling, or turning
 # one off, is the owner's alone, so a run can't loosen its own or the next run's.
 RUN_LIMITS_NAME = "run-limits.json"
+# The run brokers' owner folder, in ~/.local/state/scout/ (scout.sandbox.broker): the Telegram limits, the hourly
+# send count and the drain lock.
+RUN_BROKERS_NAME = "run-brokers"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
@@ -261,6 +265,8 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     roots.append(state / SANDBOX_SWITCH_NAME)
     roots.append(state / PROVIDER_CONSENT_NAME)
     roots.append(state / RUN_LIMITS_NAME)
+    # The run brokers' limits and counts (Phase 1d): a run that could write them could lift its own send limit.
+    roots.append(state / RUN_BROKERS_NAME)
     return roots
 
 
@@ -545,8 +551,10 @@ def removes_protected(target: str | Path, vault: Path | None, env: Mapping[str, 
     return None
 
 
-# The two secrets a run reads itself (`scoutctl notify telegram`, and the run prompts' Telegram steps).
+# The two secrets a run reads itself (`scoutctl notify telegram`, and the run prompts' Telegram steps), unless its
+# send-only broker runs (scout.sandbox.broker sets SCOUT_RUN_BROKER): then the broker reads them, not the run.
 TELEGRAM_SECRETS = ("telegram-bot-token", "telegram-chat-id")
+BROKER_ENV = "SCOUT_RUN_BROKER"
 
 
 def _secret_roots(env: Mapping[str, str]) -> set[str]:
@@ -556,14 +564,16 @@ def _secret_roots(env: Mapping[str, str]) -> set[str]:
 def secret_read(target: str | Path, env: Mapping[str, str] | None = None) -> str | None:
     """:data:`SECRETS` when reading ``target`` reads one of Scout's secrets, else None.
 
-    The Telegram token and chat id are a run's to read. Both spellings are judged, so a link named like one of
-    them that points at another secret is still a secret.
+    The Telegram token and chat id are a run's to read, unless the run's send-only broker runs (``SCOUT_RUN_BROKER``
+    in the environment Claude Code hands its hooks, which a run can't change). Both spellings are judged, so a link
+    named like one of them that points at another secret is still a secret.
     """
     env = os.environ if env is None else env
     roots = _secret_roots(env)
+    readable = () if env.get(BROKER_ENV) else TELEGRAM_SECRETS
     for key in (canon(target, env), spelled(target, env)):
         for root in roots:
-            if _under(key, root) and key[len(root) :].lstrip("/") not in TELEGRAM_SECRETS:
+            if _under(key, root) and key[len(root) :].lstrip("/") not in readable:
                 return SECRETS
     return None
 
@@ -591,6 +601,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     "engine.json",
     "provider-consent.json",
     "run-limits.json",
+    RUN_BROKERS_NAME,
     "hooks.json",
     "pyvenv.cfg",
     ".scout-secrets",

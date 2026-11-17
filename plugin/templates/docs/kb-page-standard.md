@@ -183,7 +183,7 @@ fits.
 2. Move the durable knowledge into topic notes in `projects/<name>/knowledge/` (cited, at most
    10 KB each) and the decisions into the decisions note. An old `decision-log.md` merges into it.
    Meetings, docs, PRs and decision threads go in source notes. Sort every other loose file in the
-   folder into `documents/`, `research/` or `archive/` (or out of the folder) with `git mv`: an old
+   folder into `documents/`, `research/` or `archive/` (or out of the folder) with `mv`: an old
    `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --fixed
    'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
    commit with `scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only

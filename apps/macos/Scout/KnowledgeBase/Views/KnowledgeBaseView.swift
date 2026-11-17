@@ -22,6 +22,9 @@ struct KnowledgeBaseView: View {
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
+    /// A rename that moved the note but couldn't commit it. Shown here, not in
+    /// the editor: the editor is replaced when the note reopens at its new path.
+    @State private var renameProblem: String? = nil
     /// Width of the Links/Graph panel — drag its left edge to resize. Persisted.
     @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
 
@@ -78,6 +81,11 @@ struct KnowledgeBaseView: View {
         )) {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+        .alert("Renamed, but not committed", isPresented: Binding(
+            get: { renameProblem != nil }, set: { if !$0 { renameProblem = nil } }
+        )) {
+            Button("OK", role: .cancel) { renameProblem = nil }
+        } message: { Text(renameProblem ?? "") }
     }
 
     private var divider: some View { Rectangle().fill(DS.Rule.soft).frame(width: 0.5) }
@@ -208,6 +216,7 @@ struct KnowledgeBaseView: View {
                 onRenamed: { url in
                     selectedPath = KnowledgeBaseService.relativePath(of: url, in: service.scoutDirectory)
                 },
+                onRenameProblem: { renameProblem = $0 },
                 onOverview: { selectedPath = nil },
                 onMoved: { from, to in
                     // Follow an undone or redone rename only if the note is

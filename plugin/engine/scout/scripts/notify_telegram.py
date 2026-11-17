@@ -790,6 +790,78 @@ def send(
 # ----- CLI entry -----------------------------------------------------------
 
 
+def cli_send(
+    *,
+    tier: str,
+    text: str,
+    parse_mode: str,
+    dry_run: bool,
+    allow_duplicate: bool,
+    echo_out: Callable[[str], None],
+    echo_err: Callable[[str], None],
+) -> int:
+    """``scoutctl notify telegram``'s send and its exit codes: the CLI calls it, and so does the run's send-only
+    broker (scout.sandbox.broker), so a run sees the same output and codes either way.
+
+    0 sent (``id=<ulid>`` first on stderr, the Event JSON on stdout), 1 a bad request, 2 HTTP failed,
+    3 duplicate, 4 outbound blocked, 10 not set up.
+    """
+    from dataclasses import asdict
+
+    try:
+        ev = send(
+            tier=tier,
+            body=text,
+            parse_mode=parse_mode,
+            dry_run=dry_run,
+            allow_duplicate=allow_duplicate,
+            receipt=lambda event_id: echo_err(f"id={event_id}"),
+        )
+    except DuplicateSendError as e:
+        # Receipt first (the earlier send's id), so a caller filtering
+        # stderr still finds it; then the refusal and how to override.
+        echo_err(f"id={e.original_id}")
+        echo_err(
+            f"scoutctl notify telegram: refused — byte-identical message sent at {e.sent_at} "
+            f"(id {e.original_id}); pass --allow-duplicate to send it again"
+        )
+        return DuplicateSendError.exit_code
+    except OutboundBlockedError as e:
+        echo_err(f"scoutctl notify telegram: {e}")
+        return OutboundBlockedError.exit_code
+    except ConfigError as e:
+        # The runner relies on exit 10 to know secrets are missing.
+        echo_err(f"scoutctl notify telegram: {e}")
+        return ConfigError.exit_code
+    except ValueError as e:
+        echo_err(f"scoutctl notify telegram: {e}")
+        return 1
+    except requests.HTTPError as e:
+        # ``str(HTTPError)`` includes the request URL, and the Telegram
+        # URL embeds the bot token in its path
+        # (``/bot<token>/sendMessage``). On a 401 (revoked token) or
+        # any 4xx/5xx the raw token would dump to stderr — the worst
+        # leak path because it's exactly what operators debug live.
+        # Rebuild the message from status_code + reason instead of
+        # ``str(e)`` so the URL never appears.
+        status = getattr(e.response, "status_code", "?")
+        reason = getattr(e.response, "reason", "Unknown")
+        echo_err(f"scoutctl notify telegram: HTTP {status} {reason} (token redacted in URL)")
+        return 2
+    except requests.RequestException as e:
+        # Non-HTTP failures during a live send: timeout, DNS, connection
+        # refused, SSL. ``str()`` of a ConnectionError DOES include the
+        # request path (``Max retries exceeded with url: /bot<token>/…``).
+        # send() scrubs it; redact again here so this line can never
+        # carry the token.
+        echo_err(f"scoutctl notify telegram: HTTP error: {redact_secrets(str(e))}")
+        return 2
+    # Dry-run preamble (the [dry-run] lines) goes through stderr inside
+    # send(), so this stdout is always pure JSON for tests and scripts.
+    echo_out(json.dumps(asdict(ev), indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Direct-call entry point (rarely used; the Typer CLI is the real path).
 

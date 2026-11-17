@@ -78,6 +78,42 @@ final class SlotTests: XCTestCase {
         XCTAssertFalse(draft.isDirty(against: slot))
     }
 
+    func test_decode_reads_agent_runtime_null_and_absent() throws {
+        func decode(_ extra: String) throws -> Slot {
+            let json = """
+            {"key": "s", "type": "briefing", "runner": "run-scout.sh",
+             "fires_at_local": "08:00", "weekdays": ["Mon"], "missed_window_hours": 4,
+             "on_miss": "fire", "cooldown_minutes": 60, "runtime": "local"\(extra)}
+            """.data(using: .utf8)!
+            return try JSONDecoder().decode(Slot.self, from: json)
+        }
+        XCTAssertEqual(try decode(#", "agent_runtime": "claude-code""#).agentRuntime, "claude-code")
+        XCTAssertNil(try decode(#", "agent_runtime": null"#).agentRuntime)
+        // Engines before the C2 fix don't emit the key at all.
+        XCTAssertNil(try decode("").agentRuntime)
+    }
+
+    func test_draft_round_trip_keeps_agent_runtime() {
+        let slot = Slot(key: "morning-briefing", type: .briefing, runner: "run-scout.sh",
+                        firesAtLocal: "08:00", weekdays: ["Mon"], missedWindowHours: 4,
+                        onMiss: .fire, cooldownMinutes: 60, agentRuntime: "claude-code")
+        var draft = SlotDraft(from: slot)
+        XCTAssertFalse(draft.isDirty(against: slot))
+        draft.cooldownMinutes = 120
+        XCTAssertEqual(draft.toSlot().agentRuntime, "claude-code")
+    }
+
+    func test_agent_runtime_display_name() {
+        func slot(_ runtime: String?) -> Slot {
+            Slot(key: "s", type: .briefing, runner: "run-scout.sh", firesAtLocal: "08:00",
+                 weekdays: ["Mon"], missedWindowHours: 4, onMiss: .fire, cooldownMinutes: 60,
+                 agentRuntime: runtime)
+        }
+        XCTAssertEqual(slot("claude-code").agentRuntimeDisplayName, "Claude Code")
+        XCTAssertEqual(slot("some-future-agent").agentRuntimeDisplayName, "some-future-agent")
+        XCTAssertNil(slot(nil).agentRuntimeDisplayName)
+    }
+
     func test_round_trip_encode_decode() throws {
         let original = Slot(
             key: "research",
@@ -91,7 +127,8 @@ final class SlotTests: XCTestCase {
             budgetUsd: 5.0,
             tz: "America/New_York",
             runtime: .local,
-            model: "claude-sonnet-5-5"
+            model: "claude-sonnet-5-5",
+            agentRuntime: "claude-code"
         )
         let encoded = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Slot.self, from: encoded)

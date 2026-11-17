@@ -56,6 +56,7 @@ struct SlotEditForm: View {
             if let defaultModel {
                 modelSection(defaultModel: defaultModel)
             }
+            agentSection
             DisclosureGroup("Advanced") { advancedSection }.padding(.top, 8)
             actionBar
         }
@@ -201,6 +202,23 @@ struct SlotEditForm: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Read-only until Phase 2 adds an agent picker. The value round-trips
+    /// through `draft` untouched, so saving never changes it.
+    private var agentSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Agent")
+                .font(DS.sans(11, weight: .medium))
+                .tracking(1)
+                .textCase(.uppercase)
+                .foregroundStyle(DS.Ink.p3)
+            Text(liveSlot.agentRuntimeDisplayName.map { "Runs on \($0)" }
+                 ?? "Runs on Scout's default agent")
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p2)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

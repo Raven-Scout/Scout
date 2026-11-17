@@ -14,6 +14,10 @@ struct KBEditorView: View {
     let onDeleted: () -> Void
     /// Called after a rename — parent re-selects the file at its new URL.
     let onRenamed: (URL) -> Void
+    /// Called when a rename moved the file but couldn't commit it. The parent
+    /// shows it: reopening the note at its new path replaces this view, so an
+    /// alert here would never appear.
+    let onRenameProblem: (String) -> Void
     /// Called when the user clicks the breadcrumb root — parent clears the
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
@@ -455,24 +459,54 @@ struct KBEditorView: View {
 
     private func performRename() {
         let newName = renameText
+        let source = node.url
+        let planned = try? KnowledgeBaseFileWriter.renameDestination(for: source, to: newName)
         Task {
             do {
-                let original = node.url
-                let (dest, change) = try await writer.renameReturningChange(fileURL: original, to: newName)
+                let (dest, change) = try await writer.renameReturningChange(fileURL: source, to: newName)
                 await MainActor.run {
-                    service.drafts.move(from: original, to: dest)
-                    service.reload(); onRenamed(dest); showRename = false
-                    registerRenameUndo(change, from: original, to: dest)
+                    finishRename(from: source, to: dest)
+                    // Undo only when the rename fully succeeded: a rename
+                    // whose commit failed threw before its change was
+                    // captured, so it has nothing safe to restore.
+                    registerRenameUndo(change, from: source, to: dest)
                 }
             } catch {
                 await MainActor.run {
-                    // The move itself succeeded when only the commit failed.
-                    if case KBWriterError.commitFailed = error { service.reload() }
-                    errorMessage = WriteProblem.from(error, action: "change the note").message
-                    showRename = false
+                    switch Self.renameOutcome(after: error, planned: planned) {
+                    case .movedButUncommitted(let moved, let problem):
+                        finishRename(from: source, to: moved)
+                        onRenameProblem(problem)
+                    case .notMoved(let problem):
+                        errorMessage = problem
+                        showRename = false
+                    }
                 }
             }
         }
+    }
+
+    /// What a rename that threw left behind. Only a failed commit means the
+    /// move itself happened; its message then goes to the parent, because
+    /// this view is replaced when the note reopens at its new path.
+    enum RenameOutcome: Equatable {
+        case movedButUncommitted(URL, problem: String)
+        case notMoved(problem: String)
+    }
+
+    static func renameOutcome(after error: Error, planned: URL?) -> RenameOutcome {
+        let problem = KBWriterError.message(for: error)
+        if case KBWriterError.commitFailed = error, let planned {
+            return .movedButUncommitted(planned, problem: problem)
+        }
+        return .notMoved(problem: problem)
+    }
+
+    /// The file now lives at `dest`: carry its unsaved draft over and reopen it
+    /// there, so the edits and the quit prompt follow the file.
+    private func finishRename(from old: URL, to dest: URL) {
+        service.drafts.move(from: old, to: dest)
+        service.reload(); onRenamed(dest); showRename = false
     }
 
     private var renameSheet: some View {
