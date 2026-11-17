@@ -13,9 +13,9 @@ struct StaleScheduleError: Error, LocalizedError {
 
     var errorDescription: String? {
         guard let modifiedAt else {
-            return "schedule.yaml was removed after it was loaded. Reload to bring in changes."
+            return "The schedule was removed outside the app. Reload to see the changes before saving."
         }
-        return "schedule.yaml was modified externally at \(modifiedAt). Reload to bring in changes."
+        return "The schedule changed outside the app at \(modifiedAt.formatted(date: .omitted, time: .shortened)). Reload to see the changes before saving."
     }
 }
 

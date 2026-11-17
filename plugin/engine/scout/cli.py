@@ -43,6 +43,18 @@ def version() -> None:
     print(__version__)
 
 
+@app.command("diagnostics")
+def cli_diagnostics(
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON."),
+    no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip the scheduler registration check."),
+) -> None:
+    """A redacted report for a bug report: versions, doctor, sandbox, runtime, recent runs. Never vault content."""
+    from scout import diagnostics
+    from scout import paths as _paths
+
+    typer.echo(diagnostics.main(_paths.data_dir(), as_json=as_json, check_jobs=not no_jobs))
+
+
 manifest_app = typer.Typer(help="Engine capability manifest operations.")
 app.add_typer(manifest_app, name="manifest")
 

@@ -34,6 +34,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -41,7 +42,7 @@ struct SettingsView: View {
                     SettingsCard {
                         SettingsRow(
                             title: "Launch Scout at login",
-                            help: "Start the app automatically so it's watching your Scout instance all day."
+                            help: "Start the app automatically so it's watching your Scout folder all day."
                         ) {
                             SettingsToggle(isOn: $launchAtLogin)
                                 .onChange(of: launchAtLogin) { _, newValue in
@@ -71,11 +72,13 @@ struct SettingsView: View {
                         bundledVersion: appState.engineRelease?.engine.version,
                         isUpdating: appState.isUpgradingEngine,
                         unfinishedSwitch: appState.engineSwitchUnfinished,
+                        vault: appState.scoutDirectory,
                         onUpdate: { Task { await appState.runEngineUpgrade() } },
                         onSetUp: {
                             if appState.beginOnboarding() != nil { showingSetup = true }
                         })
                 }
+                .id(SettingsAnchor.engine)
 
                 section(label: "Action Items") {
                     ActionItemsDisplaySection()
@@ -241,6 +244,14 @@ struct SettingsView: View {
             }.value
             detectedClaudePath = detected
         }
+        // Help ▸ Engine Settings… (audit C11): open at the Engine section.
+        .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
+            withAnimation { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
+        .onAppear {
+            if HelpActions.takeEngineSettingsRequest() { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        }
+        }
     }
 
     // MARK: - Atoms
@@ -250,7 +261,7 @@ struct SettingsView: View {
             Text("Settings")
                 .font(DS.serif(24, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
-            Text("Preferences for this Scout instance.")
+            Text("How Scout looks and runs on this Mac.")
                 .font(DS.sans(12.5))
                 .foregroundStyle(DS.Ink.p3)
         }

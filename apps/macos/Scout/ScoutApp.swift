@@ -48,6 +48,12 @@ struct ScoutApp: App {
             CommandGroup(after: .appInfo) {        // app menu ▸ Check for Updates… (under About Scout)
                 CheckForUpdatesView(updates: updates)
             }
+            CommandGroup(replacing: .help) {       // Help ▸ docs, doctor, logs, diagnostics (audit C11)
+                HelpCommands(vault: appState.scoutDirectory)
+            }
+            CommandGroup(after: .help) {           // Help ▸ Scout Glossary
+                GlossaryMenuItem()
+            }
         }
         // "Start in menu bar": suppress the window at launch instead of
         // creating it and hiding it a run-loop later (which raced scene
@@ -64,11 +70,33 @@ struct ScoutApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Scout Glossary", id: GlossaryView.windowID) {
+            GlossaryView()
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         Settings {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(updates)
         }
+
+        // Help ▸ Run Doctor… and Help ▸ Export Diagnostics… (audit C11).
+        Window("Scout Doctor", id: HelpWindow.doctor) {
+            DoctorView(health: appState.engineHealth)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
+        .restorationBehavior(.disabled)
+
+        Window("Export Diagnostics", id: HelpWindow.diagnostics) {
+            DiagnosticsExportView()
+                .environmentObject(appState)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
+        .restorationBehavior(.disabled)
     }
 }
 
