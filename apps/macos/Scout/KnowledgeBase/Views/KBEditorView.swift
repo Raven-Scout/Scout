@@ -409,22 +409,31 @@ struct KBEditorView: View {
     /// and recreate it. Redo moves both forward again.
     private func registerRenameUndo(_ change: VaultChange?, from original: URL, to dest: URL) {
         guard let change else { return }
-        let writer = writer, service = service, onMoved = onMoved
         vaultUndo.register(
-            UndoStep(
-                actionName: change.actionName,
-                undo: {
-                    try await writer.restore(change, .undo)
-                    service.drafts.move(from: dest, to: original)
-                    onMoved?(dest, original)
-                },
-                redo: {
-                    try await writer.restore(change, .redo)
-                    service.drafts.move(from: original, to: dest)
-                    onMoved?(original, dest)
-                }),
+            Self.renameUndoStep(change, from: original, to: dest, writer: writer,
+                                drafts: service.drafts, onMoved: onMoved),
             with: undoManager
         ) { [service] in service.reload() }
+    }
+
+    /// The undo step for a rename: the file, its draft and (through
+    /// `onMoved`) the selection move back on undo and forward on redo.
+    static func renameUndoStep(
+        _ change: VaultChange, from original: URL, to dest: URL,
+        writer: KnowledgeBaseFileWriter, drafts: KBDraftStore, onMoved: ((URL, URL) -> Void)?
+    ) -> UndoStep {
+        UndoStep(
+            actionName: change.actionName,
+            undo: {
+                try await writer.restore(change, .undo)
+                drafts.move(from: dest, to: original)
+                onMoved?(dest, original)
+            },
+            redo: {
+                try await writer.restore(change, .redo)
+                drafts.move(from: original, to: dest)
+                onMoved?(original, dest)
+            })
     }
 
     /// The user deleted the file on purpose: drop its draft, and stop the

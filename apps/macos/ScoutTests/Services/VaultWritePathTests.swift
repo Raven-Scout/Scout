@@ -513,6 +513,31 @@ struct KnowledgeBaseWritePathTests {
         #expect(!vault.exists("knowledge-base/projects/renamed.md"))
     }
 
+    @Test @MainActor func renameUndoMovesTheNoteItsDraftAndTheSelectionBack() async throws {
+        let vault = try TempVault()
+        let url = try vault.write(note, "body\n")
+        let w = KnowledgeBaseFileWriter(scoutDirectory: vault.root, gitService: nil)
+        let drafts = KBDraftStore()
+        let (dest, change) = try await w.renameReturningChange(fileURL: url, to: "renamed")
+        #expect(dest == (try KnowledgeBaseFileWriter.renameDestination(for: url, to: "renamed")))
+        // As the editor does after a rename: the draft follows the note.
+        drafts.update(KBDraft(text: "edited\n", originalText: "body\n", baselineContents: "body\n", baselineDate: nil), for: dest)
+        var moves: [(URL, URL)] = []
+        let step = KBEditorView.renameUndoStep(try #require(change), from: url, to: dest, writer: w,
+                                                drafts: drafts, onMoved: { moves.append(($0, $1)) })
+
+        try await step.undo()
+        #expect(vault.read(note) == "body\n")
+        #expect(drafts.draft(for: url)?.text == "edited\n")
+        #expect(drafts.draft(for: dest) == nil)
+        #expect(moves.last.map { [$0.0, $0.1] } == [dest, url])
+
+        try await step.redo()
+        #expect(vault.exists("knowledge-base/projects/renamed.md"))
+        #expect(drafts.draft(for: dest)?.text == "edited\n")
+        #expect(moves.last.map { [$0.0, $0.1] } == [url, dest])
+    }
+
     @Test func deleteOfAMissingNoteFails() async throws {
         let vault = try TempVault()
         let w = KnowledgeBaseFileWriter(scoutDirectory: vault.root, gitService: nil)
