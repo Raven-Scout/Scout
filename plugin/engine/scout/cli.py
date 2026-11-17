@@ -2033,8 +2033,8 @@ def _register_schedule() -> None:
             help=(
                 "Emit a JSON array of full slot records (key/type/runner/"
                 "fires_at_local/weekdays/missed_window_hours/on_miss/"
-                "cooldown_minutes/budget_usd/tz/runtime/model) instead of "
-                "tab-separated lines. Plan 6's ScheduleEditService consumes "
+                "cooldown_minutes/budget_usd/tz/runtime/model/agent_runtime) "
+                "instead of tab-separated lines. Plan 6's ScheduleEditService consumes "
                 "this for the in-app editor."
             ),
         ),
@@ -2063,6 +2063,9 @@ def _register_schedule() -> None:
                     "tz": sched[key].tz,
                     "runtime": sched[key].runtime.value,
                     "model": sched[key].model,
+                    # The app rewrites schedule.yaml from this list, so every Slot
+                    # field must appear here or an in-app save drops it.
+                    "agent_runtime": sched[key].agent_runtime,
                 }
                 for key in sorted(sched.keys())
             ]
@@ -2100,7 +2103,9 @@ def _register_schedule() -> None:
             "cooldown_minutes": slot.cooldown_minutes,
             "budget_usd": slot.budget_usd,
             "tz": slot.tz,
+            "runtime": slot.runtime.value,
             "model": slot.model,
+            "agent_runtime": slot.agent_runtime,
         }
         typer.echo(_json.dumps(record, indent=2))
 
