@@ -230,8 +230,13 @@ final class ScheduleEditService: ObservableObject {
         let change = VaultChange(actionName: actionName, before: [before],
                                  after: [FileSnapshot(url: canonicalSchedulePath, data: Data(body.utf8))])
 
-        // 6. Reload + recapture mtime.
-        try await loadAll()
+        // 6. Reload + recapture mtime. The write has landed by now, so a
+        // failed reload says so instead of passing for a failed write.
+        do {
+            try await loadAll()
+        } catch {
+            throw ScheduleReloadAfterWriteError(change: change, reason: error.localizedDescription)
+        }
         return change
     }
 

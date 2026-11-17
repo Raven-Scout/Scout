@@ -66,6 +66,15 @@ final class SlotDraftStore: ObservableObject {
     /// Drop the draft, e.g. when the user deletes the slot or reverts a new one.
     func discard(for slotKey: String) { drafts[slotKey] = nil }
 
+    /// The new slot keyed `key` is done with (saved or reverted): drop its
+    /// draft and, if it's still the pending one, the pending slot. Called
+    /// directly by the save, so a save that ends after the Schedules page
+    /// closed leaves no ghost new slot behind.
+    func finishNewSlot(key: String) {
+        drafts[key] = nil
+        if pendingNewSlot?.key == key { pendingNewSlot = nil }
+    }
+
     /// Bring the store in line with the schedule as just loaded (`slots`).
     /// A draft the slot now matches is dropped quietly: it was saved, even if
     /// its form closed before the save finished. A draft whose slot is gone
@@ -88,7 +97,8 @@ final class SlotDraftStore: ObservableObject {
             }
         }
         orphans.sort()
-        if !orphans.isEmpty { droppedSlotNames.append(contentsOf: orphans) }
+        let unseen = orphans.filter { !droppedSlotNames.contains($0) }
+        if !unseen.isEmpty { droppedSlotNames.append(contentsOf: unseen) }
         return orphans
     }
 

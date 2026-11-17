@@ -24,7 +24,8 @@ private func makeServiceOnDisk(
     listJSON: String = sampleListJSON,
     validateExitCode: Int32 = 0,
     validateStderr: Data = Data(),
-    drafts: SlotDraftStore? = nil
+    drafts: SlotDraftStore? = nil,
+    reloadJSON: String? = nil
 ) throws -> (ScheduleEditService, QueueProcessRunner, URL) {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("schedule-edit-test-\(UUID().uuidString)")
@@ -57,7 +58,7 @@ private func makeServiceOnDisk(
 
     // Two queued stdouts: one for loadAll(), one for the post-save reload.
     let runner = QueueProcessRunner(
-        stdouts: [listJSON, listJSON],
+        stdouts: [listJSON, reloadJSON ?? listJSON],
         exitCode: 0,
         validateExitCode: validateExitCode,
         validateStderr: validateStderr
@@ -431,5 +432,24 @@ struct ScheduleEditServiceDraftTests {
         }
         #expect(store.entry(for: morning.key)?.draft == draft)
         #expect(store.droppedSlotNames.isEmpty)
+    }
+
+    @Test("a write that lands but can't reload says so, with its change for undo")
+    func reloadFailureAfterWriteIsDistinct() async throws {
+        let (service, _, dir) = try makeServiceOnDisk(reloadJSON: "not json")
+        try await service.loadAll()
+
+        do {
+            try await service.delete(slotKey: "research")
+            Issue.record("expected ScheduleReloadAfterWriteError")
+        } catch let written as ScheduleReloadAfterWriteError {
+            #expect(written.change?.actionName == "Delete Slot")
+        }
+        // The delete is on disk.
+        let onDisk = try String(contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8)
+        #expect(!onDisk.contains("research:"))
+        #expect(SchedulesView.problemText(
+            ScheduleReloadAfterWriteError(change: nil, reason: "bad output"),
+            action: "delete the slot").hasPrefix("Saved, but the page couldn't reload."))
     }
 }

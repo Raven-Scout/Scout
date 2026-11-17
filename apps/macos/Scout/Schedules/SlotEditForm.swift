@@ -28,6 +28,10 @@ struct SlotEditForm: View {
     @State private var isConfirmingTypeChange = false
     @State private var isConfirmingDelete = false
     @State private var isSaving = false
+    /// A delete is in flight: the form is locked, so nothing typed now is
+    /// lost to the delete or overwritten when a failed delete puts the
+    /// set-aside draft back.
+    @State private var isDeleting = false
 
     init(
         liveSlot: Slot,
@@ -91,6 +95,7 @@ struct SlotEditForm: View {
             actionBar
         }
         .padding(20)
+        .disabled(isDeleting)
         .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
         .onChange(of: draft) { _, newDraft in
             // Typing a field back to the file's value settles its conflict.
@@ -382,7 +387,11 @@ struct SlotEditForm: View {
             titleVisibility: .visible,
             actions: {
                 Button("Delete", role: .destructive) {
-                    Task { await onDelete() }
+                    Task {
+                        isDeleting = true
+                        defer { isDeleting = false }
+                        await onDelete()
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             },

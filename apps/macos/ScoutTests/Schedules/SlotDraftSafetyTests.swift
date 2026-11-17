@@ -164,6 +164,36 @@ struct SlotDraftSafetyTests {
         #expect(store.droppedSlotNames.isEmpty)
     }
 
+    @Test("a slot dropped twice is named once")
+    func droppedNamesDeduplicated() {
+        let store = SlotDraftStore()
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        store.reconcile(with: [Self.evening])
+        store.update(editedMorning(), baseline: Self.morning, for: Self.morning.key)
+        store.reconcile(with: [Self.evening])
+        #expect(store.droppedSlotNames == ["morning-briefing"])
+    }
+
+    @Test("a saved new slot is finished in the store: no ghost new slot comes back")
+    func finishNewSlotClearsPending() {
+        let store = SlotDraftStore()
+        let newSlot = SchedulesView.makeNewDraftSlot(key: "new-slot-1")
+        store.pendingNewSlot = newSlot
+        var draft = SlotDraft(from: newSlot)
+        draft.key = "night-review"
+        store.update(draft, baseline: newSlot, for: newSlot.key)
+
+        store.finishNewSlot(key: newSlot.key)
+        #expect(store.pendingNewSlot == nil)
+        #expect(!store.hasUnsavedDrafts)
+
+        // A different pending slot (added after) is left alone.
+        let next = SchedulesView.makeNewDraftSlot(key: "new-slot-2")
+        store.pendingNewSlot = next
+        store.finishNewSlot(key: newSlot.key)
+        #expect(store.pendingNewSlot == next)
+    }
+
     @Test("a saved draft is dropped quietly, not reported as lost")
     func reconcileSavedDraftNotReported() {
         let store = SlotDraftStore()

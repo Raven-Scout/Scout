@@ -18,3 +18,18 @@ struct StaleScheduleError: Error, LocalizedError {
         return "schedule.yaml was modified externally at \(modifiedAt). Reload to bring in changes."
     }
 }
+
+/// Thrown by `ScheduleEditService` when a write landed in schedule.yaml but
+/// the reload after it failed. Unlike every other save error, the change
+/// IS on disk: callers must treat the write as done (register its undo,
+/// don't restore what it replaced, don't offer to write it again).
+nonisolated struct ScheduleReloadAfterWriteError: Error, LocalizedError {
+    /// The write that landed, for undo (nil when it changed no bytes).
+    let change: VaultChange?
+    /// Why the reload failed.
+    let reason: String
+
+    var errorDescription: String? {
+        "The change was saved, but reloading the schedule failed: \(reason)"
+    }
+}

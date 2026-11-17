@@ -65,6 +65,11 @@ struct WriteProblem: Equatable, Identifiable {
                 kind: .stale, title: title,
                 message: "The schedule changed on disk since this page loaded it. Reload to see the current schedule, then make your change again.",
                 details: e.errorDescription, retryable: false)
+        case let e as ScheduleReloadAfterWriteError:
+            return WriteProblem(
+                kind: .failed, title: "Saved, but the page couldn't reload",
+                message: "The change is in the schedule. Scout couldn't read the schedule back afterwards, so this page may be out of date. Retry loading it.",
+                details: e.reason, retryable: false)
         case let e as ScheduleNotLoadedError:
             return WriteProblem(
                 kind: .stale, title: title,
