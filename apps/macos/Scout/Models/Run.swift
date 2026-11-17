@@ -22,13 +22,12 @@ enum RunSource: String, Codable, Sendable {
 
 /// Run outcome classification consumed by the Control Center.
 ///
-/// Exhaustive switches: `RunRow.iconName`. All other consumers
-/// (`RunRow.iconColor`, `RunRow.statusColor`, `NotificationService.verb`,
-/// `AppState.recomputeMenuStatus`) fall through `default` branches to
-/// muted/idle/generic treatment — intentional for statuses that should
-/// de-emphasize in the UI (`.orphaned`, `.skippedBudget`,
-/// `.skippedConcurrency`). When adding a new case, audit those consumers
-/// to decide whether `default` is still correct.
+/// Exhaustive switches: `RunRow.iconName`, `RunStatus.skipReason`,
+/// `ScoutStatus.derive` and `RunNotificationPolicy`. Other consumers
+/// (`RunRow.iconColor`, `RunRow.statusColor`) fall through `default`
+/// branches to muted treatment — intentional for statuses that should
+/// de-emphasize in the UI (`.orphaned` and the skips). When adding a new
+/// case, audit those consumers to decide whether `default` is still correct.
 enum RunStatus: String, Codable, Sendable, CaseIterable {
     case scheduled
     case running
@@ -39,15 +38,36 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case skippedBudget
     case skippedConcurrency
     case rateLimited
-    /// Skips the run ledger names (`run-outcomes.jsonl` → `scoutctl runs --json`):
-    /// the privacy-check probe didn't pass, the write sandbox couldn't be set up,
-    /// the agent runtime was refused, another writer held the repository lease,
-    /// or an earlier run already covered the slot.
+    /// The runner skipped the run on purpose. One case per run-ledger
+    /// outcome (`skipped_gates`, `skipped_sandbox`, …), so the ledger
+    /// (card C8) maps onto these directly (`RunLedgerEntry.runStatus`);
+    /// `RunSkipLine` reads them from the log for runs without a ledger row.
     case skippedGates
     case skippedSandbox
     case skippedRuntime
     case skippedLease
     case skippedRedundant
+}
+
+extension RunStatus {
+    /// The runner decided not to run this session. A skip is a finished
+    /// run, never a running or orphaned one.
+    var isSkip: Bool { skipReason != nil }
+
+    /// Why a skipped run didn't run, in the owner's words; nil for every
+    /// status that isn't a skip.
+    var skipReason: String? {
+        switch self {
+        case .skippedBudget:      return "Budget limit reached"
+        case .skippedConcurrency: return "Another session was running"
+        case .skippedGates:       return "Privacy checks didn't load"
+        case .skippedSandbox:     return "Couldn't protect this run"
+        case .skippedRuntime:     return "Agent wasn't allowed to run"
+        case .skippedLease:       return "Another app was using the vault"
+        case .skippedRedundant:   return "A run had just finished"
+        case .scheduled, .running, .success, .failure, .timeout, .orphaned, .rateLimited: return nil
+        }
+    }
 }
 
 extension RunType {

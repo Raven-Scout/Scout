@@ -1,10 +1,17 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @State private var selection: SidebarItem = .controlCenter
+    @State private var selection: SidebarItem
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
     @EnvironmentObject var updates: UpdateService
+    @Environment(\.openWindow) private var openWindow
+
+    /// `initialSelection` lets the layout tests render the whole window on
+    /// any page; the app always opens on Control Center.
+    init(initialSelection: SidebarItem = .controlCenter) {
+        _selection = State(initialValue: initialSelection)
+    }
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not
@@ -61,6 +68,12 @@ struct MainWindowView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
+        }
+        .onAppear {
+            // So a notification click can reopen this window once it's closed (card C3).
+            if appState.openMainWindow == nil {
+                appState.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            }
         }
         .onChange(of: appState.requestedSidebar) { _, requested in
             guard let requested else { return }

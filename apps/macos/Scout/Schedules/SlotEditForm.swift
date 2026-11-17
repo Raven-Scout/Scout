@@ -14,6 +14,9 @@ struct SlotEditForm: View {
     let onRevertNewDraft: (() -> Void)?
     /// nil hides the model picker: the engine can't run per-slot models.
     let defaultModel: String?
+    /// Told whether the draft differs from `liveSlot`, so the page can refuse
+    /// to close the pane over unsaved edits (UI audit C6).
+    let onDirtyChange: (Bool) -> Void
 
     @State private var draft: SlotDraft
     @State private var isConfirmingTypeChange = false
@@ -27,7 +30,8 @@ struct SlotEditForm: View {
         onDelete: @escaping () async -> Void,
         onFireNow: @escaping (String) async -> Void,
         onRevertNewDraft: (() -> Void)? = nil,
-        defaultModel: String? = nil
+        defaultModel: String? = nil,
+        onDirtyChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -36,6 +40,7 @@ struct SlotEditForm: View {
         self.onFireNow = onFireNow
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
+        self.onDirtyChange = onDirtyChange
         _draft = State(initialValue: SlotDraft(from: liveSlot))
     }
 
@@ -61,6 +66,9 @@ struct SlotEditForm: View {
             actionBar
         }
         .padding(20)
+        .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
+        .onChange(of: draft) { _, newDraft in onDirtyChange(newDraft.isDirty(against: liveSlot)) }
+        .onChange(of: liveSlot) { _, newLive in onDirtyChange(draft.isDirty(against: newLive)) }
     }
 
     // MARK: - Private helpers
@@ -193,10 +201,11 @@ struct SlotEditForm: View {
                 .tracking(1)
                 .textCase(.uppercase)
                 .foregroundStyle(DS.Ink.p3)
-            EditorialSegmentedControl(
+            AdaptiveSegmentedControl(
                 selection: Binding(get: { current }, set: { draft.model = $0.model }),
                 options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
-                minSegmentWidth: 64
+                minSegmentWidth: 64,
+                accessibilityTitle: "Model"
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -251,30 +260,14 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
+                AdaptiveSegmentedControl(
                     selection: $draft.type,
-                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
+                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) },
+                    accessibilityTitle: "Type"
                 )
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Runtime")
-                    .font(DS.sans(11, weight: .medium))
-                    .tracking(1)
-                    .textCase(.uppercase)
-                    .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
-                    selection: $draft.runtime,
-                    options: [
-                        ("Local", SlotRuntime.local),
-                        ("Remote (Plan 7)", SlotRuntime.remote),
-                    ],
-                    minSegmentWidth: 110
-                )
-                .disabled(true)
-                .opacity(0.5)
-                Text("Remote slot execution arrives in Plan 7 (Anthropic routines integration).")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            // No Runtime row: every slot runs locally, so there is nothing to
+            // choose. The disabled "Remote (Plan 7)" placeholder is gone (card C3).
         }
         .padding(.top, 4)
     }

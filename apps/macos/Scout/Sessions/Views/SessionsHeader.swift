@@ -27,37 +27,65 @@ struct SessionsHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sessions")
-                        .font(DS.serif(28, weight: .medium))
-                        .foregroundStyle(DS.Ink.p1)
-                    TimelineView(.periodic(from: .now, by: 10)) { context in
-                        Text(SessionsFormat.freshness(
-                            lastRefreshAt: service.lastRefreshAt,
-                            prFinishedAt: service.prStatus?.finishedAt,
-                            prErrors: service.prStatus?.errors.map(\.message) ?? [],
-                            now: context.date))
-                            .font(DS.sans(12))
-                            .foregroundStyle(DS.Ink.p3)
-                            .help(service.prStatus?.errors.map(\.message).joined(separator: "\n") ?? "")
-                    }
+            // One row when the title, freshness line and controls fit beside
+            // each other; otherwise the controls drop to a second row. Never
+            // squeeze the title: at 1280 pt it wrapped as "Session" / "s", at
+            // 1100 pt it disappeared (UI audit C6).
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    titleBlock(freshnessLines: 1)
+                    Spacer(minLength: 12)
+                    controls(searchWidth: 190)
                 }
-                Spacer()
-                TextField("Search sessions", text: $filter.search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 190)
-                projectMenu
-                optionsMenu
-                EditorialSegmentedControl(
-                    selection: $viewMode,
-                    options: SessionsViewMode.allCases.map { ($0.label, $0) }
-                )
+                VStack(alignment: .leading, spacing: 10) {
+                    titleBlock(freshnessLines: 2)
+                    controls(searchWidth: nil)
+                }
             }
             stateChips
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+    }
+
+    private func titleBlock(freshnessLines: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Sessions")
+                .font(DS.serif(28, weight: .medium))
+                .foregroundStyle(DS.Ink.p1)
+                .lineLimit(1)
+                .fixedSize()
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                Text(SessionsFormat.freshness(
+                    lastRefreshAt: service.lastRefreshAt,
+                    prFinishedAt: service.prStatus?.finishedAt,
+                    prErrors: service.prStatus?.errors.map(\.message) ?? [],
+                    now: context.date))
+                    .font(DS.sans(12))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(freshnessLines)
+                    .truncationMode(.tail)
+                    .help(service.prStatus?.errors.map(\.message).joined(separator: "\n") ?? "")
+            }
+        }
+    }
+
+    /// Search, project and option menus, Board/Table. `searchWidth` nil lets
+    /// the search field take what the row has left (the stacked layout).
+    private func controls(searchWidth: CGFloat?) -> some View {
+        HStack(spacing: 12) {
+            TextField("Search sessions", text: $filter.search)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: searchWidth ?? 100, idealWidth: searchWidth ?? 220,
+                       maxWidth: searchWidth ?? 280)
+            projectMenu
+            optionsMenu
+            EditorialSegmentedControl(
+                selection: $viewMode,
+                options: SessionsViewMode.allCases.map { ($0.label, $0) }
+            )
+            .fixedSize()
+        }
     }
 
     private var projectMenu: some View {
@@ -68,11 +96,22 @@ struct SessionsHeader: View {
                 Button(project.name) { filter.projectKey = project.key }
             }
         } label: {
-            Text(projects.first { $0.key == filter.projectKey }?.name ?? "All projects")
+            Text(Self.menuTitle(projects.first { $0.key == filter.projectKey }?.name ?? "All projects"))
                 .font(DS.sans(12.5))
+                .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .help(projects.first { $0.key == filter.projectKey }?.name ?? "Show sessions from every project")
+    }
+
+    /// A long project name is shortened in the middle, so choosing it can't
+    /// widen the header past the page; the full name is in the tooltip.
+    nonisolated static func menuTitle(_ name: String, limit: Int = 22) -> String {
+        guard name.count > limit, limit > 1 else { return name }
+        let head = (limit - 1) / 2 + (limit - 1) % 2
+        let tail = (limit - 1) / 2
+        return String(name.prefix(head)) + "…" + String(name.suffix(tail))
     }
 
     private var optionsMenu: some View {

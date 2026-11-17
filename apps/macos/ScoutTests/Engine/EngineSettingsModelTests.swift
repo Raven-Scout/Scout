@@ -324,4 +324,48 @@ struct EngineSettingsModelTests {
         #expect(!m.showsRuns)
         #expect(model(runHealth(.green)).showsRuns)
     }
+
+    // MARK: every finding, grouped by severity (card C3)
+
+    @Test func findingGroupsListEveryFindingWorstFirst() {
+        func f(_ id: String, _ sev: String, _ summary: String, log: String? = nil) -> RunHealth.Finding {
+            RunHealth.Finding(id: id, severity: sev, since: nil, summary: summary, fix: id == "a" ? "" : "fix \(id)",
+                              source: "x", detail: id == "b" ? "the run's own line" : nil, log: log)
+        }
+        let rh = runHealth(.red, findings: [
+            f("n", "note", "a note"), f("a", "red", "first red"), f("y", "yellow", "a warning"),
+            f("b", "red", "second red", log: "/tmp/scout-2026-11-16_07-00.log"), f("z", "purple", "a severity from the future"),
+        ])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .red, errors: ["install error"], warnings: ["install warning"], runHealth: rh),
+                                    lastError: nil, bundledVersion: nil)
+        let groups = m.findingGroups
+        #expect(groups.map(\.severity) == [.problem, .warning, .note])
+        #expect(groups[0].items.map(\.summary) == ["install error", "first red", "second red"])
+        #expect(groups[1].items.map(\.summary) == ["install warning", "a warning", "a severity from the future"])
+        #expect(groups[2].items.map(\.summary) == ["a note"])
+        // Every finding, not just the first actionable one.
+        #expect(groups.flatMap(\.items).count == 7)
+        let second = groups[0].items[2]
+        #expect(second.detail == "the run's own line")
+        #expect(second.fix == "fix b")
+        #expect(second.logURL?.lastPathComponent == "scout-2026-11-16_07-00.log")
+        #expect(groups[0].items[1].fix == nil)   // an empty fix is no fix
+        #expect(Set(groups.flatMap(\.items).map(\.id)).count == 7)   // ids stay unique for ForEach
+        #expect(m.findingCountsLabel == "3 problems · 3 warnings · 1 note")
+    }
+
+    @Test func findingGroupsEmptyWhenNothingToShow() {
+        #expect(model(runHealth(.green)).findingGroups.isEmpty)
+        #expect(model(runHealth(.green)).findingCountsLabel == nil)
+        #expect(EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: nil).findingGroups.isEmpty)
+    }
+
+    @Test func greenWithWarningsIsNotPlainHealthy() {
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), lastError: nil, bundledVersion: nil)
+        #expect(m.healthIsOK)
+        #expect(m.healthHasWarnings)
+        #expect(!model(runHealth(.green)).healthHasWarnings)
+    }
 }

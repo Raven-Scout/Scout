@@ -27,6 +27,24 @@ struct KnowledgeBaseView: View {
     @State private var renameProblem: String? = nil
     /// Width of the Links/Graph panel — drag its left edge to resize. Persisted.
     @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
+    /// The page's width, so the Links/Graph panel never squeezes the editor.
+    @State private var pageWidth: CGFloat?
+
+    static let treeWidth: CGFloat = 268
+    static let minEditorWidth: CGFloat = 380
+    static let rightPanelMin: CGFloat = 220
+    static let rightPanelMax: CGFloat = 640
+
+    /// The Links/Graph panel's width: the stored one, narrowed when the page
+    /// can't fit it beside the tree and a `minEditorWidth` editor. At the
+    /// minimum window a wide stored panel left the editor ~310 pt (UI audit C6).
+    nonisolated static func rightPanelWidth(stored: Double, pageWidth: CGFloat?) -> CGFloat {
+        let wanted = min(max(CGFloat(stored), rightPanelMin), rightPanelMax)
+        guard let pageWidth else { return wanted }
+        // Tree, its divider, the resize handle (8) and the editor.
+        let room = pageWidth - treeWidth - 1 - 8 - minEditorWidth
+        return max(rightPanelMin, min(wanted, room))
+    }
 
     private var selectedNode: KBNode? {
         guard let selectedPath else { return nil }
@@ -35,16 +53,24 @@ struct KnowledgeBaseView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            leftPane.frame(width: 268)
+            leftPane.frame(width: Self.treeWidth)
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let node = selectedNode, node.isEditable {
-                PaneResizeHandle(width: $rightPanelWidth, minWidth: 220, maxWidth: 640)
+                // The handle starts a drag from the width on screen, not the
+                // stored one: when the page clamps a wide stored panel, a drag
+                // from the stored width would do nothing until it caught up.
+                PaneResizeHandle(
+                    width: Binding(
+                        get: { Double(Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth)) },
+                        set: { rightPanelWidth = $0 }),
+                    minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
                 KBRightPanel(relPath: node.relativePath, service: service,
                              onNavigate: { navigate(toPath: $0) })
-                    .frame(width: CGFloat(rightPanelWidth))
+                    .frame(width: Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth))
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
         // In-app wikilink navigation for every pane (editor, backlink excerpts,
         // search snippets): resolve against the index, fall back to the default
         // Linear/Obsidian opening when the target isn't a KB note.

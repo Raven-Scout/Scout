@@ -27,10 +27,11 @@ struct RunDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            EditorialSegmentedControl(
+            AdaptiveSegmentedControl(
                 selection: $tab,
                 options: RunDetailTab.allCases.map { ($0.displayName, $0) },
-                minSegmentWidth: 70
+                minSegmentWidth: 70,
+                accessibilityTitle: "Run detail tab"
             )
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
