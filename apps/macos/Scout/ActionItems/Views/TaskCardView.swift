@@ -102,6 +102,10 @@ struct TaskCardView: View {
                 detail
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
+            } else if let err = Self.collapsedError(expanded: expanded, inlineError: inlineError) {
+                inlineErrorLabel(err)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
             }
         }
         .background(
@@ -477,7 +481,7 @@ struct TaskCardView: View {
 
     // Typed properties rather than inline `cond ? nil : { … }` ternaries:
     // Xcode 26.3 (CI) can't type-check those inside the detail VStack.
-    private var editCommentHandler: ((Int, String) async -> Void)? {
+    private var editCommentHandler: ((Int, String) async -> Bool)? {
         guard Self.canComment(task) else { return nil }
         return { index, newText in
             await runOp(.editComment(
@@ -540,7 +544,7 @@ struct TaskCardView: View {
             if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
                     let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                    await runOp(.addComment(
+                    return await runOp(.addComment(
                         subject: task.matchableSubject,
                         shortPrefix: task.shortPrefix,
                         text: text,
@@ -550,11 +554,7 @@ struct TaskCardView: View {
             }
 
             if let err = inlineError {
-                Text(err)
-                    .font(DS.sans(11))
-                    .foregroundStyle(DS.Status.err)
-                    .padding(.top, 2)
-                    .textSelection(.enabled)
+                inlineErrorLabel(err)
             }
         }
     }
@@ -622,16 +622,35 @@ struct TaskCardView: View {
     }
 
     /// Dispatches a write through `onOp` and threads any failure into the
-    /// inline error label.
-    private func runOp(_ op: WriteOp) async {
+    /// inline error label. Returns whether the write landed, so editors can
+    /// keep their text on failure.
+    @discardableResult
+    private func runOp(_ op: WriteOp) async -> Bool {
         do {
             try await onOp(op, task.lineNumber)
             await MainActor.run { inlineError = nil }
+            return true
         } catch let err as ActionItemsWriterError {
             await MainActor.run { inlineError = describe(err) }
         } catch {
             await MainActor.run { inlineError = error.localizedDescription }
         }
+        return false
+    }
+
+    /// The error shown under a collapsed card's header. Quick actions (Done,
+    /// Snooze, Reopen) run from the collapsed header, and the expanded detail
+    /// that normally shows `inlineError` isn't on screen then.
+    static func collapsedError(expanded: Bool, inlineError: String?) -> String? {
+        expanded ? nil : inlineError
+    }
+
+    private func inlineErrorLabel(_ err: String) -> some View {
+        Text(err)
+            .font(DS.sans(11))
+            .foregroundStyle(DS.Status.err)
+            .padding(.top, 2)
+            .textSelection(.enabled)
     }
 
     private func describe(_ err: ActionItemsWriterError) -> String {
