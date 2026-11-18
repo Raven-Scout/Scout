@@ -21,8 +21,10 @@ What each command does:
   entry goes before any broader entry, so first-match-wins never hides it.
 - :func:`plan_unshare` removes people (or everyone) from a folder or note,
   narrower entries inside it included, inserting an exclusion before a broader
-  entry when that is what shares it. Vault only in S1a: Agnes's ``shares/stop``
-  call is slice S1b, so the stop takes effect at the next sync (ruling 18).
+  entry when that is what shares it. ``kb unshare`` first asks the linked Agnes
+  to stop the share at once (slice S1b, :mod:`scout.kb.share_stops`), and
+  ``kb share`` clears such a stop for the people it names; while Agnes has no
+  stop endpoint, the stop takes effect at the next sync (ruling 18).
 - :func:`list_shares` is the effective-shares view: per ``federation_defaults``
   entry (and per note that shares itself in frontmatter), the people, the
   notes shared, and the notes left out as private, local-only, by the ceiling
@@ -64,6 +66,7 @@ from scout.kb.privacy import (
     read_head,
     scope_admits,
 )
+from scout.kb.share_stops import VAULT_NOTE, ClearPlan, StopOutcome
 
 COPY_WARNING = (
     "Once someone's Scout has read a shared note, it can keep what it learned in their own vault. "
@@ -80,8 +83,12 @@ GROUP_OWNER_NOTE = (
 )
 UNSHARE_PENDING = (
     "The stop takes effect in Agnes once you commit scout-config.yaml and then run `scoutctl repo sync`, which "
-    "refuses while this change is uncommitted (an instant stop from the laptop comes with Agnes's shares/stop, "
-    "slice S1b)."
+    "refuses while this change is uncommitted."
+)
+ORG_ENTRY_REFUSAL = (
+    "refused: scout-config.yaml shares {glob} with org, which admits nobody in Agnes (ruling 7), and adding people "
+    "to it would leave it org. Remove it with `scoutctl kb unshare {target} --with org`, or change its scope to "
+    "a list of people by hand, then share again"
 )
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -546,9 +553,14 @@ class SharePlan:
     overlay: Overlay | None = None
     changed: bool = False
     enabling: bool = False
+    clears: ClearPlan | None = None  # the Agnes stops this share clears (None: not asked)
+    stops_note: str | None = None  # why Agnes's stops weren't read
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "agnes_stops": self.clears.to_json()
+            if self.clears is not None
+            else {"available": False, "note": self.stops_note},
             "target": self.target.rel,
             "glob": self.target.glob,
             "folder": self.target.folder,
@@ -601,6 +613,8 @@ class SharePlan:
             out += [f"  {p}  line(s) {', '.join(str(n) for n in ns)}" for p, ns in self.private_links]
         if self.enabling:
             out.append("This turns sharing on for this vault (privacy.federation.enabled: true).")
+        if self.clears is not None:
+            out += self.clears.lines()
         out.append(COPY_WARNING)
         return out
 
@@ -679,6 +693,9 @@ def plan_share(
     warnings += check_people(principals, directory)
 
     entries = overlay.entries
+    for e in entries:
+        if e.scope == "org" and _inside(e.glob, target):
+            raise ShareRefused(ORG_ENTRY_REFUSAL.format(glob=e.glob, target=raw_target))
     same = next((e for e in entries if e.glob == target.glob), None)
     if same is not None:
         same.set_scope(_union(same.scope or "none", principals))
@@ -753,6 +770,7 @@ class UnsharePlan:
     data: dict[str, Any] = field(default_factory=dict)
     overlay: Overlay | None = None
     changed: bool = False
+    agnes: StopOutcome | None = None  # what the linked Agnes stopped at once (None: not asked)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -762,7 +780,8 @@ class UnsharePlan:
             "stopped": [{"path": p, "principals": w} for p, w in self.stopped],
             "still_shared_by_frontmatter": self.still_by_frontmatter,
             "changes_overlay": self.changed,
-            "pending_until_sync": True,
+            "pending_until_sync": self.agnes is None or self.agnes.pending_until_sync,
+            "agnes": self.agnes.to_json() if self.agnes is not None else None,
         }
 
     def lines(self) -> list[str]:
@@ -776,14 +795,20 @@ class UnsharePlan:
                 "(edit those lines to stop them):"
             )
             out += [f"  {p}" for p in self.still_by_frontmatter]
-        out.append(UNSHARE_PENDING)
+        if self.agnes is not None:
+            out += self.agnes.lines()
+        if self.agnes is not None and not self.agnes.pending_until_sync:
+            if self.changed:
+                out.append(VAULT_NOTE)
+        elif self.changed or self.agnes is None:
+            out.append(UNSHARE_PENDING)
         return out
 
 
 def plan_unshare(
     vault: Path, raw_target: str, with_values: Sequence[str], *, directory: Directory | None = None
 ) -> UnsharePlan:
-    """Everything ``kb unshare`` would do in the vault (no ``shares/stop`` call in S1a).
+    """Everything ``kb unshare`` would do in the vault (the Agnes stop is :mod:`scout.kb.share_stops`).
 
     ``directory`` only turns a group's name into its id; offline, give the id.
     """
@@ -922,7 +947,12 @@ def list_shares(vault: Path, policy: Policy | None = None) -> tuple[bool, list[S
     return policy.federation_enabled, rows
 
 
-def shares_lines(enabled: bool, rows: Sequence[ShareRow], names: Mapping[str, str]) -> list[str]:
+def shares_lines(
+    enabled: bool, rows: Sequence[ShareRow], names: Mapping[str, str], stops: Mapping[str, Sequence[Any]] | None = None
+) -> list[str]:
+    """The ``kb shares`` text. ``stops``: each row's open stops in Agnes, by glob (:class:`share_stops.Stop`)."""
+    from scout.kb.share_stops import when
+
     out = [f"Sharing is {'on' if enabled else 'off (privacy.federation.enabled is false)'}."]
     if not rows:
         out.append("Nothing is shared.")
@@ -931,6 +961,8 @@ def shares_lines(enabled: bool, rows: Sequence[ShareRow], names: Mapping[str, st
         who = ", ".join(_display(p, names) for p in row.principals)
         own = ", its own frontmatter" if row.source == "frontmatter" else ""
         out.append(f"{row.glob}  with {who}  ({len(row.shared)} note(s){own})")
+        for stop in (stops or {}).get(row.glob, ()):
+            out.append(f"  STOPPED in Agnes for {stop.who()} since {when(stop.created_at)} (stop {stop.stop_id})")
         for reason, rels in sorted(row.excluded.items()):
             out.append(f"  excluded, {_REASON_TEXT.get(reason, reason)}: {len(rels)}")
             out += [f"    {p}" for p in rels]

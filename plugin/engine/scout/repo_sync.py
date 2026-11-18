@@ -851,6 +851,9 @@ class HostStatus:
     can_create: bool
     clone_url: str
     local_only_paths: tuple[str, ...] = ()
+    # Commits Agnes made on top of the laptop's last push (A8b: a stop's write-back, say). Above 0, sync pulls
+    # before it pushes even if ls-remote says nothing moved. 0 on an Agnes before A8b, which doesn't report it.
+    pending_server_commits: int = 0
 
 
 class Host(Protocol):
@@ -926,11 +929,13 @@ class AgnesHost:
 
     @staticmethod
     def _status(data: Mapping[str, Any]) -> HostStatus:
+        pending = data.get("pending_server_commits")
         return HostStatus(
             exists=bool(data.get("exists")),
             can_create=bool(data.get("can_create")),
             clone_url=str(data.get("clone_url") or ""),
             local_only_paths=tuple(str(p) for p in data.get("local_only_paths") or ()),
+            pending_server_commits=pending if isinstance(pending, int) and not isinstance(pending, bool) else 0,
         )
 
     def status(self) -> HostStatus:
@@ -1752,7 +1757,12 @@ def _sync_under_lease(
     if remote is None:
         raise RepoSyncError("remote_empty", "refused: the repository on Agnes is empty; unlink, then link again")
     replayed_to = state.last_mirror
-    if remote != state.last_mirror:
+    if status.pending_server_commits > 0:
+        # Agnes says it wrote on top of the last push: pull before pushing, whatever ls-remote answered.
+        result.notes.append(
+            f"Agnes had {status.pending_server_commits} commit(s) on top of the last push; pulled them first"
+        )
+    if remote != state.last_mirror or status.pending_server_commits > 0:
         remote = fetch_remote(vault, host, status.clone_url)
         if _rev(vault, state.last_mirror) is None or not _is_ancestor(vault, state.last_mirror, remote):
             raise RepoSyncError(
