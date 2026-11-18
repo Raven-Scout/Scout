@@ -76,6 +76,20 @@ struct SessionsBoardDedupeTests {
         #expect(Set(names.values).count == 3)
     }
 
+    @Test func trailingSlashesDontCountAndTheFallbackNeverShowsTheHomePath() {
+        let names = DisplayName.projectNames(
+            [("/Users/alex/Scout/", "Scout"), ("/Users/alex/code/Scout", "Scout")], home: home + "/")
+        #expect(names["/Users/alex/Scout/"] == "Scout (~/Scout)")
+        #expect(names["/Users/alex/code/Scout"] == "Scout (code/Scout)")
+        // Two spellings of one folder can't be told apart: both show its
+        // whole path, from `~`, never `/Users/…`.
+        let same = DisplayName.projectNames(
+            [("/Users/alex/a/Scout", "Scout"), ("/Users/alex/a/Scout/", "Scout")], home: home)
+        #expect(same["/Users/alex/a/Scout"] == "Scout (~/a/Scout)")
+        #expect(same["/Users/alex/a/Scout/"] == "Scout (~/a/Scout)")
+        #expect(!same.values.contains { $0.contains(home) })
+    }
+
     private func twoScoutLanes() throws -> SessionIndex {
         var second = try #require(try SessionsFixture.object()["sessions"] as? [[String: Any]])
             .first { $0["id"] as? String == "local_W" } ?? [:]

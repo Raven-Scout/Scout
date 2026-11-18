@@ -47,10 +47,8 @@ enum GhosttyLauncher {
     /// The System Events script that opens the tab and types the command.
     /// Pure, so the escaping is unit-tested.
     nonisolated static func makeNewTabScript(cwd: URL, runningCommand: String, delay: Double) -> String {
-        let cwdEscaped = cwd.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let shellLine = "cd \"\(cwdEscaped)\" && \(runningCommand)"
         // Escape for embedding inside an AppleScript string literal.
-        let asEscaped = ClaudeLauncher.appleScriptEscape(shellLine)
+        let asEscaped = ClaudeLauncher.appleScriptEscape(makeShellLine(cwd: cwd, runningCommand: runningCommand))
         return """
         delay \(delay)
         tell application "System Events"
@@ -63,5 +61,12 @@ enum GhosttyLauncher {
           end tell
         end tell
         """
+    }
+
+    /// The line typed into the new tab: `cd` into the folder, single-quoted
+    /// (`$(…)`, backticks, `$VAR` and a trailing `\` stay literal), then the
+    /// command, which the caller builds from fixed text and commit ids.
+    nonisolated static func makeShellLine(cwd: URL, runningCommand: String) -> String {
+        "cd \(ClaudeLauncher.shellQuote(cwd.path)) && \(runningCommand)"
     }
 }

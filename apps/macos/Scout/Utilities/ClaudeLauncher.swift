@@ -279,7 +279,7 @@ enum ClaudeLauncher {
     /// POSIX single-quote a string so it survives as one shell argument,
     /// regardless of spaces or metacharacters. Embedded single quotes are
     /// closed, backslash-escaped, and reopened (`'\''`).
-    static func shellQuote(_ s: String) -> String {
+    nonisolated static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
@@ -316,19 +316,19 @@ enum ClaudeLauncher {
     }
 
     /// The shell command run inside Terminal.app / iTerm2: cd to the working
-    /// dir, print the clipboard-paste hint, then exec claude. Mirrors
-    /// `makeGhosttyScript`'s double-quote escaping.
-    static func makeTerminalShellCommand(
+    /// dir, print the clipboard-paste hint, then exec claude. The folder and
+    /// the claude path are single-quoted (`shellQuote`), as in
+    /// `makeGhosttyScript`: inside double quotes `$(…)`, backticks and `$VAR`
+    /// still expand, so a folder named `proj$(…)` ran that command on Resume.
+    nonisolated static func makeTerminalShellCommand(
         claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
     ) -> String {
-        let cwdEsc = shellDoubleQuoteEscape(cwd)
-        let claudeEsc = shellDoubleQuoteEscape(claudePath)
         let banner = purpose == .actionItem
             ? "Scout: action-item context copied to your clipboard. Paste with Cmd+V."
             : "Scout: resuming a Claude Code session."
-        return "cd \"\(cwdEsc)\" && clear && "
+        return "cd \(shellQuote(cwd)) && clear && "
             + "echo \(shellQuote(banner)) && "
-            + "exec \"\(claudeEsc)\""
+            + "exec \(shellQuote(claudePath))"
             + purpose.arguments.map { " " + shellQuote($0) }.joined()
     }
 
@@ -599,13 +599,9 @@ enum ClaudeLauncher {
         }
     }
 
-    static func makeGhosttyScript(claudePath: String, cwd: URL, purpose: CLIPurpose = .actionItem) -> String {
-        let cwdEsc = cwd.path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let claudeEsc = claudePath
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    /// Single-quoted folder and claude path, for the reason on
+    /// `makeTerminalShellCommand`.
+    nonisolated static func makeGhosttyScript(claudePath: String, cwd: URL, purpose: CLIPurpose = .actionItem) -> String {
         let banner = purpose == .actionItem
             ? """
               echo "Scout: action-item context copied to your clipboard."
@@ -617,11 +613,11 @@ enum ClaudeLauncher {
         // by absolute path rather than relying on PATH lookup.
         return """
         #!/bin/bash
-        cd "\(cwdEsc)" || exit 1
+        cd \(shellQuote(cwd.path)) || exit 1
         clear
         \(banner)
         echo
-        exec "\(claudeEsc)"\(arguments)
+        exec \(shellQuote(claudePath))\(arguments)
         """
     }
 

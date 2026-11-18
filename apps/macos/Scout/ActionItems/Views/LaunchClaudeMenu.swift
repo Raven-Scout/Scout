@@ -42,12 +42,21 @@ struct LaunchClaudeMenu: View {
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+    /// A launch is finding `claude` or opening the terminal; a second click
+    /// meanwhile would open a second one.
+    @State private var isLaunching = false
+    /// A launch macOS refused for a missing permission: shown as an alert
+    /// with a button to the System Settings pane, not as inline text.
+    @State private var permissionFailure: LaunchFailure?
 
     var body: some View {
-        switch style {
-        case .split: split
-        case .icon:  icon
+        Group {
+            switch style {
+            case .split: split
+            case .icon:  icon
+            }
         }
+        .launchFailureAlert("Couldn't open Claude", failure: $permissionFailure)
     }
 
     private var split: some View {
@@ -166,14 +175,7 @@ struct LaunchClaudeMenu: View {
             return
         }
         let config = cliConfig
-        Task {
-            do {
-                try await ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: config)
-                launchError = nil
-            } catch {
-                launchError = error.localizedDescription
-            }
-        }
+        run { try await ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: config) }
     }
 
     private var cliConfig: CLIConfig {
@@ -194,13 +196,29 @@ struct LaunchClaudeMenu: View {
     }
 
     private func launch(_ target: ClaudeLauncher.Target) {
+        guard !isLaunching else { return }
         let text = prompt()
+        run { try await ClaudeLauncher.launch(target: target, prompt: text) }
+    }
+
+    /// One launch at a time. A permission refusal gets the alert with its
+    /// System Settings button; anything else goes to the host's inline text.
+    private func run(_ body: @escaping @MainActor () async throws -> Void) {
+        guard !isLaunching else { return }
+        isLaunching = true
         Task {
+            defer { isLaunching = false }
             do {
-                try await ClaudeLauncher.launch(target: target, prompt: text)
+                try await body()
                 launchError = nil
             } catch {
-                launchError = error.localizedDescription
+                let failure = LaunchFailure(error)
+                if failure.settingsURL != nil {
+                    launchError = nil
+                    permissionFailure = failure
+                } else {
+                    launchError = failure.message
+                }
             }
         }
     }

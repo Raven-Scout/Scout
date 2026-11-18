@@ -274,7 +274,10 @@ nonisolated enum DisplayName {
     /// part of their folder path that differs, home written as `~` —
     /// "Scout (~/Scout)" beside "Scout (code/Scout)". The `(…)` suffix is
     /// the same shape `slotKey` uses for a clashing schedule name. Names
-    /// compare without case. A key that isn't a path is its own suffix.
+    /// compare without case, and paths without trailing slashes. Two keys
+    /// for one folder (`/a/Scout`, `/a/Scout/`) can't be told apart, so
+    /// they show the folder's whole path, home still written as `~`. A key
+    /// that isn't a path is its own suffix.
     static func projectNames(_ projects: [(key: String, name: String)], home: String) -> [String: String] {
         var firstName: [String: String] = [:]
         var keys: [String] = []
@@ -289,21 +292,28 @@ nonisolated enum DisplayName {
                 result[group[0]] = firstName[group[0]]
                 continue
             }
-            let parts = group.map { pathComponents(abbreviatingHome($0, home: home)) }
+            let shown = group.map { abbreviatingHome(trimmingTrailingSlashes($0), home: home) }
+            let parts = shown.map(pathComponents)
             let deepest = parts.map(\.count).max() ?? 1
             var depth = 1
             func trail(_ p: [String]) -> String { p.suffix(depth).joined(separator: "/") }
             while depth < deepest, Set(parts.map(trail)).count < group.count { depth += 1 }
             let unique = Set(parts.map(trail)).count == group.count
-            for (key, p) in zip(group, parts) {
-                result[key] = "\(firstName[key] ?? key) (\(unique ? trail(p) : key))"
+            for (i, key) in group.enumerated() {
+                result[key] = "\(firstName[key] ?? key) (\(unique ? trail(parts[i]) : shown[i]))"
             }
         }
         return result
     }
 
+    private static func trimmingTrailingSlashes(_ path: String) -> String {
+        var trimmed = Substring(path)
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed = trimmed.dropLast() }
+        return String(trimmed)
+    }
+
     private static func abbreviatingHome(_ path: String, home: String) -> String {
-        let home = home.hasSuffix("/") ? String(home.dropLast()) : home
+        let home = trimmingTrailingSlashes(home)
         guard !home.isEmpty else { return path }
         if path == home { return "~" }
         if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }

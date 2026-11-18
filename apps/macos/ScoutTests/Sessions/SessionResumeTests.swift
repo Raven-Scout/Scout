@@ -196,9 +196,8 @@ struct LaunchFailureTests {
         let script = GhosttyLauncher.makeNewTabScript(
             cwd: URL(fileURLWithPath: "/tmp/a \"quoted\" dir"), runningCommand: #"git diff a^..b"#, delay: 0.3)
         #expect(script.hasPrefix("delay 0.3\n"))
-        // Shell-quoted folder, then AppleScript-escaped: the same two passes
-        // the launcher always made.
-        #expect(script.contains(#"keystroke "cd \"/tmp/a \\\"quoted\\\" dir\" && git diff a^..b""#))
+        // Single-quoted for the shell, then AppleScript-escaped.
+        #expect(script.contains(#"keystroke "cd '/tmp/a \"quoted\" dir' && git diff a^..b""#))
         #expect(script.contains(#"tell process "Ghostty""#))
     }
 }
