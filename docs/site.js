@@ -62,7 +62,7 @@
 
   /* ---------- scroll reveal (below the fold only) ---------- */
   if (hasIO && !reduce) {
-    var groups = ['.trio', '.bento', '.layers', '.install-grid', '.faq'];
+    var groups = ['.stages', '.trio', '.bento', '.layers', '.install-grid', '.faq'];
     var singles = '.section-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
     var rv = [];
     groups.forEach(function (g) {
@@ -109,15 +109,22 @@
     each('main > section', function (s) { nio.observe(s); });
   }
 
-  /* ---------- hero: with / without ---------- */
-  var segBtns = d.querySelectorAll('.seg button');
-  each('.seg button', function (b) {
-    b.addEventListener('click', function () {
-      var v = b.getAttribute('data-view');
-      Array.prototype.forEach.call(segBtns, function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
-      each('.hero-vis figure[data-view]', function (f) { f.hidden = f.getAttribute('data-view') !== v; });
-    });
-  });
+  /* ---------- vault: the statement's ending cycles while it's on screen ----------
+     The word is aria-hidden; screen readers get a static "yours" beside it.
+     Under reduced motion it stays on "yours". */
+  (function () {
+    var rot = $('rot'); if (!rot || reduce) return;
+    var words = ['yours', 'on your Mac', 'plain Markdown', 'readable without us', 'one commit per run'];
+    var i = 0, timer = null;
+    function next() {
+      rot.classList.add('out');
+      setTimeout(function () { i = (i + 1) % words.length; rot.textContent = words[i]; rot.classList.remove('out'); }, 250);
+    }
+    function start() { if (!timer) timer = setInterval(next, 2600); }
+    function stop() { clearInterval(timer); timer = null; }
+    if (!hasIO) { start(); return; }
+    new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) start(); else stop(); }); }).observe(rot);
+  })();
 
   /* ---------- hero: the briefing builds itself ---------- */
   (function () {

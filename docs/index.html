@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scout: your work, read and cross-checked every day</title>
-<meta name="description" content="Scout is an open-source background agent for Claude Code. It reads your work tools on a schedule, cross-checks them, and leaves you a short, sourced list of what needs you, plus a knowledge base of plain Markdown on your Mac.">
+<title>Scout: your work, as files you own</title>
+<meta name="description" content="Scout is an open-source background agent for Claude Code. It reads your work tools on a schedule, cross-checks them, and leaves you a short, sourced list of what needs you. Everything it learns goes into plain Markdown on your Mac, one git commit per run.">
 <meta name="theme-color" content="#f3f4f1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1112" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Scout: your work, read and cross-checked every day">
+<meta property="og:title" content="Scout: your work, as files you own">
 <meta property="og:description" content="An open-source background agent for Claude Code. A short, sourced list of what needs you each morning, and a knowledge base in a folder you own.">
 <meta property="og:url" content="https://raven-scout.github.io/Scout/">
 <meta property="og:image" content="https://raven-scout.github.io/Scout/assets/og.png">
@@ -61,13 +61,9 @@
   <section class="hero" aria-labelledby="hero-title">
     <div class="wrap hero-grid">
       <div>
-        <div class="badge-row">
-          <span class="chip"><span class="dot" aria-hidden="true"></span>Free and open source</span>
-          <span class="chip">For Claude Code</span>
-          <span class="chip">macOS app</span>
-        </div>
-        <h1 id="hero-title">Start every day knowing what actually needs you.</h1>
-        <p class="lede">Scout is a background agent for Claude Code. Through the day it reads your Slack, email, calendar, tickets and meeting notes, checks them against each other, and leaves you a short list of what needs you, with its sources. It also keeps a knowledge base of plain Markdown files in a folder on your Mac.</p>
+        <p class="kicker">Scout · for Claude Code</p>
+        <h1 id="hero-title">Your work, as files you own.</h1>
+        <p class="lede">Scout is a background agent for Claude Code. Through the day it reads your Slack, email, calendar, tickets and meeting notes, checks them against each other, and leaves you a short list of what needs you, with its sources. Everything it learns goes into plain Markdown in <code>~/Scout</code> on your Mac, one git commit per run.</p>
         <div class="ctas">
           <a class="btn btn-primary" href="https://github.com/Raven-Scout/Scout/releases/latest">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg>
@@ -75,15 +71,16 @@
           </a>
           <a class="btn btn-secondary" href="#install">Install from the terminal</a>
         </div>
-        <p class="fineprint">Runs on your own Claude Code sign-in, with no separate API key. Needs a paid Claude plan. The app needs macOS 15.7 or later.</p>
+        <ul class="proof" aria-label="At a glance">
+          <li><b>Free</b> and MIT licensed</li>
+          <li><b>No</b> Scout account, server or analytics</li>
+          <li><b>Runs</b> on your own Claude Code sign-in</li>
+        </ul>
+        <p class="fineprint">No separate API key. Needs a paid Claude plan. The app needs macOS 15.7 or later.</p>
       </div>
 
       <div class="hero-vis">
-      <div class="seg" role="group" aria-label="Compare the same morning">
-        <button type="button" data-view="with" aria-pressed="true">With Scout</button>
-        <button type="button" data-view="without" aria-pressed="false">Without Scout</button>
-      </div>
-      <figure class="mock-fig" data-view="with">
+      <figure class="mock-fig">
         <div class="mock desk" id="desk">
           <div class="menubar" aria-hidden="true">
             <span>Finder</span><span>File</span><span>Edit</span><span class="sp"></span>
@@ -117,23 +114,6 @@
         </div>
         <figcaption>Live demo: the menu-bar panel and a morning briefing. Tap “How it knows”. Names and items are invented.</figcaption>
       </figure>
-      <figure class="mock-fig" data-view="without" hidden>
-        <div class="mock chaos">
-          <p class="chaos-cap">The same morning without Scout. What matters is in here somewhere.</p>
-          <div class="apps" aria-hidden="true">
-            <span class="app"><i>Slack</i><b>47</b></span>
-            <span class="app"><i>Gmail</i><b>23</b></span>
-            <span class="app"><i>Linear</i><b>12</b></span>
-            <span class="app"><i>Calendar</i><b>5</b></span>
-            <span class="app"><i>GitHub</i><b>8</b></span>
-            <span class="app"><i>Granola</i><b>3</b></span>
-            <span class="app"><i>Drive</i><b>9</b></span>
-            <span class="app"><i>WhatsApp</i><b>6</b></span>
-          </div>
-          <p class="chaos-cap2">113 unread, and you reconcile them by hand, hoping nothing slipped.</p>
-        </div>
-        <figcaption>Illustration. Counts are invented.</figcaption>
-      </figure>
       </div>
     </div>
   </section>
@@ -142,10 +122,20 @@
   <section class="section-alt" aria-labelledby="problem-title">
     <div class="wrap">
       <div class="section-head">
-        <p class="kicker">Who it's for</p>
-        <h2 id="problem-title">For people whose work lives in a dozen tools, and who are tired of stitching it together by hand.</h2>
-        <p>Leads, engineers, founders and anyone who starts the morning with Slack, an inbox, a calendar, a tracker and last week's meeting notes, and has to work out which of it matters today.</p>
+        <p class="kicker">The problem</p>
+        <h2 id="problem-title">Every morning you rebuild the same picture by hand.</h2>
+        <p>Leads, engineers, founders and anyone who starts the day with Slack, an inbox, a calendar, a tracker and last week's meeting notes, and has to work out which of it matters today.</p>
       </div>
+      <figure class="mock-fig stages-fig">
+        <ol class="stages">
+          <li class="stage"><span class="k">Open</span><b>8</b><span class="d">tools with something new</span><span class="apps-list" aria-hidden="true">Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp</span></li>
+          <li class="stage"><span class="k">Read</span><b>113</b><span class="d">unread messages, threads and notifications</span></li>
+          <li class="stage"><span class="k">Reconcile</span><b>3</b><span class="d">tools that disagree about the same thing: the ticket, the pull request and the thread</span></li>
+          <li class="stage"><span class="k">Repeat</span><b>4×</b><span class="d">more before evening, as new replies arrive</span></li>
+        </ol>
+        <p class="tally">→ And nothing you worked out this morning is kept for tomorrow.</p>
+        <figcaption>Illustration of one morning without Scout. Counts are invented.</figcaption>
+      </figure>
       <div class="trio">
         <div class="card">
           <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
@@ -161,6 +151,25 @@
           <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.4-3.4 8-8 9-4.6-1-8-4.6-8-9V6l8-3Z"/><path d="M12 9v4M12 16.5v.01"/></svg></div>
           <h3>Summaries sound sure</h3>
           <p>An AI summary reads the same whether three sources agree or one person said it once. You can't tell what to trust.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WHAT THE VAULT IS ============ -->
+  <section id="vault" class="vault" aria-labelledby="vault-title">
+    <div class="wrap">
+      <p class="kicker">What the vault is</p>
+      <h2 id="vault-title">Your vault is <span class="rot" id="rot" aria-hidden="true">yours</span><span class="sr-only">yours</span>.</h2>
+      <div class="vault-grid">
+        <ul class="defs" aria-label="Examples of what goes in it">
+          <li>Who owns the billing fix: you or Sam.</li>
+          <li>That the design review moved to 15:00, and that only the calendar says so.</li>
+          <li>That PROJ-1234 is marked done while its pull request is still open.</li>
+        </ul>
+        <div class="vault-text">
+          <p>Scout writes facts like these into linked Markdown notes on your Mac: people, projects, decisions and today's list. That's the vault. Open it in any editor or in Obsidian, search it, share only the folders you choose, and undo any change, because every run is a git commit.</p>
+          <p class="vault-path"><code>~/Scout</code> · one folder · one git repository</p>
         </div>
       </div>
     </div>
@@ -665,13 +674,14 @@
     <input id="cmdk-input" type="text" placeholder="Jump to…" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list">
     <ul id="cmdk-list" role="listbox" aria-label="Sections">
       <li role="option" id="ck-0" data-href="#main">Top</li>
-      <li role="option" id="ck-1" data-href="#how">How it works: a day of runs</li>
-      <li role="option" id="ck-2" data-href="#self">It gets better on its own</li>
-      <li role="option" id="ck-3" data-href="#get-title">What you get: the list and your notes</li>
-      <li role="option" id="ck-4" data-href="#app">The Mac app</li>
-      <li role="option" id="ck-5" data-href="#privacy">Privacy and trust</li>
-      <li role="option" id="ck-6" data-href="#install">Install</li>
-      <li role="option" id="ck-7" data-href="#faq-title">Questions</li>
+      <li role="option" id="ck-1" data-href="#vault">What the vault is</li>
+      <li role="option" id="ck-2" data-href="#how">How it works: a day of runs</li>
+      <li role="option" id="ck-3" data-href="#self">It gets better on its own</li>
+      <li role="option" id="ck-4" data-href="#get-title">What you get: the list and your notes</li>
+      <li role="option" id="ck-5" data-href="#app">The Mac app</li>
+      <li role="option" id="ck-6" data-href="#privacy">Privacy and trust</li>
+      <li role="option" id="ck-7" data-href="#install">Install</li>
+      <li role="option" id="ck-8" data-href="#faq-title">Questions</li>
     </ul>
     <p class="cmdk-foot"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to jump · <kbd>Esc</kbd> to close</p>
   </div>
