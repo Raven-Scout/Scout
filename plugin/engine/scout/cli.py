@@ -776,12 +776,14 @@ def kb_share(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
-    client = share_stops.client_for(root)
+    client, link_problem = share_stops.connect(root)
     view, why = share_stops.fetch_view(client)
     if view is not None:
         plan.clears = share_stops.share_clears(view, plan.target, plan.principals)
     else:
-        plan.stops_note = why
+        plan.stops_note = link_problem or why
+    if link_problem and not as_json:
+        print(f"warning: {link_problem}: its stops on this share, if any, stay in force.", file=sys.stderr)
     clears = plan.clears if plan.clears else None
     if clears is not None and client is not None and not dry_run:
         refusal = share_stops.clear_refusal(root, os.environ, client)
@@ -865,11 +867,11 @@ def kb_unshare(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
-    client = share_stops.client_for(root)
+    client, link_problem = share_stops.connect(root)
     view, why = share_stops.fetch_view(client)
     wanted, notes = share_stops.unshare_stops(view, plan.target, plan.principals) if view is not None else ([], [])
     # The stop goes first (ruling 15): Agnes leaves the share out from the next read, before the vault changes.
-    plan.agnes = share_stops.make_stops(client, view, why, wanted, notes, dry_run=dry_run)
+    plan.agnes = share_stops.make_stops(client, view, why, wanted, notes, dry_run=dry_run, link_problem=link_problem)
     written = False
     if plan.changed and not dry_run:
         apply(root, plan)
@@ -919,8 +921,10 @@ def kb_shares(
             return Output(data={"denied": True}, lines=["denied"], denied=1, code=3)
         enabled, rows = list_shares(root)
         names = group_names(directory_for(root), rows)
-        client = share_stops.client_for(root)
+        client, link_problem = share_stops.connect(root)
         view, why = share_stops.fetch_view(client) if client is not None else (None, None)
+        if link_problem and who == "owner":  # a sandboxed autonomous run can't read the token: stay quiet there
+            why = link_problem
         stops = {row.glob: share_stops.row_stops(view, row.glob) for row in rows}
         shares = [{**row.to_json(), "stops": [s.to_json() for s in stops[row.glob]]} for row in rows]
         agnes: dict[str, Any] = view.to_json() if view is not None else {"available": False, "note": why}

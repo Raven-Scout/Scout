@@ -668,3 +668,74 @@ def test_printed_commands_quote_paths_and_people() -> None:
     stop = share_stops.Stop("stop0001", "knowledge-base/projects/my widget/**", PRIYA, "cli", "not_requested", "")
     out = share.shares_lines(True, rows, {}, {rows[0].glob: [stop]})
     assert any("`scoutctl kb share 'knowledge-base/projects/my widget' --with priya@example.com`" in x for x in out)
+
+
+# ----- review fixes (delta): a linked vault whose token can't be loaded is a failure, not "unlinked" -----
+
+
+def _break_token(vault: Path, how: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout import repo_sync
+
+    path = repo_sync.token_path(vault)
+    if how == "missing":
+        path.unlink()
+    elif how == "insecure":
+        path.chmod(0o644)
+    else:
+
+        def sandboxed(_vault: Path) -> str:
+            raise PermissionError("Operation not permitted")
+
+        monkeypatch.setattr(repo_sync, "load_token", sandboxed)
+
+
+@pytest.mark.parametrize(
+    ("how", "said"),
+    [("missing", "is missing"), ("insecure", "has loose permissions"), ("unreadable", "can't be read")],
+)
+def test_a_linked_vault_with_a_bad_token_fails_the_unshare(
+    vault: Path, agnes: FakeAgnes, monkeypatch: pytest.MonkeyPatch, how: str, said: str
+) -> None:
+    shared_with(vault, agnes, "priya@example.com")
+    _break_token(vault, how, monkeypatch)
+
+    res = kb(vault, "unshare", WIDGET, "--json")
+
+    assert res.exit_code == 4, res.output
+    data = json.loads(res.stdout)
+    assert data["written"] is True and data["agnes"]["failed"] is True
+    assert any(f"linked to Agnes, but the Agnes token {said}" in n for n in data["agnes"]["notes"])
+    assert share_stops.UNLINKED_NOTE not in res.output
+    assert agnes.requests == []
+    assert defaults(vault) == []
+    owner = kb(vault, "shares")
+    assert owner.exit_code == 0 and f"the Agnes token {said}" in owner.output
+    quiet = kb(vault, "shares", env={"SCOUT_READER": "autonomous"})
+    assert quiet.exit_code == 0 and "Agnes token" not in quiet.output
+
+
+def test_kb_share_warns_when_the_token_cant_be_loaded(vault: Path, agnes: FakeAgnes) -> None:
+    from scout import repo_sync
+
+    repo_sync.token_path(vault).unlink()
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 0, res.output
+    assert "the Agnes token is missing" in res.output and "stay in force" in res.output
+
+
+def test_principals_compare_case_insensitively_for_people_only() -> None:
+    assert share_stops.same_principal("person:Sam@Example.com", SAM)
+    assert not share_stops.same_principal("group:ABC", "group:abc")
+    assert share_stops.same_principal(None, None) and not share_stops.same_principal(None, SAM)
+    view = share_stops.SharesView.parse(
+        {"shares": [{"glob": GLOB, "principals": [{"principal": "person:Priya@Example.com"}], "stops": []}]}
+    )
+    assert share_stops.still_served(view, {GLOB: [PRIYA]}) == []
+    assert share_stops.still_served(view, {}) == [(GLOB, ["person:Priya@Example.com"])]
+
+
+def test_a_torn_link_state_reads_as_unlinked(vault: Path) -> None:
+    from scout.repo_sync import state_path
+
+    state_path(vault).write_text("{torn", encoding="utf-8")
+    assert share_stops.connect(vault) == (None, None)

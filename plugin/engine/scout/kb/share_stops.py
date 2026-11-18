@@ -61,6 +61,7 @@ RETRY_NOTE = (
     "the same `scoutctl kb unshare` again to retry the stop at once: it asks Agnes again even though the vault is "
     "already narrowed. `scoutctl kb shares` shows what Agnes still serves."
 )
+RETRY_AFTER_SYNC = "Agnes keeps serving the share until your next `scoutctl repo sync` (fix the token first)."
 EXPECTED_FALLBACKS = (FALLBACK_NOTE, SHARING_OFF_NOTE, UNLINKED_NOTE)  # an Agnes that can't stop: not a failure
 PENDING_PULL_NOTE = (
     "Agnes has {n} commit(s) on top of your last push (a stop it wrote into scout-config.yaml, say). Run "
@@ -163,7 +164,7 @@ class AgnesShare:
     stops: tuple[Stop, ...]
 
     def names(self, principal: str) -> bool:
-        return any(p.principal == principal for p in self.principals)
+        return any(same_principal(p.principal, principal) for p in self.principals)
 
     def group_of(self, principal: str) -> str | None:
         """The group this share names that admits ``person:<email>``, else None."""
@@ -358,17 +359,32 @@ def token_kind(token: str) -> str | None:
     return typ if isinstance(typ, str) and _TYP_RE.match(typ) else ("unknown" if typ is not None else None)
 
 
-def client_for(vault: Path) -> StopsClient | None:
-    """The linked Agnes for ``vault``, or None when it isn't linked (or the link has no token)."""
+def connect(vault: Path) -> tuple[StopsClient | None, str | None]:
+    """``(client, None)`` for a linked vault; ``(None, None)`` for an unlinked one; ``(None, why)`` when the vault is
+    linked but its token can't be loaded (missing, loose permissions, unreadable). Never the token in ``why``."""
     from scout.repo_sync import RepoSyncError, load_state, load_token
 
     try:
         state = load_state(vault)
-        if state is None or not state.agnes_url:
-            return None
-        return StopsClient(state.agnes_url, load_token(vault))
-    except (RepoSyncError, OSError):  # OSError: a sandboxed run can't read ~/.scout-secrets (PermissionError)
-        return None
+    except (RepoSyncError, OSError):
+        return None, None
+    if state is None or not state.agnes_url:
+        return None, None
+    try:
+        return StopsClient(state.agnes_url, load_token(vault)), None
+    except RepoSyncError as e:
+        what = {"token_missing": "is missing", "token_insecure": "has loose permissions"}.get(e.code, "is unusable")
+        return None, f"This vault is linked to Agnes, but the Agnes token {what} ({e}), so Agnes couldn't be asked"
+    except OSError as e:  # a sandboxed run can't read ~/.scout-secrets (PermissionError)
+        return None, (
+            f"This vault is linked to Agnes, but the Agnes token can't be read ({type(e).__name__}), so Agnes "
+            "couldn't be asked"
+        )
+
+
+def client_for(vault: Path) -> StopsClient | None:
+    """The linked Agnes for ``vault``, or None when it isn't linked or its token can't be loaded (:func:`connect`)."""
+    return connect(vault)[0]
 
 
 def fetch_view(client: StopsClient | None) -> tuple[SharesView | None, str | None]:
@@ -447,10 +463,19 @@ class StopRequest:
         return {"glob": self.glob, "principal": self.principal, "via": self.via}
 
 
+def same_principal(a: str | None, b: str | None) -> bool:
+    """Whether two principals are one: a ``person:`` email compares case-insensitively, a ``group:`` id exactly."""
+    if a is None or b is None:
+        return a is b
+    if a.lower().startswith("person:") and b.lower().startswith("person:"):
+        return a.lower() == b.lower()
+    return a == b
+
+
 def _covered(view: SharesView, glob: str, principal: str | None) -> bool:
     """Whether an open stop already keeps ``principal`` (None: everyone) off ``glob``."""
     for stop in view.open_stops():
-        if stop.glob == glob and (stop.principal is None or stop.principal == principal):
+        if stop.glob == glob and (stop.principal is None or same_principal(stop.principal, principal)):
             return True
     return False
 
@@ -543,8 +568,15 @@ def make_stops(
     notes: list[str],
     *,
     dry_run: bool,
+    link_problem: str | None = None,
 ) -> StopOutcome:
-    """Send ``requests_`` (``kb unshare`` calls this before it writes the vault). Never raises."""
+    """Send ``requests_`` (``kb unshare`` calls this before it writes the vault). Never raises.
+
+    ``link_problem``: the vault is linked but its token can't be loaded (:func:`connect`). That is a failure,
+    not an unlinked vault: Agnes keeps serving the share until the next sync.
+    """
+    if client is None and link_problem:
+        return StopOutcome("unavailable", notes=[*notes, f"{link_problem}. {RETRY_AFTER_SYNC}"], failed=True)
     if client is None:
         return StopOutcome("unlinked", notes=[*notes, UNLINKED_NOTE])
     if view is None:
@@ -568,8 +600,6 @@ def make_stops(
             outcome.failed = True
             outcome.notes.append(_unavailable_text(e))
             break
-    if not outcome.made and outcome.status != "unavailable":
-        outcome.status = "nothing"
     if view.pending_server_commits:
         outcome.notes.append(PENDING_PULL_NOTE.format(n=view.pending_server_commits))
     return outcome
@@ -633,9 +663,11 @@ def share_clears(view: SharesView, target: Any, principals: Sequence[str]) -> Cl
                 plan.clears.append(stop)
                 listed = view.share(stop.glob)
                 for p in listed.principals if listed is not None else ():
-                    if p.principal not in wanted and not _covered_by_person(view, stop.glob, p.principal):
+                    if not any(same_principal(p.principal, w) for w in wanted) and not _covered_by_person(
+                        view, stop.glob, p.principal
+                    ):
                         plan.keep_stopped.append(StopRequest(stop.glob, p.principal))
-            elif stop.principal in wanted:
+            elif any(same_principal(stop.principal, w) for w in wanted):
                 plan.clears.append(stop)
             else:
                 plan.kept.append((stop, f"share with {stop.who()} to clear it"))
@@ -647,7 +679,7 @@ def share_clears(view: SharesView, target: Any, principals: Sequence[str]) -> Cl
 
 
 def _covered_by_person(view: SharesView, glob: str, principal: str) -> bool:
-    return any(s.glob == glob and s.principal == principal for s in view.open_stops())
+    return any(s.glob == glob and same_principal(s.principal, principal) for s in view.open_stops())
 
 
 def apply_clears(vault: Path, env: Mapping[str, str], client: StopsClient, plan: ClearPlan) -> list[str]:
@@ -708,11 +740,11 @@ def still_served(view: SharesView, granted: Mapping[str, Sequence[str]]) -> list
     for share in view.shares:
         if share.kind != "folder" or _covered(view, share.glob, None):
             continue
-        vault = set(granted.get(share.glob, ()))
+        vault = granted.get(share.glob, ())
         extra = [
             p.principal
             for p in share.principals
-            if p.principal not in vault and not _covered(view, share.glob, p.principal)
+            if not any(same_principal(p.principal, g) for g in vault) and not _covered(view, share.glob, p.principal)
         ]
         if extra:
             out.append((share.glob, extra))
