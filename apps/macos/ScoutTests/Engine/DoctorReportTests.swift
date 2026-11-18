@@ -59,6 +59,26 @@ struct DoctorReportTests {
         #expect(r?.runHealth?.firstActionable?.log == "/Users/alex/Scout/.scout-logs/scout-2026-10-09_06-00.log")
         #expect(r?.runHealth?.firstActionable?.until == nil)
         #expect(r?.runHealth?.findings.last?.detail == nil)
+        // Two KB-reading vault scripts are ONE warning with both files (#505, UI audit R1).
+        #expect(r?.warnings.count == 2)
+        let group = try #require(r?.warningGroups.first)
+        #expect(r?.warningGroups.count == 1)
+        #expect(group.kind == "privacy.script-raw-kb-read")
+        #expect(group.items == ["scripts/link-check.py", "scripts/tag-audit.py"])
+        #expect(r?.warnings.contains(group.summary) == true)
+        let summary = HealthSummary(doctor: r)
+        #expect(summary.issues(.warning, from: .install).map(\.title) == [
+            "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
+            "2 vault scripts read the knowledge base directly, without Scout's privacy labels",
+        ])
+    }
+
+    @Test func warningGroupsAreOptionalAndNeverCostTheReport() throws {
+        let old = DoctorReport.parse(stdout: Data(#"{"severity": "yellow", "errors": [], "warnings": ["w"]}"#.utf8), stderr: Data())
+        #expect(old?.warningGroups == [])
+        let odd = #"{"severity": "yellow", "errors": [], "warnings": ["w"], "warning_groups": {"x": 1}}"#
+        let r = try #require(DoctorReport.parse(stdout: Data(odd.utf8), stderr: Data()))
+        #expect(r.warnings == ["w"] && r.warningGroups == [])
     }
 
     @Test func decodesAFindingFromAnEngineOlderThanItsErrorLine() {

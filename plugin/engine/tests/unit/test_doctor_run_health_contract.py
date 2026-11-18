@@ -69,8 +69,11 @@ def _build_vault(root: Path) -> Path:
     (v / "scout-config.yaml").write_text(
         "plugin:\n  version_at_last_setup: 0.16.0\n  version_at_last_update: 0.16.0\n", encoding="utf-8"
     )
-    # The one install warning: a runner backup left by an older engine.
+    # Install warnings: a runner backup left by an older engine, and two vault scripts that read the
+    # knowledge base around `scoutctl kb`, which the doctor reports as ONE grouped warning (#505).
     (v / "run-scout.sh.bak.1").write_text("x\n", encoding="utf-8")
+    for name in ("link-check.py", "tag-audit.py"):
+        (v / "scripts" / name).write_text("open('knowledge-base/index.md').read()\n", encoding="utf-8")
     # morning-briefing last ran 54 h ago (a yellow slot.stale): its last two runs failed on an expired
     # login. Its last fire is that last run's session end, 2 s before the ledger row's finished_at
     # (§13.1). weekly-research fired on its own Wednesday slot and left no outcome (slot.fired_silent).
@@ -149,7 +152,12 @@ def test_doctor_run_health_matches_the_shared_fixture(tmp_path, monkeypatch):
 
 def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     d = json.loads(_render(tmp_path, monkeypatch))
-    assert d["severity"] == "yellow" and len(d["warnings"]) == 1 and d["errors"] == []
+    assert d["severity"] == "yellow" and len(d["warnings"]) == 2 and d["errors"] == []
+    # The two KB-reading scripts are one warning, and its group lists both (#505).
+    (group,) = d["warning_groups"]
+    assert group["kind"] == "privacy.script-raw-kb-read" and group["count"] == 2
+    assert group["items"] == ["scripts/link-check.py", "scripts/tag-audit.py"]
+    assert group["summary"] in d["warnings"]
     rh = d["run_health"]
     assert rh["severity"] == "red"
     ids = {f["id"]: f["severity"] for f in rh["findings"]}

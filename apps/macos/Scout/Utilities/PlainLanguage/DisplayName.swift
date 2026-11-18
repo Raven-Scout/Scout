@@ -221,6 +221,10 @@ nonisolated enum DisplayName {
             title: "Signed out of Claude",
             why: "Scheduled runs can't start until Claude Code is signed in again.",
             fix: "Open Claude Code in a terminal and sign in."),
+        "authrace": PlainExplanation(
+            title: "Claude login was busy",
+            why: "Another Claude Code window was refreshing your login when the run started. Your login is fine.",
+            fix: "Nothing to do: Scout tries again a minute later, and at the next scheduled time."),
         "network": PlainExplanation(
             title: "Network problem",
             why: "The run couldn't reach Claude or a connected service.",

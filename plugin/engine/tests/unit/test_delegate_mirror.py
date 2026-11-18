@@ -1482,7 +1482,10 @@ def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Pa
     kb = {f for f in files if f.startswith("knowledge-base/")}
     assert kb and "knowledge_base" not in files and result.left_out == 0
     assert not [n for n in result.notes if n.startswith("warning")]
-    assert all(f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" for f in files), files
+    assert all(
+        f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
+        for f in files
+    ), files
 
 
 def test_path_terms_match_exactly_and_skip_symlinks_and_bare_root_names() -> None:

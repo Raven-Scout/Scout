@@ -19,6 +19,16 @@ struct ActionItemsEnvironmentResult: Equatable, Sendable {
     static let okResult = ActionItemsEnvironmentResult(ok: true, message: nil)
 }
 
+/// Thrown instead of running a write while the environment check fails: the
+/// page has turned its writes off (its banner says so), and this keeps any
+/// path that still reaches a write (undo, redo, a missed control) from
+/// running `scoutctl action-items` anyway.
+struct ActionItemsWritesOffError: Error, LocalizedError, Equatable {
+    var errorDescription: String? {
+        "Action Items writes are off because the engine check failed."
+    }
+}
+
 /// Probes scoutctl to verify Action Items writes will work. Runs
 /// `scoutctl action-items --help` and checks for a clean exit. Failure modes:
 ///   - no scoutctl at the located path (ENOENT — no engine was found)

@@ -86,6 +86,31 @@ struct ActionItemsWritePathTests {
         #expect(vault.read(dayFile) == openTask)
     }
 
+    /// R2 review: undo and redo of Done/Reopen run scoutctl too, so they
+    /// refuse while the engine check fails, asking at the moment they run.
+    @Test @MainActor func engineInverseUndoRefusesWhileWritesAreOff() async throws {
+        let vault = try TempVault()
+        try vault.write(dayFile, openTask)
+        let runner = scoutctl(vault) { $0.contains("--undo") ? openTask : doneTask }
+        let w = writer(vault, runner)
+        let op = WriteOp.markDone(subject: "Draft the demo outline", shortPrefix: "QZX7")
+        let result = try await w.submit(op, displayedDate: day)
+        let envState = ActionItemsEnvironmentState()
+        envState.result = ActionItemsEnvironmentResult(ok: false, message: "timed out")
+        let step = try #require(ActionItemsView.undoStep(for: op, result: result, writer: w, date: day,
+                                                          writesEnabled: { ActionItemsView.writesEnabled(envState.result) }))
+        let callsBefore = await runner.calls.count
+        await #expect(throws: ActionItemsWritesOffError()) { try await step.undo() }
+        await #expect(throws: ActionItemsWritesOffError()) { try await step.redo() }
+        #expect(await runner.calls.count == callsBefore, "no scoutctl call while writes are off")
+        #expect(vault.read(dayFile) == doneTask)
+        #expect(WriteProblem.from(ActionItemsWritesOffError(), action: "undo Mark Done").kind == .environment)
+
+        envState.result = .okResult                   // the check passes again
+        try await step.undo()
+        #expect(vault.read(dayFile) == openTask)
+    }
+
     @Test func untaggedWriteIsRefusedWhenTheDayFileChangedSinceShown() async throws {
         let vault = try TempVault()
         try vault.write(dayFile, openTask)
