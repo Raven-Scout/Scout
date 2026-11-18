@@ -192,7 +192,8 @@ class OutcomeRow:
     agent_runtime: str | None = None
     # The model the runner passed to the agent (scoutctl model resolve).
     model: str | None = None
-    # Which runner wrote the row (scout | dreaming | research) and what started it (schedule | heartbeat | manual).
+    # Which runner wrote the row (scout | dreaming | research) and what started it
+    # (schedule | heartbeat | manual | event: a connector-event trigger).
     runner: str | None = None
     trigger: str | None = None
 
@@ -336,7 +337,7 @@ def _parse_row(obj: object) -> OutcomeRow | None:
 _RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
 _RUNNERS = frozenset({"scout", "dreaming", "research"})
-_TRIGGERS = frozenset({"schedule", "heartbeat", "manual"})
+_TRIGGERS = frozenset({"schedule", "heartbeat", "manual", "event"})
 
 
 def _opt_nonneg(value: object) -> int | None:

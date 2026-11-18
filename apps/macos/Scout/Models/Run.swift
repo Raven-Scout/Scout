@@ -123,6 +123,40 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// The model the runner passed to claude, from the log's
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
+    /// The schedule this run ran for (`evening-consolidation`, a slot the owner
+    /// made in the app), from the run ledger's `slot`. nil when the run has no
+    /// ledger row: it's still going, it's older than the ledger's window, or an
+    /// older engine wrote it. The log itself never names the slot, and the run
+    /// type can't recover it (several slots share one type), so nothing guesses.
+    var slotKey: String? = nil
+    /// What started the run, from the run ledger's `trigger`: `schedule`,
+    /// `heartbeat`, `manual`, or `event` (a connector-event trigger, whose
+    /// "slot" is the skill it ran, not a schedule). nil without a ledger row,
+    /// or from a runner older than the field.
+    var trigger: String? = nil
+
+    /// The slot "Run again" fires: this run's own, or nil when there isn't one
+    /// to fire. A run started outside the schedule (`manual`,
+    /// `dreaming-manual`, `research-manual`, or any `event` run, whose slot is
+    /// a skill name that `fire-now` doesn't know or, worse, that a schedule
+    /// shares) or one the ledger couldn't name (`unknown`) has none.
+    var rerunSlotKey: String? {
+        guard startedBySchedule,
+              let key = slotKey?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
+              key != "unknown", key != "manual", !key.hasSuffix("-manual")
+        else { return nil }
+        return key
+    }
+
+    /// The ledger says a schedule (or the heartbeat, or a person forcing a
+    /// schedule) started this run. An older row with no `trigger` counts:
+    /// those runners never recorded event runs apart.
+    var startedBySchedule: Bool {
+        switch trigger {
+        case nil, "schedule", "heartbeat", "manual": return true
+        default: return false
+        }
+    }
 
     /// `<type>-<ISO 8601 start>`, plus `-<pid>` for a run whose log has the
     /// seconds+PID name (a later run in the same minute). A minute-named log
@@ -163,7 +197,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model
+            model: model, slotKey: slotKey, trigger: trigger
         )
     }
 }
@@ -184,7 +218,9 @@ extension Run {
         retryOf: Run.ID? = nil,
         runnerScript: String? = nil,
         headerStartedAt: Date? = nil,
-        model: String? = nil
+        model: String? = nil,
+        slotKey: String? = nil,
+        trigger: String? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -210,7 +246,9 @@ extension Run {
             errorsDetected: [],
             commits: commits,
             retryOf: retryOf,
-            model: model
+            model: model,
+            slotKey: slotKey,
+            trigger: trigger
         )
     }
 }
