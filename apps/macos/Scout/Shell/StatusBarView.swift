@@ -125,9 +125,9 @@ struct StatusBarView: View {
             return "—"
         }
         let mins = max(0, Int(next.scheduledAt.timeIntervalSince(now) / 60))
-        if mins < 60 { return "\(next.type.displayName) · \(mins)m" }
+        if mins < 60 { return "\(next.displayName) · \(mins)m" }
         let hh = mins / 60, mm = mins % 60
-        return "\(next.type.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
+        return "\(next.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
     }
 
     /// Today's cost of Scout's scheduled runs, from the same engine summary as

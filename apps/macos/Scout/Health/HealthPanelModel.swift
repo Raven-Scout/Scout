@@ -43,26 +43,40 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
     let summary: String
     /// Red and yellow findings, worst first (notes go in `everythingElse`).
     let groups: [FindingGroup]
+    /// The engine's own problems and warnings (doctor install checks), grouped by kind,
+    /// so the page lists what Settings counts (UI audit R1).
+    let engineIssues: [HealthSummary.Issue]
     /// Run-health notes, then the doctor's informational notes.
     let everythingElse: [String]
     let runs: [RunLine]
 
-    init(ledger: RunLedger?, doctorNotes: [String] = [], filter: Filter = .all) {
+    /// `doctor` adds the engine's own warnings and its notes; the run findings come from the ledger.
+    init(ledger: RunLedger?, doctor: DoctorReport? = nil, filter: Filter = .all) {
         let health = ledger?.health
-        severity = health?.severity
-        headline = RunOutcomeDisplay.overall(health?.severity)
+        let shared = HealthSummary(doctor: doctor, runHealth: .some(health))
+        severity = health.map { _ in shared.severity }
+        headline = Self.headline(runs: health?.severity, shared: shared)
         let findings = health?.findings ?? []
         var grouped: [RunOutcomeDisplay.Group: [RunHealth.Finding]] = [:]
         for finding in findings { grouped[.init(severity: finding.severity), default: []].append(finding) }
         groups = [RunOutcomeDisplay.Group.red, .yellow].compactMap { g in
             grouped[g].map { FindingGroup(group: g, findings: $0) }
         }
-        everythingElse = (grouped[.note] ?? []).map(\.summary) + doctorNotes
+        engineIssues = shared.issues.filter { $0.source == .install && $0.severity != .note }
+        everythingElse = (grouped[.note] ?? []).map(\.summary) + (doctor?.notes ?? [])
         let entries = ledger?.runs ?? []
         summary = Self.summary(entries)
         runs = entries
             .filter { filter == .all || $0.needsAttention }
             .map(Self.line)
+    }
+
+    /// The runs' verdict, then the count every health surface shows: "Scheduled runs need a look · 2 warnings".
+    /// Healthy runs beside engine warnings say both, never a bare "healthy" (R1).
+    static func headline(runs: DoctorReport.Severity?, shared: HealthSummary) -> String {
+        guard runs != nil else { return RunOutcomeDisplay.overall(nil) }
+        let count = shared.attentionLabel.map { " · \($0)" } ?? ""
+        return RunOutcomeDisplay.overall(runs) + count
     }
 
     static func summary(_ entries: [RunLedgerEntry]) -> String {

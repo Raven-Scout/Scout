@@ -71,7 +71,19 @@
     ]
   },
   "severity": "yellow",
+  "warning_groups": [
+    {
+      "count": 2,
+      "items": [
+        "scripts/link-check.py",
+        "scripts/tag-audit.py"
+      ],
+      "kind": "privacy.script-raw-kb-read",
+      "summary": "privacy: 2 vault scripts read the knowledge base directly, not through `scoutctl kb`, so what they produce carries no privacy labels: scripts/link-check.py, scripts/tag-audit.py. To fix, make them read through `scoutctl kb files` (and `scoutctl kb read`), and send an item from a private file only to an owner-only channel, never Slack (#453); `scoutctl bootstrap drift` lists them all."
+    }
+  ],
   "warnings": [
-    "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)"
+    "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
+    "privacy: 2 vault scripts read the knowledge base directly, not through `scoutctl kb`, so what they produce carries no privacy labels: scripts/link-check.py, scripts/tag-audit.py. To fix, make them read through `scoutctl kb files` (and `scoutctl kb read`), and send an item from a private file only to an owner-only channel, never Slack (#453); `scoutctl bootstrap drift` lists them all."
   ]
 }

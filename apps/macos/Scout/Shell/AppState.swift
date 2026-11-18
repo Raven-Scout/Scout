@@ -988,36 +988,27 @@ final class AppState: ObservableObject {
         requestedSidebar = .knowledgeBase
     }
 
-    /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
-    /// bypassing the engine's daily-spend gate via `--bypass-budget`.
+    /// Shells out to `scoutctl schedule fire-now <slotKey>`.
     ///
     /// Plan 5 removed in-app dispatch — the engine now owns slot routing,
-    /// scout-app just shells out. Errors are swallowed for parity with the
-    /// old `runnerService.runNow` (which also returned `try? await`).
+    /// scout-app just shells out. A failure lands in `fireNowError`.
     ///
-    /// `bypassBudget: true` is used by `RunDetailView` for the "force retry"
-    /// path — a manual override that lets a slot fire even when the day's
-    /// budget has already been spent. Default `false` for normal upcoming-strip
-    /// run-now buttons (which respect the budget gate).
+    /// There is no budget override: `fire-now` has no such option, and the
+    /// runner's budget check applies to every run.
     ///
     /// After the dispatch returns, immediately refresh `ScheduleService` so
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
-    func fireNow(slotKey: String, bypassBudget: Bool = false) async {
+    func fireNow(slotKey: String) async {
         guard firingSlotKeys.insert(slotKey).inserted else {
             // Surface the drop: several UI surfaces can fire the same slot
-            // (upcoming strip, RunDetailView's bypass retry, menu panel) and
-            // only the menu panel disables on firingSlotKeys — a silently
-            // discarded bypass-budget retry looks like it was dispatched.
+            // (upcoming strip, RunDetailView's Run again, menu panel), and a
+            // silently discarded request looks like it was dispatched.
             fireNowError = "\(slotKey) is already being started — request ignored."
             return
         }
         defer { firingSlotKeys.remove(slotKey) }
-        let args = Self.fireNowArguments(
-            argumentsPrefix: scoutctlArgumentsPrefix,
-            slotKey: slotKey,
-            bypassBudget: bypassBudget
-        )
+        let args = Self.fireNowArguments(argumentsPrefix: scoutctlArgumentsPrefix, slotKey: slotKey)
         do {
             let result = try await runner.run(
                 executable: scoutctlExecutable,
@@ -1090,14 +1081,8 @@ final class AppState: ObservableObject {
     /// path, with no `/usr/bin/env` fallback) — never a hardcoded
     /// "scoutctl", which an absolute-path executable would receive as a bogus
     /// subcommand (issue #45).
-    nonisolated static func fireNowArguments(
-        argumentsPrefix: [String],
-        slotKey: String,
-        bypassBudget: Bool
-    ) -> [String] {
-        var args = argumentsPrefix + ["schedule", "fire-now", slotKey]
-        if bypassBudget { args.append("--bypass-budget") }
-        return args
+    nonisolated static func fireNowArguments(argumentsPrefix: [String], slotKey: String) -> [String] {
+        argumentsPrefix + ["schedule", "fire-now", slotKey]
     }
 
     /// Where scoutctl lives + how to invoke it. Used by the constructor to
