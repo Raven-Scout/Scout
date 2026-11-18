@@ -70,6 +70,16 @@ struct WriteProblem: Equatable, Identifiable {
                 kind: .failed, title: "Saved, but the page didn't update",
                 message: "Your change is saved. Scout couldn't read the schedules back afterwards, so this page may be out of date. Reload to see them.",
                 details: e.reason, retryable: false)
+        case is ActionItemsWritesOffError:
+            return WriteProblem(
+                kind: .environment, title: title,
+                message: "Action Items can't save changes until Scout's engine check passes. Choose Try again on the Action Items banner, or open Settings ▸ Engine.",
+                retryable: true)
+        case let e as ScheduleValidationError:
+            return WriteProblem(
+                kind: .failed, title: title,
+                message: "Scout's check didn't accept the schedule, so nothing was saved. Check the fields and try again; the check's own words are under Details.",
+                details: e.details, retryable: false)
         case let e as ScheduleNotLoadedError:
             return WriteProblem(
                 kind: .stale, title: title,

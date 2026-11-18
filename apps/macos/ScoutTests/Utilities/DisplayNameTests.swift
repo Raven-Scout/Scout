@@ -373,6 +373,15 @@ struct PlainLanguageSurfaceTests {
         #expect(missing.details == "scoutctl unavailable")
     }
 
+    /// R2: the banner says writes "are turned off"; that has to be true.
+    @Test("a failed engine check turns the writes off, exactly when the banner says so")
+    func actionItemsWritesFollowTheBanner() {
+        let failed = ActionItemsEnvironmentResult(ok: false, message: "scoutctl not found")
+        #expect(ActionItemsView.environmentProblem(failed).impact?.contains("turned off") == true)
+        #expect(!ActionItemsView.writesEnabled(failed))
+        #expect(ActionItemsView.writesEnabled(.okResult))
+    }
+
     @Test("run search matches the words on screen, not only the engine key")
     func runSearch() {
         let run = Run.make(type: .morningBriefing, status: .rateLimited)

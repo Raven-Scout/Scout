@@ -8,7 +8,7 @@ import SwiftUI
 struct HealthView: View {
     @EnvironmentObject var ledgerService: RunLedgerService
     @EnvironmentObject var engineHealth: EngineHealthService
-    /// Opens Settings (Settings ▸ Engine holds the run protection controls).
+    /// Opens Settings at its Engine section, which holds the run protection controls.
     var openSettings: () -> Void = {}
     /// The vault's `.scout-logs/`, for "Show log" on a run.
     var logsDirectory: URL? = nil
