@@ -25,6 +25,9 @@ final class KnowledgeBaseService: ObservableObject {
 
     /// Bumped whenever `tree` or `index` is replaced; keys per-reparse caches.
     private var generation = 0
+    /// Changes whenever `tree` or `index` is replaced — a cheap key for views
+    /// that rebuild something from the whole index (the web map).
+    var indexGeneration: Int { generation }
     private var networkStatsCache: (generation: Int, hubCap: Int, stats: KBNetworkStats)?
 
     /// The scout directory; the KB lives in its `knowledge-base/` subfolder.
@@ -295,6 +298,34 @@ final class KnowledgeBaseService: ObservableObject {
                                       excerpt: excerpt))
         }
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// A short plain-text summary of a note for the map's side card: its first
+    /// paragraph of prose (frontmatter, headings, the `**Last updated:**`
+    /// header, tables, code and Scout comments skipped), markdown stripped.
+    func summary(for relPath: String, maxLength: Int = 320) -> String {
+        Self.summary(of: index.textByFile[relPath] ?? "", maxLength: maxLength)
+    }
+
+    nonisolated static func summary(of text: String, maxLength: Int = 320) -> String {
+        let segments = KBDocSegment.segments(from: text)
+        guard let para = segments.first(where: { seg in
+            seg.kind == .paragraph && !KBDocSegment.isMetadata(seg)
+                && seg.raw.trimmingCharacters(in: .whitespaces).count > 20
+        }) ?? segments.first(where: { $0.kind == .list }) else { return "" }
+        var s = para.raw.components(separatedBy: "\n")
+            .filter { !ScoutMarker.isMarkerLine($0) }
+            .joined(separator: " ")
+        // [[target|alias]] → alias, [[target]] → target, [text](url) → text.
+        s = s.replacingOccurrences(of: #"\[\[[^\]|]+?\\?\|([^\]]+)\]\]"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[\[([^\]]+)\]\]"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"[*_`]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*(?:[-*+]|\d+[.)])\s+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if s.count > maxLength { s = String(s.prefix(maxLength - 1)).trimmingCharacters(in: .whitespaces) + "…" }
+        return s
     }
 
     /// The first line of `text` holding a wikilink that resolves to `target`,

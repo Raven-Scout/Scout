@@ -14,6 +14,13 @@ from scout import health
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
 TEMPLATE = Path(health.__file__).resolve().parents[2] / "templates" / "scripts" / "run-outcome.sh.tmpl"
 
+# The sign-in race, as a synthetic line: the CLI's real one names the account's email.
+AUTH_RACE_LINE = (
+    "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being "
+    "refreshed, often by another Claude Code process), so it couldn't load your organization's settings "
+    "for alex@example.com."
+)
+
 # The tail of a real runner log after Claude Code stopped on its quota: the CLI's own line, then
 # the retry wrapper's banner (which repeats it) and the runner's footer.
 LIMIT_TAIL = """\
@@ -87,6 +94,12 @@ def _only(report: health.RunHealth) -> health.Finding:
             "fatal: Unable to create '/v/.git/index.lock': File exists.\n=== Scout run finished ===\n",
             "fatal: Unable to create '/v/.git/index.lock': File exists.",
             id="git-lock",
+        ),
+        pytest.param(
+            "auth_race",
+            f"starting\n{AUTH_RACE_LINE}\n=== Retry exhausted: 2 attempts, last exit 1 ===\n",
+            AUTH_RACE_LINE.replace("alex@example.com", "<email>"),
+            id="auth-race",
         ),
     ],
 )
@@ -223,6 +236,13 @@ def test_to_dict_emits_the_new_keys(tmp_path):
         ("network", "NETWORK_RE", "error: FailedToOpenSocket: Was there a typo in the url or port?"),
         ("budget", "BUDGET_RE", "Error: Exceeded USD budget (16.6)"),
         ("budget", "BUDGET_RE", "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap"),
+        (
+            "auth_race",
+            "AUTH_RACE_RE",
+            "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being refreshed)",
+        ),
+        ("auth_race", "AUTH_RACE_RE", "Claude Code couldn\u2019t verify your sign-in with Anthropic yet."),
+        ("auth_race", "AUTH_RACE_RE", "Claude Code couldn't confirm it: its sign-in token was still being refreshed"),
     ],
 )
 def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, var, line):
@@ -244,6 +264,8 @@ def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, va
         ("git_lock", "CANARY_PRIVATE_NOTE mentions index.lock in the runbook"),
         ("budget", "CANARY_PRIVATE_NOTE: we exceeded USD budget in Q3"),
         ("oauth_expired", "  CANARY_PRIVATE_NOTE: OAuth token has expired for the vendor"),
+        ("auth_race", "CANARY_PRIVATE_NOTE: Claude Code couldn't verify your sign-in with Anthropic yet"),
+        ("auth_race", "CANARY_PRIVATE_NOTE: its sign-in token was still being refreshed"),
     ],
 )
 def test_failure_line_never_quotes_the_sessions_own_prose(tmp_path, klass, prose):
@@ -265,3 +287,53 @@ def test_failure_line_writes_home_as_tilde(tmp_path, monkeypatch):
     log = _log(_vault(tmp_path), f"fatal: Unable to create '{tmp_path}/Scout/.git/index.lock': File exists.\n")
 
     assert health.failure_line(log, "git_lock") == "fatal: Unable to create '~/Scout/.git/index.lock': File exists."
+
+
+def test_an_auth_race_finding_names_the_race_and_never_the_email(tmp_path):
+    """The race's line names the account; the finding quotes it with the address written as <email>."""
+    v = _vault(tmp_path)
+    _log(v, f"{AUTH_RACE_LINE}\n=== Retry exhausted: 2 attempts, last exit 1 ===\n")
+    _ledger(v, [_row(NOW - timedelta(hours=1), klass="auth_race")])
+
+    finding = _only(health.evaluate(v, now=NOW))
+
+    assert finding.id == "runs.failing" and "(auth_race)" in finding.summary
+    assert finding.detail is not None and finding.detail.startswith("Claude Code couldn't verify your sign-in")
+    assert "@" not in finding.detail and "<email>" in finding.detail
+
+
+def test_recurring_auth_races_say_the_login_is_fine(tmp_path):
+    v = _vault(tmp_path)
+    _log(v, f"{AUTH_RACE_LINE}\n")
+    rows = []
+    for hours, klass in ((30, "auth_race"), (20, "ok"), (10, "auth_race"), (5, "auth_race"), (1, "ok")):
+        rows.append(_row(NOW - timedelta(hours=hours), klass=klass))
+    _ledger(v, rows)
+
+    finding = health.recurring_failures(health.read_outcomes(v), vault=v, now=NOW)
+
+    assert finding is not None and "auth_race ×3" in finding.summary
+    assert "the login itself is fine" in finding.fix and "@" not in (finding.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("classes", "severity", "race_fix"),
+    [
+        pytest.param(["auth_race", "auth_race"], "yellow", True, id="two-races-stay-yellow"),
+        pytest.param(["auth_race"] * health.RECURRING_FAILURE_THRESHOLD, "red", True, id="enough-races-turn-red"),
+        pytest.param(["network", "auth_race"], "red", False, id="a-mixed-streak-is-the-usual-one"),
+    ],
+)
+def test_a_streak_of_sign_in_races_says_what_it_is(tmp_path, classes, severity, race_fix):
+    """The login is fine and the wrapper already retried: no doctor, and red only once it has cost several runs."""
+    v = _vault(tmp_path)
+    _log(v, f"{AUTH_RACE_LINE}\n")
+    rows = [_row(NOW - timedelta(hours=10), klass="ok")]
+    rows += [_row(NOW - timedelta(hours=len(classes) - i), klass=k) for i, k in enumerate(classes)]
+    _ledger(v, rows)
+
+    finding = _only(health.evaluate(v, now=NOW))
+
+    assert finding.id == "runs.failing" and finding.severity == severity
+    assert ("sign-in was busy" in finding.fix) is race_fix
+    assert ("bootstrap doctor" in finding.fix) is not race_fix

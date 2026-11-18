@@ -1,18 +1,20 @@
 /* Self-hosted variable web fonts (latin subset, woff2).
    These are served from this site only — no requests to Google or any third party,
-   so visiting the site does not share your IP address with anyone but the host. */
+   so visiting the site does not share your IP address with anyone but the host.
+   Geist and Geist Mono are © Vercel, SIL Open Font License 1.1 (assets/fonts/OFL-geist.txt).
+   assets/og.svg loads the same two files. */
 
 @font-face {
-  font-family: 'Inter';
+  font-family: 'Geist';
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url('assets/fonts/inter.woff2') format('woff2');
+  src: url('assets/fonts/geist.woff2') format('woff2');
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: 'Geist Mono';
   font-style: normal;
-  font-weight: 100 800;
+  font-weight: 100 900;
   font-display: swap;
-  src: url('assets/fonts/jetbrains-mono.woff2') format('woff2');
+  src: url('assets/fonts/geist-mono.woff2') format('woff2');
 }

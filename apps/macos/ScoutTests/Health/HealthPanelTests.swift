@@ -7,24 +7,27 @@ import Testing
 @Suite("Health panel model")
 struct HealthPanelModelTests {
     @Test func groupsFindingsWorstFirstAndFoldsNotes() throws {
-        let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture(), doctorNotes: ["write protection is on"])
+        let doctor = DoctorReport(severity: .green, errors: [], warnings: [], notes: ["write protection is on"])
+        let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture(), doctor: doctor)
         #expect(model.severity == .red)
-        #expect(model.headline == "Scheduled runs need fixing")
-        #expect(model.groups.map(\.group) == [.red])
+        #expect(model.headline == "Scheduled runs need fixing · 2 problems · 1 warning")
+        #expect(model.groups.map(\.group) == [.red, .yellow])
         #expect(model.groups.first?.findings.map(\.id) == ["gates.probe_unsafe", "run.integrity_restored"])
+        #expect(model.groups.last?.findings.map(\.id) == ["runs.failed_today"])
+        #expect(model.engineIssues.isEmpty)
         #expect(model.everythingElse.count == 2)
         #expect(model.everythingElse.last == "write protection is on")
     }
 
     @Test func summarisesTheRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.summary == "14 runs in the last two weeks: 4 finished, 2 failed, 8 skipped.")
+        #expect(model.summary == "16 runs in the last two weeks: 4 finished, 4 failed, 8 skipped.")
         #expect(HealthPanelModel.summary([]) == "No scheduled runs in the last two weeks.")
     }
 
     @Test func linesSpeakPlainly() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.runs.count == 14)
+        #expect(model.runs.count == 16)
         let gates = try #require(model.runs.first)
         #expect(gates.title == "Morning briefing")
         #expect(gates.outcome == DisplayName.runStatus("skipped_gates"))
@@ -48,6 +51,10 @@ struct HealthPanelModelTests {
         #expect(timeout.reason == "The run reached its time limit and Scout stopped it.")
         #expect(timeout.fix != nil)
 
+        // The sign-in race explains itself, never as "an error Scout doesn't recognise".
+        let race = try #require(model.runs.first { $0.reason == DisplayName.failureClass("auth_race").why })
+        #expect(race.fix == DisplayName.failureClass("auth_race").fix)
+
         let limited = try #require(model.runs.first { $0.resetsAt != nil })
         #expect(limited.outcome == "Paused: usage limit")
 
@@ -57,8 +64,9 @@ struct HealthPanelModelTests {
 
     @Test func problemsOnlyHidesRoutineRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture(), filter: .problems)
-        // gates, sandbox-off ok, sandbox skip, runtime skip, rate limit, integrity restore, timeout.
-        #expect(model.runs.count == 7)
+        // gates, sandbox-off ok, sandbox skip, runtime skip, network failure, rate limit, sign-in race,
+        // integrity restore, timeout.
+        #expect(model.runs.count == 9)
         #expect(!model.runs.contains { $0.tone == .ok || $0.tone == .skipped })
     }
 

@@ -76,6 +76,14 @@ def test_rows_parse_every_phase1_field(tmp_path):
     )
 
 
+def test_an_event_triggered_run_says_so(tmp_path):
+    # Its slot is the trigger's skill, not a schedule; the app keys "Run again" off this.
+    v = _vault(tmp_path, [_row(5, slot="review-pr", trigger="event")])
+    (row,) = health.read_outcomes(v)
+    assert row.trigger == "event"
+    assert run_ledger.run_dict(row)["trigger"] == "event"
+
+
 def test_odd_values_never_reach_a_client(tmp_path):
     v = _vault(
         tmp_path,

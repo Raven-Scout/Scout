@@ -137,6 +137,15 @@ def test_patterns_are_the_wrappers_own() -> None:
         ("API Error: 529 Overloaded", FailureKind.TRANSIENT),
         ("hook output\nAPI Error: 500 Internal server error.", FailureKind.TRANSIENT),
         ("API Error: 403 Attention Required! | Cloudflare", FailureKind.TRANSIENT),
+        # The sign-in race (synthetic line; the real one names the account's email).
+        (
+            "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being "
+            "refreshed, often by another Claude Code process), so it couldn't load your organization's settings.",
+            FailureKind.TRANSIENT,
+        ),
+        ("Claude Code couldn't confirm it: its sign-in token was still being refreshed", FailureKind.TRANSIENT),
+        # The session quoting the race mid-line is not one.
+        ("Summary: Claude Code couldn't verify your sign-in with Anthropic yet", FailureKind.OTHER),
         ("Failed to authenticate. API Error: 401", FailureKind.AUTH),
         ("Invalid authentication credentials", FailureKind.AUTH),
         ("API Error: 401 {}", FailureKind.AUTH),

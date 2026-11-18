@@ -386,6 +386,43 @@ struct AppStateEngineDecisionTests {
         #expect(f.runner.calls.contains { $0.arguments == ["action-items", "--help"] })
     }
 
+    /// R2 review: a failed check turns the writes off, so it must rerun after
+    /// an engine health check (Settings ▸ Engine's Check now) even when the
+    /// gate doesn't change, or the writes stay off until a restart.
+    @Test func aFailedActionItemsCheckRerunsOnTheNextHealthCheck() async throws {
+        let f = gateFixture()
+        defer { try? FileManager.default.removeItem(at: f.tmp) }
+        let probe = ProbeSwitch()
+        f.runner.on({ _, args in args == ["action-items", "--help"] }) { _, _, _ in
+            probe.passes
+                ? ProcessResult(exitCode: 0, stdout: Data("Usage: scoutctl action-items".utf8), stderr: Data())
+                : ProcessResult(exitCode: 1, stdout: Data(), stderr: Data("timed out".utf8))
+        }
+        try f.writeManagedPointer()
+        await f.appState.engineHealth.refresh()   // the gate lifts; the check runs and fails
+        #expect(try await waitUntil { !f.appState.actionItemsEnvState.result.ok })
+        #expect(!ActionItemsView.writesEnabled(f.appState.actionItemsEnvState.result))
+
+        probe.passes = true
+        await f.appState.engineHealth.refresh()   // Check now: same engine, no gate change
+        #expect(try await waitUntil { f.appState.actionItemsEnvState.result.ok })
+    }
+
+    /// The banner's Try again reruns the same check.
+    @Test func theBannersTryAgainRerunsTheCheck() async throws {
+        let f = gateFixture()
+        defer { try? FileManager.default.removeItem(at: f.tmp) }
+        f.runner.on(tool: "false", prefix: ["action-items", "--help"], stdout: "Usage: scoutctl action-items")
+        f.appState.actionItemsEnvState.result = ActionItemsEnvironmentResult(ok: false, message: "timed out")
+        let recheck = try #require(f.appState.actionItemsEnvState.recheck)
+        await recheck()
+        #expect(f.appState.actionItemsEnvState.result.ok)
+    }
+
+    private final class ProbeSwitch: @unchecked Sendable {
+        var passes = false
+    }
+
     /// With background work off, a managed engine behind the bundled one is
     /// NOT upgraded by constructing the app state (Ruling 46).
     @Test func constructionNeverUpgrades() async throws {

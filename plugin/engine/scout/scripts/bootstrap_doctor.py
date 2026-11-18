@@ -35,6 +35,23 @@ class Severity(Enum):
 
 
 @dataclass(frozen=True)
+class WarningGroup:
+    """Several findings of one kind, reported as ONE doctor warning (UI audit R1, #505).
+
+    ``summary`` is that warning's text, verbatim as it appears in ``DoctorReport.warnings``;
+    ``items`` names each file it stands for, so a client can show the list behind a
+    disclosure instead of one warning per file.
+    """
+
+    kind: str  # e.g. "privacy.script-raw-kb-read"
+    summary: str
+    items: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": self.kind, "summary": self.summary, "count": len(self.items), "items": list(self.items)}
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     severity: Severity
     errors: list[str] = field(default_factory=list)
@@ -46,6 +63,8 @@ class DoctorReport:
     # an upgrade's post-upgrade check. None when the vault is missing or the
     # evaluator crashed.
     run_health: RunHealth | None = None
+    # Warnings that stand for many files of one kind; each summary is also in `warnings`.
+    warning_groups: list[WarningGroup] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
@@ -529,6 +548,8 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
         return [], []
     since = (now or datetime.now(UTC)).timestamp() - RUN_TIMEOUT_WINDOW_DAYS * 86400
     lengths: dict[str, list[int]] = {}
+    timeouts: dict[str, int] = {}
+    unmeasured = 0  # rows from runners that record awake_s, without one (no python3 where the runner ran)
     try:
         for line in ledger.read_text(encoding="utf-8").splitlines():
             try:
@@ -538,7 +559,13 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             if not isinstance(row, dict) or row.get("outcome", "ok") not in ("ok", "failed"):
                 continue
             awake_s, finished = row.get("awake_s"), row.get("finished_at")
-            if not isinstance(awake_s, int) or not isinstance(finished, int | float) or finished < since:
+            if not isinstance(finished, int | float) or finished < since:
+                continue
+            if row.get("failure_class") == "timeout":
+                timeouts[str(row.get("slot"))] = timeouts.get(str(row.get("slot")), 0) + 1
+            if not isinstance(awake_s, int):
+                if "agent_runtime" in row:
+                    unmeasured += 1
                 continue
             lengths.setdefault(str(row.get("slot")), []).append(awake_s)
         schedule_path = vault / ".scout-state" / "schedule.yaml"
@@ -549,6 +576,14 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
 
     warnings: list[str] = []
     readiness: list[str] = []
+    # A run cut off at its timeout ran at least that long, so the 90th percentile under-counts such slots:
+    # any timed-out run is worth a warning of its own (review of #653).
+    for key, n in sorted(timeouts.items()):
+        warnings.append(
+            f"slot {key!r}: {n} run(s) in {RUN_TIMEOUT_WINDOW_DAYS} days were stopped at their run timeout "
+            "(failure_class timeout). Raise it if the work needs longer: scoutctl agent-runtime set-limit "
+            "<runtime> --run-timeout-minutes <minutes>"
+        )
     for key, slot in sorted(schedule.items()):
         runs = lengths.get(key, [])
         if len(runs) < RUN_TIMEOUT_MIN_RUNS:
@@ -574,12 +609,61 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             verdict = "fits" if p90 <= planned * 60 else "would be stopped"
             readiness.append(f"{key} {p90 // 60} min p90 vs {planned} ({verdict})")
     notes = []
+    if unmeasured and not lengths:
+        notes.append(
+            f"{unmeasured} recent run(s) recorded no awake length, so run lengths can't be compared with run "
+            "timeouts: the runners measure it with python3, which wasn't found where they ran"
+        )
     if readiness:
         notes.append(
             "run timeout off; awake run lengths vs the planned timeout (45 min, 90 for research): "
             + "; ".join(readiness)
         )
     return warnings, notes
+
+
+def _check_run_limits(*, vault: Path, now: datetime | None = None) -> list[str]:
+    """Run-limit inputs a run could have tampered with (spec 2026-11-13 §8.6), as warnings. Needs no run history.
+
+    - scout-config.yaml ``budget.per_runtime`` values the limits ignore: ones that would loosen a limit, turn one
+      on, go under a floor, or aren't whole numbers. Each scheduled slot is checked with its own kind, so a value
+      looser than a briefing's 45 minutes but under research's 90 is named for the slots it is ignored on.
+    - usage-tracker rows dated in the future, which the daily token ceiling skips (review of #654).
+    """
+    from scout.agent_runtimes import limits as _limits
+    from scout.agent_runtimes import registry
+    from scout.agent_runtimes.resolve import default_runtime
+    from scout.schedule import load_default_schedule, load_schedule
+
+    warnings: list[str] = []
+    try:
+        schedule_path = vault / ".scout-state" / "schedule.yaml"
+        schedule = load_schedule(schedule_path) if schedule_path.exists() else load_default_schedule()
+        fallback = default_runtime(vault).runtime
+        # runtime -> ignored value -> the slots it was ignored on
+        ignored: dict[str, dict[str, list[str]]] = {}
+        for key, slot in sorted(schedule.items()):
+            runtime = slot.agent_runtime or fallback
+            try:
+                adapter = registry.get(runtime)
+            except KeyError:
+                continue
+            for value in _limits.limits_for(vault, adapter, key, slot.type.value).ignored:
+                ignored.setdefault(runtime, {}).setdefault(value, []).append(key)
+        for runtime, values in sorted(ignored.items()):
+            parts = [f"{value} (slots: {', '.join(slots)})" for value, slots in values.items()]
+            warnings.append(
+                f"scout-config.yaml budget.per_runtime.{runtime}: ignored {'; '.join(parts)}. Only the owner can "
+                f"loosen a run limit or turn one on: scoutctl agent-runtime set-limit {runtime} …"
+            )
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        warnings.append(f"could not check scout-config.yaml run limits: {e}")
+    if n := _limits.future_rows(vault, now=now):
+        warnings.append(
+            f".scout-logs/usage-tracker.jsonl has {n} row(s) dated in the future. The daily token ceiling skips "
+            "them; a run, or a wrong clock, wrote them. Remove them if nothing explains them."
+        )
+    return warnings
 
 
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
@@ -629,8 +713,48 @@ def _has_markers(path: Path) -> bool:
         return False
 
 
-def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
-    """Vault edits to plugin-owned files, as (warnings, notes), plus privacy drift.
+# One grouped warning per privacy-drift rule (#505): what the files do, and the fix, once.
+_PRIVACY_GROUP_TEXT = {
+    "runner-no-reader": (
+        "vault runners don't export SCOUT_READER=autonomous or SCOUT_MODE, so their sessions' reads "
+        "aren't marked as unattended",
+        'add `export SCOUT_MODE="<run-name>"` and `export SCOUT_READER=autonomous` before each launches claude',
+    ),
+    "script-raw-kb-read": (
+        "vault scripts read the knowledge base directly, not through `scoutctl kb`, so what they produce "
+        "carries no privacy labels",
+        "make them read through `scoutctl kb files` (and `scoutctl kb read`), and send an item from a private file "
+        "only to an owner-only channel, never Slack (#453)",
+    ),
+}
+
+
+def _privacy_drift_warnings(vault: Path) -> tuple[list[str], list[WarningGroup]]:
+    """Privacy drift as warnings: a rule one file breaks keeps its own message; a rule several
+    files break is one warning with a count and the first two names (#505), plus a group listing
+    them all."""
+    from scout.scripts import vault_drift
+
+    by_rule: dict[str, list[vault_drift.PrivacyDrift]] = {}
+    for finding in vault_drift.privacy_drift(vault):
+        by_rule.setdefault(finding.rule, []).append(finding)
+    warnings: list[str] = []
+    groups: list[WarningGroup] = []
+    for rule, findings in by_rule.items():
+        if len(findings) == 1 or rule not in _PRIVACY_GROUP_TEXT:
+            warnings.extend(f"privacy: {f.message}" for f in findings)
+            continue
+        what, fix = _PRIVACY_GROUP_TEXT[rule]
+        paths = [f.path for f in findings]
+        named = ", ".join(paths[:2]) + (f" and {len(paths) - 2} more" if len(paths) > 2 else "")
+        summary = f"privacy: {len(paths)} {what}: {named}. To fix, {fix}; `scoutctl bootstrap drift` lists them all."
+        warnings.append(summary)
+        groups.append(WarningGroup(kind=f"privacy.{rule}", summary=summary, items=tuple(paths)))
+    return warnings, groups
+
+
+def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str], list[WarningGroup]]:
+    """Vault edits to plugin-owned files, as (warnings, notes, groups), plus privacy drift.
 
     A conflict is a warning: the vault runs an older version of a plugin-owned
     file until it is resolved. An edit upgrades keep, and a copy the first
@@ -669,9 +793,10 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
             f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
-    # Vault-local runners and scripts that read around the privacy labels (#453).
-    warnings.extend(f"privacy: {finding.message}" for finding in vault_drift.privacy_drift(vault))
-    return warnings, notes
+    # Vault-local runners and scripts that read around the privacy labels (#453), grouped by rule (#505).
+    privacy_warnings, groups = _privacy_drift_warnings(vault)
+    warnings.extend(privacy_warnings)
+    return warnings, notes, groups
 
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
@@ -999,9 +1124,11 @@ def run_doctor(
     timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
     warnings.extend(timeout_warnings)
     notes.extend(timeout_notes)
+    warnings.extend(_check_run_limits(vault=vault, now=now))
 
+    groups: list[WarningGroup] = []
     try:
-        drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+        drift_warnings, drift_notes, groups = _check_vault_drift(vault=vault)
     except OSError as e:
         drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
     warnings.extend(drift_warnings)
@@ -1058,7 +1185,16 @@ def run_doctor(
         notes.append(f"run health could not be evaluated: {e}")
 
     if errors:
-        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes, run_health=run_health)
+        return DoctorReport(
+            severity=Severity.RED,
+            errors=errors,
+            warnings=warnings,
+            notes=notes,
+            run_health=run_health,
+            warning_groups=groups,
+        )
     if warnings:
-        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes, run_health=run_health)
+        return DoctorReport(
+            severity=Severity.YELLOW, warnings=warnings, notes=notes, run_health=run_health, warning_groups=groups
+        )
     return DoctorReport(severity=Severity.GREEN, notes=notes, run_health=run_health)

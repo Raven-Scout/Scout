@@ -19,6 +19,48 @@
     io.observe(el);
   }
 
+  /* Scroll drives the demos; every control still works by hand.
+     progressOf(): 0 → 1 as an element's top rises from `from` to `to` (fractions of the viewport).
+     onScrollFrame(): runs once per animation frame while the page scrolls or resizes.
+     guard(): once the reader clicks a demo, scrolling leaves it alone until it has left the screen.
+     playInView(): plays a card's change once it is mostly on screen, and resets it when you
+     scroll back above it, so it plays again next time. */
+  function progressOf(el, from, to) {
+    var top = el.getBoundingClientRect().top, a = innerHeight * from, b = innerHeight * to;
+    return Math.min(1, Math.max(0, (a - top) / (a - b)));
+  }
+  var frameFns = [], frameQueued = false;
+  function queueFrame() { if (!frameQueued) { frameQueued = true; requestAnimationFrame(function () { frameQueued = false; frameFns.forEach(function (f) { f(); }); }); } }
+  function onScrollFrame(fn) {
+    if (!frameFns.length) { addEventListener('scroll', queueFrame, { passive: true }); addEventListener('resize', queueFrame, { passive: true }); }
+    frameFns.push(fn); queueFrame();
+  }
+  function guard(el) {
+    var g = { user: false };
+    if (hasIO) new IntersectionObserver(function (es) { es.forEach(function (e) { if (!e.isIntersecting) g.user = false; }); }).observe(el);
+    return g;
+  }
+  function playInView(el, play, reset, delay) {
+    var h = { user: false, played: false, take: function () { h.user = true; h.played = true; if (t) { clearTimeout(t); t = null; } } };
+    var t = null;
+    if (!hasIO) return h;
+    new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        if (e.intersectionRatio >= 0.6) {
+          if (!h.played && !t) t = setTimeout(function () { t = null; if (!h.played) { h.played = true; play(); } }, reduce ? 0 : delay);
+        } else if (t) { clearTimeout(t); t = null; }
+      });
+    }, { threshold: [0, 0.6] }).observe(el);
+    /* Off-screen checks run on scroll, not on the observer: a jump (⌘K, Home) can carry the
+       card from above the screen to below it without it ever being on screen in between. */
+    onScrollFrame(function () {
+      var r = el.getBoundingClientRect();
+      if (r.top > innerHeight) { if (h.played) reset(); h.played = false; h.user = false; }
+      else if (r.bottom < 0) h.user = false;
+    });
+    return h;
+  }
+
   /* ---------- theme ---------- */
   var media = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
   function current() {
@@ -62,8 +104,8 @@
 
   /* ---------- scroll reveal (below the fold only) ---------- */
   if (hasIO && !reduce) {
-    var groups = ['.trio', '.bento', '.layers', '.install-grid', '.faq'];
-    var singles = '.section-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
+    var groups = ['.stages', '.trio', '.bento', '.readers-grid', '.layers', '.install-grid', '.faq'];
+    var singles = '.section-head, .hub-fig, .vault-fig, .readers-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
     var rv = [];
     groups.forEach(function (g) {
       each(g, function (parent) {
@@ -109,15 +151,44 @@
     each('main > section', function (s) { nio.observe(s); });
   }
 
-  /* ---------- hero: with / without ---------- */
-  var segBtns = d.querySelectorAll('.seg button');
-  each('.seg button', function (b) {
-    b.addEventListener('click', function () {
-      var v = b.getAttribute('data-view');
-      Array.prototype.forEach.call(segBtns, function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
-      each('.hero-vis figure[data-view]', function (f) { f.hidden = f.getAttribute('data-view') !== v; });
-    });
-  });
+  /* ---------- vault: the statement's ending cycles while it's on screen ----------
+     The word is aria-hidden; screen readers get a static "yours" beside it.
+     Under reduced motion it stays on "yours". */
+  (function () {
+    var rot = $('rot'); if (!rot || reduce) return;
+    var words = ['yours', 'on your Mac', 'plain Markdown', 'readable without us', 'one commit per run'];
+    var i = 0, timer = null;
+    function next() {
+      rot.classList.add('out');
+      setTimeout(function () { i = (i + 1) % words.length; rot.textContent = words[i]; rot.classList.remove('out'); }, 250);
+    }
+    function start() { if (!timer) timer = setInterval(next, 2600); }
+    function stop() { clearInterval(timer); timer = null; }
+    if (!hasIO) { start(); return; }
+    new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) start(); else stop(); }); }).observe(rot);
+  })();
+
+  /* ---------- chapter strip: shown while a numbered chapter is on screen ---------- */
+  (function () {
+    var strip = $('chapters'); if (!strip || !hasIO) return;
+    var links = {};
+    each('a', function (a) { links[a.getAttribute('href').slice(1)] = a; }, strip);
+    var current = null;
+    function paint() {
+      strip.classList.toggle('on', !!(current && links[current]));
+      Object.keys(links).forEach(function (k) {
+        var on = k === current;
+        links[k].classList.toggle('on', on);
+        if (on) { links[k].setAttribute('aria-current', 'true'); var w = links[k].parentNode; if (w.scrollWidth > w.clientWidth) w.scrollLeft = links[k].offsetLeft - w.offsetLeft - 16; }
+        else links[k].removeAttribute('aria-current');
+      });
+    }
+    var cio = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) current = e.target.id; else if (current === e.target.id) current = null; });
+      paint();
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    each('main > section', function (s) { if (s.id) cio.observe(s); });
+  })();
 
   /* ---------- hero: the briefing builds itself ---------- */
   (function () {
@@ -235,23 +306,33 @@
       out.appendChild(t); out.appendChild(m);
       if (!reduce) { out.classList.remove('flash'); void out.offsetWidth; out.classList.add('flash'); }
     }
+    var g = guard(xc), srcs = xc.querySelectorAll('.srct'), step = -1;
     each('.srct', function (b) {
-      b.addEventListener('click', function () { b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); update(); });
+      b.addEventListener('click', function () { g.user = true; step = -1; b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); update(); });
     }, xc);
+    /* Calendar alone (single-source) → + Slack (verified) → + Gmail → + Linear (contradicted) */
+    onScrollFrame(function () {
+      if (g.user) return;
+      var i = Math.min(3, Math.floor(progressOf(xc, 0.85, 0.3) * 4));
+      if (i === step) return; step = i;
+      Array.prototype.forEach.call(srcs, function (b, k) { b.setAttribute('aria-pressed', k <= i ? 'true' : 'false'); });
+      update();
+    });
   })();
 
   /* ---------- mistake pattern ---------- */
   (function () {
     var c = $('pcard'); if (!c) return;
     var pill = $('pc-pill'), msg = $('pc-msg'), btn = $('pc-btn');
-    btn.addEventListener('click', function () {
-      var fixed = c.getAttribute('data-state') !== 'fixed';
+    function set(fixed) {
       c.setAttribute('data-state', fixed ? 'fixed' : 'regression');
       pill.textContent = fixed ? 'fixed' : 'regression';
       pill.className = 'pill ' + (fixed ? 'ok' : 'bad');
       msg.textContent = fixed ? 'Fix written into its instructions. No repeat since.' : 'Seen 3 times. The fix goes into its own instructions.';
       btn.textContent = fixed ? '↻ Replay' : 'Apply the fix';
-    });
+    }
+    var pv = playInView(c, function () { set(true); }, function () { set(false); }, 700);
+    btn.addEventListener('click', function () { pv.take(); set(c.getAttribute('data-state') !== 'fixed'); });
   })();
 
   /* ---------- proposal ---------- */
@@ -259,14 +340,17 @@
     var p = $('prop'); if (!p) return;
     var acts = $('pr-acts'), timer = $('pr-timer');
     var pending = acts.innerHTML;
-    acts.addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      var a = b.getAttribute('data-act');
+    function act(a, byHand) {
       if (a === 'approve') { p.setAttribute('data-state', 'applied'); timer.textContent = 'applied ✓'; }
       else if (a === 'reject') { p.setAttribute('data-state', 'rejected'); timer.textContent = 'rejected, not applied'; }
-      else { p.setAttribute('data-state', 'pending'); timer.textContent = 'applies in 3 days'; acts.innerHTML = pending; acts.querySelector('button').focus(); return; }
+      else { p.setAttribute('data-state', 'pending'); timer.textContent = 'applies in 3 days'; acts.innerHTML = pending; if (byHand) acts.querySelector('button').focus(); return; }
       acts.innerHTML = '<button class="mini" type="button" data-act="reset">↻ Try again</button>';
-      acts.querySelector('button').focus();
+      if (byHand) acts.querySelector('button').focus();
+    }
+    var pv = playInView(p, function () { act('approve'); }, function () { act('reset'); }, 1100);
+    acts.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      pv.take(); act(b.getAttribute('data-act'), true);
     });
   })();
 
@@ -275,31 +359,166 @@
     var h = $('held'); if (!h) return;
     var lbl = $('held-lbl'), claim = $('held-claim'), acts = $('held-acts');
     var openActs = acts.innerHTML, openClaim = claim.innerHTML;
-    acts.addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      var a = b.getAttribute('data-act');
+    function act(a, byHand) {
       if (a === 'confirm') { h.setAttribute('data-state', 'confirmed'); lbl.textContent = '✓ Linked to Alex'; claim.innerHTML = 'Your call, not a guess. Both names now point to the same person note.'; }
       else if (a === 'reject') { h.setAttribute('data-state', 'rejected'); lbl.textContent = '✓ Kept separate'; claim.innerHTML = 'A new person note is started for <b>A. Rivera</b>. Nothing was merged by mistake.'; }
-      else { h.setAttribute('data-state', 'open'); lbl.textContent = '⏸ Held for you'; claim.innerHTML = openClaim; acts.innerHTML = openActs; acts.querySelector('button').focus(); return; }
+      else { h.setAttribute('data-state', 'open'); lbl.textContent = '⏸ Held for you'; claim.innerHTML = openClaim; acts.innerHTML = openActs; if (byHand) acts.querySelector('button').focus(); return; }
       acts.innerHTML = '<button class="mini" type="button" data-act="reset">↻ Reset</button>';
-      acts.querySelector('button').focus();
+      if (byHand) acts.querySelector('button').focus();
+    }
+    var pv = playInView(h, function () { act('confirm'); }, function () { act('reset'); }, 1500);
+    acts.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      pv.take(); act(b.getAttribute('data-act'), true);
+    });
+  })();
+
+  /* ---------- problem: the same morning, without and with Scout ---------- */
+  (function () {
+    var fig = $('morning'); if (!fig) return;
+    var list = $('stages'), tally = $('tally'), lbl = $('stages-lbl');
+    var stages = list.querySelectorAll('.stage');
+    var views = {
+      without: {
+        lbl: 'One morning, without Scout',
+        tally: '→ And nothing you worked out this morning is kept for tomorrow.',
+        s: [['8', 'tools with something new', 'Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp'],
+            ['113', 'unread messages, threads and notifications'],
+            ['3', 'tools that disagree about the same thing: the ticket, the pull request and the thread'],
+            ['4×', 'more before evening, as new replies arrive']]
+      },
+      'with': {
+        lbl: 'The same morning, with Scout',
+        tally: '→ And what it worked out stays in ~/Scout, one commit per run.',
+        s: [['1', 'list, with its sources', 'in the app, as Markdown, or by Slack DM or Telegram'],
+            ['6', 'items that need you, each tagged verified, single-source or contradicted'],
+            ['1', 'contradiction held for you, with both sides shown'],
+            ['0×', 'checks by hand: catch-up scans run at 11:00, 13:00, 17:00 and 19:00']]
+      }
+    };
+    function show(v) {
+      var data = views[v];
+      fig.setAttribute('data-view', v);
+      each('.seg button', function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-view') === v ? 'true' : 'false'); }, fig);
+      function write() {
+        lbl.textContent = data.lbl; tally.textContent = data.tally;
+        Array.prototype.forEach.call(stages, function (st, i) {
+          st.querySelector('b').textContent = data.s[i][0];
+          st.querySelector('.d').textContent = data.s[i][1];
+          var apps = st.querySelector('.apps-list'); if (apps) apps.textContent = data.s[i][2];
+        });
+        list.classList.remove('swap');
+      }
+      if (reduce) { write(); return; }
+      list.classList.add('swap'); setTimeout(write, 200);
+    }
+    /* Scrolling drives it. Where the figure fits on screen it sticks under the header
+       inside a taller track and flips halfway through; where it doesn't (short phones),
+       it flips once you've scrolled most of it into view. Scrolling back flips it back.
+       The buttons scroll to the matching point, so scroll and buttons never disagree. */
+    var track = $('morning-track'), prog = $('stages-prog'), head = d.querySelector('.site-head');
+    var current = 'without', figH = 0, stick = 76, scrolly = false, manual = false, ticking = false;
+    function setView(v) { if (v !== current) { current = v; show(v); } }
+    function progress() {
+      var extra = track.offsetHeight - figH;
+      return extra > 0 ? Math.min(1, Math.max(0, (stick - track.getBoundingClientRect().top) / extra)) : 0;
+    }
+    function update() {
+      ticking = false;
+      if (scrolly) { var p = progress(); prog.style.width = (p * 100).toFixed(1) + '%'; setView(p >= 0.5 ? 'with' : 'without'); }
+      else if (!manual) setView(fig.getBoundingClientRect().bottom < innerHeight * 0.8 ? 'with' : 'without');
+    }
+    function measure() {
+      stick = (head ? head.offsetHeight : 60) + 16;
+      figH = fig.offsetHeight;
+      scrolly = !!track && figH < innerHeight - stick - 24;
+      if (track) {
+        track.classList.toggle('scrolly', scrolly);
+        figH = fig.offsetHeight; /* the progress bar only shows in scrolly mode */
+        track.style.setProperty('--fig-h', figH + 'px'); track.style.setProperty('--stick', stick + 'px');
+      }
+      update();
+    }
+    function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(update); } }
+    each('.seg button', function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-view');
+        if (scrolly) {
+          var y = scrollY + track.getBoundingClientRect().top - stick + (v === 'with' ? 0.75 : 0.15) * (track.offsetHeight - figH);
+          window.scrollTo({ top: y, behavior: reduce ? 'auto' : 'smooth' });
+        } else { manual = true; setView(v); }
+      });
+    }, fig);
+    if (hasIO) new IntersectionObserver(function (es) { es.forEach(function (e) { if (!e.isIntersecting) manual = false; }); }).observe(fig);
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', measure, { passive: true });
+    if (d.fonts && d.fonts.ready) d.fonts.ready.then(measure);
+    measure();
+  })();
+
+  /* ---------- everything is a file: follow a [[link]] into the vault ---------- */
+  (function () {
+    var bar = $('vault-bar'), trace = $('vb-trace'); if (!bar || !trace) return;
+    var def = trace.innerHTML, active = null;
+    var map = {
+      priya: [['priya', 'proj'], '<b>[[priya]]</b> → people/priya.md. The owner field points at a person note, not a name typed into a meeting.'],
+      export: [['export', 'pr412'], '<b>[[export]]</b> → topics/export.md, cited to the pull request it came from in sources/.'],
+      permissions: [['permissions', 'sync'], '<b>[[permissions]]</b> → topics/permissions.md, cited to the meeting in sources/ where it was agreed.'],
+      alex: [['alex', 'proj'], '<b>[[alex]]</b> → people/alex-rivera.md. One short name, one person note, so Alex never splits in two.']
+    };
+    function clear() {
+      active = null; bar.classList.remove('tracing'); trace.innerHTML = def;
+      each('.fc.hot', function (f) { f.classList.remove('hot'); }, bar);
+      each('.spec-code button.l', function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+    }
+    function show(b) {
+      var k = b.getAttribute('data-link'), m = map[k]; if (!m) return;
+      clear(); active = k; bar.classList.add('tracing');
+      m[0].forEach(function (f) { var el = bar.querySelector('[data-f="' + f + '"]'); if (el) el.classList.add('hot'); });
+      each('.spec-code button.l[data-link="' + k + '"]', function (x) { x.classList.add('on'); x.setAttribute('aria-pressed', 'true'); });
+      trace.innerHTML = m[1];
+    }
+    var g = guard(bar), order = ['priya', 'export', 'permissions', 'alex'], step = null;
+    function release() { clear(); g.user = false; step = null; queueFrame(); }
+    each('.spec-code button.l', function (b) {
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () { g.user = true; show(b); });
+      if (fine) { b.addEventListener('mouseenter', function () { g.user = true; show(b); }); b.addEventListener('mouseleave', release); }
+      b.addEventListener('focus', function () { g.user = true; show(b); });
+      b.addEventListener('blur', release);
+    });
+    /* each link in turn while the folder bar rises up the screen */
+    onScrollFrame(function () {
+      if (g.user) return;
+      var pr = progressOf(bar, 0.95, 0.4), i = pr <= 0 ? -1 : Math.min(3, Math.floor(pr * 4));
+      if (i === step) return; step = i;
+      if (i < 0) clear(); else show(d.querySelector('.spec-code button.l[data-link="' + order[i] + '"]'));
     });
   })();
 
   /* ---------- research queue ---------- */
   (function () {
-    var run = $('rq-run'), list = $('rq-list'); if (!run || !list) return;
-    var original = list.innerHTML;
-    run.addEventListener('click', function () {
+    var run = $('rq-run'), list = $('rq-list'), box = $('rq'); if (!run || !list || !box) return;
+    var original = list.innerHTML, runs = 0, busy = false, g = guard(box);
+    function restart() { list.innerHTML = original; run.textContent = '▸ Run next'; runs = 0; }
+    function runNext() {
       var row = list.querySelector('li:not(.done):not(.running)');
-      if (!row) { list.innerHTML = original; run.textContent = '▸ Run next'; return; }
+      if (!row) { restart(); return; }
       var age = row.querySelector('span');
-      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true;
+      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true; busy = true;
       setTimeout(function () {
         row.classList.remove('running'); row.classList.add('done'); age.textContent = 'done ✓';
-        list.appendChild(row); run.disabled = false;
+        list.appendChild(row); run.disabled = false; busy = false; runs++;
         if (!list.querySelector('li:not(.done)')) run.textContent = '↻ Start over';
+        queueFrame();
       }, reduce ? 0 : 1100);
+    }
+    run.addEventListener('click', function () { g.user = true; runNext(); });
+    onScrollFrame(function () {
+      if (busy) return;
+      if (box.getBoundingClientRect().top > innerHeight) { if (runs) restart(); return; } /* back above it: start over */
+      if (g.user) return;
+      if (Math.floor(progressOf(box, 0.85, 0.3) * 4) > runs) runNext();
     });
   })();
 
@@ -330,18 +549,22 @@
       });
       m.appendChild(r);
     }
+    var choices = [['Sam owns it', 'Sam owns'], ['I do', 'you own']];
+    function reply(p, byHand) {
+      chips.innerHTML = '';
+      msg('me', p[0]);
+      var t = typing();
+      at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' the billing fix. Saved to your notes, and I won’t ask again. ✓'); if (byHand) replay.focus(); });
+    }
     function ask() {
       chips.innerHTML = '';
-      [['Sam owns it', 'Sam owns'], ['I do', 'you own']].forEach(function (p) {
+      choices.forEach(function (p) {
         var b = d.createElement('button'); b.type = 'button'; b.className = 'mini'; b.textContent = p[0];
-        b.addEventListener('click', function () {
-          chips.innerHTML = '';
-          msg('me', p[0]);
-          var t = typing();
-          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' owns the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
-        });
+        b.addEventListener('click', function () { reply(p, true); });
         chips.appendChild(b);
       });
+      /* nobody has to click: if no answer comes, the first one is sent */
+      timers.push(setTimeout(function () { if (chips.firstChild) reply(choices[0], false); }, reduce ? 2500 : 2600));
     }
     function play() {
       timers.forEach(clearTimeout); timers = []; body.innerHTML = ''; chips.innerHTML = '';
@@ -354,51 +577,6 @@
     }
     replay.addEventListener('click', play);
     onceVisible(chat, play, 0.5);
-  })();
-
-  /* ---------- wishlist ---------- */
-  each('#wish .wi', function (b) {
-    b.addEventListener('click', function () {
-      var on = b.getAttribute('aria-pressed') !== 'true';
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      var em = b.querySelector('em'); if (em) em.textContent = on ? 'shipped' : 'queued';
-    });
-  });
-
-  /* ---------- knowledge graph ---------- */
-  (function () {
-    var kg = $('kg'); if (!kg) return;
-    var cap = $('kg-cap'), def = cap.innerHTML;
-    var nodes = kg.querySelectorAll('.node'), edges = kg.querySelectorAll('line');
-    function clear() {
-      kg.classList.remove('dim');
-      each('.hot', function (x) { x.classList.remove('hot'); }, kg);
-      cap.innerHTML = def;
-    }
-    Array.prototype.forEach.call(nodes, function (n) {
-      var name = n.querySelector('text').textContent;
-      n.setAttribute('tabindex', '0');
-      n.setAttribute('role', 'button');
-      n.setAttribute('aria-label', name + ': ' + n.getAttribute('data-rels'));
-      function show() {
-        var id = n.getAttribute('data-id');
-        clear(); kg.classList.add('dim'); n.classList.add('hot');
-        Array.prototype.forEach.call(edges, function (e) {
-          var a = e.getAttribute('data-a'), b = e.getAttribute('data-b');
-          if (a === id || b === id) {
-            e.classList.add('hot');
-            var o = kg.querySelector('.node[data-id="' + (a === id ? b : a) + '"]'); if (o) o.classList.add('hot');
-          }
-        });
-        cap.innerHTML = '';
-        var b = d.createElement('b'); b.textContent = name;
-        cap.appendChild(b); cap.appendChild(d.createTextNode(' — ' + n.getAttribute('data-rels')));
-      }
-      n.addEventListener('mouseenter', show); n.addEventListener('focus', show);
-      n.addEventListener('click', show);
-      n.addEventListener('blur', clear);
-    });
-    kg.querySelector('svg').addEventListener('mouseleave', clear);
   })();
 
   /* ---------- jump palette (⌘K / Ctrl+K) ---------- */

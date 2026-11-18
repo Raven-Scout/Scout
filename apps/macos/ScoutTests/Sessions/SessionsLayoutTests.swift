@@ -19,8 +19,9 @@ struct SessionsLayoutTests {
         let index = try SessionsFixture.index()
         let rows = SessionsLayout.rows(index: index, filter: SessionsFilter(), now: now)
         #expect(rows.map(\.name) == ["Example Repo", "other-repo"])
-        // needs_you → running → parked (open first, then closed); stale collapses.
-        #expect(ids(rows[0].active) == ["local_A", "local_R", "local_C", "local_U"])
+        // Parked open first, then closed; stale collapses. The needs-you and
+        // running cards are in the Now strip, not here (UI audit R4).
+        #expect(ids(rows[0].active) == ["local_C", "local_U"])
         #expect(ids(rows[0].stale) == ["local_S"])
         #expect(rows[0].done.isEmpty)
         #expect(ids(rows[1].active) == ["local_W", "local_Q", "cli:aaaaaaaa-0000-0000-0000-000000000007"])
