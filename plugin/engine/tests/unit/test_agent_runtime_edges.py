@@ -321,8 +321,9 @@ def test_config_off_for_the_ceiling_is_ignored_where_one_is_on(vault: Path) -> N
         "budget:\n  per_runtime:\n    d:\n      max_tokens_per_day: off\n", encoding="utf-8"
     )
     lim = limits.limits_for(vault, DummyRuntime("d"))
-    assert lim.max_tokens_per_day == limits.FLOOR_TOKENS and lim.ignored == ("max_tokens_per_day: off",)
+    assert lim.max_tokens_per_day == limits.FLOOR_TOKENS
+    assert lim.ignored == ("max_tokens_per_day: off (only the owner turns it off)",)
     (vault / "scout-config.yaml").write_text(
         "budget:\n  per_runtime:\n    claude-code:\n      max_tokens_per_day: off\n", encoding="utf-8"
     )
-    assert limits.limits_for(vault, ClaudeCode()).ignored == ()
+    assert limits.limits_for(vault, ClaudeCode()).ignored == ()  # off on an off ceiling changes nothing

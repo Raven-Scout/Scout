@@ -290,13 +290,13 @@ def test_check_exit_codes(vault: Path) -> None:
         assert payload["code"] == "provider_not_consented" and payload["allowed"] is False
         assert "[scout:agent-runtime] provider_not_consented" in out
     with registered(DummyRuntime("dummy", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))):
-        (vault / "scout-config.yaml").write_text(
-            "budget:\n  per_runtime:\n    dummy:\n      max_tokens_per_day: 10\n", encoding="utf-8"
-        )
+        from scout.agent_runtimes import limits
+
+        limits.set_owner_limit(vault, "dummy", max_tokens_per_day="10")
         (vault / ".scout-logs").mkdir()
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         (vault / ".scout-logs" / "usage-tracker.jsonl").write_text(
-            json.dumps({"ts": ts, "agent_runtime": "dummy", "tokens": 11}) + "\n", encoding="utf-8"
+            json.dumps({"source": "runner", "ts": ts, "agent_runtime": "dummy", "tokens": 11}) + "\n", encoding="utf-8"
         )
         code, out, _ = _cli("agent-runtime", "check", "--runtime", "dummy")
         assert code == 4 and "token_ceiling" in out
@@ -417,12 +417,12 @@ def test_set_limit_is_the_owners_alone(vault: Path) -> None:
     from scout.agent_runtimes import limits
 
     code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--run-timeout-minutes", "45")
-    assert code == 0 and '"run_timeout_minutes": "45"' in out
-    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": "45"}
+    assert code == 0 and '"run_timeout_minutes": 45' in out
+    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": 45}
     for env in ({"SCOUT_MODE": "dreaming"}, {"SCOUT_READER": "autonomous"}):
         code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--run-timeout-minutes", "off", env=env)
         assert code == 2 and "refused" in out
-    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": "45"}
+    assert limits.owner_limits(vault, "claude-code") == {"run_timeout_minutes": 45}
     code, _, _ = _cli("agent-runtime", "set-limit", "claude-code")
     assert code == 1
     code, out, _ = _cli("agent-runtime", "set-limit", "claude-code", "--clear")
@@ -441,3 +441,13 @@ def test_exec_reads_the_slot_kind_from_the_runners_run_type(vault: Path, monkeyp
     with registered(DummyRuntime("dummy", binary=Path("/bin/dummy"))):
         _cli(*_exec_args(runtime="dummy"), env={"SCOUT_MODE": "midday-x", "SCOUT_RUN_TYPE": "research"})
     assert seen["timeout_s"] == 90 * 60
+
+
+def test_exec_logs_config_values_the_limits_ignored(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _capture_execve(monkeypatch)
+    (vault / "scout-config.yaml").write_text(
+        "budget:\n  per_runtime:\n    claude-code:\n      run_timeout_minutes: 5\n", encoding="utf-8"
+    )
+    _, out, exc = _cli(*_exec_args())
+    assert isinstance(exc, Execd)
+    assert "=== run limits: scout-config.yaml budget.per_runtime.claude-code ignored: run_timeout_minutes: 5" in out

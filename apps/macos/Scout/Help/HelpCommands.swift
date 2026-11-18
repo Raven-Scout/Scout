@@ -46,23 +46,32 @@ enum SettingsAnchor {
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
-    /// When Engine Settings… last asked for the Engine section. A Settings window that appears soon after
+    /// When something last asked for the Engine section. A Settings view that appears soon after
     /// scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings view
     /// scrolls on the notification instead. The request expires rather than being cleared by whichever
-    /// view sees it first, so the main window's Settings page can't swallow a new window's request.
+    /// view sees it first, so the main window's Settings page can't swallow a new window's request:
+    /// every Settings view that appears within the window scrolls to Engine.
     private static var engineSettingsRequestedAt: Date?
     static let engineSettingsRequestWindow: TimeInterval = 2
 
-    /// Open Settings at its Engine section.
+    /// Open the Settings window at its Engine section.
     static func showEngineSettings(_ openSettings: OpenSettingsAction) {
-        engineSettingsRequestedAt = Date()
-        openSettings()
+        showEngineSettings { openSettings() }
+    }
+
+    /// Show Settings at its Engine section, however `open` shows it: the
+    /// Settings window, or the main window's Settings page. Every "Open
+    /// Settings ▸ Engine" button goes through here, so none opens at the top.
+    static func showEngineSettings(_ open: () -> Void, now: Date = Date()) {
+        engineSettingsRequestedAt = now
+        open()
         NotificationCenter.default.post(name: .scoutShowEngineSettings, object: nil)
     }
 
-    /// Whether Engine Settings… asked for the Engine section just now; reading it clears it.
-    static func takeEngineSettingsRequest(now: Date = Date()) -> Bool {
-        defer { engineSettingsRequestedAt = nil }
+    /// Whether something asked for the Engine section just now. Reading it
+    /// doesn't clear it: it only expires, so a second Settings view appearing
+    /// in the same moment still sees it.
+    static func engineSettingsRequested(now: Date = Date()) -> Bool {
         guard let at = engineSettingsRequestedAt else { return false }
         return now.timeIntervalSince(at) <= engineSettingsRequestWindow
     }

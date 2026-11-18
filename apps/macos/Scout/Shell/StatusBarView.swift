@@ -41,13 +41,13 @@ struct StatusBarView: View {
     // MARK: - Cells
 
     /// `AppState.status`, the same status as the menu-bar icon and panel.
-    /// When it has a fix, the cell is a button to Settings, where both
-    /// "Set up…" and the engine details live.
+    /// When it has a fix, the cell is a button to Settings ▸ Engine, where
+    /// both "Set up…" and the engine details live.
     private var health: some View {
         let status = state.status
         let color = status.tone.color
         return Button {
-            state.requestedSidebar = .settings
+            HelpActions.showEngineSettings { state.requestedSidebar = .settings }
         } label: {
             HStack(spacing: 6) {
                 Circle()

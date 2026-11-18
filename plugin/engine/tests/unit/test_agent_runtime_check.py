@@ -179,16 +179,36 @@ def test_limits_from_config(vault: Path) -> None:
         vault,
         "budget:\n  per_runtime:\n"
         "    claude-code:\n      run_timeout_minutes: 90\n      max_tokens_per_day: auto\n"
-        "    d:\n      run_timeout_minutes: off\n      max_tokens_per_day: 1000\n",
+        "    d:\n      run_timeout_minutes: 40\n      max_tokens_per_day: 20000000\n",
     )
+    # Claude Code's limits are off: scout-config.yaml (which a run can write) can't turn them on (review of #653).
     c = limits.limits_for(vault, ClaudeCode())
-    assert (c.run_timeout_s, c.timeout_source) == (90 * 60, "config")
-    assert (c.max_tokens_per_day, c.ceiling_source) == (limits.FLOOR_TOKENS, "config")
+    assert (c.run_timeout_s, c.max_tokens_per_day) == (None, None)
+    assert [i.split(" (")[0] for i in c.ignored] == ["run_timeout_minutes: 90", "max_tokens_per_day: auto"]
+    assert all("only the owner turns it on" in i for i in c.ignored)
+    # Where a limit is on, config narrows it.
     d = limits.limits_for(vault, DummyRuntime("d"))
-    # scout-config.yaml can only make a limit stricter (a run can write it): `off` is ignored, and says so.
-    assert (d.run_timeout_s, d.timeout_source) == (45 * 60, "default")
-    assert d.ignored == ("run_timeout_minutes: off",)
-    assert (d.max_tokens_per_day, d.ceiling_source) == (1000, "config")
+    assert (d.run_timeout_s, d.timeout_source) == (40 * 60, "config")
+    assert (d.max_tokens_per_day, d.ceiling_source) == (limits.FLOOR_TOKENS, "default")  # 20M is looser than 10M
+    assert d.ignored == ("max_tokens_per_day: 20000000 (looser than 10,000,000)",)
+
+
+def test_config_narrowing_has_a_floor(vault: Path) -> None:
+    """A run that writes 1 minute into the config mustn't stop the next runs before they start."""
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 5\n      max_tokens_per_day: 500\n")
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    assert (d.run_timeout_s, d.max_tokens_per_day) == (45 * 60, limits.FLOOR_TOKENS)
+    assert "below the 30-minute floor" in d.ignored[0] and "below the 10,000,000-token floor" in d.ignored[1]
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 30\n")
+    assert limits.limits_for(vault, DummyRuntime("d")).run_timeout_s == 30 * 60
+
+
+def test_config_cant_turn_on_a_limit_the_owner_turned_off(vault: Path) -> None:
+    limits.set_owner_limit(vault, "d", run_timeout_minutes="off", max_tokens_per_day="off")
+    _config(vault, "budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: 40\n      max_tokens_per_day: auto\n")
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    assert (d.run_timeout_s, d.max_tokens_per_day) == (None, None)
+    assert len(d.ignored) == 2
 
 
 def test_config_can_never_loosen_a_limit(vault: Path) -> None:
@@ -196,7 +216,7 @@ def test_config_can_never_loosen_a_limit(vault: Path) -> None:
     d = limits.limits_for(vault, DummyRuntime("d"), "night", "research")
     assert (d.run_timeout_s, d.timeout_source) == (90 * 60, "default")
     assert (d.max_tokens_per_day, d.ceiling_source) == (limits.FLOOR_TOKENS, "default")
-    assert set(d.ignored) == {"run_timeout_minutes: 600", "max_tokens_per_day: off"}
+    assert {i.split(" (")[0] for i in d.ignored} == {"run_timeout_minutes: 600", "max_tokens_per_day: off"}
 
 
 def test_the_owners_limits_replace_the_default_and_config_still_narrows(vault: Path) -> None:
@@ -215,7 +235,7 @@ def test_the_owners_limits_replace_the_default_and_config_still_narrows(vault: P
     assert (back.run_timeout_s, back.timeout_source, back.ignored) == (
         45 * 60,
         "default",
-        ("run_timeout_minutes: 120",),
+        ("run_timeout_minutes: 120 (looser than 45)",),
     )
     with pytest.raises(ValueError):
         limits.set_owner_limit(vault, "d", run_timeout_minutes="soon")
@@ -246,6 +266,67 @@ def test_an_invalid_limit_keeps_the_default(vault: Path, bad: str) -> None:
     assert limits.limits_for(vault, ClaudeCode()).run_timeout_s is None
 
 
+@pytest.mark.parametrize(
+    ("bad", "shown"),
+    [
+        ('"²"', "'²'"),
+        ('"①"', "'①'"),
+        ('"٣٠"', "'٣٠'"),
+        ("0.5", "0.5"),
+        ("29.9", "29.9"),
+        ('"0.0"', "'0.0'"),
+        ('"5m"', "'5m'"),
+    ],
+)
+def test_a_value_that_isnt_a_whole_number_is_ignored_and_named(vault: Path, bad: str, shown: str) -> None:
+    """str.isdigit() is true for "²", which int() refuses: limits_for raised, so every later run was refused as
+    check_failed (review of #654). Now the value is ignored, and listed like any other."""
+    _config(
+        vault, f"budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: {bad}\n      max_tokens_per_day: {bad}\n"
+    )
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    assert (d.run_timeout_s, d.max_tokens_per_day) == (45 * 60, limits.FLOOR_TOKENS)
+    assert d.ignored == (
+        f"run_timeout_minutes: {shown} (not a whole number of minutes)",
+        f"max_tokens_per_day: {shown} (not a whole number of tokens, auto or off)",
+    )
+    dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
+    assert _check(vault, dummy) is None  # the run starts
+    with pytest.raises(ValueError):  # and the owner can't store one either
+        limits.set_owner_limit(vault, "d", run_timeout_minutes="²")
+
+
+def test_an_ignored_value_is_shown_at_most_60_characters(vault: Path) -> None:
+    """A run can write a huge value; the run log and the doctor quote it cut short (review of #654)."""
+    _config(
+        vault,
+        f'budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: "{"x" * 5000}"\n'
+        f"      max_tokens_per_day: {'9' * 300}\n",
+    )
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    timeout, ceiling = d.ignored
+    assert timeout.startswith("run_timeout_minutes: 'xxx") and timeout.endswith("… (not a whole number of minutes)")
+    assert ceiling.startswith("max_tokens_per_day: 999") and ceiling.endswith("… (looser than 10,000,000)")
+    for entry in d.ignored:
+        assert len(entry.split(": ", 1)[1].split(" (")[0]) == limits.SHOWN_MAX_CHARS
+
+
+def test_limits_for_never_raises(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the config can't be applied at all, the limits are those without it, and say so."""
+
+    class Broken(dict):  # type: ignore[type-arg]
+        def get(self, *_a: object, **_k: object) -> object:
+            raise RuntimeError("boom")
+
+    real = limits._block
+    monkeypatch.setattr(limits, "_block", lambda d, rid: Broken())
+    d = limits.limits_for(vault, DummyRuntime("d"), "night", "research")
+    assert (d.run_timeout_s, d.timeout_source) == (90 * 60, "default")
+    assert d.ignored == ("budget.per_runtime.d (RuntimeError: could not be applied)",)
+    monkeypatch.setattr(limits, "_block", real)
+    assert limits.limits_for(vault, DummyRuntime("d")).ignored == ()
+
+
 def test_an_unreadable_config_keeps_the_defaults(vault: Path) -> None:
     _config(vault, "budget: [\n")
     assert limits.limits_for(vault, DummyRuntime("d")).run_timeout_s == 45 * 60
@@ -266,12 +347,14 @@ def _ts(hours_ago: float) -> str:
 def test_tokens_used_counts_this_runtimes_last_24_hours(vault: Path) -> None:
     _rows(
         vault,
-        {"ts": _ts(1), "agent_runtime": "d", "tokens": 400},
-        {"ts": _ts(2), "agent_runtime": "d", "input_tokens": 100, "output_tokens": 50},
-        {"ts": _ts(30), "agent_runtime": "d", "tokens": 9999},
-        {"ts": _ts(1), "agent_runtime": "other", "tokens": 9999},
-        {"ts": _ts(1), "tokens": 7},  # no key: claude-code
-        {"ts": _ts(1), "agent_runtime": "d", "tokens": True},
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 400},
+        {"source": "runner", "ts": _ts(2), "agent_runtime": "d", "input_tokens": 100, "output_tokens": 50},
+        {"source": "runner", "ts": _ts(30), "agent_runtime": "d", "tokens": 9999},
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "other", "tokens": 9999},
+        {"source": "runner", "ts": _ts(1), "tokens": 7},  # no key: claude-code
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": True},
+        {"source": "session-tokens", "ts": _ts(1), "agent_runtime": "d", "tokens": 9999},  # the runner row counts it
+        {"source": "attempt", "ts": _ts(1), "agent_runtime": "d", "input_tokens": 9999},
     )
     assert limits.tokens_used(vault, "d", now=NOW) == 550
     assert limits.tokens_used(vault, "claude-code", now=NOW) == 7
@@ -279,17 +362,55 @@ def test_tokens_used_counts_this_runtimes_last_24_hours(vault: Path) -> None:
 
 
 def test_the_token_ceiling_skips_as_budget(vault: Path) -> None:
-    _config(vault, "budget:\n  per_runtime:\n    d:\n      max_tokens_per_day: 500\n")
+    limits.set_owner_limit(vault, "d", max_tokens_per_day="500")  # the owner may set any ceiling
     dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
-    _rows(vault, {"ts": _ts(1), "agent_runtime": "d", "tokens": 499})
+    _rows(vault, {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 499})
     assert _check(vault, dummy) is None
-    _rows(vault, {"ts": _ts(1), "agent_runtime": "d", "tokens": 500})
+    _rows(vault, {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 500})
     r = _check(vault, dummy)
     assert r is not None and r.code == "token_ceiling"
     assert r.exit_code == rt_check.EXIT_BUDGET
     assert "max_tokens_per_day" in r.reason
     # The skills' preamble isn't a scheduled run: no ceiling there.
     assert _check(vault, dummy, interactive=True) is None
+
+
+def test_a_future_dated_row_never_counts(vault: Path) -> None:
+    """The tracker isn't protected: a row dated 2099 would never age out and would skip every later run (review of
+    #654). Rows past now by more than the clock skew are skipped, and the doctor counts them."""
+    _rows(
+        vault,
+        {"source": "runner", "ts": "2099-01-01T00:00:00Z", "agent_runtime": "d", "tokens": 10**15},
+        {
+            "source": "runner",
+            "ts": (NOW + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "agent_runtime": "d",
+            "tokens": 10**15,
+        },
+        {
+            "source": "runner",
+            "ts": (NOW + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "agent_runtime": "d",
+            "tokens": 30,
+        },  # within the clock skew
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 400},
+    )
+    assert limits.tokens_used(vault, "d", now=NOW) == 430
+    assert limits.future_rows(vault, now=NOW) == 2
+    assert limits.future_rows(vault / "nowhere", now=NOW) == 0
+    limits.set_owner_limit(vault, "d", max_tokens_per_day="500")
+    dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
+    assert _check(vault, dummy) is None
+
+
+def test_the_formula_skips_future_dated_rows(vault: Path) -> None:
+    """A future-dated row would raise the default ceiling; the formula skips it as the ceiling does."""
+    with registered(DummyRuntime("d")):
+        _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
+        _rows(vault, _boot(-24 * 30, "dreaming", 1000.0))  # 30 days ahead, USD 1000
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == limits.FLOOR_TOKENS
+        _rows(vault, _boot(1, "dreaming", 1000.0))  # the same row, an hour ago, does count
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 2 * 1000 * limits.K_TOKENS_PER_USD
 
 
 def test_the_default_ceiling_is_one_replaceable_function(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -364,10 +485,10 @@ def test_formula_uses_the_runtimes_own_rows_after_a_week(vault: Path) -> None:
     with registered(DummyRuntime("d")):
         _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
         boot = [_boot(5, "dreaming", 50)]
-        young = [{"ts": _ts(24 * 3), "agent_runtime": "d", "type": "dreaming", "tokens": 9_000_000}]
+        young = [{"source": "runner", "ts": _ts(24 * 3), "agent_runtime": "d", "type": "dreaming", "tokens": 9_000_000}]
         _rows(vault, *boot, *young)
         assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 2 * 50 * 1_000_000  # still bootstrap
-        old = [{"ts": _ts(24 * 8), "agent_runtime": "d", "type": "dreaming", "tokens": 7_000_000}]
+        old = [{"source": "runner", "ts": _ts(24 * 8), "agent_runtime": "d", "type": "dreaming", "tokens": 7_000_000}]
         _rows(vault, *boot, *young, *old)
         # Own rows: p90 of [7M, 9M] = 9M; 2 * 9M = 18M.
         assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 18_000_000
@@ -383,3 +504,12 @@ def test_formula_a_kind_without_rows_uses_all_rows(vault: Path) -> None:
 def test_formula_errors_keep_the_floor(vault: Path) -> None:
     (vault / ".scout-state" / "schedule.yaml").write_text("slots: [\n", encoding="utf-8")
     assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == limits.FLOOR_TOKENS
+
+
+def test_a_slot_keys_words_never_beat_the_schedules_type(vault: Path) -> None:
+    """run-scout passes the slot key as SCOUT_RUN_TYPE: a `research-digest` briefing slot is a briefing (45 min)."""
+    _schedule(vault, ("research-digest", "briefing", ""))
+    assert limits.slot_kind(vault, "research-digest", "research-digest") == "briefing"
+    assert limits.limits_for(vault, DummyRuntime("d"), "research-digest", "research-digest").run_timeout_s == 45 * 60
+    # An exact kind from run-dreaming / run-research still decides.
+    assert limits.slot_kind(vault, "research-digest", "research") == "research"

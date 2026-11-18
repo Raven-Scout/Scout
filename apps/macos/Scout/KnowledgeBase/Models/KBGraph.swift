@@ -4,7 +4,13 @@ import SwiftUI
 /// local graph and the legend. Kept deliberately small so the graph reads as a
 /// map, not a stoplight.
 nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
-    case people, projects, issues, channels, ontology, research, other
+    case people, projects, issues, channels, ontology, research
+    /// The vault's layers (sources → topics → projects) and the folders Scout
+    /// keeps for itself. Before these existed, most of the vault — sources,
+    /// topics, personal notes, session logs, the mistake audit — rendered as
+    /// one grey "Other" blob on the map.
+    case topics, sources, personal, logs, audits
+    case other
 
     /// Classify a note. The ontology `type:` the plugin writes in frontmatter
     /// wins; the path fallback (whole components, not substrings — so
@@ -26,6 +32,13 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         if dirs.contains("ontology") { return .ontology }
         if dirs.contains("research-queue") || dirs.contains("review-queue")
             || stem == "research-queue" || stem == "review-queue" { return .research }
+        if dirs.contains("topics") || stem == "topics" { return .topics }
+        if dirs.contains("sources") || stem == "sources" { return .sources }
+        if dirs.contains("personal") { return .personal }
+        if dirs.contains("session-log") || dirs.contains("enrichment-qa-log")
+            || stem == "session-log" { return .logs }
+        if dirs.contains("scout-mistake-audit") || dirs.contains("kg-audits")
+            || stem == "scout-mistake-audit" { return .audits }
         return .other
     }
 
@@ -37,6 +50,11 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .channels: return "Channels"
         case .ontology: return "Ontology"
         case .research: return "Research"
+        case .topics: return "Topics"
+        case .sources: return "Sources"
+        case .personal: return "Personal"
+        case .logs: return "Logs"
+        case .audits: return "Audits"
         case .other: return "Other"
         }
     }
@@ -47,9 +65,30 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .projects: return DS.SlotType.consolidation
         case .issues:   return DS.Priority.urgent
         case .channels: return DS.Accent.fill
-        case .ontology: return DS.SlotType.dreaming
         case .research: return DS.SlotType.research
         case .other:    return DS.Ink.p3
+        // Ontology was the dreaming violet, which sits within a few points of
+        // People's purple — the two read as one colour on the map.
+        case .ontology, .topics, .sources, .personal, .logs, .audits: return swatch.color
+        }
+    }
+
+    /// The group's colour as raw light/dark values, for surfaces that can't
+    /// take a SwiftUI `Color` (the web map). Matches `color` for every group.
+    var swatch: DS.Swatch {
+        switch self {
+        case .people:   return DS.Swatch(name: "KBPeople", light: DS.RGB(0.540, 0.440, 0.740), dark: DS.RGB(0.700, 0.620, 0.880))
+        case .projects: return DS.Palette.slotConsolidation
+        case .issues:   return DS.Swatch(name: "KBIssues", light: DS.RGB(0.750, 0.310, 0.200), dark: DS.RGB(0.880, 0.450, 0.340))
+        case .channels: return DS.Palette.accentFill
+        case .ontology: return DS.Swatch(name: "KBOntology", light: DS.RGB(0.300, 0.380, 0.720), dark: DS.RGB(0.560, 0.640, 0.950))
+        case .research: return DS.Palette.slotResearch
+        case .topics:   return DS.Swatch(name: "KBTopics", light: DS.RGB(0.180, 0.560, 0.560), dark: DS.RGB(0.380, 0.760, 0.740))
+        case .sources:  return DS.Swatch(name: "KBSources", light: DS.RGB(0.660, 0.540, 0.330), dark: DS.RGB(0.820, 0.710, 0.520))
+        case .personal: return DS.Swatch(name: "KBPersonal", light: DS.RGB(0.780, 0.380, 0.540), dark: DS.RGB(0.920, 0.560, 0.680))
+        case .logs:     return DS.Swatch(name: "KBLogs", light: DS.RGB(0.470, 0.530, 0.620), dark: DS.RGB(0.600, 0.650, 0.730))
+        case .audits:   return DS.Swatch(name: "KBAudits", light: DS.RGB(0.520, 0.540, 0.200), dark: DS.RGB(0.720, 0.730, 0.420))
+        case .other:    return DS.Palette.inkP3
         }
     }
 }

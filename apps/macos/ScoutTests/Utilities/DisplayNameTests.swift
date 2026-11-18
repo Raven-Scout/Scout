@@ -124,7 +124,7 @@ struct DisplayNameTests {
     // MARK: - Failure classes
 
     @Test("failure classes explain what happened and what to do", arguments: [
-        "oauth_expired", "network", "git_lock", "rate_limited", "budget", "timeout",
+        "oauth_expired", "auth_race", "network", "git_lock", "rate_limited", "budget", "timeout",
         "lease_held", "lease_unavailable", "gates_unsafe_endpoint", "gates_unsafe_launcher", "unknown",
     ])
     func failureClass(raw: String) {
@@ -284,6 +284,9 @@ struct ProblemTests {
     func failureClasses() {
         #expect(Problem(failureClass: "oauth_expired").severity == .error)
         #expect(Problem(failureClass: "network").severity == .warning)
+        // The sign-in race is retried and the login is fine: never "an error Scout doesn't recognise".
+        #expect(Problem(failureClass: "auth_race").severity == .warning)
+        #expect(Problem(failureClass: "auth_race").title == "Claude login was busy")
         #expect(Problem(failureClass: "rate_limited").title == "Usage limit reached")
     }
 
@@ -368,6 +371,15 @@ struct PlainLanguageSurfaceTests {
         let missing = ActionItemsView.environmentProblem(ActionItemsEnvironmentResult(ok: false, message: nil))
         #expect(missing.severity == .error)
         #expect(missing.details == "scoutctl unavailable")
+    }
+
+    /// R2: the banner says writes "are turned off"; that has to be true.
+    @Test("a failed engine check turns the writes off, exactly when the banner says so")
+    func actionItemsWritesFollowTheBanner() {
+        let failed = ActionItemsEnvironmentResult(ok: false, message: "scoutctl not found")
+        #expect(ActionItemsView.environmentProblem(failed).impact?.contains("turned off") == true)
+        #expect(!ActionItemsView.writesEnabled(failed))
+        #expect(ActionItemsView.writesEnabled(.okResult))
     }
 
     @Test("run search matches the words on screen, not only the engine key")

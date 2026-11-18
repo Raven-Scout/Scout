@@ -193,6 +193,9 @@ actor PerFileItemWriter {
         return candidate
     }
 
+    /// Fields the parser reads with `PerFileItemParser.keyword(_:)`.
+    static let keywordFields: Set<String> = ["status", "priority", "date"]
+
     static func rewriteFrontmatterField(text: String, key: String, value: String, file: String) throws -> String {
         var lines = text.components(separatedBy: "\n")
         guard let first = lines.first, first.trimmingCharacters(in: .whitespaces) == "---" else {
@@ -206,7 +209,16 @@ actor PerFileItemWriter {
                 let k = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
                 if k == wantedKey {
                     let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
-                    lines[i] = "\(leading)\(key): \(value)"
+                    var rewritten = "\(leading)\(key): \(value)"
+                    // Keep a keyword field's trailing YAML comment — the vault
+                    // records why a status changed there. Free text has no
+                    // comments to keep: its `#` is content.
+                    if keywordFields.contains(wantedKey),
+                       let comment = PerFileItemParser.keywordComment(lines[i][lines[i].index(after: colon)...]) {
+                        // `"open"# x` → `done # x`: a `#` glued to the new bare value would be part of it.
+                        rewritten += (comment.first?.isWhitespace == true ? "" : " ") + comment
+                    }
+                    lines[i] = rewritten
                     return lines.joined(separator: "\n")
                 }
             }

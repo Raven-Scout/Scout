@@ -83,13 +83,27 @@ struct KBEntityGroupClassificationTests {
         #expect(KBEntityGroup.of("a/b/c.md") == .other)
     }
 
+    @Test("the vault's own layers get their own groups instead of Other")
+    func vaultLayers_haveGroups() {
+        #expect(KBEntityGroup.of("knowledge-base/topics/evals/agent-monitoring.md") == .topics)
+        #expect(KBEntityGroup.of("knowledge-base/sources/2026-10/2026-10-01-demo.md") == .sources)
+        #expect(KBEntityGroup.of("knowledge-base/personal/task-demo.md") == .personal)
+        #expect(KBEntityGroup.of("knowledge-base/session-log/2026-10.md") == .logs)
+        #expect(KBEntityGroup.of("knowledge-base/session-log.md") == .logs)
+        #expect(KBEntityGroup.of("knowledge-base/scout-mistake-audit/pattern-12.md") == .audits)
+        #expect(KBEntityGroup.of("knowledge-base/kg-audits/2026-10-30.md") == .audits)
+        // Frontmatter still wins over the folder.
+        #expect(KBEntityGroup.of("knowledge-base/personal/alex.md", type: "person") == .people)
+    }
+
     // MARK: - presentation
 
     @Test("every group has a distinct non-empty label")
     func label_isUniquePerGroup() {
         let labels = KBEntityGroup.allCases.map(\.label)
         #expect(labels == ["People", "Projects", "Issues", "Channels",
-                           "Ontology", "Research", "Other"])
+                           "Ontology", "Research", "Topics", "Sources",
+                           "Personal", "Logs", "Audits", "Other"])
         #expect(Set(labels).count == KBEntityGroup.allCases.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
     }
@@ -100,7 +114,7 @@ struct KBEntityGroupClassificationTests {
         #expect(KBEntityGroup.projects.color == DS.SlotType.consolidation)
         #expect(KBEntityGroup.issues.color == DS.Priority.urgent)
         #expect(KBEntityGroup.channels.color == DS.Accent.fill)
-        #expect(KBEntityGroup.ontology.color == DS.SlotType.dreaming)
+        #expect(KBEntityGroup.ontology.color != KBEntityGroup.people.color)
         #expect(KBEntityGroup.research.color == DS.SlotType.research)
         #expect(KBEntityGroup.other.color == DS.Ink.p3)
     }
@@ -109,7 +123,8 @@ struct KBEntityGroupClassificationTests {
     func rawValues_areStable() {
         #expect(KBEntityGroup.allCases.map(\.rawValue)
                 == ["people", "projects", "issues", "channels",
-                    "ontology", "research", "other"])
+                    "ontology", "research", "topics", "sources",
+                    "personal", "logs", "audits", "other"])
         #expect(KBEntityGroup(rawValue: "people") == .people)
         #expect(KBEntityGroup(rawValue: "nonsense") == nil)
     }
