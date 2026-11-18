@@ -79,6 +79,16 @@ nonisolated enum KBReaderDocument {
         return all[start...end].joined(separator: "\n")
     }
 
+    /// The text of cell `col` on `line`, when that line is a plain `| … |`
+    /// table row (the only rows the reader edits cell by cell); nil otherwise.
+    static func cell(_ source: String, line: Int, col: Int) -> String? {
+        let all = source.components(separatedBy: "\n")
+        guard line >= 0, line < all.count, col >= 0, all[line].hasPrefix("|"),
+              !KBMarkdownLexer.isTableSeparator(all[line]) else { return nil }
+        let cells = KBMarkdownLexer.splitRow(all[line])
+        return col < cells.count ? cells[col] : (col == cells.count ? "" : nil)
+    }
+
     /// Flip a task-list checkbox on `line`: `- [ ]` ↔ `- [x]`. Nil when the
     /// line isn't a task item.
     static func toggleTask(in source: String, line: Int) -> String? {
@@ -101,8 +111,22 @@ nonisolated enum KBReaderDocument {
         guard let marker = ScoutMarker.format(comment, quote: quote) else { return nil }
         let all = source.components(separatedBy: "\n")
         guard !all.isEmpty else { return nil }
-        let at = min(max(afterLine, 0), all.count - 1)
+        var at = min(max(afterLine, 0), all.count - 1)
+        // Never anchor on a blank line: a marker there would join the next
+        // paragraph instead of the block the passage is in.
+        while at > 0 && all[at].trimmingCharacters(in: .whitespaces).isEmpty { at -= 1 }
         let prefix = continuationPrefix(for: all[at])
+        // A line straight after a table row is another row, and one after an
+        // HTML block is more HTML: separate the marker with a blank line.
+        let body = String(all[at].drop { $0 == " " || $0 == "\t" || $0 == ">" })
+            .trimmingCharacters(in: .whitespaces)
+        if body.hasPrefix("|") || body.hasPrefix("<") {
+            let blank = prefix.trimmingCharacters(in: .whitespaces)
+            let lines = blank.isEmpty ? ["", prefix + marker] : [blank, prefix + marker]
+            var out = all
+            out.insert(contentsOf: lines, at: at + 1)
+            return out.joined(separator: "\n")
+        }
         return KBDocSegment.insertLine(in: source, afterLineEnd: at, line: prefix + marker)
     }
 

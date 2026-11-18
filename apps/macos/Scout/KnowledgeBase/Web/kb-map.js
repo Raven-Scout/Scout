@@ -710,15 +710,17 @@
 
   // ---------- selection & the side card ----------
   function select(n, recenter) {
-    if (n && !n.visible) {
+    const reveal = n && !n.visible;
+    // Selected first: `isVisible` keeps the selected note on the map, so an
+    // unlinked note picked from search stays drawn through the rebuild.
+    selected = n;
+    if (reveal) {
       // Reveal a hidden note picked from search: clear whatever hid it.
       hiddenGroups.delete(n.group);
       if (scopeSet && !scopeSet.has(n)) clearScope(false);
-      n.visible = true;
       renderLegend();
       rebuild(0.2);
     }
-    selected = n;
     if (n && !details.has(n.id)) scout.post('details', { id: n.id });
     renderCard();
     if (n && recenter) centerOn(n, mode === 'full' ? 1.4 : 0);

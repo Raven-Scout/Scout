@@ -31,6 +31,10 @@ struct KBReaderWebView: View {
         /// The source the page last rendered, so an update that changes
         /// nothing (or is the open edit's own keystroke) isn't re-sent.
         var rendered: String?
+        /// Bumped by every render. The page echoes the version it shows on
+        /// each change it asks for, and one made against an older render is
+        /// dropped: its line numbers describe a note that has since changed.
+        var version = 0
     }
 
     var body: some View {
@@ -68,9 +72,12 @@ struct KBReaderWebView: View {
             if LinkSchemePolicy.allowsExternalOpen(url) { NSWorkspace.shared.open(url) }
         }
         bridge.onMessage = { [weak bridge = self.bridge] type, body in
+            let changes: Set<String> = ["edit", "editDone", "editDiscard", "comment", "retract", "toggleTask"]
+            if changes.contains(type), (body["v"] as? NSNumber)?.intValue != session.version { return }
             switch type {
             case "ready":
-                // A fresh (or reloaded) page: give it the note.
+                // A fresh (or reloaded) page: give it the note. Any edit the
+                // old page had open is gone with it.
                 session.rendered = nil
                 Self.sendRender(bridge, source: binding.wrappedValue, resolve: resolve, reset: true, session: session)
             case "openWiki":
@@ -85,11 +92,12 @@ struct KBReaderWebView: View {
             case "edit":
                 Self.applyEdit(body, source: binding, session: session)
             case "editDone":
-                session.inline = nil
                 Self.sendRender(bridge, source: binding.wrappedValue, resolve: resolve, reset: false, session: session, force: true)
             case "editDiscard":
-                if let edit = session.inline { binding.wrappedValue = edit.snapshot }
-                session.inline = nil
+                if let edit = session.inline {
+                    session.inline = nil
+                    binding.wrappedValue = edit.snapshot
+                }
                 Self.sendRender(bridge, source: binding.wrappedValue, resolve: resolve, reset: false, session: session, force: true)
             case "comment":
                 guard session.inline == nil,
@@ -127,7 +135,11 @@ struct KBReaderWebView: View {
                                    reset: Bool, session: Session, force: Bool = false) {
         guard let bridge, force || reset || session.rendered != source else { return }
         session.rendered = source
+        // A render that isn't the open edit's own ends that edit.
+        session.inline = nil
+        session.version += 1
         bridge.send("render", [
+            "v": session.version,
             "source": source,
             "display": KBReaderDocument.displayMarkdown(source, linkify: InlineMarkdownText.linkifiedMarkdown),
             "missing": KBReaderDocument.missingTargets(in: source, resolve: resolve),
@@ -153,9 +165,12 @@ struct KBReaderWebView: View {
         }
         if session.inline?.target != target {
             let current = source.wrappedValue
-            if case .block(let s, let e) = target {
-                // The page edits the lines it rendered; refuse if the draft moved on.
+            // The page edits what it rendered; refuse if the draft moved on.
+            switch target {
+            case .block(let s, let e):
                 guard KBReaderDocument.lines(current, s, e) == original else { return }
+            case .cell(let l, let c):
+                guard KBReaderDocument.cell(current, line: l, col: c) == original else { return }
             }
             session.inline = KBInlineEdit(target: target, snapshot: current, original: original, buffer: original)
         }

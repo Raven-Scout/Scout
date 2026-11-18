@@ -113,6 +113,36 @@ struct KBReaderDocumentTests {
         #expect(out.components(separatedBy: "\n")[15] == "> //==<< on \"two lines\": Source? >>==//")
     }
 
+    @Test("a comment after a table is set apart, so it doesn't become another row")
+    func insertComment_table() throws {
+        let out = try #require(KBReaderDocument.insertComment(
+            in: note, afterLine: 18, quote: "Lead", comment: "Still?"))
+        let lines = out.components(separatedBy: "\n")
+        #expect(lines[18] == "| [[Priya\\|P]] | Lead |")
+        #expect(lines[19] == "")
+        #expect(lines[20] == "//==<< on \"Lead\": Still? >>==//")
+    }
+
+    @Test("a comment anchored on a blank line moves up to the block above it")
+    func insertComment_blankAnchor() throws {
+        // markdown-it counts the blank after a list's last item as part of it.
+        let out = try #require(KBReaderDocument.insertComment(
+            in: note, afterLine: 12, quote: "room", comment: "Which?"))
+        let lines = out.components(separatedBy: "\n")
+        #expect(lines[11] == "- [x] Book the room")
+        #expect(lines[12] == "  //==<< on \"room\": Which? >>==//")
+        #expect(lines[13] == "")
+    }
+
+    @Test("a cell is read back only from a plain table row")
+    func cellReadBack() {
+        #expect(KBReaderDocument.cell(note, line: 18, col: 0) == "[[Priya|P]]")
+        #expect(KBReaderDocument.cell(note, line: 18, col: 1) == "Lead")
+        #expect(KBReaderDocument.cell(note, line: 17, col: 0) == nil)   // separator
+        #expect(KBReaderDocument.cell(note, line: 5, col: 0) == nil)    // prose
+        #expect(KBReaderDocument.cell("> | a | b |", line: 0, col: 0) == nil)  // quoted table
+    }
+
     @Test("an empty comment inserts nothing")
     func insertComment_empty() {
         #expect(KBReaderDocument.insertComment(in: note, afterLine: 5, quote: "x", comment: "   ") == nil)

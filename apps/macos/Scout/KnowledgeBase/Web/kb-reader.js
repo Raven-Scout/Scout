@@ -22,7 +22,18 @@
   let markers = [];         // Scout comment markers found in the note, by index
   let editing = null;       // {el, kind, ...} while an inline edit is open
   let pendingRange = null;  // the selection a comment is being written about
+  let version = 0;          // the render this page shows; echoed on every change
+  // Marks the elements the renderer itself numbered. Note HTML can carry its
+  // own data-ls / data-line attributes; only elements with this render's
+  // nonce are trusted to say which source lines they are.
+  let nonce = '';
   const supportsHighlights = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
+
+  // Every change the page asks for names the render it was made against, so
+  // Swift can drop one that arrives after the note moved on.
+  function send(type, payload) {
+    scout.post(type, Object.assign({ v: version }, payload || {}));
+  }
 
   // ---------- markdown ----------
   const md = window.markdownit({
@@ -40,6 +51,7 @@
       if (t.nesting === 1 || t.type === 'fence' || t.type === 'code_block' || t.type === 'hr' || t.type === 'html_block') {
         t.attrSet('data-ls', String(t.map[0]));
         t.attrSet('data-le', String(t.map[1] - 1));
+        t.attrSet('data-k', nonce);
       }
     }
   });
@@ -49,7 +61,7 @@
     let col = 0;
     for (const t of state.tokens) {
       if (t.type === 'tr_open') col = 0;
-      else if (t.type === 'th_open' || t.type === 'td_open') t.attrSet('data-col', String(col++));
+      else if (t.type === 'th_open' || t.type === 'td_open') { t.attrSet('data-col', String(col++)); t.attrSet('data-k', nonce); }
     }
   });
 
@@ -68,7 +80,7 @@
       const li = tokens[i - 2];
       li.attrJoin('class', 'task' + (done ? ' done' : ''));
       const box = new state.Token('html_inline', '', 0);
-      box.content = `<input type="checkbox" class="task-box" data-line="${li.map ? li.map[0] : ''}"${done ? ' checked' : ''} aria-label="${done ? 'Done' : 'To do'}">`;
+      box.content = `<input type="checkbox" class="task-box" data-k="${nonce}" data-line="${li.map ? li.map[0] : ''}"${done ? ' checked' : ''} aria-label="${done ? 'Done' : 'To do'}">`;
       inline.children.unshift(box);
     }
   });
@@ -101,24 +113,32 @@
       try { body = hljs.highlight(t.content, { language: lang, ignoreIllegals: true }).value; } catch (e) { body = null; }
     }
     if (body == null) body = md.utils.escapeHtml(t.content);
-    return `<pre class="code" data-ls="${t.map[0]}" data-le="${t.map[1] - 1}"${lang ? ` data-lang="${md.utils.escapeHtml(lang)}"` : ''}><code class="hljs">${body}</code></pre>\n`;
+    return `<pre class="code" data-k="${nonce}" data-ls="${t.map[0]}" data-le="${t.map[1] - 1}"${lang ? ` data-lang="${md.utils.escapeHtml(lang)}"` : ''}><code class="hljs">${body}</code></pre>\n`;
   };
   md.renderer.rules.code_block = md.renderer.rules.fence;
   md.renderer.rules.html_block = (tokens, idx) => {
     const t = tokens[idx];
-    return `<div class="html-block" data-ls="${t.map[0]}" data-le="${t.map[1] - 1}">${t.content}</div>\n`;
+    return `<div class="html-block" data-k="${nonce}" data-ls="${t.map[0]}" data-le="${t.map[1] - 1}">${t.content}</div>\n`;
   };
   const tableOpen = md.renderer.rules.table_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
   md.renderer.rules.table_open = (tokens, idx, options, env, self) => `<div class="table-wrap">${tableOpen(tokens, idx, options, env, self)}`;
   md.renderer.rules.table_close = () => '</table></div>\n';
 
   // ---------- rendering ----------
-  const MARKER_RE = /\/\/==<<([\s\S]*?)>>==\/\//g;
+  // A marker never spans lines (ScoutMarker's contract is line by line). A
+  // prose mention of the opener with no closer on its line must not pair
+  // with a real comment further down: that would swallow the lines between
+  // into one and shift every line number after it.
+  const MARKER_RE = /\/\/==<<([^\n]*?)>>==\/\//g;
   const FRONTMATTER_KEYS = /^([A-Za-z_][\w\- ]*):\s?(.*)$/;
 
   function render(message) {
     if (editing) closeEditor(false);
     hideBubble();
+    // A comment being written was anchored in the old render: start over.
+    closeComposer();
+    version = message.v || 0;
+    nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
     const keepScroll = !message.reset;
     const scrollY = window.scrollY;
     source = message.source || '';
@@ -139,26 +159,50 @@
 
     // Scout markers become placeholders that survive markdown untouched,
     // then chips once the HTML is built.
+    // Only outside fenced code and inline code spans.
     markers = [];
-    display = lines.join('\n').replace(MARKER_RE, (whole) => {
-      markers.push(whole);
-      return `SCOUTMARKER${markers.length - 1}X`;
-    });
+    let fence = null;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (fence) { if (t.startsWith(fence)) fence = null; continue; }
+      if (t.startsWith('```') || t.startsWith('~~~')) { fence = t.slice(0, 3); continue; }
+      lines[i] = lines[i].replace(MARKER_RE, (whole, _inner, at, line) => {
+        const ticks = (line.slice(0, at).match(/`/g) || []).length;
+        if (ticks % 2 === 1) return whole;
+        markers.push(whole);
+        return `SCOUTMARKER${markers.length - 1}X`;
+      });
+    }
+    display = lines.join('\n');
 
     const html = md.render(display);
     const clean = DOMPurify.sanitize(html, {
-      ADD_ATTR: ['data-ls', 'data-le', 'data-col', 'data-line', 'data-lang', 'data-title', 'checked', 'target'],
+      ADD_ATTR: ['data-ls', 'data-le', 'data-col', 'data-line', 'data-lang', 'data-title', 'data-k', 'checked'],
+      // Note HTML must not restyle the page (a transparent full-page link over
+      // everything, say): inline styles are dropped.
+      FORBID_ATTR: ['style'],
       ADD_TAGS: ['details', 'summary', 'input'],
       ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|scout-wiki|scout-tag|obsidian|linear):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
       FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form'],
     });
     doc.innerHTML = clean;
+    distrustNoteHTML();
 
     decorateLinks();
     insertMarkers();
     buildProperties(front);
     highlightCommentedPassages();
     window.scrollTo(0, keepScroll ? scrollY : 0);
+  }
+
+  // Anything claiming source lines without this render's nonce came from the
+  // note's own HTML: strip the claim, and drop look-alike checkboxes.
+  function distrustNoteHTML() {
+    for (const el of doc.querySelectorAll('[data-ls], [data-le], [data-line], [data-col], [data-k], input')) {
+      if (el.getAttribute('data-k') === nonce) continue;
+      if (el.tagName === 'INPUT') { el.remove(); continue; }
+      for (const a of ['data-ls', 'data-le', 'data-line', 'data-col', 'data-k']) el.removeAttribute(a);
+    }
   }
 
   function decorateLinks() {
@@ -238,7 +282,7 @@
       e.stopPropagation();
       if (editing) return;
       const block = chip.closest('[data-ls]');
-      scout.post('retract', {
+      send('retract', {
         marker: raw,
         from: block ? Number(block.dataset.ls) : 0,
         to: block ? Number(block.dataset.le) : sourceLines.length - 1,
@@ -381,16 +425,16 @@
       e.preventDefault();
       if (editing) return;
       const href = a.getAttribute('href');
-      if (href.startsWith('scout-wiki:')) scout.post('openWiki', { target: decodeTarget(href) });
-      else if (href.startsWith('scout-tag:')) scout.post('openTag', { tag: decodeTarget(href) });
-      else scout.post('openURL', { url: a.href });
+      if (href.startsWith('scout-wiki:')) send('openWiki', { target: decodeTarget(href) });
+      else if (href.startsWith('scout-tag:')) send('openTag', { tag: decodeTarget(href) });
+      else send('openURL', { url: a.href });
       return;
     }
     const box = e.target.closest('input.task-box');
     if (box) {
       e.preventDefault();
       if (editing || box.dataset.line === '') return;
-      scout.post('toggleTask', { line: Number(box.dataset.line) });
+      send('toggleTask', { line: Number(box.dataset.line) });
     }
   });
 
@@ -402,6 +446,9 @@
       const nested = el.querySelector(':scope > ul[data-ls], :scope > ol[data-ls]');
       if (nested) end = Math.max(start, Number(nested.dataset.ls) - 1);
     }
+    // markdown-it counts the blank line after a list's last item as part of
+    // it; editing or commenting there would eat the paragraph break.
+    while (end > start && !(sourceLines[end] || '').trim()) end--;
     return [start, end];
   }
 
@@ -409,11 +456,19 @@
     if (editing || !scout.editable) return;
     if (e.target.closest('.scout-comment, a, input, .props > summary, .block-editor')) return;
     const cell = e.target.closest('td, th');
-    if (cell && cell.closest('tr[data-ls]')) { e.preventDefault(); openCellEditor(cell); return; }
+    const row = cell && cell.closest('tr[data-ls]');
+    if (row) {
+      e.preventDefault();
+      // A row that isn't a plain `| … |` line (a table in a quote or indented
+      // under a list) is edited as its whole line, prefix and all.
+      if ((sourceLines[Number(row.dataset.ls)] || '').startsWith('|')) openCellEditor(cell);
+      else openBlockEditor(row);
+      return;
+    }
     let el = e.target.closest('[data-ls]');
     if (!el || !doc.contains(el)) return;
     // Edit a whole table / list from its cells and items, never the wrapper.
-    if (el.tagName === 'TABLE' || el.tagName === 'UL' || el.tagName === 'OL' || el.tagName === 'TR') return;
+    if (el.tagName === 'TABLE' || el.tagName === 'UL' || el.tagName === 'OL') return;
     e.preventDefault();
     window.getSelection().removeAllRanges();
     openBlockEditor(el);
@@ -435,7 +490,16 @@
     ta.value = original;
     // Edit a list item in place without swallowing its nested list.
     const host = el.tagName === 'LI' ? el : el;
-    if (el.tagName === 'LI') {
+    if (el.tagName === 'TR') {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = el.children.length || 1;
+      td.appendChild(wrap);
+      tr.appendChild(td);
+      el.hidden = true;
+      el.after(tr);
+      editing = { kind: 'block', el, wrap: tr, start, end, original, hidden: [el] };
+    } else if (el.tagName === 'LI') {
       const hidden = [];
       for (const child of [...el.childNodes]) {
         if (child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL')) continue;
@@ -452,7 +516,7 @@
     const autosize = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
     ta.addEventListener('input', () => {
       autosize();
-      scout.post('edit', { kind: 'block', start, end, original, buffer: ta.value });
+      send('edit', { kind: 'block', start, end, original, buffer: ta.value });
     });
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' || (e.key === 'Enter' && e.metaKey)) { e.preventDefault(); finishEdit(); }
@@ -477,7 +541,7 @@
     const input = cell.querySelector('input');
     input.value = original;
     editing = { kind: 'cell', el: cell, before, line, col, original };
-    input.addEventListener('input', () => scout.post('edit', { kind: 'cell', line, col, original, buffer: input.value }));
+    input.addEventListener('input', () => send('edit', { kind: 'cell', line, col, original, buffer: input.value }));
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); finishEdit(); }
     });
@@ -505,12 +569,12 @@
   function finishEdit() {
     if (!editing) return;
     closeEditor(true);
-    scout.post('editDone');
+    send('editDone');
   }
   function discardEdit() {
     if (!editing) return;
     closeEditor(true);
-    scout.post('editDiscard');
+    send('editDiscard');
   }
   function closeEditor(restoreView) {
     const e = editing;
@@ -617,6 +681,7 @@
   // block, so the marker never lands inside them.
   function anchorLine(range) {
     let node = range.endContainer.nodeType === 1 ? range.endContainer : range.endContainer.parentElement;
+    if (!doc.contains(node)) return null;
     const whole = node.closest('.table-wrap, pre.code, .html-block');
     if (whole) {
       const holder = whole.matches('[data-le]') ? whole : whole.querySelector('[data-le]');
@@ -636,10 +701,12 @@
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
     if (composerSend.disabled || !pendingRange) return;
-    scout.post('comment', {
+    const afterLine = anchorLine(pendingRange.range);
+    if (afterLine == null) { closeComposer(); return; }
+    send('comment', {
       quote: pendingRange.text,
       text: composerText.value.trim(),
-      afterLine: anchorLine(pendingRange.range),
+      afterLine,
     });
     closeComposer();
   });

@@ -23,6 +23,11 @@ final class KBWebBridge: NSObject, ObservableObject {
 
     private(set) var isReady = false
     private var queue: [String] = []
+    /// Message types whose latest copy is sent again if the page has to be
+    /// reloaded (its web process died), so it comes back showing what it
+    /// showed instead of blank. The map marks `load`.
+    var replayOnReload: Set<String> = []
+    private var latest: [String: String] = [:]
     private let page: String
 
     /// `page` is the bundled HTML file's name without extension (`kb-map`).
@@ -64,7 +69,7 @@ final class KBWebBridge: NSObject, ObservableObject {
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message),
               let json = String(data: data, encoding: .utf8) else { return }
-        deliver(json)
+        deliver(json, type: type)
     }
 
     /// Send an `Encodable` payload; it arrives as `message.data`.
@@ -73,10 +78,11 @@ final class KBWebBridge: NSObject, ObservableObject {
               let json = String(data: encoded, encoding: .utf8),
               let typeData = try? JSONEncoder().encode(type),
               let typeJSON = String(data: typeData, encoding: .utf8) else { return }
-        deliver("{\"type\":\(typeJSON),\"data\":\(json)}")
+        deliver("{\"type\":\(typeJSON),\"data\":\(json)}", type: type)
     }
 
-    private func deliver(_ json: String) {
+    private func deliver(_ json: String, type: String) {
+        if replayOnReload.contains(type) { latest[type] = json }
         guard isReady else { queue.append(json); return }
         webView.evaluateJavaScript("window.scoutReceive(\(json));", completionHandler: nil)
     }
@@ -87,7 +93,9 @@ final class KBWebBridge: NSObject, ObservableObject {
             isReady = true
             let pending = queue
             queue.removeAll()
-            pending.forEach(deliver)
+            for json in pending {
+                webView.evaluateJavaScript("window.scoutReceive(\(json));", completionHandler: nil)
+            }
         }
         if type == "jsError" {
             NSLog("[KBWeb \(page)] \(dict["message"] ?? "") @ \(dict["source"] ?? ""):\(dict["line"] ?? "")")
@@ -109,8 +117,9 @@ extension KBWebBridge: WKNavigationDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        // The page is gone; reload it. Swift re-sends its state on `ready`.
+        // The page is gone; reload it, then replay what it was showing.
         isReady = false
+        queue = Array(latest.values)
         load()
     }
 }

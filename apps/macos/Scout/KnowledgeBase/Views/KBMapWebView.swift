@@ -36,6 +36,9 @@ struct KBMapWebView: View {
     let onOpen: (String) -> Void
 
     @StateObject private var bridge = KBWebBridge(page: "kb-map")
+    /// The `focus` already handed to the page. A reload after a reparse must
+    /// not fly the camera back to a note the user has since moved on from.
+    @State private var deliveredFocus: String? = nil
 
     var body: some View {
         KBWebViewHost(bridge: bridge)
@@ -43,7 +46,9 @@ struct KBMapWebView: View {
             .onAppear { wire() }
             .task(id: LoadKey(mode: mode, generation: service.indexGeneration)) { await sendLoad() }
             .onChange(of: focus) { _, new in
-                if let new { bridge.send("focus", ["id": new]) }
+                guard let new, new != deliveredFocus else { return }
+                deliveredFocus = new
+                bridge.send("focus", ["id": new])
             }
     }
 
@@ -56,6 +61,7 @@ struct KBMapWebView: View {
         // Capture the pieces, not `self`: the bridge outlives this struct and
         // must not keep itself alive through its own handler.
         let open = onOpen
+        bridge.replayOnReload = ["load"]
         bridge.onMessage = { [weak bridge = self.bridge, weak service = self.service] type, body in
             switch type {
             case "open":
@@ -98,8 +104,10 @@ struct KBMapWebView: View {
         }.value
         guard !Task.isCancelled else { return }
         let payload = KBMapPayload.build(from: graph, center: center, modified: modified)
+        let newFocus = center == nil && focus != deliveredFocus ? focus : nil
+        if newFocus != nil { deliveredFocus = newFocus }
         bridge.send("load", data: KBMapLoad(mode: center == nil ? "full" : "local",
-                                            focus: center == nil ? focus : nil,
+                                            focus: newFocus,
                                             payload: payload,
                                             positions: center == nil ? KBMapLayoutCache.positions : [:]))
     }
