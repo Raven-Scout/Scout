@@ -423,6 +423,7 @@ def test_finalize_publishes_once_after_notarization(tmp_path):
     line = calls[publish[0]]
     assert f"--target {sha}" in line and " --latest " in f"{line} " and "--prerelease" not in line
     assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())  # the website's stable download name
     assert "MARKETING_VERSION=0.15.0" in next(c for c in calls if c.startswith("xcodebuild"))
     assert f"CURRENT_PROJECT_VERSION={_git(r.root, 'rev-list', '--count', sha)}" in next(
         c for c in calls if c.startswith("xcodebuild")
@@ -598,7 +599,21 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     r = make_repo(tmp_path)
     _merge_release(r)
     assert r.run("finalize", "v0.15.0", extra_env={"FAKE_APPCAST": "1"}).returncode == 0
-    assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
+    line = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "appcast.xml" in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())
+
+
+def test_the_stable_dmg_is_a_copy_never_signed_or_notarized_again(tmp_path):
+    """Scout.dmg is a plain copy of the DMG that was signed, notarized and stapled: nothing touches it again."""
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode == 0, done.stderr
+    calls = r.calls()
+    assert sum(c.startswith("gh release create") for c in calls) == 1
+    touched = [c for c in calls if c.split()[0] in ("codesign", "xcrun", "spctl", "hdiutil")]
+    assert not any(w.endswith("/Scout.dmg") for c in touched for w in c.split())
 
 
 def test_finalize_attaches_the_install_manifest(tmp_path):
@@ -757,6 +772,7 @@ def test_rc_is_a_prerelease_never_latest(tmp_path):
     line = next(c for c in r.calls() if c.startswith("gh release create"))
     assert "--prerelease" in line and "--latest=false" in line and f"--target {sha}" in line
     assert "Scout-0.15.0-rc.1.dmg" in line and " --latest " not in f"{line} "
+    assert not any(w.endswith("/Scout.dmg") for w in line.split())  # an rc isn't Latest; no stable name
 
 
 def test_dry_run_rc_on_the_local_release_branch(tmp_path):

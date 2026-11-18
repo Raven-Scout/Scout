@@ -1,0 +1,39 @@
+name: rerun-unacquired
+
+# GitHub's free macOS arm64 runners are short of capacity. A job that waits too
+# long for one is cancelled by GitHub itself (0 steps, no runner, "The job was
+# not acquired by Runner of type hosted even after multiple attempts"), which
+# fails the required app-ci / plugin-test check although nothing is wrong with
+# the change. This reruns such a run's failed jobs, at most up to its third
+# attempt, and leaves every other failure alone. The rules, and why, are in
+# .github/scripts/rerun_unacquired.py; tests/unit/test_ci_rerun_unacquired.py
+# (plugin/engine) pins them against real cancelled runs.
+#
+# workflow_run always runs this file as it is on main, never a PR's copy, so a
+# change here only takes effect once merged. It checks out main's script too,
+# so no PR's code runs with this token. Not a required check.
+on:
+  workflow_run:
+    workflows: [app-ci, plugin-test]
+    types: [completed]
+
+permissions:
+  actions: write  # gh run rerun
+  checks: read    # the job's annotations: GitHub's "not acquired by Runner" note is only there
+
+jobs:
+  rerun:
+    if: github.event.workflow_run.conclusion != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Rerun a run GitHub left without a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 .github/scripts/rerun_unacquired.py "$GITHUB_REPOSITORY" "$RUN_ID" "$RUN_ATTEMPT"

@@ -967,7 +967,13 @@ GADGET_SHARE = {"glob": f"{GADGET}/**", "scope": [PRIYA]}
 
 
 def _kb(vault: Path, *args: str) -> Any:
-    result = CliRunner().invoke(app, ["kb", *args, "--repo", str(vault)])
+    from unittest import mock
+
+    # These vaults are linked to a FakeHost with no token saved. A linked vault whose token is missing fails
+    # an unshare (exit 4, S1b), and these tests are about the sync's sharing gate, not Agnes's stops (those
+    # are test_kb_share_stops.py), so the stop API is out of the picture here.
+    with mock.patch("scout.kb.share_stops.connect", return_value=(None, None)):
+        result = CliRunner().invoke(app, ["kb", *args, "--repo", str(vault)])
     assert result.exit_code == 0, result.output
     return result
 
