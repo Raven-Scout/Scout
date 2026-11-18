@@ -221,6 +221,7 @@ struct SettingsView: View {
                 }
 
                 section(label: "Updates") { UpdatesSettingsSection() }
+                    .id(SettingsAnchor.updates)
 
                 section(label: "About") {
                     SettingsCard(padding: 14) {
@@ -254,12 +255,14 @@ struct SettingsView: View {
             }.value
             detectedClaudePath = detected
         }
-        // Help ▸ Engine Settings… (audit C11): open at the Engine section.
-        .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
-            withAnimation { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        // Help ▸ Engine Settings… (audit C11) and the panel's Update
+        // available (#93): open at the section asked for.
+        .onReceive(NotificationCenter.default.publisher(for: .scoutShowSettingsSection)) { note in
+            guard let anchor = note.object as? String else { return }
+            withAnimation { proxy.scrollTo(anchor, anchor: .top) }
         }
         .onAppear {
-            if HelpActions.takeEngineSettingsRequest() { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+            if let anchor = HelpActions.takeSettingsRequest() { proxy.scrollTo(anchor, anchor: .top) }
         }
         }
     }

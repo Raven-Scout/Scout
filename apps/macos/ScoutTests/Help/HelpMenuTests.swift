@@ -37,6 +37,19 @@ struct HelpMenuTests {
         #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(60)), "a later ⌘, opens at the top")
     }
 
+    /// #93: the panel's Update available asks for the Updates section the
+    /// same way Engine Settings… asks for Engine, and one doesn't read as the other.
+    @Test func settingsRequest_carriesItsSection() {
+        let now = Date()
+        HelpActions.recordSettingsRequest(SettingsAnchor.updates, at: now)
+        #expect(HelpActions.takeSettingsRequest(now: now.addingTimeInterval(1)) == SettingsAnchor.updates)
+        #expect(HelpActions.takeSettingsRequest(now: now.addingTimeInterval(1)) == nil, "taken once")
+        HelpActions.recordSettingsRequest(SettingsAnchor.updates, at: now)
+        #expect(!HelpActions.takeEngineSettingsRequest(now: now.addingTimeInterval(1)), "an Updates request isn't an Engine one")
+        HelpActions.recordSettingsRequest(SettingsAnchor.updates, at: now)
+        #expect(HelpActions.takeSettingsRequest(now: now.addingTimeInterval(60)) == nil, "a later ⌘, opens at the top")
+    }
+
     @Test func reviewNotice_rendersAndIsInTheSavedFile() {
         ViewHost.render(DiagnosticsReviewNotice(), size: CGSize(width: 700, height: 120))
         #expect(DiagnosticsReviewNotice.text.contains("Read it through before attaching it to a public issue"))

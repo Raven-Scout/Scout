@@ -241,7 +241,7 @@ struct MenuBarExtraContent: View {
                 }
                 if updates.anyUpdateAvailable {
                     footerButton("Update available", systemImage: "arrow.down.circle") {
-                        openScoutSettings()
+                        openScoutSettings(at: SettingsAnchor.updates)
                     }
                 }
                 footerButton("Install wake schedule", systemImage: "alarm") {
@@ -277,10 +277,11 @@ struct MenuBarExtraContent: View {
         openWindow(id: "main")
     }
 
-    private func openScoutSettings() {
+    /// Front the app and open Settings, at `anchor`'s section when given.
+    private func openScoutSettings(at anchor: String? = nil) {
         dismiss()
         NSApp.activate(ignoringOtherApps: true)
-        openSettings()
+        if let anchor { HelpActions.showSettings(openSettings, at: anchor) } else { openSettings() }
     }
 
     private func installWakeSchedule() {
