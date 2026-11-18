@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.17] - 2026-11-18
+
 ### Added
 - **`kb unshare` stops a share in Agnes at once, and only `kb share` at your keyboard clears the stop** (Shared Areas S1b, keboola/agnes-the-ai-analyst#6090 §4 and §5.6, on Agnes's A8b API, #7450; `engine/scout/kb/share_stops.py`, `engine/scout/kb/share.py`, `engine/scout/repo_sync.py`, `engine/scout/cli.py`).
   - **The stop.** On a linked vault, `scoutctl kb unshare <folder or note> [--with …]` calls `POST /api/v1/me/knowledge-repository/shares/stop` before it narrows `scout-config.yaml`, always with `write_back: false` (the vault edit is Scout's), so readers lose the share from their next read, before any sync. A stop names the share's glob, so a note added under a stopped folder later stays stopped. It stops everyone, or each person or group named, a person admitted only through a shared group included: that stop lives in Agnes, since the vault can't say it. Agnes stops only a share it lists, so unsharing a subfolder of a broader share still waits for the next sync, and says so. `--dry-run` asks Agnes nothing and says what it would stop. When Agnes doesn't confirm a stop (unreachable, an error, a refusal, or a linked vault whose token is missing, has loose permissions or can't be read), the vault change is kept, the command exits 4 and says why, and running it again retries the stop; an Agnes without the stop endpoint isn't a failure.

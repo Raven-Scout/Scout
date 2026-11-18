@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.18.17] - 2026-11-18
+
 ### Added
 - **One set of button styles: the start of design-system v2** (UI audit card R6, #105; `Scout/Utilities/DSButtonStyle.swift`, `Scout/Utilities/DSPalette.swift`, `Scout/Utilities/PlainHitButtonStyle.swift`). `.dsPrimary` (filled accent), `.dsSecondary` (raised paper with a hairline), `.dsLink` (accent text) and `.dsDestructive` (red label), each at a regular or small size. The style draws the font, colours, padding and the disabled, pressed and keyboard-focus states, so a disabled button looks disabled the same way everywhere. Every label-on-fill pair is in `DS.ContrastPairs`, so `ContrastPairsTests` checks it in light, dark and Increase Contrast. `ButtonStyleGuardTests` flags new system bordered/link buttons and accent buttons hand-built from `.plainHit`; an icon button or chip marks its line `// ds-guard: hit area`. `.plainHit` stays for hit areas (chips, segments, rows, icon buttons).
 - **The Knowledge Base tab, rebuilt around a map you can explore** (`Scout/KnowledgeBase/Web/*`, `Views/KBMapWebView.swift`, `Views/KBReaderWebView.swift`, `Views/KBOverviewView.swift`, `Models/KBMapPayload.swift`, `Models/KBReaderDocument.swift`). The map and the note reader now run in a `WKWebView` from pages and scripts bundled with the app (d3-force, markdown-it, DOMPurify, highlight.js; versions and licences in `Web/KB-WEB-LICENSES.md`). Nothing is loaded from the network, and both pages carry a content-security policy.
