@@ -566,6 +566,34 @@ A failed sync is a run-health event, not a run failure.
   proposals for each action) and *contributes* (observations). Q2 asks
   whether Jordan wants more than that.
 
+**As built (V3, PR to follow):**
+
+- **The guide is part of the mirror, not written by `init`.** Every mirror carries
+  Scout's guide for its agent as its root `AGENTS.md` and `CLAUDE.md`, in place
+  of the vault's own. A Scout vault's root `CLAUDE.md` is for the laptop's
+  scheduled runs and tells them how to write. In a mirror it would mislead the
+  agent, and a file `init` wrote at the same path would collide with it on the
+  next pull. The guide is fixed text and the delegate's id. The pre-push check
+  regenerates it and compares bytes, as it does for the policy document.
+- **`scoutctl delegate init`** runs in the agent, in its clone. It finds the
+  clone by its manifest, and refuses the owner's vault and any other folder. It
+  checks:
+  - that the clone's config lists the delegate;
+  - that `SCOUT_READER` matches and `SCOUT_MODE` isn't set;
+  - that the engine is at least the one that built the mirror.
+
+  Then it reads once as the delegate, without writing the privacy index, and
+  writes `SCOUT_DATA_DIR` and `SCOUT_READER` to `.git/scout-delegate.env`,
+  never the tree. `--print-env` prints them as exports for `eval`. It is the
+  one `delegate` command a delegate checkout may run.
+- **The account confirmation stays at `link`** (`--confirm-account-unshared`,
+  §4.2). It isn't asked again in `init`: the agent runs `init`, not the owner.
+- **A delegate's commands are the allow-list's**: `kb` reads, `pre-session data`,
+  `bootstrap doctor`, `manifest show`, `version`, `hook` and `delegate init`. The
+  guide names only those. `action-items list` (§6.5) isn't in it yet.
+- **Platform docs wait for §10 Q1.** The guide is platform-neutral. A Grok Bot or
+  Duet page follows once the platform facts are confirmed.
+
 ## 7. Writes: the inbox and the curator
 
 ### 7.1 Shape
@@ -643,7 +671,7 @@ Each phase is one PR or more, and starts only on Jordan's go.
 | **V0 Answers** | Jordan answers §10; a manual check of the facts §3 marks unknown: Grok Bot clones a private repo with a token from its secrets store and runs `pip`/`uv`; Duet reads a private repo through the GitHub connector, and whether it accepts a custom remote MCP connector | §3 has no unknowns that change the plan |
 | **V1 Delegate reader** (built: #625) | `delegate:<id>` in `scout/kb/reader.py`; `privacy.delegates` parsed per §4.5; every `kb` read command, the graph, `kb delta`, `kb classify`, the KB read gate and `pre-session data` filter for it unless `privacy.delegates.<id>.include_private`; audit rows; the write-refusal in §6.5. **No contract change:** delegates don't change labels, so `privacy-corpus.json`, `privacy.snapshot.json` and `CLASSIFIER_VERSION` stay as they are, and the policy JSON names `delegates` only when a vault lists one. Delegate visibility is tested in the engine's own unit tests. Residual left for V2: a normal note's body that names a private note still shows (§4.4) | `scoutctl kb files` as `delegate:x` on the privacy fixture vault prints no `CANARY-PRIV-*` |
 | **V2 Delegate mirror** | **V2a (built: #632):** `scoutctl delegate link/sync [--all]/preview/status/unlink`; per-delegate tree with line redaction (§4.4); pre-push re-check; compare-and-swap push to a private GitHub repo or local path (§6.1 "As built"). **V2b (built: #633, stacked on #632):** `link --create-repo`, `delegate key` (read-only deploy key, rotate, revoke), `delegate push-token`. **V2c (built: #636, stacked on #633):** the post-run sync, the tick's 15-minute sync, mirror ages in doctor, failures in run health | A fixture vault links to a throwaway private repo; the mirror has no canary, no local-only path, and labels for every file (V2a's tests prove this with local bare repos; a real GitHub repo waits for V2b and Jordan's OK) |
-| **V3 Delegate bootstrap** | `scoutctl delegate init` (AGENTS.md / CLAUDE.md, env, install check); docs per platform | A fresh Linux container with only the mirror clone and a token answers a scout-ask question through `scoutctl kb` |
+| **V3 Delegate bootstrap** (built: platform-neutral part, §6.6 "As built") | `scoutctl delegate init` (AGENTS.md / CLAUDE.md, env, install check); docs per platform | A fresh Linux container with only the mirror clone and a token answers a scout-ask question through `scoutctl kb` |
 | **V4 Inbox** | proposal schema; `inbox pull/apply`; the phase step in consolidation and briefing; review-queue routing | An `action_item_op` made in the container is applied by the next fixture run; an owner-only op lands in the review queue |
 | **V5 (only if needed) MCP** | `scoutctl mcp serve` over a delegate mirror clone: read tools (`kb_resolve/files/read/search/query/related`, `action_items_list`, `pre_session`) plus `inbox_propose`. Stdio first (Grok Bot can start it by command); streamable HTTP for Duet, which as a claude.ai custom connector must be publicly reachable and needs the MCP OAuth flow or an authless URL (an unguessable path is weak auth, acceptable only for a normal-only mirror; Jordan decides, Q3) | Duet answers a scout-ask question through it |
 | **V6 Live** | Jordan links his own delegates; the vault's trading paths are confirmed local-only first (privacy P5) | Jordan's delegates answer from the mirror; doctor shows mirror ages |
