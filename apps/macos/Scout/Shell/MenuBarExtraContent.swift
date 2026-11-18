@@ -38,6 +38,11 @@ struct MenuBarExtraContent: View {
         .offset(y: appeared ? 0 : -5)
         .onAppear {
             Task { await state.refreshUrgentActionCount() }
+            // Hand over the window opener so a notification click can reopen
+            // a closed main window (card C3).
+            if state.openMainWindow == nil {
+                state.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            }
             if reduceMotion {
                 appeared = true
             } else {
@@ -52,7 +57,7 @@ struct MenuBarExtraContent: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "binoculars.fill")
-                .font(.system(size: 15, weight: .semibold))
+                .font(DS.sans(15, weight: .semibold))
                 .foregroundStyle(DS.Accent.ink)
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(DS.Accent.wash))
@@ -93,10 +98,10 @@ struct MenuBarExtraContent: View {
     }
 
     private var statusCard: some View {
-        let status = currentStatus
+        let status = state.status
         return HStack(spacing: 10) {
             Circle()
-                .fill(status.color)
+                .fill(status.tone.color)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
                 Text(status.title)
@@ -105,9 +110,17 @@ struct MenuBarExtraContent: View {
                 Text(status.detail)
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Ink.p3)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(status.title). \(status.detail)")
             Spacer()
+            if let fix = status.fix {
+                Button(fix.title) { perform(fix) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .font(DS.sans(11, weight: .medium))
+            }
         }
         .padding(11)
         .background(
@@ -115,8 +128,15 @@ struct MenuBarExtraContent: View {
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
         )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(status.title). \(status.detail)")
+    }
+
+    /// Setup happens in the main window (it shows the setup flow while the
+    /// engine isn't set up); everything else is fixed from Settings ▸ Engine.
+    private func perform(_ fix: ScoutStatus.Fix) {
+        switch fix {
+        case .setUp: openMainWindow()
+        case .openSettings: openScoutSettings()
+        }
     }
 
     private var upcomingSection: some View {
@@ -243,33 +263,13 @@ struct MenuBarExtraContent: View {
     private func footerButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .medium))
+                .font(DS.sans(11, weight: .medium))
                 .frame(width: 26, height: 24)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(DS.Ink.p3)
         .help(title)
         .accessibilityLabel(title)
-    }
-
-    private var currentStatus: (title: String, detail: String, color: Color) {
-        guard let latest = state.sessionLogService.runs.first else {
-            return ("Ready", "No recent runs", DS.Status.ok)
-        }
-        // Exhaustive over RunStatus on purpose (see its doc comment): a new
-        // case must be classified here, not silently shown as a green Ready.
-        switch latest.status {
-        case .running:
-            return ("Running \(latest.displayName)", "Started \(latest.startedAt.formatted(.relative(presentation: .named)))", DS.Accent.fill)
-        case .failure, .timeout, .rateLimited, .orphaned:
-            return ("Last run needs attention", "\(latest.displayName) · \(latest.status.rawValue)", DS.Status.err)
-        case .skippedBudget:
-            return ("Last run skipped", "Budget limit reached", DS.Status.warn)
-        case .skippedConcurrency:
-            return ("Last run skipped", "Another session was running", DS.Status.warn)
-        case .scheduled, .success:
-            return ("Ready", "Last: \(latest.displayName) · \(latest.status.rawValue)", DS.Status.ok)
-        }
     }
 
     private func openMainWindow() {

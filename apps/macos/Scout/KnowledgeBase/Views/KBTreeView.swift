@@ -53,11 +53,11 @@ private struct KBTreeRow: View {
     private var dirLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(DS.sans(9, weight: .semibold))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 10)
             Image(systemName: isExpanded ? "folder.fill" : "folder")
-                .font(.system(size: 11)).foregroundStyle(DS.Ink.p3)
+                .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
             Text(node.name).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -70,7 +70,7 @@ private struct KBTreeRow: View {
     private var fileLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: glyph)
-                .font(.system(size: 10)).foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
+                .font(DS.sans(10)).foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .frame(width: 10)
             Text(node.displayName)
                 .font(DS.sans(12.5))
@@ -79,7 +79,7 @@ private struct KBTreeRow: View {
             Spacer(minLength: 0)
             if privatePaths.contains(node.relativePath) {
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 9)).foregroundStyle(DS.Ink.p4)
+                    .font(DS.sans(9)).foregroundStyle(DS.Ink.p4)
                     .help("Private: only you and your own scheduled runs see this note")
                     .accessibilityLabel("Private")
             }

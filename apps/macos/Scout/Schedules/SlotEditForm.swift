@@ -14,11 +14,24 @@ struct SlotEditForm: View {
     let onRevertNewDraft: (() -> Void)?
     /// nil hides the model picker: the engine can't run per-slot models.
     let defaultModel: String?
+    /// Told whether the draft differs from `liveSlot`, so the page can refuse
+    /// to close the pane over unsaved edits (UI audit C6).
+    let onDirtyChange: (Bool) -> Void
+    /// Where unsaved edits outlive this view: the page tears the form down on
+    /// every slot switch (`.id(slot.key)`), so `@State` alone would drop them.
+    private let drafts: SlotDraftStore
 
     @State private var draft: SlotDraft
+    /// Fields changed both here and in schedule.yaml since the draft was
+    /// typed; the form keeps the user's value and says so.
+    @State private var conflictingFields: [String]
     @State private var isConfirmingTypeChange = false
     @State private var isConfirmingDelete = false
     @State private var isSaving = false
+    /// A delete is in flight: the form is locked, so nothing typed now is
+    /// lost to the delete or overwritten when a failed delete puts the
+    /// set-aside draft back.
+    @State private var isDeleting = false
 
     init(
         liveSlot: Slot,
@@ -27,7 +40,9 @@ struct SlotEditForm: View {
         onDelete: @escaping () async -> Void,
         onFireNow: @escaping (String) async -> Void,
         onRevertNewDraft: (() -> Void)? = nil,
-        defaultModel: String? = nil
+        defaultModel: String? = nil,
+        onDirtyChange: @escaping (Bool) -> Void = { _ in },
+        drafts: SlotDraftStore? = nil
     ) {
         self.liveSlot = liveSlot
         self.isNewDraft = isNewDraft
@@ -36,7 +51,12 @@ struct SlotEditForm: View {
         self.onFireNow = onFireNow
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
-        _draft = State(initialValue: SlotDraft(from: liveSlot))
+        self.onDirtyChange = onDirtyChange
+        let drafts = drafts ?? .shared
+        self.drafts = drafts
+        let initial = Self.initialDraft(live: liveSlot, stashed: drafts.entry(for: liveSlot.key))
+        _draft = State(initialValue: initial.draft)
+        _conflictingFields = State(initialValue: initial.conflicts)
     }
 
     // MARK: - Static helpers
@@ -45,10 +65,30 @@ struct SlotEditForm: View {
         draft.type != live.type
     }
 
+    /// What the form opens with: the slot's unsaved draft if there is one,
+    /// rebased onto the slot as it is now, else the slot itself. Pure, so
+    /// tests can pin it.
+    /// The note over the form when fields changed both here and elsewhere.
+    static func conflictNoteText(_ fields: [String]) -> String {
+        let named = fields.map { "“\($0)”" }.joined(separator: ", ")
+        return "Changed outside the app since you edited this schedule: \(named). The form shows your values: Save keeps them, Revert takes the saved ones."
+    }
+
+    static func initialDraft(live: Slot, stashed: SlotFormDraft?) -> (draft: SlotDraft, conflicts: [String]) {
+        guard let stashed, stashed.isDirty else { return (SlotDraft(from: live), []) }
+        let rebased = stashed.draft.rebased(from: stashed.baseline, onto: live)
+        let conflicts = SlotDraft.stickyConflicts(
+            previous: stashed.conflicts, new: rebased.conflicts, draft: rebased.draft, live: live)
+        return (rebased.draft, conflicts)
+    }
+
     // MARK: - Body
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !conflictingFields.isEmpty {
+                conflictNote
+            }
             slotKeyField
             timeAndWeekdaysSection
             onMissSection
@@ -56,10 +96,41 @@ struct SlotEditForm: View {
             if let defaultModel {
                 modelSection(defaultModel: defaultModel)
             }
+            agentSection
             DisclosureGroup("Advanced") { advancedSection }.padding(.top, 8)
             actionBar
         }
         .padding(20)
+        .disabled(isDeleting)
+        .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
+        .onChange(of: draft) { _, newDraft in
+            // Typing a field back to the file's value settles its conflict.
+            conflictingFields = SlotDraft.stickyConflicts(
+                previous: conflictingFields, new: [], draft: newDraft, live: liveSlot)
+            drafts.update(newDraft, baseline: liveSlot, conflicts: conflictingFields, for: liveSlot.key)
+            onDirtyChange(newDraft.isDirty(against: liveSlot))
+        }
+        .onChange(of: liveSlot) { oldLive, newLive in
+            // The slot changed under the form (a save, undo, reload): keep
+            // the user's edits, take the new values for everything else.
+            let rebased = draft.rebased(from: oldLive, onto: newLive)
+            conflictingFields = SlotDraft.stickyConflicts(
+                previous: conflictingFields, new: rebased.conflicts, draft: rebased.draft, live: newLive)
+            draft = rebased.draft
+            drafts.update(rebased.draft, baseline: newLive, conflicts: conflictingFields, for: newLive.key)
+            onDirtyChange(rebased.draft.isDirty(against: newLive))
+        }
+    }
+
+    private var conflictNote: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
+            Text(Self.conflictNoteText(conflictingFields))
+                .font(DS.sans(12))
+                .foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Private helpers
@@ -76,7 +147,7 @@ struct SlotEditForm: View {
     private var slotKeyField: some View {
         if isNewDraft {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Slot key")
+                Text(SlotFieldLabel.name)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -84,38 +155,44 @@ struct SlotEditForm: View {
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
                 if let err = SlotDraft.validateSlotKey(draft.key) {
-                    Text(err).font(.caption).foregroundStyle(.red)
+                    Text(err).font(DS.sans(10)).foregroundStyle(.red)
                 } else {
-                    Text("Slot keys are immutable after first save. Choose carefully.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
+                        .font(DS.sans(10)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             HStack {
-                Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                Text(draft.key).font(.body.monospaced())
+                Text(DisplayName.slotKey(draft.key)).font(DS.sans(13, weight: .medium))
+                Text(draft.key).font(DS.mono(10)).foregroundStyle(.secondary)
+                    .help("This schedule's key. It can't be changed after the first save.")
                 Spacer()
             }
         }
     }
 
+    private static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                                       "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+
     @ViewBuilder
     private var timeAndWeekdaysSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Time")
+            Text(SlotFieldLabel.time)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
             TextField("HH:MM", text: $draft.firesAtLocal)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Time")
                 .frame(width: 120)
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
         VStack(alignment: .leading, spacing: 4) {
-            Text("Weekdays")
+            Text(SlotFieldLabel.weekdays)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -141,10 +218,15 @@ struct SlotEditForm: View {
                             .foregroundStyle(isOn ? DS.Paper.base : DS.Ink.p2)
                     }
                     .buttonStyle(.plainHit)
+                    .accessibilityLabel(Self.weekdayNames[day] ?? day)
+                    .accessibilityValue(isOn ? "On" : "Off")
+                    .accessibilityAddTraits(.isToggle)
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Weekdays")
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(.red)
             }
         }
     }
@@ -152,7 +234,7 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var onMissSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("On miss")
+            Text(SlotFieldLabel.ifAsleep)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -160,19 +242,22 @@ struct SlotEditForm: View {
             EditorialSegmentedControl(
                 selection: $draft.onMiss,
                 options: [
-                    ("Fire", OnMissPolicy.fire),
-                    ("Skip", OnMissPolicy.skip),
-                    ("Collapse", OnMissPolicy.collapse),
+                    (OnMissPolicy.fire.displayName, OnMissPolicy.fire),
+                    (OnMissPolicy.skip.displayName, OnMissPolicy.skip),
+                    (OnMissPolicy.collapse.displayName, OnMissPolicy.collapse),
                 ],
                 minSegmentWidth: 70
             )
+            Text(draft.onMiss.explanation)
+                .font(DS.sans(10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     @ViewBuilder
     private var cooldownSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Cooldown (minutes)")
+            Text("\(SlotFieldLabel.waitBetweenRuns) (minutes)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -181,33 +266,54 @@ struct SlotEditForm: View {
                 Text("\(draft.cooldownMinutes)")
             }
             .frame(width: 200)
+            Text("After this schedule runs, it won't run again for at least this long.")
+                .font(DS.sans(10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func modelSection(defaultModel: String) -> some View {
         let current = ModelChoice(model: draft.model)
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Model")
+            Text(SlotFieldLabel.model)
                 .font(DS.sans(11, weight: .medium))
                 .tracking(1)
                 .textCase(.uppercase)
                 .foregroundStyle(DS.Ink.p3)
-            EditorialSegmentedControl(
+            AdaptiveSegmentedControl(
                 selection: Binding(get: { current }, set: { draft.model = $0.model }),
                 options: ModelChoice.slotOptions(defaultModel: defaultModel, current: current),
-                minSegmentWidth: 64
+                minSegmentWidth: 64,
+                accessibilityTitle: SlotFieldLabel.model
             )
-            Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light slot first.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
+                .font(DS.sans(10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Read-only until Phase 2 adds an agent picker. The value round-trips
+    /// through `draft` untouched, so saving never changes it.
+    private var agentSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(SlotFieldLabel.agent)
+                .font(DS.sans(11, weight: .medium))
+                .tracking(1)
+                .textCase(.uppercase)
+                .foregroundStyle(DS.Ink.p3)
+            Text(liveSlot.agentRuntimeDisplayName.map { "Runs on \($0)" }
+                 ?? "Runs on Scout's default agent")
+                .font(DS.sans(13))
+                .foregroundStyle(DS.Ink.p2)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Runner")
+                Text(SlotFieldLabel.script)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -215,9 +321,12 @@ struct SlotEditForm: View {
                 TextField("run-scout.sh", text: $draft.runner)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
+                Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Missed window (hours)")
+                Text("\(SlotFieldLabel.catchUpWindow) (hours)")
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -226,37 +335,24 @@ struct SlotEditForm: View {
                     Text("\(draft.missedWindowHours)")
                 }
                 .frame(width: 200)
+                Text("How late a missed run may still start after the Mac wakes.")
+                    .font(DS.sans(10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Type")
+                Text(SlotFieldLabel.kind)
                     .font(DS.sans(11, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
+                AdaptiveSegmentedControl(
                     selection: $draft.type,
-                    options: SlotType.allCases.map { ($0.rawValue.capitalized, $0) }
+                    options: SlotType.allCases.map { ($0.displayName, $0) },
+                    accessibilityTitle: SlotFieldLabel.kind
                 )
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Runtime")
-                    .font(DS.sans(11, weight: .medium))
-                    .tracking(1)
-                    .textCase(.uppercase)
-                    .foregroundStyle(DS.Ink.p3)
-                EditorialSegmentedControl(
-                    selection: $draft.runtime,
-                    options: [
-                        ("Local", SlotRuntime.local),
-                        ("Remote (Plan 7)", SlotRuntime.remote),
-                    ],
-                    minSegmentWidth: 110
-                )
-                .disabled(true)
-                .opacity(0.5)
-                Text("Remote slot execution arrives in Plan 7 (Anthropic routines integration).")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            // No Runtime row: every slot runs locally, so there is nothing to
+            // choose. The disabled "Remote (Plan 7)" placeholder is gone (card C3).
         }
         .padding(.top, 4)
     }
@@ -267,7 +363,7 @@ struct SlotEditForm: View {
             if !isNewDraft {
                 Button("Delete") { isConfirmingDelete = true }
                     .foregroundStyle(.red)
-                Button("Fire now") {
+                Button("Run now") {
                     Task { await onFireNow(draft.key) }
                 }
                 .disabled(draft.isDirty(against: liveSlot))
@@ -278,6 +374,7 @@ struct SlotEditForm: View {
                     onRevertNewDraft?()
                 } else {
                     draft = SlotDraft(from: liveSlot)
+                    conflictingFields = []
                 }
             }
             .disabled(!isNewDraft && !draft.isDirty(against: liveSlot))
@@ -293,7 +390,7 @@ struct SlotEditForm: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
-                    .foregroundStyle(DS.Paper.base)
+                    .foregroundStyle(DS.Accent.onFill)
             }
             .buttonStyle(.plainHit)
             .keyboardShortcut(.return, modifiers: [.command])
@@ -301,7 +398,7 @@ struct SlotEditForm: View {
         }
         .padding(.top, 8)
         .alert(
-            "Change slot type?",
+            "Change the kind of work?",
             isPresented: $isConfirmingTypeChange,
             actions: {
                 Button("Cancel", role: .cancel) { }
@@ -310,21 +407,25 @@ struct SlotEditForm: View {
                 }
             },
             message: {
-                Text("Changing slot type updates which connectors are required at fire time and reorders single-fire-per-tick priority. Continue?")
+                Text("This changes which connected tools the run needs, and which schedule goes first when two are due at the same time.")
             }
         )
         .confirmationDialog(
-            "Delete \(draft.key)?",
+            "Delete \(DisplayName.slotKey(draft.key))?",
             isPresented: $isConfirmingDelete,
             titleVisibility: .visible,
             actions: {
                 Button("Delete", role: .destructive) {
-                    Task { await onDelete() }
+                    Task {
+                        isDeleting = true
+                        defer { isDeleting = false }
+                        await onDelete()
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             },
             message: {
-                Text("Removes this slot from schedule.yaml. Tracker history is retained but unused. Run-event logs keep their references.")
+                Text("Scout stops running it. Past runs stay in the run history.")
             }
         )
     }

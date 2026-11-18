@@ -30,11 +30,11 @@ struct PreambleCard: View {
         VStack(alignment: .leading, spacing: 0) {
             // Headline row — chevron · bold serif headline.
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                         .foregroundStyle(DS.Ink.p3)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: 12)

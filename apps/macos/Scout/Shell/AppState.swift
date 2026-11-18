@@ -1,12 +1,14 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Combine
 
 @MainActor
 final class AppState: ObservableObject {
-    enum MenuBarStatus { case idle, running, lastFailed, budgetSkipped }
-
-    @Published var menuBarStatus: MenuBarStatus = .idle
+    /// What the menu-bar icon, the menu-bar panel and the status bar show
+    /// (card C3). Derived from the engine's health and the latest run by
+    /// `recomputeStatus()`; settable so view tests can pin a state.
+    @Published var status = ScoutStatus(kind: .checking, title: "Checking Scout…", detail: "Looking at the engine", tone: .neutral)
 
     /// Last "Run now" (fire-now) failure, surfaced to the UI. Set when a
     /// `scoutctl schedule fire-now` invocation throws or exits non-zero;
@@ -35,7 +37,8 @@ final class AppState: ObservableObject {
     /// wires a real `FileWatcher`; tests inject a fake so no vault is touched.
     let fileEvents: any FileSystemEventSource
     let trackerService: UsageTrackerService
-    let sessionTokensService: SessionTokensService
+    /// Scout's own scheduled-run usage (`scoutctl budget usage --json`).
+    let scoutUsageService: ScoutUsageService
     let connectorHealthService: ConnectorHealthService
     let sessionLogService: SessionLogService
     let scheduleService: ScheduleService
@@ -65,6 +68,12 @@ final class AppState: ObservableObject {
     // Engine discovery (spec §4.4)
     let engineLayout: EngineLayout
     let engineHealth: EngineHealthService
+    /// Settings ▸ Engine ▸ Run protection (card C9): `scoutctl protection status`, the privacy-check
+    /// re-check and the owner's write-protection switch.
+    let runProtection: RunProtectionService
+    /// The run ledger (`scoutctl runs --json`): the Health page, and the
+    /// Control Center's run statuses for runs the ledger records.
+    let runLedgerService: RunLedgerService
 
     // Engine install + upgrade (spec §5)
     /// The engine this build ships; nil only when the resource is missing
@@ -103,6 +112,8 @@ final class AppState: ObservableObject {
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
     let actionItemsWriterBox: ActionItemsWriterBox
+    /// Undo for vault writes, shared by every page in the main window (C10).
+    let vaultUndo = VaultUndoController()
     let actionItemsEnvState: ActionItemsEnvironmentState
     let scoutDirectory: URL
     let actionItemsDirectory: URL
@@ -162,13 +173,29 @@ final class AppState: ObservableObject {
             initialState: configuration.initialEngineState
         )
 
+        // Asks the engine health for scoutctl each time, so it follows the engine that's found; none while setup gates the tabs.
+        let runProtection = RunProtectionService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
+        )
+
+        let runLedger = RunLedgerService(
+            scoutctl: scoutctlResolved.executable,
+            argumentsPrefix: scoutctlResolved.argsPrefix,
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
+            fileEvents: events
+        )
+
         let git = GitService(repoURL: scoutDir, runner: runner)
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
-            fileEvents: events
-        )
-        let tokens = SessionTokensService(
-            trackerURL: scoutDir.appendingPathComponent(".scout-logs/session-tokens.jsonl"),
             fileEvents: events
         )
         let connectorHealth = ConnectorHealthService(
@@ -202,7 +229,8 @@ final class AppState: ObservableObject {
             scoutctl: scoutctlExe,
             runner: runner,
             canonicalSchedulePath: canonical,
-            argumentsPrefix: scoutctlArgsPrefix
+            argumentsPrefix: scoutctlArgsPrefix,
+            drafts: .shared
         )
         // Budget config is read and written through `scoutctl budget show/set`,
         // never by parsing scout-config.yaml here — that file doubles as
@@ -219,6 +247,11 @@ final class AppState: ObservableObject {
             runner: runner,
             argumentsPrefix: scoutctlArgsPrefix
         )
+        let usage = ScoutUsageService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: configuration.claudeSessionsDirectory
@@ -229,7 +262,8 @@ final class AppState: ObservableObject {
             runner: runner,
             fileEvents: events,
             indexFile: scoutDir.appendingPathComponent(".scout-cache/sessions-index.json"),
-            watchRoots: configuration.agentSessionWatchRoots
+            watchRoots: configuration.agentSessionWatchRoots,
+            source: configuration.agentSessionSource
         ))
 
         let docService = ActionItemsDocumentService(
@@ -304,7 +338,7 @@ final class AppState: ObservableObject {
         self.fileEvents = events
         self.gitService = git
         self.trackerService = tracker
-        self.sessionTokensService = tokens
+        self.scoutUsageService = usage
         self.connectorHealthService = connectorHealth
         self.sessionLogService = logs
         self.scheduleService = sched
@@ -335,6 +369,8 @@ final class AppState: ObservableObject {
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
+        self.runProtection = runProtection
+        self.runLedgerService = runLedger
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
         self.resolveClaude = configuration.resolveClaude
@@ -360,13 +396,46 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // The status bar's cost cell and the usage card read the usage
+        // summary through AppState.
+        usage.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         // The onboarding gate, the unfinished-switch flag and the Action
         // Items check follow the engine state. Every refresh publishes (no
         // de-duplication): the switch flag reads the disk, which can change
         // while the state value doesn't.
+        // The Health row's attention dot follows run health.
+        runLedger.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // Runs the ledger records take its status (a safety skip is a skip,
+        // not a run that hung); the rest keep their log-derived status.
+        runLedger.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak logs] state in
+                guard case .loaded(let ledger) = state else { return }
+                logs?.applyLedger(ledger.entriesByLog)
+            }
+            .store(in: &cancellables)
         engineHealth.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
+            .store(in: &cancellables)
+        // The shared status follows the engine as well as the runs (card C3).
+        // `receive(on:)` hops past the willSet, so the service's properties
+        // already hold the new values when this reads them.
+        engineHealth.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.recomputeStatus() }
+            .store(in: &cancellables)
+        // The Control Center's Today column shows the real daily budget.
+        budgetSettings.$settings
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         sessionIndex.$needsYouCount
             .removeDuplicates()
@@ -393,6 +462,7 @@ final class AppState: ObservableObject {
         lastGatesTabs = configuration.initialEngineState.gatesTabs
         syncOnboarding()
         refreshEngineSwitchState()
+        recomputeStatus()
 
         // Everything below spawns work that outlives the initializer — polling
         // timers, FSEvents subscriptions, launch-time loads and a `scoutctl`
@@ -405,12 +475,35 @@ final class AppState: ObservableObject {
         sessionIndex.start()
         displayProfile.startWatching()
 
+        // A finished run adds a runner row to the usage tracker, and the
+        // tracker service re-reads the file on every change to it, so re-read
+        // Scout's usage then. (Keying on the run log missed a runner row that
+        // landed after the log said the run was done.) This relies on
+        // `entries` publishing on EVERY assignment, even an equal one: it only
+        // keeps `session` rows, so a runner row leaves it unchanged. Don't add
+        // `removeDuplicates()` here or in UsageTrackerService. The launch read
+        // (`tracker.loadInitial()` below) also lands here, which is the
+        // launch-time usage refresh.
+        tracker.$entries
+            .dropFirst()
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .sink { _ in Task { await usage.refresh() } }
+            .store(in: &cancellables)
+
+        // The run-log parse cache moved to a per-build, per-vault file; the
+        // shipping app removes the old shared one (a dev build never does).
+        Task.detached(priority: .utility) { SessionLogService.removeLegacyParseCacheAtLaunch() }
+
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
-            _ = try? await tokens.loadInitial()
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
+            await runLedger.refresh()
             await MainActor.run {
+                runLedger.start()
+                // Runs already on disk at launch never notify; only runs
+                // that finish (or first appear) from here on do.
+                self?.runNotificationsArmed = true
                 sched.start()
                 power.start()
                 // Load proposals at launch so the sidebar badge is populated
@@ -420,8 +513,12 @@ final class AppState: ObservableObject {
                 wishlistDoc.load()
                 researchDoc.load()
             }
-            await self?.recomputeMenuStatus()
+            await self?.recomputeStatus()
             await self?.refreshUrgentActionCount()
+            // The real daily budget for the Control Center (card C3); a
+            // vault without one just leaves the budget off. Its own task, so
+            // the engine check below never waits on it.
+            Task { _ = try? await budgetSettings.load() }
 
             // Locate + doctor-check the engine concurrently with the Action
             // Items environment check below — a slow doctor (a real
@@ -713,7 +810,8 @@ final class AppState: ObservableObject {
         /// the configuration so a test graph never reads the real home.
         var claudeSessionsDirectory: URL
         /// Where `SessionLogService` memoises parsed log bodies
-        /// (`~/Library/Caches/Scout/session-parse-cache.json` in production).
+        /// (`~/Library/Caches/Scout/parse-cache/<bundle id>/<vault key>.json` in
+        /// production, one per build and vault).
         /// Configured for the same reason as `claudeSessionsDirectory`: the
         /// service's own default is the per-user path, so a test graph that
         /// left this to the default rewrote the *running app's* cache with
@@ -736,6 +834,14 @@ final class AppState: ObservableObject {
         /// production). Defaults to none, so a test graph never watches the
         /// real `~/.claude` or the desktop app's store.
         var agentSessionWatchRoots: [URL] = []
+        /// Where the Sessions page's index comes from. nil is `scoutctl
+        /// session index`, which reads the Mac's real `~/.claude` whatever
+        /// vault the app points at; a `FileSessionIndexSource` reads a fixed
+        /// file instead (tests, the big-vault fixture, a Debug build on a
+        /// synthetic vault via the `sessionsIndexFile` default). This covers
+        /// the Sessions page only: `claudeSessionsDirectory` (Action Items'
+        /// Launch Claude) still reads `~/.claude/projects/<encoded vault>`.
+        var agentSessionSource: (any SessionIndexSource)? = nil
         /// The engine this build ships (spec §5). The bundle's in production;
         /// nil in every test configuration unless a test passes one, so no
         /// test can install or upgrade an engine by accident (Ruling 46).
@@ -759,6 +865,14 @@ final class AppState: ObservableObject {
             let vault = AppState.resolveScoutDirectory(
                 defaults: .standard, pointer: locator.pointer(), home: layout.home
             )
+            // A Debug build pointed at a synthetic vault reads its sessions
+            // from a fixture file and watches nothing under the real home. A
+            // Release build ignores the default: it always asks scoutctl.
+            #if DEBUG
+            let sessionsFile = FileSessionIndexSource.configured(in: .standard)
+            #else
+            let sessionsFile: FileSessionIndexSource? = nil
+            #endif
             return Configuration(
                 scoutDirectory: vault,
                 // Every scoutctl/git call must see the vault the app is
@@ -778,11 +892,12 @@ final class AppState: ObservableObject {
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: vault),
-                parseCacheURL: SessionLogService.defaultParseCacheURL(),
+                parseCacheURL: SessionLogService.defaultParseCacheURL(scoutDirectory: vault),
                 engineLayout: layout,
                 initialEngineState: state,
                 startsBackgroundWork: true,
-                agentSessionWatchRoots: SessionsRefresh.productionWatchRoots(),
+                agentSessionWatchRoots: sessionsFile == nil ? SessionsRefresh.productionWatchRoots() : [],
+                agentSessionSource: sessionsFile,
                 engineRelease: release,
                 engineTarballURL: release?.bundledTarballURL(bundle: .main),
                 resolveClaude: PrerequisiteChecker.defaultResolveClaude,
@@ -1007,31 +1122,55 @@ final class AppState: ObservableObject {
         return home.appendingPathComponent("Scout")
     }
 
-    func recomputeMenuStatus() async {
-        let latest = sessionLogService.runs.first
-        let next: MenuBarStatus = switch latest?.status {
-        case .running: .running
-        case .failure, .timeout, .rateLimited: .lastFailed
-        case .skippedBudget: .budgetSkipped
-        default: .idle
-        }
-        menuBarStatus = next
+    /// Re-derive `status` from the engine's health and the latest run.
+    func recomputeStatus() {
+        let next = ScoutStatus.derive(engine: engineHealth.state, doctor: engineHealth.doctor,
+                                      doctorError: engineHealth.lastError,
+                                      latestRun: sessionLogService.runs.first)
+        if next != status { status = next }
     }
+
+    /// Open a run in the Control Center, from a notification click: front
+    /// the main window and let `ControlCenterView` open the run's detail.
+    func openRun(id: Run.ID) {
+        requestedSidebar = .controlCenter
+        pendingRunToOpen = id
+        NSApp.activate(ignoringOtherApps: true)
+        if let openMainWindow {
+            openMainWindow()
+        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
+            // No SwiftUI view has handed over its opener yet (the window
+            // started hidden and the panel was never opened). The run still
+            // opens the next time the window shows: `pendingRunToOpen` waits.
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// The SwiftUI `openWindow(id: "main")` action, handed over by the first
+    /// view that has one (the main window or the menu-bar panel), so a
+    /// notification click can reopen a closed window.
+    var openMainWindow: (() -> Void)?
+
+    /// False until the launch-time log load finishes, so runs already on
+    /// disk never notify.
+    private var runNotificationsArmed = false
 
     private func startNotificationWatch() {
         sessionLogService.$runs.sink { [weak self] runs in
             guard let self else { return }
             Task { @MainActor in
+                let defaults = UserDefaults.standard
+                let prefs = RunNotificationPolicy.Preferences(
+                    onFailure: defaults.object(forKey: RunNotificationPolicy.failureKey) as? Bool ?? true,
+                    onRateLimit: defaults.object(forKey: RunNotificationPolicy.rateLimitKey) as? Bool ?? true)
                 for r in runs {
-                    let prev = self.previousStatus[r.id]
-                    if prev == .running,
-                       r.status != .running,
-                       r.status != .success {
+                    if RunNotificationPolicy.shouldNotify(previous: self.previousStatus[r.id], run: r,
+                                                          armed: self.runNotificationsArmed, preferences: prefs) {
                         self.notificationService.notify(run: r)
                     }
                     self.previousStatus[r.id] = r.status
                 }
-                await self.recomputeMenuStatus()
+                self.recomputeStatus()
             }
         }.store(in: &cancellables)
     }

@@ -42,7 +42,8 @@ struct TabViewSmokeTests {
                 .environmentObject(vault.state.actionItemsDocumentService)
                 .environmentObject(vault.state.actionItemsWriterBox)
                 .environmentObject(vault.state.actionItemsEnvState)
-                .environmentObject(vault.state.displayProfileService))
+                .environmentObject(vault.state.displayProfileService)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     @Test("the action items tab renders its missing-day state")
@@ -59,7 +60,8 @@ struct TabViewSmokeTests {
                 .environmentObject(vault.state.actionItemsDocumentService)
                 .environmentObject(vault.state.actionItemsWriterBox)
                 .environmentObject(vault.state.actionItemsEnvState)
-                .environmentObject(vault.state.displayProfileService))
+                .environmentObject(vault.state.displayProfileService)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     // MARK: - Proposals
@@ -72,7 +74,8 @@ struct TabViewSmokeTests {
         ViewHost.render(
             ProposalsView()
                 .environmentObject(vault.state.proposalsDocumentService)
-                .environmentObject(vault.state.proposalsWriterBox))
+                .environmentObject(vault.state.proposalsWriterBox)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     // MARK: - Wishlist / Research
@@ -85,7 +88,8 @@ struct TabViewSmokeTests {
         ViewHost.render(
             PerFileListView(config: .wishlist)
                 .environmentObject(vault.state.wishlistDocumentService)
-                .environmentObject(vault.state.perFileWriterBox))
+                .environmentObject(vault.state.perFileWriterBox)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     @Test("the research tab renders")
@@ -96,7 +100,8 @@ struct TabViewSmokeTests {
         ViewHost.render(
             PerFileListView(config: .research)
                 .environmentObject(vault.state.researchDocumentService)
-                .environmentObject(vault.state.perFileWriterBox))
+                .environmentObject(vault.state.perFileWriterBox)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     // MARK: - Knowledge Base
@@ -110,7 +115,8 @@ struct TabViewSmokeTests {
         ViewHost.render(
             KnowledgeBaseView()
                 .environmentObject(vault.state.knowledgeBaseService)
-                .environmentObject(vault.state.knowledgeBaseWriterBox))
+                .environmentObject(vault.state.knowledgeBaseWriterBox)
+                .environmentObject(vault.state.vaultUndo))
     }
 
     // MARK: - Schedules
@@ -122,6 +128,7 @@ struct TabViewSmokeTests {
             SchedulesView()
                 .environmentObject(vault.state.scheduleEditService)
                 .environmentObject(vault.state.modelSettingsService)
+                .environmentObject(vault.state.vaultUndo)
                 .environmentObject(vault.state))
     }
 

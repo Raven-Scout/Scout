@@ -400,4 +400,7 @@ def test_all_runners_source_one_lock_and_carry_no_copy_of_it() -> None:
     for runner in RUNNERS:
         text = (TEMPLATES / runner).read_text(encoding="utf-8")
         assert f"RUNNER_KIND={RUNNERS[runner]}\n" in text
-        assert "set -C" not in text, f"{runner} carries its own copy of the lock protocol"
+        # The one noclobber a runner may hold is its own log's claim (a unique log per run).
+        claim = '( set -C; : >"$LOG_FILE" )'
+        assert text.count(claim) == 1, f"{runner} must claim its log exactly once"
+        assert "set -C" not in text.replace(claim, ""), f"{runner} carries its own copy of the lock protocol"

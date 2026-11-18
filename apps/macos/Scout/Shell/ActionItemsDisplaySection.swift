@@ -49,6 +49,7 @@ struct ActionItemsDisplaySection: View {
                         ForEach(DoneRange.allCases, id: \.self) { Text($0.label.capitalizedFirst).tag($0) }
                     }
                     .labelsHidden()
+                    .labelledBySettingsRow()
                     .pickerStyle(.menu)
                     .fixedSize()
                 }
@@ -74,6 +75,7 @@ struct ActionItemsDisplaySection: View {
             ForEach(options) { Text(label($0)).tag($0) }
         }
         .labelsHidden()
+        .labelledBySettingsRow()
         .pickerStyle(.menu)
         .fixedSize()
     }

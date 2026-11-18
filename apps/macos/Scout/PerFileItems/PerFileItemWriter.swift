@@ -29,6 +29,17 @@ actor PerFileItemWriter {
         self.now = now
     }
 
+    /// Undo or redo a change this writer made, in its serial queue.
+    func restore(_ change: VaultChange, _ direction: UndoDirection) async throws {
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            try await change.apply(direction, git: gitService, repo: scoutDirectory)
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
+    }
+
     @discardableResult
     func addItem(title: String, priority: ItemPriority, body: String, source: String?, area: String?,
                  in directoryURL: URL, noun: String) async throws -> URL {
@@ -43,11 +54,15 @@ actor PerFileItemWriter {
         return try await task.value
     }
 
-    func resolve(_ resolution: ItemResolution, fileURL: URL, label: String) async throws {
+    /// Each field write returns the file's bytes before and after, for undo
+    /// (nil when nothing changed).
+    @discardableResult
+    func resolve(_ resolution: ItemResolution, fileURL: URL, label: String) async throws -> VaultChange? {
         try await setStatus(resolution.status, fileURL: fileURL, label: label)
     }
 
-    func setStatus(_ status: ItemStatus, fileURL: URL, label: String) async throws {
+    @discardableResult
+    func setStatus(_ status: ItemStatus, fileURL: URL, label: String) async throws -> VaultChange? {
         let previous = tail
         let message = Self.statusCommitMessage(status, label: label)
         let value = status.frontmatterValue
@@ -55,6 +70,7 @@ actor PerFileItemWriter {
             _ = await previous?.value
             return try await Self.performFieldWrite(
                 fileURL: fileURL, key: "status", value: value, commitMessage: message,
+                actionName: Self.statusActionName(status),
                 scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
@@ -71,13 +87,25 @@ actor PerFileItemWriter {
         }
     }
 
-    func setPriority(_ priority: ItemPriority, fileURL: URL, label: String) async throws {
+    static func statusActionName(_ status: ItemStatus) -> String {
+        switch status {
+        case .open:       return "Reopen"
+        case .inProgress: return "Start"
+        case .done:       return "Mark Done"
+        case .dropped:    return "Drop"
+        case .unknown:    return "Change Status"
+        }
+    }
+
+    @discardableResult
+    func setPriority(_ priority: ItemPriority, fileURL: URL, label: String) async throws -> VaultChange? {
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.performFieldWrite(
                 fileURL: fileURL, key: "priority", value: priority.rawValue,
                 commitMessage: "app: set \(label) priority to \(priority.rawValue)",
+                actionName: "Change Priority",
                 scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
@@ -107,10 +135,11 @@ actor PerFileItemWriter {
     }
 
     private static func performFieldWrite(fileURL: URL, key: String, value: String, commitMessage: String,
-                                          scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
-        let didWrite: Bool
+                                          actionName: String,
+                                          scoutDirectory: URL, gitService: GitServiceProtocol?) async throws -> VaultChange? {
+        let written: (before: String, after: String)?
         do {
-            didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
+            written = try GuardedFileWrite.applyCapturing(to: fileURL) { text in
                 try rewriteFrontmatterField(text: text, key: key, value: value, file: fileURL.lastPathComponent)
             }
         } catch let e as GuardedFileWrite.Failure {
@@ -121,9 +150,12 @@ actor PerFileItemWriter {
                 throw PerFileItemWriterError.writeFailed("\(fileURL.lastPathComponent) changed repeatedly under concurrent writes")
             }
         }
-        guard didWrite else { return }
+        guard let written else { return nil }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: commitMessage)
+        return VaultChange(actionName: actionName,
+                           before: [.text(fileURL, written.before)],
+                           after: [.text(fileURL, written.after)])
     }
 
     // MARK: - pure helpers

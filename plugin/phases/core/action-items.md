@@ -87,7 +87,7 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 ## 🔴 Urgent
 
-- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
+- [ ] [#XXXX] **[Short natural imperative title, ≤ 80 chars — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
   - [Optional: the one blocker, or {{USER_NAME}}'s comment thread]
 
 ## 🟡 To Do
@@ -171,7 +171,7 @@ If that grep finds anything, the file is non-compliant and scout-app's writes wi
 
 ### Hard Rule — Clean Title, Prose Body, Refs Block
 
-The **bold segment is the human-readable title** and must read as a short natural imperative phrase — what to do, in plain words. Keep it scannable (aim for a single line).
+The **bold segment is the human-readable title** and must read as a short natural imperative phrase — what to do, in plain words. It is **one line of at most 80 characters** (about 12 words): the app shows it in bold, so a longer one turns a list into paragraphs. Detail goes in the body, evidence in the note.
 
 The bold title MUST NOT contain any of:
 - the `[#TAG]` (it sits *before* the bold, never inside it);
@@ -182,6 +182,8 @@ The bold title MUST NOT contain any of:
 - an internal ` — ` / ` – ` separator (that dash separates title from body).
 
 The **body** (after the ` — ` separator) is short human prose: the next step, with its status and dates, in at most two short sentences (about 25 words). A task stepped down under *Past-Due Tasks Step Down* carries its due date and "still want this?" instead. Write a date as a date (`due Oct 3`), never as an age that changes every day (`4 days overdue`, `now 5 days past`). Say what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…"). The `Action:` board field is only the 1–3-word form of that next step. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
+
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-titles --data-dir {{SCOUT_DIR}}` until it exits 0. Exit 1 names each title over 80 characters that is new or changed since the most recent earlier daily file, this run's 5 longest carried 🔴 titles, and a 💡 Today's Focus over 5 bullets or with a bullet over 300 characters. Shorten each named title, keeping its `[#TAG]` and every fact (move them into the body or the note). A rewording restarts the item's stale clock, so leave other carried titles until a run touches the item for a real reason. Exit 2 (it couldn't check): add `title check could not run: <its message>` to this run's 🪵 Run notes entry and go on.
 
 **All machine refs go in ONE `- Refs:` sub-bullet** directly under the task line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks, cross-reference hashtags, and entity wikilinks that are pure references (not part of a sentence). Omit the sub-bullet when a task has no refs.
 
@@ -440,7 +442,7 @@ For each carryover item from the previous action-items file:
 2. **Changed context:** Did anything happen overnight (from the connector queries) that changes this item's priority or next step? A PR that was blocked yesterday may have merged; a "waiting on X" item may have gotten its reply.
 3. **Work trajectory:** Based on recent sessions, messages, and commits, what was {{USER_NAME}} MOST focused on? Today's briefing should build on that momentum, not ignore it.
 
-**Output: 2–3 "Today you should…" recommendations** at the TOP of the action items file, above the 🔴 section — synthesized guidance, not new action items:
+**Output: 2–3 "Today you should…" recommendations** at the TOP of the action items file, above the 🔴 section — synthesized guidance, not new action items. Each is one bullet: a bold lead of a few words and one sentence of reasoning, under 300 characters. Lists of tickets belong in the tasks they name.
 
 ```markdown
 ## 💡 Today's Focus (continuity from yesterday)
@@ -521,7 +523,7 @@ Each item is **one line of up to 500 characters**, plus **at most one sub-bullet
 
 A 🟢 Watching line says whom it waits on instead: `— waiting on <who> since <date>`. Tags and other refs go in `- Refs:` (*Clean Title, Prose Body, Refs Block*).
 
-**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. List notes with `scripts/scoutctl kb files --glob 'action-items/context/*.md'` and read one with `scripts/scoutctl kb read <path>`, never `ls` or `cat`. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`), one of the write protocol's two exceptions to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
+**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. List notes with `scripts/scoutctl kb files --glob 'action-items/context/*.md'` and read one with `scripts/scoutctl kb read <path>`, never `ls` or `cat`. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`mv`, naming both paths to `scripts/git-safe-commit.sh`), one of the write protocol's two exceptions to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
 **Fixed sections, in order:** `## 💡 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 

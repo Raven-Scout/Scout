@@ -22,7 +22,7 @@ struct DisclosureRow<Content: View>: View {
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(DS.sans(9, weight: .semibold))
                 .foregroundStyle(DS.Ink.p3)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .frame(width: 12, height: 20)
@@ -56,7 +56,7 @@ struct DisclosureRow<Content: View>: View {
             if hovering || focused {
                 Button(action: onAsk) {
                     Image(systemName: "bubble.left")
-                        .font(.system(size: 12))
+                        .font(DS.sans(12))
                         .foregroundStyle(DS.Ink.p3)
                         .frame(width: 26, height: 24)
                         .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.raised))

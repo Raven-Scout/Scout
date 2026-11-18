@@ -158,7 +158,9 @@ struct DetailSmokeTests {
             KBEditorView(
                 node: node, service: svc,
                 writer: vault.state.knowledgeBaseWriterBox.writer,
-                onDeleted: {}, onRenamed: { _ in }, onOverview: {}),
+                onDeleted: {}, onRenamed: { _ in }, onRenameProblem: { _ in },
+                onOverview: {})
+                .environmentObject(vault.state.vaultUndo),
             size: paneSize)
     }
 

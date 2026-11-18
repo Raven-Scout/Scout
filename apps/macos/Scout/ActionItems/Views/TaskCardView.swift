@@ -102,6 +102,10 @@ struct TaskCardView: View {
                 detail
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
+            } else if let err = Self.collapsedError(expanded: expanded, inlineError: inlineError) {
+                inlineErrorLabel(err)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
             }
         }
         .background(
@@ -146,7 +150,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,17 +181,19 @@ struct TaskCardView: View {
     private var chevron: some View {
         Button { toggle() } label: {
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 11, weight: .medium))
+                .font(DS.sans(11, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
         .help(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityLabel("Action item details")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
     private func toggle() {
-        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        withMotion(.easeInOut(duration: 0.15)) { expanded.toggle() }
         if !expanded { onCollapse?() }
     }
 
@@ -283,7 +289,7 @@ struct TaskCardView: View {
     private func chipBody(for chip: TaskChip) -> some View {
         HStack(spacing: 4) {
             Image(systemName: chipGlyph(chip.glyph))
-                .font(.system(size: 9))
+                .font(DS.sans(9))
             Text(chip.label)
                 .font(DS.mono(10.5))
                 .lineLimit(1)
@@ -340,7 +346,7 @@ struct TaskCardView: View {
     private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11))
+                .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.base))
@@ -349,6 +355,7 @@ struct TaskCardView: View {
         }
         .buttonStyle(.plainHit)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder
@@ -477,7 +484,7 @@ struct TaskCardView: View {
 
     // Typed properties rather than inline `cond ? nil : { … }` ternaries:
     // Xcode 26.3 (CI) can't type-check those inside the detail VStack.
-    private var editCommentHandler: ((Int, String) async -> Void)? {
+    private var editCommentHandler: ((Int, String) async -> Bool)? {
         guard Self.canComment(task) else { return nil }
         return { index, newText in
             await runOp(.editComment(
@@ -540,7 +547,7 @@ struct TaskCardView: View {
             if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
                     let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                    await runOp(.addComment(
+                    return await runOp(.addComment(
                         subject: task.matchableSubject,
                         shortPrefix: task.shortPrefix,
                         text: text,
@@ -550,11 +557,7 @@ struct TaskCardView: View {
             }
 
             if let err = inlineError {
-                Text(err)
-                    .font(DS.sans(11))
-                    .foregroundStyle(DS.Status.err)
-                    .padding(.top, 2)
-                    .textSelection(.enabled)
+                inlineErrorLabel(err)
             }
         }
     }
@@ -575,7 +578,7 @@ struct TaskCardView: View {
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(13.5))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {
@@ -609,7 +612,7 @@ struct TaskCardView: View {
             }
         } label: {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 15, weight: .medium))
+                .font(DS.sans(15, weight: .medium))
                 .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 28, height: 28)
@@ -622,30 +625,42 @@ struct TaskCardView: View {
     }
 
     /// Dispatches a write through `onOp` and threads any failure into the
-    /// inline error label.
-    private func runOp(_ op: WriteOp) async {
+    /// inline error label. Returns whether the write landed, so editors can
+    /// keep their text on failure.
+    @discardableResult
+    private func runOp(_ op: WriteOp) async -> Bool {
         do {
             try await onOp(op, task.lineNumber)
             await MainActor.run { inlineError = nil }
+            return true
         } catch let err as ActionItemsWriterError {
             await MainActor.run { inlineError = describe(err) }
         } catch {
             await MainActor.run { inlineError = error.localizedDescription }
         }
+        return false
     }
 
+    /// The error shown under a collapsed card's header. Quick actions (Done,
+    /// Snooze, Reopen) run from the collapsed header, and the expanded detail
+    /// that normally shows `inlineError` isn't on screen then.
+    static func collapsedError(expanded: Bool, inlineError: String?) -> String? {
+        expanded ? nil : inlineError
+    }
+
+    private func inlineErrorLabel(_ err: String) -> some View {
+        Text(err)
+            .font(DS.sans(11))
+            .foregroundStyle(DS.Status.err)
+            .padding(.top, 2)
+            .textSelection(.enabled)
+    }
+
+    /// The shared write-problem wording (C10): what happened and what to do.
+    /// Raw engine output stays behind the problem's details.
     private func describe(_ err: ActionItemsWriterError) -> String {
-        switch err {
-        case .cliNonZeroExit(_, let stderr, let kind):
-            switch kind {
-            case .noMatch:     return "Task may have been edited externally — refreshing.\n\(stderr)"
-            case .ambiguous:   return "Subject matched multiple tasks.\n\(stderr)"
-            case .environment: return "Python environment problem.\n\(stderr)"
-            case .other:       return stderr.isEmpty ? "Write failed." : stderr
-            }
-        case .processFailed(let e):
-            return "Process failed: \(e.localizedDescription)"
-        }
+        let problem = WriteProblem.from(err, action: "save that change")
+        return "\(problem.title). \(problem.message)"
     }
 
     /// Shared "MMM d" formatter — DateFormatter init is expensive, and this

@@ -6,6 +6,8 @@ struct SchedulesMasterCards: View {
     let slots: [Slot]
     let newDraftSlot: Slot?
     @Binding var selectedSlotKey: String?
+    /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
+    var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
     private let columns = [
         GridItem(.adaptive(minimum: 240, maximum: 320), spacing: 12)
@@ -31,8 +33,9 @@ struct SchedulesMasterCards: View {
         Button {
             selectedSlotKey = slot.key
         } label: {
-            SlotCard(slot: slot, isSelected: isSelected)
+            SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [])
         }
         .buttonStyle(.plainHit)
+        .accessibilitySelected(isSelected)
     }
 }

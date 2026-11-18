@@ -225,7 +225,7 @@ struct SessionDetailView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "rectangle.stack.badge.person.crop")
-                .font(.system(size: 36))
+                .font(DS.sans(36))
                 .foregroundStyle(DS.Ink.p4)
             Text(index == nil ? "No session index yet" : "Pick a session")
                 .font(DS.serif(18, weight: .medium))
@@ -243,7 +243,7 @@ struct SessionDetailView: View {
                         .foregroundStyle(DS.Ink.p4)
                 }
             } else {
-                Text("Scout builds it with `scoutctl session index`.")
+                Text("Scout updates this list in the background.")
                     .font(DS.sans(12.5))
                     .foregroundStyle(DS.Ink.p3)
             }

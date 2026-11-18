@@ -72,7 +72,7 @@ struct KBMapView: View {
     private var searchField: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+                Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
                 TextField("Focus a note…", text: $query)
                     .textFieldStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p1)
                     .onSubmit { if let first = matches.first { focus(first.relativePath) } }
@@ -154,7 +154,8 @@ struct KBMapView: View {
                     .background(Capsule().fill(on ? DS.Accent.wash : DS.Paper.sunk))
                     .overlay(Capsule().strokeBorder(on ? DS.Accent.fill.opacity(0.5) : .clear, lineWidth: 1))
                     .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p4)
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plainHit)
+                .accessibilitySelected(on)
             }
             Toggle("Hide orphans", isOn: $hideOrphans)
                 .toggleStyle(.checkbox).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
@@ -163,6 +164,8 @@ struct KBMapView: View {
                 Stepper(value: $minDegree, in: 0...10) {
                     Text("\(minDegree)").font(DS.mono(11)).foregroundStyle(DS.Ink.p2)
                 }.labelsHidden()
+                .accessibilityLabel("Minimum links")
+                .accessibilityValue("\(minDegree)")
             }
         }
         .frame(maxWidth: 1100, alignment: .leading)
@@ -176,7 +179,7 @@ struct KBMapView: View {
     private var vaultEmptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+                .font(DS.sans(22)).foregroundStyle(DS.Ink.p4)
             Text("No notes yet").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
             Text("Notes added to the knowledge base will appear here as a map.")
                 .font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
@@ -186,7 +189,7 @@ struct KBMapView: View {
 
     private var noMatchState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle").font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "line.3.horizontal.decrease.circle").font(DS.sans(22)).foregroundStyle(DS.Ink.p4)
             Text("No notes match these filters").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
             Button("Reset filters") {
                 activeTypes = Set(KBEntityGroup.allCases); hideOrphans = false; minDegree = 0

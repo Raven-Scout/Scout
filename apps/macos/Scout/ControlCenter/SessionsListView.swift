@@ -24,8 +24,7 @@ struct SessionsListView: View {
             if let d = dayFilter, !cal.isDate(run.startedAt, inSameDayAs: d) { return false }
             if !typeFilter.contains(run.type) { return false }
             if !search.isEmpty {
-                let hay = "\(run.type.rawValue) \(run.commits.map(\.subject).joined(separator: " "))"
-                if !hay.localizedCaseInsensitiveContains(search) { return false }
+                if !Self.matches(run, search) { return false }
             }
             return true
         }
@@ -90,7 +89,7 @@ struct SessionsListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 10))
+                .font(DS.sans(10))
                 .foregroundStyle(DS.Ink.p4)
             TextField("Search sessions", text: $search)
                 .textFieldStyle(.plain)
@@ -106,13 +105,24 @@ struct SessionsListView: View {
         )
     }
 
+    /// Search matches what the row shows ("morning briefing", "didn't
+    /// finish", "Nov 12"), the engine name (`morningBriefing`) and commit
+    /// subjects.
+    static func matches(_ run: Run, _ search: String) -> Bool {
+        let hay = [
+            run.displayName, run.type.rawValue, run.status.displayName,
+            run.startedAt.formatted(date: .abbreviated, time: .omitted),
+        ] + run.commits.map(\.subject)
+        return hay.joined(separator: " ").localizedCaseInsensitiveContains(search)
+    }
+
     @ViewBuilder private var typeFilterMenu: some View {
         let label = typeFilter.count == RunType.allCases.count
             ? "Type: all"
             : "Type: \(typeFilter.count)"
         Menu(label) {
             ForEach(RunType.allCases, id: \.self) { t in
-                Toggle(t.rawValue, isOn: Binding(
+                Toggle(t.displayName, isOn: Binding(
                     get: { typeFilter.contains(t) },
                     set: { v in
                         if v { typeFilter.insert(t) } else { typeFilter.remove(t) }

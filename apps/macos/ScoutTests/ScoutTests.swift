@@ -31,9 +31,9 @@ final class FixtureAnchor {}
 /// Parse-cache location inside a test's own sandbox directory.
 ///
 /// `SessionLogService.parseCacheURL` defaults to the per-user caches directory,
-/// so a `loadInitial()` that leaves it `nil` writes
-/// `~/Library/Caches/Scout/session-parse-cache.json` — the *running app's*
-/// cache — and replaces the user's entries with fixture ones. Every test that
+/// so a `loadInitial()` that leaves it `nil` writes under
+/// `~/Library/Caches/Scout/parse-cache/` — next to the *running app's* cache —
+/// and leaves fixture entries on the user's disk. Every test that
 /// builds a `SessionLogService` must inject this.
 nonisolated func sandboxParseCacheURL(in directory: URL) -> URL {
     directory.appendingPathComponent("session-parse-cache.json")

@@ -9,15 +9,20 @@ struct SlotTableRow: View {
     /// Width of the flexible NAME column, computed by `SchedulesMasterTable`
     /// from the available pane width so rows align with the header.
     let nameWidth: CGFloat
+    /// Run-health warnings about this schedule, shown on a line under the row.
+    var warnings: [RunOutcomeDisplay.SlotWarning] = []
 
     var body: some View {
-        HStack(spacing: SchedulesColumns.spacing) {
-            nameCell.frame(width: nameWidth, alignment: .leading)
-            typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
-            timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
-            daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
-            onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
-            cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: SchedulesColumns.spacing) {
+                nameCell.frame(width: nameWidth, alignment: .leading)
+                typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
+                timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
+                daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
+                onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
+                cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
+            }
+            SlotWarningLines(warnings: warnings)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, SchedulesColumns.hPadding)
@@ -42,14 +47,12 @@ struct SlotTableRow: View {
 
     private var nameCell: some View {
         HStack(spacing: 6) {
-            Text(slot.key)
-                .font(DS.mono(13))
+            Text(slot.displayName)
+                .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Image(systemName: "lock.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(DS.Ink.p4)
+                .help(slot.key)
             if let model = slot.model {
                 SlotModelTag(model: model)
             }
@@ -89,7 +92,7 @@ struct SlotTableRow: View {
                 .font(DS.mono(13))
                 .foregroundStyle(DS.Ink.p2)
             Image(systemName: "bolt.fill")
-                .font(.system(size: 8))
+                .font(DS.sans(8))
                 .foregroundStyle(DS.Ink.p4)
         }
     }

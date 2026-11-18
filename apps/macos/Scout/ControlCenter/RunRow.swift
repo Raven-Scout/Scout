@@ -14,7 +14,7 @@ struct RunRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             Image(systemName: iconName)
-                .font(.system(size: 12))
+                .font(DS.sans(12))
                 .foregroundStyle(iconColor)
                 .frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
@@ -42,7 +42,7 @@ struct RunRow: View {
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 80, alignment: .trailing)
             Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .medium))
+                .font(DS.sans(10, weight: .medium))
                 .foregroundStyle(hovering || isSelected ? DS.Ink.p2 : DS.Ink.p4.opacity(0.5))
                 .frame(width: 16, alignment: .trailing)
         }
@@ -77,10 +77,10 @@ struct RunRow: View {
             if run.status == .running {
                 Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
             }
-            Text(run.status.rawValue)
-                .font(DS.mono(11, weight: .medium))
-                .tracking(0.02 * 11)
+            Text(run.status.displayName)
+                .font(DS.sans(11, weight: .medium))
                 .foregroundStyle(statusColor)
+                .help(run.status.reason ?? run.status.displayName)
         }
     }
 
@@ -100,7 +100,10 @@ struct RunRow: View {
         case .orphaned:           return "questionmark.circle"
         case .rateLimited:        return "hourglass"
         case .skippedBudget:      return "pause.circle"
-        case .skippedConcurrency: return "lock.circle"
+        case .skippedConcurrency, .skippedLease: return "lock.circle"
+        case .skippedGates, .skippedSandbox: return "shield.slash"
+        case .skippedRuntime:     return "nosign"
+        case .skippedRedundant:   return "arrow.uturn.right.circle"
         case .scheduled:          return "clock"
         }
     }

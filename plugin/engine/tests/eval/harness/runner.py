@@ -24,7 +24,7 @@ from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
 from .checks.connector_rules import linear_delta, red_poll
-from .checks.daily import body_budget, context_note, no_collapse, waiting_format
+from .checks.daily import body_budget, context_note, no_collapse, title_budget, waiting_format
 from .checks.demotion import demotion
 from .checks.kb_writing import KB_CHECKS
 from .checks.no_drop import no_drop
@@ -353,6 +353,7 @@ def _score(
         "waiting_format": lambda: waiting_format(today_items, scenario.expected_waiting),
         "no_collapse": lambda: no_collapse(today_items),
         "body_budget": lambda: body_budget(today_items),
+        "title_budget": lambda: title_budget(today_items, yesterday),
         "outage_reported": lambda: outage_reported(scenario.personas_down, out.wrap, out.run_notes, out.calls),
         "no_false_outage": lambda: no_false_outage(up, out.wrap, out.run_notes),
         "demotion": lambda: demotion(today_items, yesterday, out.notes, scenario.expected_demotion),

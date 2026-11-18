@@ -143,6 +143,20 @@ def test_global_config_locations_from_the_environment(
     assert "agent settings" in _denied(_decision(vault, "Edit", _input("Edit", str(tmp_path / "cc/plugins/x.json"))))
 
 
+def test_git_config_global_on_a_device_protects_no_device(
+    vault: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The eval harness runs sessions with GIT_CONFIG_GLOBAL=/dev/null. Protecting it refused every `2>/dev/null`
+    # as a "git config" write, and the v0.18.16 KB gate's session gave up (the sandbox already skipped devices).
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    assert protected_write(os.devnull, vault) is None
+    assert protected_write("/dev/stderr", vault) is None
+    assert protected_write(str(home / ".gitconfig"), vault) == "git config"
+    command = "mkdir -p .scout-cache && scripts/scoutctl health --json > .scout-cache/run-health.json 2>/dev/null"
+    assert _decision(vault, "Bash", {"command": command}) is None
+    assert "git config" in _denied(_decision(vault, "Bash", {"command": f"echo x > {home}/.gitconfig"}))
+
+
 # --- spelling: relative, absolute, .., case, symlinks ----------------------------------
 
 

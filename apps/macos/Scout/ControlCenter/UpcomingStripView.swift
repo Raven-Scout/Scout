@@ -110,10 +110,10 @@ struct UpcomingStripView: View {
 
     private func subtitle(for type: RunType) -> String {
         let s = type.rawValue.lowercased()
-        if s.contains("consolidation") { return "rollup + tagging" }
-        if s.contains("dreaming")      { return "long-form synthesis" }
-        if s.contains("briefing")      { return "morning run" }
-        if s.contains("research")      { return "web + papers" }
+        if s.contains("consolidation") { return "catches up on changes" }
+        if s.contains("dreaming")      { return "tidies notes" }
+        if s.contains("briefing")      { return "today's action items" }
+        if s.contains("research")      { return "news on your topics" }
         return ""
     }
 
@@ -124,22 +124,12 @@ struct UpcomingStripView: View {
             // "nothing to show" message. Common cause on macOS: scoutctl
             // not on the .app bundle's PATH (now also fixed by resolving
             // the engine through EngineLocator instead of relying on PATH).
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(DS.Status.warn)
-                    Text("Schedule unavailable")
-                        .font(DS.sans(13, weight: .medium))
-                        .foregroundStyle(DS.Ink.p1)
-                }
-                Text(err)
-                    .font(DS.mono(11.5))
-                    .foregroundStyle(DS.Ink.p3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.vertical, 14)
+            ProblemView(problem: .engineUnavailable("The schedule", details: err),
+                        actions: [.retry { Task { await state.scheduleService.refresh() } }],
+                        style: .inline)
+                .padding(.vertical, 14)
         } else {
-            Text("No upcoming runs returned by scoutctl.")
+            Text("Nothing is scheduled to run.")
                 .font(DS.serif(13))
                 .foregroundStyle(DS.Ink.p3)
                 .italic()
@@ -149,11 +139,12 @@ struct UpcomingStripView: View {
 
     private var footerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Schedule polled from `scoutctl schedule list-upcoming` every 60 s.")
+            Text("Updates every minute.")
                 .font(DS.sans(12))
                 .foregroundStyle(DS.Ink.p3)
+                .help("Read from the engine with `scoutctl schedule list-upcoming` every 60 seconds.")
             if !state.scheduleService.upcoming.contains(where: { $0.type == .research }) {
-                Text("Research: no schedule configured")
+                Text("Research isn't scheduled.")
                     .font(DS.sans(12))
                     .foregroundStyle(DS.Status.warn)
             }

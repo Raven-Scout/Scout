@@ -17,6 +17,6 @@ struct SlotModelTag: View {
                 RoundedRectangle(cornerRadius: 4)
                     .strokeBorder(DS.Rule.soft, lineWidth: 0.5)
             )
-            .help("Runs on \(model). Slots without a tag use the default model (Settings → Model).")
+            .help("Runs on \(model). Schedules without a tag use the default model (Settings → Model).")
     }
 }

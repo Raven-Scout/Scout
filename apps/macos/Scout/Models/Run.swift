@@ -22,13 +22,12 @@ enum RunSource: String, Codable, Sendable {
 
 /// Run outcome classification consumed by the Control Center.
 ///
-/// Exhaustive switches: `RunRow.iconName`. All other consumers
-/// (`RunRow.iconColor`, `RunRow.statusColor`, `NotificationService.verb`,
-/// `AppState.recomputeMenuStatus`) fall through `default` branches to
-/// muted/idle/generic treatment — intentional for statuses that should
-/// de-emphasize in the UI (`.orphaned`, `.skippedBudget`,
-/// `.skippedConcurrency`). When adding a new case, audit those consumers
-/// to decide whether `default` is still correct.
+/// Exhaustive switches: `RunRow.iconName`, `RunStatus.skipReason`,
+/// `ScoutStatus.derive` and `RunNotificationPolicy`. Other consumers
+/// (`RunRow.iconColor`, `RunRow.statusColor`) fall through `default`
+/// branches to muted treatment — intentional for statuses that should
+/// de-emphasize in the UI (`.orphaned` and the skips). When adding a new
+/// case, audit those consumers to decide whether `default` is still correct.
 enum RunStatus: String, Codable, Sendable, CaseIterable {
     case scheduled
     case running
@@ -39,23 +38,38 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case skippedBudget
     case skippedConcurrency
     case rateLimited
+    /// The runner skipped the run on purpose. One case per run-ledger
+    /// outcome (`skipped_gates`, `skipped_sandbox`, …), so the ledger
+    /// (card C8) maps onto these directly (`RunLedgerEntry.runStatus`);
+    /// `RunSkipLine` reads them from the log for runs without a ledger row.
+    case skippedGates
+    case skippedSandbox
+    case skippedRuntime
+    case skippedLease
+    case skippedRedundant
 }
 
-extension RunType {
-    /// Human-readable name without embedded times — the schedule rows already
-    /// show the time, so the display label only needs to convey the kind of
-    /// work ("Consolidation", "Briefing").
-    var displayName: String {
+extension RunStatus {
+    /// The runner decided not to run this session. A skip is a finished
+    /// run, never a running or orphaned one.
+    var isSkip: Bool { skipReason != nil }
+
+    /// Why a skipped run didn't run, in the owner's words ("Over budget");
+    /// nil for every status that isn't a skip. The words come from
+    /// `DisplayName.skipReason`, so they match the run's status name
+    /// ("Skipped: over budget") everywhere.
+    var skipReason: String? {
         switch self {
-        case .morningBriefing:    return "Morning briefing"
-        case .weekendBriefing:    return "Weekend briefing"
-        case .consolidation:      return "Consolidation"
-        case .dreaming:           return "Dreaming"
-        case .research:           return "Research"
-        case .manual:             return "Manual run"
+        case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox,
+             .skippedRuntime, .skippedLease, .skippedRedundant:
+            return DisplayName.skipReason(rawValue)
+        case .scheduled, .running, .success, .failure, .timeout, .orphaned, .rateLimited: return nil
         }
     }
 }
+
+// `RunType.displayName` and `RunStatus.displayName` live in
+// `Utilities/PlainLanguage/DisplayName.swift`, with every other engine label.
 
 extension RunType {
     /// Map a slot key (emitted by `scoutctl schedule list-upcoming`) to a
@@ -104,10 +118,14 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
 
-    static func makeId(type: RunType, startedAt: Date) -> String {
+    /// `<type>-<ISO 8601 start>`, plus `-<pid>` for a run whose log has the
+    /// seconds+PID name (a later run in the same minute). A minute-named log
+    /// keeps the id it always had, so feedback files' `run_id` still match.
+    static func makeId(type: RunType, startedAt: Date, pid: Int? = nil) -> String {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
-        return "\(type.rawValue)-\(iso.string(from: startedAt))"
+        let base = "\(type.rawValue)-\(iso.string(from: startedAt))"
+        return pid.map { "\(base)-\($0)" } ?? base
     }
 
     /// Display name for the Control Center. When the typed bucket is `.manual`
