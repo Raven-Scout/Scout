@@ -105,7 +105,8 @@ def _cost_kind(priced_by: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class TokenCount:
-    """A transcript's tokens, each message counted once. ``total`` is everything the model processed."""
+    """A transcript's tokens with its subagents', each message counted once. ``total`` is everything the model
+    processed: input, output and cache tokens."""
 
     input: int = 0
     output: int = 0
@@ -215,7 +216,7 @@ def _usage_turns(path: Path) -> list[dict]:
 
     Claude Code writes one row per content block, each repeating its message's
     usage, so rows are deduped by ``message.id`` (the last row of a message wins).
-    Subagent turns live in their own transcripts and aren't read.
+    Subagent turns live in their own transcripts and aren't read here (``_run_turns`` adds them, for tokens).
     """
     turns: dict[str, dict] = {}
     try:
@@ -245,6 +246,21 @@ def _usage_cost(path: Path) -> float:
 
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _run_turns(path: Path, turns: list[dict]) -> list[dict]:
+    """*turns* (the transcript at *path*'s own) plus its subagents' (``<stem>/subagents/*.jsonl``), each message
+    once, as ``budget usage`` (#658) reads them. For tokens only: what a run costs in USD is unchanged."""
+    sub = path.parent / path.stem / "subagents"
+    if not sub.is_dir():
+        return turns
+    merged: dict[str, dict] = {}
+    sources = [(path, turns)] + [(p, _usage_turns(p)) for p in sorted(sub.glob("*.jsonl"))]
+    for source, rows in sources:
+        for j, row in enumerate(rows):
+            key = row["message"].get("id")
+            merged[key if isinstance(key, str) and key else f"{source.name}-{j}"] = row
+    return list(merged.values())
 
 
 def _tokens(turns: list[dict]) -> TokenCount | None:
@@ -281,7 +297,7 @@ def measure(vault: Path, name: str, *, started: datetime, home: Path | None = No
             if title != name:
                 continue
             turns = _usage_turns(path)
-            tokens = _tokens(turns)
+            tokens = _tokens(_run_turns(path, turns))
             if cost is not None:
                 sessions.append(AttemptCost(path.stem, round(cost, 4), PRICED_BY_CLAUDE, tokens))
                 continue

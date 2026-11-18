@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scout.scripts.bootstrap_doctor import _check_run_timeouts
+from scout.scripts.bootstrap_doctor import _check_run_limits, _check_run_timeouts
 from tests._agent_runtimes import DummyRuntime, registered
 
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
@@ -99,15 +99,85 @@ def test_a_run_stopped_at_its_timeout_is_a_warning(vault: Path) -> None:
     assert len(warnings) == 1 and "'other': 1 run(s)" in warnings[0] and "stopped at their run timeout" in warnings[0]
 
 
-def test_ignored_config_values_are_a_warning(vault: Path) -> None:
+def test_ignored_config_values_are_a_warning_on_a_fresh_vault(vault: Path) -> None:
+    """No run-outcomes.jsonl yet (a fresh vault), and the warning still shows (review of #654)."""
     (vault / "scout-config.yaml").write_text(
         "budget:\n  per_runtime:\n    claude-code:\n      run_timeout_minutes: 5\n", encoding="utf-8"
     )
-    (vault / ".scout-logs" / "run-outcomes.jsonl").write_text("", encoding="utf-8")
-    warnings, _ = _check_run_timeouts(vault=vault, now=NOW)
+    assert not (vault / ".scout-logs" / "run-outcomes.jsonl").exists()
+    warnings = _check_run_limits(vault=vault, now=NOW)
     assert len(warnings) == 1
     assert "budget.per_runtime.claude-code: ignored run_timeout_minutes: 5" in warnings[0]
-    assert "only the owner turns it on" in warnings[0]
+    assert "only the owner turns it on" in warnings[0] and "slots: night, web" in warnings[0]
+    assert _check_run_timeouts(vault=vault, now=NOW) == ([], [])  # the timeouts check doesn't repeat it
+
+
+def test_ignored_config_values_are_judged_per_slot(vault: Path) -> None:
+    """60 minutes is looser than a dreaming slot's 45 but narrows a research slot's 90: named for the first only."""
+    slots = [("other", "dreaming", "    agent_runtime: dummy\n"), ("dig", "research", "    agent_runtime: dummy\n")]
+    body = "".join(SLOT.format(key=k, kind=kind, runner=kind, extra=e) for k, kind, e in slots)
+    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots:\n" + body, encoding="utf-8")
+    (vault / "scout-config.yaml").write_text(
+        "budget:\n  per_runtime:\n    dummy:\n      run_timeout_minutes: 60\n", encoding="utf-8"
+    )
+    warnings = _check_run_limits(vault=vault, now=NOW)
+    assert len(warnings) == 1
+    assert "run_timeout_minutes: 60 (looser than 45) (slots: other)" in warnings[0]
+    assert "dig" not in warnings[0]
+
+
+@pytest.mark.parametrize("bad", ['"²"', '"①"', "0.5", '"0.0"', '"5m"'])
+def test_a_value_that_isnt_a_whole_number_never_breaks_the_doctor(vault: Path, bad: str) -> None:
+    """A run can write any value into scout-config.yaml; the doctor names it instead of crashing (review of #654)."""
+    (vault / "scout-config.yaml").write_text(
+        f"budget:\n  per_runtime:\n    dummy:\n      run_timeout_minutes: {bad}\n      max_tokens_per_day: {bad}\n",
+        encoding="utf-8",
+    )
+    _rows(vault, "other", [20, 30, 40, 50, 60])
+    warnings = _check_run_limits(vault=vault, now=NOW)
+    assert len(warnings) == 1 and "not a whole number of minutes" in warnings[0]
+    assert "not a whole number of tokens" in warnings[0]
+    assert any("45-min run timeout" in w for w in _check_run_timeouts(vault=vault, now=NOW)[0])
+
+
+def test_future_dated_usage_rows_are_a_warning(vault: Path) -> None:
+    rows = [
+        {"source": "runner", "ts": "2099-01-01T00:00:00Z", "agent_runtime": "dummy", "tokens": 10**15},
+        {"source": "runner", "ts": (NOW + timedelta(minutes=2)).isoformat(), "tokens": 1},  # clock skew: fine
+        {"source": "runner", "ts": NOW.isoformat(), "tokens": 1},
+    ]
+    (vault / ".scout-logs" / "usage-tracker.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+    warnings = _check_run_limits(vault=vault, now=NOW)
+    assert len(warnings) == 1 and "1 row(s) dated in the future" in warnings[0]
+
+
+def test_run_limits_are_silent_by_default(vault: Path) -> None:
+    assert _check_run_limits(vault=vault, now=NOW) == []
+
+
+def test_run_limits_skip_unknown_runtimes_and_never_break_the_doctor(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout.agent_runtimes import limits
+    from scout.scripts import budget_check
+
+    body = SLOT.format(key="odd", kind="dreaming", runner="dreaming", extra="    agent_runtime: no-such-runtime\n")
+    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots:\n" + body, encoding="utf-8")
+    # The schedule itself refuses an unknown runtime; the doctor says so instead of crashing.
+    (only,) = _check_run_limits(vault=vault, now=NOW)
+    assert only.startswith("could not check scout-config.yaml run limits:") and "no-such-runtime" in only
+
+    def boom(*_a: object, **_k: object) -> object:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(limits, "limits_for", boom)
+    monkeypatch.setattr(budget_check, "iter_tracker_rows", boom)
+    (vault / ".scout-logs" / "usage-tracker.jsonl").write_text("{}\n", encoding="utf-8")
+    body = SLOT.format(key="other", kind="dreaming", runner="dreaming", extra="    agent_runtime: dummy\n")
+    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots:\n" + body, encoding="utf-8")
+    assert _check_run_limits(vault=vault, now=NOW) == ["could not check scout-config.yaml run limits: boom"]
 
 
 def test_runs_without_an_awake_length_say_why(vault: Path) -> None:

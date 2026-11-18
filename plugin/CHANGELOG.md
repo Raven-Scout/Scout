@@ -7,20 +7,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, plus task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
-  - **Config can't turn a limit on.** `budget.per_runtime` in `scout-config.yaml` no longer turns on a limit that is off, whether off by default (Claude Code's timeout) or by the owner. Only `scoutctl agent-runtime set-limit` does.
-  - **Config narrowing has floors:** 30 minutes of awake time for a run timeout, and 10,000,000 tokens for the daily ceiling. Without them, a run that writes the config could stop the next runs before they start.
-  - **Where an ignored value shows up:** a value the limits ignore (it would loosen a limit, turn one on, or go below a floor) is now written into the run's log by `agent-runtime exec` and raised as a `scoutctl bootstrap doctor` warning, as well as in `agent-runtime show`.
-  - **More doctor checks:**
-    - a warning on any run stopped at its timeout (`failure_class: timeout`), since a cut-off run pulls the 90th percentile down;
-    - a note when recent runs recorded no awake length because there was no python3 where the runner ran.
-  - **A slot's kind:** the runner's `SCOUT_RUN_TYPE` decides it only when it is exactly a kind (`dreaming`, `research`). run-scout passes the slot key, so a `research-digest` slot of `type: briefing` now gets a briefing's 45 minutes, as the doctor already assumed.
-  - `set-limit` stores numbers as numbers.
-  - **Usage-tracker rows (task 1.6):** the runner's row and each attempt row now carry `agent_runtime`, `provider` and `cost_kind`.
-    - `cost_kind` is `reported` when Claude Code's own cost was read, and `priced` when it was priced from usage rows; a runtime that reports tokens only will write `unpriced`.
-    - The older `cost_source` keeps its meaning.
-    - A row without these keys is Claude Code's.
-    - **The runner's row also carries the run's tokens** (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts with each message counted once. The daily token ceiling and its `auto` formula count these. Before, they read token fields no row had, so the ceiling counted 0. Attempt rows carry none, so a retried run isn't counted twice.
+- **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, and part of task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
+  - **scout-config.yaml can only tighten a limit that is on** (`budget.per_runtime`, which a run can write). It never turns a limit on, never goes under a floor (30 minutes of awake time, 10,000,000 tokens), and never uses a value that isn't a whole number (`0.5`, `"5m"`, `"²"`). Only `scoutctl agent-runtime set-limit` loosens a limit or turns one on or off.
+  - **Ignored values are named** in `agent-runtime show`, the run's log and `scoutctl bootstrap doctor`. The doctor checks each slot with its own kind, so a value under research's 90 minutes isn't reported against research slots, and it reports them on a vault with no runs yet.
+  - **Doctor warnings:** runs stopped at their timeout (`failure_class: timeout`), and usage-tracker rows dated in the future. A note says when runs recorded no awake length (no python3 where the runner ran).
+  - **A slot's kind:** the runner's `SCOUT_RUN_TYPE` decides it only when it is exactly a kind (`dreaming`, `research`); otherwise the schedule's `type` does.
+  - **Usage-tracker rows:** the runner's row and each attempt row carry `agent_runtime`, `provider` and `cost_kind`: `reported` (Claude Code's own cost), `priced` (from usage rows) or `unpriced` (tokens only). `cost_source` keeps its meaning, and a row without these keys is Claude Code's.
+  - **The daily token ceiling counts real tokens.** The runner's row carries the run's tokens (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts and its subagents', each message once. Before, the ceiling read token fields no row had and counted 0. Rows dated in the future are skipped, since they would never age out.
 
 ### Fixed
 - **Each run gets its own log, even two runs in one minute** (`templates/run-scout.sh.tmpl`, `templates/run-dreaming.sh.tmpl`, `templates/run-research.sh.tmpl`, `engine/scout/health.py`, `templates/scripts/session-lane-liveness.py`). Run logs were named to the minute, so a second run in the same minute, usually one the session lock skipped, wrote its skip line into the running session's log, and the app showed the running session as skipped.

@@ -565,17 +565,6 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             "(failure_class timeout). Raise it if the work needs longer: scoutctl agent-runtime set-limit "
             "<runtime> --run-timeout-minutes <minutes>"
         )
-    # scout-config.yaml values the limits ignored (they would loosen a limit, turn one on, or go under a floor).
-    for runtime in sorted({slot.agent_runtime or fallback for slot in schedule.values()}):
-        try:
-            ignored = _limits.limits_for(vault, registry.get(runtime)).ignored
-        except KeyError:
-            continue
-        if ignored:
-            warnings.append(
-                f"scout-config.yaml budget.per_runtime.{runtime}: ignored {'; '.join(ignored)}. Only the owner can "
-                f"loosen a run limit or turn one on: scoutctl agent-runtime set-limit {runtime} …"
-            )
     for key, slot in sorted(schedule.items()):
         runs = lengths.get(key, [])
         if len(runs) < RUN_TIMEOUT_MIN_RUNS:
@@ -612,6 +601,50 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
             + "; ".join(readiness)
         )
     return warnings, notes
+
+
+def _check_run_limits(*, vault: Path, now: datetime | None = None) -> list[str]:
+    """Run-limit inputs a run could have tampered with (spec 2026-11-13 §8.6), as warnings. Needs no run history.
+
+    - scout-config.yaml ``budget.per_runtime`` values the limits ignore: ones that would loosen a limit, turn one
+      on, go under a floor, or aren't whole numbers. Each scheduled slot is checked with its own kind, so a value
+      looser than a briefing's 45 minutes but under research's 90 is named for the slots it is ignored on.
+    - usage-tracker rows dated in the future, which the daily token ceiling skips (review of #654).
+    """
+    from scout.agent_runtimes import limits as _limits
+    from scout.agent_runtimes import registry
+    from scout.agent_runtimes.resolve import default_runtime
+    from scout.schedule import load_default_schedule, load_schedule
+
+    warnings: list[str] = []
+    try:
+        schedule_path = vault / ".scout-state" / "schedule.yaml"
+        schedule = load_schedule(schedule_path) if schedule_path.exists() else load_default_schedule()
+        fallback = default_runtime(vault).runtime
+        # runtime -> ignored value -> the slots it was ignored on
+        ignored: dict[str, dict[str, list[str]]] = {}
+        for key, slot in sorted(schedule.items()):
+            runtime = slot.agent_runtime or fallback
+            try:
+                adapter = registry.get(runtime)
+            except KeyError:
+                continue
+            for value in _limits.limits_for(vault, adapter, key, slot.type.value).ignored:
+                ignored.setdefault(runtime, {}).setdefault(value, []).append(key)
+        for runtime, values in sorted(ignored.items()):
+            parts = [f"{value} (slots: {', '.join(slots)})" for value, slots in values.items()]
+            warnings.append(
+                f"scout-config.yaml budget.per_runtime.{runtime}: ignored {'; '.join(parts)}. Only the owner can "
+                f"loosen a run limit or turn one on: scoutctl agent-runtime set-limit {runtime} …"
+            )
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        warnings.append(f"could not check scout-config.yaml run limits: {e}")
+    if n := _limits.future_rows(vault, now=now):
+        warnings.append(
+            f".scout-logs/usage-tracker.jsonl has {n} row(s) dated in the future. The daily token ceiling skips "
+            "them; a run, or a wrong clock, wrote them. Remove them if nothing explains them."
+        )
+    return warnings
 
 
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
@@ -1031,6 +1064,7 @@ def run_doctor(
     timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
     warnings.extend(timeout_warnings)
     notes.extend(timeout_notes)
+    warnings.extend(_check_run_limits(vault=vault, now=now))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

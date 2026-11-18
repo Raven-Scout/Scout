@@ -266,6 +266,52 @@ def test_an_invalid_limit_keeps_the_default(vault: Path, bad: str) -> None:
     assert limits.limits_for(vault, ClaudeCode()).run_timeout_s is None
 
 
+@pytest.mark.parametrize(
+    ("bad", "shown"),
+    [
+        ('"²"', "'²'"),
+        ('"①"', "'①'"),
+        ('"٣٠"', "'٣٠'"),
+        ("0.5", "0.5"),
+        ("29.9", "29.9"),
+        ('"0.0"', "'0.0'"),
+        ('"5m"', "'5m'"),
+    ],
+)
+def test_a_value_that_isnt_a_whole_number_is_ignored_and_named(vault: Path, bad: str, shown: str) -> None:
+    """str.isdigit() is true for "²", which int() refuses: limits_for raised, so every later run was refused as
+    check_failed (review of #654). Now the value is ignored, and listed like any other."""
+    _config(
+        vault, f"budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: {bad}\n      max_tokens_per_day: {bad}\n"
+    )
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    assert (d.run_timeout_s, d.max_tokens_per_day) == (45 * 60, limits.FLOOR_TOKENS)
+    assert d.ignored == (
+        f"run_timeout_minutes: {shown} (not a whole number of minutes)",
+        f"max_tokens_per_day: {shown} (not a whole number of tokens, auto or off)",
+    )
+    dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
+    assert _check(vault, dummy) is None  # the run starts
+    with pytest.raises(ValueError):  # and the owner can't store one either
+        limits.set_owner_limit(vault, "d", run_timeout_minutes="²")
+
+
+def test_limits_for_never_raises(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the config can't be applied at all, the limits are those without it, and say so."""
+
+    class Broken(dict):  # type: ignore[type-arg]
+        def get(self, *_a: object, **_k: object) -> object:
+            raise RuntimeError("boom")
+
+    real = limits._block
+    monkeypatch.setattr(limits, "_block", lambda d, rid: Broken())
+    d = limits.limits_for(vault, DummyRuntime("d"), "night", "research")
+    assert (d.run_timeout_s, d.timeout_source) == (90 * 60, "default")
+    assert d.ignored == ("budget.per_runtime.d (RuntimeError: could not be applied)",)
+    monkeypatch.setattr(limits, "_block", real)
+    assert limits.limits_for(vault, DummyRuntime("d")).ignored == ()
+
+
 def test_an_unreadable_config_keeps_the_defaults(vault: Path) -> None:
     _config(vault, "budget: [\n")
     assert limits.limits_for(vault, DummyRuntime("d")).run_timeout_s == 45 * 60
@@ -312,6 +358,44 @@ def test_the_token_ceiling_skips_as_budget(vault: Path) -> None:
     assert "max_tokens_per_day" in r.reason
     # The skills' preamble isn't a scheduled run: no ceiling there.
     assert _check(vault, dummy, interactive=True) is None
+
+
+def test_a_future_dated_row_never_counts(vault: Path) -> None:
+    """The tracker isn't protected: a row dated 2099 would never age out and would skip every later run (review of
+    #654). Rows past now by more than the clock skew are skipped, and the doctor counts them."""
+    _rows(
+        vault,
+        {"source": "runner", "ts": "2099-01-01T00:00:00Z", "agent_runtime": "d", "tokens": 10**15},
+        {
+            "source": "runner",
+            "ts": (NOW + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "agent_runtime": "d",
+            "tokens": 10**15,
+        },
+        {
+            "source": "runner",
+            "ts": (NOW + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "agent_runtime": "d",
+            "tokens": 30,
+        },  # within the clock skew
+        {"source": "runner", "ts": _ts(1), "agent_runtime": "d", "tokens": 400},
+    )
+    assert limits.tokens_used(vault, "d", now=NOW) == 430
+    assert limits.future_rows(vault, now=NOW) == 2
+    assert limits.future_rows(vault / "nowhere", now=NOW) == 0
+    limits.set_owner_limit(vault, "d", max_tokens_per_day="500")
+    dummy = DummyRuntime("d", provider="anthropic", caps=TIER_F_REQUIRES, binary=Path("/bin/true"))
+    assert _check(vault, dummy) is None
+
+
+def test_the_formula_skips_future_dated_rows(vault: Path) -> None:
+    """A future-dated row would raise the default ceiling; the formula skips it as the ceiling does."""
+    with registered(DummyRuntime("d")):
+        _schedule(vault, ("night", "dreaming", "    agent_runtime: d\n"))
+        _rows(vault, _boot(-24 * 30, "dreaming", 1000.0))  # 30 days ahead, USD 1000
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == limits.FLOOR_TOKENS
+        _rows(vault, _boot(1, "dreaming", 1000.0))  # the same row, an hour ago, does count
+        assert limits.default_daily_token_ceiling(vault, "d", now=NOW) == 2 * 1000 * limits.K_TOKENS_PER_USD
 
 
 def test_the_default_ceiling_is_one_replaceable_function(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

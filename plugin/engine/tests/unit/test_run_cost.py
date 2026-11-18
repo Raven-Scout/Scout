@@ -425,7 +425,7 @@ def test_legacy_rows_default_to_claude_code(env, monkeypatch):
     tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
     with tracker.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"source": "runner", "ts": row["ts"], "tokens": 7}) + "\n")
-    assert limits.tokens_used(vault, "claude-code", now=STARTED + timedelta(hours=1)) == 7
+    assert limits.tokens_used(vault, "claude-code") == 7  # row["ts"] is the real now
 
 
 @pytest.mark.parametrize("value", ["", "Claude Code", 'x", "y'])
@@ -455,6 +455,25 @@ def test_the_runner_row_carries_the_runs_tokens_each_message_once(env, monkeypat
     # Only the runner's row carries tokens: the attempt row never makes the run count twice.
     attempt_rows = [r for r in _tracker_rows(vault) if r.get("source") == "attempt"]
     assert attempt_rows and all("tokens" not in r and "input_tokens" not in r for r in attempt_rows)
+
+
+def test_the_runs_tokens_include_its_subagents_but_its_usd_doesnt_change(env):
+    """Subagent transcripts (``<session>/subagents/*.jsonl``) count toward tokens, as ``budget usage`` (#658) counts
+    them, each message once across all the files. The run's USD is still claude's own figure (review of #654)."""
+    vault, projects = env
+    main = _transcript(projects, vault, "a1", name=NAME, cost=6.5, usage=[("msg_a", TOKENS)])
+    sub = main.parent / "a1" / "subagents"
+    sub.mkdir(parents=True)
+    rows = [
+        {"type": "assistant", "message": {"id": "msg_s", "model": "claude-opus-5", "usage": TOKENS_2}},
+        {"type": "assistant", "message": {"id": "msg_s", "model": "claude-opus-5", "usage": TOKENS_2}},
+        {"type": "assistant", "message": {"id": "msg_a", "model": "claude-opus-5", "usage": TOKENS}},  # also in main
+    ]
+    (sub / "agent-1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    cost = run_cost.measure(vault, NAME, started=STARTED)
+    assert (cost.usd, cost.attempts) == (6.5, 1)  # the subagent file is no attempt of its own
+    assert cost.tokens is not None
+    assert (cost.tokens.input, cost.tokens.output, cost.tokens.cache_read) == (1500, 3300, 210000)
 
 
 def test_a_run_without_usage_rows_writes_no_tokens(env):

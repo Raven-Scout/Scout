@@ -541,8 +541,12 @@ with a test: the wrapper's rewrite must reach the exec'd CLI.
 - Modify: `plugin/templates/scripts/run-outcome.sh.tmpl` (add `"agent_runtime": $SCOUT_AGENT_RUNTIME` when set, as `model` is), `plugin/engine/scout/cli.py:1015-1087` (`budget record-run`/`record-attempt` rows gain `agent_runtime`, `provider`, and the cost-kind key: `"reported"` for Claude transcript cost, `"priced"` for the usage fallback. Pick a name other than `cost_source`, which these rows already carry as `"transcript"`, and update spec §8.6 with it)
 - Modify: `plugin/engine/scout/health.py` (`_parse_row` defaults `agent_runtime` to `claude-code`), `plugin/engine/scout/scripts/budget_check.py` (unchanged maths; reads the new keys only to group usage limits per runtime)
 - Test: `plugin/engine/tests/unit/test_run_cost.py`, `test_budget_cli.py`, `test_budget_check.py`
+- **As built, partly (#653, #654):**
+  - **Done.** Run-outcome rows carry `agent_runtime` (#653). The runner's row and each attempt row carry `agent_runtime`, `provider` and `cost_kind` (#654). The runner's row also carries the run's tokens, which the daily ceiling counts.
+  - **Not done yet.** `health.py` `_parse_row`'s `claude-code` default; readers already treat a missing key as Claude Code.
+  - **Not done yet.** Per-runtime usage-limit back-off in `budget_check.py` (`test_usage_limit_backoff_is_per_runtime`). It waits for Phase 2's first non-Claude rows, with #652.
 
-- [ ] **Step 1: Write the failing tests:** `test_record_run_writes_runtime_keys`, `test_legacy_rows_default_to_claude_code` and `test_usage_limit_backoff_is_per_runtime` (a Claude `resets_at` doesn't block a dummy runtime's run).
+- [ ] **Step 1 (partly done: the first two tests are in #654):** Write the failing tests: `test_record_run_writes_runtime_keys`, `test_legacy_rows_default_to_claude_code` and `test_usage_limit_backoff_is_per_runtime` (a Claude `resets_at` doesn't block a dummy runtime's run).
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.** Leave `doctor-run-health.json` alone unless `RunHealth` itself changes. If it does, regenerate it per the root CLAUDE.md, in the same commit.
 - [ ] **Step 4: Run the tests and `test_doctor_run_health_contract.py`.** Expected: PASS.
