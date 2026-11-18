@@ -69,7 +69,7 @@ struct UpcomingStripView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Button("Run now") {
                 Task {
-                    await state.fireNow(slotKey: up.slotKey, bypassBudget: false)
+                    await state.fireNow(slotKey: up.slotKey)
                 }
             }
             .buttonStyle(.plainHit)

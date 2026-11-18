@@ -977,29 +977,22 @@ final class AppState: ObservableObject {
     /// Plan 5 removed in-app dispatch — the engine now owns slot routing,
     /// scout-app just shells out. A failure lands in `fireNowError`.
     ///
-    /// Never pass `bypassBudget: true`: the engine's `fire-now` has no
-    /// `--bypass-budget` option (and the runner no budget override), so the
-    /// call fails outright. The run detail's "Run anyway (ignore budget)",
-    /// its only caller, is gone (card R3).
+    /// There is no budget override: `fire-now` has no such option, and the
+    /// runner's budget check applies to every run.
     ///
     /// After the dispatch returns, immediately refresh `ScheduleService` so
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
-    func fireNow(slotKey: String, bypassBudget: Bool = false) async {
+    func fireNow(slotKey: String) async {
         guard firingSlotKeys.insert(slotKey).inserted else {
             // Surface the drop: several UI surfaces can fire the same slot
-            // (upcoming strip, RunDetailView's Run again, menu panel) and
-            // only the menu panel disables on firingSlotKeys — a silently
-            // discarded bypass-budget retry looks like it was dispatched.
+            // (upcoming strip, RunDetailView's Run again, menu panel), and a
+            // silently discarded request looks like it was dispatched.
             fireNowError = "\(slotKey) is already being started — request ignored."
             return
         }
         defer { firingSlotKeys.remove(slotKey) }
-        let args = Self.fireNowArguments(
-            argumentsPrefix: scoutctlArgumentsPrefix,
-            slotKey: slotKey,
-            bypassBudget: bypassBudget
-        )
+        let args = Self.fireNowArguments(argumentsPrefix: scoutctlArgumentsPrefix, slotKey: slotKey)
         do {
             let result = try await runner.run(
                 executable: scoutctlExecutable,
@@ -1072,14 +1065,8 @@ final class AppState: ObservableObject {
     /// path, with no `/usr/bin/env` fallback) — never a hardcoded
     /// "scoutctl", which an absolute-path executable would receive as a bogus
     /// subcommand (issue #45).
-    nonisolated static func fireNowArguments(
-        argumentsPrefix: [String],
-        slotKey: String,
-        bypassBudget: Bool
-    ) -> [String] {
-        var args = argumentsPrefix + ["schedule", "fire-now", slotKey]
-        if bypassBudget { args.append("--bypass-budget") }
-        return args
+    nonisolated static func fireNowArguments(argumentsPrefix: [String], slotKey: String) -> [String] {
+        argumentsPrefix + ["schedule", "fire-now", slotKey]
     }
 
     /// Where scoutctl lives + how to invoke it. Used by the constructor to

@@ -170,11 +170,15 @@ measure_commits() {
 }
 
 # What started this run: the tick (it sets SCOUT_FORCE_MODE), the heartbeat
-# (SCOUT_TRIGGER=heartbeat), or a person.
+# (SCOUT_TRIGGER=heartbeat), a connector-event trigger (run_skill sets
+# SCOUT_TRIGGER_ID, and SCOUT_FORCE_MODE to its skill, which is no schedule),
+# or a person.
 run_trigger() {
     case "${SCOUT_TRIGGER:-}" in
-        schedule|heartbeat|manual) echo "$SCOUT_TRIGGER" ;;
-        *) if [ -n "${SCOUT_FORCE_MODE:-}" ]; then echo schedule; else echo manual; fi ;;
+        schedule|heartbeat|manual|event) echo "$SCOUT_TRIGGER" ;;
+        *) if [ -n "${SCOUT_TRIGGER_ID:-}" ]; then echo event
+           elif [ -n "${SCOUT_FORCE_MODE:-}" ]; then echo schedule
+           else echo manual; fi ;;
     esac
 }
 

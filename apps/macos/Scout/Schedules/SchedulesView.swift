@@ -490,6 +490,6 @@ struct SchedulesView: View {
     }
 
     private func handleFireNow(_ key: String) async {
-        await appState.fireNow(slotKey: key, bypassBudget: false)
+        await appState.fireNow(slotKey: key)
     }
 }

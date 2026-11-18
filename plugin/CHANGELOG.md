@@ -12,6 +12,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - The run ledger's `log` field, `scoutctl health` and `session-lane-liveness.py` read both names. The newest log is picked by start time, then PID, never by text order, in which `…_09-03-25-4242.log` sorts before `…_09-03.log`.
   - **Upgrading.** The runners and `scripts/session-lane-liveness.py` reach a vault with `/scout-update`. A vault edit far from the runners' log-name lines merges. An edit right next to them (the `SCOUTCTL_BIN` or `LOCK_FILE` line) parks the update for `scoutctl bootstrap drift`, and that runner keeps working with minute-named logs until it is merged.
 
+- **The run ledger says when a connector-event trigger started a run** (`templates/scripts/run-outcome.sh.tmpl`, `engine/scout/health.py`). Such a run sets `SCOUT_FORCE_MODE` to its skill, so its ledger row read `trigger: "schedule"`, with the skill as its `slot`. The app's "Run again" took that as a schedule to re-run: `fire-now` then failed with "unknown slot", or fired a schedule that happened to share the skill's name. A run with `SCOUT_TRIGGER_ID` set now records `trigger: "event"`, and `scoutctl runs --json` passes it through. Vaults get the new `scripts/run-outcome.sh` with `/scout-update`; until then event runs still read as `schedule`.
+
 ## [0.18.16] - 2026-11-17
 
 ### Added

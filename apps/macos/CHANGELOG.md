@@ -18,14 +18,15 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   - The status pill shows at most 24 characters; the full value is in its tooltip and what VoiceOver reads.
   - A long card builds only the text it shows: about 1,500 characters collapsed and 20,000 expanded, with a link to open the file past that. Clipping alone hid the rest but still laid it out. An item's body is now split into blocks once when the file is read, not on every redraw.
 - **"Run again" re-runs the run's own schedule** (`Scout/ControlCenter/RunDetailView.swift`, `Scout/Models/Run.swift`, `Scout/Services/SessionLogService.swift`). It used to fire one default schedule per run type, so an evening consolidation re-ran the morning one, and a schedule made in the app couldn't be re-run at all (UI audit #19). Each run now takes its schedule from its run-ledger row.
-  - A run with no schedule to fire has "Run again" turned off, with the reason beside it. That covers a run started outside the schedule and an old run with no ledger row.
+  - A run with no schedule to fire has "Run again" turned off, with the reason beside it. That covers a run started outside the schedule, a run a connector-event trigger started (its ledger row now says `trigger: "event"`; its slot is the skill it ran), and an old run with no ledger row.
   - The confirmation names the schedule, and a failed start shows under the buttons.
-  - "Run anyway (ignore budget)" is gone. It could only fail: the engine's `fire-now` has no budget override.
+  - "Run anyway (ignore budget)" is gone, with the unused `--bypass-budget` argument behind it. It could only fail: the engine's `fire-now` has no budget override.
 - **Next up and the Heartbeat schedule include every schedule** (`Scout/Services/ScheduleService.swift`, `Scout/Models/UpcomingRun.swift`, `Scout/ControlCenter/UpcomingStripView.swift`, `Scout/ControlCenter/NowStripView.swift`, `Scout/Shell/MenuBarExtraContent.swift`, `Scout/Shell/StatusBarView.swift`). A schedule made in the app was dropped because its key wasn't in the app's table of default schedules; it now takes its type from the engine's `slot_type` and shows under its own name (UI audit #17). The app also looks a week ahead instead of a day. A weekend briefing or weekly research schedule was missing from Next up on most days, and the "Research isn't scheduled" warnings fired although it was scheduled.
 - **The Errors tab finds Python tracebacks and other errors** (`Scout/Services/RunLogErrorScanner.swift`, `Scout/Models/DetectedError.swift`, `Scout/ControlCenter/Detail/ErrorsTab.swift`). It only knew usage-limit patterns, so a run that died on a traceback read "No errors detected." and labels showed the matching regex (UI audit #24).
   - A traceback, chained ones included, is one entry headed by its exception line. So is a command's error box. Error lines (`ERROR …`, `Error: …`, `fatal: …`, `ValueError: …`, shell errors) bring their indented lines with them. The runner's own "… failed …" notes are listed too.
   - Entries have plain labels ("Python error", "Usage limit or API error"). A multi-line error shows all its lines on request, with Copy.
   - A failed run with no recognised error line says so and points at the Log tab.
+  - An API error in an error line's indented detail still counts toward the usage-limit signal. Block lines longer than 400 characters are cut.
   - Every log is scanned again once after the update. The parse cache's version went up, so cached scans are thrown away.
 
 ## [0.18.16] - 2026-11-17

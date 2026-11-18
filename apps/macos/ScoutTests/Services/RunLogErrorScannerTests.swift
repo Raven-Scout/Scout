@@ -112,6 +112,24 @@ struct RunLogErrorScannerTests {
         #expect(errors[0].pattern == "429")
     }
 
+    /// An API error in an error line's indented detail still feeds the
+    /// rate-limit signal (review of #686).
+    @Test func anErrorLinesDetailKeepsItsAPIPattern() {
+        let errors = RunLogErrorScanner.scan("ERROR request failed\n    status 429\n")
+        #expect(errors.count == 1)
+        #expect(errors[0].kind == .error)
+        #expect(errors[0].pattern == "429")
+    }
+
+    /// One huge line can't make "Show all" slow to lay out.
+    @Test func aHugeBlockLineIsCut() {
+        let huge = "    " + String(repeating: "x", count: 50_000)
+        let e = try! #require(RunLogErrorScanner.scan("Error: it broke\n\(huge)\n").first)
+        #expect(e.block.count == 2)
+        #expect(e.block[1].count == RunLogErrorScanner.maxBlockLineLength + 1)
+        #expect(e.block[1].hasSuffix("…"))
+    }
+
     /// Prose that only mentions an error, and the runner's ordinary lines,
     /// aren't errors.
     @Test func ordinaryLinesAreNotErrors() {

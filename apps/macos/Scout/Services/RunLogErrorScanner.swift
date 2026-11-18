@@ -24,6 +24,9 @@ nonisolated enum RunLogErrorScanner {
     static let maxBlockLines = 60
     /// Indented lines taken after a one-line error.
     static let maxContinuationLines = 20
+    /// A longer block line is cut, so one huge line can't make "Show all"
+    /// slow to lay out.
+    static let maxBlockLineLength = 400
 
     /// Usage-limit and API errors, matched anywhere in a line. The ids are the
     /// patterns the scanner always used; the Control Center's rate-limit
@@ -95,7 +98,8 @@ nonisolated enum RunLogErrorScanner {
                 while end + 1 < lines.count, end - i < maxContinuationLines, isIndented(lines[end + 1]) { end += 1 }
                 let block = end > i ? Array(lines[i...end]) : []
                 out.append(DetectedError(
-                    line: i + 1, pattern: id, snippet: headline(line), kind: .error, block: capped(block)
+                    line: i + 1, pattern: apiPattern(in: block) ?? id, snippet: headline(line), kind: .error,
+                    block: capped(block)
                 ))
                 i = end + 1
                 continue
@@ -147,10 +151,11 @@ nonisolated enum RunLogErrorScanner {
     }
 
     private static func capped(_ block: [String]) -> [String] {
-        guard block.count > maxBlockLines else { return block }
+        let lines = block.map { $0.count > maxBlockLineLength ? String($0.prefix(maxBlockLineLength)) + "…" : $0 }
+        guard lines.count > maxBlockLines else { return lines }
         let head = 5
         let tail = maxBlockLines - head - 1
-        return Array(block.prefix(head)) + ["… \(block.count - head - tail) more lines …"] + Array(block.suffix(tail))
+        return Array(lines.prefix(head)) + ["… \(lines.count - head - tail) more lines …"] + Array(lines.suffix(tail))
     }
 
     private static func headline(_ line: String) -> String {

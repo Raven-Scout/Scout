@@ -182,6 +182,9 @@ struct RunDetailView: View {
     private var rerunUnavailableReason: String? {
         if run.status == .running { return nil }
         guard run.rerunSlotKey == nil else { return nil }
+        if !run.startedBySchedule {
+            return "An event trigger started this run, not a schedule, so there's none to run again."
+        }
         if let key = run.slotKey, key == "manual" || key.hasSuffix("-manual") {
             return "This run wasn't started by a schedule, so there's none to run again. Use Run now on the Schedules page."
         }

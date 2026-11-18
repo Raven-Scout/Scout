@@ -185,7 +185,7 @@ struct MenuBarExtraContent: View {
             }
             Spacer()
             Button {
-                Task { await state.fireNow(slotKey: run.slotKey, bypassBudget: false) }
+                Task { await state.fireNow(slotKey: run.slotKey) }
             } label: {
                 HStack(spacing: 5) {
                     if isFiring {
