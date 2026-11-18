@@ -41,6 +41,19 @@ first.** The two have different languages, test runners, and release flows.
   `plugin/v0.15.x` patch via `plugin/scripts/release-plugin.sh`); the existing ones (`app/v0.1.0`–`app/v0.14.0`,
   `plugin/v0.14.0`, `plugin/v0.15.0`) are history. The app was never released as 0.15.0. Bare `v0.4.0`–`v0.13.0` are the plugin's pre-monorepo releases. Agents never
   run `finalize`/`rc` for real.
+- **A changelog entry is a fragment file, never an edit to a CHANGELOG.** Add
+  `plugin/changelog.d/<branch-slug>.<section>.md` (plugin and engine) and/or
+  `apps/macos/changelog.d/<branch-slug>.<section>.md` (app): `<branch-slug>` is
+  your branch name after its last `/`, `<section>` one of `added`, `changed`,
+  `fixed`, `removed`, `security`, `deprecated`, `performance`, `documentation`,
+  `upgrade-notes`, and the content the entry's `- ` bullets, no headings
+  (format: `plugin/changelog.d/README.md`). `scripts/release.sh prepare`
+  assembles them into `## [X.Y.Z]` and deletes them. Never add to
+  `## [Unreleased]` (it is kept only for PRs opened before fragments, and goes
+  once they merge) and never touch a released `## [X.Y.Z]` section: `contract`
+  runs `python -m scout.scripts.changelog check --base <base>` and fails on
+  either a bad fragment or a changed released section. A deliberate fix to a
+  released entry needs a `Changelog-Edit-Released: <why>` commit trailer.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is
