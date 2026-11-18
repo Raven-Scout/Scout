@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -115,6 +116,76 @@ def test_changes_scan_cli(cli, git_vault):
 
 def test_changes_scan_bad_since(cli, git_vault):
     assert cli(["changes", "scan", "--since", "soonish"]).exit_code == 2
+
+
+def _git(repo: Path, *a: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=dict(os.environ))
+
+
+def test_owner_rows_from_a_vault_worktree_key_the_installed_vault(cli, tmp_path, home, monkeypatch):
+    """No SCOUT_DATA_DIR and a cwd in a worktree (its own scout-config.yaml): the engine pointer's vault, not cwd."""
+    from scout.changes.store import owner_dir, vault_key
+    from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    _git(vault, "init", "-q")
+    _git(vault, "config", "user.name", "Scout Test")
+    _git(vault, "config", "user.email", "scout@example.invalid")
+    _git(vault, "config", "commit.gpgsign", "false")
+    (vault / "scout-config.yaml").write_text("schedule: {}\n")
+    _git(vault, "add", "scout-config.yaml")
+    _git(vault, "commit", "-q", "-m", "init")
+    wt = vault / ".claude" / "worktrees" / "wt"
+    _git(vault, "worktree", "add", "-q", "--detach", str(wt))
+    write_pointer(
+        EnginePointer("0.0.0", "/e", "/e/python", "/e/scoutctl", str(vault), "dev", "2026-11-17T00:00:00Z"),
+        home=home,
+    )
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    monkeypatch.chdir(wt)
+    assert cli(["engagement", "record", "inline-comment", "--surface", "action-items"]).exit_code == 0
+    [row] = [json.loads(x) for x in (owner_dir({"HOME": str(home)}) / "engagement.jsonl").read_text().splitlines()]
+    assert row["vault_key"] == vault_key(vault)
+    monkeypatch.chdir(tmp_path)  # the report also follows the pointer, wherever it is run from
+    out = cli(["engagement", "--json", "--since", "1d"])
+    assert out.exit_code == 0, out.output
+    assert json.loads(out.stdout)["totals"]["feedback"] == 1
+
+
+def _a_live_run(monkeypatch: pytest.MonkeyPatch, *, runs: bool) -> None:
+    from scout.kb import live_run
+
+    source = live_run.CommitSource(runs, "dreaming", "ancestry" if runs else "host")
+    monkeypatch.setattr(live_run, "commit_source_now", lambda vault: source)
+
+
+def test_owner_kinds_refused_when_the_process_table_shows_a_run(cli, vault, home, monkeypatch):
+    """SCOUT_MODE unset is not enough: a run that hides its env is still a run (the kb-lint process check)."""
+    _a_live_run(monkeypatch, runs=True)
+    assert cli(["engagement", "record", "session-reliance", "--surface", "kb"]).exit_code == 2
+    assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("consent.json"))
+    # A run kind is still the run's to record.
+    assert cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"]).exit_code == 0
+
+
+def test_owner_host_during_a_run_may_record(cli, vault, home, monkeypatch):
+    _a_live_run(monkeypatch, runs=False)
+    assert cli(["engagement", "record", "approval", "--surface", "app"]).exit_code == 0
+    assert cli(["engagement", "consent", "--out-of-vault", "no"]).exit_code == 0
+
+
+def test_ref_is_an_id_not_a_path(cli, vault, home):
+    import typer.main
+
+    record = typer.main.get_command(app).commands["engagement"].commands["record"]  # type: ignore[attr-defined]
+    [ref] = [p for p in record.params if p.name == "ref"]
+    assert "path)" not in ref.help and "commit sha" in ref.help
+    for path in ("/Users/someone/notes.md", "~/notes.md"):
+        assert cli(["engagement", "record", "app-edit", "--surface", "app", "--ref", path]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl"))
+    assert cli(["engagement", "record", "app-edit", "--surface", "app", "--ref", "1790330702.929009"]).exit_code == 0
 
 
 def test_bare_groups_print_help(cli, vault):

@@ -34,6 +34,23 @@ def is_owner_session(env: Mapping[str, str]) -> bool:
     return not env.get("SCOUT_MODE") and env.get("SCOUT_READER") in (None, "", "owner")
 
 
+def is_owner_caller(env: Mapping[str, str], vault: Path) -> bool:
+    """:func:`is_owner_session`, and the process table shows this process is not a live run of ``vault``.
+
+    A command has no transcript to read a run's mode from, and a run can unset ``SCOUT_MODE``; it can't leave
+    the processes it runs in, so ask :func:`scout.kb.live_run.commit_source_now` the way kb-lint does. Fails
+    closed: a check that raises means "not the owner"."""
+    if not is_owner_session(env):
+        return False
+    try:
+        from scout.kb import live_run
+
+        source = live_run.commit_source_now(vault)
+    except Exception:  # noqa: BLE001 - any failure refuses the owner-only write
+        return False
+    return source is None or not source.runs
+
+
 def _logs(vault: Path) -> Path:
     return vault / ".scout-logs"
 
@@ -49,16 +66,21 @@ def _append(path: Path, row: dict[str, Any]) -> None:
 
 
 def _read(path: Path) -> tuple[list[dict[str, Any]], int]:
-    if not path.exists():
-        return [], 0
+    """The file's object rows and how many lines were skipped. Never raises: an unreadable file is one skip."""
+    try:
+        if not path.exists():
+            return [], 0
+        text = path.read_text(errors="replace")
+    except OSError:
+        return [], 1
     rows: list[dict[str, Any]] = []
     skipped = 0
-    for line in path.read_text(errors="replace").splitlines():
+    for line in text.splitlines():
         if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: a line nested deeper than the decoder goes
             skipped += 1
             continue
         if isinstance(row, dict):

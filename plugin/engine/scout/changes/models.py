@@ -54,6 +54,15 @@ def _bool(value: Any, name: str) -> bool:
     return value
 
 
+def _readable(row: dict[str, Any]) -> None:
+    """A row this reader understands: no ``schema_version`` (a v1 row), or an integer up to ``SCHEMA_VERSION``.
+
+    A newer row may mean something else under the same keys, so it is skipped, never read as this version."""
+    version = row.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= SCHEMA_VERSION:
+        raise ValueError(f"schema_version: {version!r} is not one this reader knows (max {SCHEMA_VERSION})")
+
+
 @dataclass(frozen=True)
 class Why:
     type: str
@@ -108,6 +117,7 @@ class Change:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Change:
+        _readable(row)
         summary = _str(row.get("summary"), "summary") or ""
         if len(summary) > SUMMARY_MAX:
             raise ValueError(f"summary: {len(summary)} chars, max {SUMMARY_MAX}")
@@ -150,6 +160,7 @@ class Signal:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Signal:
+        _readable(row)
         sentiment = row.get("sentiment")
         if sentiment is not None:
             _check(sentiment, SENTIMENTS, "sentiment")

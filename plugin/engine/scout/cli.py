@@ -416,13 +416,17 @@ app.add_typer(changes_app, name="changes")
 app.add_typer(engagement_app, name="engagement")
 
 
-def _changes_document(command: str, since: str, build: Callable[..., dict]) -> None:
-    """Shared tail of ``scoutctl changes --json`` / ``engagement --json``: resolve --since and the vault, print."""
+def _changes_document(command: str, since: str, build: Callable[..., dict], *, installed: bool = False) -> None:
+    """Shared tail of ``scoutctl changes --json`` / ``engagement --json``: resolve --since and the vault, print.
+
+    ``installed``: owner engagement is keyed to the installed vault (``scout.changes.vault``), never the cwd's."""
     import json as _json
+    import os
     from datetime import UTC
     from datetime import datetime as _dt
 
     from scout import paths as _paths
+    from scout.changes.vault import installed_vault
     from scout.run_ledger import parse_since
 
     now = _dt.now(UTC)
@@ -431,7 +435,7 @@ def _changes_document(command: str, since: str, build: Callable[..., dict]) -> N
     except ValueError as e:
         typer.echo(f"scoutctl {command}: {e}", err=True)
         raise typer.Exit(code=2) from None
-    vault = _paths.data_dir()
+    vault = installed_vault(os.environ) if installed else _paths.data_dir()
     if not vault.is_dir():
         typer.echo(f"scoutctl {command}: vault directory missing", err=True)
         raise typer.Exit(code=2)
@@ -479,6 +483,7 @@ def cli_engagement(
         lambda vault, now, cutoff: engagement_report(
             vault, os.environ, now=now, since=cutoff, tz=resolve_timezone(vault)
         ),
+        installed=True,
     )
 
 
@@ -511,7 +516,11 @@ def cli_engagement_record(
     surface: str = typer.Option(
         ..., "--surface", help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app."
     ),
-    ref: str | None = typer.Option(None, "--ref", help="A pointer (Slack ts, path), never content."),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="An id: a Slack message ts, a commit sha or a slug. Never content; a path outside the vault is refused.",
+    ),
     sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
     ts: str | None = typer.Option(None, "--ts", help="ISO time; default now."),
 ) -> None:
@@ -520,16 +529,23 @@ def cli_engagement_record(
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from scout import paths
-    from scout.changes.models import Signal
-    from scout.changes.store import append_signal
+    from scout.changes.models import OWNER_KINDS, Signal
+    from scout.changes.store import append_signal, is_owner_caller
+    from scout.changes.vault import installed_vault
 
+    vault = installed_vault(os.environ)
     try:
+        if ref is not None and ref.startswith(("/", "~")):
+            raise ValueError("--ref is an id (a Slack ts, a commit sha), not a path")
         when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
         signal = Signal.from_row(
             {"ts": when.isoformat(), "kind": kind, "surface": surface, "ref": ref, "sentiment": sentiment}
         )
-        append_signal(signal, vault=paths.require_data_dir(), env=os.environ)
+        if signal.kind in OWNER_KINDS and not is_owner_caller(os.environ, vault):
+            raise PermissionError(f"{signal.kind!r} is owner-sourced; a run may not write it")
+        if not vault.is_dir():
+            raise ValueError(f"vault directory missing: {vault}")
+        append_signal(signal, vault=vault, env=os.environ)
     except (ValueError, PermissionError) as e:
         typer.echo(f"scoutctl engagement record: {e}", err=True)
         raise typer.Exit(2) from None
@@ -554,7 +570,12 @@ def cli_engagement_consent(
     if out_of_vault not in ("yes", "no"):
         typer.echo("scoutctl engagement consent: pass --out-of-vault yes|no or --show", err=True)
         raise typer.Exit(2)
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
     try:
+        if not is_owner_caller(os.environ, installed_vault(os.environ)):
+            raise PermissionError("the consent answer is the owner's; a scheduled run may not write it")
         consent.set_out_of_vault(out_of_vault == "yes", os.environ)
     except PermissionError as e:
         typer.echo(f"scoutctl engagement consent: {e}", err=True)

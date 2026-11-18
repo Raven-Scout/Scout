@@ -1,56 +1,88 @@
 {
   "days": [
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-02",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-03",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-04",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-05",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-06",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-07",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-08",
       "feedback": 0,
       "noise": 0,
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-09",
       "feedback": 0,
       "noise": 0,
@@ -58,8 +90,12 @@
     },
     {
       "by_surface": {
-        "kb": 1,
-        "skill": 1
+        "feedback": {},
+        "noise": {},
+        "reliance": {
+          "kb": 1,
+          "skill": 1
+        }
       },
       "date": "2026-11-10",
       "feedback": 0,
@@ -68,7 +104,11 @@
     },
     {
       "by_surface": {
-        "skill": 1
+        "feedback": {},
+        "noise": {},
+        "reliance": {
+          "skill": 1
+        }
       },
       "date": "2026-11-11",
       "feedback": 0,
@@ -77,8 +117,12 @@
     },
     {
       "by_surface": {
-        "action-items": 1,
-        "app": 1
+        "feedback": {
+          "action-items": 1,
+          "app": 1
+        },
+        "noise": {},
+        "reliance": {}
       },
       "date": "2026-11-12",
       "feedback": 2,
@@ -86,7 +130,11 @@
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-13",
       "feedback": 0,
       "noise": 0,
@@ -94,7 +142,11 @@
     },
     {
       "by_surface": {
-        "slack-dm": 2
+        "feedback": {
+          "slack-dm": 2
+        },
+        "noise": {},
+        "reliance": {}
       },
       "date": "2026-11-14",
       "feedback": 2,
@@ -103,7 +155,11 @@
     },
     {
       "by_surface": {
-        "action-items": 1
+        "feedback": {},
+        "noise": {
+          "action-items": 1
+        },
+        "reliance": {}
       },
       "date": "2026-11-15",
       "feedback": 0,
@@ -111,7 +167,11 @@
       "reliance": 0
     },
     {
-      "by_surface": {},
+      "by_surface": {
+        "feedback": {},
+        "noise": {},
+        "reliance": {}
+      },
       "date": "2026-11-16",
       "feedback": 0,
       "noise": 0,

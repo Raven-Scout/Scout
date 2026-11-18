@@ -10,19 +10,21 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scout import paths
 from scout.changes.consent import out_of_vault_answer
 from scout.changes.models import Signal
 from scout.changes.store import append_signal, is_owner_session, owner_dir
+from scout.changes.vault import installed_vault, vault_roots
 from scout.hooks.run_context import RunContext, _text_of
 
 _PATH_TOOLS = frozenset({"Read", "Grep", "Glob", "Edit"})
 _PATH_KEYS = ("file_path", "path", "notebook_path")
+# The Scout plugin's own commands only: /scout-work, and the namespaced /scout:scout-briefing.
+_COMMAND_PREFIXES = ("/scout-", "/scout:")
 SEEN_NAME = "reliance-seen.json"
 _SEEN_SCHEMA = 1
 _SEEN_TTL = timedelta(days=7)
@@ -40,11 +42,21 @@ def _is_under(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _in_vault(cwd: str, vault: Path) -> bool:
+def _under_any(path: Path, roots: Sequence[Path]) -> bool:
+    return any(_is_under(path, r) for r in roots)
+
+
+def _in_vault(cwd: str, roots: Sequence[Path]) -> bool:
+    """Whether the session's cwd is the vault or inside one of its worktrees (``roots``: :func:`vault_roots`)."""
     if not cwd:
         return False
     resolved = _resolve(cwd, Path("/"))
-    return resolved is not None and _is_under(resolved, _resolve(str(vault), Path("/")) or vault)
+    return resolved is not None and _under_any(resolved, roots)
+
+
+def _scout_command(text: str) -> bool:
+    """A Scout slash command: ``/scout-…`` or the plugin-namespaced ``/scout:…``, typed or as a command tag."""
+    return any(f"<command-name>{p}" in text for p in _COMMAND_PREFIXES) or text.lstrip().startswith(_COMMAND_PREFIXES)
 
 
 def _rows(transcript_path: Path):
@@ -61,14 +73,15 @@ def _rows(transcript_path: Path):
         return
 
 
-def surfaces_used(transcript_path: Path, vault: Path, *, cwd: str) -> set[str]:
-    vault_root = _resolve(str(vault), Path("/")) or vault
-    kb_root = vault_root / "knowledge-base"
-    ai_root = vault_root / "action-items"
+def surfaces_used(transcript_path: Path, vault: Path, *, cwd: str, roots: Sequence[Path] | None = None) -> set[str]:
+    """``roots`` are the vault's folders (default :func:`vault_roots`): KB and action-item paths count under any."""
+    roots = tuple(roots) if roots is not None else vault_roots(vault)
+    kb_roots = [r / "knowledge-base" for r in roots]
+    ai_roots = [r / "action-items" for r in roots]
     base = _resolve(cwd, Path("/")) if cwd else None
-    base = base or vault_root
+    base = base or roots[0]
     surfaces: set[str] = set()
-    if _in_vault(cwd, vault):
+    if _in_vault(cwd, roots):
         surfaces.add("vault-session")
     for row in _rows(transcript_path):
         msg = row.get("message")
@@ -76,8 +89,7 @@ def surfaces_used(transcript_path: Path, vault: Path, *, cwd: str) -> set[str]:
             continue
         content = msg.get("content")
         if msg.get("role") == "user":
-            text = _text_of(content)
-            if "<command-name>/scout-" in text or text.lstrip().startswith("/scout-"):
+            if _scout_command(_text_of(content)):
                 surfaces.add("skill")
         if not isinstance(content, list):
             continue
@@ -96,9 +108,9 @@ def surfaces_used(transcript_path: Path, vault: Path, *, cwd: str) -> set[str]:
                     p = _resolve(raw, base)
                     if p is None:
                         continue
-                    if _is_under(p, kb_root):
+                    if _under_any(p, kb_roots):
                         surfaces.add("kb")
-                    elif _is_under(p, ai_root):
+                    elif _under_any(p, ai_roots):
                         surfaces.add("action-items")
             elif name == "Skill":
                 skill = inp.get("skill")
@@ -168,11 +180,13 @@ def record_reliance(
     """Rows written. Zero for runs, non-owner sessions, a missing transcript, or unconsented out-of-vault sessions."""
     if ctx.mode or not is_owner_session(env) or transcript_path is None:
         return 0
-    vault = paths.data_dir()
+    # The installed vault, never the cwd's: a session in a vault worktree counts for the vault (spec §6.3).
+    vault = installed_vault(env)
+    roots = vault_roots(vault)
     cwd = str(payload.get("cwd") or "")
-    if not _in_vault(cwd, vault) and out_of_vault_answer(env) is not True:
+    if not _in_vault(cwd, roots) and out_of_vault_answer(env) is not True:
         return 0
-    surfaces = surfaces_used(transcript_path, vault, cwd=cwd)
+    surfaces = surfaces_used(transcript_path, vault, cwd=cwd, roots=roots)
     session = hashlib.sha256(str(payload.get("session_id") or "").encode()).hexdigest()[:16]
     # Stop fires after every turn; count each (session, surface) once.
     seen = _read_seen(env)

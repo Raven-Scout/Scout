@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,7 +17,7 @@ from scout.changes.store import (
 )
 from scout.kb import hook_paths
 
-NOW = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
 
 
 def _change(**kw) -> Change:
@@ -120,7 +120,7 @@ def test_read_signals_filters_other_vaults_and_skips_torn_lines(tmp_path, vault)
 
 def test_read_signals_merges_and_sorts(tmp_path, vault):
     env = {"HOME": str(tmp_path / "home")}
-    late = datetime(2026, 11, 18, tzinfo=timezone.utc)
+    late = datetime(2026, 11, 18, tzinfo=UTC)
     append_signal(Signal(ts=late, kind="app-edit", surface="app"), vault=vault, env=env)
     append_signal(Signal(ts=NOW, kind="dm-sent", surface="slack-dm"), vault=vault, env={**env, "SCOUT_MODE": "x"})
     sigs, _ = read_signals(vault, env)
@@ -130,6 +130,56 @@ def test_read_signals_merges_and_sorts(tmp_path, vault):
 def test_owner_dir_is_a_protected_engine_root(tmp_path):
     env = {"HOME": str(tmp_path)}
     assert tmp_path / ".local/state/scout/change-map" in hook_paths.engine_roots(env)
+
+
+def test_readers_survive_deep_nesting_and_unreadable_files(tmp_path, vault):
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from scout.changes.report import changes_report, engagement_report
+
+    env = {"HOME": str(tmp_path / "home")}
+    logs = vault / ".scout-logs"
+    logs.mkdir()
+    (logs / "changes.jsonl").write_text("[" * 200_000 + "\n" + json.dumps(_change().to_row()) + "\n")
+    assert read_changes(vault) == ([_change()], 1)
+    (logs / "engagement.jsonl").write_text('{"a":' * 200_000 + "\n")
+    assert read_signals(vault, env) == ([], 1)
+    # An unreadable ledger (here a directory where the file should be) is empty, counted as one skipped.
+    (logs / "engagement.jsonl").unlink()
+    (logs / "engagement.jsonl").mkdir()
+    owner_dir(env).mkdir(parents=True)
+    (owner_dir(env) / "engagement.jsonl").mkdir()
+    assert read_signals(vault, env) == ([], 2)
+    (logs / "changes.jsonl").unlink()
+    (logs / "changes.jsonl").mkdir()
+    assert read_changes(vault) == ([], 1)
+    since = NOW - timedelta(days=1)
+    assert changes_report(vault, now=NOW, since=since)["skipped_rows"] == 1
+    assert engagement_report(vault, env, now=NOW, since=since, tz=ZoneInfo("UTC"))["skipped_rows"] == 2
+
+
+def test_readers_skip_rows_from_a_newer_schema(tmp_path, vault):
+    env = {"HOME": str(tmp_path / "home")}
+    append_change(vault, _change())
+    future_change = {**_change(id="chg-future000000").to_row(), "schema_version": 2}
+    with (vault / ".scout-logs" / "changes.jsonl").open("a") as fh:
+        fh.write(json.dumps(future_change) + "\n")
+    assert read_changes(vault) == ([_change()], 1)
+
+    append_signal(Signal(ts=NOW, kind="app-edit", surface="app"), vault=vault, env=env)
+    owner_future = {**Signal(ts=NOW, kind="app-edit", surface="app").to_row(), "vault_key": vault_key(vault)}
+    run_future = Signal(ts=NOW, kind="dm-reply", surface="slack-dm").to_row()
+    with (owner_dir(env) / "engagement.jsonl").open("a") as fh:
+        fh.write(json.dumps({**owner_future, "schema_version": 2}) + "\n")
+    with (vault / ".scout-logs" / "engagement.jsonl").open("a") as fh:
+        fh.write(json.dumps({**run_future, "schema_version": 99}) + "\n")
+        fh.write(json.dumps({**run_future, "schema_version": "1"}) + "\n")
+    sigs, skipped = read_signals(vault, env)
+    assert [s.kind for s in sigs] == ["app-edit"] and skipped == 3
+    # A row with no schema_version is a v1 row.
+    legacy = {k: v for k, v in run_future.items() if k != "schema_version"}
+    assert Signal.from_row(legacy).kind == "dm-reply"
 
 
 def test_owner_kind_planted_in_vault_log_is_dropped(tmp_path, vault):

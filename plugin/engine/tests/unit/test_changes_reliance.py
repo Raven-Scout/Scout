@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import UTC, datetime
+import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from scout.changes.consent import set_out_of_vault
 from scout.changes.reliance import record_reliance, surfaces_used
+from scout.changes.report import engagement_report
 from scout.changes.store import owner_dir
 from scout.hooks import session_tokens
 from scout.hooks.run_context import RunContext
+from scout.scripts.engine_pointer import EnginePointer, write_pointer
 
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
 SESSION_ID = "sess-secret-123"
@@ -92,7 +96,7 @@ def test_out_of_vault_needs_consent(vault, home, other_repo):
     t = transcript(
         cwd=other_repo, tool_uses=[("Read", {"file_path": str(vault / "action-items/action-items-2026-11-17.md")})]
     )
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=NOW) == 0
     set_out_of_vault(True, env)
     assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=NOW) == 1
@@ -124,7 +128,7 @@ def test_rows_hold_no_paths_or_text(vault, home):
         tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})],
         user_texts=["please look at my secret plan"],
     )
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
     text = (owner_dir(env) / "engagement.jsonl").read_text()
     rows = [json.loads(line) for line in text.splitlines()]
@@ -161,6 +165,90 @@ def test_stop_hook_records_reliance_and_survives_failure(vault, home, tmp_path, 
     assert session_tokens.run(stdin=io.StringIO(body)) is not None
 
 
+def test_namespaced_scout_slash_commands_count_as_skill(vault, home, other_repo):
+    for text in ("<command-name>/scout:scout-briefing</command-name>", "/scout:scout-update"):
+        t = transcript(cwd=other_repo, user_texts=[text])
+        assert surfaces_used(t, vault, cwd=str(other_repo)) == {"skill"}, text
+    for text in ("<command-name>/superpowers:brainstorming</command-name>", "/scouting-trip", "/other:scout-x"):
+        t = transcript(cwd=other_repo, user_texts=[text])
+        assert surfaces_used(t, vault, cwd=str(other_repo)) == set(), text
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+@pytest.fixture
+def git_vault(vault):
+    _git(vault, "init", "-q")
+    _git(vault, "config", "user.name", "Scout Test")
+    _git(vault, "config", "user.email", "scout@example.invalid")
+    _git(vault, "config", "commit.gpgsign", "false")
+    (vault / "scout-config.yaml").write_text("schedule: {}\n")
+    _git(vault, "add", "scout-config.yaml")
+    _git(vault, "commit", "-q", "-m", "init")
+    return vault
+
+
+def add_worktree(vault: Path, path: Path) -> Path:
+    _git(vault, "worktree", "add", "-q", "--detach", str(path))
+    (path / "knowledge-base").mkdir()
+    (path / "action-items").mkdir()
+    return path
+
+
+def point_engine_at(home: Path, vault: Path) -> None:
+    pointer = EnginePointer(
+        version="0.0.0",
+        engine_root="/engine",
+        python="/engine/.venv/bin/python",
+        scoutctl="/engine/bin/scoutctl",
+        vault=str(vault),
+        managed_by="dev",
+        written_at="2026-11-17T00:00:00Z",
+    )
+    write_pointer(pointer, home=home)
+
+
+def test_worktree_session_is_keyed_to_the_installed_vault(git_vault, home, monkeypatch):
+    """A session in <vault>/.claude/worktrees/<name> (its own scout-config.yaml) counts for the installed vault."""
+    wt = add_worktree(git_vault, git_vault / ".claude" / "worktrees" / "wt")
+    monkeypatch.delenv("SCOUT_DATA_DIR")
+    point_engine_at(home, git_vault)
+    monkeypatch.chdir(wt)  # the hook process runs in the session's cwd
+    t = transcript(cwd=wt, tool_uses=[("Read", {"file_path": str(wt / "knowledge-base/people.md")})])
+    env = dict(HOME=str(home))  # no SCOUT_DATA_DIR: the engine pointer names the vault
+    assert record_reliance(payload(t, wt), t, owner_ctx(wt), env, now=NOW) == 2
+    doc = engagement_report(git_vault, env, now=NOW, since=NOW - timedelta(days=1), tz=ZoneInfo("UTC"))
+    assert doc["totals"]["reliance"] == 2
+    assert doc["days"][-1]["by_surface"]["reliance"] == {"kb": 1, "vault-session": 1}
+
+
+def test_worktree_outside_the_vault_folder_is_in_vault(git_vault, home, tmp_path):
+    """A linked worktree of the vault's repo anywhere on disk is the vault: no out-of-vault consent needed."""
+    wt = add_worktree(git_vault, tmp_path / "elsewhere" / "wt")
+    t = transcript(cwd=wt, tool_uses=[("Read", {"file_path": str(wt / "action-items/action-items-2026-11-17.md")})])
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(git_vault)}
+    assert record_reliance(payload(t, wt), t, owner_ctx(git_vault), env, now=NOW) == 2
+    assert {r["surface"] for r in _rows(home)} == {"vault-session", "action-items"}
+
+
+def test_main_vault_session_reading_a_worktree_kb_counts_as_kb(git_vault, home, tmp_path, other_repo):
+    wt = add_worktree(git_vault, tmp_path / "elsewhere" / "wt")
+    t = transcript(cwd=other_repo, tool_uses=[("Grep", {"path": str(wt / "knowledge-base"), "pattern": "x"})])
+    assert surfaces_used(t, git_vault, cwd=str(other_repo)) == {"kb"}
+
+
+def test_unrelated_repo_with_a_vault_marker_is_not_the_vault(git_vault, home, tmp_path):
+    other = tmp_path / "other-vault"
+    other.mkdir()
+    _git(other, "init", "-q")
+    (other / "scout-config.yaml").write_text("x: 1\n")
+    t = transcript(cwd=other, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(git_vault)}
+    assert record_reliance(payload(t, other), t, owner_ctx(git_vault), env, now=NOW) == 0
+
+
 def _rows(home: Path) -> list[dict]:
     path = owner_dir({"HOME": str(home)}) / "engagement.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -168,14 +256,14 @@ def _rows(home: Path) -> list[dict]:
 
 def test_repeated_stops_count_each_surface_once(vault, home):
     t = transcript(cwd=vault, tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})])
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 0
     assert len(_rows(home)) == 2
 
 
 def test_later_turn_writes_only_the_new_surface(vault, home):
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     t = transcript(cwd=vault, tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})])
     record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW)
     t = transcript(
@@ -190,7 +278,7 @@ def test_later_turn_writes_only_the_new_surface(vault, home):
 
 
 def test_corrupt_marker_is_treated_as_empty(vault, home):
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     marker = owner_dir(env) / "reliance-seen.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("{not json")
@@ -200,7 +288,7 @@ def test_corrupt_marker_is_treated_as_empty(vault, home):
 
 
 def test_stale_marker_entries_are_pruned(vault, home):
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
     marker = owner_dir(env) / "reliance-seen.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     old = {"surfaces": ["kb"], "at": "2026-11-01T00:00:00+00:00"}

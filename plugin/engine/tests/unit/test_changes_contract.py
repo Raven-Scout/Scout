@@ -113,12 +113,20 @@ def test_engagement_contract_has_every_day(tmp_path):
     vault, _, env = _build(tmp_path)
     doc = engagement_report(vault, env, now=NOW, since=NOW - timedelta(days=14), tz=PRAGUE)
     assert len(doc["days"]) == 15
-    assert doc["days"][3] == {"date": "2026-11-05", "feedback": 0, "reliance": 0, "noise": 0, "by_surface": {}}
+    empty = {"feedback": {}, "noise": {}, "reliance": {}}
+    assert doc["days"][3] == {"date": "2026-11-05", "feedback": 0, "reliance": 0, "noise": 0, "by_surface": empty}
     assert doc["skipped_rows"] == 2
     # approval and dm-sent are not engagement; a session counts once per surface per local day.
     assert doc["totals"] == {"feedback": 4, "reliance": 3, "noise": 1}
     by_date = {d["date"]: d for d in doc["days"]}
     assert by_date["2026-11-11"]["reliance"] == 1  # 23:30Z is already the 11th in Prague
+    # by_surface is split per field: an ignored red (noise) never reads as engagement on its surface.
+    assert by_date["2026-11-15"]["by_surface"] == {**empty, "noise": {"action-items": 1}}
+    assert by_date["2026-11-12"]["by_surface"] == {**empty, "feedback": {"action-items": 1, "app": 1}}
+    assert by_date["2026-11-10"]["by_surface"] == {**empty, "reliance": {"kb": 1, "skill": 1}}
+    for d in doc["days"]:
+        for field in ("feedback", "reliance", "noise"):
+            assert sum(d["by_surface"][field].values()) == d[field]
     _check_or_regen(CANONICAL_ENGAGEMENT, _text(doc))
 
 
