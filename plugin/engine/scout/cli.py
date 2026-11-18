@@ -5418,6 +5418,52 @@ def _register_delegate() -> None:
             _fail(e, as_json)
         _say(result, as_json)
 
+    @delegate_app.command("init")
+    def cli_delegate_init(
+        clone: Path | None = typer.Option(  # noqa: B008
+            None, "--clone", help="The mirror clone (default: $SCOUT_DATA_DIR, else this folder or one above it)."
+        ),
+        print_env: bool = typer.Option(
+            False,
+            "--print-env",
+            help='Print only shell exports, for: e=$(scoutctl delegate init --print-env) && eval "$e".',
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Set up the agent's side of a delegate mirror: run in its clone, on the agent's platform.
+
+        Checks the clone, its config and this engine, reads once as the delegate,
+        and writes the environment Scout needs here inside the clone's .git (never
+        the tree). Safe to run again; the mirror's AGENTS.md says when.
+        """
+        import json as _json
+
+        from scout.delegate_agent import init
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = init(clone)
+        except Exception as e:  # every failure exits 2, so `e=$(... --print-env) && eval "$e"` loads nothing
+            failure = e if isinstance(e, RepoSyncError) else RepoSyncError("init_failed", f"refused: {e}")
+            if print_env:
+                typer.echo(failure.message, err=True)
+                raise typer.Exit(2) from e
+            _fail(failure, as_json)
+        if print_env:
+            for note in result.notes:
+                typer.echo(f"scoutctl delegate init: {note}", err=True)
+            typer.echo(result.exports(), nl=False)
+            return
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {result.files} file(s) visible to it")
+        for note in result.notes:
+            typer.echo(f"warning: {note}")
+        if result.env_file:
+            typer.echo(f"wrote {result.env_file}")
+        typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
+
     @delegate_app.command("status")
     def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
         """List the linked delegates: remote, last sync and the vault commit it mirrors."""
@@ -5584,6 +5630,7 @@ _DELEGATE_COMMANDS = frozenset(
         ("pre-session", "data"),
         ("bootstrap", "doctor"),
         ("manifest", "show"),
+        ("delegate", "init"),  # writes only the clone's .git/scout-delegate.env, never the tree
     }
 )
 _DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them
