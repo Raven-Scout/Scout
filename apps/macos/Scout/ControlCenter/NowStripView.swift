@@ -19,7 +19,19 @@ struct NowStripView: View {
             column(label: "Next up") { nextColumn }
         }
         .editorialCard(padding: 14)
+        // The usage card loads the summary too, but a side detail can hide it; the tile
+        // mustn't sit on "cost —" then (R1 review).
+        .task(id: todayRunsKey) { await state.scoutUsageService.refresh() }
     }
+
+    /// Today's runs by the vault's day (the usage summary's `today` bounds), so the run count
+    /// and the cost beside it count the same day; the host's day until the summary loads.
+    nonisolated static func todayRuns(_ runs: [Run], today: UsagePeriod?, now: Date = Date(),
+                                      calendar: Calendar = .current) -> [Run] {
+        runs.filter { today?.contains($0.startedAt) ?? calendar.isDate($0.startedAt, inSameDayAs: now) }
+    }
+
+    private var todayRunsKey: String { todayRuns().map(\.id).joined(separator: "|") }
 
     /// "cost ≥$42.09 · budget $8/day". The cost is today's from the engine's usage summary
     /// (`scoutctl budget usage`), the figure the usage card and the status bar show, so a
@@ -146,7 +158,6 @@ struct NowStripView: View {
     }
 
     private func todayRuns() -> [Run] {
-        let cal = Calendar.current
-        return state.sessionLogService.runs.filter { cal.isDateInToday($0.startedAt) }
+        Self.todayRuns(state.sessionLogService.runs, today: state.scoutUsageService.summary?.today)
     }
 }

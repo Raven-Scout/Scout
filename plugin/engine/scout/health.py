@@ -524,7 +524,26 @@ _RECURRING_FIX = {
 }
 
 
-def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> Finding | None:
+def _recurring_rows(rows: list[OutcomeRow], *, now: datetime) -> list[OutcomeRow]:
+    """The failed runs runs.recurring counts, oldest first; [] when they make no pattern."""
+    cutoff = now - RECURRING_FAILURE_WINDOW
+    recent = [r for r in rows if r.outcome not in SKIP_OUTCOMES and r.finished_at >= cutoff]
+    oks = [r.finished_at for r in recent if r.outcome == "ok"]
+    if not oks:
+        return []
+    settled = [r for r in recent if r.finished_at <= max(oks)]
+    failed = [r for r in settled if r.outcome == "failed"]
+    if len(failed) < RECURRING_FAILURE_THRESHOLD:
+        return []
+    first, last = failed[0].finished_at, failed[-1].finished_at
+    if not any(r.outcome == "ok" and first < r.finished_at < last for r in settled):
+        return []  # one streak that has ended: nothing recurs
+    return failed
+
+
+def recurring_failures(
+    rows: list[OutcomeRow], *, vault: Path, now: datetime, still_failing: str | None = None
+) -> Finding | None:
     """Failed runs in the last 48 h with a success between them, which the trailing streak can't show.
 
     A vault whose runs fail about twice a day reads green after every success
@@ -536,33 +555,34 @@ def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
     doctor fix next to a pause, or advice for an older class next to a login
     that has expired. A single streak that has already ended isn't a pattern
     either, so a success must fall between the first and last failure counted.
+
+    ``still_failing`` names this pattern's slots that failed again today and haven't
+    finished since; they are said here, not in a second finding (runs.failed_today).
     """
+    failed = _recurring_rows(rows, now=now)
+    if not failed:
+        return None
     cutoff = now - RECURRING_FAILURE_WINDOW
-    recent = [r for r in rows if r.outcome not in SKIP_OUTCOMES and r.finished_at >= cutoff]
-    oks = [r.finished_at for r in recent if r.outcome == "ok"]
-    if not oks:
-        return None
-    settled = [r for r in recent if r.finished_at <= max(oks)]
-    failed = [r for r in settled if r.outcome == "failed"]
-    if len(failed) < RECURRING_FAILURE_THRESHOLD:
-        return None
-    first, last = failed[0].finished_at, failed[-1].finished_at
-    if not any(r.outcome == "ok" and first < r.finished_at < last for r in settled):
-        return None  # one streak that has ended: nothing recurs
+    last_ok = max(r.finished_at for r in rows if r.outcome == "ok" and r.finished_at >= cutoff)
+    settled = [r for r in rows if r.outcome not in SKIP_OUTCOMES and cutoff <= r.finished_at <= last_ok]
+    first = failed[0].finished_at
     classes = Counter(r.failure_class for r in failed).most_common()
     class_text = ", ".join(f"{klass} ×{n}" for klass, n in classes)
     slots = ", ".join(sorted({r.slot for r in failed}))
     newest = failed[-1]
     log = _run_log(vault, newest)
     log_hint = f": .scout-logs/{newest.log}" if newest.log else ""
+    summary = (
+        f"{len(failed)} of the last {len(settled)} scheduled runs failed in the past 48 h, "
+        f"with successes in between ({class_text}). Failed slots: {slots}."
+    )
+    if still_failing:
+        summary += f" Still failing today, with no finished run since: {still_failing}."
     return Finding(
         id=RECURRING_FINDING_ID,
         severity="yellow",
         since=first,
-        summary=(
-            f"{len(failed)} of the last {len(settled)} scheduled runs failed in the past 48 h, "
-            f"with successes in between ({class_text}). Failed slots: {slots}."
-        ),
+        summary=summary,
         fix=_RECURRING_FIX.get(
             classes[0][0], f"Run scoutctl bootstrap doctor and read the newest failed log{log_hint}"
         ),
@@ -572,58 +592,102 @@ def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
     )
 
 
-def failed_today(rows: list[OutcomeRow], *, vault: Path, now: datetime, tz: tzinfo | None = None) -> Finding | None:
-    """Runs that failed today whose schedule hasn't finished a run since, or None (UI audit R1).
+@dataclass(frozen=True)
+class OpenFailure:
+    """One slot's failures today since it last finished a run (runs.failed_today)."""
+
+    first: OutcomeRow
+    newest: OutcomeRow
+
+    @property
+    def slot(self) -> str:
+        return self.newest.slot
+
+
+def open_failures_today(
+    rows: list[OutcomeRow], *, vault: Path, now: datetime, tz: tzinfo | None = None
+) -> tuple[list[OpenFailure], tzinfo]:
+    """Each scheduled slot that failed today and hasn't finished a run since, oldest first, and
+    the vault's zone.
 
     "Today" is the vault's day (``user.timezone``, else the host's zone), the same day the usage
-    summary counts. A later success of the *same* slot clears its failure; a success of another
-    slot doesn't, which is the case the trailing streak misses. Skips clear nothing. Slots in the
-    trailing streak are left out: runs.failing, auth.expired or runs.paused already says so.
+    summary counts. A scheduled slot recovers when it next finishes a run: a success of another
+    slot doesn't count, which is the case the trailing streak misses. A run no schedule runs
+    (trigger ``manual``, or a slot the schedule doesn't name, such as a trigger's skill) has no
+    next scheduled run, so any later finished run clears it; one that nothing has followed is in
+    the trailing streak, which runs.failing, auth.expired or runs.paused already report, so this
+    never names one. Skips clear nothing.
     """
-    local_now = now.astimezone(tz or resolve_timezone(vault))
-    day_start = datetime.combine(local_now.date(), time(0), tzinfo=local_now.tzinfo)
+    zone = tz or resolve_timezone(vault)
+    day_start = datetime.combine(now.astimezone(zone).date(), time(0), tzinfo=zone)
+    loaded = _load_schedule(vault)
+
+    def is_scheduled(r: OutcomeRow) -> bool:
+        return r.trigger != "manual" and (loaded is None or r.slot in loaded[0])
+
     in_streak = {r.slot for r in _trailing_failures(rows)}
-    open_failures: dict[str, OutcomeRow] = {}
+    open_: dict[str, list[OutcomeRow]] = {}
     for r in sorted(rows, key=lambda r: r.finished_at):
         if r.outcome == "ok":
-            open_failures.pop(r.slot, None)
+            open_.pop(r.slot, None)
+            for slot in [s for s, failed in open_.items() if not is_scheduled(failed[-1])]:
+                del open_[slot]
         elif r.outcome == "failed" and r.finished_at >= day_start and r.slot not in in_streak:
-            open_failures.setdefault(r.slot, r)
-    if not open_failures:
-        return None
-    failed = sorted(open_failures.values(), key=lambda r: r.finished_at)
+            open_.setdefault(r.slot, []).append(r)
+    found = [OpenFailure(first=f[0], newest=f[-1]) for f in open_.values()]
+    return sorted(found, key=lambda o: o.newest.finished_at), zone
 
-    def at(r: OutcomeRow) -> str:
+
+def describe_open_failures(found: list[OpenFailure], zone: tzinfo) -> str:
+    """``morning-briefing (at 08:00, unknown), …``: each slot with its newest failure's time and class."""
+
+    def one(o: OpenFailure) -> str:
+        r = o.newest
         klass = f", {r.failure_class}" if r.failure_class and r.failure_class != "ok" else ""
-        return f"{r.slot} (at {r.finished_at.astimezone(local_now.tzinfo):%H:%M}{klass})"
+        return f"{r.slot} (at {r.finished_at.astimezone(zone):%H:%M}{klass})"
 
-    if len(failed) == 1:
-        summary = f"{at(failed[0])} failed today and hasn't finished a run since."
+    return ", ".join(one(o) for o in found)
+
+
+def failed_today_finding(
+    found: list[OpenFailure], *, rows: list[OutcomeRow], vault: Path, zone: tzinfo
+) -> Finding | None:
+    """runs.failed_today for ``found`` (UI audit R1), or None when nothing is open.
+
+    The newest failure speaks for each slot (its time and class); ``since`` is the first one.
+    """
+    if not found:
+        return None
+    named = describe_open_failures(found, zone)
+    if len(found) == 1:
+        summary = f"{named} failed today and hasn't finished a run since."
     else:
-        summary = (
-            f"{len(failed)} schedules failed today and haven't finished a run since: "
-            + ", ".join(at(r) for r in failed)
-            + "."
-        )
-    first = failed[0]
-    if any(r.outcome == "ok" and r.finished_at > first.finished_at for r in rows):
+        summary = f"{len(found)} schedules failed today and haven't finished a run since: {named}."
+    first = min(o.first.finished_at for o in found)
+    if any(r.outcome == "ok" and r.finished_at > first for r in rows):
         summary += " Other scheduled runs have finished since."
-    newest = failed[-1]
+    newest = found[-1].newest
     log = _run_log(vault, newest)
     log_hint = f" (.scout-logs/{newest.log})" if newest.log else ""
     return Finding(
         id=FAILED_TODAY_FINDING_ID,
         severity="yellow",
-        since=first.finished_at,
+        since=first,
         summary=summary,
         fix=(
             f"Read the failed run's log{log_hint}. This clears when "
-            f"{'that schedule' if len(failed) == 1 else 'each schedule'} next finishes a run, or run it again now."
+            f"{'that schedule' if len(found) == 1 else 'each schedule'} next finishes a run, or run it again now."
         ),
         source="ledger",
         detail=failure_line(log, newest.failure_class) if log else None,
         log=str(log) if log else None,
     )
+
+
+def failed_today(rows: list[OutcomeRow], *, vault: Path, now: datetime, tz: tzinfo | None = None) -> Finding | None:
+    """runs.failed_today on its own, without folding into runs.recurring (see ledger_findings)."""
+    found, zone = open_failures_today(rows, vault=vault, now=now, tz=tz)
+    return failed_today_finding(found, rows=rows, vault=vault, zone=zone)
 
 
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
@@ -697,12 +761,19 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                 )
             )
 
-    recurring = recurring_failures(rows, vault=vault, now=now)
+    # One finding per slot: a slot runs.recurring names that failed again today is said there.
+    today, zone = open_failures_today(rows, vault=vault, now=now)
+    recurring_slots = {r.slot for r in _recurring_rows(rows, now=now)}
+    folded = [o for o in today if o.slot in recurring_slots]
+    recurring = recurring_failures(
+        rows, vault=vault, now=now, still_failing=describe_open_failures(folded, zone) if folded else None
+    )
     if recurring is not None:
         findings.append(recurring)
-    today = failed_today(rows, vault=vault, now=now)
-    if today is not None:
-        findings.append(today)
+        today = [o for o in today if o.slot not in recurring_slots]
+    failed_today_ = failed_today_finding(today, rows=rows, vault=vault, zone=zone)
+    if failed_today_ is not None:
+        findings.append(failed_today_)
 
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))

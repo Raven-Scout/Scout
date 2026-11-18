@@ -21,7 +21,7 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   - A run that failed today keeps the Health page, Settings and the panel amber until its schedule finishes a run (the engine's new `runs.failed_today`), even when a later run of another schedule finished.
   - Warnings the engine groups (`warning_groups`) are one line, such as "34 vault scripts read the knowledge base directly, without Scout's privacy labels", with the files behind "Show all 34 files", in Settings, the Doctor window and the Health page.
   - The panel and status bar read "Ready · 2 warnings", and the panel's second line names the worst one. The Health page's headline carries the same count and lists the engine's own warnings under "Scout's engine". Settings no longer says "Healthy" beside scheduled runs that need fixing.
-- **The Today tile's cost matches the usage card** (`Scout/ControlCenter/NowStripView.swift`; UI audit R1). It added up a per-run placeholder and read "cost $0" next to "≥$42" in the usage card and status bar. It now shows today's figure from `scoutctl budget usage`, "unknown" or "≥" when runs reported no cost, and "—" until the summary loads.
+- **The Today tile's cost matches the usage card** (`Scout/ControlCenter/NowStripView.swift`; UI audit R1). It added up a per-run placeholder and read "cost $0" next to "≥$42" in the usage card and status bar. It now shows today's figure from `scoutctl budget usage`, "unknown" or "≥" when runs reported no cost, and "—" until the summary loads. The tile loads the summary itself, so it fills in even when a side panel hides the usage card, and its run count uses the same day as the cost (the vault's).
 
 ## [0.18.16] - 2026-11-17
 

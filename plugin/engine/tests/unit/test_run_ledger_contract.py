@@ -97,7 +97,6 @@ RUNS: list[tuple[float, int, str, str, dict]] = [
             "failure_class": "network",
             "model": "opus",
             **PROTECTED,
-            "trigger": "manual",
         },
     ),
     (6, 0, "evening-consolidation", "scout", {"outcome": "skipped_runtime"}),

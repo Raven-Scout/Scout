@@ -59,6 +59,25 @@ struct ControlCenterPlaceholderTests {
         }
     }
 
+    /// The tile's run count and its cost count the same day: the vault's, from the usage summary.
+    @Test("the Today column counts the vault's day once the summary has loaded")
+    func todayIsTheVaultsDay() {
+        // The vault's day: 2026-11-17 in UTC+1 is 2026-11-16T23:00Z to 2026-11-17T23:00Z.
+        let p = period(.reported, cost: 1)
+        let iso = ISO8601DateFormatter()
+        func run(_ at: String) -> Run {
+            Run.make(type: .consolidation, startedAt: iso.date(from: at)!, endedAt: nil, status: .success)
+        }
+        let early = run("2026-11-16T23:30:00Z"), late = run("2026-11-17T23:30:00Z"), before = run("2026-11-16T22:30:00Z")
+        #expect(NowStripView.todayRuns([late, early, before], today: p).map(\.startedAt) == [early.startedAt])
+        // Before the summary loads, the host's day: on a UTC host the 17th is a different window.
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let noon = iso.date(from: "2026-11-17T12:00:00Z")!
+        #expect(NowStripView.todayRuns([late, early, before], today: nil, now: noon, calendar: utc).map(\.startedAt)
+                == [late.startedAt])
+        #expect(p.contains(early.startedAt) == true && p.contains(late.startedAt) == false)
+    }
+
     private func period(_ kind: UsageCostKind, cost: Double) -> UsagePeriod {
         UsagePeriod(start: "2026-11-17T00:00:00+01:00", end: "2026-11-18T00:00:00+01:00", runs: 11, runsWithTokens: 11,
                     sessions: 11, tokens: UsageTokens(input: 1, output: 1, cacheRead: 0, cacheCreation: 0),

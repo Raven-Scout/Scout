@@ -99,7 +99,7 @@ nonisolated struct HealthSummary: Equatable, Sendable {
             fix = "Have each read through `scoutctl kb files` and `scoutctl kb read`, so a private note never reaches a shared channel."
         case "privacy.runner-no-reader":
             title = "\(n) vault runner\(n == 1 ? " doesn't" : "s don't") mark their reads as unattended"
-            fix = "Add `export SCOUT_READER=autonomous` to each before it starts Claude."
+            fix = "Add `export SCOUT_MODE=\"<run-name>\"` and `export SCOUT_READER=autonomous` to each before it starts Claude."
         default:
             title = group.summary
             fix = nil

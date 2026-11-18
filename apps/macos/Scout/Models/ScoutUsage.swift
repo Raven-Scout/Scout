@@ -58,6 +58,15 @@ nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
 
     /// When the period ends; nil if the engine's `end` doesn't parse.
     var endDate: Date? { ISO8601DateFormatter().date(from: end) }
+    /// When the period starts; nil if the engine's `start` doesn't parse.
+    var startDate: Date? { ISO8601DateFormatter().date(from: start) }
+
+    /// Whether `date` falls in this period, the vault's day or week (`[start, end)`);
+    /// nil when either bound doesn't parse.
+    func contains(_ date: Date) -> Bool? {
+        guard let s = startDate, let e = endDate else { return nil }
+        return date >= s && date < e
+    }
 }
 
 /// The `scoutctl budget usage --json` payload (engine:

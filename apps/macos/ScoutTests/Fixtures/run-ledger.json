@@ -192,7 +192,7 @@
       "sandbox_source": null,
       "slot": "weekly-research",
       "started_at": "2026-11-16T04:58:00Z",
-      "trigger": "manual"
+      "trigger": "schedule"
     },
     {
       "agent_runtime": null,

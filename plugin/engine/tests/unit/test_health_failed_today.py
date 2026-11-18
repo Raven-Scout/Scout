@@ -136,7 +136,7 @@ def test_several_slots_failed_today_are_one_finding(tmp_path):
     (finding,) = health.evaluate(v, now=NOW).findings
     assert finding.summary.startswith(
         "2 schedules failed today and haven't finished a run since: "
-        "overnight-research (at 03:00, network), morning-briefing (at 08:00, unknown)."
+        "overnight-research (at 04:00, network), morning-briefing (at 08:00, unknown)."
     )
     assert finding.since == NOW - timedelta(hours=9) and "each schedule" in finding.fix
 
@@ -177,3 +177,120 @@ def test_a_failure_today_quotes_its_own_error_line(tmp_path):
     finding = _today(health.evaluate(v, now=NOW))
     assert finding.detail == "API Error: Connection error."
     assert finding.log is not None and finding.log.endswith(failed["log"])
+
+
+def test_the_newest_failure_of_a_slot_speaks_for_it(tmp_path):
+    v = _vault(tmp_path)
+    older = _row(NOW - timedelta(hours=6), "morning-briefing", code=1, klass="network")
+    newer = _row(NOW - timedelta(hours=4), "morning-briefing", code=1, klass="unknown")
+    (v / ".scout-logs" / older["log"]).write_text("API Error: Connection error.\n", encoding="utf-8")
+    (v / ".scout-logs" / newer["log"]).write_text("no recognisable line\n", encoding="utf-8")
+    _ledger(v, [older, newer, _row(NOW - timedelta(hours=1), "midday-consolidation")])
+    finding = _today(health.evaluate(v, now=NOW))
+    assert finding.summary.startswith("morning-briefing (at 08:00, unknown) failed today")
+    assert finding.since == NOW - timedelta(hours=6)  # since its first failure today
+    assert finding.log is not None and finding.log.endswith(newer["log"])
+    assert newer["log"] in finding.fix and finding.detail is None
+
+
+def _schedule(vault: Path, *slots: str) -> None:
+    lines = ["schema_version: 1", "slots:"]
+    for slot in slots:
+        lines += [
+            f"  {slot}:",
+            "    type: briefing",
+            "    runner: run-scout.sh",
+            '    fires_at_local: "08:00"',
+            "    weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]",
+            "    missed_window_hours: 4",
+            "    on_miss: fire",
+            "    cooldown_minutes: 0",
+        ]
+    (vault / ".scout-state").mkdir(exist_ok=True)
+    (vault / ".scout-state" / "schedule.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_a_manual_run_that_failed_clears_on_any_later_finished_run(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=4), "morning-briefing", code=1, trigger="manual"),
+            _row(NOW - timedelta(hours=1), "midday-consolidation"),
+        ],
+    )
+    assert health.FAILED_TODAY_FINDING_ID not in _ids(health.evaluate(v, now=NOW))
+
+
+def test_a_slot_the_schedule_doesnt_run_clears_on_any_later_finished_run(tmp_path):
+    # A trigger's skill or `research-manual`: no schedule will run it next.
+    v = _vault(tmp_path)
+    _schedule(v, "morning-briefing", "midday-consolidation")
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=5), "research-manual", code=1),
+            _row(NOW - timedelta(hours=4), "morning-briefing", code=1),
+            _row(NOW - timedelta(hours=1), "midday-consolidation"),
+        ],
+    )
+    finding = _today(health.evaluate(v, now=NOW))
+    assert "research-manual" not in finding.summary
+    assert finding.summary.startswith("morning-briefing (at 08:00) failed today and hasn't finished a run since.")
+
+
+def test_a_manual_failure_nothing_has_followed_is_the_streaks(tmp_path):
+    v = _vault(tmp_path)
+    _schedule(v, "morning-briefing")
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=3), "morning-briefing"),
+            _row(NOW - timedelta(hours=1), "dreaming-manual", code=1),
+            _row(NOW - timedelta(minutes=30), "morning-briefing", outcome="skipped_budget"),
+        ],
+    )
+    assert _ids(health.evaluate(v, now=NOW)) == {"runs.failing": "yellow"}
+
+
+def test_a_slot_runs_recurring_names_is_one_finding_not_two(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=40), "morning-briefing", code=1, klass="network"),
+            _row(NOW - timedelta(hours=38), "midday-consolidation"),
+            _row(NOW - timedelta(hours=20), "morning-briefing", code=1, klass="network"),
+            _row(NOW - timedelta(hours=18), "midday-consolidation"),
+            _row(NOW - timedelta(hours=4), "morning-briefing", code=1, klass="network"),
+            _row(NOW - timedelta(hours=1), "midday-consolidation"),
+        ],
+    )
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"runs.recurring": "yellow"}
+    (finding,) = report.findings
+    assert finding.summary.endswith(
+        "Still failing today, with no finished run since: morning-briefing (at 08:00, network)."
+    )
+
+
+def test_while_recurring_fires_it_names_every_slot_still_failing_today(tmp_path):
+    # runs.recurring counts every failure up to the last success, so it holds all of today's too.
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=40), "morning-briefing", code=1),
+            _row(NOW - timedelta(hours=38), "midday-consolidation"),
+            _row(NOW - timedelta(hours=20), "morning-briefing", code=1),
+            _row(NOW - timedelta(hours=18), "midday-consolidation"),
+            _row(NOW - timedelta(hours=5), "morning-briefing", code=1),
+            _row(NOW - timedelta(hours=4), "overnight-research", code=1),
+            _row(NOW - timedelta(hours=1), "midday-consolidation"),
+        ],
+    )
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"runs.recurring": "yellow"}
+    assert report.findings[0].summary.endswith(
+        "Still failing today, with no finished run since: morning-briefing (at 07:00), overnight-research (at 08:00)."
+    )

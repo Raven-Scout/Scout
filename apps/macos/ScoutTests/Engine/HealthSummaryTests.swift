@@ -57,6 +57,9 @@ struct HealthSummaryTests {
         ])
         #expect(s.issues.map(\.items) == [files, runners, ["a", "b", "c"], []])
         #expect(s.issues[2].fix == nil)
+        // The engine's fix for a runner names both exports (R1 review).
+        #expect(s.issues[1].fix?.contains("export SCOUT_MODE=") == true)
+        #expect(s.issues[1].fix?.contains("export SCOUT_READER=autonomous") == true)
         #expect(s.issues.allSatisfy { $0.source == .install })
     }
 
