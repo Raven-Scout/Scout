@@ -972,17 +972,15 @@ final class AppState: ObservableObject {
         requestedSidebar = .knowledgeBase
     }
 
-    /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
-    /// bypassing the engine's daily-spend gate via `--bypass-budget`.
+    /// Shells out to `scoutctl schedule fire-now <slotKey>`.
     ///
     /// Plan 5 removed in-app dispatch — the engine now owns slot routing,
-    /// scout-app just shells out. Errors are swallowed for parity with the
-    /// old `runnerService.runNow` (which also returned `try? await`).
+    /// scout-app just shells out. A failure lands in `fireNowError`.
     ///
-    /// `bypassBudget: true` is used by `RunDetailView` for the "force retry"
-    /// path — a manual override that lets a slot fire even when the day's
-    /// budget has already been spent. Default `false` for normal upcoming-strip
-    /// run-now buttons (which respect the budget gate).
+    /// Never pass `bypassBudget: true`: the engine's `fire-now` has no
+    /// `--bypass-budget` option (and the runner no budget override), so the
+    /// call fails outright. The run detail's "Run anyway (ignore budget)",
+    /// its only caller, is gone (card R3).
     ///
     /// After the dispatch returns, immediately refresh `ScheduleService` so
     /// the heartbeat strip drops the just-fired slot instead of sitting on
@@ -990,7 +988,7 @@ final class AppState: ObservableObject {
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
         guard firingSlotKeys.insert(slotKey).inserted else {
             // Surface the drop: several UI surfaces can fire the same slot
-            // (upcoming strip, RunDetailView's bypass retry, menu panel) and
+            // (upcoming strip, RunDetailView's Run again, menu panel) and
             // only the menu panel disables on firingSlotKeys — a silently
             // discarded bypass-budget retry looks like it was dispatched.
             fireNowError = "\(slotKey) is already being started — request ignored."

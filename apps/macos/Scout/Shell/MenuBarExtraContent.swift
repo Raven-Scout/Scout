@@ -176,7 +176,7 @@ struct MenuBarExtraContent: View {
         let isFiring = state.firingSlotKeys.contains(run.slotKey)
         return HStack(spacing: 9) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(run.type.displayName)
+                Text(run.displayName)
                     .font(DS.sans(11.5, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(run.scheduledAt.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
@@ -200,8 +200,8 @@ struct MenuBarExtraContent: View {
             .font(DS.sans(10.5, weight: .medium))
             .foregroundStyle(DS.Accent.ink)
             .disabled(isFiring)
-            .help(isFiring ? "This run is being started" : "Start \(run.type.displayName) now")
-            .accessibilityLabel(isFiring ? "Starting \(run.type.displayName)" : "Run \(run.type.displayName) now")
+            .help(isFiring ? "This run is being started" : "Start \(run.displayName) now")
+            .accessibilityLabel(isFiring ? "Starting \(run.displayName)" : "Run \(run.displayName) now")
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 8)

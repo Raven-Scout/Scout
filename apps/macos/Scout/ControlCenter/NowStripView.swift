@@ -109,7 +109,7 @@ struct NowStripView: View {
         }
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
-                bigName(u.type.displayName)
+                bigName(u.displayName)
                 sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
