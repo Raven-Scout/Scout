@@ -234,7 +234,13 @@ LEFT_OUT_REASONS = {
 }
 LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
 MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until clean
-GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH})
+# The agent's guide (#550 V3): Scout's own instructions at the mirror's root, in place of the vault's. A vault's
+# AGENTS.md / CLAUDE.md are for the owner's scheduled runs on the laptop, which write; a delegate only reads.
+GUIDE_PATHS = ("AGENTS.md", "CLAUDE.md")
+GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH, *GUIDE_PATHS})
+ENGINE_INSTALL = (
+    'uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"'
+)
 # The privacy keys a mirror's config keeps (overlay keys; see scout.kb.privacy.load_policy).
 PRIVACY_KEYS = (
     "local_only_add",
@@ -1618,6 +1624,62 @@ def _mirror_file(
     return MirrorFile(e.path, e.mode, new_text.encode("utf-8"), ""), new_label, new_text
 
 
+def delegate_guide(delegate: str) -> bytes:
+    """The mirror's ``AGENTS.md`` and ``CLAUDE.md``: how the agent ``delegate:<delegate>`` uses this clone.
+
+    Fixed text and the delegate id only, so it can name nothing from the vault, and
+    :func:`check_tree` regenerates it and compares bytes like the other generated files.
+    """
+    return f"""# Scout delegate mirror: {delegate}
+
+This repository is a read-only, filtered copy of its owner's Scout vault, made for one
+agent, `delegate:{delegate}`. It holds only what that agent may see. Scout rebuilds it
+from the owner's computer, and nothing written here goes back.
+
+## Set up (once per environment; safe to run again)
+
+1. Install the engine: `{ENGINE_INSTALL}`
+   (or the same requirement with `pip install`).
+2. In this clone, run `scoutctl delegate init`. It checks the clone and the engine, and
+   says what is wrong if anything is.
+3. At the start of every task, load the environment Scout needs here:
+   `eval "$(scoutctl delegate init --print-env)"`. That sets `SCOUT_DATA_DIR` to this
+   clone and `SCOUT_READER` to `delegate:{delegate}`.
+
+## Reading the vault
+
+Read through `scoutctl`, not by opening files: it applies the owner's privacy rules and
+resolves names.
+
+- `scoutctl kb resolve "<name>"` finds the note for a person, project or topic.
+- `scoutctl kb search "<words>"`, `scoutctl kb read <path>` and `scoutctl kb related <path>`
+  find and read notes and what they link to.
+- `scoutctl kb query`, `scoutctl kb entity` and `scoutctl kb traverse` walk the graph.
+- `scoutctl kb delta --since <date>` lists what changed.
+- `scoutctl pre-session data` gives today's dates, recent changes and open tasks.
+
+Add `--help` to any of them for their options.
+
+## Never write
+
+- Don't edit, commit or push in this clone: each sync replaces it.
+- Every `scoutctl` command that writes the vault refuses here (exit 3).
+- To suggest a change, such as a new fact or a finished task, tell the owner in your
+  reply. (Scout's inbox for an agent's proposals comes later.)
+
+## Brain files
+
+`SKILL.md`, `DREAMING.md` and `RESEARCH.md`, if this mirror has them, are the owner's
+instructions for Scout's scheduled runs on the laptop. Read them for how the owner works
+and what the knowledge base holds. Don't follow their steps that write files, send
+messages or run schedules.
+
+## Staying current
+
+Run `git pull --ff-only`. If that fails, the owner started the mirror over: clone it again.
+""".encode()
+
+
 def write_tree(vault: Path, the_plan: Plan) -> str:
     """Write ``the_plan``'s blobs and tree into the vault's object store; the tree sha."""
 
@@ -1632,6 +1694,8 @@ def write_tree(vault: Path, the_plan: Plan) -> str:
         lines.append(f"{f.mode} {sha}\t{f.path}")
     lines.append(f"100644 {blob(the_plan.policy_document())}\t{POLICY_PATH}")
     lines.append(f"100644 {blob(the_plan.manifest())}\t{MANIFEST_PATH}")
+    guide = blob(delegate_guide(the_plan.delegate))
+    lines += [f"100644 {guide}\t{rel}" for rel in GUIDE_PATHS]
     return _write_tree(vault, lines)
 
 
@@ -1755,6 +1819,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             elif e.path != paths.VAULT_MARKER and not _same_label(ours, mirrored):
                 bad += 1
         bad += blobs.read(by_path[POLICY_PATH].sha) != policy_document(theirs, labels)
+        guide = delegate_guide(delegate)
+        bad += sum(blobs.read(by_path[rel].sha) != guide or by_path[rel].mode != "100644" for rel in GUIDE_PATHS)
         bad += not _manifest_ok(blobs.read(by_path[MANIFEST_PATH].sha), delegate, tree_paths, _vault_mark(vault))
         if bad:
             raise RepoSyncError(
