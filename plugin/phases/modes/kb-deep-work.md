@@ -37,7 +37,7 @@ cd {{SCOUT_DIR}} && scripts/scoutctl kb search --fixed '//==<<' --glob '**/*.md'
 
 **Comment format:** `//==<< comment >>==//`
 
-A comment left by highlighting text in the Mac app's note reader names the passage it is about: `//==<< on "quoted passage": comment >>==//`. The quote is the exact text {{USER_NAME}} selected (flattened to one line, double quotes turned to single, long passages cut with `…`), and the marker sits on the line after the block holding it — inside a list item or blockquote it is indented or `>`-prefixed to stay in that block. Find the quoted passage nearby and act on *that* text, not the whole note.
+A comment on selected text quotes it: `//==<< on "passage": comment >>==//`. Act on that passage.
 
 {{USER_NAME}} leaves these as embedded feedback, questions, or requests directly in KB files and docs. For each comment found:
 
