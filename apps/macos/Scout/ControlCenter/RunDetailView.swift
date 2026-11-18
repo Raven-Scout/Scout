@@ -21,6 +21,8 @@ struct RunDetailView: View {
     let run: Run
     @EnvironmentObject var state: AppState
     @State private var confirmRetry = false
+    /// The owner pressed Run again here, so a `fireNowError` is this view's to show.
+    @State private var askedToRerun = false
     @State private var resolvedCommits: [Commit] = []
     @SceneStorage("runDetailTab") private var tab: RunDetailTab = .summary
 
@@ -53,7 +55,7 @@ struct RunDetailView: View {
         case .diff:     DiffViewer(commits: resolvedCommits)
         case .files:    FilesTab(run: run)
         case .tools:    ToolsTab(run: run)
-        case .errors:   ErrorsTab(errors: run.errorsDetected)
+        case .errors:   ErrorsTab(errors: run.errorsDetected, runFailed: [.failure, .timeout, .orphaned].contains(run.status))
         case .feedback: FeedbackTab(run: run)
         }
     }
@@ -112,50 +114,80 @@ struct RunDetailView: View {
         }
     }
 
+    /// "Run again" fires this run's own schedule (`Run.rerunSlotKey`, from the
+    /// run ledger), never one guessed from the run type: several schedules
+    /// share a type, so a guess re-ran the morning consolidation for an
+    /// evening one and couldn't re-run a schedule made in the app. There is no
+    /// "ignore budget" variant: the engine's `fire-now` has no such option.
     private var actionBar: some View {
-        HStack(spacing: 8) {
-            Button("Run again") { confirmRetry = true }
-                .disabled(run.status == .running)
-            Button("Open log") {
-                NSWorkspace.shared.open(run.logPath)
+        let slot = run.rerunSlotKey
+        let firing = slot.map { state.firingSlotKeys.contains($0) } ?? false
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(firing ? "Starting…" : "Run again") { confirmRetry = true }
+                    .disabled(slot == nil || run.status == .running || firing)
+                    .accessibilityHint(rerunUnavailableReason ?? "Runs \u{201C}\(scheduleName)\u{201D} now")
+                Button("Open log") {
+                    NSWorkspace.shared.open(run.logPath)
+                }
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([run.logPath])
+                }
+                Spacer()
             }
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([run.logPath])
+            if let reason = rerunUnavailableReason {
+                Text(reason)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if askedToRerun, let error = state.fireNowError {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(DS.Status.warn)
+                        .accessibilityHidden(true)
+                    Text(error)
+                        .font(DS.sans(11))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Couldn't run it again: \(error)")
             }
-            Spacer()
         }
+        .onChange(of: run.id) { _, _ in askedToRerun = false }
         .confirmationDialog(
-            "Run \(run.displayName) again?",
+            "Run \u{201C}\(scheduleName)\u{201D} again?",
             isPresented: $confirmRetry,
             titleVisibility: .visible
         ) {
-            Button("Run again") {
-                Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: false) }
-            }
-            Button("Run anyway (ignore budget)") {
-                Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: true) }
+            if let slot {
+                Button("Run again") {
+                    askedToRerun = true
+                    Task { await state.fireNow(slotKey: slot) }
+                }
             }
             Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Starts a new run now. The daily budget still applies.")
         }
     }
 
-    /// Map a `RunType` to a representative slot-key for retry.
-    /// TODO(plan-6): Persist the originating slot-key on the `Run` record so
-    /// retrying an `evening-consolidation` re-fires that slot specifically
-    /// instead of the morning one. Plan 5 collapsed RunType to slot-type-aligned
-    /// vocabulary, which made the consolidation/dreaming slot-key lossy at
-    /// retry time. The defaults below pick one slot per family.
-    private func defaultSlotKey(for type: RunType) -> String {
-        switch type {
-        case .morningBriefing:  return "morning-briefing"
-        case .weekendBriefing:  return "weekend-briefing"
-        case .consolidation:    return "morning-consolidation"
-        case .dreaming:         return "dreaming-evening"
-        case .research:         return "research"
-        // .manual: route to the engine's manual slot type — schedule v2 has no
-        // default manual slot, so this may resolve to a no-op until users add
-        // one. Avoids silently re-firing as a briefing.
-        case .manual:           return "manual"
+    /// The schedule's name, as the Schedules page shows it.
+    private var scheduleName: String {
+        run.rerunSlotKey.map(DisplayName.slotKey) ?? run.displayName
+    }
+
+    /// Why "Run again" is off, in the owner's words; nil when it's on.
+    private var rerunUnavailableReason: String? {
+        if run.status == .running { return nil }
+        guard run.rerunSlotKey == nil else { return nil }
+        if !run.startedBySchedule {
+            return "An event trigger started this run, not a schedule, so there's none to run again."
         }
+        if let key = run.slotKey, key == "manual" || key.hasSuffix("-manual") {
+            return "This run wasn't started by a schedule, so there's none to run again. Use Run now on the Schedules page."
+        }
+        return "Scout doesn't know which schedule started this run. Use Run now on the Schedules page."
     }
 }

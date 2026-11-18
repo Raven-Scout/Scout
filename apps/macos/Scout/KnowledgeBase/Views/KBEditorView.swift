@@ -52,6 +52,8 @@ struct KBEditorView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDeleteConfirm = false
+    /// Reload was asked for with unsaved edits: confirm before discarding.
+    @State private var showReloadConfirm = false
     /// The file exists but couldn't be read. The editor shows an error with
     /// Retry instead of an empty document, so nothing typed into a blank
     /// stand-in can be saved over the real file.
@@ -76,6 +78,43 @@ struct KBEditorView: View {
             switch self {
             case .overwrite, .reload: return .destructive
             case .keepEditing: return .cancel
+            }
+        }
+    }
+
+    /// What a Reload button does. With unsaved edits it asks first, like the
+    /// conflict alert and Quit: an edit is never discarded without asking (C1).
+    enum ReloadStep: Equatable {
+        case reloadNow, confirmDiscard
+
+        static func forReload(isDirty: Bool) -> ReloadStep { isDirty ? .confirmDiscard : .reloadNow }
+    }
+
+    /// What every Reload button runs (`requestReload()`): reload at once with
+    /// nothing to lose, else only ask. Static so tests drive the same code.
+    static func requestReload(isDirty: Bool, reload: () -> Void, askToDiscard: () -> Void) {
+        switch ReloadStep.forReload(isDirty: isDirty) {
+        case .reloadNow: reload()
+        case .confirmDiscard: askToDiscard()
+        }
+    }
+
+    /// The Reload confirmation's buttons. "Keep Editing" has the cancel role,
+    /// so Esc (or closing the alert) never discards work.
+    enum ReloadChoice: CaseIterable {
+        case keepEditing, discardAndReload
+
+        var title: String {
+            switch self {
+            case .keepEditing: return "Keep Editing"
+            case .discardAndReload: return "Discard Edits and Reload"
+            }
+        }
+
+        var role: ButtonRole? {
+            switch self {
+            case .keepEditing: return .cancel
+            case .discardAndReload: return .destructive
             }
         }
     }
@@ -139,6 +178,15 @@ struct KBEditorView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .alert("Discard your edits to \(node.displayName)?", isPresented: $showReloadConfirm) {
+            ForEach(ReloadChoice.allCases, id: \.self) { choice in
+                Button(choice.title, role: choice.role) {
+                    if choice == .discardAndReload { loadFile() }
+                }
+            }
+        } message: {
+            Text("Reloading shows the file as it is on disk and throws away the changes you haven't saved.")
+        }
         .alert("Delete \(node.displayName)?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) { performDelete() }
             Button("Cancel", role: .cancel) {}
@@ -175,9 +223,9 @@ struct KBEditorView: View {
                 )
             }
 
-            Button { loadFile() } label: { Label("Reload", systemImage: "arrow.clockwise") }
+            Button { requestReload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
                 .buttonStyle(.plain).foregroundStyle(DS.Ink.p3).font(DS.sans(12))
-                .help("Reload from disk (discards unsaved changes)")
+                .help(isDirty ? "Reload from disk (asks before discarding your unsaved edits)" : "Reload from disk")
 
             Button(action: save) {
                 Label("Save", systemImage: "checkmark")
@@ -234,7 +282,7 @@ struct KBEditorView: View {
             Text("This file changed on disk. Reload to see the new version, or save to overwrite it.")
                 .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
             Spacer()
-            Button("Reload") { loadFile() }.buttonStyle(.plain)
+            Button("Reload") { requestReload() }.buttonStyle(.plain)
                 .font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.ink)
         }
         .padding(.horizontal, 20).padding(.vertical, 8)
@@ -293,7 +341,13 @@ struct KBEditorView: View {
             stashed: service.drafts.draft(for: node.url)))
     }
 
-    /// Load from disk, discarding any unsaved draft. Every "Reload" goes here.
+    /// A Reload button: reloads at once with nothing to lose, else asks.
+    private func requestReload() {
+        Self.requestReload(isDirty: isDirty, reload: { loadFile() }, askToDiscard: { showReloadConfirm = true })
+    }
+
+    /// Load from disk, discarding any unsaved draft. A Reload button reaches
+    /// it through `requestReload()`, which asks first when there are edits.
     private func loadFile() {
         service.drafts.discard(for: node.url)
         apply(Self.resolveLoad(

@@ -74,6 +74,14 @@ RUNS: list[tuple[float, int, str, str, dict]] = [
         "scout",
         {"outcome": "ok", "model": "sonnet", **PROTECTED, "integrity": "restored", "newest_commit": "3f9c2a1"},
     ),
+    # Another Claude Code process was refreshing the shared sign-in: the run died in seconds.
+    (
+        45,
+        0,
+        "morning-briefing",
+        "scout",
+        {"outcome": "failed", "exit_code": 1, "failure_class": "auth_race", **PROTECTED},
+    ),
     (42, 0, "evening-consolidation", "scout", {"outcome": "skipped_lock"}),
     (
         27,
@@ -85,6 +93,20 @@ RUNS: list[tuple[float, int, str, str, dict]] = [
     (18, 0, "evening-consolidation", "scout", {"outcome": "skipped_budget"}),
     (9, 0, "evening-consolidation", "scout", {"outcome": "skipped_redundant"}),
     (8, 0, "evening-consolidation", "scout", {"outcome": "skipped_lease", "failure_class": "lease_held"}),
+    # Failed today, and its schedule hasn't finished a run since; a later briefing did (runs.failed_today, R1).
+    (
+        7,
+        2,
+        "weekly-research",
+        "research",
+        {
+            "outcome": "failed",
+            "exit_code": 1,
+            "failure_class": "network",
+            "model": "opus",
+            **PROTECTED,
+        },
+    ),
     (6, 0, "evening-consolidation", "scout", {"outcome": "skipped_runtime"}),
     (5, 0, "evening-consolidation", "scout", {"outcome": "skipped_sandbox", "sandbox": "failed"}),
     (
@@ -104,6 +126,8 @@ def _build_vault(root: Path) -> Path:
     state.mkdir(parents=True)
     logs.mkdir()
     (state / "schedule.yaml").write_text(SCHEDULE, encoding="utf-8")
+    # The vault's day is UTC's, so "today" (runs.failed_today) is the same on every host.
+    (v / "scout-config.yaml").write_text("user:\n  timezone: UTC\n", encoding="utf-8")
     old = (NOW - timedelta(days=60)).timestamp()
     os.utime(state / "schedule.yaml", (old, old))
     rows, fires = [], {}
@@ -172,7 +196,12 @@ def test_the_fixture_covers_every_outcome_the_app_names(tmp_path, monkeypatch):
     assert doc["schema_version"] == 1
     runs = doc["runs"]
     assert {r["outcome"] for r in runs} == {"ok", "failed"} | SKIP_OUTCOMES
-    assert {r["failure_class"] for r in runs if r["outcome"] == "failed"} == {"timeout", "rate_limited"}
+    assert {r["failure_class"] for r in runs if r["outcome"] == "failed"} == {
+        "timeout",
+        "rate_limited",
+        "auth_race",
+        "network",
+    }
     assert {r["sandbox"] for r in runs} >= {"enforced", "off", "failed", None}
     assert {r["integrity"] for r in runs} >= {"clean", "restored", None}
     assert any(r["resets_at"] for r in runs) and any(r["awake_s"] for r in runs)
@@ -191,6 +220,9 @@ def test_the_fixture_carries_findings_with_fixes(tmp_path, monkeypatch):
     # The integrity restore and the privacy-check skip are both on the panel, each with a fix.
     assert any(i.startswith("run.integrity") for i in ids), ids
     assert any(i.startswith("gates.") for i in ids), ids
+    # Today's failed research run stays on the panel after the later briefing finished (R1).
+    today = next(f for f in rh["findings"] if f["id"] == "runs.failed_today")
+    assert today["severity"] == "yellow" and today["summary"].startswith("weekly-research (at 05:00, network)")
     assert all(f["fix"] for f in rh["findings"] if f["severity"] != "note")
     assert all({"detail", "log", "until"} <= set(f) for f in rh["findings"])
 

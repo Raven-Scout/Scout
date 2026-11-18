@@ -7,6 +7,8 @@ struct DoctorPresentation: Equatable {
         let text: String
         var fix: String? = nil
         var since: String? = nil
+        /// The files a grouped warning stands for, behind a disclosure (UI audit R1).
+        var files: [String] = []
     }
     struct Group: Equatable {
         let title: String
@@ -43,21 +45,28 @@ struct DoctorPresentation: Equatable {
             groups = lastError.map { [Group(title: "Problem", tone: .error, items: [Item(text: $0)])] } ?? []
             return
         }
-        switch doctor.severity {
-        case .green: headline = "Scout's engine is healthy"; tone = .ok
-        case .yellow: headline = "Scout's engine works, with warnings"; tone = .warn
-        case .red: headline = "Scout's engine has problems"; tone = .error
+        // The same issues and count as Settings, the Health page and the status bar (UI audit R1).
+        let summary = HealthSummary(doctor: doctor)
+        let count = summary.attentionLabel.map { " · \($0)" } ?? ""
+        switch (doctor.severity, summary.severity) {
+        case (.red, _): headline = "Scout's engine has problems\(count)"; tone = .error
+        case (.yellow, _): headline = "Scout's engine works, with warnings\(count)"; tone = .warn
+        case (.green, .green): headline = "Scout's engine is healthy"; tone = .ok
+        // A healthy install whose runs aren't: say so, rather than "healthy" beside a warning.
+        case (.green, .red): headline = "Scheduled runs need fixing\(count)"; tone = .error
+        case (.green, .yellow): headline = "Scheduled runs need a look\(count)"; tone = .warn
         }
+        func item(_ issue: HealthSummary.Issue) -> Item { Item(text: issue.title, fix: issue.fix, files: issue.items) }
         var groups: [Group] = []
-        if !doctor.errors.isEmpty {
-            groups.append(Group(title: "Problems", tone: .error, items: doctor.errors.map { Item(text: $0) }))
-        }
-        if !doctor.warnings.isEmpty {
-            groups.append(Group(title: "Warnings", tone: .warn, items: doctor.warnings.map { Item(text: $0) }))
-        }
+        let problems = summary.issues(.problem, from: .install)
+        if !problems.isEmpty { groups.append(Group(title: "Problems", tone: .error, items: problems.map(item))) }
+        let warnings = summary.issues(.warning, from: .install)
+        if !warnings.isEmpty { groups.append(Group(title: "Warnings", tone: .warn, items: warnings.map(item))) }
         if let rh = doctor.runHealth {
             let tone: Tone = rh.severity == .green ? .ok : rh.severity == .yellow ? .warn : .error
-            let items = rh.findings.map { Item(text: $0.summary, fix: $0.fix.isEmpty ? nil : $0.fix, since: $0.since) }
+            let items = summary.issues.filter { $0.source == .runs }.map {
+                Item(text: $0.title, fix: $0.fix, since: $0.since)
+            }
             groups.append(Group(title: rh.severity == .green ? "Scheduled runs: healthy" : "Scheduled runs",
                                 tone: tone,
                                 items: items.isEmpty ? [Item(text: "No problems with recent runs.")] : items))
@@ -139,6 +148,9 @@ struct DoctorView: View {
                     Text(item.text).font(DS.sans(13)).foregroundStyle(DS.Ink.p1).textSelection(.enabled)
                     if let fix = item.fix {
                         Text("How to fix: \(fix)").font(DS.sans(12)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
+                    }
+                    if !item.files.isEmpty {
+                        IssueFilesDisclosure(files: item.files)
                     }
                 }
             }

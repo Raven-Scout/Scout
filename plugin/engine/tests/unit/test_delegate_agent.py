@@ -481,3 +481,19 @@ def test_init_still_prints_the_environment_when_git_is_read_only_or_a_temp_file_
     with pytest.raises(OSError):
         da._write_env(link, "X=1\n")  # a symlinked folder is never opened
     assert list(elsewhere.iterdir()) == []
+
+
+def test_root_github_files_are_counted_and_named_apart(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    for rel in (".github/notes.md", ".github/workflows/run.yml", "tools/claude.md"):
+        _commit(vault, rel, f"{LAPTOP}\n", f"left out {rel}")
+    bare = _bare(tmp_path, "grok")
+    (note,) = [n for n in _link(vault, "grok-personal", bare).notes if n.startswith("left out as agent config:")]
+    assert note.startswith("left out as agent config: 3 file(s): 1 that agents read")
+    assert "2 under the root's .github/" in note and ".github/notes.md" in note and ".github/workflows/run.yml" in note
+    assert "tools/claude.md" in note.split("; 2 under")[0]
+    assert not {".github/notes.md", ".github/workflows/run.yml", "tools/claude.md"} & _files(bare)
+    only_github = dm.Plan(delegate="d", agent_files=[".github/x.md"])
+    (alone,) = dm._agent_files_note("d", only_github)
+    assert alone.startswith("left out as agent config: 1 file(s): 1 under the root's .github/")
+    many = dm.Plan(delegate="d", agent_files=[f"tools/{i}/claude.md" for i in range(dm.LEFT_OUT_LISTED + 2)])
+    assert "and 2 more" in dm._agent_files_note("d", many)[0]

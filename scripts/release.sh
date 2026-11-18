@@ -367,6 +367,14 @@ build_and_publish() {
   printf '{"name": "scout", "version": "%s", "tag": "%s"}\n' "$v" "$tag" > "$build/release/scout-release.json"
 
   set -- "$dmg" "$build/release/scout-release.json"
+  if [ "$kind" = release ]; then
+    # The website's Download for Mac button links to /releases/latest/download/Scout.dmg, which
+    # starts the download directly. This is a plain copy of the DMG signed, notarized and stapled
+    # above: nothing re-signs it. An rc isn't Latest, so it doesn't get one. Sparkle's appcast
+    # keeps the versioned name.
+    cp "$dmg" "$build/release/Scout.dmg"
+    set -- "$@" "$build/release/Scout.dmg"
+  fi
   [ ! -f "$build/appcast.xml" ] || set -- "$@" "$build/appcast.xml"
 
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then

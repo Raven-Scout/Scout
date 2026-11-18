@@ -116,7 +116,8 @@ struct SessionsView: View {
         case .info: return []
         default:
             return [.retry { Task { await service.refreshFast() } },
-                    ProblemAction("Open Settings") { openSettings() }]
+                    // The fix line says Settings ▸ Engine, so land there (R2).
+                    ProblemAction("Open Settings") { HelpActions.showEngineSettings(openSettings) }]
         }
     }
 
