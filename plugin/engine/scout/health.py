@@ -16,11 +16,11 @@ import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from itertools import takewhile
 from pathlib import Path
 
-from scout.config import config_load_problem
+from scout.config import config_load_problem, resolve_timezone
 from scout.engine_checkout import WORKTREES_HINT, checkout_state
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
@@ -67,6 +67,10 @@ RECURRING_FAILURE_THRESHOLD = 3
 RECURRING_FAILURE_WINDOW = timedelta(hours=48)
 # A Claude usage limit that named its reset: runs wait for it (#424).
 PAUSED_FINDING_ID = "runs.paused"
+# A run that failed today whose schedule hasn't finished since (UI audit R1). The trailing streak
+# (runs.failing) clears on any later success, so a failed morning briefing followed by a clean
+# consolidation read "healthy" all day; this keeps it yellow until that schedule itself finishes.
+FAILED_TODAY_FINDING_ID = "runs.failed_today"
 
 # Runner log filename prefixes written under <vault>/.scout-logs/ by the three
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
@@ -568,6 +572,60 @@ def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
     )
 
 
+def failed_today(rows: list[OutcomeRow], *, vault: Path, now: datetime, tz: tzinfo | None = None) -> Finding | None:
+    """Runs that failed today whose schedule hasn't finished a run since, or None (UI audit R1).
+
+    "Today" is the vault's day (``user.timezone``, else the host's zone), the same day the usage
+    summary counts. A later success of the *same* slot clears its failure; a success of another
+    slot doesn't, which is the case the trailing streak misses. Skips clear nothing. Slots in the
+    trailing streak are left out: runs.failing, auth.expired or runs.paused already says so.
+    """
+    local_now = now.astimezone(tz or resolve_timezone(vault))
+    day_start = datetime.combine(local_now.date(), time(0), tzinfo=local_now.tzinfo)
+    in_streak = {r.slot for r in _trailing_failures(rows)}
+    open_failures: dict[str, OutcomeRow] = {}
+    for r in sorted(rows, key=lambda r: r.finished_at):
+        if r.outcome == "ok":
+            open_failures.pop(r.slot, None)
+        elif r.outcome == "failed" and r.finished_at >= day_start and r.slot not in in_streak:
+            open_failures.setdefault(r.slot, r)
+    if not open_failures:
+        return None
+    failed = sorted(open_failures.values(), key=lambda r: r.finished_at)
+
+    def at(r: OutcomeRow) -> str:
+        klass = f", {r.failure_class}" if r.failure_class and r.failure_class != "ok" else ""
+        return f"{r.slot} (at {r.finished_at.astimezone(local_now.tzinfo):%H:%M}{klass})"
+
+    if len(failed) == 1:
+        summary = f"{at(failed[0])} failed today and hasn't finished a run since."
+    else:
+        summary = (
+            f"{len(failed)} schedules failed today and haven't finished a run since: "
+            + ", ".join(at(r) for r in failed)
+            + "."
+        )
+    first = failed[0]
+    if any(r.outcome == "ok" and r.finished_at > first.finished_at for r in rows):
+        summary += " Other scheduled runs have finished since."
+    newest = failed[-1]
+    log = _run_log(vault, newest)
+    log_hint = f" (.scout-logs/{newest.log})" if newest.log else ""
+    return Finding(
+        id=FAILED_TODAY_FINDING_ID,
+        severity="yellow",
+        since=first.finished_at,
+        summary=summary,
+        fix=(
+            f"Read the failed run's log{log_hint}. This clears when "
+            f"{'that schedule' if len(failed) == 1 else 'each schedule'} next finishes a run, or run it again now."
+        ),
+        source="ledger",
+        detail=failure_line(log, newest.failure_class) if log else None,
+        log=str(log) if log else None,
+    )
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -642,6 +700,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     recurring = recurring_failures(rows, vault=vault, now=now)
     if recurring is not None:
         findings.append(recurring)
+    today = failed_today(rows, vault=vault, now=now)
+    if today is not None:
+        findings.append(today)
 
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))

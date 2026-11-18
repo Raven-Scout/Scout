@@ -26,7 +26,7 @@ struct RunLedgerContractTests {
         let ledger = try Self.fixture()
         #expect(ledger.schemaVersion == 1)
         #expect(ledger.truncated == false)
-        #expect(ledger.runs.count == 14)
+        #expect(ledger.runs.count == 15)
         #expect(ledger.generatedAt == RunLedgerTime.parse("2026-11-16T12:00:00Z"))
         #expect(ledger.since == RunLedgerTime.parse("2026-11-09T12:00:00Z"))
         // Newest first.
@@ -64,6 +64,7 @@ struct RunLedgerContractTests {
             "ok/ok=success",
             "failed/timeout=timeout",
             "failed/rate_limited=rateLimited",
+            "failed/network=failure",
             "skipped_lock/ok=skippedConcurrency",
             "skipped_budget/ok=skippedBudget",
             "skipped_redundant/ok=skippedRedundant",
@@ -96,12 +97,16 @@ struct RunLedgerContractTests {
     @Test func carriesTheHealthReport() throws {
         let health = try #require(try Self.fixture().health)
         #expect(health.severity == .red)
-        #expect(health.findings.map(\.id) == ["gates.probe_unsafe", "run.integrity_restored", "lease.held"])
-        #expect(health.findings.map(\.severity) == ["red", "red", "note"])
+        #expect(health.findings.map(\.id) == ["gates.probe_unsafe", "run.integrity_restored", "runs.failed_today", "lease.held"])
+        #expect(health.findings.map(\.severity) == ["red", "red", "yellow", "note"])
         #expect(health.findings.allSatisfy { !$0.fix.isEmpty })
         // Vault-relative, never an absolute path (C8 review).
         #expect(health.findings.compactMap(\.log) == [".scout-logs/scout-2026-11-16_08-30.log",
-                                                       ".scout-logs/scout-2026-11-14_08-56.log"])
+                                                       ".scout-logs/scout-2026-11-14_08-56.log",
+                                                       ".scout-logs/research-2026-11-16_04-58.log"])
+        // A run that failed today stays on the panel after a later run of another schedule finished (R1).
+        let today = try #require(health.findings.first { $0.id == "runs.failed_today" })
+        #expect(today.summary.hasPrefix("weekly-research (at 05:00, network) failed today"))
     }
 
     @Test func findingLogsResolveInsideTheVault() throws {
@@ -126,7 +131,7 @@ struct RunLedgerContractTests {
 
     @Test func indexesRowsByLogName() throws {
         let ledger = try Self.fixture()
-        #expect(ledger.entriesByLog.count == 14)
+        #expect(ledger.entriesByLog.count == 15)
         #expect(ledger.entriesByLog["scout-2026-11-16_08-30.log"]?.outcome == "skipped_gates")
         // A lock skip started in the same minute as the run it was skipped for has its own log and row.
         #expect(ledger.entriesByLog["scout-2026-11-13_17-57.log"]?.outcome == "ok")

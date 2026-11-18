@@ -87,7 +87,8 @@ struct DoctorPresentationTests {
         ], slots: [])
         let doctor = DoctorReport(severity: .yellow, errors: ["e1"], warnings: ["w1", "w2"], runHealth: rh)
         let p = DoctorPresentation(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil)
-        #expect(p.headline == "Scout's engine works, with warnings")
+        // The count every other health surface shows (R1).
+        #expect(p.headline == "Scout's engine works, with warnings · 2 problems · 3 warnings")
         #expect(p.groups.map(\.title) == ["Problems", "Warnings", "Scheduled runs"])
         #expect(p.groups[0].items.map(\.text) == ["e1"])
         #expect(p.groups[1].items.map(\.text) == ["w1", "w2"])

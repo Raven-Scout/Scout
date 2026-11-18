@@ -21,11 +21,18 @@ struct NowStripView: View {
         .editorialCard(padding: 14)
     }
 
-    /// "cost $1.20 · budget $8/day": the budget comes from the vault's own
-    /// budget settings (`scoutctl budget show`), and is left off until they
-    /// have loaded — never a made-up figure (card C3).
-    nonisolated static func costLine(total: Decimal, dailyBudgetUSD: Double?) -> String {
-        let cost = "cost $\(total as NSDecimalNumber)"
+    /// "cost ≥$42.09 · budget $8/day". The cost is today's from the engine's usage summary
+    /// (`scoutctl budget usage`), the figure the usage card and the status bar show, so a
+    /// cost no run measured reads "unknown" or "≥", never $0 (UI audit R1). "—" until it loads.
+    /// The budget comes from the vault's own budget settings (`scoutctl budget show`), and is
+    /// left off until they have loaded — never a made-up figure (card C3).
+    nonisolated static func costLine(today: UsagePeriod?, dailyBudgetUSD: Double?) -> String {
+        let cost: String
+        if let today {
+            cost = today.costKind == UsageCostKind.none ? "no cost yet" : "cost \(UsageFormat.shortCost(today))"
+        } else {
+            cost = "cost —"
+        }
         guard let daily = dailyBudgetUSD, daily > 0 else { return cost }
         return "\(cost) · budget \(daily.formatted(.currency(code: "USD").precision(.fractionLength(0...2))))/day"
     }
@@ -89,10 +96,10 @@ struct NowStripView: View {
     @ViewBuilder private var todayColumn: some View {
         let runs = todayRuns()
         let failures = runs.filter { [.failure, .timeout, .rateLimited].contains($0.status) }.count
-        let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
         VStack(alignment: .leading, spacing: 4) {
             bigName("\(runs.count) runs · \(failures) failed")
-            sub(Self.costLine(total: total, dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
+            sub(Self.costLine(today: state.scoutUsageService.summary?.today,
+                              dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
                 color: DS.Ink.p3)
         }
     }

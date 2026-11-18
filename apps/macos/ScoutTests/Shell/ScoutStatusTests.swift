@@ -96,7 +96,32 @@ struct ScoutStatusTests {
                        doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), run: run(.success))
         #expect(s.kind == .ready)
         #expect(s.tone == .warn)
-        #expect(s.detail.hasSuffix("1 warning in Settings"))
+        #expect(s.title == "Ready · 1 warning")
+        #expect(s.detail == "w")   // the reason, not a bare count
+        #expect(s.fix == .openSettings)
+    }
+
+    @Test("a run that failed today makes Ready amber and names it, after a later run of another schedule finished")
+    func failedTodayNamesTheReason() {
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: ["w1", "w2"], runHealth: runHealth(.yellow, [
+            finding("runs.failed_today", "yellow", "morning-briefing (at 08:00, unknown) failed today and hasn't finished a run since."),
+        ]))
+        let s = derive(.external(install, .devCheckout), doctor: doctor, run: run(.success))
+        #expect(s.tone == .warn)
+        // The same count Settings and the Health page show; the run's failure first.
+        #expect(s.title == "Ready · 3 warnings")
+        #expect(s.detail.hasPrefix("morning-briefing (at 08:00, unknown) failed today"))
+    }
+
+    @Test("34 grouped warnings count once")
+    func groupedWarningsCountOnce() {
+        let summary = "privacy: 34 vault scripts read the knowledge base directly"
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: [summary],
+                                  warningGroups: [.init(kind: "privacy.script-raw-kb-read", summary: summary,
+                                                        items: (1...34).map { "scripts/s\($0).py" })])
+        let s = derive(.external(install, .devCheckout), doctor: doctor, run: run(.success))
+        #expect(s.title == "Ready · 1 warning")
+        #expect(s.detail == "34 vault scripts read the knowledge base directly, without Scout's privacy labels")
     }
 
     // MARK: - Then the latest run
