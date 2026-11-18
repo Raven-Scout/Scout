@@ -74,6 +74,14 @@ RUNS: list[tuple[float, int, str, str, dict]] = [
         "scout",
         {"outcome": "ok", "model": "sonnet", **PROTECTED, "integrity": "restored", "newest_commit": "3f9c2a1"},
     ),
+    # Another Claude Code process was refreshing the shared sign-in: the run died in seconds.
+    (
+        45,
+        0,
+        "morning-briefing",
+        "scout",
+        {"outcome": "failed", "exit_code": 1, "failure_class": "auth_race", **PROTECTED},
+    ),
     (42, 0, "evening-consolidation", "scout", {"outcome": "skipped_lock"}),
     (
         27,
@@ -172,7 +180,7 @@ def test_the_fixture_covers_every_outcome_the_app_names(tmp_path, monkeypatch):
     assert doc["schema_version"] == 1
     runs = doc["runs"]
     assert {r["outcome"] for r in runs} == {"ok", "failed"} | SKIP_OUTCOMES
-    assert {r["failure_class"] for r in runs if r["outcome"] == "failed"} == {"timeout", "rate_limited"}
+    assert {r["failure_class"] for r in runs if r["outcome"] == "failed"} == {"timeout", "rate_limited", "auth_race"}
     assert {r["sandbox"] for r in runs} >= {"enforced", "off", "failed", None}
     assert {r["integrity"] for r in runs} >= {"clean", "restored", None}
     assert any(r["resets_at"] for r in runs) and any(r["awake_s"] for r in runs)
