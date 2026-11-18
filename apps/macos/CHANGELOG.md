@@ -40,6 +40,12 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   - A comment written right against a closing quote (`"open"# note`) gets one space before it (`done # note`), so it still reads as a comment.
   - A line without a comment is written as before. Free-text fields have no comments to keep: their `#` is content.
 
+- **Every health surface tells the same story** (`Scout/Engine/HealthSummary.swift`, `Scout/Engine/DoctorReport.swift`, `Scout/Engine/EngineSettingsModel.swift`, `Scout/Shell/ScoutStatus.swift`, `Scout/Shell/EngineSettingsSection.swift`, `Scout/Help/DoctorView.swift`, `Scout/Health/HealthPanelModel.swift`, `Scout/Health/HealthView.swift`; UI audit R1). On a real vault the Health page said "Nothing needs fixing", Settings said "35 warnings", and the menu-bar panel and status bar said an amber "Ready" with no reason. One shared list of issues, worst first, now feeds all of them, with one count.
+  - A run that failed today keeps the Health page, Settings and the panel amber until its schedule finishes a run (the engine's new `runs.failed_today`), even when a later run of another schedule finished.
+  - Warnings the engine groups (`warning_groups`) are one line, such as "34 vault scripts read the knowledge base directly, without Scout's privacy labels", with the files behind "Show all 34 files", in Settings, the Doctor window and the Health page.
+  - The panel and status bar read "Ready · 2 warnings", and the panel's second line names the worst one. The Health page's headline carries the same count and lists the engine's own warnings under "Scout's engine". Settings no longer says "Healthy" beside scheduled runs that need fixing.
+- **The Today tile's cost matches the usage card** (`Scout/ControlCenter/NowStripView.swift`; UI audit R1). It added up a per-run placeholder and read "cost $0" next to "≥$42" in the usage card and status bar. It now shows today's figure from `scoutctl budget usage`, "unknown" or "≥" when runs reported no cost, and "—" until the summary loads. The tile loads the summary itself, so it fills in even when a side panel hides the usage card, and its run count uses the same day as the cost (the vault's).
+
 ### Removed
 - **The Grape graph package** and the SwiftUI graph views built on it (`KBMapView`, `KBLocalGraphView`), and the SwiftUI block reader (`KBEditableView`); the web map and reader replace them.
 
