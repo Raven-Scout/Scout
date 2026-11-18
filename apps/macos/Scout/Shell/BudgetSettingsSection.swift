@@ -215,18 +215,8 @@ struct BudgetSettingsSection: View {
             Task { await save(current) }
         } label: {
             Text(isSaving ? "Saving…" : "Save")
-                .font(DS.sans(12.5, weight: .medium))
-                .foregroundStyle(disabled ? DS.Ink.p4 : DS.Accent.onFill)
-                .padding(.horizontal, 14)
-                .frame(height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(disabled ? DS.Paper.sunk : DS.Accent.fill)
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                )
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsPrimary)
         .disabled(disabled)
         .padding(.top, 2)
     }

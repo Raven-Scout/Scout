@@ -45,6 +45,30 @@ extension EngineUpgradeSheetTests {
         #expect(!verifyOnly.contains("switching Claude Code") && verifyOnly.contains("health check"))
     }
 
+    /// Audit #91: the sheet opens by itself, so it says why and how long.
+    @Test func explainsWhyItOpenedAndHowLong() {
+        for repair in [false, true] {
+            let text = EngineUpgradeSheet.explanation(isRepair: repair)
+            #expect(text.contains("minute"))
+            #expect(text.contains("engine"))
+        }
+        #expect(EngineUpgradeSheet.explanation(isRepair: true) != EngineUpgradeSheet.explanation(isRepair: false))
+    }
+
+    /// Audit #91: Copy details carries every step's state and the failure.
+    @Test func copyTextListsStepsAndTheFailure() {
+        let progress: [InstallStep: InstallProgress] = [
+            .ensureUv: InstallProgress(step: .ensureUv, status: .done, log: ""),
+            .buildVenv: InstallProgress(step: .buildVenv, status: .failed("x"), log: "install-venv.sh failed: boom"),
+        ]
+        let text = EngineUpgradeSheet.copyText(title: "Updating the Scout engine to 0.11.0", progress: progress, error: nil)
+        #expect(text.hasPrefix("Updating the Scout engine to 0.11.0"))
+        #expect(text.contains("- Get uv (Python): Done"))
+        #expect(text.contains("- Build Python environment: Failed"))
+        #expect(text.contains("- Verify: Not started"))
+        #expect(text.hasSuffix("Build Python environment failed: install-venv.sh failed: boom"))
+    }
+
     /// Ruling 69 I4: target == installed reads as a repair.
     @Test func titleSaysRepairingWhenTargetIsInstalled() {
         #expect(EngineUpgradeSheet.title(targetVersion: "0.11.0", isRepair: true) == "Repairing the Scout engine")

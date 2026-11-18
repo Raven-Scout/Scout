@@ -34,24 +34,27 @@ enum HelpWindow {
 }
 
 extension Notification.Name {
-    /// Scroll an open Settings view to its Engine section.
-    static let scoutShowEngineSettings = Notification.Name("scout.showEngineSettings")
+    /// Scroll an open Settings view to a section; `object` is its
+    /// `SettingsAnchor` id.
+    static let scoutShowSettingsSection = Notification.Name("scout.showSettingsSection")
 }
 
 /// Scroll targets inside Settings.
 enum SettingsAnchor {
     static let engine = "settings-engine"
+    /// The panel's "Update available" opens here (audit #93).
+    static let updates = "settings-updates"
 }
 
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
-    /// When something last asked for the Engine section. A Settings view that appears soon after
-    /// scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings view
-    /// scrolls on the notification instead. The request expires rather than being cleared by whichever
+    /// Which Settings section something last asked for, and when. A Settings view that appears soon
+    /// after scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings
+    /// view scrolls on the notification instead. The request expires rather than being cleared by whichever
     /// view sees it first, so the main window's Settings page can't swallow a new window's request:
-    /// every Settings view that appears within the window scrolls to Engine.
-    private static var engineSettingsRequestedAt: Date?
+    /// every Settings view that appears within the window scrolls to the section.
+    private static var settingsRequest: (anchor: String, at: Date)?
     static let engineSettingsRequestWindow: TimeInterval = 2
 
     /// Open the Settings window at its Engine section.
@@ -63,21 +66,39 @@ enum HelpActions {
     /// Settings window, or the main window's Settings page. Every "Open
     /// Settings ▸ Engine" button goes through here, so none opens at the top.
     static func showEngineSettings(_ open: () -> Void, now: Date = Date()) {
-        engineSettingsRequestedAt = now
-        open()
-        NotificationCenter.default.post(name: .scoutShowEngineSettings, object: nil)
+        showSettings(at: SettingsAnchor.engine, open, now: now)
     }
 
-    /// Whether something asked for the Engine section just now. Reading it
-    /// doesn't clear it: it only expires, so a second Settings view appearing
-    /// in the same moment still sees it.
+    /// Open the Settings window at one of its sections (a `SettingsAnchor` id).
+    static func showSettings(_ openSettings: OpenSettingsAction, at anchor: String) {
+        showSettings(at: anchor) { openSettings() }
+    }
+
+    /// Show Settings at `anchor`'s section, however `open` shows it. Records
+    /// the request first, so a Settings view that appears during `open`
+    /// sees it, then tells any open one to scroll.
+    static func showSettings(at anchor: String, _ open: () -> Void, now: Date = Date()) {
+        settingsRequest = (anchor, now)
+        open()
+        NotificationCenter.default.post(name: .scoutShowSettingsSection, object: anchor)
+    }
+
+    /// The section something asked for just now, if any. Reading it doesn't
+    /// clear it: it only expires, so a second Settings view appearing in the
+    /// same moment still sees it.
+    static func settingsRequested(now: Date = Date()) -> String? {
+        guard let request = settingsRequest, now.timeIntervalSince(request.at) <= engineSettingsRequestWindow else { return nil }
+        return request.anchor
+    }
+
+    /// Whether something asked for the Engine section just now (see `settingsRequested`).
     static func engineSettingsRequested(now: Date = Date()) -> Bool {
-        guard let at = engineSettingsRequestedAt else { return false }
-        return now.timeIntervalSince(at) <= engineSettingsRequestWindow
+        settingsRequested(now: now) == SettingsAnchor.engine
     }
 
     /// For tests: record a request made at `date`.
-    static func recordEngineSettingsRequest(at date: Date) { engineSettingsRequestedAt = date }
+    static func recordEngineSettingsRequest(at date: Date) { recordSettingsRequest(SettingsAnchor.engine, at: date) }
+    static func recordSettingsRequest(_ anchor: String, at date: Date) { settingsRequest = (anchor, date) }
 
     /// `<vault>/.scout-logs` when it exists, else the vault itself.
     static func logsFolder(vault: URL, fileManager: FileManager = .default) -> URL {

@@ -465,8 +465,11 @@ struct OnboardingViewModelTests {
         #expect(OnboardingViewModel.parseDailyBudget("1e3") == nil)
         #expect(OnboardingViewModel.parseDailyBudget("abc") == nil)
 
+        // Asked on About you, with the other details, not on Connectors (#90).
         let m = model()
-        m.step = .connectors
+        m.step = .identity
+        m.identity.userName = "Alex"
+        m.identity.userEmail = "alex@example.com"
         #expect(m.canContinue)            // empty: optional
         m.dailyBudget = "ten"
         #expect(!m.canContinue)           // non-empty and invalid blocks
