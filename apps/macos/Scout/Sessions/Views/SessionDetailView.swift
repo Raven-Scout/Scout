@@ -13,13 +13,26 @@ struct SessionDetailView: View {
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
     @State private var confirmingResume = false
-    @State private var launchError: String?
+    @State private var launchFailure: LaunchFailure?
+    /// A resume is finding the folder and opening the terminal.
+    @State private var isResuming = false
+    /// Set when a resume started somewhere it may not work, keyed by the
+    /// session it was about so it never shows under another one.
+    @State private var resumeNote: (sessionID: String, text: String)?
+    @State private var copiedHandoff = false
 
     var body: some View {
-        if let session, let index {
-            content(session, index: index)
-        } else {
-            emptyState
+        Group {
+            if let session, let index {
+                content(session, index: index)
+            } else {
+                emptyState
+            }
+        }
+        // A note or "Copied" belongs to the session it was about.
+        .onChange(of: session?.id) {
+            resumeNote = nil
+            copiedHandoff = false
         }
     }
 
@@ -68,13 +81,7 @@ struct SessionDetailView: View {
         } message: {
             Text("It is still running in Claude. Resuming it in a terminal starts a second copy on the same conversation.")
         }
-        .alert("Couldn't resume the session", isPresented: Binding(
-            get: { launchError != nil }, set: { if !$0 { launchError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(launchError ?? "")
-        }
+        .launchFailureAlert("Couldn't resume the session", failure: $launchFailure)
     }
 
     private func header(_ session: AgentSession, index: SessionIndex) -> some View {
@@ -113,14 +120,36 @@ struct SessionDetailView: View {
     }
 
     private func actions(_ session: AgentSession, index: SessionIndex) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            actionButtons(session, index: index)
+            if let resumeNote, resumeNote.sessionID == session.id {
+                Label(resumeNote.text, systemImage: "exclamationmark.triangle")
+                    .font(DS.sans(11.5))
+                    .foregroundStyle(DS.Status.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func actionButtons(_ session: AgentSession, index: SessionIndex) -> some View {
         HStack(spacing: 8) {
             Button {
                 if session.isOpen { confirmingResume = true } else { resume(session) }
             } label: {
-                Label("Resume", systemImage: "terminal")
+                if isResuming {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.mini)
+                        Text("Opening…")
+                    }
+                } else {
+                    Label("Resume", systemImage: "terminal")
+                }
             }
-            .disabled(session.cliSessionID == nil)
-            .help("Run claude --resume in your terminal")
+            .disabled(session.cliSessionID == nil || isResuming)
+            .accessibilityLabel(isResuming ? "Opening the terminal" : "Resume")
+            .help(session.cliSessionID == nil
+                  ? "Claude Code didn't record a session id for this one, so it can't be resumed from a terminal"
+                  : "Run claude --resume in your terminal, from the folder the session ran in")
 
             Button {
                 if let url = session.pr?.webURL { NSWorkspace.shared.open(url) }
@@ -144,9 +173,16 @@ struct SessionDetailView: View {
                     for: session, projectName: SessionsLayout.projectName(for: session.projectKey, in: index))
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
+                copiedHandoff = true
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    copiedHandoff = false
+                }
             } label: {
-                Label("Copy handoff", systemImage: "doc.on.doc")
+                Label(copiedHandoff ? "Copied" : "Copy handoff",
+                      systemImage: copiedHandoff ? "checkmark" : "doc.on.doc")
             }
+            .help("Copy a summary of this session to paste into another one")
         }
         .controlSize(.small)
         .font(DS.sans(12))
@@ -260,17 +296,26 @@ struct SessionDetailView: View {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// Off the main thread from the first file read to the terminal opening;
+    /// the button shows progress meanwhile and ignores a second click.
     private func resume(_ session: AgentSession) {
-        guard let id = session.cliSessionID else { return }
+        guard !isResuming else { return }
         let config = CLIConfig(
             claudePathOverride: claudeCLIPath,
             terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
             customCommand: customLaunchCommand
         )
-        do {
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: SessionsFormat.resumeDirectory(for: session), config: config)
-        } catch {
-            launchError = error.localizedDescription
+        isResuming = true
+        resumeNote = nil
+        Task {
+            defer { isResuming = false }
+            do {
+                if let note = try await SessionResume.run(session, config: config) {
+                    resumeNote = (session.id, note)
+                }
+            } catch {
+                launchFailure = LaunchFailure(error)
+            }
         }
     }
 }

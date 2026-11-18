@@ -165,11 +165,14 @@ struct LaunchClaudeMenu: View {
             launch(.claudeDesktop(.code(folder: scoutDirectory)))
             return
         }
-        do {
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cliConfig)
-            launchError = nil
-        } catch {
-            launchError = error.localizedDescription
+        let config = cliConfig
+        Task {
+            do {
+                try await ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: config)
+                launchError = nil
+            } catch {
+                launchError = error.localizedDescription
+            }
         }
     }
 
@@ -191,11 +194,14 @@ struct LaunchClaudeMenu: View {
     }
 
     private func launch(_ target: ClaudeLauncher.Target) {
-        do {
-            try ClaudeLauncher.launch(target: target, prompt: prompt())
-            launchError = nil
-        } catch {
-            launchError = error.localizedDescription
+        let text = prompt()
+        Task {
+            do {
+                try await ClaudeLauncher.launch(target: target, prompt: text)
+                launchError = nil
+            } catch {
+                launchError = error.localizedDescription
+            }
         }
     }
 }
