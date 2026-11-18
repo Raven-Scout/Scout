@@ -221,6 +221,7 @@ struct SettingsView: View {
                 }
 
                 section(label: "Updates") { UpdatesSettingsSection() }
+                    .id(SettingsAnchor.updates)
 
                 section(label: "About") {
                     SettingsCard(padding: 14) {
@@ -254,16 +255,17 @@ struct SettingsView: View {
             }.value
             detectedClaudePath = detected
         }
-        // Help ▸ Engine Settings… and every "Open Settings ▸ Engine" button
-        // (audit C11, R2): open at the Engine section. No scroll animation
-        // under Reduce Motion.
-        .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
-            withMotion { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+        // Help ▸ Engine Settings…, every "Open Settings ▸ Engine" button
+        // (audit C11, R2) and the panel's "Update available" (#93): open at
+        // the section asked for. No scroll animation under Reduce Motion.
+        .onReceive(NotificationCenter.default.publisher(for: .scoutShowSettingsSection)) { note in
+            guard let anchor = note.object as? String else { return }
+            withMotion { proxy.scrollTo(anchor, anchor: .top) }
         }
         .onAppear {
-            guard HelpActions.engineSettingsRequested() else { return }
-            // After the first layout, so the Engine section has a frame to scroll to.
-            DispatchQueue.main.async { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+            guard let anchor = HelpActions.settingsRequested() else { return }
+            // After the first layout, so the section has a frame to scroll to.
+            DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
         }
         }
     }

@@ -112,9 +112,7 @@ struct PerFileItemCardView: View {
                         .help(item.fileURL.path)
                     }
                 }
-                .buttonStyle(.plainHit)
-                .font(DS.sans(11.5, weight: .medium))
-                .foregroundStyle(DS.Accent.ink)
+                .buttonStyle(.ds(.link, size: .small))
             }
         } else {
             MarkdownBodyView(blocks: blocks)

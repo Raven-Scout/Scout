@@ -88,10 +88,8 @@ struct MenuBarExtraContent: View {
                 openMainWindow()
             } label: {
                 Label("Open", systemImage: "macwindow")
-                    .font(DS.sans(11.5, weight: .medium))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Open the full Scout window")
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
@@ -117,9 +115,7 @@ struct MenuBarExtraContent: View {
             Spacer()
             if let fix = status.fix {
                 Button(fix.title) { perform(fix) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .font(DS.sans(11, weight: .medium))
+                    .buttonStyle(.ds(.secondary, size: .small))
             }
         }
         .padding(11)
@@ -135,7 +131,7 @@ struct MenuBarExtraContent: View {
     private func perform(_ fix: ScoutStatus.Fix) {
         switch fix {
         case .setUp: openMainWindow()
-        case .openSettings: openScoutSettings(atEngine: true)
+        case .openSettings: openScoutSettings(at: SettingsAnchor.engine)
         }
     }
 
@@ -245,7 +241,7 @@ struct MenuBarExtraContent: View {
                 }
                 if updates.anyUpdateAvailable {
                     footerButton("Update available", systemImage: "arrow.down.circle") {
-                        openScoutSettings()
+                        openScoutSettings(at: SettingsAnchor.updates)
                     }
                 }
                 footerButton("Install wake schedule", systemImage: "alarm") {
@@ -281,12 +277,13 @@ struct MenuBarExtraContent: View {
         openWindow(id: "main")
     }
 
-    /// `atEngine`: the status card's fix, which lives in Settings ▸ Engine.
-    private func openScoutSettings(atEngine: Bool = false) {
+    /// Front the app and open Settings, at `anchor`'s section when given:
+    /// Engine for the status card's fix, Updates for "Update available".
+    private func openScoutSettings(at anchor: String? = nil) {
         dismiss()
         NSApp.activate(ignoringOtherApps: true)
-        if atEngine {
-            HelpActions.showEngineSettings(openSettings)
+        if let anchor {
+            HelpActions.showSettings(openSettings, at: anchor)
         } else {
             openSettings()
         }

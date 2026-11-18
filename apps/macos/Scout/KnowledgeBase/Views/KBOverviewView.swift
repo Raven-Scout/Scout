@@ -94,7 +94,7 @@ struct KBOverviewView: View {
                                 .background(EditorialChipBackground())
                                 .contentShape(Capsule())
                             }
-                            .buttonStyle(.plainHit)
+                            .buttonStyle(.plainHit) // ds-guard: hit area (a link chip; only its icon is accent)
                             .help("Open \(ql.label)")
                         }
                     }

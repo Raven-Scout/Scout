@@ -36,8 +36,7 @@ struct TaskContextNoteSection: View {
                         MarkdownBodyView(blocks: blocks)
                     }
                     Button("Open note") { NSWorkspace.shared.open(noteURL) }
-                        .buttonStyle(.link)
-                        .font(DS.sans(11.5))
+                        .buttonStyle(.ds(.link, size: .small))
                 }
                 .padding(.top, 6)
             } label: {

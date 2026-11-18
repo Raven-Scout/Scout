@@ -462,10 +462,11 @@ struct ActionItemsView: View {
             HStack(spacing: 10) {
                 if let prev = Calendar(identifier: .iso8601).date(byAdding: .day, value: -1, to: displayedDate) {
                     Button("Previous day") { displayedDate = prev }
+                        .buttonStyle(.dsSecondary)
                 }
                 if !Calendar.current.isDate(displayedDate, inSameDayAs: Self.today()) {
                     Button("Today") { displayedDate = Self.today() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.dsSecondary)
                 }
             }
         }
@@ -607,9 +608,7 @@ struct ActionItemsView: View {
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(DS.Accent.fill)
+            .buttonStyle(.ds(.primary, size: .small))
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .disabled(selectedTaskIDs.isEmpty)
             .help("Copy selected items with full context (⌘⇧C)")
