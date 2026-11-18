@@ -6,7 +6,21 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **One set of button styles: the start of design-system v2** (UI audit card R6, #105; `Scout/Utilities/DSButtonStyle.swift`, `Scout/Utilities/DSPalette.swift`, `Scout/Utilities/PlainHitButtonStyle.swift`). `.dsPrimary` (filled accent), `.dsSecondary` (raised paper with a hairline), `.dsLink` (accent text) and `.dsDestructive` (red label), each at a regular or small size. The style draws the font, colours, padding and the disabled, pressed and keyboard-focus states, so a disabled button looks disabled the same way everywhere. Every label-on-fill pair is in `DS.ContrastPairs`, so `ContrastPairsTests` checks it in light, dark and Increase Contrast. `ButtonStyleGuardTests` flags new system bordered/link buttons and accent buttons hand-built from `.plainHit`. `.plainHit` stays for hit areas (chips, segments, rows, icon buttons).
+
+### Changed
+- **Buttons across the app use the new styles** (R6, #105). The problem banner (`ProblemView`), undo and write-problem toasts, Schedules (+ New, Save, Revert, Run now, Delete, Retry, Add schedule, the "changed outside the app" banner), Settings ▸ Budget's Save, Settings ▸ Updates, Action Items (Previous day, Today, Copy, the topic prompt box, Open note), the menu-bar panel's Open and fix buttons, Sessions' PR Open, Wishlist and Research cards' Show more, onboarding and the engine upgrade sheet. Disabled Save and + New now look disabled (they used opacity, or nothing). The topic prompt's Send is the accent, no longer the urgent red. The Knowledge Base views keep their buttons until their rebuild (#677) lands.
+
 ### Fixed
+- **Onboarding reads as a first-run flow for a new owner** (R6, #87–#91; `Scout/Onboarding/OnboardingView.swift`, `OnboardingViewModel.swift`, `EngineUpgradeSheet.swift`).
+  - Continue, Open Scout and Retry are real primary buttons: Return triggers them and they look disabled when they are (#87).
+  - The last step says "Everything checks out", "Ready, with 2 things to look at later" or "Something needs fixing before the first run", with what to do next. The health check's own lines are under Details, no longer "Health: yellow" over a monospaced dump (#88).
+  - Each step has a name and a count ("Step 3 of 7 · Install the engine"). Progress uses symbols with a spinner and spoken states, not ○ ✓ ✗. A failed step shows its whole log, selectable, with Copy details. A broken engine is titled "Repair Scout" and says why setup runs again (#89).
+  - The Scout folder has a Choose… folder picker, and the time zone is a picker, not free text. The two budget fields move from Connectors to About you, under "Spending limits", named as Settings ▸ Budget names them ("Limit per run", "Daily budget") (#90).
+  - The engine upgrade sheet, which opens on its own at launch, says why and that it usually takes a minute or two, shows a spinner on the running step, and on failure offers Copy details, Later and Retry (#91).
+- **A failed update check says what went wrong** (R6, #92; `Scout/Shell/UpdatesSettingsSection.swift`). Settings ▸ Updates shows the checker's own message ("Couldn't check the latest plugin version: HTTP 404 from …") under the row, not only "Couldn't check".
+- **"Update available" in the menu-bar panel opens Settings at Updates** (R6, #93; `Scout/Shell/MenuBarExtraContent.swift`, `Scout/Help/HelpCommands.swift`, `Scout/Shell/SettingsView.swift`), not at the top of Settings. The Engine-only scroll request now takes any Settings section.
 - **A run started in the same minute as another shows as its own run** (`Scout/Services/SessionLogService.swift`, `Scout/Models/Run.swift`, `Scout/Services/ClaudeSessionService.swift`, `Scout/ControlCenter/Detail/FeedbackTab.swift`). The runners now give a later run in the same minute its own log, `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log`, and the app reads it.
   - A run with a minute-named log keeps the id it always had, so saved feedback still matches. A seconds+PID log gets an id with its seconds and PID, and its own feedback file.
   - The run ledger's status reaches each of the two runs from its own row.
