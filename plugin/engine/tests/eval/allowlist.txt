@@ -353,3 +353,9 @@ Sept
 Oct
 Nov
 Dec
+
+# --- demo vault overlay (docs/demo/vault) ---
+Settle
+Close
+Ticket
+Thread
