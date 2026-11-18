@@ -22,9 +22,11 @@ git setup (signing, hooks, default branch) can't change the result.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -126,10 +128,35 @@ def _commit(vault: Path, subject: str) -> None:
     git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
 
 
+# One built vault per process and day (see build_privacy_vault).
+_TEMPLATES: dict[date, Path] = {}
+
+
 def build_privacy_vault(tmp: Path) -> Path:
-    """Copy the fixture to ``tmp/vault``, date it to today, and give it a git history."""
+    """Copy the fixture to ``tmp/vault``, date it to today, and give it a git history.
+
+    The first call in a process (per day) builds it in a temp dir; every call copies that. Building runs git
+    nine times (init, then add and commit for each of four commits), which is most of a test's setup on macOS
+    CI and ~30 test files build one per test. The copy is the same vault: the same files and history (a fixed
+    identity, today's dates), with commit and file times from when the process built it rather than from this
+    test's start, and an index refreshed for its new inodes.
+    """
     today = date.today()
+    template = _TEMPLATES.get(today)
+    if template is None or not template.is_dir():
+        template = Path(tempfile.mkdtemp(prefix="scout-privacy-vault-")) / "vault"
+        _build(template, today)
+        _TEMPLATES[today] = template
+        atexit.register(shutil.rmtree, template.parent, True)
     vault = tmp / "vault"
+    shutil.copytree(template, vault, symlinks=True)
+    # The index holds each file's inode and ctime, which the copy changed: refresh it, so plumbing that trusts
+    # the index (diff-files, diff-index) sees a clean tree, as it did in a freshly built vault.
+    git(vault, "update-index", "-q", "--refresh")
+    return vault
+
+
+def _build(vault: Path, today: date) -> None:
     shutil.copytree(FIXTURE, vault)
     _rewrite_dates(vault, today)
 
@@ -151,4 +178,3 @@ def build_privacy_vault(tmp: Path) -> Path:
             with (vault / rel).open("a", encoding="utf-8") as fh:
                 fh.write(f"\nUpdate {n}.\n")
         _commit(vault, subject)
-    return vault

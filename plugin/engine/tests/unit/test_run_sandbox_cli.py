@@ -226,6 +226,7 @@ def _slow_git(tmp_path: Path) -> Path:
     return slow
 
 
+@pytest.mark.real_git_config
 def test_the_hooks_roots_build_keeps_to_its_time_budget(vault: Path, tmp_path: Path, monkeypatch) -> None:
     # kb-read-gate's watchdog blocks at 8 s: slow gits on PATH mustn't use it up building the list (review of #642).
     env = {**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{_slow_git(tmp_path)}:/usr/bin:/bin"}
@@ -237,6 +238,7 @@ def test_the_hooks_roots_build_keeps_to_its_time_budget(vault: Path, tmp_path: P
     assert hook_paths.protected_write(vault / ".git" / "hooks" / "pre-commit", vault, env) is not None
 
 
+@pytest.mark.real_git_config
 def test_a_gitdir_include_that_matches_only_the_vault_is_protected(vault: Path, tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -251,6 +253,7 @@ def test_a_gitdir_include_that_matches_only_the_vault_is_protected(vault: Path, 
     assert hook_paths.protected_write(inc, vault, env) == hook_paths.USER_GIT_CONFIG
 
 
+@pytest.mark.real_git_config
 def test_no_time_left_skips_the_git_calls(vault: Path) -> None:
     gone = time.monotonic() - 1
     assert hook_paths.git_hooks_dir(vault, deadline=gone) is None

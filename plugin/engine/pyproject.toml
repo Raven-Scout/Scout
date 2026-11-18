@@ -91,6 +91,7 @@ markers = [
     "perf: performance tests (may be skipped in fast CI runs)",
     "concurrency: tests involving multiple processes/threads",
     "slow: tests taking > 1 second",
+    "real_git_config: in-process gate decisions run the real hook_paths.git_config_files (tests/conftest.py)",
     "flaky(reruns, issue): quarantined known flake — rerun a failed call up to `reruns` times (tests/conftest.py); `issue` is the tracking issue URL",
 ]
 

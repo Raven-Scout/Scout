@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import subprocess
-from collections.abc import Iterator
+import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,6 +115,84 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     # no-op engine (/usr/bin/true) for scoutctl, which can't print a profile. The sandbox's own tests
     # (test_run_sandbox_*) delete this to turn it on.
     monkeypatch.setenv("SCOUT_RUN_SANDBOX", "off")
+
+
+# ---- protected roots: the machine's git config, asked once per process ---------
+#
+# Every gate decision builds the protected roots (scout.kb.hook_paths), and
+# git_config_files asks every git on PATH for its system and global config, from
+# no cwd and again from the vault: 8 git runs on a Mac with Homebrew's git and
+# Apple's /usr/bin/git (an xcrun shim). A hook is one process, so production
+# builds the list once per call; in tests every test has its own HOME and PATH,
+# so hook_paths' per-process cache never hits, and each in-process decision paid
+# ~0.4 s on macOS CI (test_hooks_write_gate: 295 tests, median 0.42 s vs 0.04 s
+# on Ubuntu). Only HOME and the vault differ between tests, and a test's HOME
+# and vault are empty temp dirs, so the answer is the machine's system configs.
+
+_SESSION_PATH = os.environ.get("PATH", "")
+_MACHINE_GIT_CONFIG: list[tuple[str, bool]] = []
+_MACHINE_GIT_CONFIG_READ = False
+
+
+def _machine_git_config(real: Callable[..., list[tuple[str, bool]]]) -> list[tuple[str, bool]]:
+    """What the real ``git_config_files`` names for an empty HOME and no vault: each git's system config."""
+    global _MACHINE_GIT_CONFIG_READ
+    if not _MACHINE_GIT_CONFIG_READ:
+        with tempfile.TemporaryDirectory() as home:
+            found = real({"PATH": _SESSION_PATH, "HOME": home})
+            roots = {home, os.path.realpath(home)}
+            _MACHINE_GIT_CONFIG[:] = [
+                (p, tree) for p, tree in found if not any(p == r or p.startswith(r + os.sep) for r in roots)
+            ]
+        _MACHINE_GIT_CONFIG_READ = True
+    return _MACHINE_GIT_CONFIG
+
+
+@pytest.fixture(autouse=True)
+def _machine_git_config_once(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In-process gate decisions get the machine's git config list asked once per process, not 8 gits per test.
+
+    ``$GIT_CONFIG_SYSTEM`` is still honoured (the real function names that file in place of the system ones).
+    What this leaves out: ``include.path`` / ``includeIf`` entries a test writes into its own ``~/.gitconfig``,
+    a fake ``git`` a test puts on PATH, and the deadline. A test about any of those is marked
+    ``@pytest.mark.real_git_config`` and gets the real function. Hooks run as subprocesses always do.
+    """
+    if request.node.get_closest_marker("real_git_config"):
+        return
+    from scout.kb import hook_paths
+
+    real = hook_paths.git_config_files
+
+    def git_config_files(
+        env: Mapping[str, str], *, deadline: float | None = None, vault: Path | None = None
+    ) -> list[tuple[str, bool]]:
+        if env.get("GIT_CONFIG_SYSTEM"):
+            return [(env["GIT_CONFIG_SYSTEM"], False)]
+        return list(_machine_git_config(real))
+
+    monkeypatch.setattr(hook_paths, "git_config_files", git_config_files)
+
+
+@pytest.fixture
+def eval_runner_git_off_xcrun(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The eval harness's runner gets this machine's own git first on its system PATH, on macOS.
+
+    A sample runs the real runner with ``PATH`` ending in ``/usr/bin`` (tests/eval/harness/runner_env.py), and
+    on macOS ``/usr/bin/git`` is an xcrun shim that finds the Command Line Tools' git on every call; a sample
+    runs git ~90 times. When the test session's PATH has another git (Homebrew's, on CI), a folder holding
+    just that one goes ahead of ``/usr/bin``; nothing else on the runner's PATH changes. Elsewhere: no-op.
+    """
+    import shutil
+    import sys
+
+    git = shutil.which("git", path=_SESSION_PATH)
+    if sys.platform != "darwin" or not git or os.path.realpath(git) == os.path.realpath("/usr/bin/git"):
+        return
+    import tests.eval.harness.runner_env as runner_env
+
+    bin_dir = tmp_path_factory.mktemp("eval-git")
+    (bin_dir / "git").symlink_to(git)
+    monkeypatch.setattr(runner_env, "SYSTEM_PATH", [str(bin_dir), *runner_env.SYSTEM_PATH])
 
 
 _REFUSING_LAUNCHCTL = """#!/bin/sh
@@ -382,16 +463,32 @@ class KbRepo:
         self.git("commit", "-q", "--no-verify", "-m", msg)
 
 
+_KB_REPO_TEMPLATE: list[Path] = []
+
+
+def _kb_repo_template() -> Path:
+    """The kb_repo vault, built once per process: git init, four config lines and a commit are six git runs."""
+    if not _KB_REPO_TEMPLATE or not _KB_REPO_TEMPLATE[0].is_dir():
+        repo = KbRepo(Path(tempfile.mkdtemp(prefix="scout-kb-repo-")) / "vault")
+        (repo.root / "knowledge-base").mkdir(parents=True)
+        (repo.root / "action-items").mkdir()
+        repo.git("init", "-q", "-b", "main")
+        repo.git("config", "user.email", "t@example.com")
+        repo.git("config", "user.name", "T")
+        repo.git("config", "commit.gpgsign", "false")
+        repo.git("config", "core.quotepath", "false")
+        repo.stage("README.md", "vault\n")
+        repo.commit("init")
+        atexit.register(shutil.rmtree, repo.root.parent, True)
+        _KB_REPO_TEMPLATE[:] = [repo.root]
+    return _KB_REPO_TEMPLATE[0]
+
+
 @pytest.fixture
 def kb_repo(tmp_path: Path) -> KbRepo:
+    """A git vault with an empty knowledge-base/ and action-items/ and one commit (a README), copied from a
+    per-process template. The index is refreshed for the copy's new inodes, as a fresh clone would be."""
     repo = KbRepo(tmp_path / "vault")
-    (repo.root / "knowledge-base").mkdir(parents=True)
-    (repo.root / "action-items").mkdir()
-    repo.git("init", "-q", "-b", "main")
-    repo.git("config", "user.email", "t@example.com")
-    repo.git("config", "user.name", "T")
-    repo.git("config", "commit.gpgsign", "false")
-    repo.git("config", "core.quotepath", "false")
-    repo.stage("README.md", "vault\n")
-    repo.commit("init")
+    shutil.copytree(_kb_repo_template(), repo.root, symlinks=True)
+    repo.git("update-index", "-q", "--refresh")
     return repo
