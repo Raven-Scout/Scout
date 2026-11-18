@@ -11,6 +11,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - A runner now claims `<stem>-YYYY-MM-DD_HH-MM.log` atomically (noclobber, so an existing log is never truncated) and keeps that name when it is first in its minute, which is almost always. When another run already holds it, the runner logs to `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log` instead.
   - The run ledger's `log` field, `scoutctl health` and `session-lane-liveness.py` read both names. The newest log is picked by start time, then PID, never by text order, in which `…_09-03-25-4242.log` sorts before `…_09-03.log`.
   - **Upgrading.** The runners and `scripts/session-lane-liveness.py` reach a vault with `/scout-update`. A vault edit far from the runners' log-name lines merges. An edit right next to them (the `SCOUTCTL_BIN` or `LOCK_FILE` line) parks the update for `scoutctl bootstrap drift`, and that runner keeps working with minute-named logs until it is merged.
+- **`/scout-status` KB Health sets aside more personal paperwork** (UI audit card R5; `commands/scout-status.md`). Under a `personal` folder, certificates, estimates, warranties and payslips are now set aside along with receipts and invoices. The "Not counted" line reads `A archived, P paperwork`. Outside `personal/` those words name work notes, so they stay live. Reports are never set aside. The app's KB Health uses the same rule.
+
 
 ## [0.18.16] - 2026-11-17
 

@@ -402,35 +402,9 @@ struct ActionItemsView: View {
             || trimmed.hasPrefix("**this run’s headline")  // curly-apostrophe variant
     }
 
-    /// Lift the leading `**…**` markdown bold span out of a preamble
-    /// paragraph and treat it as the headline; everything after becomes the
-    /// collapsible body. Falls back to "first sentence" + "rest" if no
-    /// leading bold exists.
+    /// Headline and body of one preamble paragraph (`PreambleSplit`).
     fileprivate func splitPreamble(_ raw: String) -> (headline: String, body: String) {
-        let s = raw.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("**") {
-            // Find the closing `**` that isn't immediately back-to-back.
-            var idx = s.index(s.startIndex, offsetBy: 2)
-            while idx < s.endIndex {
-                if let closeRange = s.range(of: "**", range: idx..<s.endIndex) {
-                    let head = String(s[s.index(s.startIndex, offsetBy: 2)..<closeRange.lowerBound])
-                    let rest = String(s[closeRange.upperBound...])
-                        .trimmingCharacters(in: .whitespaces)
-                    // Strip a leading period or em-dash separator from the body
-                    // so the headline doesn't appear to dangle.
-                    let cleaned = rest.drop(while: { ".—– ".contains($0) })
-                    return (head.trimmingCharacters(in: .whitespaces), String(cleaned))
-                }
-                idx = s.index(after: idx)
-            }
-        }
-        // No leading bold — split on the first sentence boundary.
-        if let dot = s.firstIndex(where: { $0 == "." || $0 == ":" }) {
-            let head = String(s[..<dot])
-            let body = String(s[s.index(after: dot)...]).trimmingCharacters(in: .whitespaces)
-            return (head, body)
-        }
-        return (s, "")
+        PreambleSplit.split(raw)
     }
 
     private var environmentBanner: some View {

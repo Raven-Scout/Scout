@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Renders a per-file item body as a vertical stack of headings, task lists,
-/// prose paragraphs (inline markdown) and verbatim code panels. Mirrors
+/// quotes and callouts, prose paragraphs (inline markdown) and verbatim code
+/// panels. Mirrors
 /// `ProposalBodyView` from the Proposals module.
 struct MarkdownBodyView: View {
     let blocks: [MarkdownBodyBlock]
@@ -23,6 +24,8 @@ struct MarkdownBodyView: View {
                     heading(level: level, text: text)
                 case .tasks(let tasks):
                     taskList(tasks)
+                case .quote(let kind, let title, let text):
+                    quote(kind: kind, title: title, text: text)
                 }
             }
         }
@@ -59,6 +62,53 @@ struct MarkdownBodyView: View {
                 .accessibilityValue(task.checked ? "Done" : "Not done")
             }
         }
+    }
+
+    /// A quote, or a callout with its title: a rule down the leading edge,
+    /// tinted by the callout's kind, beside the text.
+    private func quote(kind: String?, title: String?, text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Self.tint(forCallout: kind))
+                .frame(width: 3)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                if let title {
+                    InlineMarkdownText(title)
+                        .font(DS.sans(12.5, weight: .semibold))
+                        .foregroundStyle(DS.Ink.p1)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !text.isEmpty {
+                    InlineMarkdownText(text)
+                        .font(DS.serif(13.5))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .textSelection(.enabled)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title.map { "\(Self.calloutLabel(kind)): \($0)" } ?? "Quote")
+    }
+
+    /// Warnings read amber, dangers red, tips green; anything else, and a
+    /// plain quote, takes the rule colour.
+    static func tint(forCallout kind: String?) -> Color {
+        switch kind {
+        case "warning", "caution", "attention": return DS.Status.warn
+        case "danger", "error", "bug", "failure", "fail": return DS.Status.err
+        case "tip", "hint", "success", "check", "done": return DS.Status.ok
+        case nil: return DS.Rule.hard
+        default: return DS.Accent.fill
+        }
+    }
+
+    /// What VoiceOver calls the block: "Warning", "Note", or "Callout".
+    nonisolated static func calloutLabel(_ kind: String?) -> String {
+        guard let kind, !kind.isEmpty else { return "Callout" }
+        return kind.prefix(1).uppercased() + kind.dropFirst()
     }
 
     private func codePanel(_ code: String) -> some View {

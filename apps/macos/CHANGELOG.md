@@ -17,6 +17,15 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   - The engine reads a status as its first word. The two agree on plain values with or without a comment. They differ on a value that is only a comment (`status: # TODO`: open here), a status with a space (`in progress`), and quoted values. Tests pin both the cases where they agree and these differences.
   - The status pill shows at most 24 characters; the full value is in its tooltip and what VoiceOver reads.
   - A long card builds only the text it shows: about 1,500 characters collapsed and 20,000 expanded, with a link to open the file past that. Clipping alone hid the rest but still laid it out. An item's body is now split into blocks once when the file is read, not on every redraw.
+- **Wishlist and Research cards render quotes, math and broken bold** (UI audit card R5; `Scout/PerFileItems/Models/MarkdownBodyBlock.swift`, `Scout/PerFileItems/Models/InlineMarkupCleanup.swift`, `Scout/PerFileItems/Views/MarkdownBodyView.swift`). Research cards showed `>` markers on their own lines, LaTeX-style math as `(\ge 1.5)` and stray `**`. The same renderer draws task context notes.
+  - `>` lines are a quote, with a rule down the leading edge. A callout (`> [!warning] Title`) shows its title, and its rule is tinted by kind: amber for warnings, red for dangers, green for tips. VoiceOver reads "Warning: Title", or "Quote".
+  - Math in `\(…\)`, `\[…\]`, `$$…$$`, and `$…$` holding a command reads as plain text: `≥ 1.5`, `a/b`. A bare `\ge` in prose becomes `≥`. Prices ("$5 and $6") and escaped parentheses stay as written.
+  - A `**` with spaces on both sides is dropped, and so is the last of an odd count, so a cut-off bold span reads as plain text. Inline code is left exactly as written.
+  - The Knowledge Base reader is not changed here (Raven-Scout/Scout#677 replaces it).
+- **A card's Source line has clickable links** (UI audit card R5; `Scout/PerFileItems/Views/PerFileItemCardView.swift`). The `source:`/`area:` line goes through the inline renderer: wikilinks open like the body's, markdown links work, and a bare `https://` URL is linked.
+- **An Action Items update card keeps the time in its headline** (UI audit card R5; `Scout/ActionItems/Models/PreambleSplit.swift`, `Scout/ActionItems/ActionItemsView.swift`). A preamble paragraph without a bold lead was cut at its first `.` or `:`, so "Rewritten by the 09:03 run: …" read "Rewritten by the 09". It now splits only at a `.` or `:` followed by a space. Leading `>` and `[!kind]` markers are no longer part of the headline.
+- **KB Health sets aside more personal paperwork** (UI audit card R5; `Scout/KnowledgeBase/Models/KBGraph.swift`, `KnowledgeBaseService.swift`, `Views/KBStatsView.swift`). Certificates, estimates, warranties and payslips under a `personal` folder now join receipts and invoices on the "Not counted" line, now worded "N paperwork notes". Outside `personal/` those words stay live ("tls-certificate-rotation"). Reports are never set aside. Same rule as `/scout-status`.
+
 
 ## [0.18.16] - 2026-11-17
 
