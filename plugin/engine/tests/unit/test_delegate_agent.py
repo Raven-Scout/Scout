@@ -403,4 +403,3 @@ def test_a_failed_env_write_leaves_no_temporary_file(tmp_path: Path, monkeypatch
     with pytest.raises(OSError, match="disk full"):
         da._write_env(target, "X=1\n")
     assert list(tmp_path.iterdir()) == []
-
