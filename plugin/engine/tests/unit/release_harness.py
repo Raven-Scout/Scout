@@ -108,10 +108,13 @@ def _seed(root: Path, version: str) -> None:
         "apps/macos/Scout.xcodeproj/project.pbxproj",
         "".join(f"\t\t\t\tMARKETING_VERSION = {version};\n" for _ in range(4)),
     )
-    _write(root, "plugin/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n- a plugin thing\n")
-    _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n- an app thing\n")
+    _write(root, "plugin/CHANGELOG.md", "# Changelog\n")
+    _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n")
     for frag_dir in ("plugin/changelog.d", "apps/macos/changelog.d"):  # the README keeps the directory
         _write(root, f"{frag_dir}/README.md", "# Changelog fragments\n")
+    # What merged PRs left for the next release: one entry for each changelog.
+    _write(root, "plugin/changelog.d/seed.added.md", "- a plugin thing\n")
+    _write(root, "apps/macos/changelog.d/seed.added.md", "- an app thing\n")
     _write(root, ".gitignore", ".release/\n.eval-results/\n")
     (root / "scripts").mkdir(exist_ok=True)
     shutil.copy2(SCRIPT, root / "scripts" / "release.sh")
@@ -171,7 +174,7 @@ def make_repo(
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
     if app_release:
-        _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n")
+        _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n")
         _git(root, "add", "-A")
         _git(root, "commit", "-q", "-m", "chore: the app's last release")
         _git(root, "tag", f"app/v{app_release}")

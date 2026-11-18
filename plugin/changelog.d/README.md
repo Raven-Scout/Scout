@@ -22,17 +22,18 @@ plugin/changelog.d/<branch-slug>.<section>.md
 ```
 
 `scripts/release.sh prepare` writes every fragment into the new `## [X.Y.Z] - date` section, grouped by
-heading, and deletes them in the release commit. Nothing else moves them. Within a heading, entries
-still under `## [Unreleased]` come first, then the fragments **in file-name order, not merge order**.
+heading, and deletes them in the release commit. Nothing else moves them. Within a heading, fragments
+go **in file-name order, not merge order**.
 
 CI's `contract` job runs `python -m scout.scripts.changelog check`. On every run, every fragment must
-parse. On pull requests and in the merge queue (not on the push to main that follows, which a squash
+parse, and neither CHANGELOG may have a `## [Unreleased]` heading (there is none: an entry there would
+never be released). On pull requests and in the merge queue (not on the push to main that follows, which a squash
 merge would trip), it also compares with the base, and fails when:
 
 - a PR changes a fragment main already has (a slug collision, or a reused branch name). Deleting one
   is fine: a revert does that, and so does the release PR;
-- a PR changes or drops a `## [X.Y.Z]` section main already has. That is what a plain merge of main
-  does when it files your `[Unreleased]` entry under a release just cut.
+- a PR changes or drops a `## [X.Y.Z]` section main already has, such as an entry added straight to a
+  CHANGELOG that a merge of main filed under a release just cut.
 
 **Fixing a release in progress.** A PR into `release/vX.Y.Z` edits the `## [X.Y.Z]` section of the
 CHANGELOG directly, and must not add a fragment: fragments there are never assembled into X.Y.Z, so the
