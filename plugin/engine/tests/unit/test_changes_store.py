@@ -192,3 +192,84 @@ def test_owner_kind_planted_in_vault_log_is_dropped(tmp_path, vault):
     sigs, skipped = read_signals(vault, env)
     assert [s.kind for s in sigs] == ["dm-reply"]
     assert skipped == 1
+
+
+# ---- fallback paths ----------------------------------------------------------
+
+
+def test_change_and_why_reject_malformed_fields():
+    row = _change().to_row()
+    with pytest.raises(ValueError, match="not an ISO timestamp"):
+        Change.from_row({**row, "ts": "last tuesday"})
+    with pytest.raises(ValueError, match="expected a list of strings"):
+        Change.from_row({**row, "files": "SKILL.md"})
+    with pytest.raises(ValueError, match="expected a list of strings"):
+        Change.from_row({**row, "targets": [1]})
+    with pytest.raises(ValueError, match="expected a bool"):
+        Change.from_row({**row, "governance": "yes"})
+    with pytest.raises(ValueError, match="why: expected an object"):
+        Change.from_row({**row, "why": "pattern-1"})
+
+
+def test_vault_key_falls_back_to_absolute_when_resolve_fails(tmp_path):
+    class Unresolvable:
+        def resolve(self):
+            raise OSError("symlink loop")
+
+        def absolute(self):
+            return tmp_path / "vault"
+
+    assert vault_key(Unresolvable()) == vault_key(tmp_path / "vault")  # type: ignore[arg-type]
+
+
+def test_read_skips_blank_lines_and_non_object_rows(vault):
+    (vault / ".scout-logs").mkdir()
+    good = json.dumps(_change().to_row())
+    (vault / ".scout-logs/changes.jsonl").write_text(f"\n   \n{good}\n[1, 2]\n")
+    rows, skipped = read_changes(vault)
+    assert rows == [_change()] and skipped == 1
+
+
+def test_is_owner_caller_fails_closed_when_the_process_check_raises(tmp_path, vault, monkeypatch):
+    from scout.changes.store import is_owner_caller
+    from scout.kb import live_run
+
+    def boom(_vault):
+        raise RuntimeError("ps unavailable")
+
+    monkeypatch.setattr(live_run, "commit_source_now", boom)
+    assert is_owner_caller({"HOME": str(tmp_path / "home")}, vault) is False
+
+
+def test_consent_record_that_does_not_parse_is_unanswered(tmp_path):
+    from scout.changes.consent import out_of_vault_answer
+
+    env = {"HOME": str(tmp_path / "home")}
+    path = owner_dir(env) / "consent.json"
+    path.parent.mkdir(parents=True)
+    for text in ('{"schema": 2, "out_of_vault": true}', '{"schema": 1, "out_of_vault": "yes"}', "[true]"):
+        path.write_text(text)
+        assert out_of_vault_answer(env) is None, text
+
+
+def test_consent_cannot_be_written_by_a_run(tmp_path):
+    from scout.changes.consent import set_out_of_vault
+
+    env = {"HOME": str(tmp_path / "home"), "SCOUT_MODE": "dreaming"}
+    with pytest.raises(PermissionError):
+        set_out_of_vault(True, env)
+    assert not any((tmp_path / "home").rglob("consent.json"))
+
+
+def test_consent_write_failure_leaves_no_temp_file(tmp_path, monkeypatch):
+    from scout.changes import consent
+
+    env = {"HOME": str(tmp_path / "home")}
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(consent.os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        consent.set_out_of_vault(True, env)
+    assert list(owner_dir(env).iterdir()) == []

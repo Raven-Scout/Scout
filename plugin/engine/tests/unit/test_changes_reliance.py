@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
@@ -296,3 +297,81 @@ def test_stale_marker_entries_are_pruned(vault, home):
     t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
     record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW)
     assert "oldsession0000000" not in json.loads(marker.read_text())["sessions"]
+
+
+def _raw_transcript(tmp_path: Path, lines: list[str]) -> Path:
+    path = tmp_path / "raw.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _assistant(*blocks) -> str:
+    return json.dumps({"message": {"role": "assistant", "content": list(blocks)}})
+
+
+def test_surfaces_ignore_malformed_transcript_shapes(vault, home, other_repo, tmp_path):
+    outside = str(other_repo / "elsewhere.md")
+    t = _raw_transcript(
+        tmp_path,
+        [
+            "[1, 2]",  # valid JSON, not a row
+            json.dumps({"message": "not an object"}),
+            json.dumps({"message": {"role": "user", "content": 7}}),
+            _assistant("a bare string", {"type": "text", "text": "hi"}),
+            _assistant({"type": "tool_use", "name": "Read", "input": "nope"}),
+            _assistant({"type": "tool_use", "name": "Read", "input": {"file_path": outside}}),
+            _assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "bad\0path"}}),
+            _assistant({"type": "tool_use", "name": "Skill", "input": {"skill": "superpowers:brainstorming"}}),
+            _assistant({"type": "tool_use", "name": "Skill", "input": {"skill": None}}),
+            _assistant({"type": "tool_use", "name": "Bash", "input": {"command": ["scoutctl"]}}),
+            _assistant({"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}),
+            _assistant({"type": "tool_use", "name": "WebFetch", "input": {"url": "https://example.com"}}),
+        ],
+    )
+    assert surfaces_used(t, vault, cwd=str(other_repo)) == set()
+
+
+def test_surfaces_with_no_cwd_or_unresolvable_cwd_are_not_a_vault_session(vault, home, other_repo):
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert surfaces_used(t, vault, cwd="") == {"scoutctl"}
+    assert surfaces_used(t, vault, cwd="bad\0cwd") == {"scoutctl"}
+
+
+def test_missing_transcript_has_no_surfaces(vault, home, other_repo, tmp_path):
+    assert surfaces_used(tmp_path / "gone.jsonl", vault, cwd=str(other_repo)) == set()
+
+
+def test_marker_with_non_object_sessions_is_empty(vault, home):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    marker = owner_dir(env) / "reliance-seen.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"schema": 1, "sessions": ["kb"]}))
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
+
+
+def test_marker_entries_without_a_readable_time_are_dropped(vault, home):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    marker = owner_dir(env) / "reliance-seen.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    sessions = {"garbled00000000": {"surfaces": ["kb"], "at": "sometime"}, "missing0000000": {"surfaces": ["kb"]}}
+    marker.write_text(json.dumps({"schema": 1, "sessions": sessions}))
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW)
+    assert set(json.loads(marker.read_text())["sessions"]) == {hashlib.sha256(SESSION_ID.encode()).hexdigest()[:16]}
+
+
+@pytest.mark.parametrize("failing", ["replace", "mkstemp"])
+def test_marker_write_failure_is_swallowed_and_leaves_no_temp_file(vault, home, monkeypatch, failing):
+    from scout.changes import reliance
+
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+
+    def boom(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(reliance.os if failing == "replace" else reliance.tempfile, failing, boom)
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
+    assert not list(owner_dir(env).glob("reliance-seen*"))
+    assert not list(owner_dir(env).glob(".reliance-seen*"))

@@ -206,3 +206,17 @@ def test_cli_emits_both_documents_and_bare_prints_help(tmp_path, monkeypatch):
     assert json.loads(out.stdout)["schema_version"] == 1
     assert "Usage" in runner.invoke(app, ["changes"]).output
     assert runner.invoke(app, ["changes", "--json", "--since", "soon"]).exit_code == 2
+
+
+def test_signals_outside_the_window_and_sessionless_reliance(tmp_path):
+    vault, home = tmp_path / "Scout", tmp_path / "home"
+    vault.mkdir()
+    env = {"HOME": str(home)}
+    inside = datetime(2026, 11, 12, 9, 0, tzinfo=UTC)
+    before = NOW - timedelta(days=30)
+    after = NOW + timedelta(days=1)
+    # No session id to dedupe on: every row counts. Out-of-window rows count for nothing.
+    for when in (inside, inside, before, after):
+        append_signal(Signal(ts=when, kind="session-reliance", surface="kb"), vault=vault, env=env)
+    doc = engagement_report(vault, env, now=NOW, since=NOW - timedelta(days=14), tz=PRAGUE)
+    assert doc["totals"]["reliance"] == 2

@@ -63,9 +63,7 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
         if not since <= s.ts <= now:
             continue
         date = s.ts.astimezone(tz).date().isoformat()
-        bucket = days.get(date)
-        if bucket is None:
-            continue
+        bucket = days[date]  # in [since, now], so its local date is one of the days built above
         if s.kind in FEEDBACK_KINDS:
             field = "feedback"
         elif s.kind == RELIANCE_KIND:

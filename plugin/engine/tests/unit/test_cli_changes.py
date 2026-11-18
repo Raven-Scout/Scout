@@ -191,3 +191,17 @@ def test_ref_is_an_id_not_a_path(cli, vault, home):
 def test_bare_groups_print_help(cli, vault):
     assert "scan" in cli(["changes"]).output
     assert "record" in cli(["engagement"]).output
+
+
+def test_changes_report_needs_an_existing_vault(cli, tmp_path, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
+    r = cli(["changes", "--json", "--since", "7d"])
+    assert r.exit_code == 2
+    assert "vault directory missing" in r.output
+
+
+def test_record_needs_an_existing_vault(cli, tmp_path, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
+    r = cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"])
+    assert r.exit_code == 2
+    assert "vault directory missing" in r.output

@@ -121,3 +121,12 @@ def test_git_failure_never_raises(tmp_path, monkeypatch, error):
 
     monkeypatch.setattr(vault_mod.subprocess, "run", boom)
     assert vault_roots(vault) == (vault.resolve(),)
+
+
+def test_unresolvable_vault_falls_back_to_an_absolute_path(tmp_path, monkeypatch):
+    def boom(_p):
+        raise OSError("symlink loop")
+
+    monkeypatch.setattr(vault_mod.paths, "resolve_path", boom)
+    target = tmp_path / "explicit"
+    assert installed_vault({"HOME": str(tmp_path), "SCOUT_DATA_DIR": str(target)}) == target.absolute()

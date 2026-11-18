@@ -165,3 +165,56 @@ def test_helpers():
     assert lane_of("chore(scout-update): x") == "update"
     assert infer_why("nothing", "").type == "unknown"
     assert classify([("M", "README.md")], "scout: x", lambda p: "") is None
+
+
+def test_wishlist_why_needs_a_wishlist_path_somewhere():
+    assert infer_why("scout: wishlist — done", "", ("README.md",)).type == "unknown"
+    # The first file names no wishlist item; a later one does.
+    why = infer_why("scout: wishlist — done", "", ("README.md", "docs/wishlist/red-carry.md"))
+    assert (why.type, why.ref, why.inferred) == ("wishlist", "red-carry", True)
+
+
+def test_unrecognised_why_trailer_is_kept_as_unknown_not_inferred(repo):
+    commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x\n\nScout-Change-Why: vibes-only")
+    [c] = scan(repo, since=None)
+    assert (c.why.type, c.why.ref, c.why.inferred) == ("unknown", "vibes-only", False)
+
+
+def test_targets_trailer_overrides_the_inferred_target(repo):
+    commit(
+        repo,
+        "SKILL.md",
+        "dreaming [22:12]: SKILL.md self-edit — closes Pattern #12\n\nScout-Change-Targets: briefing, , dreaming",
+    )
+    [c] = scan(repo, since=None)
+    assert c.targets == ("briefing", "dreaming")
+
+
+def test_scan_returns_nothing_when_git_cannot_run(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    def boom(*a, **k):
+        raise OSError("no git")
+
+    monkeypatch.setattr(scan_mod.subprocess, "run", boom)
+    assert scan(repo, since=None) == []
+
+
+def test_parse_log_skips_blank_short_and_undated_records():
+    from scout.changes.scan import _RS, _US, _parse_log
+
+    def rec(*parts: str) -> str:
+        return _RS + _US.join(parts)
+
+    raw = "".join(
+        [
+            _RS + "   ",
+            rec("a" * 40, "2026-11-17T10:00:00Z", "subject"),  # too few fields
+            rec("b" * 40, "not-a-date", "subject", "", "M\tSKILL.md"),
+            rec("c" * 40, "2026-11-17T10:00:00Z", "subject", "body", "M\tSKILL.md\n\nR090\told.md\tnew.md\nstray"),
+        ]
+    )
+    [(sha, ts, subject, body, paths)] = _parse_log(raw)
+    assert (sha, subject, body) == ("c" * 40, "subject", "body")
+    assert ts.year == 2026
+    assert paths == [("M", "SKILL.md"), ("R090", "new.md")]
