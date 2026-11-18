@@ -102,7 +102,7 @@ struct KBInlineEditDraftTests {
 
     @Test("opening an inline editor without typing leaves the note byte-identical")
     func untouchedInlineEdit_isClean() {
-        let edit = KBEditableView.InlineEdit(
+        let edit = KBInlineEdit(
             target: .block(lineStart: 2, lineEnd: 2), snapshot: note,
             original: "First paragraph.", buffer: "First paragraph.")
         #expect(edit.applied == note)
@@ -111,7 +111,7 @@ struct KBInlineEditDraftTests {
 
     @Test("typing in a block puts the change in the draft right away")
     func blockEdit_writesThrough() {
-        var edit = KBEditableView.InlineEdit(
+        var edit = KBInlineEdit(
             target: .block(lineStart: 2, lineEnd: 2), snapshot: note,
             original: "First paragraph.", buffer: "First paragraph.")
         edit.buffer = "First paragraph, edited."
@@ -131,8 +131,8 @@ struct KBInlineEditDraftTests {
 
     @Test("typing in a table cell rewrites only that cell in the draft")
     func cellEdit_writesThrough() {
-        var edit = KBEditableView.InlineEdit(
-            target: .cell(segmentID: 4, row: 0, col: 1, sourceLine: 6), snapshot: note,
+        var edit = KBInlineEdit(
+            target: .cell(sourceLine: 6, col: 1), snapshot: note,
             original: "Lead", buffer: "Lead")
         edit.buffer = "Owner"
         let lines = edit.applied.components(separatedBy: "\n")
@@ -142,7 +142,7 @@ struct KBInlineEditDraftTests {
 
     @Test("a draft the edit didn't produce (Reload, another note) ends the edit")
     func foreignSourceEndsEdit() {
-        var edit = KBEditableView.InlineEdit(
+        var edit = KBInlineEdit(
             target: .block(lineStart: 2, lineEnd: 2), snapshot: note,
             original: "First paragraph.", buffer: "First paragraph.")
         edit.buffer = "Typed."
@@ -155,14 +155,14 @@ struct KBInlineEditDraftTests {
     func commentSendWaitsForInlineEdit() {
         // Its marker goes in by line number from the edit's snapshot, and
         // sending saves the note with the unfinished edit in it.
-        #expect(!KBEditableView.canSendComment("Check this", inlineEditOpen: true))
-        #expect(KBEditableView.canSendComment("Check this", inlineEditOpen: false))
-        #expect(!KBEditableView.canSendComment("   ", inlineEditOpen: false))
+        #expect(!KBInlineEdit.canSendComment("Check this", inlineEditOpen: true))
+        #expect(KBInlineEdit.canSendComment("Check this", inlineEditOpen: false))
+        #expect(!KBInlineEdit.canSendComment("   ", inlineEditOpen: false))
     }
 
     @Test("the inline editor's buttons say what they do")
     func inlineButtonTitles() {
-        #expect(KBEditableView.inlineCommitTitle == "Done")
-        #expect(KBEditableView.inlineDiscardTitle == "Discard")
+        #expect(KBInlineEdit.commitTitle == "Done")
+        #expect(KBInlineEdit.discardTitle == "Discard")
     }
 }

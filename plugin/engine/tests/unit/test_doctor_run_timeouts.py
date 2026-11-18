@@ -145,6 +145,8 @@ def test_future_dated_usage_rows_are_a_warning(vault: Path) -> None:
         {"source": "runner", "ts": "2099-01-01T00:00:00Z", "agent_runtime": "dummy", "tokens": 10**15},
         {"source": "runner", "ts": (NOW + timedelta(minutes=2)).isoformat(), "tokens": 1},  # clock skew: fine
         {"source": "runner", "ts": NOW.isoformat(), "tokens": 1},
+        # Another source's row, an hour "ahead" (local time read as UTC): the ceiling never reads it, so no alarm.
+        {"source": "session-tokens", "ts": (NOW + timedelta(hours=1)).replace(tzinfo=None).isoformat(), "tokens": 1},
     ]
     (vault / ".scout-logs" / "usage-tracker.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"

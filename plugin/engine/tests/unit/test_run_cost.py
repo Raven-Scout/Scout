@@ -420,12 +420,13 @@ def test_legacy_rows_default_to_claude_code(env, monkeypatch):
     vault, projects = env
     monkeypatch.delenv("SCOUT_AGENT_RUNTIME", raising=False)
     _transcript(projects, vault, "a1", name=NAME, cost=4.0)
-    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault)
+    now = STARTED + timedelta(minutes=20)
+    row, _ = run_cost.record("research", name=NAME, started=STARTED, cap=20.0, exit_code=0, vault=vault, now=now)
     assert "agent_runtime" not in row and "provider" not in row
     tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
     with tracker.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"source": "runner", "ts": row["ts"], "tokens": 7}) + "\n")
-    assert limits.tokens_used(vault, "claude-code") == 7  # row["ts"] is the real now
+    assert limits.tokens_used(vault, "claude-code", now=now + timedelta(hours=1)) == 7
 
 
 @pytest.mark.parametrize("value", ["", "Claude Code", 'x", "y'])
