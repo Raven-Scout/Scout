@@ -477,8 +477,11 @@ def _kb_repo_template() -> Path:
         repo.git("config", "user.name", "T")
         repo.git("config", "commit.gpgsign", "false")
         repo.git("config", "core.quotepath", "false")
-        repo.stage("README.md", "vault\n")
-        repo.commit("init")
+        repo.write("README.md", "vault\n")
+        # No detached `git maintenance run --auto` (git 2.47+) left running in the template while tests copy it.
+        no_auto = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+        repo.git(*no_auto, "add", "--", "README.md")
+        repo.git(*no_auto, "commit", "-q", "--no-verify", "-m", "init")
         atexit.register(shutil.rmtree, repo.root.parent, True)
         _KB_REPO_TEMPLATE[:] = [repo.root]
     return _KB_REPO_TEMPLATE[0]

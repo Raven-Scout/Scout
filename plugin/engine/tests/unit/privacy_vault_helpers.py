@@ -123,9 +123,14 @@ def _rewrite_dates(vault: Path, today: date) -> None:
             path.write_text(new, encoding="utf-8")
 
 
+# A commit starts `git maintenance run --auto` detached (git 2.47+). In the template that would still be running
+# (taking .git/objects/maintenance.lock, maybe packing) while tests copy it, so the template is built with it off.
+NO_AUTO_MAINTENANCE = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+
+
 def _commit(vault: Path, subject: str) -> None:
-    git(vault, "add", "-A")
-    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+    git(vault, *NO_AUTO_MAINTENANCE, "add", "-A")
+    git(vault, *NO_AUTO_MAINTENANCE, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
 
 
 # One built vault per process and day (see build_privacy_vault).
