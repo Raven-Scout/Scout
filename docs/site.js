@@ -62,8 +62,8 @@
 
   /* ---------- scroll reveal (below the fold only) ---------- */
   if (hasIO && !reduce) {
-    var groups = ['.stages', '.trio', '.bento', '.layers', '.install-grid', '.faq'];
-    var singles = '.section-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
+    var groups = ['.stages', '.trio', '.bento', '.readers-grid', '.layers', '.install-grid', '.faq'];
+    var singles = '.section-head, .hub-fig, .vault-fig, .readers-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
     var rv = [];
     groups.forEach(function (g) {
       each(g, function (parent) {
@@ -124,6 +124,28 @@
     function stop() { clearInterval(timer); timer = null; }
     if (!hasIO) { start(); return; }
     new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) start(); else stop(); }); }).observe(rot);
+  })();
+
+  /* ---------- chapter strip: shown while a numbered chapter is on screen ---------- */
+  (function () {
+    var strip = $('chapters'); if (!strip || !hasIO) return;
+    var links = {};
+    each('a', function (a) { links[a.getAttribute('href').slice(1)] = a; }, strip);
+    var current = null;
+    function paint() {
+      strip.classList.toggle('on', !!(current && links[current]));
+      Object.keys(links).forEach(function (k) {
+        var on = k === current;
+        links[k].classList.toggle('on', on);
+        if (on) { links[k].setAttribute('aria-current', 'true'); var w = links[k].parentNode; if (w.scrollWidth > w.clientWidth) w.scrollLeft = links[k].offsetLeft - w.offsetLeft - 16; }
+        else links[k].removeAttribute('aria-current');
+      });
+    }
+    var cio = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) current = e.target.id; else if (current === e.target.id) current = null; });
+      paint();
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    each('main > section', function (s) { if (s.id) cio.observe(s); });
   })();
 
   /* ---------- hero: the briefing builds itself ---------- */
@@ -293,6 +315,79 @@
     });
   })();
 
+  /* ---------- problem: the same morning, without and with Scout ---------- */
+  (function () {
+    var fig = $('morning'); if (!fig) return;
+    var list = $('stages'), tally = $('tally'), lbl = $('stages-lbl');
+    var stages = list.querySelectorAll('.stage');
+    var views = {
+      without: {
+        lbl: 'One morning, without Scout',
+        tally: '→ And nothing you worked out this morning is kept for tomorrow.',
+        s: [['8', 'tools with something new', 'Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp'],
+            ['113', 'unread messages, threads and notifications'],
+            ['3', 'tools that disagree about the same thing: the ticket, the pull request and the thread'],
+            ['4×', 'more before evening, as new replies arrive']]
+      },
+      'with': {
+        lbl: 'The same morning, with Scout',
+        tally: '→ And what it worked out stays in ~/Scout, one commit per run.',
+        s: [['1', 'list, with its sources', 'in the app, as Markdown, or by Slack DM or Telegram'],
+            ['6', 'items that need you, each tagged verified, single-source or contradicted'],
+            ['1', 'contradiction held for you, with both sides shown'],
+            ['0×', 'checks by hand: catch-up scans run at 11:00, 13:00, 17:00 and 19:00']]
+      }
+    };
+    function show(v) {
+      var data = views[v];
+      fig.setAttribute('data-view', v);
+      each('.seg button', function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-view') === v ? 'true' : 'false'); }, fig);
+      function write() {
+        lbl.textContent = data.lbl; tally.textContent = data.tally;
+        Array.prototype.forEach.call(stages, function (st, i) {
+          st.querySelector('b').textContent = data.s[i][0];
+          st.querySelector('.d').textContent = data.s[i][1];
+          var apps = st.querySelector('.apps-list'); if (apps) apps.textContent = data.s[i][2];
+        });
+        list.classList.remove('swap');
+      }
+      if (reduce) { write(); return; }
+      list.classList.add('swap'); setTimeout(write, 200);
+    }
+    each('.seg button', function (b) { b.addEventListener('click', function () { show(b.getAttribute('data-view')); }); }, fig);
+  })();
+
+  /* ---------- everything is a file: follow a [[link]] into the vault ---------- */
+  (function () {
+    var bar = $('vault-bar'), trace = $('vb-trace'); if (!bar || !trace) return;
+    var def = trace.innerHTML, active = null;
+    var map = {
+      priya: [['priya', 'proj'], '<b>[[priya]]</b> → people/priya.md. The owner field points at a person note, not a name typed into a meeting.'],
+      export: [['export', 'pr412'], '<b>[[export]]</b> → topics/export.md, cited to the pull request it came from in sources/.'],
+      permissions: [['permissions', 'sync'], '<b>[[permissions]]</b> → topics/permissions.md, cited to the meeting in sources/ where it was agreed.'],
+      alex: [['alex', 'proj'], '<b>[[alex]]</b> → people/alex-rivera.md. One short name, one person note, so Alex never splits in two.']
+    };
+    function clear() {
+      active = null; bar.classList.remove('tracing'); trace.innerHTML = def;
+      each('.fc.hot', function (f) { f.classList.remove('hot'); }, bar);
+      each('.spec-code button.l', function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+    }
+    function show(b) {
+      var k = b.getAttribute('data-link'), m = map[k]; if (!m) return;
+      clear(); active = k; bar.classList.add('tracing');
+      m[0].forEach(function (f) { var el = bar.querySelector('[data-f="' + f + '"]'); if (el) el.classList.add('hot'); });
+      each('.spec-code button.l[data-link="' + k + '"]', function (x) { x.classList.add('on'); x.setAttribute('aria-pressed', 'true'); });
+      trace.innerHTML = m[1];
+    }
+    each('.spec-code button.l', function (b) {
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () { show(b); });
+      if (fine) { b.addEventListener('mouseenter', function () { show(b); }); b.addEventListener('mouseleave', clear); }
+      b.addEventListener('focus', function () { show(b); });
+      b.addEventListener('blur', clear);
+    });
+  })();
+
   /* ---------- research queue ---------- */
   (function () {
     var run = $('rq-run'), list = $('rq-list'); if (!run || !list) return;
@@ -345,7 +440,7 @@
           chips.innerHTML = '';
           msg('me', p[0]);
           var t = typing();
-          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' owns the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
+          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
         });
         chips.appendChild(b);
       });
@@ -361,51 +456,6 @@
     }
     replay.addEventListener('click', play);
     onceVisible(chat, play, 0.5);
-  })();
-
-  /* ---------- wishlist ---------- */
-  each('#wish .wi', function (b) {
-    b.addEventListener('click', function () {
-      var on = b.getAttribute('aria-pressed') !== 'true';
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      var em = b.querySelector('em'); if (em) em.textContent = on ? 'shipped' : 'queued';
-    });
-  });
-
-  /* ---------- knowledge graph ---------- */
-  (function () {
-    var kg = $('kg'); if (!kg) return;
-    var cap = $('kg-cap'), def = cap.innerHTML;
-    var nodes = kg.querySelectorAll('.node'), edges = kg.querySelectorAll('line');
-    function clear() {
-      kg.classList.remove('dim');
-      each('.hot', function (x) { x.classList.remove('hot'); }, kg);
-      cap.innerHTML = def;
-    }
-    Array.prototype.forEach.call(nodes, function (n) {
-      var name = n.querySelector('text').textContent;
-      n.setAttribute('tabindex', '0');
-      n.setAttribute('role', 'button');
-      n.setAttribute('aria-label', name + ': ' + n.getAttribute('data-rels'));
-      function show() {
-        var id = n.getAttribute('data-id');
-        clear(); kg.classList.add('dim'); n.classList.add('hot');
-        Array.prototype.forEach.call(edges, function (e) {
-          var a = e.getAttribute('data-a'), b = e.getAttribute('data-b');
-          if (a === id || b === id) {
-            e.classList.add('hot');
-            var o = kg.querySelector('.node[data-id="' + (a === id ? b : a) + '"]'); if (o) o.classList.add('hot');
-          }
-        });
-        cap.innerHTML = '';
-        var b = d.createElement('b'); b.textContent = name;
-        cap.appendChild(b); cap.appendChild(d.createTextNode(' — ' + n.getAttribute('data-rels')));
-      }
-      n.addEventListener('mouseenter', show); n.addEventListener('focus', show);
-      n.addEventListener('click', show);
-      n.addEventListener('blur', clear);
-    });
-    kg.querySelector('svg').addEventListener('mouseleave', clear);
   })();
 
   /* ---------- jump palette (⌘K / Ctrl+K) ---------- */
