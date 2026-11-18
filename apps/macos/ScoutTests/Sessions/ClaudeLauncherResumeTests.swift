@@ -15,8 +15,8 @@ struct ClaudeLauncherResumeTests {
 
     @Test func terminalAndITermExecClaudeWithTheResumeFlag() {
         let cmd = ClaudeLauncher.makeTerminalShellCommand(claudePath: "/cl", cwd: "/w", purpose: resume)
-        #expect(cmd.hasPrefix("cd \"/w\" && clear && "))
-        #expect(cmd.hasSuffix("exec \"/cl\" '--resume' '\(id)'"))
+        #expect(cmd.hasPrefix("cd '/w' && clear && "))
+        #expect(cmd.hasSuffix("exec '/cl' '--resume' '\(id)'"))
         #expect(cmd.contains("resuming a Claude Code session"))
         #expect(!cmd.contains("clipboard"))
         #expect(ClaudeLauncher.makeTerminalAppScript(claudePath: "/cl", cwd: "/w", purpose: resume)
@@ -27,9 +27,9 @@ struct ClaudeLauncherResumeTests {
 
     @Test func theActionItemCommandIsUnchanged() {
         #expect(ClaudeLauncher.makeTerminalShellCommand(claudePath: "/cl", cwd: "/w")
-            == "cd \"/w\" && clear && "
+            == "cd '/w' && clear && "
             + "echo 'Scout: action-item context copied to your clipboard. Paste with Cmd+V.' && "
-            + "exec \"/cl\"")
+            + "exec '/cl'")
     }
 
     @Test func tmuxPassesTheFlagAsSeparateArgv() {
@@ -41,16 +41,16 @@ struct ClaudeLauncherResumeTests {
 
     @Test func ghosttyScriptsResumeAndKeepTheActionItemText() {
         let resumed = ClaudeLauncher.makeGhosttyScript(claudePath: "/cl", cwd: URL(fileURLWithPath: "/w"), purpose: resume)
-        #expect(resumed.hasSuffix("exec \"/cl\" '--resume' '\(id)'"))
+        #expect(resumed.hasSuffix("exec '/cl' '--resume' '\(id)'"))
         #expect(!resumed.contains("clipboard"))
         #expect(ClaudeLauncher.makeGhosttyScript(claudePath: "/cl", cwd: URL(fileURLWithPath: "/w")) == """
         #!/bin/bash
-        cd "/w" || exit 1
+        cd '/w' || exit 1
         clear
         echo "Scout: action-item context copied to your clipboard."
         echo "When Claude prompts you, paste (Cmd+V) and press Enter to send."
         echo
-        exec "/cl"
+        exec '/cl'
         """)
     }
 

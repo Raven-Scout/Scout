@@ -759,6 +759,10 @@ def test_a_vault_without_history_is_unmeasured(vault: Path, outcome: Path, setup
         ({"SCOUT_FORCE_MODE": "morning-briefing"}, "schedule"),
         ({"SCOUT_TRIGGER": "heartbeat"}, "heartbeat"),
         ({"SCOUT_TRIGGER": "bogus", "SCOUT_FORCE_MODE": "x"}, "schedule"),
+        # A connector-event trigger forces its skill as the mode, which is no
+        # schedule: the app must not offer to "run again" a schedule by that name.
+        ({"SCOUT_TRIGGER_ID": "pr-opened", "SCOUT_FORCE_MODE": "review-pr"}, "event"),
+        ({"SCOUT_TRIGGER": "event"}, "event"),
     ],
 )
 def test_every_row_names_its_trigger(vault: Path, outcome: Path, env: dict[str, str], expected: str) -> None:
