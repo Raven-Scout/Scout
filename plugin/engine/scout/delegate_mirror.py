@@ -2025,17 +2025,27 @@ def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
 
 
 def _agent_files_note(delegate: str, the_plan: Plan) -> list[str]:
-    """Which visible files were left out because agents read them as instructions or settings."""
+    """Which visible files were left out as agent config, the root's GitHub automation named apart from the rest."""
     if not the_plan.agent_files:
         return []
-    items = the_plan.agent_files
-    listed = ", ".join(items[:LEFT_OUT_LISTED]) + (
-        f" and {len(items) - LEFT_OUT_LISTED} more" if len(items) > LEFT_OUT_LISTED else ""
-    )
+
+    def listing(items: list[str]) -> str:
+        more = f" and {len(items) - LEFT_OUT_LISTED} more" if len(items) > LEFT_OUT_LISTED else ""
+        return ", ".join(items[:LEFT_OUT_LISTED]) + more
+
+    root = {unicodedata.normalize("NFKC", r).casefold() for r in ROOT_AUTOMATION}
+    github = [r for r in the_plan.agent_files if unicodedata.normalize("NFKC", r.split("/", 1)[0]).casefold() in root]
+    agents = [r for r in the_plan.agent_files if r not in github]
+    parts = []
+    if agents:
+        parts.append(f"{len(agents)} that agents read as their instructions or settings ({listing(agents)})")
+    if github:
+        parts.append(f"{len(github)} under the root's .github/, whose workflows would run in the mirror's repository "
+                     f"({listing(github)})")  # fmt: skip
     return [
-        f"left out as agent config: {len(items)} file(s) agents read as their instructions or settings ({listed}). "
-        f"They're for the owner's runs on the laptop; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) "
-        "instead. Rename a note to keep it in the mirror"
+        f"left out as agent config: {len(the_plan.agent_files)} file(s): {'; '.join(parts)}. They're for the "
+        f"owner's computer; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. Rename or move a "
+        "note to keep it in the mirror"
     ]
 
 

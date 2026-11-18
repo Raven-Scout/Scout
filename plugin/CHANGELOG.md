@@ -20,6 +20,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **The daily token ceiling counts real tokens.** The runner's row carries the run's tokens (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts and its subagents', each message once. Before, the ceiling read token fields no row had and counted 0. Rows dated in the future are skipped, since they would never age out.
 
 ### Fixed
+- **A delegate sync's "left out as agent config" note names the root's `.github/` apart** (`engine/scout/delegate_mirror.py`). Those files were always counted and listed, but under "files agents read as their instructions or settings"; the note now gives them their own count, as GitHub automation that would run in the mirror's repository.
 - **The run-limit doctor checks raise no false alarms, and quote a run-written value cut short** (follow-up to the review of #654; `engine/scout/agent_runtimes/limits.py`).
   - The future-dated-row warning counts only the runner's rows, the only ones the daily token ceiling and its formula read. Another source's rows, in whatever clock it writes, can no longer raise it.
   - A value `agent-runtime exec` and `scoutctl bootstrap doctor` report as ignored is quoted at most 60 characters long, so a huge value a run wrote into `scout-config.yaml` can't bloat the run log or the doctor.
