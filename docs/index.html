@@ -136,15 +136,22 @@
         <h2 id="problem-title">Every morning you rebuild the same picture by hand.</h2>
         <p>Leads, engineers, founders and anyone who starts the day with Slack, an inbox, a calendar, a tracker and last week's meeting notes, and has to work out which of it matters today.</p>
       </div>
-      <figure class="mock-fig stages-fig">
-        <ol class="stages">
+      <figure class="mock-fig stages-fig" id="morning" data-view="without">
+        <div class="stages-bar">
+          <span class="stages-lbl" id="stages-lbl">One morning, without Scout</span>
+          <div class="seg" role="group" aria-label="Show the same morning">
+            <button type="button" data-view="without" aria-pressed="true">Without Scout</button>
+            <button type="button" data-view="with" aria-pressed="false">With Scout</button>
+          </div>
+        </div>
+        <ol class="stages" id="stages" aria-live="polite">
           <li class="stage"><span class="k">Open</span><b>8</b><span class="d">tools with something new</span><span class="apps-list" aria-hidden="true">Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp</span></li>
           <li class="stage"><span class="k">Read</span><b>113</b><span class="d">unread messages, threads and notifications</span></li>
           <li class="stage"><span class="k">Reconcile</span><b>3</b><span class="d">tools that disagree about the same thing: the ticket, the pull request and the thread</span></li>
           <li class="stage"><span class="k">Repeat</span><b>4×</b><span class="d">more before evening, as new replies arrive</span></li>
         </ol>
-        <p class="tally">→ And nothing you worked out this morning is kept for tomorrow.</p>
-        <figcaption>Illustration of one morning without Scout. Counts are invented.</figcaption>
+        <p class="tally" id="tally">→ And nothing you worked out this morning is kept for tomorrow.</p>
+        <figcaption>Try it: switch between the same morning without and with Scout. Counts are invented.</figcaption>
       </figure>
       <div class="trio">
         <div class="card">
@@ -235,7 +242,18 @@
         <li class="slot" data-pos="58.33" data-time="14:00" data-name="Research" data-reads="the web, docs and your tools" data-writes="fuller, fresher notes" data-commit="research [14:00]: refreshed report-builder · 4 sources">
           <span class="when">14:00 weekdays</span>
           <h3>Research</h3>
-          <p>Picks the part of your knowledge base that's thinnest or most out of date and fills it in from the web, docs and your tools.</p>
+          <p>Picks the part of your knowledge base that's thinnest or most out of date and fills it in from the web, docs and your tools. Try it: run the queue.</p>
+          <div class="demo rq" id="rq">
+            <div class="rq-pin"><code>//==&lt;&lt; check the vendor's new pricing &gt;&gt;==//</code><span>your note, moved to the front</span></div>
+            <ol class="rq-list" id="rq-list" aria-live="polite">
+              <li><b>report-builder</b><span>12 days old</span></li>
+              <li><b>billing-revamp</b><span>9 days old</span></li>
+              <li><b>api-migration</b><span>7 days old</span></li>
+              <li><b>onboarding-flow</b><span>6 days old</span></li>
+              <li class="done"><b>data-pipeline</b><span>done ✓</span></li>
+            </ol>
+            <button class="mini act" type="button" id="rq-run">▸ Run next</button>
+          </div>
         </li>
         <li class="slot" data-pos="77.08" data-time="18:30" data-name="Dreaming" data-reads="your 👍 and 👎, and its own mistakes" data-writes="better instructions for tomorrow" data-commit="dreaming [18:30]: logged pattern #12 · 1 fix · 1 proposal">
           <span class="when">18:30 · 22:00</span>
@@ -281,41 +299,42 @@
 <span class="y">---
 type: project
 status: active
-owner: "[[priya]]"
+owner: "<button type="button" class="l" data-link="priya">[[priya]]</button>"
 as_of: 2026-11-10
 ---</span>
 <span class="h"># Report builder</span>
 On track for the December beta.
 
 <span class="h">## Where it stands</span>
-- CSV export shipped Nov 6. <span class="l">[[export]]</span>
-- Permissions model agreed. <span class="l">[[permissions]]</span>
+- CSV export shipped Nov 6. <button type="button" class="l" data-link="export">[[export]]</button>
+- Permissions model agreed. <button type="button" class="l" data-link="permissions">[[permissions]]</button>
 
 <span class="h">## What's next</span>
-- Nov 18: beta checklist with <span class="l">[[alex]]</span></pre>
+- Nov 18: beta checklist with <button type="button" class="l" data-link="alex">[[alex]]</button></pre>
             <div class="spec-notes">
               <div class="sn y"><span class="k">YAML</span><span>What the schema checks on every run.</span></div>
               <div class="sn p"><span class="k">Markdown</span><span>What you read. One screen per project.</span></div>
-              <div class="sn l"><span class="k">[[links]]</span><span>The graph that lets Scout cross-check.</span></div>
+              <div class="sn l"><span class="k">[[links]]</span><span>The graph. Tap one to follow it into the vault.</span></div>
             </div>
             <p class="equation">YAML + Markdown + [[links]] = one note</p>
           </div>
-          <figcaption>Illustration of a project note. The project and people are invented.</figcaption>
+          <figcaption>Try it: tap a [[link]] to find what it points to in the vault below. The project and people are invented.</figcaption>
         </figure>
       </div>
 
       <figure class="mock-fig vault-fig">
-        <div class="vault-bar">
+        <div class="vault-bar" id="vault-bar">
           <div class="vb-top"><b>~/Scout</b><span>one folder · one git repository</span></div>
           <div class="vb-cols">
             <div><h4>action-items/<small>today's list</small></h4><span class="fc">2026-11-17.md</span><span class="fc">2026-11-16.md</span><span class="fc more">older days archived</span></div>
-            <div><h4>people/<small>who's who</small></h4><span class="fc">priya.md</span><span class="fc">alex-rivera.md</span><span class="fc more">one note each</span></div>
-            <div><h4>projects/<small>one screen each</small></h4><span class="fc">report-builder/</span><span class="fc">billing-revamp/</span><span class="fc more">one folder each</span></div>
-            <div><h4>topics/<small>durable notes</small></h4><span class="fc">permissions.md</span><span class="fc">export.md</span><span class="fc more">rewritten in place</span></div>
-            <div><h4>sources/<small>cited evidence</small></h4><span class="fc">2026-11/…-sync.md</span><span class="fc">2026-11/…-pr-412.md</span><span class="fc more">one per meeting or PR</span></div>
+            <div><h4>people/<small>who's who</small></h4><span class="fc" data-f="priya">priya.md</span><span class="fc" data-f="alex">alex-rivera.md</span><span class="fc more">one note each</span></div>
+            <div><h4>projects/<small>one screen each</small></h4><span class="fc" data-f="proj">report-builder/</span><span class="fc">billing-revamp/</span><span class="fc more">one folder each</span></div>
+            <div><h4>topics/<small>durable notes</small></h4><span class="fc" data-f="permissions">permissions.md</span><span class="fc" data-f="export">export.md</span><span class="fc more">rewritten in place</span></div>
+            <div><h4>sources/<small>cited evidence</small></h4><span class="fc" data-f="sync">2026-11/…-sync.md</span><span class="fc" data-f="pr412">2026-11/…-pr-412.md</span><span class="fc more">one per meeting or PR</span></div>
             <div><h4>meetings/<small>prep and notes</small></h4><span class="fc">design-review/</span><span class="fc">weekly-sync/</span><span class="fc more">per recurring meeting</span></div>
           </div>
         </div>
+        <p class="vb-trace" id="vb-trace" aria-live="polite">Tap a [[link]] in the note above to see where it points.</p>
         <figcaption>What's in the vault. people/, projects/, topics/ and sources/ sit under knowledge-base/. File names are invented.</figcaption>
       </figure>
     </div>
@@ -448,14 +467,29 @@ On track for the December beta.
         <h2 id="anywhere-title">Read it anywhere.</h2>
         <p>Scout keeps the vault up to date. You can read it with whatever you already use.</p>
       </div>
+      <div class="readers-split">
       <ul class="readers-grid">
           <li><b>Obsidian</b><span>Open the vault as it is. The links already work.</span></li>
           <li><b>Any editor</b><span>It's Markdown: search it, diff it, back it up.</span></li>
           <li><b>Claude Code</b><span><code>/scout-ask</code> answers from your notes; <code>/scout-work</code> works today's list.</span></li>
-          <li><b>Slack or Telegram</b><span>A short summary after each run, if you connect one.</span></li>
+          <li><b>Slack or Telegram</b><span>A short summary after each run, if you connect one, and now and then one question no tool can answer.</span></li>
           <li><b>Your team</b><span>Share chosen folders. Everything private stays on your Mac.</span></li>
           <li class="soon"><b>Other agents</b><span>Antigravity, Codex and Gemini CLIs are planned, not supported yet.</span></li>
         </ul>
+        <figure class="mock-fig chat-fig">
+          <div class="demo chat" id="chat">
+            <div class="chat-head"><span class="av" aria-hidden="true">S</span><div><b>Scout</b><span>Slack DM</span></div><button class="mini" type="button" id="chat-replay" aria-label="Replay the conversation">↻</button></div>
+            <div class="chat-body" id="chat-body" aria-live="polite">
+              <div class="msg">Morning briefing: <b>3 need you</b>, 1 contradiction held for you.</div>
+              <div class="msg">One thing I can't tell from your tools: who owns the billing fix, you or Sam?</div>
+              <div class="msg me">Sam owns it</div>
+              <div class="msg">Got it. Saved to your notes, and I won't ask again. ✓</div>
+            </div>
+            <div class="chat-chips" id="chat-chips"></div>
+          </div>
+          <figcaption>Try it: a run's summary in a Slack DM, and the one question Scout asks. Your answer goes into your notes, and it never asks twice. Names are invented.</figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 

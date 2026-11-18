@@ -315,6 +315,149 @@
     });
   })();
 
+  /* ---------- problem: the same morning, without and with Scout ---------- */
+  (function () {
+    var fig = $('morning'); if (!fig) return;
+    var list = $('stages'), tally = $('tally'), lbl = $('stages-lbl');
+    var stages = list.querySelectorAll('.stage');
+    var views = {
+      without: {
+        lbl: 'One morning, without Scout',
+        tally: '→ And nothing you worked out this morning is kept for tomorrow.',
+        s: [['8', 'tools with something new', 'Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp'],
+            ['113', 'unread messages, threads and notifications'],
+            ['3', 'tools that disagree about the same thing: the ticket, the pull request and the thread'],
+            ['4×', 'more before evening, as new replies arrive']]
+      },
+      'with': {
+        lbl: 'The same morning, with Scout',
+        tally: '→ And what it worked out stays in ~/Scout, one commit per run.',
+        s: [['1', 'list, with its sources', 'in the app, as Markdown, or by Slack DM or Telegram'],
+            ['6', 'items that need you, each tagged verified, single-source or contradicted'],
+            ['1', 'contradiction held for you, with both sides shown'],
+            ['0×', 'checks by hand: catch-up scans run at 11:00, 13:00, 17:00 and 19:00']]
+      }
+    };
+    function show(v) {
+      var data = views[v];
+      fig.setAttribute('data-view', v);
+      each('.seg button', function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-view') === v ? 'true' : 'false'); }, fig);
+      function write() {
+        lbl.textContent = data.lbl; tally.textContent = data.tally;
+        Array.prototype.forEach.call(stages, function (st, i) {
+          st.querySelector('b').textContent = data.s[i][0];
+          st.querySelector('.d').textContent = data.s[i][1];
+          var apps = st.querySelector('.apps-list'); if (apps) apps.textContent = data.s[i][2];
+        });
+        list.classList.remove('swap');
+      }
+      if (reduce) { write(); return; }
+      list.classList.add('swap'); setTimeout(write, 200);
+    }
+    each('.seg button', function (b) { b.addEventListener('click', function () { show(b.getAttribute('data-view')); }); }, fig);
+  })();
+
+  /* ---------- everything is a file: follow a [[link]] into the vault ---------- */
+  (function () {
+    var bar = $('vault-bar'), trace = $('vb-trace'); if (!bar || !trace) return;
+    var def = trace.innerHTML, active = null;
+    var map = {
+      priya: [['priya', 'proj'], '<b>[[priya]]</b> → people/priya.md. The owner field points at a person note, not a name typed into a meeting.'],
+      export: [['export', 'pr412'], '<b>[[export]]</b> → topics/export.md, cited to the pull request it came from in sources/.'],
+      permissions: [['permissions', 'sync'], '<b>[[permissions]]</b> → topics/permissions.md, cited to the meeting in sources/ where it was agreed.'],
+      alex: [['alex', 'proj'], '<b>[[alex]]</b> → people/alex-rivera.md. One short name, one person note, so Alex never splits in two.']
+    };
+    function clear() {
+      active = null; bar.classList.remove('tracing'); trace.innerHTML = def;
+      each('.fc.hot', function (f) { f.classList.remove('hot'); }, bar);
+      each('.spec-code button.l', function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+    }
+    function show(b) {
+      var k = b.getAttribute('data-link'), m = map[k]; if (!m) return;
+      clear(); active = k; bar.classList.add('tracing');
+      m[0].forEach(function (f) { var el = bar.querySelector('[data-f="' + f + '"]'); if (el) el.classList.add('hot'); });
+      each('.spec-code button.l[data-link="' + k + '"]', function (x) { x.classList.add('on'); x.setAttribute('aria-pressed', 'true'); });
+      trace.innerHTML = m[1];
+    }
+    each('.spec-code button.l', function (b) {
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () { show(b); });
+      if (fine) { b.addEventListener('mouseenter', function () { show(b); }); b.addEventListener('mouseleave', clear); }
+      b.addEventListener('focus', function () { show(b); });
+      b.addEventListener('blur', clear);
+    });
+  })();
+
+  /* ---------- research queue ---------- */
+  (function () {
+    var run = $('rq-run'), list = $('rq-list'); if (!run || !list) return;
+    var original = list.innerHTML;
+    run.addEventListener('click', function () {
+      var row = list.querySelector('li:not(.done):not(.running)');
+      if (!row) { list.innerHTML = original; run.textContent = '▸ Run next'; return; }
+      var age = row.querySelector('span');
+      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true;
+      setTimeout(function () {
+        row.classList.remove('running'); row.classList.add('done'); age.textContent = 'done ✓';
+        list.appendChild(row); run.disabled = false;
+        if (!list.querySelector('li:not(.done)')) run.textContent = '↻ Start over';
+      }, reduce ? 0 : 1100);
+    });
+  })();
+
+  /* ---------- a question in Slack ---------- */
+  (function () {
+    var chat = $('chat'); if (!chat) return;
+    var body = $('chat-body'), chips = $('chat-chips'), replay = $('chat-replay');
+    var timers = [];
+    function at(ms, fn) { timers.push(setTimeout(fn, reduce ? 0 : ms)); }
+    function msg(cls, html) {
+      var m = d.createElement('div'); m.className = 'msg ' + cls; m.innerHTML = html; body.appendChild(m); return m;
+    }
+    function typing() {
+      if (reduce) return { remove: function () {} };
+      var t = d.createElement('div'); t.className = 'typing'; t.setAttribute('aria-hidden', 'true');
+      t.innerHTML = '<i></i><i></i><i></i>'; body.appendChild(t); return t;
+    }
+    function react(m) {
+      var r = d.createElement('div'); r.className = 'react';
+      [['👍', 'Helpful'], ['👎', 'Not helpful']].forEach(function (p) {
+        var b = d.createElement('button'); b.type = 'button'; b.textContent = p[0];
+        b.setAttribute('aria-label', p[1]); b.setAttribute('aria-pressed', 'false');
+        b.addEventListener('click', function () {
+          each('button', function (x) { x.setAttribute('aria-pressed', 'false'); }, r);
+          b.setAttribute('aria-pressed', 'true');
+        });
+        r.appendChild(b);
+      });
+      m.appendChild(r);
+    }
+    function ask() {
+      chips.innerHTML = '';
+      [['Sam owns it', 'Sam owns'], ['I do', 'you own']].forEach(function (p) {
+        var b = d.createElement('button'); b.type = 'button'; b.className = 'mini'; b.textContent = p[0];
+        b.addEventListener('click', function () {
+          chips.innerHTML = '';
+          msg('me', p[0]);
+          var t = typing();
+          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
+        });
+        chips.appendChild(b);
+      });
+    }
+    function play() {
+      timers.forEach(clearTimeout); timers = []; body.innerHTML = ''; chips.innerHTML = '';
+      var t1 = typing();
+      at(900, function () { t1.remove(); react(msg('', 'Morning briefing: <b>3 need you</b>, 1 contradiction held for you.')); });
+      at(1500, function () {
+        var t2 = typing();
+        at(1100, function () { t2.remove(); msg('', 'One thing I can’t tell from your tools: who owns the billing fix, you or Sam? <span style="color:var(--ink-3)">(ticket link · 1-line summary)</span>'); ask(); });
+      });
+    }
+    replay.addEventListener('click', play);
+    onceVisible(chat, play, 0.5);
+  })();
+
   /* ---------- jump palette (⌘K / Ctrl+K) ---------- */
   (function () {
     var pal = $('cmdk'), input = $('cmdk-input'), list = $('cmdk-list'), openBtn = $('cmdk-btn');
