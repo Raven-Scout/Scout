@@ -135,7 +135,7 @@ struct MenuBarExtraContent: View {
     private func perform(_ fix: ScoutStatus.Fix) {
         switch fix {
         case .setUp: openMainWindow()
-        case .openSettings: openScoutSettings()
+        case .openSettings: openScoutSettings(atEngine: true)
         }
     }
 
@@ -281,10 +281,15 @@ struct MenuBarExtraContent: View {
         openWindow(id: "main")
     }
 
-    private func openScoutSettings() {
+    /// `atEngine`: the status card's fix, which lives in Settings ▸ Engine.
+    private func openScoutSettings(atEngine: Bool = false) {
         dismiss()
         NSApp.activate(ignoringOtherApps: true)
-        openSettings()
+        if atEngine {
+            HelpActions.showEngineSettings(openSettings)
+        } else {
+            openSettings()
+        }
     }
 
     private func installWakeSchedule() {

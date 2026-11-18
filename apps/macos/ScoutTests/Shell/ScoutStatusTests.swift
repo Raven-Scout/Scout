@@ -144,13 +144,33 @@ struct ScoutStatusTests {
         let engine = EngineState.external(install, .devCheckout)
         for status in RunStatus.allCases where status.isSkip {
             let s = derive(engine, doctor: green, run: run(status))
-            #expect(s.kind == .skipped, "\(status)")
+            let kind: ScoutStatus.Kind = status.isSafetySkip ? .heldForSafety
+                : status == .skippedRuntime ? .agentNotAllowed : .skipped
+            #expect(s.kind == kind, "\(status)")
             #expect(s.detail.contains(status.skipReason!), "\(status)")
         }
         #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).tone == .err)
         #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).fix == .openSettings)
         #expect(derive(engine, doctor: green, run: run(.skippedBudget)).tone == .warn)
         #expect(derive(engine, doctor: green, run: run(.skippedBudget)).fix == nil)
+    }
+
+    @Test("a safety skip has its own words, not a routine skip's (R2)")
+    func safetySkipsAreNotRoutine() {
+        let engine = EngineState.external(install, .devCheckout)
+        #expect(RunStatus.allCases.filter(\.isSafetySkip) == [.skippedGates, .skippedSandbox])
+        for status in [RunStatus.skippedGates, .skippedSandbox] {
+            let s = derive(engine, doctor: green, run: run(status))
+            #expect(s.kind == .heldForSafety, "\(status)")
+            #expect(s.title == "Run held back for safety", "\(status)")
+            #expect(s.tone == .err, "\(status)")
+        }
+        #expect(derive(engine, doctor: green, run: run(.skippedBudget)).title == "Last run skipped")
+        // An agent that isn't allowed isn't routine either: its own kind, an error with a fix.
+        let runtime = derive(engine, doctor: green, run: run(.skippedRuntime))
+        #expect(runtime.kind == .agentNotAllowed)
+        #expect(runtime.tone == .err)
+        #expect(runtime.fix == .openSettings)
     }
 
     // MARK: - AppState keeps it current

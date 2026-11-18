@@ -148,9 +148,9 @@ struct AccessibilityFoundationTests {
                 KBGraphNode(id: "c.md", label: "Center", group: KBEntityGroup.allCases[0], degree: 2, isCenter: true),
             ],
             edges: [])
-        let ordered = KBGraphCanvas.accessibleNodes(graph).map(\.label)
+        let ordered = KBMapPayload.accessibleNodes(graph).map(\.label)
         #expect(ordered == ["Center", "Beta", "Alpha"])
-        #expect(KBGraphCanvas.accessibilityLabel(for: graph.nodes[2]) == "Center, this note, 2 links")
-        #expect(KBGraphCanvas.accessibilityLabel(for: graph.nodes[0]) == "Alpha, 1 link")
+        #expect(KBMapPayload.accessibilityLabel(for: graph.nodes[2]) == "Center, this note, 2 links")
+        #expect(KBMapPayload.accessibilityLabel(for: graph.nodes[0]) == "Alpha, 1 link")
     }
 }

@@ -448,8 +448,33 @@ struct ScheduleEditServiceDraftTests {
         // The delete is on disk.
         let onDisk = try String(contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8)
         #expect(!onDisk.contains("research:"))
-        #expect(SchedulesView.problemText(
+        let problem = SchedulesView.problem(
             ScheduleReloadAfterWriteError(change: nil, reason: "bad output"),
-            action: "delete the schedule").hasPrefix("Saved, but the page didn't update."))
+            action: "delete the schedule")
+        #expect(problem.title == "Saved, but the page didn't update")
+        #expect(problem.details == "bad output")
+    }
+
+    @Test("a rejected schedule keeps the validator's output behind Details (R2)")
+    func validateFailureIsPlainWithRawOutputInDetails() async throws {
+        let (service, _, _) = try makeServiceOnDisk(
+            validateExitCode: 2,
+            validateStderr: Data("slots.research.cooldown_minutes: must be >= 0".utf8)
+        )
+        try await service.loadAll()
+        do {
+            try await service.save(allSlots: service.slots)
+            Issue.record("expected ScheduleValidationError")
+        } catch let rejected as ScheduleValidationError {
+            #expect(rejected.exitCode == 2)
+            let problem = SchedulesView.problem(rejected, action: "save the schedule")
+            #expect(problem.title == "Couldn't save the schedule")
+            // The plain words carry no engine output; the raw line is Details only.
+            #expect(problem.impact?.contains("cooldown_minutes") == false)
+            #expect(!problem.title.contains("cooldown_minutes"))
+            #expect(problem.details == "slots.research.cooldown_minutes: must be >= 0")
+        }
+        // A validator that printed nothing still leaves something to copy.
+        #expect(ScheduleValidationError(exitCode: 3, output: "  \n").details.contains("exited 3"))
     }
 }

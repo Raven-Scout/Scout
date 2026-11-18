@@ -199,6 +199,97 @@ def test_retries_on_socket_open_failure_and_server_500(tmp_path: Path, output: s
     assert _attempts(scout_dir) == 2, f"wrapper should have retried after: {output}"
 
 
+# The sign-in race, as a synthetic line: the CLI's real one names the account's email.
+AUTH_RACE_LINE = (
+    "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being "
+    "refreshed, often by another Claude Code process), so it couldn't load your organization's settings "
+    "for alex@example.com."
+)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param(AUTH_RACE_LINE, id="observed-wording"),
+        pytest.param(AUTH_RACE_LINE.replace("'", "’"), id="curly-apostrophe"),
+        pytest.param(f"Error: {AUTH_RACE_LINE}", id="error-prefix"),
+        pytest.param(
+            "Claude Code couldn't confirm your account (its sign-in token was still being refreshed).",
+            id="cause-clause",
+        ),
+    ],
+)
+def test_retries_on_the_sign_in_race(tmp_path: Path, output: str) -> None:
+    """Another Claude Code process refreshing the shared login makes a run exit 1 in seconds.
+
+    Regression context (2026-11-17): one vault lost two scheduled runs to it in a day, each
+    3 s long, both "not classified as transient". The login was fine: a retry a minute later works.
+    """
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=output, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2
+    log = log_file.read_text()
+    assert "Transient API error detected" in log
+    assert "Authentication failure" not in log
+
+
+def test_a_sign_in_race_that_persists_is_bounded(tmp_path: Path) -> None:
+    """The race is retried, not waited out forever: SCOUT_RETRY_MAX still ends the run."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    counter = scout_dir / "attempts.count"
+    fake = scout_dir / "fake-claude.sh"
+    fake.write_text(
+        "#!/bin/bash\n"
+        f'n=$(cat "{counter}" 2>/dev/null || echo 0); echo $((n + 1)) > "{counter}"\n'
+        f"echo {AUTH_RACE_LINE!r}\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 1
+    assert _attempts(scout_dir) == 2
+    assert "Retry exhausted: 2 attempts" in log_file.read_text()
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Not logged in · Please run /login",
+        "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        # Mentions the sign-in, but not the race: a login that can't be verified at all.
+        "Claude Code couldn't verify your sign-in with Anthropic.",
+        # The session's own output quoting the race (a briefing about last night's runs) is not one.
+        "- Two runs failed: Claude Code couldn't verify your sign-in with Anthropic yet, so they stopped.",
+        "Summary: the sign-in token was still being refreshed by another process.",
+        "  Claude Code couldn't verify your sign-in with Anthropic yet (quoted, indented)",
+    ],
+)
+def test_a_real_signed_out_state_or_a_quote_is_not_taken_for_the_race(tmp_path: Path, output: str) -> None:
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=output, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 1
+    assert _attempts(scout_dir) == 1, "a signed-out state, or a quote of the race, must not be retried"
+
+
 def test_existing_transient_pattern_still_retries(tmp_path: Path) -> None:
     """Guard: editing the regex alternation must not break a pre-existing pattern."""
     scout_dir = tmp_path / "Scout"

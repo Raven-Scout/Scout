@@ -199,22 +199,23 @@ struct DetailSmokeTests {
         ```
         """
         let binding = Binding(get: { source }, set: { source = $0 })
-        ViewHost.render(KBEditableView(source: binding), size: paneSize)
+        ViewHost.render(KBReaderWebView(source: binding, resolve: { _ in nil }), size: paneSize)
 
         source = ""
-        ViewHost.render(KBEditableView(source: binding), size: paneSize)
+        ViewHost.render(KBReaderWebView(source: binding, resolve: { _ in nil }), size: paneSize)
     }
 
-    @Test("the local graph canvas renders")
-    func kbGraphCanvasRenders() async throws {
+    @Test("the knowledge map renders, for the vault and for one note")
+    func kbMapRenders() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         let svc = await loadedKB(vault)
-        let graph = svc.fullGraph()
         ViewHost.render(
-            KBGraphCanvas(graph: graph, onNavigate: { _ in }),
+            KBMapWebView(service: svc, mode: .vault, onOpen: { _ in }),
             size: CGSize(width: 700, height: 600))
-        ViewHost.render(
-            KBGraphCanvas(graph: .empty, onNavigate: { _ in }),
-            size: CGSize(width: 700, height: 600))
+        if let first = svc.fullGraph().nodes.first {
+            ViewHost.render(
+                KBMapWebView(service: svc, mode: .local(center: first.id), onOpen: { _ in }),
+                size: CGSize(width: 300, height: 400))
+        }
     }
 }

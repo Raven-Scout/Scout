@@ -19,7 +19,13 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         case paused
         case running
         case lastFailed
+        /// A routine skip: over budget, another run or app writing, already done.
         case skipped
+        /// The last run was held back for safety (`RunStatus.isSafetySkip`):
+        /// every run stops the same way until the owner fixes it.
+        case heldForSafety
+        /// The last run's agent isn't allowed to run (`skippedRuntime`).
+        case agentNotAllowed
         case ready
     }
 
@@ -124,12 +130,21 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox, .skippedRuntime,
              .skippedLease, .skippedRedundant:
             // Safety skips mean the run couldn't happen safely: that's a
-            // problem to fix. Budget, lock and lease skips are routine.
-            let routine: Set<RunStatus> = [.skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant]
+            // problem to fix, and it gets its own icon and words. Budget,
+            // lock and lease skips are routine.
+            let reason = latest.status.skipReason ?? "skipped"
+            if latest.status.isSafetySkip {
+                return ScoutStatus(kind: .heldForSafety, title: "Run held back for safety",
+                                   detail: "\(name) · \(reason)", tone: .err, fix: .openSettings)
+            }
+            // Not routine either: every run on that agent stops until its
+            // permission is changed in Settings ▸ Engine.
+            if latest.status == .skippedRuntime {
+                return ScoutStatus(kind: .agentNotAllowed, title: "Run skipped: agent not allowed",
+                                   detail: "\(name) · \(reason)", tone: .err, fix: .openSettings)
+            }
             return ScoutStatus(kind: .skipped, title: "Last run skipped",
-                               detail: "\(name) · \(latest.status.skipReason ?? "skipped")",
-                               tone: routine.contains(latest.status) ? .warn : .err,
-                               fix: routine.contains(latest.status) ? nil : .openSettings)
+                               detail: "\(name) · \(reason)", tone: .warn)
         case .scheduled, .success:
             let when = latest.endedAt ?? latest.startedAt
             return ScoutStatus(kind: .ready, title: "Ready",
