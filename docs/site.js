@@ -354,7 +354,48 @@
       if (reduce) { write(); return; }
       list.classList.add('swap'); setTimeout(write, 200);
     }
-    each('.seg button', function (b) { b.addEventListener('click', function () { show(b.getAttribute('data-view')); }); }, fig);
+    /* Scrolling drives it. Where the figure fits on screen it sticks under the header
+       inside a taller track and flips halfway through; where it doesn't (short phones),
+       it flips once you've scrolled most of it into view. Scrolling back flips it back.
+       The buttons scroll to the matching point, so scroll and buttons never disagree. */
+    var track = $('morning-track'), prog = $('stages-prog'), head = d.querySelector('.site-head');
+    var current = 'without', figH = 0, stick = 76, scrolly = false, manual = false, ticking = false;
+    function setView(v) { if (v !== current) { current = v; show(v); } }
+    function progress() {
+      var extra = track.offsetHeight - figH;
+      return extra > 0 ? Math.min(1, Math.max(0, (stick - track.getBoundingClientRect().top) / extra)) : 0;
+    }
+    function update() {
+      ticking = false;
+      if (scrolly) { var p = progress(); prog.style.width = (p * 100).toFixed(1) + '%'; setView(p >= 0.5 ? 'with' : 'without'); }
+      else if (!manual) setView(fig.getBoundingClientRect().bottom < innerHeight * 0.8 ? 'with' : 'without');
+    }
+    function measure() {
+      stick = (head ? head.offsetHeight : 60) + 16;
+      figH = fig.offsetHeight;
+      scrolly = !!track && figH < innerHeight - stick - 24;
+      if (track) {
+        track.classList.toggle('scrolly', scrolly);
+        figH = fig.offsetHeight; /* the progress bar only shows in scrolly mode */
+        track.style.setProperty('--fig-h', figH + 'px'); track.style.setProperty('--stick', stick + 'px');
+      }
+      update();
+    }
+    function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(update); } }
+    each('.seg button', function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-view');
+        if (scrolly) {
+          var y = scrollY + track.getBoundingClientRect().top - stick + (v === 'with' ? 0.75 : 0.15) * (track.offsetHeight - figH);
+          window.scrollTo({ top: y, behavior: reduce ? 'auto' : 'smooth' });
+        } else { manual = true; setView(v); }
+      });
+    }, fig);
+    if (hasIO) new IntersectionObserver(function (es) { es.forEach(function (e) { if (!e.isIntersecting) manual = false; }); }).observe(fig);
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', measure, { passive: true });
+    if (d.fonts && d.fonts.ready) d.fonts.ready.then(measure);
+    measure();
   })();
 
   /* ---------- everything is a file: follow a [[link]] into the vault ---------- */
