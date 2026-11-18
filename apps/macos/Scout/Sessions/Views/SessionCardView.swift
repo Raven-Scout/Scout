@@ -6,6 +6,8 @@ import SwiftUI
 struct SessionCardView: View {
     let session: AgentSession
     let now: Date
+    /// Set on a Now-strip card, which sits outside its project's lane.
+    var projectName: String? = nil
     /// Set for a sub-agent whose parent is in the index.
     var parentTitle: String? = nil
     var isSelected = false
@@ -14,6 +16,14 @@ struct SessionCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let projectName {
+                Text(projectName)
+                    .font(DS.sans(10.5, weight: .medium))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityLabel("Project: \(projectName)")
+            }
             if let parentTitle {
                 Text("↳ \(parentTitle)")
                     .font(DS.sans(10.5))
