@@ -266,19 +266,35 @@ struct InlineMarkdownText: View {
 
     /// `target` arrives already percent-decoded from `target(of:)`.
     private func openWikilink(target decoded: String) -> OpenURLAction.Result {
-        // In-app navigation first (Knowledge Base). If the handler resolves the
-        // target it returns true and we stop; otherwise route it.
-        if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
+        Self.openWikilink(target: decoded, kbHandler: kbWikilinkHandler, openKBNote: openKBNote)
+            ? .handled : .discarded
+    }
+
+    /// Open a clicked wikilink: in-app navigation first (the Knowledge Base
+    /// handler, which returns true when it resolved the target), else route
+    /// it. Shared with the KB's web reader. Returns whether anything opened.
+    @discardableResult
+    static func openWikilink(target decoded: String, kbHandler: ((String) -> Bool)?,
+                             openKBNote: StableAction<String>?) -> Bool {
+        if let kbHandler, kbHandler(decoded) { return true }
         let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
-        switch Self.route(for: decoded, canOpenKBNote: openKBNote != nil, linearWorkspace: workspace) {
+        switch route(for: decoded, canOpenKBNote: openKBNote != nil, linearWorkspace: workspace) {
         case .kbNote(let target):
             openKBNote?(target)
-            return .handled
+            return true
         case .external(let url):
             NSWorkspace.shared.open(url)
-            return .handled
+            return true
         case nil:
-            return .discarded
+            return false
         }
+    }
+
+    /// `raw` with tags, GitHub refs and wikilinks rewritten as markdown links
+    /// (`scout-tag://`, `https://github.com/…`, `scout-wiki://`) — the same
+    /// rewriting this view renders from. The KB's web reader runs it line by
+    /// line, so it must never add or remove a newline (it doesn't).
+    static func linkifiedMarkdown(_ raw: String) -> String {
+        rewriteWikilinks(GitHubRefLinkifier.linkify(KBTag.linkify(raw)))
     }
 }
