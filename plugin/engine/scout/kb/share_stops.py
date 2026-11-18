@@ -56,6 +56,12 @@ UNLINKED_NOTE = "This vault isn't linked to Agnes, so nothing is shared yet and 
 SHARING_OFF_NOTE = "Shared Areas are off on this Agnes, so nobody reads your shares there."
 STOPPED_NOTE = "Agnes stopped it at once: from their next read, they no longer get it. No sync is needed for that."
 VAULT_NOTE = "Commit scout-config.yaml and run `scoutctl repo sync` so the vault says so too."
+RETRY_NOTE = (
+    "Agnes didn't confirm every stop, so it may still serve the share until your next `scoutctl repo sync`. Run "
+    "the same `scoutctl kb unshare` again to retry the stop at once: it asks Agnes again even though the vault is "
+    "already narrowed. `scoutctl kb shares` shows what Agnes still serves."
+)
+EXPECTED_FALLBACKS = (FALLBACK_NOTE, SHARING_OFF_NOTE, UNLINKED_NOTE)  # an Agnes that can't stop: not a failure
 PENDING_PULL_NOTE = (
     "Agnes has {n} commit(s) on top of your last push (a stop it wrote into scout-config.yaml, say). Run "
     "`scoutctl repo sync` before you commit this change, so the two privacy edits don't clash."
@@ -361,7 +367,7 @@ def client_for(vault: Path) -> StopsClient | None:
         if state is None or not state.agnes_url:
             return None
         return StopsClient(state.agnes_url, load_token(vault))
-    except RepoSyncError:
+    except (RepoSyncError, OSError):  # OSError: a sandboxed run can't read ~/.scout-secrets (PermissionError)
         return None
 
 
@@ -390,15 +396,26 @@ def clear_refusal(vault: Path, env: Mapping[str, str], client: StopsClient) -> s
     Clearing widens what is shared, so it is the owner's act at the keyboard
     only (as ``repo sync-only --accept`` and ``sandbox off``): refused when
     ``SCOUT_MODE`` is set (a scheduled run), the reader isn't ``owner`` (an
-    engine-launched or agent run, ``delegate:*``, another person's agent), the
+    engine-launched or agent run, ``delegate:*``, another person's agent), a
+    live scheduled run of this vault is in this process's ancestry (read from
+    the process table, so ``env -u SCOUT_MODE`` doesn't get past it, #595), the
     vault is a delegate checkout, or the link token isn't a personal access token.
+    A clear takes effect in Agnes at once, with no commit-time check behind it,
+    so the process check runs here and not only in the commit hook.
     """
     from scout.delegate_agent import ENV_FILE
+    from scout.kb import live_run
     from scout.scripts.privacy_migrate import headless_reason
 
     why = headless_reason(env)
     if why:
         return f"refused: {why}. Only the owner, at the keyboard, may clear a stop in Agnes"
+    src = live_run.commit_source_now(vault)
+    if src is not None and src.runs:
+        return (
+            f"refused: this command runs inside a scheduled run ({src.mode}, by {src.by}), whatever its environment "
+            "says. Only the owner, at the keyboard, may clear a stop in Agnes"
+        )
     if (vault / ".git" / ENV_FILE).exists():
         return "refused: this is a delegate checkout. Only the owner, at the keyboard, may clear a stop in Agnes"
     kind = client.token_kind()
@@ -484,6 +501,7 @@ class StopOutcome:
     made: list[Stop] = field(default_factory=list)
     planned: list[StopRequest] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    failed: bool = False  # a stop Agnes should have made wasn't confirmed: kb unshare exits 4
 
     @property
     def pending_until_sync(self) -> bool:
@@ -492,6 +510,7 @@ class StopOutcome:
     def to_json(self) -> dict[str, Any]:
         return {
             "status": self.status,
+            "failed": self.failed,
             "stops": [s.to_json() for s in self.made],
             "planned": [r.to_json() for r in self.planned],
             "notes": self.notes,
@@ -511,6 +530,8 @@ class StopOutcome:
                     "it stays until you share with that person again with `scoutctl kb share`."
                 )
         out += self.notes
+        if self.failed:
+            out.append(RETRY_NOTE)
         return out
 
 
@@ -527,7 +548,8 @@ def make_stops(
     if client is None:
         return StopOutcome("unlinked", notes=[*notes, UNLINKED_NOTE])
     if view is None:
-        return StopOutcome("unavailable", notes=[*notes, why or FALLBACK_NOTE])
+        why = why or FALLBACK_NOTE
+        return StopOutcome("unavailable", notes=[*notes, why], failed=why not in EXPECTED_FALLBACKS)
     if dry_run:
         return StopOutcome("preview", planned=requests_, notes=notes)
     if not requests_:
@@ -539,9 +561,11 @@ def make_stops(
             outcome.made.append(client.stop(req.glob, req.principal))
         except StopRefused as e:
             outcome.status = "partial"
+            outcome.failed = True
             outcome.notes.append(f"Agnes didn't stop {req.glob} for {req.who()}: {e.code} ({e})")
         except StopsUnavailable as e:
             outcome.status = "unavailable"
+            outcome.failed = True
             outcome.notes.append(_unavailable_text(e))
             break
     if not outcome.made and outcome.status != "unavailable":
@@ -671,6 +695,47 @@ def when(iso: str) -> str:
     """``2026-11-13T21:24:00.48Z`` → ``2026-11-13 21:24 UTC`` (as given when it isn't that shape)."""
     m = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})", iso)
     return f"{m.group(1)} {m.group(2)} UTC" if m else (iso or "?")
+
+
+def still_served(view: SharesView, granted: Mapping[str, Sequence[str]]) -> list[tuple[str, list[str]]]:
+    """``[(glob, principals)]`` Agnes still serves that the vault no longer grants, and no open stop covers.
+
+    ``granted`` is the vault's ``federation_defaults`` scope per glob (nothing while sharing is off there). This
+    is what a failed or never-made stop leaves behind (an unshare on an older Agnes, offline, refused); it lasts
+    until the vault is synced or the stop is made. Agnes lists shares from the last pushed commit.
+    """
+    out: list[tuple[str, list[str]]] = []
+    for share in view.shares:
+        if share.kind != "folder" or _covered(view, share.glob, None):
+            continue
+        vault = set(granted.get(share.glob, ()))
+        extra = [
+            p.principal
+            for p in share.principals
+            if p.principal not in vault and not _covered(view, share.glob, p.principal)
+        ]
+        if extra:
+            out.append((share.glob, extra))
+    return out
+
+
+def still_served_lines(served: Sequence[tuple[str, list[str]]], granted: Mapping[str, Sequence[str]]) -> list[str]:
+    import shlex
+
+    out: list[str] = []
+    for glob, principals in served:
+        target = glob[:-3] if glob.endswith("/**") else glob
+        who = ", ".join(p[len("person:") :] if p.startswith("person:") else p for p in principals)
+        if granted.get(glob):
+            args = " ".join(f"--with {shlex.quote(p)}" for p in principals)
+            command = f"scoutctl kb unshare {shlex.quote(target)} {args}"
+        else:
+            command = f"scoutctl kb unshare {shlex.quote(target)}"
+        out.append(
+            f"Agnes still serves {glob} to {who}, which this vault no longer shares: until you commit and run "
+            f"`scoutctl repo sync`, or run `{command}` to retry the stop at once."
+        )
+    return out
 
 
 def stop_lines(view: SharesView | None, why: str | None, listed_globs: Sequence[str]) -> list[str]:

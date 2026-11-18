@@ -42,6 +42,7 @@ error status leaves the share to Agnes's read-time check, with a warning.
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,7 +196,7 @@ def directory_for(vault: Path) -> Directory | None:
         if state is None or not state.agnes_url:
             return None
         return Directory(state.agnes_url, load_token(vault))
-    except RepoSyncError:
+    except (RepoSyncError, OSError):  # OSError: a sandboxed run can't read ~/.scout-secrets (PermissionError)
         return None
 
 
@@ -695,7 +696,7 @@ def plan_share(
     entries = overlay.entries
     for e in entries:
         if e.scope == "org" and _inside(e.glob, target):
-            raise ShareRefused(ORG_ENTRY_REFUSAL.format(glob=e.glob, target=raw_target))
+            raise ShareRefused(ORG_ENTRY_REFUSAL.format(glob=e.glob, target=shlex.quote(raw_target)))
     same = next((e for e in entries if e.glob == target.glob), None)
     if same is not None:
         same.set_scope(_union(same.scope or "none", principals))
@@ -966,8 +967,8 @@ def shares_lines(
             # The vault shares with them (again, say by a hand edit), but the stop still keeps them out.
             again = row.principals if stop.principal is None else [p for p in row.principals if p == stop.principal]
             if again and row.source == "default":
-                target = row.glob[:-3] if row.glob.endswith("/**") else row.glob
-                people = " ".join(f"--with {_display(p, {})}" for p in again)
+                target = shlex.quote(row.glob[:-3] if row.glob.endswith("/**") else row.glob)
+                people = " ".join(f"--with {shlex.quote(_display(p, {}))}" for p in again)
                 out.append(
                     f"    still stopped although this vault shares it with them: run `scoutctl kb share {target} "
                     f"{people}` to lift it"

@@ -844,6 +844,12 @@ def kb_unshare(
     has no stop endpoint, or can't be reached, the stop takes effect once you
     commit scout-config.yaml and run `scoutctl repo sync`. A note that shares
     itself in its own frontmatter is listed, not edited.
+
+    Exit 1 = refused, 2 = bad argument, 4 = the vault was narrowed but Agnes
+    didn't confirm every stop (unreachable, an error, a refusal): it may serve
+    the share until the next sync, and running the same command again retries
+    the stop. An Agnes without the stop endpoint, or with sharing off, isn't a
+    failure (exit 0).
     """
     import json
 
@@ -870,11 +876,15 @@ def kb_unshare(
         written = True
     if as_json:
         print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+        if plan.agnes.failed:
+            raise typer.Exit(4)
         return
     for line in plan.lines():
         print(line)
     if not plan.changed and not plan.agnes.made and not plan.agnes.planned:
         print("Nothing to change: it wasn't shared that way.")
+    if plan.agnes.failed:
+        raise typer.Exit(4)
 
 
 @kb_app.command("shares")
@@ -898,6 +908,8 @@ def kb_shares(
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
+        from typing import Any
+
         from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
         from scout.kb.read import Output
@@ -911,10 +923,15 @@ def kb_shares(
         view, why = share_stops.fetch_view(client) if client is not None else (None, None)
         stops = {row.glob: share_stops.row_stops(view, row.glob) for row in rows}
         shares = [{**row.to_json(), "stops": [s.to_json() for s in stops[row.glob]]} for row in rows]
-        agnes = view.to_json() if view is not None else {"available": False, "note": why}
+        agnes: dict[str, Any] = view.to_json() if view is not None else {"available": False, "note": why}
+        granted = {row.glob: row.principals for row in rows if row.source == "default"} if enabled else {}
+        served = share_stops.still_served(view, granted) if view is not None else []
+        if view is not None:
+            agnes["still_served"] = [{"glob": g, "principals": p} for g, p in served]
         data = {"enabled": enabled, "group_names": names, "shares": shares, "agnes": agnes}
         lines = shares_lines(enabled, rows, names, stops)
         lines += share_stops.stop_lines(view, why, [row.glob for row in rows])
+        lines += share_stops.still_served_lines(served, granted)
         return Output(data=data, lines=lines)
 
     _kb_run(args, reader, repo, as_json, body)

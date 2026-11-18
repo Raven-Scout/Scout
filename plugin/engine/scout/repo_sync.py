@@ -1757,11 +1757,7 @@ def _sync_under_lease(
     if remote is None:
         raise RepoSyncError("remote_empty", "refused: the repository on Agnes is empty; unlink, then link again")
     replayed_to = state.last_mirror
-    if status.pending_server_commits > 0:
-        # Agnes says it wrote on top of the last push: pull before pushing, whatever ls-remote answered.
-        result.notes.append(
-            f"Agnes had {status.pending_server_commits} commit(s) on top of the last push; pulled them first"
-        )
+    # Agnes says it wrote on top of the last push: pull before pushing, whatever ls-remote answered.
     if remote != state.last_mirror or status.pending_server_commits > 0:
         remote = fetch_remote(vault, host, status.clone_url)
         if _rev(vault, state.last_mirror) is None or not _is_ancestor(vault, state.last_mirror, remote):
@@ -1793,6 +1789,11 @@ def _sync_under_lease(
             state.last_mirror = rev
             parent = rev
             save_state(vault, state)
+    if status.pending_server_commits > 0:
+        result.notes.append(
+            f"Agnes reported {status.pending_server_commits} commit(s) on top of the last push, so this sync "
+            f"fetched first and replayed {len(result.replayed)} before pushing"
+        )
     if rules.sync_only:
         result.replay_skipped[:0] = _skips_since_last_push(vault, rules, state, replayed_to)
     if result.replay_skipped:

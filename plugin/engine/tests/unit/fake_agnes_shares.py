@@ -64,6 +64,7 @@ class FakeAgnes:
     pending_server_commits: int = 0
     requests: list[dict[str, Any]] = field(default_factory=list)
     clear_refuses: bool = False  # answer clear-stop 404 knowledge_repository_not_found whatever the token
+    stop_fail: int | None = None  # answer shares/stop with this status (500, 401…) after a GET that worked
     on_stop: Callable[[dict[str, Any]], None] | None = None
     url: str = ""
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1))
@@ -153,6 +154,8 @@ class FakeAgnes:
         if method == "POST" and path == f"{BASE}/shares/stop":
             if not isinstance(body, dict) or set(body) - {"glob", "person", "write_back"}:
                 return 422, {"detail": {"code": "share_widen_in_vault_only", "message": "widen"}}
+            if self.stop_fail is not None:
+                return self.stop_fail, {"detail": "boom"}
             glob, person = body.get("glob"), body.get("person")
             if glob not in self.shares or (person is not None and not self._admits(glob, person)):
                 return 404, {"detail": {"code": "share_not_found", "message": "Nothing you share matches that"}}

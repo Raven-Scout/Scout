@@ -209,9 +209,12 @@ def test_a_sync_only_vault_never_asks_for_a_write_back(vault: Path, agnes: FakeA
 def test_an_agnes_without_a8b_keeps_the_s1a_unshare(vault: Path, agnes: FakeAgnes, mode: str, note: str) -> None:
     shared_with(vault, agnes, "priya@example.com")
     agnes.mode = mode
-    data = json.loads(kb(vault, "unshare", WIDGET, "--json").stdout)
+    res = kb(vault, "unshare", WIDGET, "--json")
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
     assert data["written"] is True and data["pending_until_sync"] is True
     assert data["agnes"]["status"] == "unavailable" and note in data["agnes"]["notes"]
+    assert data["agnes"]["failed"] is False  # an Agnes that can't stop isn't a failure: exit 0
     assert defaults(vault) == []
     assert agnes.calls("POST") == []
     res = kb(vault, "unshare", WIDGET, "--with", "sam@example.com")
@@ -233,7 +236,8 @@ def test_an_unreachable_agnes_keeps_the_vault_change(vault: Path, agnes: FakeAgn
     shared_with(vault, agnes, "priya@example.com")
     link(vault, "http://127.0.0.1:9", PAT)  # nothing listens on the discard port
     res = kb(vault, "unshare", WIDGET)
-    assert res.exit_code == 0, res.output
+    assert res.exit_code == 4, res.output  # the vault is narrowed, but no stop was confirmed
+    assert share_stops.RETRY_NOTE in res.output
     assert "Agnes couldn't be asked" in res.output and share.UNSHARE_PENDING in res.output
     assert defaults(vault) == []
 
@@ -514,3 +518,153 @@ def test_kb_shares_flags_a_stop_on_someone_the_vault_shares_with_again(vault: Pa
     out = kb(vault, "shares").output
     hint = f"run `scoutctl kb share {WIDGET} --with priya@example.com` to lift it"
     assert hint in out and out.count("still stopped although") == 1
+
+
+# ----- review fixes: a stop that fails after the listing worked ---------------------------------
+
+
+@pytest.mark.parametrize("fail", [500, 401, "timeout"])
+def test_a_stop_that_fails_after_the_listing_exits_4_and_kb_shares_remembers(
+    vault: Path, agnes: FakeAgnes, monkeypatch: pytest.MonkeyPatch, fail: int | str
+) -> None:
+    shared_with(vault, agnes, "priya@example.com", "sam@example.com")
+    timing_out = [fail == "timeout"]
+    if fail == "timeout":
+        guarded = requests.request
+
+        def slow(method: str, url: str, **kw: Any) -> Any:
+            if timing_out[0] and url.endswith("/shares/stop"):
+                raise requests.ReadTimeout("read timed out")
+            return guarded(method, url, **kw)
+
+        monkeypatch.setattr(requests, "request", slow)
+    else:
+        agnes.stop_fail = int(fail)
+
+    res = kb(vault, "unshare", WIDGET, "--with", "sam@example.com")
+
+    assert res.exit_code == 4, res.output
+    assert share_stops.RETRY_NOTE in res.output
+    assert defaults(vault) == [{"glob": GLOB, "scope": [PRIYA]}]  # the vault change is kept
+    assert agnes.open_stops() == []
+    shares = kb(vault, "shares")
+    assert f"Agnes still serves {GLOB} to sam@example.com, which this vault no longer shares" in shares.output
+    assert f"`scoutctl kb unshare {WIDGET} --with person:sam@example.com` to retry the stop at once" in shares.output
+    data = json.loads(kb(vault, "shares", "--json").stdout)
+    assert data["agnes"]["still_served"] == [{"glob": GLOB, "principals": [SAM]}]
+
+    agnes.stop_fail = None
+    timing_out[0] = False
+    retry = kb(vault, "unshare", WIDGET, "--with", "sam@example.com")  # the vault is already narrowed
+    assert retry.exit_code == 0, retry.output
+    assert [(s["glob"], s["principal"]) for s in agnes.open_stops()] == [(GLOB, SAM)]
+    assert "Agnes still serves" not in kb(vault, "shares").output
+
+
+def test_a_partial_group_stop_exits_4(vault: Path, agnes: FakeAgnes) -> None:
+    shared_with(vault, agnes, groups={GROUP: ["sam@example.com"]})
+    agnes.stop_fail = 500
+    res = kb(vault, "unshare", WIDGET, "--with", "sam@example.com", "--json")
+    assert res.exit_code == 4
+    assert json.loads(res.stdout)["agnes"]["failed"] is True
+
+
+def test_an_old_agnes_is_not_a_failed_stop(vault: Path, agnes: FakeAgnes) -> None:
+    shared_with(vault, agnes, "priya@example.com")
+    agnes.mode = "old"
+    assert kb(vault, "unshare", WIDGET).exit_code == 0
+
+
+def test_kb_shares_names_what_an_unsynced_old_agnes_unshare_left_served(vault: Path, agnes: FakeAgnes) -> None:
+    shared_with(vault, agnes, "priya@example.com")
+    agnes.mode = "old"
+    kb(vault, "unshare", WIDGET)
+    agnes.mode = "a8b"
+    out = kb(vault, "shares").output
+    assert f"Agnes still serves {GLOB} to priya@example.com" in out
+    assert f"`scoutctl kb unshare {WIDGET}` to retry" in out
+
+
+def test_keeping_an_unnamed_person_stopped_fails_so_the_stop_for_everyone_stays(vault: Path, agnes: FakeAgnes) -> None:
+    shared_with(vault, agnes, "priya@example.com", "sam@example.com")
+    kb(vault, "unshare", WIDGET)
+    (everyone,) = agnes.open_stops()
+    agnes.stop_fail = 500  # the stop that would keep Sam out fails
+    agnes.requests.clear()
+
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+
+    assert res.exit_code == 0, res.output
+    assert agnes.calls("POST", "/clear-stop") == []  # never cleared: that would let Sam back in
+    assert [s["stop_id"] for s in agnes.open_stops()] == [everyone["stop_id"]]
+    assert "its stop for everyone stays" in res.output
+
+
+def test_apply_clears_skips_only_the_globs_it_couldnt_narrow(vault: Path, agnes: FakeAgnes) -> None:
+    agnes.share(GLOB, "priya@example.com", "sam@example.com")
+    agnes.share(f"{WIDGET}/design/**", "priya@example.com")
+    wide = agnes.add_stop(GLOB, None)
+    design = agnes.add_stop(f"{WIDGET}/design/**", PRIYA)
+    client = share_stops.client_for(vault)
+    assert client is not None
+    view = client.shares()
+    plan = share_stops.share_clears(view, Target(rel=WIDGET, folder=True), [PRIYA])
+    assert [r.principal for r in plan.keep_stopped] == [SAM]
+    agnes.stop_fail = 500
+    lines = share_stops.apply_clears(vault, {}, client, plan)
+    cleared = [c["body"]["stop_id"] for c in agnes.calls("POST", "/clear-stop")]
+    assert cleared == [design["stop_id"]] and wide["stop_id"] not in cleared
+    assert any("its stop for everyone stays" in line for line in lines)
+
+
+# ----- review fixes: the process check, an unreadable token, quoting ----------------------------
+
+
+def test_a_clear_is_refused_inside_a_live_run_whatever_the_environment(
+    vault: Path, agnes: FakeAgnes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout.kb import live_run
+
+    client = share_stops.client_for(vault)
+    assert client is not None
+    seen: list[Path] = []
+
+    def in_a_run(v: Path) -> live_run.CommitSource:
+        seen.append(v)
+        return live_run.CommitSource(True, "briefing", "ancestry")
+
+    monkeypatch.setattr(live_run, "commit_source_now", in_a_run)
+    refusal = share_stops.clear_refusal(vault, {}, client)  # an environment that says "owner"
+    assert refusal is not None and "inside a scheduled run (briefing, by ancestry)" in refusal
+    assert seen == [vault]
+    monkeypatch.setattr(live_run, "commit_source_now", lambda v: live_run.CommitSource(False, "briefing", "host"))
+    assert share_stops.clear_refusal(vault, {}, client) is None  # the owner's own terminal during a run
+    shared_with(vault, agnes, "priya@example.com")
+    agnes.add_stop(GLOB, PRIYA)
+    monkeypatch.setattr(live_run, "commit_source_now", in_a_run)
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 2 and "inside a scheduled run" in res.output
+    assert agnes.calls("POST") == []
+
+
+def test_an_unreadable_token_degrades_to_unlinked(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout import repo_sync
+
+    def sandboxed(_vault: Path) -> str:
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(repo_sync, "load_token", sandboxed)
+    assert share_stops.client_for(vault) is None
+    assert share.directory_for(vault) is None
+    res = kb(vault, "shares", env={"SCOUT_READER": "autonomous"})
+    assert res.exit_code == 0, res.output
+
+
+def test_printed_commands_quote_paths_and_people() -> None:
+    served = [("knowledge-base/projects/my widget/**", ["person:sam@example.com"])]
+    (line,) = share_stops.still_served_lines(served, {"knowledge-base/projects/my widget/**": ["x"]})
+    assert "`scoutctl kb unshare 'knowledge-base/projects/my widget' --with person:sam@example.com`" in line
+    rows = [share.ShareRow(glob="knowledge-base/projects/my widget/**", source="default", principals=[PRIYA])]
+    stop = share_stops.Stop("stop0001", "knowledge-base/projects/my widget/**", PRIYA, "cli", "not_requested", "")
+    out = share.shares_lines(True, rows, {}, {rows[0].glob: [stop]})
+    assert any("`scoutctl kb share 'knowledge-base/projects/my widget' --with priya@example.com`" in x for x in out)
