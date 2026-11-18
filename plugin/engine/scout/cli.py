@@ -3072,7 +3072,17 @@ def _register_agent_runtime() -> None:
             return
         try:
             run_type = _os.environ.get("SCOUT_RUN_TYPE") or None
-            timeout_s = _limits.limits_for(vault, adapter, req.mode or None, run_type).run_timeout_s
+            lim = _limits.limits_for(vault, adapter, req.mode or None, run_type)
+            timeout_s = lim.run_timeout_s
+            if lim.ignored:
+                # Into the run's log (the wrapper sends exec's stderr there), so a run that tried to change
+                # its own limits leaves a trace (review of #653).
+                typer.echo(
+                    f"=== run limits: scout-config.yaml budget.per_runtime.{adapter.id} ignored: "
+                    + "; ".join(lim.ignored)
+                    + " ===",
+                    err=True,
+                )
         except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
             kind = _limits.kind_of(_os.environ.get("SCOUT_RUN_TYPE")) or _limits.kind_of(req.mode)
             timeout_s = None if adapter.caps_own_spend else _limits.default_timeout_minutes(kind) * 60

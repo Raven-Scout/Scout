@@ -18,13 +18,13 @@ struct HealthPanelModelTests {
 
     @Test func summarisesTheRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.summary == "13 runs in the last two weeks: 4 finished, 2 failed, 7 skipped.")
+        #expect(model.summary == "14 runs in the last two weeks: 4 finished, 2 failed, 8 skipped.")
         #expect(HealthPanelModel.summary([]) == "No scheduled runs in the last two weeks.")
     }
 
     @Test func linesSpeakPlainly() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.runs.count == 13)
+        #expect(model.runs.count == 14)
         let gates = try #require(model.runs.first)
         #expect(gates.title == "Morning briefing")
         #expect(gates.outcome == DisplayName.runStatus("skipped_gates"))

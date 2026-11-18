@@ -344,6 +344,84 @@ def test_a_shared_runner_log_is_only_blamed_on_the_lane_that_ran_it(vault, sched
     )
 
 
+@pytest.mark.parametrize(
+    ("name", "matches"),
+    [
+        ("dreaming-2026-01-05_22-00.log", True),  # claimed the minute; every log before unique names
+        ("dreaming-2026-01-05_22-00-25-4242.log", True),  # a later run in the same minute
+        ("dreaming-2026-01-05_22-00-25.log", False),  # seconds without a PID
+        ("dreaming-2026-01-05_22-00-4242.log", False),
+        ("dreaming-2026-01-05_22-00-5-4242.log", False),
+        ("dreaming-notes.log", False),
+        ("research-2026-01-05_22-00.log", False),
+    ],
+)
+def test_a_runner_log_name_has_two_forms(name, matches):
+    assert bool(health.run_log_pattern("dreaming").fullmatch(name)) is matches
+
+
+def test_runner_logs_sort_by_start_not_by_text():
+    names = [
+        "dreaming-2026-01-05_22-00-25-4242.log",
+        "dreaming-2026-01-05_22-01.log",
+        "dreaming-2026-01-05_21-59-59-7.log",
+        "dreaming-2026-01-05_22-00.log",
+        "dreaming-2026-01-05_22-00-25-987.log",
+        "dreaming-2026-01-05_22-00-07-99999.log",
+        "dreaming-notes.log",
+    ]
+
+    assert sorted(names, key=health.run_log_sort_key) == [
+        "dreaming-notes.log",
+        "dreaming-2026-01-05_21-59-59-7.log",
+        "dreaming-2026-01-05_22-00.log",
+        "dreaming-2026-01-05_22-00-07-99999.log",
+        "dreaming-2026-01-05_22-00-25-987.log",
+        "dreaming-2026-01-05_22-00-25-4242.log",
+        "dreaming-2026-01-05_22-01.log",
+    ]
+
+
+def test_a_later_run_in_the_same_minute_is_the_newest_log(vault, schedule):
+    """Text order would pick the minute-named log (``-`` sorts before ``.``)."""
+    logs = vault / ".scout-logs"
+    (logs / "dreaming-2026-01-05_22-00.log").write_text("(exit code: 0, duration: 900s)\n", encoding="utf-8")
+    (logs / "dreaming-2026-01-05_22-00-31-4242.log").write_text(
+        "=== Another Scout session running (PID 42) — skipping ===\n", encoding="utf-8"
+    )
+
+    assert _dark_dreaming(schedule, vault).summary.endswith(
+        "newest run log: dreaming-2026-01-05_22-00-31-4242.log: lock-skip"
+    )
+
+
+def test_a_just_claimed_empty_log_reads_as_no_completion_line(vault, schedule):
+    """The runner claims its log as an empty file before writing to it, as the
+    timezone step already did before unique names."""
+    (vault / ".scout-logs" / "dreaming-2026-01-05_22-00.log").write_text("", encoding="utf-8")
+
+    assert _dark_dreaming(schedule, vault).summary.endswith(
+        "newest run log: dreaming-2026-01-05_22-00.log: no completion line"
+    )
+
+
+def test_a_ledger_log_with_a_unique_name_is_the_lanes_own(vault, schedule):
+    logs = vault / ".scout-logs"
+    commits = [c for c in _healthy() if not c[1].startswith("consolidation")]
+    rows = [
+        _row("evening-consolidation", days_ago=5, log="scout-2026-01-05_19-00.log"),
+        _row("evening-consolidation", days_ago=4.9, log="scout-2026-01-05_19-00-12-31337.log"),
+    ]
+    (logs / "scout-2026-01-05_19-00.log").write_text("(exit code: 0, duration: 60s)\n", encoding="utf-8")
+    (logs / "scout-2026-01-05_19-00-12-31337.log").write_text("Failed to authenticate\n", encoding="utf-8")
+
+    found = _lanes(schedule, vault, commits, rows=rows, fires={"evening-consolidation": ago(1)})
+
+    assert found["lane.silent:consolidation"].summary.endswith(
+        "newest run log: scout-2026-01-05_19-00-12-31337.log: AUTH FAILURE"
+    )
+
+
 def test_an_unreadable_log_is_left_out_of_the_summary(vault, schedule):
     (vault / ".scout-logs" / "dreaming-2026-01-05_22-00.log").mkdir()  # reading a directory raises OSError
 

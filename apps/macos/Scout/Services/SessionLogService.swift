@@ -49,6 +49,13 @@ final class SessionLogService: ObservableObject {
         let runnerScript: String
         let type: RunType
         let startedAt: Date
+        /// The runner's PID when the log has the seconds+PID name a run falls
+        /// back to when another run already claimed this minute's log; nil for
+        /// the minute-named log.
+        var pid: Int? = nil
+        /// `-SS-PID` (as written in the name) for a seconds+PID log, nil for a
+        /// minute-named one. Keeps per-run file names (feedback) apart.
+        var uniqueSuffix: String? = nil
     }
 
     nonisolated static func parseFilename(
@@ -56,7 +63,10 @@ final class SessionLogService: ObservableObject {
         timeZone: TimeZone = .current
     ) -> ParsedFilename? {
         let name = url.deletingPathExtension().lastPathComponent
-        // Accept: scout-YYYY-MM-DD_HH-MM, dreaming-YYYY-MM-DD_HH-MM, research-YYYY-MM-DD_HH-MM
+        // Accept <runner>-YYYY-MM-DD_HH-MM (the run that claimed the minute's
+        // log, and every log written before unique names) and
+        // <runner>-YYYY-MM-DD_HH-MM-SS-PID (a later run in the same minute),
+        // for runner scout, dreaming or research.
         guard let underscoreIdx = name.firstIndex(of: "_") else { return nil }
         let head = String(name[..<underscoreIdx])                       // "scout-2026-04-19"
         let tail = String(name[name.index(after: underscoreIdx)...])    // "08-03"
@@ -66,10 +76,23 @@ final class SessionLogService: ObservableObject {
         guard ["scout", "dreaming", "research"].contains(runner) else { return nil }
 
         let tailParts = tail.components(separatedBy: "-")
-        guard tailParts.count == 2 else { return nil }
+        guard tailParts.count == 2 || tailParts.count == 4,
+              tailParts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        else { return nil }
+        var second = 0
+        var pid: Int? = nil
+        var uniqueSuffix: String? = nil
+        if tailParts.count == 4 {
+            guard tailParts[2].count == 2, let s = Int(tailParts[2]), s < 60,
+                  let p = Int(tailParts[3]), p > 0
+            else { return nil }
+            second = s
+            pid = p
+            uniqueSuffix = "-\(tailParts[2])-\(tailParts[3])"
+        }
 
         // Log filenames carry the system's local-clock time at the moment the
-        // shell script ran (`date "+%Y-%m-%d_%H-%M"`). Parsing them in any
+        // shell script ran (`date "+%Y-%m-%d_%H-%M-%S"`). Parsing them in any
         // fixed zone breaks the moment the user travels — the run's wall
         // clock would shift, and downstream `since`/`until` git filters
         // would window past the actual commits. Honor the caller-supplied
@@ -80,6 +103,7 @@ final class SessionLogService: ObservableObject {
         components.day = Int(headParts[3])
         components.hour = Int(tailParts[0])
         components.minute = Int(tailParts[1])
+        components.second = second
         components.timeZone = timeZone
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return nil }
 
@@ -93,7 +117,8 @@ final class SessionLogService: ObservableObject {
         }()
 
         let type = deriveType(runner: runner, date: date, timeZone: timeZone)
-        return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date)
+        return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date,
+                              pid: pid, uniqueSuffix: uniqueSuffix)
     }
 
     nonisolated static func deriveType(
@@ -297,7 +322,12 @@ final class SessionLogService: ObservableObject {
     ///
     /// Logic:
     /// - Find, per `RunType`, the most-recent run whose status is **terminal**
-    ///   (anything except `.running`).
+    ///   (anything except `.running`), leaving out lock skips
+    ///   (`.skippedConcurrency`): the runner skips on the session lock before
+    ///   it holds it, so a lock skip is evidence that an earlier run is still
+    ///   alive, not that it died. Every other skip happens after the runner
+    ///   took the lock, so, like a finished run, it shows the earlier run no
+    ///   longer holds it.
     /// - For every still-`.running` run, if a terminal run of the same type
     ///   started strictly later than this one, this run is stale → `.orphaned`.
     ///
@@ -307,7 +337,7 @@ final class SessionLogService: ObservableObject {
     /// first, then this reconciles cross-run.
     nonisolated static func resolveStaleRunning(_ runs: [Run]) -> [Run] {
         var latestTerminal: [RunType: Date] = [:]
-        for r in runs where r.status != .running {
+        for r in runs where r.status != .running && r.status != .skippedConcurrency {
             let prev = latestTerminal[r.type] ?? .distantPast
             if r.startedAt > prev { latestTerminal[r.type] = r.startedAt }
         }
@@ -321,10 +351,8 @@ final class SessionLogService: ObservableObject {
     }
 
     /// Replace each run's status with its ledger row's, matched by log file name.
-    ///
-    /// Known gap: logs are named to the minute, so two runs started in the same minute share a log
-    /// (and the newest ledger row for it wins). Unique log names are a separate change to the
-    /// runners' log-name format, which the engine and this parser both read.
+    /// Each run has its own log (a later run in the same minute logs to a
+    /// seconds+PID name), so a row matches exactly one run.
     nonisolated static func overlayLedger(_ runs: [Run], statuses: [String: RunStatus]) -> [Run] {
         guard !statuses.isEmpty else { return runs }
         return runs.map { run in
@@ -464,7 +492,8 @@ final class SessionLogService: ObservableObject {
                 let url = meta.url
                 guard let filename = Self.parseFilename(url, timeZone: tz) else { continue }
                 guard let body = resolved.bodies[meta.name] else { continue }
-                let cost = await tracker.cost(
+                // A skipped run spent nothing; a nearby cost row is another run's.
+                let cost = body.status.isSkip ? nil : await tracker.cost(
                     matching: filename.type.costTrackerKey,
                     near: filename.startedAt,
                     tolerance: 120
@@ -476,7 +505,7 @@ final class SessionLogService: ObservableObject {
                     now: nowSnapshot
                 )
                 let run = Run(
-                    id: Run.makeId(type: filename.type, startedAt: filename.startedAt),
+                    id: Run.makeId(type: filename.type, startedAt: filename.startedAt, pid: filename.pid),
                     type: filename.type,
                     runnerScript: filename.runnerScript,
                     source: .launchdScheduled,
@@ -552,7 +581,8 @@ final class SessionLogService: ObservableObject {
             try? Self.parseBody(at: url, filename: filename)
         }
         guard let body = await parseTask.value else { return }
-        let cost = trackerService.cost(
+        // A skipped run spent nothing; a nearby cost row is another run's.
+        let cost = body.status.isSkip ? nil : trackerService.cost(
             matching: filename.type.costTrackerKey,
             near: filename.startedAt,
             tolerance: 120
@@ -567,7 +597,7 @@ final class SessionLogService: ObservableObject {
         // detail pane opens. Keeps reconciliation cheap on every FS event.
         let commits: [Commit] = []
         let newRun = Run(
-            id: Run.makeId(type: filename.type, startedAt: filename.startedAt),
+            id: Run.makeId(type: filename.type, startedAt: filename.startedAt, pid: filename.pid),
             type: filename.type,
             runnerScript: filename.runnerScript,
             source: .launchdScheduled,
