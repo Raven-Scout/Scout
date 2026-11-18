@@ -207,6 +207,11 @@ cmd_sign() {
     || die "codesign failed on $app"
 
   codesign --verify --strict --deep --verbose=2 "$app" || die "codesign --verify --strict --deep failed on $app"
+  # Read the entitlements back from the signed app, not just the arguments we
+  # passed: without this one, the Terminal hand-off fails with no prompt.
+  codesign -d --entitlements - --xml "$app" 2>/dev/null | tr -d ' \t\n' \
+    | grep -qF '<key>com.apple.security.automation.apple-events</key><true/>' \
+    || die "$app is signed without com.apple.security.automation.apple-events"
   echo "✓ sparkle-release sign: Sparkle's nested code, Sparkle.framework and $app signed"
 }
 
