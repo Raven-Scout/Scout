@@ -214,7 +214,7 @@ struct SchedulesView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: 420)
             Button("Retry") { Task { await reload() } }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.dsPrimary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -236,7 +236,7 @@ struct SchedulesView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             Button("+ Add schedule") { addDraftSlot() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.dsPrimary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -260,10 +260,9 @@ struct SchedulesView: View {
             Button("Reload now") {
                 Task { await reload(); staleBannerVisible = false }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.dsPrimary)
             Button("Dismiss") { staleBannerVisible = false }
-                .buttonStyle(.plainHit)
-                .foregroundStyle(DS.Ink.p3)
+                .buttonStyle(.dsSecondary)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)

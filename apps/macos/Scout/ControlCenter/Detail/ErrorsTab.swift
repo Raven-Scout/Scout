@@ -51,15 +51,13 @@ private struct ErrorRow: View {
                     Button(expanded ? "Hide the \(error.block.count) lines" : "Show all \(error.block.count) lines") {
                         expanded.toggle()
                     }
-                    .buttonStyle(.link)
-                    .font(DS.sans(11))
+                    .buttonStyle(.ds(.link, size: .small))
                     .accessibilityHint("Shows every line of this error")
                     Button("Copy") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(error.block.joined(separator: "\n"), forType: .string)
                     }
-                    .buttonStyle(.link)
-                    .font(DS.sans(11))
+                    .buttonStyle(.ds(.link, size: .small))
                     .accessibilityLabel("Copy this error's \(error.block.count) lines")
                 }
                 if expanded {

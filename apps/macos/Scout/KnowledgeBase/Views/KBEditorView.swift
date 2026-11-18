@@ -261,11 +261,8 @@ struct KBEditorView: View {
                     // Root crumb navigates back to the overview.
                     Button(action: onOverview) {
                         Text(part)
-                            .font(DS.sans(11))
-                            .foregroundStyle(DS.Accent.ink)
-                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.ds(.link, size: .small))
                     .help("Back to overview")
                 } else {
                     Text((part as NSString).deletingPathExtension.isEmpty ? part : (i == parts.count - 1 ? (part as NSString).deletingPathExtension : part))
@@ -282,8 +279,7 @@ struct KBEditorView: View {
             Text("This file changed on disk. Reload to see the new version, or save to overwrite it.")
                 .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
             Spacer()
-            Button("Reload") { requestReload() }.buttonStyle(.plain)
-                .font(DS.sans(12, weight: .semibold)).foregroundStyle(DS.Accent.ink)
+            Button("Reload") { requestReload() }.buttonStyle(.ds(.secondary, size: .small))
         }
         .padding(.horizontal, 20).padding(.vertical, 8)
         .background(DS.Accent.wash)
@@ -301,7 +297,7 @@ struct KBEditorView: View {
             Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")
                 .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
-            Button("Retry") { loadFile() }.buttonStyle(.borderedProminent)
+            Button("Retry") { loadFile() }.buttonStyle(.dsPrimary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
