@@ -10,6 +10,15 @@ on:
   pull_request:
   workflow_call:
 
+# A new push to a PR cancels the run for its previous head. The org gets five
+# macOS runners at once on GitHub's free plan, shared by every workflow and
+# repo, and a superseded run's ~20-minute macOS leg held one of them while the
+# current head queued behind it. Pushes to main and workflow_call runs each get
+# their own group (the run id), so nothing on main is ever cancelled or held.
+concurrency:
+  group: plugin-test-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Path-scoped `paths:` filters were removed from `on.pull_request` above so
   # this workflow can be a required status check (ruling R30): a check
@@ -113,10 +122,20 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then brew install ripgrep; else sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi
           rg --version
+      # The JUnit XML keeps every test's duration, so a slow leg can be
+      # broken down by file afterwards, not only by the 30 slowest tests.
       - name: Pytest (parallel)
-        run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=20 ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
+        run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=30 --junitxml="$RUNNER_TEMP/junit/parallel.xml" ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
       - name: Pytest (perf, serial)
-        run: .venv/bin/pytest tests/ -m perf -p no:xdist -rP ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
+        run: .venv/bin/pytest tests/ -m perf -p no:xdist -rP --junitxml="$RUNNER_TEMP/junit/perf.xml" ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
+      - name: Keep test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.os }}-${{ matrix.python }}
+          path: ${{ runner.temp }}/junit/
+          if-no-files-found: ignore
+          retention-days: 14
       # Exits non-zero below [tool.coverage.report] fail_under, rounding the
       # total to its `precision` (tests/unit/test_coverage_gate.py pins both).
       - name: Coverage floor

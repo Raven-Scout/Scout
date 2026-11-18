@@ -134,13 +134,19 @@ jobs:
           if-no-files-found: ignore
 
   # Early warning for the next Xcode (#337). Not in app-ci's `needs`, so it
-  # never blocks a merge or holds the required check. It runs beside `test`
-  # on GitHub's free `xcode-27` preview image, whose default is Xcode 27.0.
-  # The `test` job stays on macos-15 / Xcode 26.x, which matches releases.
+  # never blocks a merge or holds the required check. It runs on GitHub's free
+  # `xcode-27` preview image, whose default is Xcode 27.0. The `test` job stays
+  # on macos-15 / Xcode 26.x, which matches releases.
+  #
+  # Pushes to main only, not PRs: the org gets five macOS runners at once
+  # (GitHub's free plan, shared by every workflow and repo), and on a PR this
+  # leg took one of them for ~7 minutes while the required ScoutTests queued
+  # behind it (2026-11-18: five busy for 80 minutes straight, ScoutTests
+  # waiting up to 29). Every app change still meets Xcode 27 once it merges.
   xcode-27:
     name: ScoutTests (Xcode 27, non-blocking)
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: needs.changes.outputs.run == 'true' && github.event_name != 'pull_request'
     runs-on: xcode-27
     timeout-minutes: 30
     steps:
