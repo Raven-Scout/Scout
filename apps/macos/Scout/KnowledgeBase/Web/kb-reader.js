@@ -181,6 +181,9 @@
       // Note HTML must not restyle the page (a transparent full-page link over
       // everything, say): inline styles are dropped.
       FORBID_ATTR: ['style'],
+      // Note ids and names get a `user-content-` prefix, so note HTML can't
+      // stand in for the reader's own elements (the composer's quote, say).
+      SANITIZE_NAMED_PROPS: true,
       ADD_TAGS: ['details', 'summary', 'input'],
       ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|scout-wiki|scout-tag|obsidian|linear):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
       FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form'],
@@ -198,6 +201,11 @@
   // Anything claiming source lines without this render's nonce came from the
   // note's own HTML: strip the claim, and drop look-alike checkboxes.
   function distrustNoteHTML() {
+    // Classes the reader gives its own chrome; on note HTML they would only
+    // dress text up as a comment chip, an editor or the properties box.
+    for (const el of doc.querySelectorAll('.scout-comment, .block-editor, .props, .comment-only, .edited-flash')) {
+      el.classList.remove('scout-comment', 'block-editor', 'props', 'comment-only', 'edited-flash');
+    }
     for (const el of doc.querySelectorAll('[data-ls], [data-le], [data-line], [data-col], [data-k], input')) {
       if (el.getAttribute('data-k') === nonce) continue;
       if (el.tagName === 'INPUT') { el.remove(); continue; }
@@ -424,10 +432,12 @@
     if (a && doc.contains(a)) {
       e.preventDefault();
       if (editing) return;
-      const href = a.getAttribute('href');
+      // Read the attribute, not `a.href`: on an SVG <a> that is an
+      // SVGAnimatedString, not a URL.
+      const href = (a.getAttribute('href') || '').trim();
       if (href.startsWith('scout-wiki:')) send('openWiki', { target: decodeTarget(href) });
       else if (href.startsWith('scout-tag:')) send('openTag', { tag: decodeTarget(href) });
-      else send('openURL', { url: a.href });
+      else if (/^[a-z][a-z0-9+.-]*:/i.test(href)) send('openURL', { url: href });
       return;
     }
     const box = e.target.closest('input.task-box');
@@ -685,11 +695,16 @@
     const whole = node.closest('.table-wrap, pre.code, .html-block');
     if (whole) {
       const holder = whole.matches('[data-le]') ? whole : whole.querySelector('[data-le]');
-      if (holder) return Number(holder.dataset.le);
+      if (holder) {
+        // A code block also says where it starts, so the marker can take the
+        // block's container indent rather than its code indent.
+        const code = whole.matches('pre.code') ? Number(holder.dataset.ls) : null;
+        return { line: Number(holder.dataset.le), codeStart: code };
+      }
     }
     const el = node.closest('[data-ls]');
-    if (!el || !doc.contains(el)) return sourceLines.length - 1;
-    return blockRange(el)[1];
+    if (!el || !doc.contains(el)) return { line: sourceLines.length - 1, codeStart: null };
+    return { line: blockRange(el)[1], codeStart: null };
   }
 
   composerText.addEventListener('input', updateSend);
@@ -701,12 +716,13 @@
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
     if (composerSend.disabled || !pendingRange) return;
-    const afterLine = anchorLine(pendingRange.range);
-    if (afterLine == null) { closeComposer(); return; }
+    const anchor = anchorLine(pendingRange.range);
+    if (anchor == null) { closeComposer(); return; }
     send('comment', {
       quote: pendingRange.text,
       text: composerText.value.trim(),
-      afterLine,
+      afterLine: anchor.line,
+      codeStart: anchor.codeStart,
     });
     closeComposer();
   });

@@ -36,12 +36,29 @@ nonisolated enum KBReaderDocument {
                 continue
             }
             guard !t.isEmpty else { continue }
-            let rewritten = linkify(lines[i])
+            let rewritten = linkifyOutsideMarkers(lines[i], linkify)
             // A linkifier must never split a line: that would shift every
             // line number after it. Keep the original if one did.
             lines[i] = rewritten.contains("\n") ? lines[i] : rewritten
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// A Scout marker is quoted back to `removeMarker` exactly as written, so
+    /// its text is never rewritten: only the prose around it is linkified.
+    @MainActor static func linkifyOutsideMarkers(_ line: String, _ linkify: (String) -> String) -> String {
+        guard line.contains(ScoutMarker.open),
+              let re = try? NSRegularExpression(pattern: #"//==<<.*?>>==//"#) else { return linkify(line) }
+        let ns = line as NSString
+        var out = ""
+        var cursor = 0
+        for m in re.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            out += linkify(ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
+            out += ns.substring(with: m.range)
+            cursor = m.range.location + m.range.length
+        }
+        out += linkify(ns.substring(from: cursor))
+        return out
     }
 
     /// Wikilink targets in `source` that resolve to no note, so the page can
@@ -107,7 +124,8 @@ nonisolated enum KBReaderDocument {
     /// `afterLine`. The marker keeps the structure it lands in: inside a list
     /// item it is indented to the item's text, inside a blockquote it keeps
     /// the `>` prefix, so neither the list nor the quote is split in two.
-    static func insertComment(in source: String, afterLine: Int, quote: String?, comment: String) -> String? {
+    static func insertComment(in source: String, afterLine: Int, quote: String?, comment: String,
+                              codeBlockStart: Int? = nil) -> String? {
         guard let marker = ScoutMarker.format(comment, quote: quote) else { return nil }
         let all = source.components(separatedBy: "\n")
         guard !all.isEmpty else { return nil }
@@ -115,7 +133,20 @@ nonisolated enum KBReaderDocument {
         // Never anchor on a blank line: a marker there would join the next
         // paragraph instead of the block the passage is in.
         while at > 0 && all[at].trimmingCharacters(in: .whitespaces).isEmpty { at -= 1 }
-        let prefix = continuationPrefix(for: all[at])
+        var prefix = continuationPrefix(for: all[at])
+        // After a code block the marker takes the indentation of the block's
+        // container, not of its code: an indented code block's 4 spaces would
+        // make the marker more code.
+        if let start = codeBlockStart, start >= 0, start < all.count {
+            let first = all[start]
+            let t = first.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") || t.hasPrefix("~~~") {
+                prefix = continuationPrefix(for: first)
+            } else {
+                let indent = first.prefix { $0 == " " || $0 == "\t" }
+                prefix = String(indent.dropFirst(min(4, indent.count)))
+            }
+        }
         // A line straight after a table row is another row, and one after an
         // HTML block is more HTML: separate the marker with a blank line.
         let body = String(all[at].drop { $0 == " " || $0 == "\t" || $0 == ">" })
@@ -150,6 +181,11 @@ nonisolated enum KBReaderDocument {
     /// the page showed it in). A line left holding only whitespace or a bare
     /// quote prefix is removed with it. Nil when the marker isn't there.
     static func removeMarker(in source: String, marker: String, from: Int, to: Int) -> String? {
+        // Only ever a whole, single-line marker — never an arbitrary piece of
+        // the note the page names.
+        guard marker.hasPrefix(ScoutMarker.open), marker.hasSuffix(ScoutMarker.close),
+              marker.count >= ScoutMarker.open.count + ScoutMarker.close.count,
+              !marker.contains("\n") else { return nil }
         var all = source.components(separatedBy: "\n")
         guard !all.isEmpty else { return nil }
         let lo = max(0, from), hi = min(all.count - 1, max(from, to))

@@ -106,7 +106,8 @@ struct KBReaderWebView: View {
                       let after = (body["afterLine"] as? NSNumber)?.intValue,
                       let updated = KBReaderDocument.insertComment(
                         in: binding.wrappedValue, afterLine: after,
-                        quote: body["quote"] as? String, comment: text)
+                        quote: body["quote"] as? String, comment: text,
+                        codeBlockStart: (body["codeStart"] as? NSNumber)?.intValue)
                 else { return }
                 binding.wrappedValue = updated
                 requestSave()

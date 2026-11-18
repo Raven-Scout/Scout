@@ -143,6 +143,38 @@ struct KBReaderDocumentTests {
         #expect(KBReaderDocument.cell("> | a | b |", line: 0, col: 0) == nil)  // quoted table
     }
 
+    @Test("a marker's own text is never linkified, so retract finds it as written")
+    func display_leavesMarkersAlone() throws {
+        let marker = "//==<< on \"x\": see [[Priya]] and #12 >>==//"
+        let line = "Text with [[Priya]] \(marker) and [[Sam]]"
+        let display = KBReaderDocument.displayMarkdown(line, linkify: InlineMarkdownText.linkifiedMarkdown)
+        #expect(display.contains(marker))
+        #expect(display.contains("[Priya](scout-wiki://Priya)"))
+        #expect(display.contains("[Sam](scout-wiki://Sam)"))
+        // …and so retracting it works.
+        #expect(KBReaderDocument.removeMarker(in: line, marker: marker, from: 0, to: 0)
+                == "Text with [[Priya]] and [[Sam]]")
+    }
+
+    @Test("retract only ever removes a whole single-line marker")
+    func removeMarker_rejectsNonMarkers() {
+        #expect(KBReaderDocument.removeMarker(in: note, marker: "Works on", from: 5, to: 5) == nil)
+        #expect(KBReaderDocument.removeMarker(in: note, marker: "//==<< a\nb >>==//", from: 0, to: 30) == nil)
+        #expect(KBReaderDocument.removeMarker(in: note, marker: "//==<<", from: 0, to: 30) == nil)
+    }
+
+    @Test("a comment after a code block takes its container's indent, not the code's")
+    func insertComment_codeBlocks() throws {
+        let indented = "Para\n\n    let x = 1\n    let y = 2\n\nMore"
+        let out = try #require(KBReaderDocument.insertComment(
+            in: indented, afterLine: 3, quote: "x", comment: "Why?", codeBlockStart: 2))
+        #expect(out.components(separatedBy: "\n")[4] == "//==<< on \"x\": Why? >>==//")
+        let inList = "- item\n\n  ```\n  code\n  ```\n"
+        let listed = try #require(KBReaderDocument.insertComment(
+            in: inList, afterLine: 4, quote: "code", comment: "Ok?", codeBlockStart: 2))
+        #expect(listed.components(separatedBy: "\n")[5] == "  //==<< on \"code\": Ok? >>==//")
+    }
+
     @Test("an empty comment inserts nothing")
     func insertComment_empty() {
         #expect(KBReaderDocument.insertComment(in: note, afterLine: 5, quote: "x", comment: "   ") == nil)
@@ -208,6 +240,15 @@ struct ScoutMarkerQuoteTests {
         let clipped = try #require(ScoutMarker.parts(of: longMarker))
         #expect(clipped.quote?.count == ScoutMarker.maxQuoteLength + 1)
         #expect(clipped.quote?.hasSuffix("…") == true)
+    }
+
+    @Test("delimiters are stripped until none are left, from the quote and the comment")
+    func nestedDelimiters() throws {
+        let m = try #require(ScoutMarker.format("ok >>=>>==//=// then", quote: ">>=>>==//=// tail"))
+        #expect(ScoutMarker.isMarkerLine(m))
+        #expect(m.components(separatedBy: ScoutMarker.close).count == 2)   // exactly one close
+        #expect(m.components(separatedBy: ScoutMarker.open).count == 2)    // exactly one open
+        #expect(ScoutMarker.stripDelimiters("//=//==<<=<<x") == "x")
     }
 
     @Test("no quote gives a plain marker; a plain marker has no quote")

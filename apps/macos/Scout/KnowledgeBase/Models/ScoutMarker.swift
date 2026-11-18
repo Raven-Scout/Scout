@@ -49,21 +49,31 @@ nonisolated enum ScoutMarker {
     /// closing quote is unambiguous), and cut to `maxQuoteLength` with an
     /// ellipsis. An empty quote gives a plain marker.
     static func format(_ text: String, quote: String?) -> String? {
-        guard let comment = format(text).map({ body(of: $0) ?? "" }), !comment.isEmpty else { return nil }
-        let flat = (quote ?? "")
+        guard let comment = format(stripDelimiters(text)).map({ body(of: $0) ?? "" }), !comment.isEmpty
+        else { return nil }
+        let flat = stripDelimiters((quote ?? "")
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .replacingOccurrences(of: "\"", with: "'")
             .replacingOccurrences(of: "\u{201C}", with: "'")
-            .replacingOccurrences(of: "\u{201D}", with: "'")
-            .replacingOccurrences(of: close, with: "")
-            .replacingOccurrences(of: open, with: "")
+            .replacingOccurrences(of: "\u{201D}", with: "'"))
         guard !flat.isEmpty else { return "\(open) \(comment) \(close)" }
         let clipped = flat.count > maxQuoteLength
             ? String(flat.prefix(maxQuoteLength)).trimmingCharacters(in: .whitespaces) + "…"
             : flat
         return "\(open) on \"\(clipped)\": \(comment) \(close)"
+    }
+
+    /// `text` with every marker delimiter removed, repeatedly: one pass over
+    /// `">>=>>==//=//"` leaves a `>>==//` that would close the marker early.
+    static func stripDelimiters(_ text: String) -> String {
+        var current = text
+        while true {
+            let next = current.replacingOccurrences(of: close, with: "").replacingOccurrences(of: open, with: "")
+            if next == current { return current }
+            current = next
+        }
     }
 
     /// A marker's parts: the quoted passage (if it names one) and the comment.

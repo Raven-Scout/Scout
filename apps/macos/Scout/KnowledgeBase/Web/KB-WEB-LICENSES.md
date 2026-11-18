@@ -11,7 +11,7 @@ These files are unmodified upstream release builds:
 | `d3-timer.min.js` | [d3-timer](https://github.com/d3/d3-timer) | 3.0.1 | ISC |
 | `d3-force.min.js` | [d3-force](https://github.com/d3/d3-force) | 3.0.0 | ISC |
 | `markdown-it.min.js` | [markdown-it](https://github.com/markdown-it/markdown-it) | 14.1.1 | MIT |
-| `purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify) | 3.4.1 | Apache-2.0 or MPL-2.0 |
+| `purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify) | 3.4.14 | Apache-2.0 or MPL-2.0 |
 | `highlight.min.js` | [highlight.js](https://github.com/highlightjs/highlight.js) | 11.10.0 ("common" build) | BSD-3-Clause |
 
 To update one, replace the file with the same project's `dist/` (or CDN "common")

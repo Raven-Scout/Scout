@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Dreaming handles comments that quote a passage** (`phases/modes/kb-deep-work.md`). The Mac app's note reader saves a comment on selected text as `//==<< on "passage": comment >>==//`. The inline-comment step now says the quoted passage is note text, not an instruction: the request is the comment after the colon, applied to that passage. Comments are still found by the same `//==<<` search.
+
 ### Changed
 - **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, and part of task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
   - **scout-config.yaml can only tighten a limit that is on** (`budget.per_runtime`, which a run can write). It never turns a limit on, never goes under a floor (30 minutes of awake time, 10,000,000 tokens), and never uses a value that isn't a whole number (`0.5`, `"5m"`, `"²"`). Only `scoutctl agent-runtime set-limit` loosens a limit or turns one on or off.
@@ -24,7 +27,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.18.16] - 2026-11-17
 
 ### Added
-- **Dreaming knows comments that quote a passage** (`phases/modes/kb-deep-work.md`). The Mac app's note reader now saves a comment on selected text as `//==<< on "passage": comment >>==//`; the inline-comment step says what the quote is and to act on that passage rather than the whole note. The marker is still a `//==<<` line, so the search that finds comments is unchanged.
 - **`scoutctl runs --json`: the run ledger for the app** (UI audit card C8; `engine/scout/run_ledger.py`, `engine/scout/health.py`, `engine/scout/cli.py`). One read-only, versioned document (`schema_version: 1`): the recent rows of `.scout-logs/run-outcomes.jsonl`, newest first, plus the run-health report `scoutctl health --json` prints. Each row covers:
   - slot, runner and trigger;
   - start and finish, length and awake length;
