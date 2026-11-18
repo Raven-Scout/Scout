@@ -214,6 +214,16 @@ section { padding: 72px 0; }
 
 /* four-stage morning, after the "assembly line" pattern: the cost before the product */
 .mock-fig.stages-fig { margin-bottom: 44px; }
+/* Scroll-driven: the figure sticks under the header while you scroll through the track,
+   and flips from "without" to "with" halfway. Only when it fits on screen (site.js sets
+   .scrolly and --fig-h); otherwise it flips once you've scrolled past it. */
+.morning-track.scrolly { height: calc(var(--fig-h, 0px) + 70vh); margin-bottom: 44px; }
+.morning-track.scrolly > .stages-fig { position: sticky; top: var(--stick, 76px); margin-bottom: 0; }
+.stages-progress { display: none; height: 2px; margin: -6px 0 16px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.stages-progress i { display: block; height: 100%; width: 0; background: var(--acc); }
+.scrolly .stages-progress { display: block; }
+.stages-hint { display: none; }
+.scrolly .stages-fig[data-view="without"] .stages-hint { display: inline; }
 .stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (min-width: 900px) { .stages { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px; } }
 .stage { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -456,9 +466,12 @@ body { counter-reset: fig; }
 @media (min-width: 900px) and (hover: hover) { .kbd-btn { display: inline-grid; } }
 /* chapter strip: a numbered index under the header, shown only while a chapter
    (01-06) is on screen. Without JS it stays hidden; the header nav still works. */
-.chapters { display: none; border-top: 1px solid var(--line); }
-html.js .chapters { display: block; max-height: 0; overflow: hidden; border-top-color: transparent; transition: max-height .25s ease, border-color .25s; }
-html.js .chapters.on { max-height: 44px; border-top-color: var(--line); }
+/* It hangs below the header instead of sitting in the page flow: growing the sticky header
+   pushed the whole page down 40px mid-scroll, which read as jitter (and could flip which
+   section counted as current, toggling the strip back off). Showing it now moves nothing. */
+.chapters { display: none; }
+html.js .chapters { display: block; position: absolute; left: 0; right: 0; top: 100%; background: color-mix(in srgb, var(--bg) 96%, transparent); border-bottom: 1px solid var(--line); opacity: 0; visibility: hidden; transform: translateY(-4px); pointer-events: none; transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s; }
+html.js .chapters.on { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity .2s ease, transform .2s ease, visibility 0s; }
 .chapters .wrap { display: flex; gap: 4px; height: 40px; align-items: center; overflow-x: auto; scrollbar-width: none; }
 .chapters .wrap::-webkit-scrollbar { display: none; }
 .chapters a { flex: none; display: inline-flex; gap: 7px; align-items: baseline; padding: 5px 10px; border-radius: 7px; font: 400 13px/1.2 var(--mono); color: var(--ink-3); text-decoration: none; }
@@ -468,7 +481,7 @@ html.js .chapters.on { max-height: 44px; border-top-color: var(--line); }
 .chapters a.on span { color: var(--acc-ink); }
 .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; pointer-events: none; }
 .progress i { display: block; height: 100%; width: 0; background: var(--acc); }
-section[id], h2[id] { scroll-margin-top: 112px; }
+section[id], h2[id] { scroll-margin-top: 116px; }
 
 /* scroll reveal (only below the fold, only when motion is OK) */
 @media (prefers-reduced-motion: no-preference) {
@@ -516,7 +529,9 @@ html.js .brief .item:not(.shown) { opacity: 0; transform: translateY(6px); }
 .day-panel { display: none; }
 @media (min-width: 1000px) {
   .day { grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); gap: 48px; align-items: start; }
-  .day-panel { display: grid; gap: 14px; position: sticky; top: 96px; }
+  /* below the header and the chapter strip (~101px), and centred in the viewport when there is room,
+     so the pinned panel doesn't sit at the top of a mostly empty column */
+  .day-panel { display: grid; gap: 14px; position: sticky; top: max(118px, calc(50vh - 230px)); }
   .timeline.steps { grid-template-columns: minmax(0, 1fr); }
   .timeline.steps .slot.on { border-color: var(--acc); box-shadow: var(--shadow); background: linear-gradient(180deg, var(--acc-wash), var(--surface) 70%); }
 }
@@ -541,13 +556,21 @@ html.js .brief .item:not(.shown) { opacity: 0; transform: translateY(6px); }
 .dp-hint { font-size: 13.5px; color: var(--ink-3); }
 
 /* ---------- self-improvement bento ---------- */
+/* One full-width row per habit: the text on the left, its demo on the right, like the feature
+   rows elsewhere. Side by side in a three-column grid, the cards' very different demo heights
+   left large empty areas in or under the shorter cards. */
 .bento { display: grid; gap: 16px; }
-@media (min-width: 760px) { .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; } }
-@media (min-width: 1100px) { .bento { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.demo-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+.demo-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; display: grid; gap: 10px; }
 .demo-card h3 { font-size: 18.5px; line-height: 1.3; }
 .demo-card > p { color: var(--ink-2); font-size: 15px; }
-.demo-card .demo { margin-top: auto; }
+.demo-card .demo { margin-top: 4px; }
+@media (min-width: 860px) {
+  .bento { gap: 20px; }
+  .demo-card { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-rows: auto auto; column-gap: 48px; row-gap: 10px; padding: 28px 32px; }
+  .demo-card > h3 { grid-column: 1; align-self: end; font-size: 21px; }
+  .demo-card > p { grid-column: 1; align-self: start; font-size: 16px; max-width: 34em; }
+  .demo-card .demo { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; align-self: center; }
+}
 .demo { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 14px; font-size: 13.5px; display: grid; gap: 9px; align-content: start; }
 .demo .mini { justify-self: start; }
 .mono { font-family: var(--mono); font-size: 12px; }
@@ -572,16 +595,21 @@ html.js .brief .item:not(.shown) { opacity: 0; transform: translateY(6px); }
 .prop[data-state="rejected"] .pr-diff { opacity: .45; }
 .prop[data-state="rejected"] .pr-text { text-decoration: line-through; color: var(--ink-3); }
 .acts { display: flex; gap: 8px; flex-wrap: wrap; }
-.commit-line { display: none; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 8px 10px; }
+.prop { grid-template-areas: "head" "file" "diff" "swap" "acts"; }
+.prop .pr-head { grid-area: head; } .prop .pr-file { grid-area: file; } .prop .pr-diff { grid-area: diff; }
+.prop .pr-text, .prop .commit-line { grid-area: swap; align-self: center; } .prop .acts { grid-area: acts; }
+.commit-line { visibility: hidden; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 8px 10px; }
 .commit-line b, .commit-line em { color: var(--code-dim); font-weight: 500; font-style: normal; }
-.prop[data-state="applied"] .commit-line { display: block; }
+.prop[data-state="applied"] .commit-line { visibility: visible; }
+.prop[data-state="applied"] .pr-text { visibility: hidden; }
 .held { border-left: 3px solid var(--warn); }
 .held[data-state="confirmed"] { border-left-color: var(--ok); }
 .held[data-state="rejected"] { border-left-color: var(--ink-3); }
 .held-lbl { font-weight: 600; font-size: 12.5px; color: var(--warn); }
 .held[data-state="confirmed"] .held-lbl { color: var(--ok); }
 .held[data-state="rejected"] .held-lbl { color: var(--ink-2); }
-.held-claim { line-height: 1.5; }
+.held-claim { line-height: 1.5; min-height: 4.5em; } /* the answered text is shorter; keep the row from shrinking as it plays */
+@media (min-width: 860px) { .held-claim { min-height: 3em; } }
 @keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* research queue, inside the research run in 01 */
@@ -636,7 +664,9 @@ html.js .brief .item:not(.shown) { opacity: 0; transform: translateY(6px); }
 .srct[aria-pressed="true"] .sw::after { transform: translateX(12px); }
 .srct b { font-size: 14px; font-weight: 600; }
 .srct small { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
-.xc-out { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; font-size: 14.5px; color: var(--ink-2); min-height: 52px; }
+.xc-out { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; font-size: 14.5px; color: var(--ink-2); min-height: 64px; }
+/* tall enough for the longest result (contradicted), so the box never resizes as the tag changes */
+@media (max-width: 520px) { .xc-out { min-height: 86px; } }
 .xc-out .tag { font-size: 12px; padding: 3px 9px; flex: none; }
 .xc-out.flash { animation: pop .3s ease; }
 

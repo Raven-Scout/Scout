@@ -19,6 +19,48 @@
     io.observe(el);
   }
 
+  /* Scroll drives the demos; every control still works by hand.
+     progressOf(): 0 → 1 as an element's top rises from `from` to `to` (fractions of the viewport).
+     onScrollFrame(): runs once per animation frame while the page scrolls or resizes.
+     guard(): once the reader clicks a demo, scrolling leaves it alone until it has left the screen.
+     playInView(): plays a card's change once it is mostly on screen, and resets it when you
+     scroll back above it, so it plays again next time. */
+  function progressOf(el, from, to) {
+    var top = el.getBoundingClientRect().top, a = innerHeight * from, b = innerHeight * to;
+    return Math.min(1, Math.max(0, (a - top) / (a - b)));
+  }
+  var frameFns = [], frameQueued = false;
+  function queueFrame() { if (!frameQueued) { frameQueued = true; requestAnimationFrame(function () { frameQueued = false; frameFns.forEach(function (f) { f(); }); }); } }
+  function onScrollFrame(fn) {
+    if (!frameFns.length) { addEventListener('scroll', queueFrame, { passive: true }); addEventListener('resize', queueFrame, { passive: true }); }
+    frameFns.push(fn); queueFrame();
+  }
+  function guard(el) {
+    var g = { user: false };
+    if (hasIO) new IntersectionObserver(function (es) { es.forEach(function (e) { if (!e.isIntersecting) g.user = false; }); }).observe(el);
+    return g;
+  }
+  function playInView(el, play, reset, delay) {
+    var h = { user: false, played: false, take: function () { h.user = true; h.played = true; if (t) { clearTimeout(t); t = null; } } };
+    var t = null;
+    if (!hasIO) return h;
+    new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        if (e.intersectionRatio >= 0.6) {
+          if (!h.played && !t) t = setTimeout(function () { t = null; if (!h.played) { h.played = true; play(); } }, reduce ? 0 : delay);
+        } else if (t) { clearTimeout(t); t = null; }
+      });
+    }, { threshold: [0, 0.6] }).observe(el);
+    /* Off-screen checks run on scroll, not on the observer: a jump (⌘K, Home) can carry the
+       card from above the screen to below it without it ever being on screen in between. */
+    onScrollFrame(function () {
+      var r = el.getBoundingClientRect();
+      if (r.top > innerHeight) { if (h.played) reset(); h.played = false; h.user = false; }
+      else if (r.bottom < 0) h.user = false;
+    });
+    return h;
+  }
+
   /* ---------- theme ---------- */
   var media = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
   function current() {
@@ -264,23 +306,33 @@
       out.appendChild(t); out.appendChild(m);
       if (!reduce) { out.classList.remove('flash'); void out.offsetWidth; out.classList.add('flash'); }
     }
+    var g = guard(xc), srcs = xc.querySelectorAll('.srct'), step = -1;
     each('.srct', function (b) {
-      b.addEventListener('click', function () { b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); update(); });
+      b.addEventListener('click', function () { g.user = true; step = -1; b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); update(); });
     }, xc);
+    /* Calendar alone (single-source) → + Slack (verified) → + Gmail → + Linear (contradicted) */
+    onScrollFrame(function () {
+      if (g.user) return;
+      var i = Math.min(3, Math.floor(progressOf(xc, 0.85, 0.3) * 4));
+      if (i === step) return; step = i;
+      Array.prototype.forEach.call(srcs, function (b, k) { b.setAttribute('aria-pressed', k <= i ? 'true' : 'false'); });
+      update();
+    });
   })();
 
   /* ---------- mistake pattern ---------- */
   (function () {
     var c = $('pcard'); if (!c) return;
     var pill = $('pc-pill'), msg = $('pc-msg'), btn = $('pc-btn');
-    btn.addEventListener('click', function () {
-      var fixed = c.getAttribute('data-state') !== 'fixed';
+    function set(fixed) {
       c.setAttribute('data-state', fixed ? 'fixed' : 'regression');
       pill.textContent = fixed ? 'fixed' : 'regression';
       pill.className = 'pill ' + (fixed ? 'ok' : 'bad');
       msg.textContent = fixed ? 'Fix written into its instructions. No repeat since.' : 'Seen 3 times. The fix goes into its own instructions.';
       btn.textContent = fixed ? '↻ Replay' : 'Apply the fix';
-    });
+    }
+    var pv = playInView(c, function () { set(true); }, function () { set(false); }, 700);
+    btn.addEventListener('click', function () { pv.take(); set(c.getAttribute('data-state') !== 'fixed'); });
   })();
 
   /* ---------- proposal ---------- */
@@ -288,14 +340,17 @@
     var p = $('prop'); if (!p) return;
     var acts = $('pr-acts'), timer = $('pr-timer');
     var pending = acts.innerHTML;
-    acts.addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      var a = b.getAttribute('data-act');
+    function act(a, byHand) {
       if (a === 'approve') { p.setAttribute('data-state', 'applied'); timer.textContent = 'applied ✓'; }
       else if (a === 'reject') { p.setAttribute('data-state', 'rejected'); timer.textContent = 'rejected, not applied'; }
-      else { p.setAttribute('data-state', 'pending'); timer.textContent = 'applies in 3 days'; acts.innerHTML = pending; acts.querySelector('button').focus(); return; }
+      else { p.setAttribute('data-state', 'pending'); timer.textContent = 'applies in 3 days'; acts.innerHTML = pending; if (byHand) acts.querySelector('button').focus(); return; }
       acts.innerHTML = '<button class="mini" type="button" data-act="reset">↻ Try again</button>';
-      acts.querySelector('button').focus();
+      if (byHand) acts.querySelector('button').focus();
+    }
+    var pv = playInView(p, function () { act('approve'); }, function () { act('reset'); }, 1100);
+    acts.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      pv.take(); act(b.getAttribute('data-act'), true);
     });
   })();
 
@@ -304,14 +359,17 @@
     var h = $('held'); if (!h) return;
     var lbl = $('held-lbl'), claim = $('held-claim'), acts = $('held-acts');
     var openActs = acts.innerHTML, openClaim = claim.innerHTML;
-    acts.addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      var a = b.getAttribute('data-act');
+    function act(a, byHand) {
       if (a === 'confirm') { h.setAttribute('data-state', 'confirmed'); lbl.textContent = '✓ Linked to Alex'; claim.innerHTML = 'Your call, not a guess. Both names now point to the same person note.'; }
       else if (a === 'reject') { h.setAttribute('data-state', 'rejected'); lbl.textContent = '✓ Kept separate'; claim.innerHTML = 'A new person note is started for <b>A. Rivera</b>. Nothing was merged by mistake.'; }
-      else { h.setAttribute('data-state', 'open'); lbl.textContent = '⏸ Held for you'; claim.innerHTML = openClaim; acts.innerHTML = openActs; acts.querySelector('button').focus(); return; }
+      else { h.setAttribute('data-state', 'open'); lbl.textContent = '⏸ Held for you'; claim.innerHTML = openClaim; acts.innerHTML = openActs; if (byHand) acts.querySelector('button').focus(); return; }
       acts.innerHTML = '<button class="mini" type="button" data-act="reset">↻ Reset</button>';
-      acts.querySelector('button').focus();
+      if (byHand) acts.querySelector('button').focus();
+    }
+    var pv = playInView(h, function () { act('confirm'); }, function () { act('reset'); }, 1500);
+    acts.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      pv.take(); act(b.getAttribute('data-act'), true);
     });
   })();
 
@@ -354,7 +412,48 @@
       if (reduce) { write(); return; }
       list.classList.add('swap'); setTimeout(write, 200);
     }
-    each('.seg button', function (b) { b.addEventListener('click', function () { show(b.getAttribute('data-view')); }); }, fig);
+    /* Scrolling drives it. Where the figure fits on screen it sticks under the header
+       inside a taller track and flips halfway through; where it doesn't (short phones),
+       it flips once you've scrolled most of it into view. Scrolling back flips it back.
+       The buttons scroll to the matching point, so scroll and buttons never disagree. */
+    var track = $('morning-track'), prog = $('stages-prog'), head = d.querySelector('.site-head');
+    var current = 'without', figH = 0, stick = 76, scrolly = false, manual = false, ticking = false;
+    function setView(v) { if (v !== current) { current = v; show(v); } }
+    function progress() {
+      var extra = track.offsetHeight - figH;
+      return extra > 0 ? Math.min(1, Math.max(0, (stick - track.getBoundingClientRect().top) / extra)) : 0;
+    }
+    function update() {
+      ticking = false;
+      if (scrolly) { var p = progress(); prog.style.width = (p * 100).toFixed(1) + '%'; setView(p >= 0.5 ? 'with' : 'without'); }
+      else if (!manual) setView(fig.getBoundingClientRect().bottom < innerHeight * 0.8 ? 'with' : 'without');
+    }
+    function measure() {
+      stick = (head ? head.offsetHeight : 60) + 16;
+      figH = fig.offsetHeight;
+      scrolly = !!track && figH < innerHeight - stick - 24;
+      if (track) {
+        track.classList.toggle('scrolly', scrolly);
+        figH = fig.offsetHeight; /* the progress bar only shows in scrolly mode */
+        track.style.setProperty('--fig-h', figH + 'px'); track.style.setProperty('--stick', stick + 'px');
+      }
+      update();
+    }
+    function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(update); } }
+    each('.seg button', function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-view');
+        if (scrolly) {
+          var y = scrollY + track.getBoundingClientRect().top - stick + (v === 'with' ? 0.75 : 0.15) * (track.offsetHeight - figH);
+          window.scrollTo({ top: y, behavior: reduce ? 'auto' : 'smooth' });
+        } else { manual = true; setView(v); }
+      });
+    }, fig);
+    if (hasIO) new IntersectionObserver(function (es) { es.forEach(function (e) { if (!e.isIntersecting) manual = false; }); }).observe(fig);
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', measure, { passive: true });
+    if (d.fonts && d.fonts.ready) d.fonts.ready.then(measure);
+    measure();
   })();
 
   /* ---------- everything is a file: follow a [[link]] into the vault ---------- */
@@ -379,29 +478,47 @@
       each('.spec-code button.l[data-link="' + k + '"]', function (x) { x.classList.add('on'); x.setAttribute('aria-pressed', 'true'); });
       trace.innerHTML = m[1];
     }
+    var g = guard(bar), order = ['priya', 'export', 'permissions', 'alex'], step = null;
+    function release() { clear(); g.user = false; step = null; queueFrame(); }
     each('.spec-code button.l', function (b) {
       b.setAttribute('aria-pressed', 'false');
-      b.addEventListener('click', function () { show(b); });
-      if (fine) { b.addEventListener('mouseenter', function () { show(b); }); b.addEventListener('mouseleave', clear); }
-      b.addEventListener('focus', function () { show(b); });
-      b.addEventListener('blur', clear);
+      b.addEventListener('click', function () { g.user = true; show(b); });
+      if (fine) { b.addEventListener('mouseenter', function () { g.user = true; show(b); }); b.addEventListener('mouseleave', release); }
+      b.addEventListener('focus', function () { g.user = true; show(b); });
+      b.addEventListener('blur', release);
+    });
+    /* each link in turn while the folder bar rises up the screen */
+    onScrollFrame(function () {
+      if (g.user) return;
+      var pr = progressOf(bar, 0.95, 0.4), i = pr <= 0 ? -1 : Math.min(3, Math.floor(pr * 4));
+      if (i === step) return; step = i;
+      if (i < 0) clear(); else show(d.querySelector('.spec-code button.l[data-link="' + order[i] + '"]'));
     });
   })();
 
   /* ---------- research queue ---------- */
   (function () {
-    var run = $('rq-run'), list = $('rq-list'); if (!run || !list) return;
-    var original = list.innerHTML;
-    run.addEventListener('click', function () {
+    var run = $('rq-run'), list = $('rq-list'), box = $('rq'); if (!run || !list || !box) return;
+    var original = list.innerHTML, runs = 0, busy = false, g = guard(box);
+    function restart() { list.innerHTML = original; run.textContent = '▸ Run next'; runs = 0; }
+    function runNext() {
       var row = list.querySelector('li:not(.done):not(.running)');
-      if (!row) { list.innerHTML = original; run.textContent = '▸ Run next'; return; }
+      if (!row) { restart(); return; }
       var age = row.querySelector('span');
-      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true;
+      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true; busy = true;
       setTimeout(function () {
         row.classList.remove('running'); row.classList.add('done'); age.textContent = 'done ✓';
-        list.appendChild(row); run.disabled = false;
+        list.appendChild(row); run.disabled = false; busy = false; runs++;
         if (!list.querySelector('li:not(.done)')) run.textContent = '↻ Start over';
+        queueFrame();
       }, reduce ? 0 : 1100);
+    }
+    run.addEventListener('click', function () { g.user = true; runNext(); });
+    onScrollFrame(function () {
+      if (busy) return;
+      if (box.getBoundingClientRect().top > innerHeight) { if (runs) restart(); return; } /* back above it: start over */
+      if (g.user) return;
+      if (Math.floor(progressOf(box, 0.85, 0.3) * 4) > runs) runNext();
     });
   })();
 
@@ -432,18 +549,22 @@
       });
       m.appendChild(r);
     }
+    var choices = [['Sam owns it', 'Sam owns'], ['I do', 'you own']];
+    function reply(p, byHand) {
+      chips.innerHTML = '';
+      msg('me', p[0]);
+      var t = typing();
+      at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' the billing fix. Saved to your notes, and I won’t ask again. ✓'); if (byHand) replay.focus(); });
+    }
     function ask() {
       chips.innerHTML = '';
-      [['Sam owns it', 'Sam owns'], ['I do', 'you own']].forEach(function (p) {
+      choices.forEach(function (p) {
         var b = d.createElement('button'); b.type = 'button'; b.className = 'mini'; b.textContent = p[0];
-        b.addEventListener('click', function () {
-          chips.innerHTML = '';
-          msg('me', p[0]);
-          var t = typing();
-          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
-        });
+        b.addEventListener('click', function () { reply(p, true); });
         chips.appendChild(b);
       });
+      /* nobody has to click: if no answer comes, the first one is sent */
+      timers.push(setTimeout(function () { if (chips.firstChild) reply(choices[0], false); }, reduce ? 2500 : 2600));
     }
     function play() {
       timers.forEach(clearTimeout); timers = []; body.innerHTML = ''; chips.innerHTML = '';

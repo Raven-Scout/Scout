@@ -21,6 +21,17 @@ struct MenuBarIconTests {
         }
     }
 
+    /// R2: a run held back for safety must not wear the budget skip's pause
+    /// icon, or a problem looks like a non-event.
+    @Test func safetySkipHasItsOwnIcon() {
+        let safety = MenuBarIcon.symbolName(for: .heldForSafety)
+        #expect(safety != MenuBarIcon.symbolName(for: .skipped))
+        #expect(safety != MenuBarIcon.symbolName(for: .paused))
+        #expect(safety != MenuBarIcon.symbolName(for: .ready))
+        // An error-toned skip never wears the routine pause icon.
+        #expect(MenuBarIcon.symbolName(for: .agentNotAllowed) != MenuBarIcon.symbolName(for: .skipped))
+    }
+
     @Test func badgedImageIsATemplateTheSizeOfTheBaseSymbol() throws {
         for status in Self.allStatuses {
             let name = MenuBarIcon.symbolName(for: status)

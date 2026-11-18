@@ -341,16 +341,17 @@ struct EngineSettingsModelTests {
                                     lastError: nil, bundledVersion: nil)
         let groups = m.findingGroups
         #expect(groups.map(\.severity) == [.problem, .warning, .note])
-        #expect(groups[0].items.map(\.summary) == ["install error", "first red", "second red"])
-        #expect(groups[1].items.map(\.summary) == ["install warning", "a warning", "a severity from the future"])
+        // Within a severity, scheduled runs come before the install (R1's shared order).
+        #expect(groups[0].items.map(\.summary) == ["first red", "second red", "install error"])
+        #expect(groups[1].items.map(\.summary) == ["a warning", "a severity from the future", "install warning"])
         #expect(groups[2].items.map(\.summary) == ["a note"])
         // Every finding, not just the first actionable one.
         #expect(groups.flatMap(\.items).count == 7)
-        let second = groups[0].items[2]
+        let second = groups[0].items[1]
         #expect(second.detail == "the run's own line")
         #expect(second.fix == "fix b")
         #expect(second.logURL?.lastPathComponent == "scout-2026-11-16_07-00.log")
-        #expect(groups[0].items[1].fix == nil)   // an empty fix is no fix
+        #expect(groups[0].items[0].fix == nil)   // an empty fix is no fix
         #expect(Set(groups.flatMap(\.items).map(\.id)).count == 7)   // ids stay unique for ForEach
         #expect(m.findingCountsLabel == "3 problems · 3 warnings · 1 note")
     }
@@ -367,5 +368,38 @@ struct EngineSettingsModelTests {
         #expect(m.healthIsOK)
         #expect(m.healthHasWarnings)
         #expect(!model(runHealth(.green)).healthHasWarnings)
+    }
+
+    // MARK: one story with every other health surface (UI audit R1)
+
+    @Test func aHealthyInstallWithFailingRunsIsNotHealthy() {
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let yellow = RunHealth(severity: .yellow, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failed_today", severity: "yellow", since: nil, summary: "morning-briefing failed today", fix: "f", source: "ledger"),
+        ], slots: [])
+        func label(_ rh: RunHealth) -> String {
+            EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                doctor: DoctorReport(severity: .green, errors: [], warnings: [], runHealth: rh),
+                                lastError: nil, bundledVersion: nil).healthLabel
+        }
+        #expect(label(red) == "Needs attention")
+        #expect(label(yellow) == "Healthy, with warnings")
+    }
+
+    @Test func groupedWarningsAreOneItemWithTheirFiles() {
+        let files = (1...34).map { "scripts/check-\($0).py" }
+        let summary = "privacy: 34 vault scripts read the knowledge base directly, …"
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: ["runner backup present: run-scout.sh.bak.1", summary],
+                                  warningGroups: [.init(kind: "privacy.script-raw-kb-read", summary: summary, items: files)])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil, bundledVersion: nil)
+        let warnings = m.findingGroups.first { $0.severity == .warning }?.items ?? []
+        #expect(warnings.count == 2)
+        let grouped = warnings[1]
+        #expect(grouped.summary == "34 vault scripts read the knowledge base directly, without Scout's privacy labels")
+        #expect(grouped.items == files)
+        #expect(grouped.fix?.contains("scoutctl kb files") == true)
+        #expect(m.findingCountsLabel == "2 warnings")
     }
 }

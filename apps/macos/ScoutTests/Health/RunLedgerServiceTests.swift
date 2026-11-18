@@ -29,7 +29,7 @@ struct RunLedgerServiceTests {
         #expect(svc.state == .loading)
         await svc.refresh()
         #expect(runner.calls == [["--engine", "runs", "--json", "--since", "14d"]])
-        #expect(svc.ledger?.runs.count == 15)
+        #expect(svc.ledger?.runs.count == 16)
         #expect(svc.needsAttention)
         #expect(svc.lastChecked != nil)
         // Each finding's first-seen time is the read's time, and survives a re-read.
@@ -129,5 +129,67 @@ struct LedgerOverlayTests {
         let ledger = try RunLedgerContractTests.fixture()
         svc.applyLedger(ledger.entriesByLog)
         #expect(svc.runs.first?.status == .skippedGates)
+        // Card R3: the row's slot rides along, so "Run again" fires it.
+        #expect(svc.runs.first?.slotKey == "morning-briefing")
+    }
+
+    /// Finding #19: two consolidation runs of different schedules each get
+    /// their own slot from the ledger, not one picked from the run type.
+    @Test func eachRunGetsItsOwnRowsSlot() {
+        let t = Date(timeIntervalSince1970: 1_800_000_000)
+        let runs = [run("scout-a.log", status: .success, startedAt: t), run("scout-b.log", status: .failure, startedAt: t + 60)]
+        let out = SessionLogService.overlayLedger(
+            runs, statuses: [:],
+            slots: ["scout-a.log": "morning-consolidation", "scout-b.log": "evening-consolidation"]
+        )
+        #expect(out.map(\.slotKey) == ["morning-consolidation", "evening-consolidation"])
+        #expect(out.map(\.rerunSlotKey) == ["morning-consolidation", "evening-consolidation"])
+        // A status change keeps the slot.
+        #expect(out[1].with(status: .timeout).slotKey == "evening-consolidation")
+    }
+}
+
+@Suite("Run again's slot")
+struct RerunSlotTests {
+    @Test func aScheduledSlotIsRerun() {
+        #expect(Run.make(type: .consolidation, slotKey: "evening-consolidation").rerunSlotKey == "evening-consolidation")
+        // A schedule made in the app, which the run type could never name.
+        #expect(Run.make(type: .research, slotKey: "late-research").rerunSlotKey == "late-research")
+    }
+
+    /// No ledger row: Scout doesn't know the slot, so nothing is guessed.
+    @Test func anUnknownSlotIsNotGuessed() {
+        #expect(Run.make(type: .consolidation).rerunSlotKey == nil)
+        #expect(Run.make(type: .consolidation, slotKey: "unknown").rerunSlotKey == nil)
+        #expect(Run.make(type: .consolidation, slotKey: "  ").rerunSlotKey == nil)
+    }
+
+    /// An event-triggered run's slot is the skill it ran, maybe a schedule's
+    /// name too: never re-run it as that schedule (review of #686).
+    @Test func anEventTriggeredRunIsNotRerun() {
+        #expect(Run.make(type: .consolidation, slotKey: "review-pr", trigger: "event").rerunSlotKey == nil)
+        #expect(Run.make(type: .consolidation, slotKey: "evening-consolidation", trigger: "event").rerunSlotKey == nil)
+        #expect(Run.make(type: .consolidation, slotKey: "evening-consolidation", trigger: "some-new-kind").rerunSlotKey == nil)
+        for trigger in [nil, "schedule", "heartbeat", "manual"] as [String?] {
+            #expect(Run.make(type: .consolidation, slotKey: "evening-consolidation", trigger: trigger).rerunSlotKey
+                    == "evening-consolidation", "\(trigger ?? "nil")")
+        }
+    }
+
+    @Test func theLedgersTriggerRidesAlong() {
+        let run = Run.make(type: .consolidation, logPath: URL(fileURLWithPath: "/v/.scout-logs/scout-a.log"))
+        let out = SessionLogService.overlayLedger(
+            [run], statuses: [:], slots: ["scout-a.log": "review-pr"], triggers: ["scout-a.log": "event"]
+        )
+        #expect(out[0].trigger == "event")
+        #expect(out[0].rerunSlotKey == nil)
+        #expect(out[0].with(status: .failure).trigger == "event")
+    }
+
+    /// A run started outside the schedule has no slot `fire-now` knows.
+    @Test func aManualRunHasNoSlotToRerun() {
+        for key in ["manual", "dreaming-manual", "research-manual"] {
+            #expect(Run.make(type: .manual, slotKey: key).rerunSlotKey == nil, "\(key)")
+        }
     }
 }

@@ -136,14 +136,16 @@
         <h2 id="problem-title">Every morning you rebuild the same picture by hand.</h2>
         <p>Leads, engineers, founders and anyone who starts the day with Slack, an inbox, a calendar, a tracker and last week's meeting notes, and has to work out which of it matters today.</p>
       </div>
+      <div class="morning-track" id="morning-track">
       <figure class="mock-fig stages-fig" id="morning" data-view="without">
         <div class="stages-bar">
-          <span class="stages-lbl" id="stages-lbl">One morning, without Scout</span>
+          <span class="stages-lbl"><span id="stages-lbl">One morning, without Scout</span><span class="stages-hint"> · keep scrolling</span></span>
           <div class="seg" role="group" aria-label="Show the same morning">
             <button type="button" data-view="without" aria-pressed="true">Without Scout</button>
             <button type="button" data-view="with" aria-pressed="false">With Scout</button>
           </div>
         </div>
+        <div class="stages-progress" aria-hidden="true"><i id="stages-prog"></i></div>
         <ol class="stages" id="stages" aria-live="polite">
           <li class="stage"><span class="k">Open</span><b>8</b><span class="d">tools with something new</span><span class="apps-list" aria-hidden="true">Slack · Gmail · Linear · Calendar · GitHub · Granola · Drive · WhatsApp</span></li>
           <li class="stage"><span class="k">Read</span><b>113</b><span class="d">unread messages, threads and notifications</span></li>
@@ -151,8 +153,9 @@
           <li class="stage"><span class="k">Repeat</span><b>4×</b><span class="d">more before evening, as new replies arrive</span></li>
         </ol>
         <p class="tally" id="tally">→ And nothing you worked out this morning is kept for tomorrow.</p>
-        <figcaption>Try it: switch between the same morning without and with Scout. Counts are invented.</figcaption>
+        <figcaption>Keep scrolling and the same morning switches from without Scout to with it, or use the buttons. Counts are invented.</figcaption>
       </figure>
+      </div>
       <div class="trio">
         <div class="card">
           <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
@@ -242,7 +245,7 @@
         <li class="slot" data-pos="58.33" data-time="14:00" data-name="Research" data-reads="the web, docs and your tools" data-writes="fuller, fresher notes" data-commit="research [14:00]: refreshed report-builder · 4 sources">
           <span class="when">14:00 weekdays</span>
           <h3>Research</h3>
-          <p>Picks the part of your knowledge base that's thinnest or most out of date and fills it in from the web, docs and your tools. Try it: run the queue.</p>
+          <p>Picks the part of your knowledge base that's thinnest or most out of date and fills it in from the web, docs and your tools. Scroll on and it works down the queue, or run it yourself.</p>
           <div class="demo rq" id="rq">
             <div class="rq-pin"><code>//==&lt;&lt; check the vendor's new pricing &gt;&gt;==//</code><span>your note, moved to the front</span></div>
             <ol class="rq-list" id="rq-list" aria-live="polite">
@@ -318,7 +321,7 @@ On track for the December beta.
             </div>
             <p class="equation">YAML + Markdown + [[links]] = one note</p>
           </div>
-          <figcaption>Try it: tap a [[link]] to find what it points to in the vault below. The project and people are invented.</figcaption>
+          <figcaption>Scroll on and each [[link]] lights up what it points to in the vault below, or tap one. The project and people are invented.</figcaption>
         </figure>
       </div>
 
@@ -368,7 +371,7 @@ On track for the December beta.
             </div>
             <div class="xc-out" id="xc-out" aria-live="polite"><span class="tag ok">verified</span><span>2 sources agree.</span></div>
           </div>
-          <figcaption>Try it: turn sources on and off. Names and items are invented.</figcaption>
+          <figcaption>Scroll and the sources switch on one at a time, or turn them on and off yourself. Names and items are invented.</figcaption>
         </figure>
       </div>
     </div>
@@ -380,7 +383,7 @@ On track for the December beta.
       <div class="section-head">
         <p class="kicker">04 · It edits itself</p>
         <h2 id="self-title">It learns from its mistakes, in the open.</h2>
-        <p>Three habits that make tomorrow's Scout better than today's. Every card below works, and the names and items in them are invented. It also asks you a short question now and then about facts no tool holds, and works through its own wishlist of improvements, one item an evening.</p>
+        <p>Three habits that make tomorrow's Scout better than today's. Each card plays as you scroll to it, and every one also works by hand. The names and items in them are invented. It also asks you a short question now and then about facts no tool holds, and works through its own wishlist of improvements, one item an evening.</p>
       </div>
       <div class="bento">
 
@@ -487,7 +490,7 @@ On track for the December beta.
             </div>
             <div class="chat-chips" id="chat-chips"></div>
           </div>
-          <figcaption>Try it: a run's summary in a Slack DM, and the one question Scout asks. Your answer goes into your notes, and it never asks twice. Names are invented.</figcaption>
+          <figcaption>A run's summary in a Slack DM, and the one question Scout asks. Pick an answer, or wait and one is sent for you. Your answer goes into your notes, and it never asks twice. Names are invented.</figcaption>
         </figure>
       </div>
     </div>

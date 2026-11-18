@@ -254,12 +254,16 @@ struct SettingsView: View {
             }.value
             detectedClaudePath = detected
         }
-        // Help ▸ Engine Settings… (audit C11): open at the Engine section.
+        // Help ▸ Engine Settings… and every "Open Settings ▸ Engine" button
+        // (audit C11, R2): open at the Engine section. No scroll animation
+        // under Reduce Motion.
         .onReceive(NotificationCenter.default.publisher(for: .scoutShowEngineSettings)) { _ in
-            withAnimation { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+            withMotion { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
         }
         .onAppear {
-            if HelpActions.takeEngineSettingsRequest() { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
+            guard HelpActions.engineSettingsRequested() else { return }
+            // After the first layout, so the Engine section has a frame to scroll to.
+            DispatchQueue.main.async { proxy.scrollTo(SettingsAnchor.engine, anchor: .top) }
         }
         }
     }

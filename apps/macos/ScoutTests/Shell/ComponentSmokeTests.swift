@@ -113,8 +113,14 @@ enum SmokeFixtures {
     ]
 
     static let errors: [DetectedError] = [
-        DetectedError(line: 12, pattern: "ERROR", snippet: "ERROR: the tracing job timed out"),
-        DetectedError(line: 88, pattern: "Traceback", snippet: "Traceback (most recent call last):"),
+        DetectedError(line: 12, pattern: "error", snippet: "ERROR: the tracing job timed out", kind: .error),
+        DetectedError(line: 88, pattern: "traceback", snippet: "ValueError: bad slot", kind: .traceback, block: [
+            "Traceback (most recent call last):",
+            "  File \"/tmp/scout/cli.py\", line 10, in main",
+            "    run()",
+            "ValueError: bad slot",
+        ]),
+        DetectedError(line: 120, pattern: "429", snippet: "429 Too Many Requests", kind: .api),
     ]
 
     static func perFileItem(
