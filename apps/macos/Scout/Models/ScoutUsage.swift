@@ -67,6 +67,9 @@ nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
         guard let s = startDate, let e = endDate else { return nil }
         return date >= s && date < e
     }
+
+    /// This period while `now` is in it; nil once it is over (or its bounds don't parse).
+    func ifCurrent(at now: Date) -> UsagePeriod? { contains(now) == true ? self : nil }
 }
 
 /// The `scoutctl budget usage --json` payload (engine:

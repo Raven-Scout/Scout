@@ -69,13 +69,20 @@ struct ControlCenterPlaceholderTests {
             Run.make(type: .consolidation, startedAt: iso.date(from: at)!, endedAt: nil, status: .success)
         }
         let early = run("2026-11-16T23:30:00Z"), late = run("2026-11-17T23:30:00Z"), before = run("2026-11-16T22:30:00Z")
-        #expect(NowStripView.todayRuns([late, early, before], today: p).map(\.startedAt) == [early.startedAt])
+        let inTheVaultsDay = iso.date(from: "2026-11-17T20:00:00Z")!
+        #expect(NowStripView.todayRuns([late, early, before], today: p, now: inTheVaultsDay).map(\.startedAt)
+                == [early.startedAt])
+        // Past the summary's day (its refresh after midnight failed): the host's day, never yesterday's count.
+        var utcDay = Calendar(identifier: .gregorian); utcDay.timeZone = TimeZone(identifier: "UTC")!
+        let nextDay = iso.date(from: "2026-11-18T00:30:00Z")!
+        #expect(NowStripView.todayRuns([late, early, before], today: p, now: nextDay, calendar: utcDay).isEmpty)
         // Before the summary loads, the host's day: on a UTC host the 17th is a different window.
         var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
         let noon = iso.date(from: "2026-11-17T12:00:00Z")!
         #expect(NowStripView.todayRuns([late, early, before], today: nil, now: noon, calendar: utc).map(\.startedAt)
                 == [late.startedAt])
         #expect(p.contains(early.startedAt) == true && p.contains(late.startedAt) == false)
+        #expect(p.ifCurrent(at: inTheVaultsDay) == p && p.ifCurrent(at: nextDay) == nil)
     }
 
     private func period(_ kind: UsageCostKind, cost: Double) -> UsagePeriod {

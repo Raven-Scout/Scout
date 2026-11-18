@@ -25,13 +25,20 @@ struct NowStripView: View {
     }
 
     /// Today's runs by the vault's day (the usage summary's `today` bounds), so the run count
-    /// and the cost beside it count the same day; the host's day until the summary loads.
+    /// and the cost beside it count the same day. The host's day until the summary loads, and
+    /// when its day is over (a refresh after midnight failed): never yesterday's count.
     nonisolated static func todayRuns(_ runs: [Run], today: UsagePeriod?, now: Date = Date(),
                                       calendar: Calendar = .current) -> [Run] {
-        runs.filter { today?.contains($0.startedAt) ?? calendar.isDate($0.startedAt, inSameDayAs: now) }
+        let current = today?.ifCurrent(at: now)
+        return runs.filter { current?.contains($0.startedAt) ?? calendar.isDate($0.startedAt, inSameDayAs: now) }
     }
 
-    private var todayRunsKey: String { todayRuns().map(\.id).joined(separator: "|") }
+    /// Today's date as well as its runs: a render after midnight re-reads the summary even
+    /// when no run has finished yet (the service's own rollover refresh can fail).
+    private var todayRunsKey: String {
+        let day = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        return "\(day)|" + todayRuns().map(\.id).joined(separator: "|")
+    }
 
     /// "cost ≥$42.09 · budget $8/day". The cost is today's from the engine's usage summary
     /// (`scoutctl budget usage`), the figure the usage card and the status bar show, so a
@@ -110,7 +117,8 @@ struct NowStripView: View {
         let failures = runs.filter { [.failure, .timeout, .rateLimited].contains($0.status) }.count
         VStack(alignment: .leading, spacing: 4) {
             bigName("\(runs.count) runs · \(failures) failed")
-            sub(Self.costLine(today: state.scoutUsageService.summary?.today,
+            // Yesterday's figure (a refresh after midnight failed) is no figure for today.
+            sub(Self.costLine(today: state.scoutUsageService.summary?.today.ifCurrent(at: Date()),
                               dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
                 color: DS.Ink.p3)
         }
