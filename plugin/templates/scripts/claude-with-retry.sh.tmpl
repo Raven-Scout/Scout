@@ -12,6 +12,10 @@
 #                                                    idle sleep surfaces as the
 #                                                    line above instead)
 #   - "529 Overloaded"                              (Anthropic upstream temp)
+#   - "couldn't verify your sign-in with Anthropic yet" / "sign-in token was still
+#     being refreshed"                              (sign-in race: another Claude
+#                                                    Code process was refreshing
+#                                                    the shared login)
 #
 # Does NOT retry on:
 #   - 401 / 403 auth failures   (need user intervention)
@@ -92,7 +96,21 @@ fi
 # (FailedToOpenSocket)` (2026-07-08) and `API Error: 500 Internal server error. This
 # is a server-side issue, usually temporary — try again in a moment.` (2026-06-05).
 # The CLI's own text calls the 500 temporary. The trailing space keeps `5000…` out.
-TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Unable to connect to API \(FailedToOpenSocket\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded|^API Error: 500 |API Error: 403 Attention Required! \| Cloudflare'
+#
+# `couldn.{1,3}t verify your sign-in with Anthropic yet` / `sign-in token was still being
+# refreshed` is the sign-in race, added 2026-11-17. Claude Code shares one login across
+# its processes; when a scheduled run starts while another one (an open session, the
+# desktop app) is refreshing that login's token, the CLI exits 1 within seconds, saying
+# it couldn't verify the sign-in "yet" because the token "was still being refreshed",
+# and names the account. One vault lost its 01:04 research and 08:04 briefing runs to
+# it the same day, 3 s each, filed `failure_class: unknown`. The first alternative is
+# the observed sentence, the second its cause clause, in case the sentence is reworded.
+# Both say "yet" / "still": a real signed-out state words itself differently and
+# stays on AUTH_PATTERNS, unretried. `.{1,3}` is the apostrophe, straight or curly: in a
+# byte-wise locale (GNU grep under the C locale cron gives a run) `.` is one byte, `’` three. The refresh is one token request by the other
+# process, done in seconds, so the default 60 s backoff is ample, and SCOUT_RETRY_MAX
+# bounds it: a race that is still there on the last attempt ends the run.
+TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Unable to connect to API \(FailedToOpenSocket\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded|^API Error: 500 |API Error: 403 Attention Required! \| Cloudflare|couldn.{1,3}t verify your sign-in with Anthropic yet|sign-in token was still being refreshed'
 
 # Auth-failure class (HTTP 401/403). NOT retried — re-authentication needs a human —
 # but surfaced with a concrete remediation instead of the opaque "not classified"

@@ -113,6 +113,9 @@ _NET_STREAM = (
 )
 FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "oauth_expired": (re.compile(CLI_AUTH_FAILURE_ERE),),
+    # The sign-in race (run-outcome.sh's AUTH_RACE_RE), when Claude Code's sentence opens the line. That line
+    # names the account's email, which failure_line() writes as <email>.
+    "auth_race": (re.compile(_ERR + r"(?:Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet"),),
     "network": (
         re.compile(
             r"(?:API Error: .{0,80}?(?:" + _NET_CODES + r"|socket hang up|Connection error|" + _NET_STREAM + r")"
@@ -138,6 +141,9 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "budget": (re.compile(_ERR + r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),
 }
 FAILURE_LINE_MAX = 300
+# An address in a quoted error line (the sign-in race names the account) reaches the app and diagnostics
+# bundles as <email>: it never helps read the error.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 
 
 def iso_z(dt: datetime) -> str:
@@ -384,7 +390,7 @@ def failure_line(log: Path, failure_class: str) -> str | None:
         # match(), not search(): the error shape must open the line (see FAILURE_LINE_RES).
         hit = next((ln for ln in reversed(lines) if pattern.match(ln)), None)
         if hit:
-            hit = _home_relative(hit)
+            hit = _EMAIL_RE.sub("<email>", _home_relative(hit))
             return hit if len(hit) <= FAILURE_LINE_MAX else hit[: FAILURE_LINE_MAX - 1] + "…"
     return None
 
@@ -516,6 +522,12 @@ _RECURRING_FIX = {
         "These runs reached the per-session cap (claude --max-budget-usd, set by connectors.inputs.max_budget "
         "in scout-config.yaml). Compare what the runs cost with that cap, then raise it or move those slots "
         "to a cheaper model (the slot's model: in .scout-state/schedule.yaml)."
+    ),
+    "auth_race": (
+        "These runs started while another Claude Code process was refreshing your sign-in; the login itself "
+        "is fine. Each run retries once after a minute. If it keeps happening, move those slots away from "
+        "times you usually open Claude Code, or store a long-lived token for scheduled runs: "
+        "scoutctl auth setup-token"
     ),
 }
 

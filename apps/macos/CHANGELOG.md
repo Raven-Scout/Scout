@@ -7,6 +7,7 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ## [Unreleased]
 
 ### Fixed
+- **A run that hit Claude's sign-in race says so** (`Scout/Utilities/PlainLanguage/DisplayName.swift`, `Scout/Utilities/PlainLanguage/Problem.swift`, `Scout/Help/DiagnosticsScrubber.swift`). The engine files a run that started while another Claude Code process was refreshing the sign-in as `failure_class: auth_race`, where it used to be `unknown`. The Health page called it "an error Scout doesn't recognise". It now reads "Claude login was busy", says the login is fine, and shows as a warning, like a network problem: the run is retried. Diagnostics keep the value.
 - **A run started in the same minute as another shows as its own run** (`Scout/Services/SessionLogService.swift`, `Scout/Models/Run.swift`, `Scout/Services/ClaudeSessionService.swift`, `Scout/ControlCenter/Detail/FeedbackTab.swift`). The runners now give a later run in the same minute its own log, `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log`, and the app reads it.
   - A run with a minute-named log keeps the id it always had, so saved feedback still matches. A seconds+PID log gets an id with its seconds and PID, and its own feedback file.
   - The run ledger's status reaches each of the two runs from its own row.

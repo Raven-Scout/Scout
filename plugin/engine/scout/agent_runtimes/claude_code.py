@@ -33,7 +33,8 @@ TRANSIENT_PATTERNS = (
     r"Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|"
     r"Unable to connect to API \(FailedToOpenSocket\)|Can.t reach the API server|Stream idle timeout|"
     r"Connection closed mid-response|went to sleep mid-response|529 Overloaded|^API Error: 500 |"
-    r"API Error: 403 Attention Required! \| Cloudflare"
+    r"API Error: 403 Attention Required! \| Cloudflare|couldn.{1,3}t verify your sign-in with Anthropic yet|"
+    r"sign-in token was still being refreshed"
 )
 AUTH_PATTERNS = (
     r"^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|"
