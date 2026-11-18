@@ -963,6 +963,15 @@ def shares_lines(
         out.append(f"{row.glob}  with {who}  ({len(row.shared)} note(s){own})")
         for stop in (stops or {}).get(row.glob, ()):
             out.append(f"  STOPPED in Agnes for {stop.who()} since {when(stop.created_at)} (stop {stop.stop_id})")
+            # The vault shares with them (again, say by a hand edit), but the stop still keeps them out.
+            again = row.principals if stop.principal is None else [p for p in row.principals if p == stop.principal]
+            if again and row.source == "default":
+                target = row.glob[:-3] if row.glob.endswith("/**") else row.glob
+                people = " ".join(f"--with {_display(p, {})}" for p in again)
+                out.append(
+                    f"    still stopped although this vault shares it with them: run `scoutctl kb share {target} "
+                    f"{people}` to lift it"
+                )
         for reason, rels in sorted(row.excluded.items()):
             out.append(f"  excluded, {_REASON_TEXT.get(reason, reason)}: {len(rels)}")
             out += [f"    {p}" for p in rels]

@@ -505,3 +505,12 @@ def test_a_stop_agnes_refuses_leaves_the_unshare_pending_until_sync(vault: Path,
     assert outcome.status == "partial" and outcome.pending_until_sync
     assert [s.principal for s in outcome.made] == [PRIYA]
     assert any("Agnes didn't stop" in n and "share_not_found" in n for n in outcome.notes)
+
+
+def test_kb_shares_flags_a_stop_on_someone_the_vault_shares_with_again(vault: Path, agnes: FakeAgnes) -> None:
+    shared_with(vault, agnes, "priya@example.com", "sam@example.com")
+    agnes.add_stop(GLOB, PRIYA)  # say Priya was put back in scout-config.yaml by hand, and synced
+    agnes.add_stop("knowledge-base/projects/gone/**", None)
+    out = kb(vault, "shares").output
+    hint = f"run `scoutctl kb share {WIDGET} --with priya@example.com` to lift it"
+    assert hint in out and out.count("still stopped although") == 1
