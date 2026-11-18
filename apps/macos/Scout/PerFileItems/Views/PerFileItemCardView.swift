@@ -42,6 +42,7 @@ struct PerFileItemCardView: View {
             case .code(_, let c): text = c
             case .heading(_, let t): text = t
             case .tasks(let tasks): text = tasks.map(\.text).joined(separator: "\n")
+            case .quote(_, let title, let t): text = [title, t].compactMap { $0 }.joined(separator: "\n")
             }
             lines += text.split(separator: "\n", omittingEmptySubsequences: false).count + 1
             characters += text.count
@@ -54,9 +55,12 @@ struct PerFileItemCardView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if let label = optionalLabel, let value = optionalValue, !value.isEmpty {
-                Text("\(label): \(value)")
+                // Through the inline renderer, so its wikilinks and URLs can be clicked.
+                InlineMarkdownText(Self.provenanceMarkdown(label: label, value: value))
                     .font(DS.mono(11))
                     .foregroundStyle(DS.Ink.p4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if !blocks.isEmpty {
                 bodyContent(blocks)
@@ -144,6 +148,28 @@ struct PerFileItemCardView: View {
     }
 
     private var optionalValue: String? { item.source ?? item.area }
+
+    /// A bare `https://` URL, not already an autolink (`<…>`), a link's text
+    /// (`[…`) or a link's target (`](…`). It may
+    /// hold balanced parentheses (`…/Foo_(bar)`), and it doesn't take trailing
+    /// punctuation or an unbalanced `)` that closes the surrounding prose.
+    nonisolated private static let bareURLRe = try! NSRegularExpression(
+        pattern: #"(?<![<\[])(?<!\]\()\bhttps?://(?:[^\s<>()\[\]]|\([^\s<>()\[\]]*\))*(?:[^\s<>()\[\].,;:!?'"]|\([^\s<>()\[\]]*\))"#
+    )
+
+    /// The "Source: …" line as inline markdown: wikilinks and markdown links
+    /// stay as written for `InlineMarkdownText`, and a bare URL is wrapped as
+    /// an autolink (the inline parser doesn't link bare URLs). The label is
+    /// escaped so it can't turn into markup.
+    nonisolated static func provenanceMarkdown(label: String, value: String) -> String {
+        let ns = value as NSString
+        var out = value as NSString
+        for m in bareURLRe.matches(in: value, range: NSRange(location: 0, length: ns.length)).reversed() {
+            out = out.replacingCharacters(in: m.range, with: "<\(ns.substring(with: m.range))>") as NSString
+        }
+        let safeLabel = label.replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "_", with: "\\_")
+        return "\(safeLabel): \(InlineMarkupCleanup.clean(out as String))"
+    }
 
     // MARK: - Actions
 

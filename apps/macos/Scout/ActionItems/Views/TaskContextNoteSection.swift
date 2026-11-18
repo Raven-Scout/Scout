@@ -13,7 +13,9 @@ struct TaskContextNoteSection: View {
     private let noteURL: URL?
 
     @State private var isExpanded = false
-    @State private var text: String?
+    /// The note split into blocks once, when it's read — not on every redraw
+    /// (as `PerFileItem.bodyBlocks` does for cards).
+    @State private var blocks: [MarkdownBodyBlock]?
 
     init(tag: String?, scoutDirectory: URL) {
         self.tag = tag
@@ -30,8 +32,8 @@ struct TaskContextNoteSection: View {
         if let noteURL {
             DisclosureGroup(isExpanded: $isExpanded) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let text {
-                        MarkdownBodyView(blocks: MarkdownBodyBlock.blocks(from: text))
+                    if let blocks {
+                        MarkdownBodyView(blocks: blocks)
                     }
                     Button("Open note") { NSWorkspace.shared.open(noteURL) }
                         .buttonStyle(.link)
@@ -44,8 +46,9 @@ struct TaskContextNoteSection: View {
                     .foregroundStyle(DS.Ink.p2)
             }
             .onChange(of: isExpanded) { _, open in
-                if open && text == nil {
-                    text = TaskContextNote.load(tag: tag, scoutDirectory: scoutDirectory)
+                if open && blocks == nil,
+                   let text = TaskContextNote.load(tag: tag, scoutDirectory: scoutDirectory) {
+                    blocks = MarkdownBodyBlock.blocks(from: text)
                 }
             }
         }
