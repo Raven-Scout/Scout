@@ -53,7 +53,7 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
-**The primary install is Scout.app** (starting with Scout 0.16): download it from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
+**The primary install is Scout.app** (starting with Scout 0.16): [download `Scout.dmg`](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
 
 ### Before you start
 
@@ -91,7 +91,7 @@ The installer also downloads one small public file from GitHub Releases to tell 
 
 ### 2. Add the Mac app later (optional)
 
-Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.
+Set up this way and want the app too? [Download `Scout.dmg`](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.
 
 **Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
