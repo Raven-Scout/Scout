@@ -17,6 +17,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$(cd "$HERE/.." && pwd)/sparkle-release.sh"
+APP_ENTITLEMENTS="$(cd "$HERE/../.." && pwd)/Scout.entitlements"
 
 FEED_URL="https://github.com/Raven-Scout/Scout/releases/latest/download/appcast.xml"
 # Invented, base64-shaped stand-ins. Not keys.
@@ -55,6 +56,11 @@ write_stub() { # write_stub <path> <body>
 write_stub "$STUBS/codesign" '
 if [ -n "${CODESIGN_FAIL_MATCH:-}" ]; then
   case "$*" in *"$CODESIGN_FAIL_MATCH"*) echo "codesign stub: refusing $CODESIGN_FAIL_MATCH" >&2; exit 1 ;; esac
+fi
+# -d --entitlements: answer like real codesign --xml (one compact line).
+# CODESIGN_ENTITLEMENTS_XML overrides it; set it empty for an app with none.
+if [ "$1" = "-d" ]; then
+  printf "%s\n" "${CODESIGN_ENTITLEMENTS_XML-<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>com.apple.security.automation.apple-events</key><true/></dict></plist>}"
 fi
 exit 0'
 
@@ -347,10 +353,13 @@ EXPECTED="$ROOT/expected-sign.log"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$B/Autoupdate"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$B/Updater.app"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$FW"
-  printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$APP"
+  printf 'codesign|--force|--options|runtime|--timestamp|--entitlements|%s|--sign|%s|%s\n' "$APP_ENTITLEMENTS" "$IDENT" "$APP"
   printf 'codesign|--verify|--strict|--deep|--verbose=2|%s\n' "$APP"
+  printf 'codesign|-d|--entitlements|-|--xml|%s\n' "$APP"
 } >"$EXPECTED"
-check "sign runs exactly: Installer.xpc, Downloader.xpc, Autoupdate, Updater.app, Sparkle.framework, Scout.app, then verify" \
+check "the app's entitlements allow Apple events (hardened runtime blocks the Terminal hand-off without it)" \
+  eq "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.automation.apple-events' "$APP_ENTITLEMENTS")" "true"
+check "sign runs exactly: Installer.xpc, Downloader.xpc, Autoupdate, Updater.app, Sparkle.framework, Scout.app, verify, then reads the app's entitlements back" \
   diff -u "$EXPECTED" "$STUB_LOG"
 check "exactly six codesign --force lines" eq "$(log_count 'codesign|--force|')" 6
 check "only Downloader.xpc keeps its entitlements" \
@@ -359,8 +368,10 @@ check "every signing line has --options runtime --timestamp" \
   eq "$(grep '^codesign|--force|' "$STUB_LOG" | grep -c '|--options|runtime|--timestamp|')" 6
 check "no signing line has --deep" eq "$(grep '^codesign|--force|' "$STUB_LOG" | grep -c -- '--deep')" 0
 check "the identity reaches codesign as one argument" eq "$(log_count "|--sign|$IDENT|")" 6
-check "the last line is codesign --verify --strict --deep on the app" \
-  eq "$(tail -n 1 "$STUB_LOG")" "codesign|--verify|--strict|--deep|--verbose=2|$APP"
+check "the next-to-last line is codesign --verify --strict --deep on the app" \
+  eq "$(tail -n 2 "$STUB_LOG" | head -n 1)" "codesign|--verify|--strict|--deep|--verbose=2|$APP"
+check "the last line reads the signed app's entitlements" \
+  eq "$(tail -n 1 "$STUB_LOG")" "codesign|-d|--entitlements|-|--xml|$APP"
 
 for c in $COMPONENTS; do
   mkapp "$APPDIR" 42 "$KEY" "$FEED_URL"
@@ -386,6 +397,16 @@ check "  ...and stops there (Updater.app, the framework and the app are not sign
 mkapp "$APPDIR" 42 "$KEY" "$FEED_URL"
 CODESIGN_FAIL_MATCH="--verify" run sign "$APP" "$IDENT"
 check "sign dies when the final verify fails" rc_nonzero
+
+mkapp "$APPDIR" 42 "$KEY" "$FEED_URL"
+CODESIGN_ENTITLEMENTS_XML="" run sign "$APP" "$IDENT"
+check "sign dies when the signed app has no entitlements" rc_nonzero
+check "  ...and names the missing entitlement" out_has "com.apple.security.automation.apple-events"
+
+mkapp "$APPDIR" 42 "$KEY" "$FEED_URL"
+CODESIGN_ENTITLEMENTS_XML='<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.automation.apple-events</key><false/></dict></plist>' \
+  run sign "$APP" "$IDENT"
+check "sign dies when the signed app has the entitlement set to false" rc_nonzero
 
 run sign "$APP" ""
 check "sign dies on an empty identity" rc_nonzero

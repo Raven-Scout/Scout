@@ -7,6 +7,7 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ## [Unreleased]
 
 ### Fixed
+- **Scout can ask for permission to control Terminal** (`Scout.entitlements`, `scripts/sparkle-release.sh`). Released builds run under the hardened runtime without the Apple Events entitlement, which by Apple's rules makes commands sent to Terminal fail with no consent prompt. This covers the Install and Sign in buttons in setup and opening action items in Terminal or iTerm2. The app is now signed with that entitlement, and the prompt's wording mentions setup. `sparkle-release.sh sign` reads the entitlement back from the signed app and stops the release if it is missing.
 - **A run started in the same minute as another shows as its own run** (`Scout/Services/SessionLogService.swift`, `Scout/Models/Run.swift`, `Scout/Services/ClaudeSessionService.swift`, `Scout/ControlCenter/Detail/FeedbackTab.swift`). The runners now give a later run in the same minute its own log, `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log`, and the app reads it.
   - A run with a minute-named log keeps the id it always had, so saved feedback still matches. A seconds+PID log gets an id with its seconds and PID, and its own feedback file.
   - The run ledger's status reaches each of the two runs from its own row.
