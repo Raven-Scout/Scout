@@ -207,6 +207,16 @@ def _auto(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() == "auto"
 
 
+SHOWN_MAX_CHARS = 60
+
+
+def _shown(value: Any, *, quote: bool = False) -> str:
+    """A config value as an ``ignored`` entry shows it (in quotes with *quote*, for a string), cut to
+    ``SHOWN_MAX_CHARS`` so a huge value a run wrote can't bloat the run log and the doctor (review of #654)."""
+    text = repr(value) if quote and isinstance(value, str) else str(value)
+    return text if len(text) <= SHOWN_MAX_CHARS else text[: SHOWN_MAX_CHARS - 1] + "…"
+
+
 def slot_kind(data_dir: Path | None, slot: str | None, run_type: str | None = None) -> str | None:
     """The kind (dreaming, research, briefing, consolidation) of the run: the runner's own ``SCOUT_RUN_TYPE``
     first, then the schedule's ``type`` for the slot, then the slot key's own words (``research-manual``),
@@ -392,18 +402,18 @@ def _limits_for(
     raw = config.get("run_timeout_minutes")
     if (minutes := _positive_int(raw)) is not None:
         if timeout_s is None:
-            ignored.append(f"run_timeout_minutes: {minutes} (the timeout is off; only the owner turns it on)")
+            ignored.append(f"run_timeout_minutes: {_shown(minutes)} (the timeout is off; only the owner turns it on)")
         elif minutes < CONFIG_FLOOR_TIMEOUT_MINUTES:
             ignored.append(f"run_timeout_minutes: {minutes} (below the {CONFIG_FLOOR_TIMEOUT_MINUTES}-minute floor)")
         elif minutes * 60 < timeout_s:
             timeout_s, t_src = minutes * 60, "config"
         elif minutes * 60 > timeout_s:
-            ignored.append(f"run_timeout_minutes: {minutes} (looser than {timeout_s // 60})")
+            ignored.append(f"run_timeout_minutes: {_shown(minutes)} (looser than {timeout_s // 60})")
     elif raw is not None and _off(raw):
         if timeout_s is not None:
             ignored.append("run_timeout_minutes: off (only the owner turns it off)")
     elif raw is not None:
-        ignored.append(f"run_timeout_minutes: {raw!r} (not a whole number of minutes)")
+        ignored.append(f"run_timeout_minutes: {_shown(raw, quote=True)} (not a whole number of minutes)")
 
     # The ceiling: likewise.
     ceiling: int | None
@@ -429,16 +439,16 @@ def _limits_for(
         if ceiling is not None:
             ignored.append("max_tokens_per_day: off (only the owner turns it off)")
     elif raw is not None:
-        ignored.append(f"max_tokens_per_day: {raw!r} (not a whole number of tokens, auto or off)")
+        ignored.append(f"max_tokens_per_day: {_shown(raw, quote=True)} (not a whole number of tokens, auto or off)")
     if wanted is not None:
         if ceiling is None:
-            ignored.append(f"max_tokens_per_day: {raw} (the ceiling is off; only the owner turns it on)")
+            ignored.append(f"max_tokens_per_day: {_shown(raw)} (the ceiling is off; only the owner turns it on)")
         elif wanted < FLOOR_TOKENS:
-            ignored.append(f"max_tokens_per_day: {raw} (below the {FLOOR_TOKENS:,}-token floor)")
+            ignored.append(f"max_tokens_per_day: {_shown(raw)} (below the {FLOOR_TOKENS:,}-token floor)")
         elif wanted < ceiling:
             ceiling, c_src = wanted, "config"
         elif wanted > ceiling:
-            ignored.append(f"max_tokens_per_day: {raw} (looser than {ceiling:,})")
+            ignored.append(f"max_tokens_per_day: {_shown(raw)} (looser than {ceiling:,})")
     return RuntimeLimits(adapter.id, timeout_s, t_src, ceiling, c_src, tuple(ignored))
 
 
@@ -479,7 +489,9 @@ def tokens_used(data_dir: Path | None, runtime_id: str, *, now: datetime | None 
 
 
 def future_rows(data_dir: Path | None, *, now: datetime | None = None) -> int:
-    """Usage-tracker rows dated later than now (beyond ``CLOCK_SKEW``), which the ceiling and its formula skip.
+    """Runner rows in the usage tracker dated later than now (beyond ``CLOCK_SKEW``), which the ceiling and its
+    formula skip. Only runner rows: they are all the ceiling and the formula read, so another source's rows (written
+    in whatever clock that source uses) could only raise a false alarm.
 
     The tracker isn't protected, so a run can append one; counted, it would never age out of the 24 hours and
     would skip every later run (review of #654). The doctor warns about them. Never raises.
@@ -492,7 +504,9 @@ def future_rows(data_dir: Path | None, *, now: datetime | None = None) -> int:
             return 0
         until = (now or datetime.now(UTC)) + CLOCK_SKEW
         return sum(
-            1 for row in iter_tracker_rows(tracker) if isinstance(row, dict) and (ts := row_ts(row)) and ts > until
+            1
+            for row in iter_tracker_rows(tracker)
+            if isinstance(row, dict) and row.get("source") == "runner" and (ts := row_ts(row)) and ts > until
         )
     except Exception:  # noqa: BLE001 - a count for the doctor only
         return 0

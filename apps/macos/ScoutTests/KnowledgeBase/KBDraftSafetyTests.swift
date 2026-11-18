@@ -98,7 +98,7 @@ struct KBDraftSafetyTests {
 
     @Test("the inline editor's confirm button doesn't claim to save the file")
     func inlineConfirmIsDone() {
-        #expect(KBEditableView.inlineCommitTitle == "Done")
+        #expect(KBInlineEdit.commitTitle == "Done")
     }
 
     @Test("the quit prompt names the notes with unsaved edits")

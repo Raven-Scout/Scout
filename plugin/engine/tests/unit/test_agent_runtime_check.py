@@ -296,6 +296,21 @@ def test_a_value_that_isnt_a_whole_number_is_ignored_and_named(vault: Path, bad:
         limits.set_owner_limit(vault, "d", run_timeout_minutes="²")
 
 
+def test_an_ignored_value_is_shown_at_most_60_characters(vault: Path) -> None:
+    """A run can write a huge value; the run log and the doctor quote it cut short (review of #654)."""
+    _config(
+        vault,
+        f'budget:\n  per_runtime:\n    d:\n      run_timeout_minutes: "{"x" * 5000}"\n'
+        f"      max_tokens_per_day: {'9' * 300}\n",
+    )
+    d = limits.limits_for(vault, DummyRuntime("d"))
+    timeout, ceiling = d.ignored
+    assert timeout.startswith("run_timeout_minutes: 'xxx") and timeout.endswith("… (not a whole number of minutes)")
+    assert ceiling.startswith("max_tokens_per_day: 999") and ceiling.endswith("… (looser than 10,000,000)")
+    for entry in d.ignored:
+        assert len(entry.split(": ", 1)[1].split(" (")[0]) == limits.SHOWN_MAX_CHARS
+
+
 def test_limits_for_never_raises(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """If the config can't be applied at all, the limits are those without it, and say so."""
 
