@@ -253,6 +253,60 @@ def test_a_gitdir_include_that_matches_only_the_vault_is_protected(vault: Path, 
     assert hook_paths.protected_write(inc, vault, env) == hook_paths.USER_GIT_CONFIG
 
 
+def _fake_git(tmp_path: Path, name: str, *, stdout: str = "", stderr: str = "", code: int = 0) -> Path:
+    """A folder holding a ``git`` that answers ``config --system …`` with ``stdout``/``stderr``/``code``."""
+    d = tmp_path / name
+    d.mkdir()
+    (d / "out").write_text(stdout)
+    (d / "err").write_text(stderr)
+    (d / "git").write_text(
+        f'#!/bin/sh\ncase " $* " in *" --system "*) cat "{d}/out"; cat "{d}/err" >&2; exit {code} ;; esac\nexit 0\n'
+    )
+    (d / "git").chmod(0o755)
+    return d
+
+
+@pytest.mark.real_git_config
+def test_each_gits_system_config_is_protected_whether_or_not_it_exists(vault: Path, tmp_path: Path) -> None:
+    # Two gits with their own system configs (Homebrew's and Apple's read different ones): one file exists and git
+    # lists it (--show-origin), the other doesn't yet and git names it in its error. Both are a run's to leave alone.
+    there = tmp_path / "brew" / "etc" / "gitconfig"
+    there.parent.mkdir(parents=True)
+    there.write_text("[core]\n\teditor = vi\n")
+    absent = tmp_path / "apple" / "etc" / "gitconfig"
+    one = _fake_git(tmp_path, "git-one", stdout=f"file:{there}\tcore.editor=vi\n")
+    missing = f"fatal: unable to read config file '{absent}': No such file or directory\n"
+    two = _fake_git(tmp_path, "git-two", stderr=missing, code=128)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(HOME=str(tmp_path / "home"), PATH=f"{one}:{two}:/usr/bin:/bin")
+    named = {p for p, _ in hook_paths.git_config_files(env)}
+    assert {str(there), str(absent)} <= named
+    hook_paths._ROOTS_CACHE.clear()
+    rules = sbx.build_rules(vault, env)
+    for path in (there, absent):
+        assert hook_paths.protected_write(path, vault, env) == hook_paths.USER_GIT_CONFIG
+        assert sbx.decide(rules, str(path)) == "deny"
+    hook_paths._ROOTS_CACHE.clear()
+
+
+@pytest.mark.real_git_config
+def test_the_default_system_config_of_the_git_on_path_is_protected(vault: Path, tmp_path: Path) -> None:
+    # The real git, asked where its system config lives without --show-origin: `config --system --edit` hands the
+    # file to $GIT_EDITOR, here `echo`, whether or not the file exists.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["HOME"] = str(tmp_path / "home")
+    where = subprocess.run(
+        ["git", "config", "--system", "--edit"], env={**env, "GIT_EDITOR": "echo"},
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=20,
+    ).stdout.strip()  # fmt: skip
+    if not where:
+        pytest.skip("this git reads no system config file")
+    hook_paths._ROOTS_CACHE.clear()
+    assert hook_paths.protected_write(where, vault, env) == hook_paths.USER_GIT_CONFIG
+    assert sbx.decide(sbx.build_rules(vault, env), where) == "deny"
+    hook_paths._ROOTS_CACHE.clear()
+
+
 @pytest.mark.real_git_config
 def test_no_time_left_skips_the_git_calls(vault: Path) -> None:
     gone = time.monotonic() - 1
