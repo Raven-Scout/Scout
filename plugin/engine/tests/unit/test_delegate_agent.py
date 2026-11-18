@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -201,3 +202,205 @@ def test_an_agent_with_only_the_clone_reads_through_scoutctl(vault: Path, tmp_pa
     write = scoutctl("action-items", "mark-done", "x", env=agent_env)
     assert write.returncode == 3 and "delegate checkout" in write.stderr
     assert sys.executable  # the same interpreter the agent's `uv tool` install would provide
+
+
+# ----- review of #678 (coordinator, 2026-11-17): every bypass form ------------------------------------
+
+
+def _mirror(vault: Path, tmp_path: Path) -> Path:  # noqa: F811
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    return bare
+
+
+def _files(bare: Path) -> set[str]:
+    out = subprocess.run(
+        ["git", "-C", str(bare), "ls-tree", "-r", "--name-only", "main"], capture_output=True, text=True, check=True
+    )
+    return set(out.stdout.splitlines())
+
+
+def test_agent_files_at_any_depth_and_any_case_stay_on_the_laptop(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    laptop = f"{LAPTOP}\n"
+    for rel in (
+        "agents.md",  # a case variant of the guide's name
+        "knowledge-base/AGENTS.md",
+        "knowledge-base/topics/CLAUDE.md",
+        "GEMINI.md",
+        "notes/.cursorrules",
+        "projects/x/.claude/settings.json",
+        ".github/workflows/run.yml",
+    ):
+        _commit(vault, rel, laptop, f"agent file {rel}")
+    (vault / "CLAUDE.md").symlink_to("knowledge-base/people/priya.md")  # a symlinked guide in the vault
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "symlinked guide")
+    bare = _mirror(vault, tmp_path)
+    files = _files(bare)
+    assert {"AGENTS.md", "CLAUDE.md"} <= files
+    lowered = {f.casefold() for f in files} - {"agents.md", "claude.md"}
+    assert not any(f.endswith(("agents.md", "claude.md", "gemini.md", ".cursorrules")) for f in lowered), files
+    assert not any("/.claude/" in f or f.startswith(".github/") for f in files), files
+    blobs = subprocess.run(["git", "-C", str(bare), "log", "-p", "main"], capture_output=True, text=True).stdout
+    assert LAPTOP not in blobs
+    assert _show(bare, "CLAUDE.md") == dm.delegate_guide("grok-personal").decode()  # not the symlink's target
+
+
+def test_check_tree_refuses_a_guide_bypass(vault: Path) -> None:  # noqa: F811
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    tree = dm.write_tree(vault, the_plan)
+    rows = git(vault, "ls-tree", tree).splitlines()
+    guide = next(r for r in rows if r.endswith("\tAGENTS.md")).split()[2]
+    for name, edit in (
+        (
+            "a guide with the wrong mode",
+            lambda r: r.replace("100644 blob", "100755 blob") if r.endswith("\tCLAUDE.md") else r,
+        ),
+        (
+            "a symlink for a guide",
+            lambda r: r.replace("100644 blob", "120000 blob") if r.endswith("\tCLAUDE.md") else r,
+        ),
+        ("an extra lowercase guide", None),
+    ):
+        listing = [edit(r) for r in rows] if edit else [*rows, f"100644 blob {guide}\tagents.md"]
+        changed = _mktree(vault, listing)
+        commit = git(vault, "commit-tree", changed, "-m", "x").strip()
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", name
+    missing = _mktree(vault, [r for r in rows if not r.endswith("\tCLAUDE.md")])
+    commit = git(vault, "commit-tree", missing, "-m", "x").strip()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "policy_missing"
+
+
+def _mktree(vault: Path, rows: list[str]) -> str:  # noqa: F811
+    """A tree from ``git ls-tree`` rows (one level), with any edits made to them."""
+    return rs.git(vault, "mktree", input="\n".join(rows) + "\n").stdout.strip()
+
+
+def test_init_refuses_the_vault_through_a_symlink_and_accepts_a_clone_inside_it(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    link = tmp_path / "looks-like-a-clone"
+    link.symlink_to(vault)
+    (vault / dm.MANIFEST_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (vault / dm.MANIFEST_PATH).write_text('{"delegate": "grok-personal"}', encoding="utf-8")
+    (vault / dm.STATE_REL).write_text("{}", encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        da.init(link, env={})
+    assert e.value.code == "owners_vault"
+    (vault / dm.MANIFEST_PATH).unlink()
+    (vault / dm.STATE_REL).unlink()
+    clone = _clone(vault, tmp_path)
+    inside = vault / "agent-clone"
+    shutil.move(str(clone), str(inside))
+    assert da.init(inside, env={}).clone == str(inside.resolve())  # the clone's own manifest, not the vault's state
+    with pytest.raises(rs.RepoSyncError) as e:
+        da.init(vault / "knowledge-base", env={})  # a vault folder: no manifest above it
+    assert e.value.code == "not_a_mirror"
+
+
+def test_the_env_file_stays_in_the_clones_own_git_folder(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    clone = _clone(vault, tmp_path)
+    other = tmp_path / "other-repo"
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me\n", encoding="utf-8")
+    # an inherited GIT_DIR changes nothing: init doesn't ask git where the git folder is
+    result = da.init(clone, env={"GIT_DIR": str(other / ".git")})
+    assert result.env_file == str(clone / ".git" / da.ENV_FILE) and not (other / ".git" / da.ENV_FILE).exists()
+    # a symlink at the env file's own path is replaced, never written through
+    env_file = clone / ".git" / da.ENV_FILE
+    env_file.unlink()
+    env_file.symlink_to(victim)
+    da.init(clone, env={})
+    assert victim.read_text(encoding="utf-8") == "keep me\n" and not env_file.is_symlink()
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    # a .git file (worktree or submodule) or a symlinked .git: nothing written anywhere
+    for make in ("gitfile", "symlink"):
+        copy = tmp_path / f"clone-{make}"
+        shutil.copytree(clone, copy, ignore=shutil.ignore_patterns(".git"), symlinks=True)
+        if make == "gitfile":
+            (copy / ".git").write_text(f"gitdir: {other / '.git'}\n", encoding="utf-8")
+        else:
+            (copy / ".git").symlink_to(other / ".git")
+        result = da.init(copy, env={})
+        assert result.env_file is None and any("no .git folder of its own" in n for n in result.notes), make
+    assert not (other / ".git" / da.ENV_FILE).exists()
+
+
+def test_a_hostile_clone_path_is_quoted_for_the_shell(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    clone = _clone(vault, tmp_path)
+    hostile = tmp_path / "it's $(touch PWNED) `touch PWNED2`; x"
+    shutil.move(str(clone), str(hostile))
+    result = da.init(hostile, env={})
+    assert result.env_file is not None
+    parsed = [shlex.split(line) for line in Path(result.env_file).read_text(encoding="utf-8").splitlines()]
+    assert parsed == [[f"SCOUT_DATA_DIR={hostile.resolve()}"], ["SCOUT_READER=delegate:grok-personal"]]
+    script = 'eval "$E"; printf %s "$SCOUT_DATA_DIR"; set -a; . "$F"; set +a; printf "|%s" "$SCOUT_READER"'
+    out = subprocess.run(
+        ["bash", "-c", script],
+        env={"E": result.exports(), "F": str(result.env_file), "PATH": os.environ["PATH"]},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout == f"{hostile.resolve()}|delegate:grok-personal"
+    assert not (tmp_path / "PWNED").exists() and not (tmp_path / "PWNED2").exists()
+
+
+def test_every_init_failure_exits_non_zero_and_loads_nothing(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clone = _clone(vault, tmp_path)
+    env = {"SCOUT_DATA_DIR": str(clone), "SCOUT_READER": ""}
+
+    def broken(*_a: object, **_k: object) -> object:
+        raise ValueError("bad yaml")
+
+    for target in ("scout.kb.privacy.load_policy", "scout.kb.read.all_labels"):
+        with monkeypatch.context() as mp:
+            mp.setattr(target, broken)
+            with pytest.raises(rs.RepoSyncError) as e:
+                da.init(clone, env={})
+            assert e.value.code == "clone_unreadable" and "bad yaml" in e.value.message
+            out = runner.invoke(app, ["delegate", "init", "--print-env"], env=env)
+            assert out.exit_code == 2 and "export" not in out.stdout
+    with monkeypatch.context() as mp:
+        mp.setattr(da, "init", lambda *_a, **_k: (_ for _ in ()).throw(KeyError("odd")))
+        out = runner.invoke(app, ["delegate", "init", "--print-env"], env=env)
+        assert out.exit_code == 2 and "export" not in out.stdout
+        out = runner.invoke(app, ["delegate", "init", "--json"], env=env)
+        assert out.exit_code == 2 and json.loads(out.stdout)["code"] == "init_failed"
+    guide = dm.delegate_guide("grok-personal").decode()
+    assert 'e=$(scoutctl delegate init --print-env) && eval "$e"' in guide
+    failing = subprocess.run(
+        ["bash", "-c", 'e=$(exit 2) && eval "$e"; printf %s "${SCOUT_READER-unset}"'],
+        capture_output=True,
+        text=True,
+    )
+    assert failing.stdout == "unset"  # the guide's form loads nothing when init fails
+
+
+def test_a_failed_env_write_leaves_no_temporary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / da.ENV_FILE
+
+    def refuse(*_a: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(da.os, "replace", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        da._write_env(target, "X=1\n")
+    assert list(tmp_path.iterdir()) == []
+

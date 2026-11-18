@@ -15,9 +15,11 @@ file it made:
   and that this engine is at least the one that built the mirror.
 - **Reads as the delegate** once (what ``kb files`` lists, without writing the
   privacy index), to show the engine works here.
-- **Writes the environment** Scout needs here to ``<git dir>/scout-delegate.env``
-  (inside ``.git``, never tracked), and with ``--print-env`` prints it as shell
-  ``export`` lines for ``eval``.
+- **Writes the environment** Scout needs here to ``<clone>/.git/scout-delegate.env``
+  (never tracked), shell-quoted, and with ``--print-env`` prints it as
+  ``export`` lines for ``eval``. Only into the clone's own ``.git`` folder: not
+  through a ``.git`` file or symlink, nor wherever ``GIT_DIR`` points, and never
+  through a symlink at the file's own path (written aside, then renamed over it).
 
 It is safe to run again, as the guide asks at the start of every task: on Grok
 Bot a computer update drops installed tools, and ``init`` is how the agent
@@ -30,7 +32,7 @@ import json
 import os
 import re
 import shlex
-import subprocess
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,11 +84,26 @@ def _version(text: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", text.split("-")[0].split("+")[0])[:3])
 
 
-def _git_dir(clone: Path) -> Path | None:
-    proc = subprocess.run(
-        ["git", "-C", str(clone), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, check=False
-    )
-    return Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
+def _own_git_dir(clone: Path) -> Path | None:
+    """The clone's own ``.git`` folder: a real directory there, never a ``.git`` file, a symlink or ``GIT_DIR``."""
+    git_dir = clone / ".git"
+    try:
+        return git_dir if stat.S_ISDIR(git_dir.lstat().st_mode) else None
+    except OSError:
+        return None
+
+
+def _write_env(path: Path, text: str) -> None:
+    """Write ``path`` without following a symlink: to a new file beside it, then renamed over it."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)  # a rename replaces a symlink at ``path``; it never writes through it
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> InitResult:
@@ -124,7 +141,10 @@ def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> 
     from scout.kb.privacy import load_policy, visible_to
     from scout.kb.read import all_labels
 
-    policy = load_policy(root)
+    try:
+        policy = load_policy(root)
+    except Exception as e:  # any failure is a refusal (exit 2), so the guide's `&& eval` never loads half a setup
+        raise RepoSyncError("clone_unreadable", f"refused: this clone's scout-config.yaml can't be read ({e})") from e
     if policy.delegate(reader) is None:
         raise RepoSyncError(
             "delegate_not_listed",
@@ -144,19 +164,25 @@ def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> 
     missing = [rel for rel in GUIDE_PATHS if not (root / rel).is_file()]
     if missing:
         notes.append(f"the guide ({', '.join(missing)}) is missing; pull the mirror again (git pull --ff-only)")
-    labels = all_labels(root, policy, persist=False)  # no privacy index written: init leaves the tree as it found it
+    try:
+        labels = all_labels(root, policy, persist=False)  # no privacy index written: init leaves the tree alone
+    except Exception as e:
+        raise RepoSyncError("clone_unreadable", f"refused: Scout can't read this clone as {delegate} ({e})") from e
     files = sum(visible_to(label, reader, policy) for label in labels.values())
     if files == 0:
         notes.append(f"{delegate} sees no files in this clone; check the clone, or ask the owner to sync the mirror")
     result = InitResult(
         delegate=delegate, clone=str(root), env={"SCOUT_DATA_DIR": str(root), "SCOUT_READER": reader}, files=files
     )
-    git_dir = _git_dir(root)
-    if git_dir is not None and git_dir.is_dir():
+    git_dir = _own_git_dir(root)
+    if git_dir is not None:
         path = git_dir / ENV_FILE
-        path.write_text("".join(f"{k}={v}\n" for k, v in result.env.items()), encoding="utf-8")
+        _write_env(path, "".join(f"{k}={shlex.quote(v)}\n" for k, v in result.env.items()))
         result.env_file = str(path)
     else:
-        notes.append("not a git checkout, so nothing was written; load the environment with --print-env each task")
+        notes.append(
+            "this clone has no .git folder of its own (not a git checkout, or a worktree or submodule), so nothing "
+            "was written; load the environment with --print-env each task"
+        )
     result.notes = notes
     return result

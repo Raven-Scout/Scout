@@ -238,6 +238,23 @@ MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until
 # AGENTS.md / CLAUDE.md are for the owner's scheduled runs on the laptop, which write; a delegate only reads.
 GUIDE_PATHS = ("AGENTS.md", "CLAUDE.md")
 GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH, *GUIDE_PATHS})
+# Files agents read as their instructions or settings, at any depth: the vault's are for the owner's runs on the
+# laptop, so a mirror leaves them out (the agent gets Scout's guide instead). Compared case-folded.
+AGENT_FILES = frozenset(
+    {"agents.md", "agent.md", "claude.md", "claude.local.md", "gemini.md", "copilot-instructions.md",
+     ".cursorrules", ".windsurfrules", ".clinerules"}
+)  # fmt: skip
+AGENT_FOLDERS = frozenset({".claude", ".cursor", ".gemini", ".codex", ".windsurf", ".clinerules"})
+# At the root only: a mirror pushed to GitHub would run the vault's workflows, and Copilot reads its instructions.
+ROOT_AUTOMATION = frozenset({".github"})
+
+
+def _agent_config(rel: str) -> bool:
+    """Whether vault path ``rel`` is an agent's instructions or settings, or the root's GitHub automation."""
+    parts = [unicodedata.normalize("NFKC", p).casefold() for p in rel.split("/")]
+    return parts[-1] in AGENT_FILES or bool(AGENT_FOLDERS & set(parts[:-1])) or parts[0] in ROOT_AUTOMATION
+
+
 ENGINE_INSTALL = (
     'uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"'
 )
@@ -1331,8 +1348,8 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
     entries = [e for e in ls_tree(vault, head) if e.kind == "blob"]
     out = Visibility(policy, rules, entries, [], [], set())
     for e in entries:
-        if fold(e.path) in generated:
-            continue  # only the generated files may carry those names
+        if fold(e.path) in generated or _agent_config(e.path):
+            continue  # only the generated files may carry those names; the vault's agent files stay on the laptop
         if rules.refused(e.path):
             out.hidden.add(e.path)
         elif e.mode == SYMLINK_MODE:
@@ -1643,8 +1660,9 @@ from the owner's computer, and nothing written here goes back.
 2. In this clone, run `scoutctl delegate init`. It checks the clone and the engine, and
    says what is wrong if anything is.
 3. At the start of every task, load the environment Scout needs here:
-   `eval "$(scoutctl delegate init --print-env)"`. That sets `SCOUT_DATA_DIR` to this
-   clone and `SCOUT_READER` to `delegate:{delegate}`.
+   `e=$(scoutctl delegate init --print-env) && eval "$e"`. That sets `SCOUT_DATA_DIR` to
+   this clone and `SCOUT_READER` to `delegate:{delegate}`. If it fails, nothing is set:
+   fix what it says before reading, since without `SCOUT_READER` Scout isn't reading as you.
 
 ## Reading the vault
 

@@ -5238,7 +5238,9 @@ def _register_delegate() -> None:
             None, "--clone", help="The mirror clone (default: $SCOUT_DATA_DIR, else this folder or one above it)."
         ),
         print_env: bool = typer.Option(
-            False, "--print-env", help='Print only shell exports, for: eval "$(scoutctl delegate init --print-env)".'
+            False,
+            "--print-env",
+            help='Print only shell exports, for: e=$(scoutctl delegate init --print-env) && eval "$e".',
         ),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
@@ -5255,11 +5257,12 @@ def _register_delegate() -> None:
 
         try:
             result = init(clone)
-        except RepoSyncError as e:
+        except Exception as e:  # every failure exits 2, so `e=$(... --print-env) && eval "$e"` loads nothing
+            failure = e if isinstance(e, RepoSyncError) else RepoSyncError("init_failed", f"refused: {e}")
             if print_env:
-                typer.echo(e.message, err=True)
+                typer.echo(failure.message, err=True)
                 raise typer.Exit(2) from e
-            _fail(e, as_json)
+            _fail(failure, as_json)
         if print_env:
             for note in result.notes:
                 typer.echo(f"scoutctl delegate init: {note}", err=True)
@@ -5273,7 +5276,7 @@ def _register_delegate() -> None:
             typer.echo(f"warning: {note}")
         if result.env_file:
             typer.echo(f"wrote {result.env_file}")
-        typer.echo('load it in each task with: eval "$(scoutctl delegate init --print-env)"')
+        typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
 
     @delegate_app.command("status")
     def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
