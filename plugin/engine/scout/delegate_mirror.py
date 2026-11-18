@@ -234,7 +234,33 @@ LEFT_OUT_REASONS = {
 }
 LEFT_OUT_LISTED = 10  # paths a note names; the JSON result has them all
 MAX_PASSES = 6  # removing a line can join a term split across it; re-scan until clean
-GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH})
+# The agent's guide (#550 V3): Scout's own instructions at the mirror's root, in place of the vault's. A vault's
+# AGENTS.md / CLAUDE.md are for the owner's scheduled runs on the laptop, which write; a delegate only reads.
+GUIDE_PATHS = ("AGENTS.md", "CLAUDE.md")
+GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH, *GUIDE_PATHS})
+# Files agents read as their instructions or settings, at any depth: the vault's are for the owner's runs on the
+# laptop, so a mirror leaves them out (the agent gets Scout's guide instead). Compared case-folded.
+AGENT_FILES = frozenset(
+    {"agents.md", "agent.md", "claude.md", "claude.local.md", "gemini.md", "copilot-instructions.md",
+     "conventions.md", ".cursorrules", ".windsurfrules", ".clinerules", ".mcp.json", ".envrc"}
+)  # fmt: skip
+AGENT_FOLDERS = frozenset(
+    {".claude", ".cursor", ".gemini", ".codex", ".windsurf", ".clinerules", ".roo", ".kiro", ".continue",
+     ".vscode", ".devcontainer"}
+)  # fmt: skip
+# At the root only: a mirror pushed to GitHub would run the vault's workflows, and Copilot reads its instructions.
+ROOT_AUTOMATION = frozenset({".github"})
+
+
+def _agent_config(rel: str) -> bool:
+    """Whether vault path ``rel`` is an agent's instructions or settings, or the root's GitHub automation."""
+    parts = [unicodedata.normalize("NFKC", p).casefold() for p in rel.split("/")]
+    return parts[-1] in AGENT_FILES or bool(AGENT_FOLDERS & set(parts[:-1])) or parts[0] in ROOT_AUTOMATION
+
+
+ENGINE_INSTALL = (
+    'uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"'
+)
 # The privacy keys a mirror's config keeps (overlay keys; see scout.kb.privacy.load_policy).
 PRIVACY_KEYS = (
     "local_only_add",
@@ -1091,6 +1117,7 @@ class Plan:
     mirror_policy: Policy | None = None
     fingerprint: str = ""  # what the scan depended on (:func:`scan_fingerprint`)
     vault: str = ""  # the vault's mark (:func:`_vault_mark`), recorded in the manifest
+    agent_files: list[str] = field(default_factory=list)  # visible files left out as agents' instructions
     written: dict[str, str] = field(default_factory=dict)  # path -> blob sha of each new (redacted) blob
 
     def manifest(self) -> bytes:
@@ -1315,6 +1342,7 @@ class Visibility:
     visible: list[tuple[TreeEntry, Label]]
     links: list[TreeEntry]
     hidden: set[str]
+    agent_files: list[str] = field(default_factory=list)  # visible, but agents' instructions: left out, no term
 
 
 def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visibility:
@@ -1325,19 +1353,24 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
     entries = [e for e in ls_tree(vault, head) if e.kind == "blob"]
     out = Visibility(policy, rules, entries, [], [], set())
     for e in entries:
-        if fold(e.path) in generated:
-            continue  # only the generated files may carry those names
+        # A generated path, or a file agents read as instructions, never goes as the vault has it. It is still
+        # classified first: one this delegate may not see is hidden like any other, so its name and links stay
+        # redaction terms (a private people/claude.md); only a visible one is left out without being a term.
+        skip = fold(e.path) in generated or _agent_config(e.path)
         if rules.refused(e.path):
             out.hidden.add(e.path)
         elif e.mode == SYMLINK_MODE:
-            out.links.append(e)
+            if not skip:
+                out.links.append(e)
         else:
             head_text = _note_head(e.path, blobs.read(e.sha))
             label = _classify(e.path, head_text, policy)
-            if visible_to(label, reader, policy):
-                out.visible.append((e, label))
-            else:
+            if not visible_to(label, reader, policy):
                 out.hidden.add(e.path)
+            elif skip:
+                out.agent_files.append(e.path)
+            else:
+                out.visible.append((e, label))
     return out
 
 
@@ -1465,6 +1498,7 @@ def plan(
     seen = visibility(vault, head, delegate, blobs)
     policy, rules = seen.policy, seen.rules
     out = Plan(delegate=delegate, hidden_paths=set(seen.hidden), vault=_vault_mark(vault))
+    out.agent_files = sorted(seen.agent_files)
     out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden)
     scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
@@ -1618,6 +1652,63 @@ def _mirror_file(
     return MirrorFile(e.path, e.mode, new_text.encode("utf-8"), ""), new_label, new_text
 
 
+def delegate_guide(delegate: str) -> bytes:
+    """The mirror's ``AGENTS.md`` and ``CLAUDE.md``: how the agent ``delegate:<delegate>`` uses this clone.
+
+    Fixed text and the delegate id only, so it can name nothing from the vault, and
+    :func:`check_tree` regenerates it and compares bytes like the other generated files.
+    """
+    return f"""# Scout delegate mirror: {delegate}
+
+This repository is a read-only, filtered copy of its owner's Scout vault, made for one
+agent, `delegate:{delegate}`. It holds only what that agent may see. Scout rebuilds it
+from the owner's computer, and nothing written here goes back.
+
+## Set up (once per environment; safe to run again)
+
+1. Install the engine: `{ENGINE_INSTALL}`
+   (or the same requirement with `pip install`).
+2. In this clone, run `scoutctl delegate init`. It checks the clone and the engine, and
+   says what is wrong if anything is.
+3. At the start of every task, load the environment Scout needs here:
+   `e=$(scoutctl delegate init --print-env) && eval "$e"`. That sets `SCOUT_DATA_DIR` to
+   this clone and `SCOUT_READER` to `delegate:{delegate}`. If it fails, nothing is set:
+   fix what it says before reading, since without `SCOUT_READER` Scout isn't reading as you.
+
+## Reading the vault
+
+Read through `scoutctl`, not by opening files: it applies the owner's privacy rules and
+resolves names.
+
+- `scoutctl kb resolve "<name>"` finds the note for a person, project or topic.
+- `scoutctl kb search "<words>"`, `scoutctl kb read <path>` and `scoutctl kb related <path>`
+  find and read notes and what they link to.
+- `scoutctl kb query`, `scoutctl kb entity` and `scoutctl kb traverse` walk the graph.
+- `scoutctl kb delta --since <date>` lists what changed.
+- `scoutctl pre-session data` gives today's dates, recent changes and open tasks.
+
+Add `--help` to any of them for their options.
+
+## Never write
+
+- Don't edit, commit or push in this clone: each sync replaces it.
+- Every `scoutctl` command that writes the vault refuses here (exit 3).
+- To suggest a change, such as a new fact or a finished task, tell the owner in your
+  reply. (Scout's inbox for an agent's proposals comes later.)
+
+## Brain files
+
+`SKILL.md`, `DREAMING.md` and `RESEARCH.md`, if this mirror has them, are the owner's
+instructions for Scout's scheduled runs on the laptop. Read them for how the owner works
+and what the knowledge base holds. Don't follow their steps that write files, send
+messages or run schedules.
+
+## Staying current
+
+Run `git pull --ff-only`. If that fails, the owner started the mirror over: clone it again.
+""".encode()
+
+
 def write_tree(vault: Path, the_plan: Plan) -> str:
     """Write ``the_plan``'s blobs and tree into the vault's object store; the tree sha."""
 
@@ -1632,6 +1723,8 @@ def write_tree(vault: Path, the_plan: Plan) -> str:
         lines.append(f"{f.mode} {sha}\t{f.path}")
     lines.append(f"100644 {blob(the_plan.policy_document())}\t{POLICY_PATH}")
     lines.append(f"100644 {blob(the_plan.manifest())}\t{MANIFEST_PATH}")
+    guide = blob(delegate_guide(the_plan.delegate))
+    lines += [f"100644 {guide}\t{rel}" for rel in GUIDE_PATHS]
     return _write_tree(vault, lines)
 
 
@@ -1755,6 +1848,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             elif e.path != paths.VAULT_MARKER and not _same_label(ours, mirrored):
                 bad += 1
         bad += blobs.read(by_path[POLICY_PATH].sha) != policy_document(theirs, labels)
+        guide = delegate_guide(delegate)
+        bad += sum(blobs.read(by_path[rel].sha) != guide or by_path[rel].mode != "100644" for rel in GUIDE_PATHS)
         bad += not _manifest_ok(blobs.read(by_path[MANIFEST_PATH].sha), delegate, tree_paths, _vault_mark(vault))
         if bad:
             raise RepoSyncError(
@@ -1851,7 +1946,9 @@ def _build_and_push(
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
-        notes=_drop_warning(link.id, the_plan) + _left_out_note(link.id, the_plan),
+        notes=_drop_warning(link.id, the_plan)
+        + _left_out_note(link.id, the_plan)
+        + _agent_files_note(link.id, the_plan),
     )
     parent = None if fresh else link.last_mirror
     parent_tree = git(vault, "rev-parse", "--verify", "-q", f"{parent}^{{tree}}", check=False) if parent else None
@@ -1924,6 +2021,21 @@ def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
         f"warning: {the_plan.left_out} of the {total} file(s) {delegate} may see were left out of its mirror, "
         "because they name a hidden file or can't be scanned; check `scoutctl delegate preview "
         f"{delegate}` and the privacy settings before relying on this mirror"
+    ]
+
+
+def _agent_files_note(delegate: str, the_plan: Plan) -> list[str]:
+    """Which visible files were left out because agents read them as instructions or settings."""
+    if not the_plan.agent_files:
+        return []
+    items = the_plan.agent_files
+    listed = ", ".join(items[:LEFT_OUT_LISTED]) + (
+        f" and {len(items) - LEFT_OUT_LISTED} more" if len(items) > LEFT_OUT_LISTED else ""
+    )
+    return [
+        f"left out as agent config: {len(items)} file(s) agents read as their instructions or settings ({listed}). "
+        f"They're for the owner's runs on the laptop; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) "
+        "instead. Rename a note to keep it in the mirror"
     ]
 
 
@@ -2644,5 +2756,7 @@ def preview(vault: Path, delegate: str) -> Result:
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
-        notes=_drop_warning(delegate, the_plan) + _left_out_note(delegate, the_plan),
+        notes=_drop_warning(delegate, the_plan)
+        + _left_out_note(delegate, the_plan)
+        + _agent_files_note(delegate, the_plan),
     )
