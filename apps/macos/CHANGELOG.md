@@ -18,6 +18,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   - The engine reads a status as its first word. The two agree on plain values with or without a comment. They differ on a value that is only a comment (`status: # TODO`: open here), a status with a space (`in progress`), and quoted values. Tests pin both the cases where they agree and these differences.
   - The status pill shows at most 24 characters; the full value is in its tooltip and what VoiceOver reads.
   - A long card builds only the text it shows: about 1,500 characters collapsed and 20,000 expanded, with a link to open the file past that. Clipping alone hid the rest but still laid it out. An item's body is now split into blocks once when the file is read, not on every redraw.
+- **Start, Done, Drop, Reopen and a priority change keep the field's comment** (`Scout/PerFileItems/PerFileItemWriter.swift`, `Scout/PerFileItems/PerFileItemParser.swift`). The app rewrote the whole `status:` or `priority:` line, so `status: done   # retired … — expires reached` became a bare `status: open` and the note on why the status changed was gone. The comment now stays, with the spacing before its `#`: `status: open   # retired … — expires reached`.
+  - It uses the parser's rules for `status`, `priority` and `date`. Unquoted, a `#` at the start of the value or after whitespace starts the comment. Quoted, the comment is what follows the closing quote; a `#` inside the quotes is part of the value and is not kept.
+  - A comment written right against a closing quote (`"open"# note`) gets one space before it (`done # note`), so it still reads as a comment.
+  - A line without a comment is written as before. Free-text fields have no comments to keep: their `#` is content.
 
 ## [0.18.16] - 2026-11-17
 
