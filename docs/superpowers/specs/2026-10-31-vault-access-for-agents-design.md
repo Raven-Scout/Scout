@@ -586,6 +586,17 @@ A failed sync is a run-health event, not a run failure.
   writes `SCOUT_DATA_DIR` and `SCOUT_READER` to `.git/scout-delegate.env`,
   never the tree. `--print-env` prints them as exports for `eval`. It is the
   one `delegate` command a delegate checkout may run.
+- **The vault's own agent files stay on the laptop**, at every depth and in any
+  case: instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`
+  and the like), settings folders (`.claude/`, `.cursor/`, `.gemini/`, `.codex/`),
+  and a root `.github/`, whose workflows would run in the mirror's repository.
+  They are skipped like generated paths, not treated as hidden notes, so their
+  names never become redaction terms.
+- **`init` writes only into the clone's own `.git` folder**, and only through
+  files it creates itself: never through a `.git` file, a symlink, `GIT_DIR` or
+  a symlink at the env file's path. Any failure exits non-zero, and the guide
+  loads the environment with `e=$(scoutctl delegate init --print-env) && eval "$e"`,
+  so a failed `init` sets nothing.
 - **The account confirmation stays at `link`** (`--confirm-account-unshared`,
   §4.2). It isn't asked again in `init`: the agent runs `init`, not the owner.
 - **A delegate's commands are the allow-list's**: `kb` reads, `pre-session data`,
