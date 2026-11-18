@@ -394,12 +394,90 @@ def test_every_init_failure_exits_non_zero_and_loads_nothing(
 
 
 def test_a_failed_env_write_leaves_no_temporary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / da.ENV_FILE
-
-    def refuse(*_a: object) -> None:
+    def refuse(*_a: object, **_k: object) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(da.os, "replace", refuse)
     with pytest.raises(OSError, match="disk full"):
-        da._write_env(target, "X=1\n")
+        da._write_env(tmp_path, "X=1\n")
     assert list(tmp_path.iterdir()) == []
+
+
+# ----- re-review of #678 (coordinator, 2026-11-17) -----------------------------------------------
+
+
+def test_a_private_note_with_an_agent_files_name_is_still_hidden_and_redacted(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer's probe: private people/claude.md and people/zorblax.md, each linked from a visible line."""
+    private = "---\ntitle: {t}\nvisibility: private\n---\n\nquiet\n"
+    _commit(vault, "knowledge-base/people/claude.md", private.format(t="Claude"), "private claude")
+    _commit(vault, "knowledge-base/people/zorblax.md", private.format(t="Zorblax"), "private zorblax")
+    mention = "knowledge-base/topics/misc/mention.md"
+    _commit(vault, mention, "---\ntitle: Mention\n---\n\nSee [[claude]].\nSee [[zorblax]].\nKept.\n", "links")
+    # the pre-push check, which works visibility out again, refuses the lines if the build missed them
+    with monkeypatch.context() as mp:
+        mp.setattr(dm, "redact_lines", lambda text, *_a, **_k: (text, 0))
+        with pytest.raises(rs.RepoSyncError) as e:
+            _link(vault, "grok-personal", _bare(tmp_path, "unredacted"))
+        assert e.value.code == "delegate_mirror_unsafe"
+    bare = _mirror(vault, tmp_path)
+    assert _show(bare, mention) == "---\ntitle: Mention\n---\n\nKept.\n"
+    assert not {"knowledge-base/people/claude.md", "knowledge-base/people/zorblax.md"} & _files(bare)
+
+
+def test_visible_agent_files_are_counted_when_left_out(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    for rel in (
+        "tools/claude.md",
+        "projects/x/.vscode/settings.json",
+        ".devcontainer/devcontainer.json",
+        "notes/.mcp.json",
+        "notes/.envrc",
+        ".roo/rules.md",
+        ".kiro/steering.md",
+        ".continue/config.json",
+        "CONVENTIONS.md",
+    ):
+        _commit(vault, rel, f"{LAPTOP}\n", f"agent file {rel}")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    (note,) = [n for n in result.notes if n.startswith("left out as agent config:")]
+    # notes/.mcp.json and notes/.envrc are already local-only (`.mcp.json`, `.env*` match at any depth)
+    assert note.startswith("left out as agent config: 7 file(s)") and "tools/claude.md" in note
+    assert not {"notes/.mcp.json", "notes/.envrc"} & _files(bare)
+    assert (
+        LAPTOP
+        not in subprocess.run(["git", "-C", str(bare), "log", "-p", "main"], capture_output=True, text=True).stdout
+    )
+    assert any(n.startswith("left out as agent config:") for n in dm.preview(vault, "grok-personal").notes)
+
+
+def test_init_still_prints_the_environment_when_git_is_read_only_or_a_temp_file_is_left(
+    vault: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    clone = _clone(vault, tmp_path)
+    git_dir = clone / ".git"
+    stale = git_dir / f".{da.ENV_FILE}.{os.getpid()}.tmp"
+    stale.write_text("old\n", encoding="utf-8")
+    result = da.init(clone, env={})
+    assert result.env_file == str(git_dir / da.ENV_FILE) and not stale.exists()
+    git_dir.chmod(0o500)
+    try:
+        result = da.init(clone, env={})
+        assert result.env_file is None and any("couldn't write" in n and "--print-env" in n for n in result.notes)
+        out = runner.invoke(
+            app, ["delegate", "init", "--print-env"], env={"SCOUT_DATA_DIR": str(clone), "SCOUT_READER": ""}
+        )
+        assert out.exit_code == 0 and "export SCOUT_READER=delegate:grok-personal" in out.stdout
+    finally:
+        git_dir.chmod(0o755)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / "git-link"
+    link.symlink_to(elsewhere)
+    with pytest.raises(OSError):
+        da._write_env(link, "X=1\n")  # a symlinked folder is never opened
+    assert list(elsewhere.iterdir()) == []

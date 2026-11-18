@@ -28,6 +28,7 @@ finds out.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -93,17 +94,31 @@ def _own_git_dir(clone: Path) -> Path | None:
         return None
 
 
-def _write_env(path: Path, text: str) -> None:
-    """Write ``path`` without following a symlink: to a new file beside it, then renamed over it."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _write_env(git_dir: Path, text: str) -> Path:
+    """Write ``git_dir/ENV_FILE`` without following a symlink anywhere: ``.git`` is opened as a directory that
+    isn't a symlink, and the file is made beside the target inside it (``dir_fd``) and renamed over it, so a
+    symlink at either place is never written through. A leftover temporary file from an earlier try is removed."""
+    dir_fd = os.open(git_dir, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+    tmp = f".{ENV_FILE}.{os.getpid()}.tmp"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)  # a rename replaces a symlink at ``path``; it never writes through it
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=dir_fd)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, ENV_FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=dir_fd)
+            raise
+    finally:
+        os.close(dir_fd)
+    return git_dir / ENV_FILE
 
 
 def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> InitResult:
@@ -176,9 +191,12 @@ def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> 
     )
     git_dir = _own_git_dir(root)
     if git_dir is not None:
-        path = git_dir / ENV_FILE
-        _write_env(path, "".join(f"{k}={shlex.quote(v)}\n" for k, v in result.env.items()))
-        result.env_file = str(path)
+        try:
+            path = _write_env(git_dir, "".join(f"{k}={shlex.quote(v)}\n" for k, v in result.env.items()))
+        except OSError as e:  # a read-only .git, say: the environment still works through --print-env
+            notes.append(f"couldn't write {git_dir / ENV_FILE} ({e}); load the environment with --print-env")
+        else:
+            result.env_file = str(path)
     else:
         notes.append(
             "this clone has no .git folder of its own (not a git checkout, or a worktree or submodule), so nothing "

@@ -242,9 +242,12 @@ GENERATED = frozenset({POLICY_PATH, MANIFEST_PATH, *GUIDE_PATHS})
 # laptop, so a mirror leaves them out (the agent gets Scout's guide instead). Compared case-folded.
 AGENT_FILES = frozenset(
     {"agents.md", "agent.md", "claude.md", "claude.local.md", "gemini.md", "copilot-instructions.md",
-     ".cursorrules", ".windsurfrules", ".clinerules"}
+     "conventions.md", ".cursorrules", ".windsurfrules", ".clinerules", ".mcp.json", ".envrc"}
 )  # fmt: skip
-AGENT_FOLDERS = frozenset({".claude", ".cursor", ".gemini", ".codex", ".windsurf", ".clinerules"})
+AGENT_FOLDERS = frozenset(
+    {".claude", ".cursor", ".gemini", ".codex", ".windsurf", ".clinerules", ".roo", ".kiro", ".continue",
+     ".vscode", ".devcontainer"}
+)  # fmt: skip
 # At the root only: a mirror pushed to GitHub would run the vault's workflows, and Copilot reads its instructions.
 ROOT_AUTOMATION = frozenset({".github"})
 
@@ -1114,6 +1117,7 @@ class Plan:
     mirror_policy: Policy | None = None
     fingerprint: str = ""  # what the scan depended on (:func:`scan_fingerprint`)
     vault: str = ""  # the vault's mark (:func:`_vault_mark`), recorded in the manifest
+    agent_files: list[str] = field(default_factory=list)  # visible files left out as agents' instructions
     written: dict[str, str] = field(default_factory=dict)  # path -> blob sha of each new (redacted) blob
 
     def manifest(self) -> bytes:
@@ -1338,6 +1342,7 @@ class Visibility:
     visible: list[tuple[TreeEntry, Label]]
     links: list[TreeEntry]
     hidden: set[str]
+    agent_files: list[str] = field(default_factory=list)  # visible, but agents' instructions: left out, no term
 
 
 def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visibility:
@@ -1348,19 +1353,24 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
     entries = [e for e in ls_tree(vault, head) if e.kind == "blob"]
     out = Visibility(policy, rules, entries, [], [], set())
     for e in entries:
-        if fold(e.path) in generated or _agent_config(e.path):
-            continue  # only the generated files may carry those names; the vault's agent files stay on the laptop
+        # A generated path, or a file agents read as instructions, never goes as the vault has it. It is still
+        # classified first: one this delegate may not see is hidden like any other, so its name and links stay
+        # redaction terms (a private people/claude.md); only a visible one is left out without being a term.
+        skip = fold(e.path) in generated or _agent_config(e.path)
         if rules.refused(e.path):
             out.hidden.add(e.path)
         elif e.mode == SYMLINK_MODE:
-            out.links.append(e)
+            if not skip:
+                out.links.append(e)
         else:
             head_text = _note_head(e.path, blobs.read(e.sha))
             label = _classify(e.path, head_text, policy)
-            if visible_to(label, reader, policy):
-                out.visible.append((e, label))
-            else:
+            if not visible_to(label, reader, policy):
                 out.hidden.add(e.path)
+            elif skip:
+                out.agent_files.append(e.path)
+            else:
+                out.visible.append((e, label))
     return out
 
 
@@ -1488,6 +1498,7 @@ def plan(
     seen = visibility(vault, head, delegate, blobs)
     policy, rules = seen.policy, seen.rules
     out = Plan(delegate=delegate, hidden_paths=set(seen.hidden), vault=_vault_mark(vault))
+    out.agent_files = sorted(seen.agent_files)
     out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden)
     scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
@@ -1935,7 +1946,9 @@ def _build_and_push(
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
-        notes=_drop_warning(link.id, the_plan) + _left_out_note(link.id, the_plan),
+        notes=_drop_warning(link.id, the_plan)
+        + _left_out_note(link.id, the_plan)
+        + _agent_files_note(link.id, the_plan),
     )
     parent = None if fresh else link.last_mirror
     parent_tree = git(vault, "rev-parse", "--verify", "-q", f"{parent}^{{tree}}", check=False) if parent else None
@@ -2008,6 +2021,21 @@ def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
         f"warning: {the_plan.left_out} of the {total} file(s) {delegate} may see were left out of its mirror, "
         "because they name a hidden file or can't be scanned; check `scoutctl delegate preview "
         f"{delegate}` and the privacy settings before relying on this mirror"
+    ]
+
+
+def _agent_files_note(delegate: str, the_plan: Plan) -> list[str]:
+    """Which visible files were left out because agents read them as instructions or settings."""
+    if not the_plan.agent_files:
+        return []
+    items = the_plan.agent_files
+    listed = ", ".join(items[:LEFT_OUT_LISTED]) + (
+        f" and {len(items) - LEFT_OUT_LISTED} more" if len(items) > LEFT_OUT_LISTED else ""
+    )
+    return [
+        f"left out as agent config: {len(items)} file(s) agents read as their instructions or settings ({listed}). "
+        f"They're for the owner's runs on the laptop; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) "
+        "instead. Rename a note to keep it in the mirror"
     ]
 
 
@@ -2728,5 +2756,7 @@ def preview(vault: Path, delegate: str) -> Result:
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
-        notes=_drop_warning(delegate, the_plan) + _left_out_note(delegate, the_plan),
+        notes=_drop_warning(delegate, the_plan)
+        + _left_out_note(delegate, the_plan)
+        + _agent_files_note(delegate, the_plan),
     )
