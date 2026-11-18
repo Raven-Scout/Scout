@@ -1519,11 +1519,38 @@ def recent_commits(vault: Path, limit: int = COMMIT_SCAN) -> list[tuple[datetime
     return out
 
 
+# A runner log's name: ``<stem>-YYYY-MM-DD_HH-MM.log`` for the run that claimed
+# the minute (and every log from before unique names), or
+# ``<stem>-YYYY-MM-DD_HH-MM-SS-PID.log`` for a later run in the same minute.
+_RUN_LOG_TAIL = r"-(\d{4}-\d{2}-\d{2}_\d{2}-\d{2})(?:-(\d{2})-(\d+))?\.log"
+_ANY_RUN_LOG_RE = re.compile(r"[a-z]+" + _RUN_LOG_TAIL)
+
+
+def run_log_pattern(stem: str) -> re.Pattern[str]:
+    """Matches a runner's log names, in both forms, for runner stem ``stem``."""
+    return re.compile(re.escape(stem) + _RUN_LOG_TAIL)
+
+
+def run_log_sort_key(name: str) -> tuple[str, int, int, str]:
+    """Orders runner log names by start: minute, then second, then PID.
+
+    Plain text order puts ``…_09-03-25-4242.log`` before ``…_09-03.log`` and a
+    short PID after a long one. The minute-named log of a minute sorts first:
+    the run that claimed it was that minute's first. Names in neither form sort
+    before all others, by text.
+    """
+    m = _ANY_RUN_LOG_RE.fullmatch(name)
+    if m is None:
+        return ("", -1, -1, name)
+    return (m.group(1), int(m.group(2) or 0), int(m.group(3) or 0), name)
+
+
 def newest_log_outcome(vault: Path, runner: str | None, ledger_logs: list[str], *, shared: bool) -> str | None:
     """Why a lane's newest run produced nothing, read from its runner log.
 
     The logs the ledger recorded for the lane are always its own. A runner's
-    other logs (``<stem>-YYYY-MM-DD_HH-MM.log``, including runs that stopped
+    other logs (``<stem>-YYYY-MM-DD_HH-MM.log`` or, for a later run in the same
+    minute, ``<stem>-YYYY-MM-DD_HH-MM-SS-PID.log``; including runs that stopped
     before the ledger step) count only when no other lane uses the same runner:
     run-scout.sh serves both briefing and consolidation and its log names do not
     say which one ran.
@@ -1532,11 +1559,11 @@ def newest_log_outcome(vault: Path, runner: str | None, ledger_logs: list[str], 
     names = {name for name in ledger_logs if (log_dir / name).is_file()}
     m = re.fullmatch(r"run-(.+)\.sh", runner or "")
     if m and not shared:
-        pattern = re.compile(re.escape(m.group(1)) + r"-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.log")
+        pattern = run_log_pattern(m.group(1))
         names |= {p.name for p in log_dir.glob("*.log") if pattern.fullmatch(p.name)}
     if not names:
         return None
-    name = sorted(names)[-1]
+    name = max(names, key=run_log_sort_key)
     try:
         text = (log_dir / name).read_text(encoding="utf-8", errors="replace")
     except OSError:

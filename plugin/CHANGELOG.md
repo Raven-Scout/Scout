@@ -6,6 +6,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **A run can't set later runs a tiny limit, and usage rows name their runtime** (spec §8.6; Phase 1, PR D2: the review of #653, and part of task 1.6; `engine/scout/agent_runtimes/limits.py`, `engine/scout/scripts/run_cost.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/cli.py`).
+  - **scout-config.yaml can only tighten a limit that is on** (`budget.per_runtime`, which a run can write). It never turns a limit on, never goes under a floor (30 minutes of awake time, 10,000,000 tokens), and never uses a value that isn't a whole number (`0.5`, `"5m"`, `"²"`). Only `scoutctl agent-runtime set-limit` loosens a limit or turns one on or off.
+  - **Ignored values are named** in `agent-runtime show`, the run's log and `scoutctl bootstrap doctor`. The doctor checks each slot with its own kind, so a value under research's 90 minutes isn't reported against research slots, and it reports them on a vault with no runs yet.
+  - **Doctor warnings:** runs stopped at their timeout (`failure_class: timeout`), and usage-tracker rows dated in the future. A note says when runs recorded no awake length (no python3 where the runner ran).
+  - **A slot's kind:** the runner's `SCOUT_RUN_TYPE` decides it only when it is exactly a kind (`dreaming`, `research`); otherwise the schedule's `type` does.
+  - **Usage-tracker rows:** the runner's row and each attempt row carry `agent_runtime`, `provider` and `cost_kind`: `reported` (Claude Code's own cost), `priced` (from usage rows) or `unpriced` (tokens only). `cost_source` keeps its meaning, and a row without these keys is Claude Code's.
+  - **The daily token ceiling counts real tokens.** The runner's row carries the run's tokens (`tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), measured from the run's transcripts and its subagents', each message once. Before, the ceiling read token fields no row had and counted 0. Rows dated in the future are skipped, since they would never age out.
+
+### Fixed
+- **Each run gets its own log, even two runs in one minute** (`templates/run-scout.sh.tmpl`, `templates/run-dreaming.sh.tmpl`, `templates/run-research.sh.tmpl`, `engine/scout/health.py`, `templates/scripts/session-lane-liveness.py`). Run logs were named to the minute, so a second run in the same minute, usually one the session lock skipped, wrote its skip line into the running session's log, and the app showed the running session as skipped.
+  - A runner now claims `<stem>-YYYY-MM-DD_HH-MM.log` atomically (noclobber, so an existing log is never truncated) and keeps that name when it is first in its minute, which is almost always. When another run already holds it, the runner logs to `<stem>-YYYY-MM-DD_HH-MM-SS-PID.log` instead.
+  - The run ledger's `log` field, `scoutctl health` and `session-lane-liveness.py` read both names. The newest log is picked by start time, then PID, never by text order, in which `…_09-03-25-4242.log` sorts before `…_09-03.log`.
+  - **Upgrading.** The runners and `scripts/session-lane-liveness.py` reach a vault with `/scout-update`. A vault edit far from the runners' log-name lines merges. An edit right next to them (the `SCOUTCTL_BIN` or `LOCK_FILE` line) parks the update for `scoutctl bootstrap drift`, and that runner keeps working with minute-named logs until it is merged.
+
+## [0.18.16] - 2026-11-17
+
 ### Added
 - **Dreaming knows comments that quote a passage** (`phases/modes/kb-deep-work.md`). The Mac app's note reader now saves a comment on selected text as `//==<< on "passage": comment >>==//`; the inline-comment step says what the quote is and to act on that passage rather than the whole note. The marker is still a `//==<<` line, so the search that finds comments is unchanged.
 - **`scoutctl runs --json`: the run ledger for the app** (UI audit card C8; `engine/scout/run_ledger.py`, `engine/scout/health.py`, `engine/scout/cli.py`). One read-only, versioned document (`schema_version: 1`): the recent rows of `.scout-logs/run-outcomes.jsonl`, newest first, plus the run-health report `scoutctl health --json` prints. Each row covers:
@@ -32,6 +49,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`scoutctl sandbox off` is the owner's only** (`engine/scout/cli.py`). A scheduled or engine-launched run (`SCOUT_MODE` set, or a reader other than the owner) is refused with exit 2 and nothing changes, as for `agent-runtime set-limit`. `scoutctl sandbox on` stays open to everyone.
 
 ### Fixed
+- **`2>/dev/null` is no longer a "git config" write when `GIT_CONFIG_GLOBAL=/dev/null`** (`engine/scout/kb/hook_paths.py`). The run gates protect the file `$GIT_CONFIG_GLOBAL` names. When it names `/dev/null`, as in the eval harness's sessions, every command that sent output to `/dev/null` was refused as a hook skip. The v0.18.16 KB-writing gate's session gave up at its first step because of this. The gates now protect no device (`/dev/…`), as the write sandbox's profile already did. Live runs, which don't set the variable, were never affected.
 - **A failed run's quoted error line is the CLI's, never the session's prose** (`engine/scout/health.py`). The `detail` that `scoutctl health --json`, the doctor and `scoutctl runs --json` give for a failed run now comes only from a line that opens with a Claude Code, git or retry-wrapper error shape (`FAILURE_LINE_RES`, matched at the line's start).
   - Before, a line in the run log that merely mentioned a limit, a lock or a connection reset could be quoted, and the log also holds the session's own output, which can quote vault notes.
   - The home directory in a quoted line is written as `~`.

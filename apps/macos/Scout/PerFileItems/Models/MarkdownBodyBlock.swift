@@ -86,6 +86,60 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         return blocks
     }
 
+    /// The leading blocks of `blocks` holding at most `budget` characters of
+    /// text, cutting the last one short when it overflows. `truncated` is true
+    /// when anything was left out.
+    ///
+    /// Clipping a view does not stop SwiftUI laying out what it hides: a card
+    /// that clipped a 220 KB body still measured all of it. Cards render this
+    /// prefix instead, so their text layout is bounded by the budget, not the
+    /// file. (Splitting the body into blocks happens once per file read, in
+    /// `PerFileItem.init`; `prefix` itself is one linear pass.)
+    static func prefix(_ blocks: [MarkdownBodyBlock], characters budget: Int)
+        -> (blocks: [MarkdownBodyBlock], truncated: Bool) {
+        var out: [MarkdownBodyBlock] = []
+        var remaining = budget
+        for block in blocks {
+            let size = block.characterCount
+            if size <= remaining {
+                out.append(block)
+                remaining -= size
+                continue
+            }
+            if let cut = block.cut(to: remaining) { out.append(cut) }
+            return (out, true)
+        }
+        return (out, false)
+    }
+
+    var characterCount: Int {
+        switch self {
+        case .prose(let t), .heading(_, let t): return t.count
+        case .code(_, let c): return c.count
+        case .tasks(let tasks): return tasks.reduce(0) { $0 + $1.text.count }
+        }
+    }
+
+    /// This block shortened to at most `limit` characters, or nil if nothing
+    /// meaningful fits.
+    private func cut(to limit: Int) -> MarkdownBodyBlock? {
+        guard limit > 0 else { return nil }
+        switch self {
+        case .prose(let t): return .prose(String(t.prefix(limit)) + "…")
+        case .code(let lang, let c): return .code(language: lang, code: String(c.prefix(limit)))
+        case .heading(let level, let t): return .heading(level: level, text: String(t.prefix(limit)))
+        case .tasks(let tasks):
+            var kept: [MarkdownTask] = []
+            var used = 0
+            for task in tasks {
+                used += task.text.count
+                if used > limit { break }
+                kept.append(task)
+            }
+            return kept.isEmpty ? nil : .tasks(kept)
+        }
+    }
+
     private static func heading(in line: String) -> MarkdownBodyBlock? {
         let ns = line as NSString
         guard let m = headingRe.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else {

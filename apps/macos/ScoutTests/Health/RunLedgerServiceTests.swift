@@ -29,7 +29,7 @@ struct RunLedgerServiceTests {
         #expect(svc.state == .loading)
         await svc.refresh()
         #expect(runner.calls == [["--engine", "runs", "--json", "--since", "14d"]])
-        #expect(svc.ledger?.runs.count == 13)
+        #expect(svc.ledger?.runs.count == 14)
         #expect(svc.needsAttention)
         #expect(svc.lastChecked != nil)
         // Each finding's first-seen time is the read's time, and survives a re-read.

@@ -118,10 +118,14 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
 
-    static func makeId(type: RunType, startedAt: Date) -> String {
+    /// `<type>-<ISO 8601 start>`, plus `-<pid>` for a run whose log has the
+    /// seconds+PID name (a later run in the same minute). A minute-named log
+    /// keeps the id it always had, so feedback files' `run_id` still match.
+    static func makeId(type: RunType, startedAt: Date, pid: Int? = nil) -> String {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
-        return "\(type.rawValue)-\(iso.string(from: startedAt))"
+        let base = "\(type.rawValue)-\(iso.string(from: startedAt))"
+        return pid.map { "\(base)-\($0)" } ?? base
     }
 
     /// Display name for the Control Center. When the typed bucket is `.manual`

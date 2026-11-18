@@ -50,6 +50,19 @@ struct WriteSafetyTests {
 
     // MARK: - Run feedback note
 
+    /// Two runs of one type in one minute keep separate feedback files; a
+    /// minute-named run keeps the file name its notes always had.
+    @Test func feedbackFilesDontCollideForSameMinuteRuns() {
+        let t = Date(timeIntervalSince1970: 1_800_000_000)
+        let minute = Run.make(type: .consolidation, startedAt: t, logPath: URL(fileURLWithPath: "/x/scout-2027-01-15_08-00.log"))
+        let later = Run.make(type: .consolidation, startedAt: t.addingTimeInterval(31),
+                             logPath: URL(fileURLWithPath: "/x/scout-2027-01-15_08-00-31-4242.log"))
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HH-mm"
+        #expect(FeedbackTab.slug(for: minute) == "\(fmt.string(from: t))_consolidation")
+        #expect(FeedbackTab.slug(for: later) == "\(fmt.string(from: t))-31-4242_consolidation")
+    }
+
     @Test("a note that exists but can't be read is unreadable, not empty")
     func feedbackUnreadable() {
         #expect(FeedbackTab.loadOutcome(data: nil, fileExists: true) == .unreadable)

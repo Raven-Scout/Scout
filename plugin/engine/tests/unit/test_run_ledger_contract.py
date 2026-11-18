@@ -5,7 +5,9 @@
 ``SCOUT_REGEN_CONTRACT=1`` to rewrite the canonical file from the deterministic vault below — never edit
 it by hand. The vault holds one row per outcome family the app must name: a clean run, a timeout, a
 usage limit with its reset, an integrity restore, and every skip (privacy checks, write protection,
-agent runtime, writer lease, lock, budget, redundant).
+agent runtime, writer lease, lock, budget, redundant). One lock skip started in the same minute as the
+run it was skipped for, so it logs to the seconds+PID name (``<runner>-YYYY-MM-DD_HH-MM-SS-PID.log``)
+and its row never shares a log with that run's.
 """
 
 from __future__ import annotations
@@ -62,6 +64,8 @@ RUNS: list[tuple[float, int, str, str, dict]] = [
         "research",
         {"outcome": "failed", "exit_code": 124, "failure_class": "timeout", "model": "opus", **PROTECTED},
     ),
+    # Started 30 s into the minute the next row's run started in, while it held the lock.
+    (66 + 2.5 / 60, 0, "evening-consolidation", "scout", {"outcome": "skipped_lock", "log_pid": 48213}),
     (66, 3, "evening-consolidation", "scout", {"outcome": "ok", "model": "sonnet", **PROTECTED}),
     (
         51,
@@ -109,7 +113,12 @@ def _build_vault(root: Path) -> Path:
         started = finished - timedelta(minutes=minutes)
         outcome = fields.pop("outcome")
         resets = fields.pop("resets_hours", None)
-        log = f"{runner}-{started.strftime('%Y-%m-%d_%H-%M')}.log"
+        pid = fields.pop("log_pid", None)
+        log = (
+            f"{runner}-{started.strftime('%Y-%m-%d_%H-%M-%S')}-{pid}.log"
+            if pid
+            else f"{runner}-{started.strftime('%Y-%m-%d_%H-%M')}.log"
+        )
         row = {
             "slot": slot,
             "mode": runner if runner != "scout" else "scout",
@@ -169,6 +178,10 @@ def test_the_fixture_covers_every_outcome_the_app_names(tmp_path, monkeypatch):
     assert any(r["resets_at"] for r in runs) and any(r["awake_s"] for r in runs)
     finished = [r["finished_at"] for r in runs]
     assert finished == sorted(finished, reverse=True)
+    # Two runs started in one minute, each with its own log.
+    logs = [r["log"] for r in runs]
+    assert len(set(logs)) == len(logs)
+    assert {"scout-2026-11-13_17-57.log", "scout-2026-11-13_17-57-30-48213.log"} <= set(logs)
 
 
 def test_the_fixture_carries_findings_with_fixes(tmp_path, monkeypatch):

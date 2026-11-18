@@ -13,7 +13,10 @@ Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, me
 2. **The owner's limits**, ``~/.local/state/scout/run-limits.json`` (``scoutctl agent-runtime set-limit``,
    owner only), which a run can't write (the write gate and the OS sandbox protect it). They replace the
    default: this is the only way to raise a limit or turn it off.
-3. **scout-config.yaml**, which a run *can* write, so it can only make a limit stricter::
+3. **scout-config.yaml**, which a run *can* write, so it can only make a limit that is on stricter, and
+   never below a floor (``CONFIG_FLOOR_TIMEOUT_MINUTES`` of awake time, ``FLOOR_TOKENS``). It can't turn a
+   limit on where the default or the owner has it off (Claude Code's timeout today), so a run can't set
+   later runs a tiny limit::
 
        budget:
          per_runtime:
@@ -21,12 +24,16 @@ Three layers, per runtime, each a value or ``off`` (``auto`` for the ceiling, me
              run_timeout_minutes: 30     # applies only below the limit above
              max_tokens_per_day: 2000000 # likewise; `auto` applies where it is lower
 
-   A value that would loosen a limit is ignored, and ``agent-runtime show`` says so.
+   A value that would loosen a limit, turn one on, or go below its floor, or isn't a whole number (``0.5``,
+   ``"5m"``, ``"²"``), is ignored, and says so in
+   ``agent-runtime show``, the run's log and ``scoutctl bootstrap doctor``.
 
-The ceiling counts the usage tracker's rows for that runtime (``agent_runtime``, a
-missing key meaning ``claude-code``) over the last 24 hours, summing their
-``tokens`` (or ``input_tokens`` + ``output_tokens``). A run that would start past it
-is skipped as ``skipped_budget``, like a USD overrun.
+The ceiling counts the usage tracker's **runner rows** for that runtime (``agent_runtime``, a
+missing key meaning ``claude-code``) over the last 24 hours, summing their ``tokens``: every token
+the model processed in the run, each message once, which ``budget record-run`` measures from the
+run's transcripts and their subagents' (only the runner's row carries them, so attempts aren't counted
+twice). A row dated in the future (beyond ``CLOCK_SKEW``) is skipped, since it would never age out. A run
+that would start past it is skipped as ``skipped_budget``, like a USD overrun.
 
 **The default ceiling** (``auto``) is Phase 0's formula (spec §8.6; the Phase 0
 findings, #650 §3), approved by Jordan on 2026-11-16. Every constant is a module constant::
@@ -60,7 +67,13 @@ DEFAULT_RUN_TIMEOUT_MINUTES = 45
 # A slot kind whose runs usually take longer starts higher (spec §8.6, Q6 as amended 2026-11-16: Claude research runs'
 # p90 is 111 min).
 DEFAULT_TIMEOUT_BY_KIND: dict[str, int] = {"research": 90}
+# The least a scout-config.yaml value may narrow a run timeout to (review of #653): below it, a run that
+# writes the config could stop the next runs before they do anything.
+CONFIG_FLOOR_TIMEOUT_MINUTES = 30
 CEILING_WINDOW = timedelta(hours=24)
+# A usage-tracker row dated later than this past now is skipped (review of #654): the tracker isn't protected,
+# and a future-dated row would never age out of the window.
+CLOCK_SKEW = timedelta(minutes=5)
 # The default ceiling's formula (Phase 0, #650 §3). K is derived from USD at list prices, not measured
 # (about ±25%), which is why a runtime's own rows replace the bootstrap after OWN_ROWS_AFTER.
 K_TOKENS_PER_USD = 1_000_000
@@ -134,7 +147,7 @@ def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: 
                 if not isinstance(row, dict):
                     continue
                 ts = row_ts(row)
-                if ts is None or ts < since:
+                if ts is None or ts < since or ts > now + CLOCK_SKEW:
                     continue
                 kind = kind_of(row.get("type"))
                 if row.get("agent_runtime") == runtime_id and runtime_id != "claude-code":
@@ -176,21 +189,33 @@ def _off(value: Any) -> bool:
 
 
 def _positive_int(value: Any) -> int | None:
+    """A whole number above 0, as an int or ASCII digits, else None. Never raises: ``str.isdigit`` alone is
+    true for "²" or "①", which ``int()`` refuses (review of #654)."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int) and value > 0:
-        return value
-    if isinstance(value, str) and value.strip().isdigit() and int(value.strip()) > 0:
-        return int(value.strip())
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isascii() and text.isdigit():
+            n = int(text)
+            return n if n > 0 else None
     return None
+
+
+def _auto(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() == "auto"
 
 
 def slot_kind(data_dir: Path | None, slot: str | None, run_type: str | None = None) -> str | None:
     """The kind (dreaming, research, briefing, consolidation) of the run: the runner's own ``SCOUT_RUN_TYPE``
     first, then the schedule's ``type`` for the slot, then the slot key's own words (``research-manual``),
     else None. Never raises."""
-    if kind := kind_of(run_type):
-        return kind
+    # The runner's own run type names the kind only when it is exactly one (run-dreaming and run-research pass
+    # "dreaming" / "research"); run-scout passes the slot key, whose words prove nothing (a `research-digest`
+    # slot may be `type: briefing`), so the schedule decides those.
+    if run_type in SLOT_KINDS:
+        return run_type
     if not slot:
         return None
     try:
@@ -256,7 +281,16 @@ def _valid_timeout(value: Any) -> bool:
 
 
 def _valid_ceiling(value: Any) -> bool:
-    return _valid_timeout(value) or (isinstance(value, str) and value.strip().lower() == "auto")
+    return _valid_timeout(value) or _auto(value)
+
+
+def _stored(value: Any) -> Any:
+    """A number as an int; ``off`` / ``auto`` as lower-case words."""
+    if (n := _positive_int(value)) is not None:
+        return n
+    if _off(value):
+        return "off"
+    return str(value).strip().lower()
 
 
 def set_owner_limit(
@@ -279,9 +313,9 @@ def set_owner_limit(
     entry = vaults.setdefault(_vault_key(data_dir), {})
     block = {} if clear else dict(entry.get(runtime_id) or {})
     if run_timeout_minutes is not None:
-        block["run_timeout_minutes"] = run_timeout_minutes
+        block["run_timeout_minutes"] = _stored(run_timeout_minutes)
     if max_tokens_per_day is not None:
-        block["max_tokens_per_day"] = max_tokens_per_day
+        block["max_tokens_per_day"] = _stored(max_tokens_per_day)
     if block:
         entry[runtime_id] = block
     else:
@@ -312,10 +346,35 @@ def limits_for(
 ) -> RuntimeLimits:
     """The limits for a run on *adapter*, of *slot* (the runners' ``$MODE``) and *run_type*
     (``SCOUT_RUN_TYPE``) when given: the default, replaced by the owner's limits, narrowed by
-    scout-config.yaml. Never raises; an invalid or unreadable value is skipped."""
+    scout-config.yaml. Never raises: a config value it can't use is listed in ``ignored``, and if the
+    config can't be applied at all, the limits are those without it."""
+    try:
+        return _limits_for(data_dir, adapter, slot, run_type, env=env, use_config=True)
+    except Exception as e:  # noqa: BLE001 - a run's start never fails on its limits; the config is dropped
+        base = _limits_for(data_dir, adapter, slot, run_type, env=env, use_config=False)
+        note = f"budget.per_runtime.{adapter.id} ({type(e).__name__}: could not be applied)"
+        return RuntimeLimits(
+            base.runtime,
+            base.run_timeout_s,
+            base.timeout_source,
+            base.max_tokens_per_day,
+            base.ceiling_source,
+            (note,),
+        )
+
+
+def _limits_for(
+    data_dir: Path | None,
+    adapter: AgentRuntime,
+    slot: str | None,
+    run_type: str | None,
+    *,
+    env: Mapping[str, str] | None,
+    use_config: bool,
+) -> RuntimeLimits:
     self_capped = adapter.caps_own_spend
     owner = owner_limits(data_dir, adapter.id, env=env)
-    config = _block(data_dir, adapter.id)
+    config = _block(data_dir, adapter.id) if use_config else {}
     ignored: list[str] = []
 
     # The timeout: default, then the owner's value, then the config's if stricter.
@@ -332,12 +391,19 @@ def limits_for(
         timeout_s, t_src = minutes * 60, "owner"
     raw = config.get("run_timeout_minutes")
     if (minutes := _positive_int(raw)) is not None:
-        if timeout_s is None or minutes * 60 < timeout_s:
+        if timeout_s is None:
+            ignored.append(f"run_timeout_minutes: {minutes} (the timeout is off; only the owner turns it on)")
+        elif minutes < CONFIG_FLOOR_TIMEOUT_MINUTES:
+            ignored.append(f"run_timeout_minutes: {minutes} (below the {CONFIG_FLOOR_TIMEOUT_MINUTES}-minute floor)")
+        elif minutes * 60 < timeout_s:
             timeout_s, t_src = minutes * 60, "config"
         elif minutes * 60 > timeout_s:
-            ignored.append(f"run_timeout_minutes: {minutes}")
-    elif raw is not None and _off(raw) and timeout_s is not None:
-        ignored.append("run_timeout_minutes: off")
+            ignored.append(f"run_timeout_minutes: {minutes} (looser than {timeout_s // 60})")
+    elif raw is not None and _off(raw):
+        if timeout_s is not None:
+            ignored.append("run_timeout_minutes: off (only the owner turns it off)")
+    elif raw is not None:
+        ignored.append(f"run_timeout_minutes: {raw!r} (not a whole number of minutes)")
 
     # The ceiling: likewise.
     ceiling: int | None
@@ -351,25 +417,36 @@ def limits_for(
         ceiling, c_src = None, "owner"
     elif (n := _positive_int(raw)) is not None:
         ceiling, c_src = n, "owner"
-    elif isinstance(raw, str) and raw.strip().lower() == "auto":
+    elif _auto(raw):
         ceiling, c_src = default_daily_token_ceiling(data_dir, adapter.id), "owner"
     raw = config.get("max_tokens_per_day")
     wanted: int | None = None
     if (n := _positive_int(raw)) is not None:
         wanted = n
-    elif isinstance(raw, str) and raw.strip().lower() == "auto":
+    elif _auto(raw):
         wanted = default_daily_token_ceiling(data_dir, adapter.id)
-    elif raw is not None and _off(raw) and ceiling is not None:
-        ignored.append("max_tokens_per_day: off")
+    elif raw is not None and _off(raw):
+        if ceiling is not None:
+            ignored.append("max_tokens_per_day: off (only the owner turns it off)")
+    elif raw is not None:
+        ignored.append(f"max_tokens_per_day: {raw!r} (not a whole number of tokens, auto or off)")
     if wanted is not None:
-        if ceiling is None or wanted < ceiling:
+        if ceiling is None:
+            ignored.append(f"max_tokens_per_day: {raw} (the ceiling is off; only the owner turns it on)")
+        elif wanted < FLOOR_TOKENS:
+            ignored.append(f"max_tokens_per_day: {raw} (below the {FLOOR_TOKENS:,}-token floor)")
+        elif wanted < ceiling:
             ceiling, c_src = wanted, "config"
         elif wanted > ceiling:
-            ignored.append(f"max_tokens_per_day: {raw}")
+            ignored.append(f"max_tokens_per_day: {raw} (looser than {ceiling:,})")
     return RuntimeLimits(adapter.id, timeout_s, t_src, ceiling, c_src, tuple(ignored))
 
 
 def _row_tokens(row: dict[str, Any]) -> int:
+    """A runner row's tokens (``budget record-run`` writes ``tokens``, every attempt included). Other rows (the
+    session's own, attempt rows) are 0: the runner's row already counts them."""
+    if row.get("source") != "runner":
+        return 0
     total = row.get("tokens")
     if isinstance(total, int) and not isinstance(total, bool) and total > 0:
         return total
@@ -388,16 +465,37 @@ def tokens_used(data_dir: Path | None, runtime_id: str, *, now: datetime | None 
     tracker = paths.logs_dir(data_dir) / "usage-tracker.jsonl"
     if not tracker.exists():
         return 0
-    since = (now or datetime.now(UTC)) - CEILING_WINDOW
+    now = now or datetime.now(UTC)
+    since, until = now - CEILING_WINDOW, now + CLOCK_SKEW
     total = 0
     for row in iter_tracker_rows(tracker):
         if not isinstance(row, dict) or (row.get("agent_runtime") or "claude-code") != runtime_id:
             continue
         ts = row_ts(row)
-        if ts is None or ts < since:
+        if ts is None or ts < since or ts > until:  # a future-dated row would never age out
             continue
         total += _row_tokens(row)
     return total
+
+
+def future_rows(data_dir: Path | None, *, now: datetime | None = None) -> int:
+    """Usage-tracker rows dated later than now (beyond ``CLOCK_SKEW``), which the ceiling and its formula skip.
+
+    The tracker isn't protected, so a run can append one; counted, it would never age out of the 24 hours and
+    would skip every later run (review of #654). The doctor warns about them. Never raises.
+    """
+    from scout.scripts.budget_check import iter_tracker_rows, row_ts
+
+    try:
+        tracker = paths.logs_dir(data_dir) / "usage-tracker.jsonl"
+        if not tracker.exists():
+            return 0
+        until = (now or datetime.now(UTC)) + CLOCK_SKEW
+        return sum(
+            1 for row in iter_tracker_rows(tracker) if isinstance(row, dict) and (ts := row_ts(row)) and ts > until
+        )
+    except Exception:  # noqa: BLE001 - a count for the doctor only
+        return 0
 
 
 def over_ceiling(limits: RuntimeLimits, data_dir: Path | None, *, now: datetime | None = None) -> str | None:
@@ -430,6 +528,7 @@ def dumps(limits: RuntimeLimits) -> str:
 __all__ = [
     "CEILING_WINDOW",
     "DEFAULT_RUN_TIMEOUT_MINUTES",
+    "CONFIG_FLOOR_TIMEOUT_MINUTES",
     "DEFAULT_TIMEOUT_BY_KIND",
     "default_timeout_minutes",
     "kind_of",
@@ -446,4 +545,6 @@ __all__ = [
     "set_owner_limit",
     "over_ceiling",
     "tokens_used",
+    "future_rows",
+    "CLOCK_SKEW",
 ]
