@@ -126,6 +126,28 @@
     new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) start(); else stop(); }); }).observe(rot);
   })();
 
+  /* ---------- chapter strip: shown while a numbered chapter is on screen ---------- */
+  (function () {
+    var strip = $('chapters'); if (!strip || !hasIO) return;
+    var links = {};
+    each('a', function (a) { links[a.getAttribute('href').slice(1)] = a; }, strip);
+    var current = null;
+    function paint() {
+      strip.classList.toggle('on', !!(current && links[current]));
+      Object.keys(links).forEach(function (k) {
+        var on = k === current;
+        links[k].classList.toggle('on', on);
+        if (on) { links[k].setAttribute('aria-current', 'true'); var w = links[k].parentNode; if (w.scrollWidth > w.clientWidth) w.scrollLeft = links[k].offsetLeft - w.offsetLeft - 16; }
+        else links[k].removeAttribute('aria-current');
+      });
+    }
+    var cio = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) current = e.target.id; else if (current === e.target.id) current = null; });
+      paint();
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    each('main > section', function (s) { if (s.id) cio.observe(s); });
+  })();
+
   /* ---------- hero: the briefing builds itself ---------- */
   (function () {
     var brief = $('brief'); if (!brief) return;
@@ -292,85 +314,6 @@
       acts.querySelector('button').focus();
     });
   })();
-
-  /* ---------- research queue ---------- */
-  (function () {
-    var run = $('rq-run'), list = $('rq-list'); if (!run || !list) return;
-    var original = list.innerHTML;
-    run.addEventListener('click', function () {
-      var row = list.querySelector('li:not(.done):not(.running)');
-      if (!row) { list.innerHTML = original; run.textContent = '▸ Run next'; return; }
-      var age = row.querySelector('span');
-      row.classList.add('running'); age.textContent = 'researching…'; run.disabled = true;
-      setTimeout(function () {
-        row.classList.remove('running'); row.classList.add('done'); age.textContent = 'done ✓';
-        list.appendChild(row); run.disabled = false;
-        if (!list.querySelector('li:not(.done)')) run.textContent = '↻ Start over';
-      }, reduce ? 0 : 1100);
-    });
-  })();
-
-  /* ---------- a question in Slack ---------- */
-  (function () {
-    var chat = $('chat'); if (!chat) return;
-    var body = $('chat-body'), chips = $('chat-chips'), replay = $('chat-replay');
-    var timers = [];
-    function at(ms, fn) { timers.push(setTimeout(fn, reduce ? 0 : ms)); }
-    function msg(cls, html) {
-      var m = d.createElement('div'); m.className = 'msg ' + cls; m.innerHTML = html; body.appendChild(m); return m;
-    }
-    function typing() {
-      if (reduce) return { remove: function () {} };
-      var t = d.createElement('div'); t.className = 'typing'; t.setAttribute('aria-hidden', 'true');
-      t.innerHTML = '<i></i><i></i><i></i>'; body.appendChild(t); return t;
-    }
-    function react(m) {
-      var r = d.createElement('div'); r.className = 'react';
-      [['👍', 'Helpful'], ['👎', 'Not helpful']].forEach(function (p) {
-        var b = d.createElement('button'); b.type = 'button'; b.textContent = p[0];
-        b.setAttribute('aria-label', p[1]); b.setAttribute('aria-pressed', 'false');
-        b.addEventListener('click', function () {
-          each('button', function (x) { x.setAttribute('aria-pressed', 'false'); }, r);
-          b.setAttribute('aria-pressed', 'true');
-        });
-        r.appendChild(b);
-      });
-      m.appendChild(r);
-    }
-    function ask() {
-      chips.innerHTML = '';
-      [['Sam owns it', 'Sam owns'], ['I do', 'you own']].forEach(function (p) {
-        var b = d.createElement('button'); b.type = 'button'; b.className = 'mini'; b.textContent = p[0];
-        b.addEventListener('click', function () {
-          chips.innerHTML = '';
-          msg('me', p[0]);
-          var t = typing();
-          at(800, function () { t.remove(); msg('', 'Got it: ' + p[1] + ' owns the billing fix. Saved to your notes, and I won’t ask again. ✓'); replay.focus(); });
-        });
-        chips.appendChild(b);
-      });
-    }
-    function play() {
-      timers.forEach(clearTimeout); timers = []; body.innerHTML = ''; chips.innerHTML = '';
-      var t1 = typing();
-      at(900, function () { t1.remove(); react(msg('', 'Morning briefing: <b>3 need you</b>, 1 contradiction held for you.')); });
-      at(1500, function () {
-        var t2 = typing();
-        at(1100, function () { t2.remove(); msg('', 'One thing I can’t tell from your tools: who owns the billing fix, you or Sam? <span style="color:var(--ink-3)">(ticket link · 1-line summary)</span>'); ask(); });
-      });
-    }
-    replay.addEventListener('click', play);
-    onceVisible(chat, play, 0.5);
-  })();
-
-  /* ---------- wishlist ---------- */
-  each('#wish .wi', function (b) {
-    b.addEventListener('click', function () {
-      var on = b.getAttribute('aria-pressed') !== 'true';
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      var em = b.querySelector('em'); if (em) em.textContent = on ? 'shipped' : 'queued';
-    });
-  });
 
   /* ---------- jump palette (⌘K / Ctrl+K) ---------- */
   (function () {
