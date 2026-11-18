@@ -57,9 +57,7 @@ struct WriteFeedbackOverlay: View {
                 .font(DS.sans(12))
                 .foregroundStyle(DS.Ink.p1)
             Button("Undo") { controller.undoLatest(with: undoManager) }
-                .buttonStyle(.plainHit)
-                .font(DS.sans(12, weight: .semibold))
-                .foregroundStyle(DS.Accent.ink)
+                .buttonStyle(.ds(.link, size: .small))
                 .help("Undo (⌘Z)")
             Button { controller.dismissLatest() } label: {
                 Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
@@ -135,9 +133,7 @@ struct WriteProblemBanner: View {
                 HStack(spacing: 12) {
                     if let onRetry, problem.retryable {
                         Button("Try again", action: onRetry)
-                            .buttonStyle(.plainHit)
-                            .font(DS.sans(12, weight: .semibold))
-                            .foregroundStyle(DS.Accent.ink)
+                            .buttonStyle(.ds(.link, size: .small))
                     }
                     if let details = problem.details {
                         Button("Copy details") {

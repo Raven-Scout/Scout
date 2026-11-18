@@ -65,14 +65,8 @@ struct SchedulesHeader: View {
                 Image(systemName: "plus")
                 Text("New")
             }
-            .font(DS.sans(13, weight: .medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 7))
-            .foregroundStyle(DS.Accent.onFill)
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsPrimary)
         .disabled(!canAddSlot)
-        .opacity(canAddSlot ? 1 : 0.4)
     }
 }

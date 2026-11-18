@@ -55,12 +55,13 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         }
         if let runs = runHealthStatus(doctor.runHealth, now: now) { return runs }
         var status = runStatus(latestRun, now: now)
-        // Warnings don't stop the runs, but "Ready" in green would hide them.
-        let warnings = doctor.warnings.count + (doctor.runHealth?.findings.filter { $0.severity == "yellow" }.count ?? 0)
-        if status.kind == .ready, doctor.severity == .yellow || warnings > 0 {
-            let n = max(warnings, 1)
-            status = ScoutStatus(kind: .ready, title: "Ready",
-                                 detail: "\(status.detail) · \(n) warning\(n == 1 ? "" : "s") in Settings",
+        // Warnings don't stop the runs, but "Ready" in green would hide them. The count is the
+        // one Settings, the Doctor window and the Health page show, and the detail says why (R1).
+        let summary = HealthSummary(doctor: doctor)
+        if status.kind == .ready, doctor.severity == .yellow || summary.attentionCount > 0 {
+            let n = max(summary.attentionCount, 1)
+            status = ScoutStatus(kind: .ready, title: "Ready · \(n) warning\(n == 1 ? "" : "s")",
+                                 detail: summary.reason ?? status.detail,
                                  tone: .warn, fix: .openSettings)
         }
         return status

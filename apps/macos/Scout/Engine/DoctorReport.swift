@@ -14,13 +14,27 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
     /// Informational lines (write protection, privacy checks, sign-in, …);
     /// empty for engines that don't emit them.
     let notes: [String]
+    /// Warnings that stand for many files of one kind (UI audit R1, engine #505):
+    /// each `summary` is one of `warnings`, verbatim. Empty for older engines.
+    let warningGroups: [WarningGroup]
 
-    init(severity: Severity, errors: [String], warnings: [String], runHealth: RunHealth? = nil, notes: [String] = []) {
-        self.severity = severity; self.errors = errors; self.warnings = warnings; self.runHealth = runHealth
-        self.notes = notes
+    nonisolated struct WarningGroup: Equatable, Sendable, Decodable {
+        /// e.g. `privacy.script-raw-kb-read`.
+        let kind: String
+        let summary: String
+        /// The files the warning stands for (vault-relative).
+        let items: [String]
     }
 
-    private enum CodingKeys: String, CodingKey { case severity, errors, warnings, notes, runHealth = "run_health" }
+    init(severity: Severity, errors: [String], warnings: [String], runHealth: RunHealth? = nil, notes: [String] = [],
+         warningGroups: [WarningGroup] = []) {
+        self.severity = severity; self.errors = errors; self.warnings = warnings; self.runHealth = runHealth
+        self.notes = notes; self.warningGroups = warningGroups
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case severity, errors, warnings, notes, runHealth = "run_health", warningGroups = "warning_groups"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -31,6 +45,8 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
         // shape) costs only that block — never the install health beside it.
         runHealth = try? c.decodeIfPresent(RunHealth.self, forKey: .runHealth)
         notes = (try? c.decodeIfPresent([String].self, forKey: .notes)) ?? []
+        // Like run_health: a groups block this build can't read costs only the grouping.
+        warningGroups = (try? c.decodeIfPresent([WarningGroup].self, forKey: .warningGroups)) ?? []
     }
 
     /// JSON is read from `stdout` only. The legacy text form is split across

@@ -75,10 +75,15 @@ def test_wishlist_phase_no_longer_appends_dated_notes_to_the_card() -> None:
     assert "- [x] Sub-task 1 — completed [date]" not in text
 
 
-def test_scout_status_sets_archives_and_receipts_aside() -> None:
+def test_scout_status_sets_archives_and_paperwork_aside() -> None:
     text = _text(STATUS)
     assert "folder named exactly `archive` or `archived`" in text
     assert "relative to `knowledge-base/`" in text
     assert "not its `progress/` folder" in text
     assert "`receipt`, `receipts`, `invoice` or `invoices`" in text
-    assert "Not counted:    A archived, R receipts" in text
+    # The wider words, only under `personal/` (the app's KBNoteKind agrees).
+    assert "Under a folder named `personal`" in text
+    for word in ("certificate", "estimate", "warranty", "payslip"):
+        assert f"`{word}`" in text
+    assert "`report`" not in text
+    assert "Not counted:    A archived, P paperwork" in text

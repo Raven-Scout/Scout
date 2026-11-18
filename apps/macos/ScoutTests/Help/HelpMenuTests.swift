@@ -46,8 +46,8 @@ struct HelpMenuTests {
         HelpActions.recordEngineSettingsRequest(at: now.addingTimeInterval(-600))
         let log = EventLog()
         // Posted synchronously on this thread, so the log is complete on return.
-        let token = NotificationCenter.default.addObserver(forName: .scoutShowEngineSettings, object: nil, queue: nil) { _ in
-            log.append("notified")
+        let token = NotificationCenter.default.addObserver(forName: .scoutShowSettingsSection, object: nil, queue: nil) { note in
+            log.append(note.object as? String == SettingsAnchor.engine ? "notified" : "notified for another section")
         }
         defer { NotificationCenter.default.removeObserver(token) }
         HelpActions.showEngineSettings({
@@ -59,6 +59,31 @@ struct HelpMenuTests {
     private final class EventLog: @unchecked Sendable {
         private(set) var events: [String] = []
         func append(_ event: String) { events.append(event) }
+    }
+
+    /// #93: the panel's Update available asks for the Updates section the
+    /// same way Engine Settings… asks for Engine: every reader sees it until
+    /// it expires (R2), and one section doesn't read as the other.
+    @Test func settingsRequest_carriesItsSection() {
+        let now = Date()
+        HelpActions.recordSettingsRequest(SettingsAnchor.updates, at: now)
+        #expect(HelpActions.settingsRequested(now: now.addingTimeInterval(1)) == SettingsAnchor.updates)
+        #expect(HelpActions.settingsRequested(now: now.addingTimeInterval(1)) == SettingsAnchor.updates, "not cleared on read")
+        #expect(!HelpActions.engineSettingsRequested(now: now.addingTimeInterval(1)), "an Updates request isn't an Engine one")
+        #expect(HelpActions.settingsRequested(now: now.addingTimeInterval(60)) == nil, "a later ⌘, opens at the top")
+    }
+
+    @Test func showSettings_recordsTheSectionThenNotifiesWithIt() {
+        let now = Date()
+        let log = EventLog()
+        let token = NotificationCenter.default.addObserver(forName: .scoutShowSettingsSection, object: nil, queue: nil) { note in
+            log.append("notified \(note.object as? String ?? "-")")
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        HelpActions.showSettings(at: SettingsAnchor.updates, {
+            log.append("opened \(HelpActions.settingsRequested(now: now) ?? "-")")
+        }, now: now)
+        #expect(log.events == ["opened \(SettingsAnchor.updates)", "notified \(SettingsAnchor.updates)"])
     }
 
     @Test func reviewNotice_rendersAndIsInTheSavedFile() {
@@ -111,7 +136,8 @@ struct DoctorPresentationTests {
         ], slots: [])
         let doctor = DoctorReport(severity: .yellow, errors: ["e1"], warnings: ["w1", "w2"], runHealth: rh)
         let p = DoctorPresentation(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil)
-        #expect(p.headline == "Scout's engine works, with warnings")
+        // The count every other health surface shows (R1).
+        #expect(p.headline == "Scout's engine works, with warnings · 2 problems · 3 warnings")
         #expect(p.groups.map(\.title) == ["Problems", "Warnings", "Scheduled runs"])
         #expect(p.groups[0].items.map(\.text) == ["e1"])
         #expect(p.groups[1].items.map(\.text) == ["w1", "w2"])
