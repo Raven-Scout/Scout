@@ -35,6 +35,15 @@ struct PreambleSplitTests {
         #expect(end.body == "")
     }
 
+    @Test func anAbbreviationOrAnEllipsisIsNotASentenceEnd() {
+        let eg = PreambleSplit.split("Two items moved, e.g. the demo prep. The rest waits.")
+        #expect(eg.headline == "Two items moved, e.g. the demo prep")
+        #expect(eg.body == "The rest waits.")
+        #expect(PreambleSplit.split("Wait... ok").headline == "Wait... ok")
+        #expect(PreambleSplit.split("Wait… ok").headline == "Wait… ok")
+        #expect(PreambleSplit.split("Plan vs. actual (cf. last week)").headline == "Plan vs. actual (cf. last week)")
+    }
+
     @Test func quoteAndCalloutMarkersAreNotText() {
         #expect(PreambleSplit.split("> [!info] Rewritten at 09:03: see below").headline == "Rewritten at 09:03")
         let quoted = PreambleSplit.split("> **Moved.** Two items.")

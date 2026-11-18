@@ -8,10 +8,12 @@ import Foundation
 ///   `(\ge 1.5)` (it reads `\(` as an escaped parenthesis);
 /// - an unbalanced `**` left over from a cut-off bold span.
 ///
-/// Math becomes plain text (`≥ 1.5`). A `**` that can't open or close bold
-/// (spaces on both sides) is dropped, and so is the last one of an odd count.
-/// Inline code spans are left exactly as written: `**kwargs` or `\ge` inside
-/// backticks is code, not markup.
+/// Math becomes plain text (`≥ 1.5`). When the `**` marks don't pair up, the
+/// last one is dropped, but only when it reads as a cut-off bold span: it
+/// touches a word on exactly one side, and nothing next to it suggests a glob
+/// (`src/**/*.swift`), an operator (`x ** 2`), a kwargs prefix
+/// (`f(**kwargs)`) or a URL. Anything else is left as written. Inline code
+/// spans are never touched.
 nonisolated enum InlineMarkupCleanup {
     static func clean(_ text: String) -> String {
         guard text.contains("\\") || text.contains("$") || text.contains("**") else { return text }
@@ -50,12 +52,15 @@ nonisolated enum InlineMarkupCleanup {
     // MARK: - Math
 
     /// `$$…$$` is always math. `\(…\)`, `\[…\]` and `$…$` count only when they
-    /// hold a `\command`, so prices ("$5 and $6") and escaped brackets stay.
+    /// hold a `\command`, so escaped brackets stay. `$…$` also follows
+    /// Pandoc's rule, so prices stay: the opening `$` is followed by a
+    /// non-space, the closing `$` follows a non-space and isn't followed by a
+    /// digit ("$5 (p \ge 0.1) or $10" is not math).
     private static let mathRes: [(NSRegularExpression, requiresCommand: Bool)] = [
         (try! NSRegularExpression(pattern: #"\$\$(.+?)\$\$"#), false),
         (try! NSRegularExpression(pattern: #"\\\((.+?)\\\)"#), true),
         (try! NSRegularExpression(pattern: #"\\\[(.+?)\\\]"#), true),
-        (try! NSRegularExpression(pattern: #"(?<![\\$])\$([^$\n]+?)\$"#), true),
+        (try! NSRegularExpression(pattern: #"(?<![\\$])\$(?=[^\s$])([^$\n]*?[^\s$\\])\$(?!\d)"#), true),
     ]
     private static let commandRe = try! NSRegularExpression(pattern: #"\\[A-Za-z]+"#)
 
@@ -122,55 +127,64 @@ nonisolated enum InlineMarkupCleanup {
     /// Exactly two asterisks, not part of a longer run (`***` is left alone).
     private static let boldMarkRe = try! NSRegularExpression(pattern: #"(?<!\*)\*\*(?!\*)"#)
 
-    /// Drop a `**` with whitespace (or the text's edge) on both sides: it can
-    /// neither open nor close bold, so the parser would show it. Then, if the
-    /// rest still don't pair up, drop the last one.
+    /// When the `**` marks (outside code) don't pair up, drop the last one if
+    /// it reads as a cut-off bold span. A mark with spaces on both sides can
+    /// neither open nor close bold, so it doesn't count toward the pairing.
     private static func balanceBold(_ parts: [Segment]) -> [Segment] {
         var parts = parts
-        var marks: [(segment: Int, location: Int)] = []
-        for (i, part) in parts.enumerated() where !part.isCode {
+        let joined = parts.map(\.text).joined() as NSString
+        var marks: [(segment: Int, location: Int, absolute: Int)] = []
+        var offset = 0
+        for (i, part) in parts.enumerated() {
             let ns = part.text as NSString
-            for m in boldMarkRe.matches(in: part.text, range: NSRange(location: 0, length: ns.length)) {
-                marks.append((i, m.range.location))
+            if !part.isCode {
+                for m in boldMarkRe.matches(in: part.text, range: NSRange(location: 0, length: ns.length)) {
+                    marks.append((i, m.range.location, offset + m.range.location))
+                }
             }
+            offset += ns.length
         }
-        guard !marks.isEmpty else { return parts }
+        func unit(_ at: Int) -> Character? {
+            guard at >= 0, at < joined.length else { return nil }
+            return Character(joined.substring(with: joined.rangeOfComposedCharacterSequence(at: at)))
+        }
+        func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
+        let pairing = marks.filter { !(isSpace(unit($0.absolute - 1)) && isSpace(unit($0.absolute + 2))) }
+        guard pairing.count % 2 == 1, let last = pairing.last,
+              isCutOffBold(at: last.absolute, in: joined, unit: unit) else { return parts }
 
-        func isSpace(_ ch: Character?) -> Bool { ch == nil || ch!.isWhitespace }
-        let joined = parts.map(\.text).joined()
-        var offsets: [Int] = []  // segment start offsets in UTF-16
-        var running = 0
-        for part in parts { offsets.append(running); running += (part.text as NSString).length }
-        let all = joined as NSString
-        func char(at utf16: Int) -> Character? {
-            guard utf16 >= 0, utf16 < all.length else { return nil }
-            return Character(all.substring(with: all.rangeOfComposedCharacterSequence(at: utf16)))
-        }
-
-        var drop: [(segment: Int, location: Int)] = []
-        var kept: [(segment: Int, location: Int)] = []
-        for mark in marks {
-            let at = offsets[mark.segment] + mark.location
-            if isSpace(char(at: at - 1)) && isSpace(char(at: at + 2)) { drop.append(mark) } else { kept.append(mark) }
-        }
-        if kept.count % 2 == 1, let last = kept.last { drop.append(last) }
-
-        // Remove right to left within each segment so earlier locations hold.
-        for mark in drop.sorted(by: { ($0.segment, $0.location) > ($1.segment, $1.location) }) {
-            let ns = parts[mark.segment].text as NSString
-            var replaced = ns.replacingCharacters(in: NSRange(location: mark.location, length: 2), with: "")
-            // "a ** b" → "a b", not "a  b".
-            let before = mark.location - 1
-            if before >= 0, before < (replaced as NSString).length,
-               (replaced as NSString).substring(with: NSRange(location: before, length: 1)) == " ",
-               mark.location < (replaced as NSString).length,
-               (replaced as NSString).substring(with: NSRange(location: mark.location, length: 1)) == " " {
-                replaced = (replaced as NSString).replacingCharacters(in: NSRange(location: before, length: 1), with: "")
-            }
-            parts[mark.segment].text = replaced
-        }
+        let ns = parts[last.segment].text as NSString
+        parts[last.segment].text = ns.replacingCharacters(in: NSRange(location: last.location, length: 2), with: "")
         return parts
     }
+
+    /// A `**` at `at` that touches a word on exactly one side, with no `/`,
+    /// digit, `(`, `,`, `=` or `*` beside it, not inside a URL or a link
+    /// target, and not a kwargs prefix (`**kwargs)`, `**opts,`).
+    private static func isCutOffBold(at: Int, in text: NSString, unit: (Int) -> Character?) -> Bool {
+        let before = unit(at - 1), after = unit(at + 2)
+        func isWord(_ ch: Character?) -> Bool { ch.map { $0.isLetter || $0.isNumber } ?? false }
+        guard isWord(before) != isWord(after) else { return false }
+        let blocked: (Character?) -> Bool = { ch in
+            guard let ch else { return false }
+            return ch.isNumber || "/(,=*".contains(ch)
+        }
+        if blocked(before) || blocked(after) { return false }
+        // The whitespace-delimited token holding the mark: a URL or a link
+        // target (`](…)`) keeps its asterisks.
+        var start = at, end = at + 2
+        while start > 0, !isSpace(unit(start - 1)) { start -= 1 }
+        while end < text.length, !isSpace(unit(end)) { end += 1 }
+        let token = text.substring(with: NSRange(location: start, length: end - start))
+        if token.contains("://") || token.contains("](") { return false }
+        let tail = text.substring(with: NSRange(location: at, length: end - at))
+        return kwargsRe.firstMatch(in: tail, range: NSRange(location: 0, length: (tail as NSString).length)) == nil
+    }
+
+    /// `**name)` or `**name,`: Python's keyword-argument unpacking.
+    private static let kwargsRe = try! NSRegularExpression(pattern: #"^\*\*[A-Za-z_][A-Za-z0-9_]*[),]"#)
+
+    private static func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
 
     // MARK: - Regex helpers
 

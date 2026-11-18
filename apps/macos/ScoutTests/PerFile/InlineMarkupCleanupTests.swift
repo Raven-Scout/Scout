@@ -27,6 +27,10 @@ struct InlineMarkupCleanupTests {
 
     @Test func pricesAndEscapedParenthesesAreNotMath() {
         #expect(clean("It costs $5 and $6 a month.") == "It costs $5 and $6 a month.")
+        // A command between two prices is still not math (Pandoc's rule: the
+        // closing `$` follows a non-space and isn't followed by a digit).
+        #expect(clean(#"Plan A is $5 (p \ge 0.1); plan B is $10."#) == "Plan A is $5 (p ≥ 0.1); plan B is $10.")
+        #expect(clean(#"From $ \ge 3$ on"#) == #"From $ ≥ 3$ on"#)
         #expect(clean(#"Use \(see above\) here."#) == #"Use \(see above\) here."#)
     }
 
@@ -43,9 +47,22 @@ struct InlineMarkupCleanupTests {
         #expect(clean("**Unclosed") == "Unclosed")
     }
 
-    @Test func aBoldMarkerBetweenSpacesIsDropped() {
-        #expect(clean("before ** after") == "before after")
-        #expect(clean("A ** stray, then **real bold**") == "A stray, then **real bold**")
+    @Test func aBoldMarkerBetweenSpacesIsLeftAndDoesNotCountTowardPairing() {
+        #expect(clean("x ** 2") == "x ** 2")
+        #expect(clean("A ** stray, then **real bold**") == "A ** stray, then **real bold**")
+    }
+
+    /// An odd `**` that isn't a cut-off bold span stays as written.
+    @Test(arguments: [
+        "src/**/*.swift",
+        "Call f(**kwargs) to pass them on",
+        "fn(a, **kwargs)",
+        "2**8 is 256",
+        "[the docs](https://example.com/a**)",
+        "see https://example.com/**glob",
+    ])
+    func anOddMarkerThatIsntBoldIsLeft(_ text: String) {
+        #expect(clean(text) == text)
     }
 
     @Test func balancedBoldIsKept() {

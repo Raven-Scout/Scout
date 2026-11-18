@@ -7,8 +7,9 @@ nonisolated enum PreambleSplit {
     /// body. Without one, the headline is the first sentence: text up to a `.`
     /// or `:` followed by a space (or the end). A colon inside a time or a dot
     /// inside a version stays put, so "Rewritten by the 09:03 run: …" keeps
-    /// "09:03" in its headline (UI audit R5). Leading quote markers
-    /// (`> `, `> [!note]`) are not part of the text.
+    /// "09:03" in its headline (UI audit R5). So do an ellipsis ("Wait… ok",
+    /// "Wait... ok") and the dot of a common abbreviation ("e.g. ", "vs. ").
+    /// Leading quote markers (`> `, `> [!note]`) are not part of the text.
     static func split(_ raw: String) -> (headline: String, body: String) {
         let s = stripQuoteMarkers(raw.trimmingCharacters(in: .whitespaces))
         if s.hasPrefix("**"), let close = s.range(of: "**", range: s.index(s.startIndex, offsetBy: 2)..<s.endIndex) {
@@ -22,7 +23,8 @@ nonisolated enum PreambleSplit {
         while idx < s.endIndex {
             let ch = s[idx]
             let next = s.index(after: idx)
-            if ch == "." || ch == ":", next == s.endIndex || s[next].isWhitespace {
+            if ch == "." || ch == ":", next == s.endIndex || s[next].isWhitespace,
+               !(ch == "." && (endsEllipsis(s, at: idx) || endsAbbreviation(s, at: idx))) {
                 let head = String(s[..<idx])
                 let body = String(s[next...]).trimmingCharacters(in: .whitespaces)
                 return (head, body)
@@ -30,6 +32,26 @@ nonisolated enum PreambleSplit {
             idx = next
         }
         return (s, "")
+    }
+
+    /// "e.g.", "vs.", "approx." — lowercased, with their final dot.
+    private static let abbreviations: Set<String> = [
+        "e.g.", "i.e.", "etc.", "vs.", "cf.", "approx.", "incl.", "esp.", "a.m.", "p.m.",
+        "mr.", "mrs.", "ms.", "dr.", "fig.", "jan.", "feb.", "aug.", "sept.", "oct.", "nov.", "dec.",
+    ]
+
+    /// The dot at `idx` closes a run of dots ("...").
+    private static func endsEllipsis(_ s: String, at idx: String.Index) -> Bool {
+        idx > s.startIndex && s[s.index(before: idx)] == "."
+    }
+
+    /// The word ending with the dot at `idx` is a common abbreviation.
+    private static func endsAbbreviation(_ s: String, at idx: String.Index) -> Bool {
+        var start = idx
+        while start > s.startIndex, !s[s.index(before: start)].isWhitespace, s[s.index(before: start)] != "(" {
+            start = s.index(before: start)
+        }
+        return abbreviations.contains(s[start...idx].lowercased())
     }
 
     /// `> `, `> > `, then an optional callout marker `[!kind]` (with `+`/`-`).

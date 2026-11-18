@@ -18,6 +18,11 @@ struct ProvenanceLineTests {
         #expect(PerFileItemCardView.provenanceMarkdown(
             label: "Source", value: "Slack https://acme-co.slack.com/archives/C0123456789/p1700000000000000.")
                 == "Source: Slack <https://acme-co.slack.com/archives/C0123456789/p1700000000000000>.")
+        // Balanced parentheses stay in the URL; the prose's closing one doesn't.
+        #expect(PerFileItemCardView.provenanceMarkdown(label: "Source", value: "https://example.com/wiki/Foo_(bar)")
+                == "Source: <https://example.com/wiki/Foo_(bar)>")
+        #expect(PerFileItemCardView.provenanceMarkdown(label: "Source", value: "Notes (https://example.com/a)")
+                == "Source: Notes (<https://example.com/a>)")
         // Already linked: left alone.
         #expect(PerFileItemCardView.provenanceMarkdown(label: "Source", value: "<https://example.com>")
                 == "Source: <https://example.com>")

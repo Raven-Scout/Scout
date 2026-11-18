@@ -89,8 +89,19 @@ struct MarkdownBodyView: View {
             .textSelection(.enabled)
         }
         .fixedSize(horizontal: false, vertical: true)
+        // Combine title and body, then say what the block is in front of them:
+        // the plain `accessibilityLabel(_:)` would replace the body.
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(title.map { "\(Self.calloutLabel(kind)): \($0)" } ?? "Quote")
+        .accessibilityLabel(content: { label in
+            Text(Self.accessibilityPrefix(kind: kind))
+            label
+        })
+    }
+
+    /// What VoiceOver says before a quote's text: "Warning: " for a callout
+    /// (its title follows), "Quote: " for a plain quote.
+    nonisolated static func accessibilityPrefix(kind: String?) -> String {
+        (kind == nil ? "Quote" : calloutLabel(kind)) + ": "
     }
 
     /// Warnings read amber, dangers red, tips green; anything else, and a

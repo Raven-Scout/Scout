@@ -254,5 +254,7 @@ struct MarkdownBodyBlockQuoteTests {
     @Test func calloutLabelsForVoiceOver() {
         #expect(MarkdownBodyView.calloutLabel("warning") == "Warning")
         #expect(MarkdownBodyView.calloutLabel(nil) == "Callout")
+        #expect(MarkdownBodyView.accessibilityPrefix(kind: "warning") == "Warning: ")
+        #expect(MarkdownBodyView.accessibilityPrefix(kind: nil) == "Quote: ")
     }
 }

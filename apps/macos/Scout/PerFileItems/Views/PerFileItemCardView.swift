@@ -149,8 +149,13 @@ struct PerFileItemCardView: View {
 
     private var optionalValue: String? { item.source ?? item.area }
 
-    /// A bare `https://` URL, not already inside `<…>`, `(…)` or `[…]`.
-    nonisolated private static let bareURLRe = try! NSRegularExpression(pattern: #"(?<![<(\[])\bhttps?://[^\s<>()\[\]]+[^\s<>()\[\].,;:!?'"]"#)
+    /// A bare `https://` URL, not already an autolink (`<…>`), a link's text
+    /// (`[…`) or a link's target (`](…`). It may
+    /// hold balanced parentheses (`…/Foo_(bar)`), and it doesn't take trailing
+    /// punctuation or an unbalanced `)` that closes the surrounding prose.
+    nonisolated private static let bareURLRe = try! NSRegularExpression(
+        pattern: #"(?<![<\[])(?<!\]\()\bhttps?://(?:[^\s<>()\[\]]|\([^\s<>()\[\]]*\))*(?:[^\s<>()\[\].,;:!?'"]|\([^\s<>()\[\]]*\))"#
+    )
 
     /// The "Source: …" line as inline markdown: wikilinks and markdown links
     /// stay as written for `InlineMarkdownText`, and a bare URL is wrapped as
