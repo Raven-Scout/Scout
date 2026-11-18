@@ -35,4 +35,45 @@ nonisolated enum ScoutMarker {
         return t.dropFirst(open.count).dropLast(close.count)
             .trimmingCharacters(in: .whitespaces)
     }
+
+    // MARK: - Comments on a passage
+
+    /// Longest quoted passage a marker carries, in characters. Enough to find
+    /// the passage again; the comment itself is never shortened.
+    static let maxQuoteLength = 140
+
+    /// A marker about one passage of the note: `//==<< on "passage": comment >>==//`.
+    /// The quote is what the reader highlighted, so dreaming knows which words
+    /// the comment is about, and the reader can highlight them again. It is
+    /// flattened to one line, its double quotes turned to single ones (so the
+    /// closing quote is unambiguous), and cut to `maxQuoteLength` with an
+    /// ellipsis. An empty quote gives a plain marker.
+    static func format(_ text: String, quote: String?) -> String? {
+        guard let comment = format(text).map({ body(of: $0) ?? "" }), !comment.isEmpty else { return nil }
+        let flat = (quote ?? "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .replacingOccurrences(of: "\"", with: "'")
+            .replacingOccurrences(of: "\u{201C}", with: "'")
+            .replacingOccurrences(of: "\u{201D}", with: "'")
+            .replacingOccurrences(of: close, with: "")
+            .replacingOccurrences(of: open, with: "")
+        guard !flat.isEmpty else { return "\(open) \(comment) \(close)" }
+        let clipped = flat.count > maxQuoteLength
+            ? String(flat.prefix(maxQuoteLength)).trimmingCharacters(in: .whitespaces) + "…"
+            : flat
+        return "\(open) on \"\(clipped)\": \(comment) \(close)"
+    }
+
+    /// A marker's parts: the quoted passage (if it names one) and the comment.
+    static func parts(of marker: String) -> (quote: String?, comment: String)? {
+        guard let inner = body(of: marker) else { return nil }
+        guard inner.hasPrefix("on \""),
+              let end = inner.range(of: "\": ", range: inner.index(inner.startIndex, offsetBy: 4)..<inner.endIndex)
+        else { return (nil, inner) }
+        let quote = String(inner[inner.index(inner.startIndex, offsetBy: 4)..<end.lowerBound])
+        let comment = String(inner[end.upperBound...]).trimmingCharacters(in: .whitespaces)
+        return (quote.isEmpty ? nil : quote, comment)
+    }
 }

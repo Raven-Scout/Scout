@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bundled scripts only; nothing from the network. Note content is sanitised
+       (DOMPurify) before it is shown, and this is the backstop if that ever fails. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'">
+  <title>Knowledge map</title>
+  <link rel="stylesheet" href="kb-common.css">
+  <link rel="stylesheet" href="kb-map.css">
+</head>
+<body class="mode-full">
+  <div id="stage">
+    <canvas id="canvas" role="img" aria-label="Knowledge map"></canvas>
+  </div>
+
+  <div id="topbar">
+    <div id="search" class="surface">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <input id="q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Find a note…" aria-label="Find a note on the map"
+             aria-controls="results" aria-expanded="false">
+      <kbd id="q-hint">/</kbd>
+      <ul id="results" role="listbox" hidden></ul>
+    </div>
+    <div id="scope" class="surface" hidden>
+      <span id="scope-text"></span>
+      <button id="scope-clear" class="btn quiet" type="button">Show everything</button>
+    </div>
+  </div>
+
+  <aside id="legend" class="surface" aria-label="Note types">
+    <div class="legend-head">
+      <span class="legend-title">Notes</span>
+      <div class="seg" role="radiogroup" aria-label="Colour notes by">
+        <button type="button" role="radio" data-color="type" aria-checked="true">Type</button>
+        <button type="button" role="radio" data-color="fresh" aria-checked="false">Freshness</button>
+      </div>
+    </div>
+    <div id="fresh-key" hidden>
+      <span class="ramp"></span>
+      <span class="ramp-labels"><span>Today</span><span>Week</span><span>Month</span><span>Older</span></span>
+    </div>
+    <ul id="groups"></ul>
+    <label class="toggle"><input id="unlinked" type="checkbox"> <span>Show unlinked notes <b id="unlinked-count"></b></span></label>
+    <div id="shown" class="legend-foot"></div>
+  </aside>
+
+  <div id="controls" class="surface" role="toolbar" aria-label="Zoom">
+    <button type="button" id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+    <button type="button" id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+    <button type="button" id="zoom-fit" title="Fit everything (0)" aria-label="Fit everything">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
+  <aside id="card" class="surface" aria-live="polite"></aside>
+
+  <div id="tooltip" role="tooltip" hidden></div>
+  <div id="empty" hidden></div>
+  <nav id="a11y" class="sr-only" aria-label="Notes on the map"></nav>
+
+  <script src="d3-dispatch.min.js"></script>
+  <script src="d3-quadtree.min.js"></script>
+  <script src="d3-timer.min.js"></script>
+  <script src="d3-force.min.js"></script>
+  <script src="kb-common.js"></script>
+  <script src="kb-map.js"></script>
+</body>
+</html>

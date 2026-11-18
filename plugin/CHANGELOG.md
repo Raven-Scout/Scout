@@ -7,6 +7,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Dreaming knows comments that quote a passage** (`phases/modes/kb-deep-work.md`). The Mac app's note reader now saves a comment on selected text as `//==<< on "passage": comment >>==//`; the inline-comment step says what the quote is and to act on that passage rather than the whole note. The marker is still a `//==<<` line, so the search that finds comments is unchanged.
 - **`scoutctl runs --json`: the run ledger for the app** (UI audit card C8; `engine/scout/run_ledger.py`, `engine/scout/health.py`, `engine/scout/cli.py`). One read-only, versioned document (`schema_version: 1`): the recent rows of `.scout-logs/run-outcomes.jsonl`, newest first, plus the run-health report `scoutctl health --json` prints. Each row covers:
   - slot, runner and trigger;
   - start and finish, length and awake length;

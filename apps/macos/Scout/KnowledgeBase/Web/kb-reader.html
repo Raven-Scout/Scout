@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bundled scripts only; nothing from the network. Note content is sanitised
+       (DOMPurify) before it is shown, and this is the backstop if that ever fails. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'">
+  <title>Note</title>
+  <link rel="stylesheet" href="kb-common.css">
+  <link rel="stylesheet" href="kb-reader.css">
+</head>
+<body>
+  <main id="page">
+    <article id="doc" aria-live="off"></article>
+    <p id="foot-hint">Select any text to comment on it for Scout. Double-click a paragraph, list item or table cell to edit it.</p>
+  </main>
+
+  <button id="comment-bubble" class="surface" type="button" hidden
+          title="Comment for Scout (⇧⌘M)" aria-label="Comment on the selected text for Scout">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 2.5v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    <span>Comment</span>
+  </button>
+
+  <form id="composer" class="surface" hidden aria-label="Comment for Scout">
+    <blockquote id="composer-quote"></blockquote>
+    <textarea id="composer-text" rows="3" placeholder="What should Scout do about this?" aria-label="Your comment"></textarea>
+    <div class="composer-foot">
+      <span class="composer-note">Scout picks this up on its next dreaming run</span>
+      <button type="button" class="btn quiet" id="composer-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="composer-send" disabled>Send to Scout <kbd>⌘↩</kbd></button>
+    </div>
+    <p id="composer-wait" hidden>Finish the edit you have open first.</p>
+  </form>
+
+  <script src="markdown-it.min.js"></script>
+  <script src="purify.min.js"></script>
+  <script src="highlight.min.js"></script>
+  <script src="kb-common.js"></script>
+  <script src="kb-reader.js"></script>
+</body>
+</html>
