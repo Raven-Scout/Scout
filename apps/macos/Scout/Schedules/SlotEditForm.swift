@@ -362,10 +362,11 @@ struct SlotEditForm: View {
         HStack {
             if !isNewDraft {
                 Button("Delete") { isConfirmingDelete = true }
-                    .foregroundStyle(.red)
+                    .buttonStyle(.dsDestructive)
                 Button("Run now") {
                     Task { await onFireNow(draft.key) }
                 }
+                .buttonStyle(.dsSecondary)
                 .disabled(draft.isDirty(against: liveSlot))
             }
             Spacer()
@@ -377,6 +378,7 @@ struct SlotEditForm: View {
                     conflictingFields = []
                 }
             }
+            .buttonStyle(.dsSecondary)
             .disabled(!isNewDraft && !draft.isDirty(against: liveSlot))
             Button {
                 if Self.requiresTypeChangeConfirmation(draft: draft, live: liveSlot) {
@@ -386,13 +388,8 @@ struct SlotEditForm: View {
                 }
             } label: {
                 Text("Save")
-                    .font(DS.sans(13, weight: .medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
-                    .foregroundStyle(DS.Accent.onFill)
             }
-            .buttonStyle(.plainHit)
+            .buttonStyle(.dsPrimary)
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
         }

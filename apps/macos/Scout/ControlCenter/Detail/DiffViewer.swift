@@ -7,6 +7,7 @@ struct DiffViewer: View {
 
     @State private var expanded: Set<String> = []
     @State private var diffs: [String: String] = [:]
+    @State private var ghosttyFailure: LaunchFailure?
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -53,14 +54,22 @@ struct DiffViewer: View {
                 }
             }
         }
+        .launchFailureAlert("Couldn't open the diff in Ghostty", failure: $ghosttyFailure)
     }
 
     private func openInGhostty() {
         guard let first = commits.last, let last = commits.first else { return }
-        GhosttyLauncher.openNewTab(
-            cwd: state.scoutDirectory,
-            runningCommand: "git diff \(first.id)^..\(last.id)"
-        )
+        let folder = state.scoutDirectory
+        Task {
+            do {
+                try await GhosttyLauncher.openNewTab(
+                    cwd: folder,
+                    runningCommand: "git diff \(first.id)^..\(last.id)"
+                )
+            } catch {
+                ghosttyFailure = LaunchFailure(error)
+            }
+        }
     }
 
     private func loadDiff(_ sha: String) async {

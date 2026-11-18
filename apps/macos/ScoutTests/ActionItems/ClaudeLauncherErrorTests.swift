@@ -11,6 +11,9 @@ struct ClaudeLauncherErrorTests {
     private var allCases: [ClaudeLauncher.LaunchError] {
         [
             .ghosttyNotInstalled,
+            .ghosttyLaunchFailed("damaged"),
+            .accessibilityDenied,
+            .automationDenied("not authorised"),
             .claudeDesktopNotInstalled,
             .claudeCLINotFound,
             .scriptWriteFailed("permission denied"),

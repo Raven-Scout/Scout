@@ -77,7 +77,10 @@ nonisolated enum SessionsLayout {
     static func matchesSearch(_ session: AgentSession, query: String, index: SessionIndex) -> Bool {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return true }
-        var haystack = [session.displayTitle, projectName(for: session.projectKey, in: index)]
+        // The project's own name, not the disambiguated one: this runs per
+        // session per keystroke, and the name alone already matches.
+        let project = index.projects.first { $0.key == session.projectKey }?.name ?? basename(session.projectKey)
+        var haystack = [session.displayTitle, project]
         if let prompt = session.transcript?.firstPrompt { haystack.append(prompt) }
         if let branch = session.worktree?.branch { haystack.append(branch) }
         if let group = session.groupName { haystack.append(group) }
@@ -111,15 +114,20 @@ nonisolated enum SessionsLayout {
 
     // MARK: Board
 
-    /// One row per project with a visible session, most recently active first.
+    /// One row per project with a visible session, most recently active
+    /// first. A card in the Now strip is not repeated in its project's lane
+    /// (UI audit #34), so a project whose every visible session is in Now
+    /// has no lane; its Now cards carry the project name instead.
     static func rows(index: SessionIndex, filter: SessionsFilter, now: Date) -> [SessionRow] {
-        let visible = visibleSessions(index: index, filter: filter, now: now)
+        let inNow = Set(nowStrip(index: index, filter: filter, now: now).map(\.id))
+        let visible = visibleSessions(index: index, filter: filter, now: now).filter { !inNow.contains($0.id) }
         let grouped = Dictionary(grouping: visible, by: \.projectKey)
+        let names = projectNames(in: index)
         let rows = grouped.map { key, sessions -> SessionRow in
             let sorted = sessions.sorted(by: severityOrder)
             return SessionRow(
                 id: key,
-                name: projectName(for: key, in: index),
+                name: names[key] ?? basename(key),
                 active: sorted.filter { $0.state != .stale && $0.state != .done },
                 stale: sorted.filter { $0.state == .stale },
                 done: sorted.filter { $0.state == .done },
@@ -159,22 +167,47 @@ nonisolated enum SessionsLayout {
     // MARK: Table
 
     static func tableRows(index: SessionIndex, filter: SessionsFilter, now: Date) -> [SessionTableRow] {
-        visibleSessions(index: index, filter: filter, now: now)
+        let names = projectNames(in: index)
+        return visibleSessions(index: index, filter: filter, now: now)
             .sorted(by: severityOrder)
-            .map { SessionTableRow(session: $0, projectName: projectName(for: $0.projectKey, in: index)) }
+            .map { SessionTableRow(session: $0, projectName: names[$0.projectKey] ?? basename($0.projectKey)) }
     }
 
     // MARK: Lookups
 
-    static func projectName(for key: String, in index: SessionIndex) -> String {
-        if let project = index.projects.first(where: { $0.key == key }) { return project.name }
+    /// A project's name as every part of the page shows it: lane, menu,
+    /// table, detail pane, handoff. Same-named projects are told apart.
+    static func projectName(for key: String, in index: SessionIndex,
+                            home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
+        projectNames(in: index, home: home)[key] ?? basename(key)
+    }
+
+    /// Every project key in the index (its projects, then any key only a
+    /// session names, under its folder's name) to the name the page shows,
+    /// disambiguated by `DisplayName.projectNames`.
+    static func projectNames(in index: SessionIndex,
+                             home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String: String] {
+        let listed = index.projects.map { (key: $0.key, name: $0.name) }
+        let unlisted = index.sessions.map(\.projectKey).map { (key: $0, name: basename($0)) }
+        return DisplayName.projectNames(listed + unlisted, home: home)
+    }
+
+    static func basename(_ key: String) -> String {
         let base = (key as NSString).lastPathComponent
         return base.isEmpty ? key : base
     }
 
-    /// Every project in the index, by name, for the project menu.
+    /// Every project in the index, by its shown name, for the project menu.
+    /// (No default `home`: the page passes this as a function reference.)
     static func menuProjects(index: SessionIndex) -> [SessionProject] {
-        index.projects.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        menuProjects(index: index, home: FileManager.default.homeDirectoryForCurrentUser.path)
+    }
+
+    static func menuProjects(index: SessionIndex, home: String) -> [SessionProject] {
+        let names = projectNames(in: index, home: home)
+        return index.projects
+            .map { SessionProject(key: $0.key, name: names[$0.key] ?? $0.name, groupID: $0.groupID, counts: $0.counts) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     static func parent(of session: AgentSession, in index: SessionIndex) -> AgentSession? {

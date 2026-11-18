@@ -2,6 +2,8 @@ import Foundation
 import AppKit
 
 enum GhosttyLauncher {
+    static let bundleID = "com.mitchellh.ghostty"
+
     /// Open a new Ghostty **tab** at ``cwd`` running ``runningCommand``.
     ///
     /// Ghostty's ``-e`` CLI flag always opens a new *window* — there's no
@@ -11,44 +13,43 @@ enum GhosttyLauncher {
     /// shell line and press return.
     ///
     /// Requires Accessibility permission for Scout.app; macOS will prompt
-    /// on first use. If the permission is denied, the keystrokes silently
-    /// no-op (we ``NSLog`` the AppleScript error for Console debugging).
-    static func openNewTab(cwd: URL, runningCommand: String) {
-        let cwdEscaped = cwd.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let shellLine = "cd \"\(cwdEscaped)\" && \(runningCommand)"
-
-        // Escape for embedding inside an AppleScript string literal.
-        // Backslash first so quote-escaping doesn't double-escape.
-        let asEscaped = shellLine
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let runningGhostty = NSRunningApplication.runningApplications(
-            withBundleIdentifier: "com.mitchellh.ghostty"
-        ).first
+    /// on first use. Every failure throws a `ClaudeLauncher.LaunchError` the
+    /// caller shows (UI audit #38): Ghostty missing, macOS refusing to open
+    /// it, or System Events refusing the keystrokes (`accessibilityDenied`,
+    /// whose alert opens the Accessibility pane).
+    static func openNewTab(cwd: URL, runningCommand: String) async throws {
+        let runningGhostty = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
 
         if let app = runningGhostty {
             app.activate()
-        } else if let appURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: "com.mitchellh.ghostty"
-        ) {
+        } else if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let config = NSWorkspace.OpenConfiguration()
             config.activates = true
-            NSWorkspace.shared.openApplication(at: appURL, configuration: config) { _, error in
-                if let error {
-                    NSLog("GhosttyLauncher: NSWorkspace.openApplication failed: \(error.localizedDescription)")
-                }
+            do {
+                _ = try await NSWorkspace.shared.openApplication(at: appURL, configuration: config)
+            } catch {
+                throw ClaudeLauncher.LaunchError.ghosttyLaunchFailed(error.localizedDescription)
             }
         } else {
-            NSLog("GhosttyLauncher: Ghostty.app not found")
-            return
+            throw ClaudeLauncher.LaunchError.ghosttyNotInstalled
         }
 
         // Give Ghostty longer to come up when we had to cold-launch it —
         // the first window needs to exist before ⌘T has a target.
-        let delay = runningGhostty == nil ? 0.9 : 0.3
+        let script = makeNewTabScript(cwd: cwd, runningCommand: runningCommand,
+                                      delay: runningGhostty == nil ? 0.9 : 0.3)
+        // The script sleeps (`delay`), so it runs off the main thread.
+        try await Task.detached(priority: .userInitiated) {
+            try ClaudeLauncher.runAppleScript(script)
+        }.value
+    }
 
-        let script = """
+    /// The System Events script that opens the tab and types the command.
+    /// Pure, so the escaping is unit-tested.
+    nonisolated static func makeNewTabScript(cwd: URL, runningCommand: String, delay: Double) -> String {
+        // Escape for embedding inside an AppleScript string literal.
+        let asEscaped = ClaudeLauncher.appleScriptEscape(makeShellLine(cwd: cwd, runningCommand: runningCommand))
+        return """
         delay \(delay)
         tell application "System Events"
           tell process "Ghostty"
@@ -60,13 +61,12 @@ enum GhosttyLauncher {
           end tell
         end tell
         """
+    }
 
-        DispatchQueue.global().async {
-            var errorDict: NSDictionary?
-            _ = NSAppleScript(source: script)?.executeAndReturnError(&errorDict)
-            if let err = errorDict {
-                NSLog("GhosttyLauncher: AppleScript error: \(err)")
-            }
-        }
+    /// The line typed into the new tab: `cd` into the folder, single-quoted
+    /// (`$(…)`, backticks, `$VAR` and a trailing `\` stay literal), then the
+    /// command, which the caller builds from fixed text and commit ids.
+    nonisolated static func makeShellLine(cwd: URL, runningCommand: String) -> String {
+        "cd \(ClaudeLauncher.shellQuote(cwd.path)) && \(runningCommand)"
     }
 }

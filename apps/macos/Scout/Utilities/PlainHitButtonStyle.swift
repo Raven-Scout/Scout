@@ -14,6 +14,11 @@ import SwiftUI
 /// It also draws the keyboard focus ring (C7): custom-styled buttons get no
 /// system focus indicator, so with Keyboard navigation on, Tab moved focus
 /// through the app's chips, segments and toggles invisibly.
+///
+/// For hit areas only (chips, segments, rows, icon buttons). An action with a
+/// label (Continue, Save, Retry, Change…) uses a design-system button style
+/// instead: `.dsPrimary`, `.dsSecondary`, `.dsLink` or `.dsDestructive`
+/// (see `DSButtonStyle.swift`).
 struct PlainHitButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         PlainHitButtonBody(configuration: configuration)
@@ -29,14 +34,7 @@ private struct PlainHitButtonBody: View {
         configuration.label
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.75 : 1)
-            .overlay {
-                if isFocused {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
-                        .padding(-2)
-                        .allowsHitTesting(false)
-                }
-            }
+            .dsFocusRing(isFocused)
     }
 }
 
