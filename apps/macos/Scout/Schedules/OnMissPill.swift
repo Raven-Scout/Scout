@@ -9,19 +9,20 @@ struct OnMissPill: View {
     let policy: OnMissPolicy
 
     var body: some View {
-        Text(policy.rawValue.uppercased())
+        Text(policy.displayName)
             .font(DS.sans(11, weight: .medium))
             .foregroundStyle(foreground)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(background, in: Capsule())
-            .accessibilityLabel("On miss: \(policy.rawValue)")
+            .help(policy.explanation)
+            .accessibilityLabel("If the Mac was asleep: \(policy.displayName)")
     }
 
     private var background: Color {
         switch policy {
-        case .skip:     return DS.Ink.p4.opacity(0.18)
-        case .fire:     return DS.Status.warn.opacity(0.20)
+        case .skip:     return DS.Ink.decorative.opacity(0.18)
+        case .fire:     return DS.Status.warn.opacity(DS.Status.washOpacity)
         case .collapse: return DS.Accent.wash
         }
     }

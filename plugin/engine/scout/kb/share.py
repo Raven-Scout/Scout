@@ -69,22 +69,26 @@ COPY_WARNING = (
     "Once someone's Scout has read a shared note, it can keep what it learned in their own vault. "
     "Un-sharing stops future reads; it can't recall what was already read."
 )
-SYNC_NOTE = "Nothing is shared until your next `scoutctl repo sync`; Agnes checks every read against it."
+SYNC_NOTE = (
+    "Nothing is shared until you commit scout-config.yaml and then run `scoutctl repo sync`, which refuses while "
+    "this change is uncommitted; Agnes checks every read against it."
+)
 GROUP_MEMBERS_NOTE = "members are shown once Agnes reports them (A8b)"
 GROUP_OWNER_NOTE = (
     "A group share works only while you are a member of that group: Agnes rechecks your membership and the "
     "reader's at every read (ruling 7). Scout can't see your membership yet, so it doesn't check it here."
 )
 UNSHARE_PENDING = (
-    "The stop takes effect in Agnes at your next `scoutctl repo sync` "
-    "(an instant stop from the laptop comes with Agnes's shares/stop, slice S1b)."
+    "The stop takes effect in Agnes once you commit scout-config.yaml and then run `scoutctl repo sync`, which "
+    "refuses while this change is uncommitted (an instant stop from the laptop comes with Agnes's shares/stop, "
+    "slice S1b)."
 )
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WILDCARDS = re.compile(r"[*?\[]")
 _EVERYONE = "everyone"
 
-ExcludeReason = Literal["private", "local-only", "ceiling", "frontmatter", "earlier-entry"]
+ExcludeReason = Literal["private", "local-only", "outside-sync-only", "ceiling", "frontmatter", "earlier-entry"]
 
 
 class ShareRefused(Exception):
@@ -436,13 +440,13 @@ def load_overlay(vault: Path) -> Overlay:
 
 
 def write_overlay(vault: Path, overlay: Overlay, data: dict[str, Any]) -> None:
-    """Write ``data`` over ``scout-config.yaml``, keeping every block but ``privacy:`` byte for byte."""
-    from scout.scripts.bootstrap import _dump_keeping_comments
+    """Write ``data`` over ``scout-config.yaml``, keeping every line but the changed federation keys byte for byte."""
+    from scout.scripts.bootstrap import _dump_keeping_comments, _same_value
     from scout.scripts.privacy_migrate import _atomic_write_bytes
 
     config = paths.config_path(vault)
     result = _dump_keeping_comments(overlay.text, data)
-    if (yaml.safe_load(result) or {}) != data:
+    if not _same_value(yaml.safe_load(result) or {}, data):
         raise RuntimeError("could not write scout-config.yaml → privacy")
     if config.exists():
         _atomic_write_bytes(config, result.encode("utf-8"))
@@ -494,6 +498,7 @@ def _exclude_reason(label: Label, *, below_ceiling: bool) -> ExcludeReason:
 _REASON_TEXT: dict[str, str] = {
     "private": "private (private always wins)",
     "local-only": "local-only (never leaves the laptop)",
+    "outside-sync-only": "outside privacy.sync_only (never reaches Agnes)",
     "ceiling": "its folder can't be shared this widely",
     "frontmatter": "its own federation_scope decides (edit the note to share it)",
     "earlier-entry": "an earlier federation_defaults entry decides",
@@ -626,6 +631,18 @@ def plan_share(
     if not target.folder and not notes:
         notes = [target.rel]
 
+    from scout.repo_sync import sync_scope
+
+    reach = sync_scope(vault, before)
+    if reach.sync_only and (
+        reach.outside_sync_only(target.rel)
+        if not target.folder
+        else all(reach.outside_sync_only(rel) for rel in notes) and not reach.entry_in_scope(target.glob)
+    ):
+        raise ShareRefused(
+            f"refused: {target.rel} is outside privacy.sync_only, so it never reaches Agnes and nobody could read it"
+        )
+
     if target.folder:
         inside = target.rel + "/"
         for prefix in _people_ceiling_folders(before):
@@ -683,6 +700,9 @@ def plan_share(
     plan.enabling = not before.federation_enabled
     plan.changed = data != overlay.data
     for rel in notes:
+        if reach.outside_sync_only(rel):
+            plan.excluded.append((rel, "outside-sync-only"))
+            continue
         old, new = labels_before.get(rel), labels_after.get(rel)
         if new is None:
             continue
@@ -862,9 +882,12 @@ class ShareRow:
 
 def list_shares(vault: Path, policy: Policy | None = None) -> tuple[bool, list[ShareRow]]:
     """``(sharing on, rows)``: each ``federation_defaults`` entry and each self-sharing note, with its notes."""
+    from scout.repo_sync import sync_scope
+
     vault = vault.resolve()
     policy = policy or load_policy(vault)
     labels = _labels(vault, policy, persist=True)
+    reach = sync_scope(vault, policy)
     rows: list[ShareRow] = []
     by_glob: dict[str, ShareRow] = {}
     for d in policy.federation_defaults:
@@ -877,6 +900,10 @@ def list_shares(vault: Path, policy: Policy | None = None) -> tuple[bool, list[S
         label = labels[rel]
         default = first_default(policy, rel)
         row = by_glob.get(default.glob) if default is not None else None
+        if reach.outside_sync_only(rel):
+            if row is not None:
+                row.excluded.setdefault("outside-sync-only", []).append(rel)
+            continue
         if label.federation_source == "frontmatter" and label.federation_scope != "none":
             rows.append(ShareRow(glob=rel, source="frontmatter", principals=_principals_of(label.federation_scope)))
             rows[-1].shared.append(rel)

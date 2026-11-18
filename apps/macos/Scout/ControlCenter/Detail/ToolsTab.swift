@@ -55,9 +55,9 @@ struct ToolsTab: View {
     private func chip(name: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Text(name).font(.system(.callout, design: .monospaced))
+                Text(name).font(DS.mono(12))
                 Text("\(count)")
-                    .font(.caption.monospaced())
+                    .font(DS.mono(10))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10)
@@ -103,18 +103,18 @@ struct ToolsTab: View {
     private func callRow(_ call: ClaudeSessionActivity.ToolCall) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(call.name)
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .font(DS.mono(10, weight: .semibold))
                 .foregroundStyle(color(for: call.name))
                 .frame(width: 90, alignment: .leading)
             Text(call.summary)
-                .font(.system(.callout, design: .monospaced))
+                .font(DS.mono(12))
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let ts = call.timestamp {
                 Text(ts, format: .dateTime.hour().minute().second())
-                    .font(.caption.monospaced())
+                    .font(DS.mono(10))
                     .foregroundStyle(.secondary)
             }
         }

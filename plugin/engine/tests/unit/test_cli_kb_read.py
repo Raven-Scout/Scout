@@ -10,6 +10,7 @@ without ``rg``, binary and non-UTF-8 files, and the audit log.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import datetime
 import io
 import json
@@ -96,7 +97,10 @@ def _settle(vault: Path) -> None:
     old = time.time() - 86_400
     for p in vault.rglob("*"):
         if p.is_file() and not p.is_symlink():
-            os.utime(p, (old, old))
+            # A file can vanish mid-walk (a detached `git gc --auto` packing the vault's loose
+            # objects failed this on CI); a file that is gone needs no backdating.
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(p, (old, old))
 
 
 def _labels_by_path(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -184,7 +188,12 @@ def test_owner_and_autonomous_see_private_labelled(vault: Path, reader: str) -> 
     export = json.loads(kb(vault, "export", reader=reader).stdout)
     assert export["entities"]["sam"]["_label"]["visibility"] == "private"
     assert "Entities:" in kb(vault, "stats", reader=reader).stdout
-    assert kb(vault, "validate", reader=reader).exit_code == 0
+    # 3, not 0: this fixture plants two validation errors on purpose (an orphaned private
+    # task and a file with broken frontmatter). What matters here is that the reader is not
+    # denied — a denial is also 3, so check the output names the errors it found.
+    validated = kb(vault, "validate", reader=reader)
+    assert validated.exit_code == 3
+    assert "validation error(s) found" in validated.stdout
 
 
 # ----- agents: nothing ----------------------------------------------------------
@@ -592,6 +601,7 @@ def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, mon
         "warnings": [],
         "declared_present": False,
         "kind": None,
+        "shared_source": False,
     }
     stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
     for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
@@ -900,6 +910,7 @@ _GOOD_FACTS: dict[str, object] = {
     "warnings": [],
     "declared_present": True,
     "kind": "meeting",
+    "shared_source": False,
 }
 
 
@@ -918,6 +929,7 @@ def test_facts_round_trip_through_the_index() -> None:
         {"warnings": "none"},
         {"declared_present": "yes"},
         {"kind": 3},
+        {"shared_source": "no"},
         {"declared": 3},
         {"declared": [3]},
     ],

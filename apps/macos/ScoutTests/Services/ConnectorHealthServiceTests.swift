@@ -41,8 +41,18 @@ struct ConnectorHealthServiceTests {
             to: logsDir.appendingPathComponent("connector-calls-now.jsonl"),
             atomically: true, encoding: .utf8
         )
-        let alertLine = "\(alertTs) | CRITICAL | mcp:claude_ai_Google_Drive | zero successful calls in last 3 runs | first_seen=\(firstSeen)\n"
-        try alertLine.write(
+        let alertState = """
+        {"schema_version": 1, "generated_at": "\(alertTs)", "mode": "consolidation", "alerts": [
+          {"connector_key": "mcp:claude_ai_Google_Drive", "level": "CRITICAL", "name": "Google Drive",
+           "reason": "3 failed call(s) in `consolidation` run", "ts": "\(alertTs)", "first_seen": "\(firstSeen)"}
+        ]}
+        """
+        try alertState.write(
+            to: logsDir.appendingPathComponent(ConnectorAlert.fileName),
+            atomically: true, encoding: .utf8
+        )
+        // The human-readable history beside it is not the app's input.
+        try "2026-04-22 08:30:00 EDT [CRITICAL] run=briefing Gmail: stale\n".write(
             to: logsDir.appendingPathComponent("connector-alerts.log"),
             atomically: true, encoding: .utf8
         )
@@ -63,7 +73,7 @@ struct ConnectorHealthServiceTests {
         let matrix = await service.matrix
         #expect(matrix.sessionsNewestFirst.count == 3)
 
-        // The fixture log has one active CRITICAL (Drive).
+        // The alert state has one active CRITICAL (Drive).
         let active = await service.activeAlerts
         #expect(active.count == 1)
         #expect(active.first?.connector == "mcp:claude_ai_Google_Drive")
@@ -72,6 +82,24 @@ struct ConnectorHealthServiceTests {
         let fp = active.first!.fingerprint
         await service.acknowledge(fingerprint: fp)
         #expect(await service.activeAlerts.isEmpty)
+
+        // A torn read of the state file must not prune the ack: once the
+        // engine's next write lands, the same alert is still hidden.
+        let stateURL = logsDir.appendingPathComponent(ConnectorAlert.fileName)
+        try "{\"schema_version\": 1, \"alerts\": [".write(to: stateURL, atomically: true, encoding: .utf8)
+        await service.refresh()
+        #expect(await service.activeAlerts.isEmpty)
+        try alertState.write(to: stateURL, atomically: true, encoding: .utf8)
+        await service.refresh()
+        #expect(await service.activeAlerts.isEmpty, "ack was pruned by the torn read")
+
+        // A readable state without the alert does prune the ack, so the
+        // alert shows again if the engine raises it again.
+        try "{\"schema_version\": 1, \"alerts\": []}".write(to: stateURL, atomically: true, encoding: .utf8)
+        await service.refresh()
+        try alertState.write(to: stateURL, atomically: true, encoding: .utf8)
+        await service.refresh()
+        #expect(await service.activeAlerts.count == 1)
     }
 
     // MARK: - Plan 4 Task 8: roster snapshot loading

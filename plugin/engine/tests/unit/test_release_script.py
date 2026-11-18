@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -156,6 +157,40 @@ def test_the_eval_reminder_never_stops_a_release(tmp_path):
     pr = [c for c in r.calls() if c.startswith("gh pr create")]
     body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
     assert "- [ ] Eval (local, not a gate): ran `plugin/scripts/eval.sh` on my own Claude login" in body
+
+
+def _kb_gate_result(r, stamp, verdict):
+    """A kb-gate result dir as `eval.sh kb-gate` leaves it: its report beside the sample."""
+    d = r.root / ".eval-results" / f"kb-front-page-kb-gate-{stamp}-1"
+    d.mkdir(parents=True)
+    checkout = {"commit": "ab12cd34ef56" * 3 + "abcd", "branch": "main", "dirty": False}
+    report = {"gate": "kb-writing", "verdict": verdict, "passed": verdict == "pass", "sample": {"checkout": checkout}}
+    (d / "kb-gate-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def test_prepare_names_the_kb_writing_gate_and_the_release_pr_carries_it(tmp_path):
+    r = make_repo(tmp_path)
+    done = r.run("prepare", "patch")
+    assert done.returncode == 0, done.stderr  # a reminder: the gate needs a Claude login, so it never refuses
+    assert "→ KB-writing gate (a release gate, run locally): no local result yet." in done.stdout
+    assert "    plugin/scripts/eval.sh kb-gate" in done.stdout
+    pr = [c for c in r.calls() if c.startswith("gh pr create")]
+    body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
+    assert "- [ ] KB-writing gate (local, **a release gate**): `plugin/scripts/eval.sh kb-gate` passed (exit 0)" in body
+    assert body.index("KB-writing gate") < body.index("Eval (local, not a gate)")
+
+
+def test_prepare_reports_the_newest_kb_gate_verdict(tmp_path):
+    r = make_repo(tmp_path)
+    _kb_gate_result(r, "20200101-000000", "pass")
+    _kb_gate_result(r, "20200102-093000", "fail")
+    done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    newest = "KB-writing gate (a release gate, run locally): newest local result 2020-01-02 09:30, fail,"
+    assert f"{newest} on main @ {'ab12cd34ef56' * 3}abcd." in done.stdout
+    # It can't be this release's run, and says so: prepare made the release commit just before.
+    assert "That is NOT a run of this release" in done.stdout
+    assert "On release/v0.14.1, before merging the release PR" in done.stdout
 
 
 def test_prepare_names_the_headless_self_update_rehearsal(tmp_path):
@@ -469,6 +504,37 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     _merge_release(r)
     assert r.run("finalize", "v0.15.0", extra_env={"FAKE_APPCAST": "1"}).returncode == 0
     assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
+
+
+def test_finalize_attaches_the_install_manifest(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    assert r.run("finalize", "v0.15.0").returncode == 0
+    assert "scout-release.json" in next(c for c in r.calls() if c.startswith("gh release create"))
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
+
+
+def test_an_rc_manifest_names_the_rc_tag_and_the_version_it_carries(tmp_path):
+    r = make_repo(tmp_path)
+    assert r.run("prepare", "0.15.0").returncode == 0
+    assert r.run("rc", "v0.15.0-rc.1").returncode == 0
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0-rc.1"}
+    # A prerelease never becomes /releases/latest, so an rc's manifest can't answer an installer.
+    create = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "scout-release.json" in create
+    assert "--prerelease" in create and "--latest=false" in create
+
+
+def test_a_dry_run_builds_the_install_manifest_and_publishes_nothing(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert not [c for c in r.calls() if c.startswith("gh release create")]
+    built = r.root / ".release" / "v0.15.0" / "apps" / "macos" / "build" / "release" / "scout-release.json"
+    assert json.loads(built.read_text()) == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
 
 
 def test_refuses_before_the_release_pr_merged(tmp_path):

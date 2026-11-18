@@ -39,7 +39,7 @@ struct EditorialActionButton: View {
             HStack(spacing: 5) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 10))
+                        .font(DS.sans(10))
                 }
                 Text(label)
                     .font(DS.sans(11.5, weight: .medium))

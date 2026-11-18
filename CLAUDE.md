@@ -79,6 +79,43 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Fixtures/doctor-run-health.json` and update the pins in
   `apps/macos/ScoutTests/Engine/DoctorReportTests.swift` — all in one commit.
   `contract.yml` byte-compares the two copies.
+- **The connector alert state has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/connector-alerts.json`, the format of
+  `.scout-logs/connector-alerts.json` (documented on `render_alerts_state` in
+  `connector_health_report.py`), which the app's `ConnectorAlert.parseFile`
+  reads. Generate it the same way, from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_connector_alerts_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
+  update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
+  — all in one commit. `connector-alerts.log` is for people; neither side parses it.
+- **The usage summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/usage-summary.json`, the output of
+  `scoutctl budget usage --json` (`scout/scripts/usage_summary.py`), which the
+  app's `ScoutUsageService` decodes for the usage card and status bar. Generate
+  it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_usage_summary.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/usage-summary.json` and
+  update the pins in `apps/macos/ScoutTests/Services/ScoutUsageServiceTests.swift`
+  — all in one commit.
+- **The run protection summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/protection-status.json`, the output of
+  `scoutctl protection status --json`, which the app's Run protection card reads.
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_protection_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/protection-status.json` and update
+  the pins in `apps/macos/ScoutTests/Engine/RunProtectionTests.swift` — all in one commit.
+- **The run ledger has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/run-ledger.json`, the output of
+  `scoutctl runs --json` (`scout/run_ledger.py`; recent `run-outcomes.jsonl`
+  rows plus the run-health report, versioned by `schema_version`), which the
+  app's Health panel reads (`RunLedger.parse`). Generate it the same way, from
+  `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_ledger_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/run-ledger.json` and update the pins in
+  `apps/macos/ScoutTests/Health/RunLedgerContractTests.swift` — all in one
+  commit. A new ledger field or outcome goes into the test's vault builder, not
+  the JSON.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

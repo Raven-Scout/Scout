@@ -33,6 +33,14 @@
 # (a Python pre-check would add ~20-60 ms to every hook call). A cache that
 # fails the check is deleted, and we fall through to the full probe. The cache
 # lives inside the plugin so different plugin installs don't share state.
+#
+# Every Python call here passes -P (Python 3.11+, which the engine requires).
+# `python -m` and `python -c` put the working directory first on sys.path, and
+# hooks, the pre-commit hook and the heartbeat run this with the vault as cwd,
+# so a vault-root typer.py, yaml.py or scout/ would be imported in place of the
+# engine's. -P leaves the cwd off. A python3 older than 3.11 rejects -P, which
+# changes nothing: it could not run the engine anyway. scout/_spawn.py does the
+# same for the engine's own `python -m` children.
 set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -47,7 +55,7 @@ CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 MODULE=scout.cli
 if [ "${1:-}" = hook ]; then
     case "${2:-}" in
-        kb-read-gate | kb-read-label | outbound-gate)
+        kb-read-gate | kb-write-gate | kb-read-label | outbound-gate | shared-read-record)
             MODULE=scout.hooks
             shift
             ;;
@@ -68,24 +76,6 @@ for d in map(os.path.abspath, sys.path):
         if n.startswith("scout_engine-") and n.endswith(".dist-info"):
             print(os.path.join(d, n, "METADATA"))'
 
-# Fast path: the cached interpreter is executable and every stamped file is
-# still there. A cache written before stamps existed has no stamp, so it gets
-# one fresh probe.
-if [ -r "$CACHE_FILE" ]; then
-    CACHED_PY="" STAMPED=0 MISSING=0
-    {
-        IFS= read -r CACHED_PY || true
-        while IFS= read -r STAMP || [ -n "$STAMP" ]; do
-            STAMPED=1
-            [ -f "$STAMP" ] || MISSING=1
-        done
-    } <"$CACHE_FILE"
-    if [ -n "$CACHED_PY" ] && [ -x "$CACHED_PY" ] && [ "$STAMPED" = 1 ] && [ "$MISSING" = 0 ]; then
-        exec "$CACHED_PY" -m "$MODULE" "$@"
-    fi
-    rm -f "$CACHE_FILE" 2>/dev/null || true
-fi
-
 candidates=(
     "${PLUGIN_ROOT}/.venv/bin/python"
     "${ENGINE_DIR}/.venv/bin/python"
@@ -102,7 +92,9 @@ candidates=(
 POINTER="$HOME/.local/state/scout/engine.json"
 if [ -r "$POINTER" ]; then
     POINTER_PY="$(sed -n 's/^[[:space:]]*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$POINTER" | head -n 1)"
-    if [ -n "$POINTER_PY" ]; then
+    # Only a venv's python (pyvenv.cfg in the venv root): a pointer rewritten to name some other
+    # binary (/usr/bin/true, a script) is ignored, so it can't stand in for the engine (#637).
+    if [ -n "$POINTER_PY" ] && [ -f "${POINTER_PY%/bin/*}/pyvenv.cfg" ]; then
         candidates+=("$POINTER_PY")
     fi
 fi
@@ -137,15 +129,42 @@ if [[ "$PLUGIN_ROOT" == */plugins/cache/* ]]; then
     fi
 fi
 
+# Fast path: the cached interpreter is one of the candidates above, so a cache rewritten to
+# name some other binary (/usr/bin/true) is never run (#637); it is executable; its stamp
+# names the scout/cli.py it resolved; and every stamped file is still there. A cache that
+# fails any of that is deleted, and we fall through to the full probe. A cache written
+# before stamps existed has no stamp, so it gets one fresh probe.
+if [ -r "$CACHE_FILE" ]; then
+    CACHED_PY="" STAMPED=0 MISSING=0 HAS_CLI=0 KNOWN=0
+    {
+        IFS= read -r CACHED_PY || true
+        while IFS= read -r STAMP || [ -n "$STAMP" ]; do
+            STAMPED=1
+            if [ ! -f "$STAMP" ]; then MISSING=1; fi
+            case "$STAMP" in */scout/cli.py) HAS_CLI=1 ;; esac
+        done
+    } <"$CACHE_FILE"
+    for CANDIDATE in "${candidates[@]}"; do
+        if [ -n "$CACHED_PY" ] && [ "$CANDIDATE" = "$CACHED_PY" ]; then KNOWN=1; fi
+    done
+    if [ "$KNOWN" = 1 ] && [ -x "$CACHED_PY" ] && [ "$STAMPED" = 1 ] && [ "$MISSING" = 0 ] && [ "$HAS_CLI" = 1 ]; then
+        exec "$CACHED_PY" -P -m "$MODULE" "$@"
+    fi
+    rm -f "$CACHE_FILE" 2>/dev/null || true
+fi
+
 for VENV_PY in "${candidates[@]}"; do
     # The probe gets /dev/null as stdin, which leaves the hook payload for the real call.
-    if [ -x "$VENV_PY" ] && STAMP_LINES="$("$VENV_PY" -c "$PROBE" </dev/null 2>/dev/null)"; then
+    if [ -x "$VENV_PY" ] && STAMP_LINES="$("$VENV_PY" -P -c "$PROBE" </dev/null 2>/dev/null)"; then
+        # The probe's first line is where it found scout.cli: anything else isn't the engine.
+        case "${STAMP_LINES%%$'\n'*}" in */scout/cli.py) ;; *) continue ;; esac
         # Best-effort write to the cache so the next call skips the probe.
         # Failures (read-only plugin root in Claude Code's cache copy, no
-        # write perms, etc.) are silently ignored.
-        printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE" 2>/dev/null || true
-        exec "$VENV_PY" -m "$MODULE" "$@"
+        # write perms, the run's write sandbox) are silently ignored: the
+        # braces make the redirect's own error go to /dev/null too.
+        { printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE"; } 2>/dev/null || true
+        exec "$VENV_PY" -P -m "$MODULE" "$@"
     fi
 done
 
-exec python3 -m "$MODULE" "$@"
+exec python3 -P -m "$MODULE" "$@"

@@ -26,7 +26,15 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # 2026-10-21 (#453 eval follow-up): +189 SKILL, +109 DREAMING, +70 RESEARCH for listing/reading context
 # notes via `scoutctl kb files|read`, exact private titles on owner-only surfaces, and consolidation
 # keeping `personal_tasks`; the pins also absorb drift already on main (+762 SKILL, +239 RESEARCH).
-PINS = {"SKILL": 42_648, "DREAMING": 18_725, "RESEARCH": 6_569}
+# 2026-11-05 (Agnes Shared Areas S2a): +103 in every mode for the shared-notes rule in phases/core/privacy.md,
+# which must reach every run that could read one (the hook carries the rest at read time). The pins also absorb
+# drift already on main, which had left DREAMING 6 and RESEARCH 12 tokens under the limit (+1,862 SKILL, +930
+# DREAMING, +316 RESEARCH).
+# 2026-11-16 (Phase 1d run brokers, #648): RESEARCH re-pinned to its measure. git-setup's "Changing the vault's git"
+# (a sandboxed run can't change the repository: the helper, mv/rm, git show, untracking) and Step 0's sandbox guard,
+# +~150 in every mode, trimmed to the replacements runs used in the 50-run replay. RESEARCH also absorbs +237 of drift
+# already on main, which had left it 112 tokens under the limit. SKILL and DREAMING stay inside their headroom.
+PINS = {"SKILL": 44_613, "DREAMING": 19_758, "RESEARCH": 7_375}
 GROWTH = 0.05
 SHRINK = 0.10
 

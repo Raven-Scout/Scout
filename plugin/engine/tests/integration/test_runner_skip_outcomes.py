@@ -184,6 +184,77 @@ def test_a_run_that_was_not_skipped_records_no_skip(vault: Path, runner: str) ->
     assert row["runner"] == {"run-scout.sh.tmpl": "scout", "run-dreaming.sh.tmpl": "dreaming"}.get(runner, "research")
 
 
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_failed_gate_probe_records_skipped_gates_and_never_launches(vault: Path, runner: str) -> None:
+    """Bare-mode guard (spec 2026-11-13 §3.5): claude without Scout's hooks never runs against the vault."""
+    _script(
+        vault / "bin" / "scoutctl",
+        '#!/bin/bash\nif [ "$1" = gates ]; then echo "[scout:gates] not loaded" >&2; exit 3; fi\nexit 0\n',
+    )
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["slot"], row["outcome"], row["exit_code"]) == (SLOT, "skipped_gates", 0)
+    assert not (vault / ".scout-logs" / ".scout-session.lock").exists()
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize(("code", "klass"), [(4, "gates_unsafe_endpoint"), (5, "gates_unsafe_launcher")])
+def test_a_probe_that_cant_run_safely_records_its_cause(vault: Path, runner: str, code: int, klass: str) -> None:
+    """Exit 4 (a setting it can't keep local) and 5 (a launcher it can't see through) are gates skips with a cause."""
+    gate = f'if [ "$1" = gates ]; then echo "[scout:gates] can\'t probe safely" >&2; exit {code}; fi'
+    _script(vault / "bin" / "scoutctl", f"#!/bin/bash\n{gate}\nexit 0\n")
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["failure_class"], row["exit_code"]) == ("skipped_gates", klass, 0)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize("broken", ["missing", "not-executable"])
+def test_a_missing_scoutctl_skips_the_run_instead_of_running_ungated(vault: Path, runner: str, broken: str) -> None:
+    """The hooks run the plugin's scoutctl, not this one, so a broken one here proves nothing (review of #635)."""
+    stub = vault / "bin" / "scoutctl"
+    if broken == "missing":
+        stub.unlink()
+    else:
+        stub.chmod(0o644)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["slot"], row["outcome"]) == (SLOT, "skipped_gates")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_gate_probe_gets_the_runners_claude_and_vault(vault: Path, runner: str) -> None:
+    _script(vault / "bin" / "scoutctl", f'#!/bin/bash\necho "$@" >> "{vault}/scoutctl-calls"\nexit 0\n')
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+
+    calls = (vault / "scoutctl-calls").read_text(encoding="utf-8").splitlines()
+    (probe,) = [c for c in calls if c.startswith("gates probe")]
+    assert probe == f"gates probe --cached --vault {vault} --claude-bin /usr/bin/true"
+    assert (vault / "session-ran").exists()
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_gate_probe_runs_after_the_lock_and_budget_and_before_claude(runner: str) -> None:
+    text = (TEMPLATES / runner).read_text(encoding="utf-8")
+    probe = text.index("gates probe --cached")
+    assert text.index("scout_lock_acquire") < probe
+    assert text.index("scout_record_skip skipped_budget") < probe
+    assert probe < text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+
+
 # ----- the health reading of a skip --------------------------------------------
 
 
@@ -249,3 +320,170 @@ def test_health_still_reports_a_fire_that_recorded_nothing(vault: Path, monkeypa
     ids = {f.id for f in health.evaluate(vault, now=now).findings}
 
     assert f"slot.fired_silent:{SLOT}" in ids
+
+
+# -- the write sandbox (spec 2026-11-15, Phase 1c) ------------------------------------------------------------
+
+_SANDBOX_STUB = """#!/bin/bash
+if [ "$1" = sandbox ]; then
+    {action}
+fi
+exit 0
+"""
+
+
+def _sandbox_scoutctl(vault: Path, action: str) -> None:
+    _script(vault / "bin" / "scoutctl", _SANDBOX_STUB.format(action=action))
+
+
+def _capture_wrapper_env(vault: Path) -> Path:
+    seen = vault / "wrapper-env.txt"
+    _script(
+        vault / "scripts" / "claude-with-retry.sh",
+        f'#!/bin/bash\nprintf "%s|%s\\n" "${{SCOUT_SANDBOX_STATUS-}}" "${{SCOUT_SANDBOX_PROFILE:0:11}}" > "{seen}"\n'
+        f'touch "{vault}/session-ran"\n',
+    )
+    return seen
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_sandbox_that_cant_be_set_up_skips_the_run(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, 'echo "[scout:sandbox] failed: self-test: nope" >&2; exit 3')
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["sandbox"], row["exit_code"]) == ("skipped_sandbox", "failed", 0)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_an_engine_that_prints_no_profile_never_runs_the_session_unsandboxed(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "exit 0")  # "enforced" with nothing to enforce
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "session-ran").exists()
+    (row,) = _ledger(vault)
+    assert row["outcome"] == "skipped_sandbox"
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize(("code", "status"), [(6, "unavailable"), (7, "off"), (8, "conflict")])
+def test_no_sandbox_here_runs_as_before_and_says_so(vault: Path, runner: str, code: int, status: str) -> None:
+    _sandbox_scoutctl(vault, f"exit {code}")
+    seen = _capture_wrapper_env(vault)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text().strip() == f"{status}|"
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["sandbox"]) == ("ok", status)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_an_enforced_sandbox_hands_the_profile_to_the_wrapper(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "printf '(version 1)\\n(allow default)\\n'; exit 0")
+    seen = _capture_wrapper_env(vault)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text().strip() == "enforced|(version 1)"
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["sandbox"]) == ("ok", "enforced")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_env_switch_turns_it_off_without_asking_the_engine(vault: Path, runner: str) -> None:
+    calls = vault / "scoutctl.calls"
+    _script(vault / "bin" / "scoutctl", f'#!/bin/bash\necho "$*" >> "{calls}"\nexit 0\n')
+    seen = _capture_wrapper_env(vault)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="OFF")
+
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text().strip() == "off|"
+    assert "sandbox profile" not in calls.read_text()
+    (row,) = _ledger(vault)
+    assert (row["sandbox"], row["sandbox_source"]) == ("off", "env")
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_owners_switch_is_recorded_as_the_source(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "exit 7")
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    (row,) = _ledger(vault)
+    assert (row["sandbox"], row["sandbox_source"]) == ("off", "switch")
+
+
+# -- the post-run integrity check (spec 2026-11-15 §13) -----------------------------------------------------------
+
+_INTEGRITY_STUB = """#!/bin/bash
+case "$1 $2" in
+    "sandbox profile") printf '(version 1)\\n(allow default)\\n' ;;
+    "sandbox snapshot") echo '{{"version":1,"start":true}}' ;;
+    "sandbox verify") cat > "{stdin}"; echo "integrity check: stub"; exit {verify_rc} ;;
+esac
+exit 0
+"""
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize(
+    ("verify_rc", "status"), [(0, "clean"), (10, "restored"), (11, "unrestored"), (12, "error"), (1, "error")]
+)
+def test_the_runner_checks_integrity_after_claude_and_records_it(
+    vault: Path, runner: str, verify_rc: int, status: str
+) -> None:
+    stdin = vault / "verify-stdin.txt"
+    _script(vault / "bin" / "scoutctl", _INTEGRITY_STUB.format(stdin=stdin, verify_rc=verify_rc))
+    _capture_wrapper_env(vault)
+
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert result.returncode == 0, result.stderr  # never changes the run's exit code
+    assert stdin.read_text() == '{"version":1,"start":true}'  # the start state, by value
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["integrity"]) == ("ok", status)
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_scoutctl_that_takes_no_start_snapshot_records_an_error(vault: Path, runner: str) -> None:
+    _sandbox_scoutctl(vault, "exit 6")  # prints nothing for any sandbox subcommand
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    (row,) = _ledger(vault)
+    assert row["integrity"] == "error"  # health turns yellow, so a snapshot that always fails gets noticed
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_profile_is_built_for_the_claude_the_runner_starts(vault: Path, runner: str) -> None:
+    seen = vault / "profile-claude-bin.txt"
+    _sandbox_scoutctl(vault, f'[ "$2" = profile ] && printf "%s" "${{SCOUT_CLAUDE_BIN-}}" > "{seen}"; exit 6')
+    _capture_wrapper_env(vault)
+
+    _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_RUN_SANDBOX="")
+
+    assert seen.read_text() == "/usr/bin/true"  # the runner's CLAUDE_BIN, not whatever `which claude` finds
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_the_integrity_check_brackets_claude_and_comes_before_every_post_session_step(runner: str) -> None:
+    text = (TEMPLATES / runner).read_text(encoding="utf-8")
+    snapshot = text.index("sandbox snapshot --vault")
+    claude = text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+    verify = text.index("sandbox verify --vault")
+    outcome = text.index('"$OUTCOME" record')
+    assert snapshot < claude < verify < outcome
+    for later in ("POST_BACKFILL=", "connector-health-report", "budget record-run", "delegate sync"):
+        if later in text:
+            assert verify < text.index(later), later

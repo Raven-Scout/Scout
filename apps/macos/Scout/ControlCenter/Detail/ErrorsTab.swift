@@ -12,10 +12,10 @@ struct ErrorsTab: View {
             List(Array(errors.enumerated()), id: \.offset) { _, err in
                 VStack(alignment: .leading) {
                     Text("Line \(err.line) · \(err.pattern)")
-                        .font(.caption)
+                        .font(DS.sans(10))
                         .foregroundStyle(.secondary)
                     Text(err.snippet)
-                        .font(.system(.body, design: .monospaced))
+                        .font(DS.mono(13))
                         .lineLimit(2)
                 }
                 .padding(.vertical, 2)

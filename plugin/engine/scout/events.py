@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,22 @@ def append_event(log_dir: Path, *, kind: str, source: str, payload: dict[str, An
     ev = Event(id=new_ulid(), ts=now_iso(), kind=kind, source=source, payload=payload)
     log_dir.mkdir(parents=True, exist_ok=True)
     row = {"id": ev.id, "ts": ev.ts, "kind": ev.kind, "source": ev.source, "payload": ev.payload}
-    with (log_dir / f"{EVENT_LOG_PREFIX}{ev.ts[:10]}.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    _append_regular(log_dir / f"{EVENT_LOG_PREFIX}{ev.ts[:10]}.jsonl", (json.dumps(row) + "\n").encode("utf-8"))
     return ev
+
+
+def _append_regular(path: Path, data: bytes) -> None:
+    """Append to ``path`` only if it is a regular file (or new): never block, never follow a symlink.
+
+    A FIFO, device or socket put where a log belongs would make a plain ``open("a")`` hang, and a hook that hangs
+    times out, which Claude Code treats as an allow (review of #637). O_NONBLOCK makes such an open fail or return
+    at once; the fstat then refuses anything but a regular file.
+    """
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        os.write(fd, data)
+    finally:
+        os.close(fd)

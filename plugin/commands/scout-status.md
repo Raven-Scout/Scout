@@ -73,6 +73,12 @@ The "Last briefing / consolidation / dreaming / research" lines come from `slots
 find "SCOUT_DIR/knowledge-base" -type f -name "*.md" | sort
 ```
 
+Set two kinds of file aside before checking: they are not live notes, and counting them hides the notes that need work. Paths here are relative to `knowledge-base/`, and matching ignores case. The words of a name are its parts split at every character that isn't a letter or a digit (`2026-03-invoice` → `2026`, `03`, `invoice`).
+- **Archived:** any file under a folder named exactly `archive` or `archived`, at any depth.
+- **Receipts:** otherwise, a file under a folder named exactly `receipt`, `receipts`, `invoice` or `invoices`, or whose file name (without `.md`) or frontmatter `type:` has one of those four as a word.
+
+Count each kind, and don't check its files for staleness. Check every other file as below.
+
 For each file found, read it and take its date from the first of:
 - the frontmatter `last_verified:` or `last_updated:` key (the newer of the two)
 - a `**Last verified:**` line (older files)
@@ -105,7 +111,7 @@ Count how many Pending and Approved proposals exist.
 
 ### 3d. Wishlist
 
-Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists). Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
+Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists), not its `progress/` folder, which holds each item's progress log. Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
 
 Collect the active items: `status: open` (new) and `status: in-progress`. Exclude `done` and `dropped`.
 
@@ -142,7 +148,7 @@ Then verify three properties of `SCOUTCTL_BIN`:
 
 1. **Exists** — `[ -e "$SCOUTCTL_BIN" ]`. If not, flag as a broken plist.
 2. **Executable** — `[ -x "$SCOUTCTL_BIN" ]`. If not, flag.
-3. **Not under a TCC-protected dir** (after resolving symlinks). Resolve with `RESOLVED=$(readlink -f "$SCOUTCTL_BIN" 2>/dev/null || python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$SCOUTCTL_BIN")`. Then check:
+3. **Not under a TCC-protected dir** (after resolving symlinks). Resolve with `RESOLVED=$(readlink -f "$SCOUTCTL_BIN" 2>/dev/null || python3 -I -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$SCOUTCTL_BIN")`. Then check:
    ```bash
    case "$RESOLVED" in
        "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Downloads/"*) flag ;;
@@ -212,6 +218,23 @@ SCOUT_DATA_DIR="$SCOUT_DIR" "$SCOUTCTL" health --json; echo "exit=$?"
 Of the output, the first line is the JSON report and the last line is `exit=N`. Exit codes 0 (green), 1 (yellow) and 2 (red) are all normal. Any other exit code, a first line that is not a JSON report, or a report with `"severity": "unknown"` (a vault the command cannot find) means `RUN_HEALTH_UNAVAILABLE`: skip the run-health headline, and take the per-type last-run lines from the commit-message match instead (3a).
 
 The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each finding has `id`, `severity` (`yellow`, `red` or `note`), `since`, `summary` and `fix`. Ignore `note` findings everywhere: they are informational and never change the headline. Each slot has `key`, `type`, `last_fire` and `last_outcome` (`{outcome, finished_at, failure_class}` or null). Keep the whole report for Step 4.
+
+### 3h. Brain-file edits (applied rules)
+
+Dreaming runs may edit Scout's own instructions (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
+
+Read git:
+
+```bash
+git -C "SCOUT_DIR" log --since="7 days ago" --no-merges --date=format:'%Y-%m-%d %H:%M' \
+    --pretty=format:'@@%h|%ad|%s' --numstat -- SKILL.md DREAMING.md RESEARCH.md
+```
+
+Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines.
+
+Split the commits by subject. A **self-edit** is a commit whose subject starts with a run prefix, optionally after a slot name and a hyphen: `dreaming [`, `research [`, `briefing [`, `consolidation [` or `work [` (so `dreaming [21:0x]: …` and `morning-briefing [08:0x]: …` both count). Every other commit that touched the three files is **other**: plugin upgrades, hand-made grafts, `bootstrap resolve` follow-ups and the owner's own edits. Keep both lists; only the self-edits get rows.
+
+No commits in the window means no brain-file edits in 7 days. A git error means the history is unavailable: say so rather than showing an empty table.
 
 ---
 
@@ -307,11 +330,14 @@ The first four come from `slots[]` (3a, 3g): the newest `last_fire` among the sl
 ### KB Health
 
 ```
-  Total files:    X
+  Live notes:     X
   Up to date:     Y
   Need attention: Z
   Unknown dates:  W
+  Not counted:    A archived, R receipts
 ```
+
+Leave out the `Not counted` line when both are 0.
 
 If any files need attention, list them:
 
@@ -432,6 +458,23 @@ A `conflict` means the user is running their own version of a plugin-owned file 
 
 ---
 
+### Brain-File Edits (last 7 days)
+
+From 3h. One row per self-edit, newest first, at most 10 (say how many were left out). Every row shows the subject, cut to its first clause:
+
+```
+  2026-10-25 18:44  a1b2c3d  DREAMING.md +4/-0  dreaming [18:4x]: Step 2a-shrink cuts tables with their header
+  2026-10-25 06:48  e4f5a6b  SKILL.md +24/-9 · DREAMING.md +17/-4 · RESEARCH.md +14/-1  dreaming [06:4x]: wrap goes to Telegram
+```
+
+Then, when the other list is not empty, one line: `  +N other brain-file commits (upgrades or by hand).`
+
+When at least one self-edit is listed, end with: `These edits may not be in the plugin yet: "$SCOUTCTL" phases backport lists what is owed (read-only).` Resolve `$SCOUTCTL` as in 3f.
+
+If there were no self-edits and no other commits: `  No brain-file edits in the last 7 days.` If there were only other commits, show just the `+N other` line.
+
+---
+
 ### Knowledge Graph Health
 
 Run the ontology parser to check the knowledge graph:
@@ -484,4 +527,4 @@ End the dashboard with a one-line summary:
 Scout is healthy. / Scout needs attention — Z KB files stale, X proposals pending.
 ```
 
-Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes.
+Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes. Brain-file edits alone never make it "needs attention": they are a record, not a fault.

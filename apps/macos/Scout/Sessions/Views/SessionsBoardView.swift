@@ -52,14 +52,21 @@ struct SessionsBoardView: View {
                 Text(title)
                     .font(DS.serif(17, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(title)
                 if let counts {
                     countPills(counts)
                 }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
+            // Indicators on: a lane wider than the page cut its last card off
+            // with no hint that it scrolls (UI audit C6).
+            ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 10) { cards() }
                     .padding(.vertical, 2)
+                    .padding(.bottom, 6)
             }
+            .scrollIndicators(.visible)
         }
     }
 

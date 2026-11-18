@@ -1,0 +1,23 @@
+{
+  "alerts": [
+    {
+      "connector_key": "mcp:claude_ai_Slack",
+      "first_seen": "2026-04-27T13:00:00Z",
+      "level": "CRITICAL",
+      "name": "Slack",
+      "reason": "2 failed call(s) in `morning-briefing` run; 2/3 prior `morning-briefing` runs were healthy; dark for 2 run(s) total; last healthy Apr 25 08:00 EDT",
+      "ts": "2026-04-28T13:00:00Z"
+    },
+    {
+      "connector_key": "mcp:claude_ai_Linear",
+      "first_seen": "2026-04-28T13:00:00Z",
+      "level": "WARNING",
+      "name": "Linear",
+      "reason": "3/4 calls errored this run (75%)",
+      "ts": "2026-04-28T13:00:00Z"
+    }
+  ],
+  "generated_at": "2026-04-28T13:00:00Z",
+  "mode": "morning-briefing",
+  "schema_version": 1
+}

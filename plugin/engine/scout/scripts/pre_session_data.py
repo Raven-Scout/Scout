@@ -18,7 +18,11 @@ scheduled run). Every KB path and every task in it carries its
 ``visibility`` from the engine classifier, the same label ``scoutctl kb``
 gives. Tasks come from the engine's labelled ``KnowledgeGraph`` in process,
 not the vault ``parser.py`` shim, so nothing depends on PATH. A reader that
-sees nothing (``agent:*``) gets empty KB fields and no git log.
+sees nothing (``agent:*``) gets empty KB fields and no git log. A
+``delegate:<id>`` reader (#550 §4.1) gets the KB dates, commits and tasks it
+may see, and nothing from Linear, the daily files or past-due tasks: those mix
+in lines about private notes, which only a delegate mirror's redaction (V2)
+takes out.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from typing import Any
 
 from scout import config as scout_config
 from scout import paths
-from scout.kb.privacy import FULL_READERS
+from scout.kb.privacy import FULL_READERS, reads_any
 from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
 from scout.linear_activity import OwnActivity, fetch_own_activity
@@ -257,7 +261,7 @@ def get_git_recent(
     from scout.kb.delta import delta
 
     who = reader if reader is not None else resolve_reader(None, os.environ)
-    if who not in FULL_READERS or not (scout_dir / ".git").exists():
+    if not reads_any(who) or not (scout_dir / ".git").exists():
         return []
     try:
         commits = delta(scout_dir, who, since, with_diff=False)
@@ -324,7 +328,7 @@ def _graph(scout_dir: Path, reader: str | None) -> Any | None:
     from scout.kb.read import load_graph
 
     who = reader if reader is not None else resolve_reader(None, os.environ)
-    if who not in FULL_READERS or not (scout_dir / "knowledge-base").is_dir():
+    if not reads_any(who) or not (scout_dir / "knowledge-base").is_dir():
         return None
     try:
         return load_graph(scout_dir, who)
@@ -450,7 +454,7 @@ def gather(
     reader = resolve_reader(None, os.environ)
     full = reader in FULL_READERS
     kb_dates: dict[str, dict[str, str]] = {}
-    if full:
+    if reads_any(reader):
         dates = gather_kb_file_dates(
             target / "knowledge-base",
             scout_dir=target,
@@ -458,7 +462,9 @@ def gather(
         )
         labels = visibility_map(target, reader, ["knowledge-base/**"], who="pre-session-data")
         kb_dates = {
-            rel: {"last_updated": when, "visibility": labels.get(rel, "private")} for rel, when in dates.items()
+            rel: {"last_updated": when, "visibility": labels.get(rel, "private")}
+            for rel, when in dates.items()
+            if full or rel in labels  # a delegate: only the paths it may see
         }
 
     linear_rows: list[dict[str, Any]] | None = None

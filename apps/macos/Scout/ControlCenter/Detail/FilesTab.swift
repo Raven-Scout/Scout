@@ -29,7 +29,7 @@ struct FilesTab: View {
                         .foregroundStyle(.secondary)
                         .italic()
                     Text("Scout writes session files to ~/.claude/projects/-Users-…-Scout — they appear once a run starts.")
-                        .font(.caption)
+                        .font(DS.sans(10))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -49,11 +49,11 @@ struct FilesTab: View {
                 HStack(spacing: 6) {
                     Circle().fill(color).frame(width: 8, height: 8)
                     Text(title.uppercased())
-                        .font(.system(.caption, design: .monospaced))
+                        .font(DS.mono(10))
                         .fontWeight(.medium)
                         .foregroundStyle(.secondary)
                     Text("\(paths.count)")
-                        .font(.caption.monospaced())
+                        .font(DS.mono(10))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(paths, id: \.self) { path in
@@ -67,9 +67,9 @@ struct FilesTab: View {
         HStack(spacing: 8) {
             Image(systemName: "doc.text")
                 .foregroundStyle(.secondary)
-                .font(.caption)
+                .font(DS.sans(10))
             Text(displayPath(path))
-                .font(.system(.callout, design: .monospaced))
+                .font(DS.mono(12))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(path)
@@ -82,6 +82,7 @@ struct FilesTab: View {
             .buttonStyle(.plainHit)
             .foregroundStyle(.secondary)
             .help("Reveal in Finder")
+            .accessibilityLabel("Reveal in Finder")
         }
         .padding(.vertical, 2)
     }

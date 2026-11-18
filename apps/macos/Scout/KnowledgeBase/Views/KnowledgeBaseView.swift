@@ -22,8 +22,29 @@ struct KnowledgeBaseView: View {
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
+    /// A rename that moved the note but couldn't commit it. Shown here, not in
+    /// the editor: the editor is replaced when the note reopens at its new path.
+    @State private var renameProblem: String? = nil
     /// Width of the Links/Graph panel — drag its left edge to resize. Persisted.
     @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
+    /// The page's width, so the Links/Graph panel never squeezes the editor.
+    @State private var pageWidth: CGFloat?
+
+    static let treeWidth: CGFloat = 268
+    static let minEditorWidth: CGFloat = 380
+    static let rightPanelMin: CGFloat = 220
+    static let rightPanelMax: CGFloat = 640
+
+    /// The Links/Graph panel's width: the stored one, narrowed when the page
+    /// can't fit it beside the tree and a `minEditorWidth` editor. At the
+    /// minimum window a wide stored panel left the editor ~310 pt (UI audit C6).
+    nonisolated static func rightPanelWidth(stored: Double, pageWidth: CGFloat?) -> CGFloat {
+        let wanted = min(max(CGFloat(stored), rightPanelMin), rightPanelMax)
+        guard let pageWidth else { return wanted }
+        // Tree, its divider, the resize handle (8) and the editor.
+        let room = pageWidth - treeWidth - 1 - 8 - minEditorWidth
+        return max(rightPanelMin, min(wanted, room))
+    }
 
     private var selectedNode: KBNode? {
         guard let selectedPath else { return nil }
@@ -32,16 +53,24 @@ struct KnowledgeBaseView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            leftPane.frame(width: 268)
+            leftPane.frame(width: Self.treeWidth)
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let node = selectedNode, node.isEditable {
-                PaneResizeHandle(width: $rightPanelWidth, minWidth: 220, maxWidth: 640)
+                // The handle starts a drag from the width on screen, not the
+                // stored one: when the page clamps a wide stored panel, a drag
+                // from the stored width would do nothing until it caught up.
+                PaneResizeHandle(
+                    width: Binding(
+                        get: { Double(Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth)) },
+                        set: { rightPanelWidth = $0 }),
+                    minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
                 KBRightPanel(relPath: node.relativePath, service: service,
                              onNavigate: { navigate(toPath: $0) })
-                    .frame(width: CGFloat(rightPanelWidth))
+                    .frame(width: Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth))
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
         // In-app wikilink navigation for every pane (editor, backlink excerpts,
         // search snippets): resolve against the index, fall back to the default
         // Linear/Obsidian opening when the target isn't a KB note.
@@ -78,6 +107,11 @@ struct KnowledgeBaseView: View {
         )) {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+        .alert("Renamed, but not committed", isPresented: Binding(
+            get: { renameProblem != nil }, set: { if !$0 { renameProblem = nil } }
+        )) {
+            Button("OK", role: .cancel) { renameProblem = nil }
+        } message: { Text(renameProblem ?? "") }
     }
 
     private var divider: some View { Rectangle().fill(DS.Rule.soft).frame(width: 0.5) }
@@ -89,19 +123,22 @@ struct KnowledgeBaseView: View {
             HStack(spacing: 8) {
                 Text("Knowledge Base")
                     .font(DS.serif(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.knowledgeBase)
                 Spacer()
                 if selectedPath != nil {
                     Button { selectedPath = nil } label: {
-                        Image(systemName: "house").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "house").font(DS.sans(11, weight: .semibold))
                             .foregroundStyle(DS.Ink.p3)
                     }
                     .buttonStyle(.plainHit).help("Back to overview")
+                    .accessibilityLabel("Back to overview")
                 }
                 Button { showNewFile = true } label: {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
                 .buttonStyle(.plainHit).help("New note")
+                .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
@@ -124,13 +161,14 @@ struct KnowledgeBaseView: View {
 
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             TextField("Search notes…", text: $searchQuery)
                 .textFieldStyle(.plain).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
             if !searchQuery.isEmpty {
                 Button { searchQuery = "" } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+                    Image(systemName: "xmark.circle.fill").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -208,7 +246,16 @@ struct KnowledgeBaseView: View {
                 onRenamed: { url in
                     selectedPath = KnowledgeBaseService.relativePath(of: url, in: service.scoutDirectory)
                 },
-                onOverview: { selectedPath = nil }
+                onRenameProblem: { renameProblem = $0 },
+                onOverview: { selectedPath = nil },
+                onMoved: { from, to in
+                    // Follow an undone or redone rename only if the note is
+                    // still the one on screen.
+                    let fromPath = KnowledgeBaseService.relativePath(of: from, in: service.scoutDirectory)
+                    if selectedPath == fromPath {
+                        selectedPath = KnowledgeBaseService.relativePath(of: to, in: service.scoutDirectory)
+                    }
+                }
             )
             .id(node.id)
         } else {
@@ -218,7 +265,7 @@ struct KnowledgeBaseView: View {
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: icon).font(DS.sans(30)).foregroundStyle(DS.Ink.p4)
             Text(title).font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p2)
             Text(detail).font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
@@ -367,7 +414,8 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("FOLDER").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
-                Picker("", selection: $directoryPath) {
+                    .accessibilityHidden(true)
+                Picker("Folder", selection: $directoryPath) {
                     ForEach(directories, id: \.url.path) { dir in
                         Text(dir.label).tag(dir.url.path)
                     }
@@ -377,7 +425,9 @@ struct KBNewFileSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("NAME").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                    .accessibilityHidden(true)
                 TextField("my-note", text: $name)
+                    .accessibilityLabel("Name")
                     .textFieldStyle(.roundedBorder).font(DS.sans(13))
                     .onSubmit(create)
                 Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)

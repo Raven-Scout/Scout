@@ -69,6 +69,14 @@ auto_update:
 # models:
 #   default: opus
 
+# The agent CLI scheduled runs use. A slot's own `agent_runtime:` in
+# .scout-state/schedule.yaml wins (SCOUT_AGENT_RUNTIME wins over both); with
+# neither, runs use claude-code, which is today the only runtime. models.default
+# above applies to Claude Code; another runtime's default model goes under its
+# own id. Deliberately unset here, like models.
+# agent_runtimes:
+#   default: claude-code
+
 # Day planning for /scout-plan. MUST equal PlanningSettings()'s defaults in
 # scout/planning/settings.py; tests/unit/test_planning_settings.py fails the
 # build if they drift. Times are quoted: YAML 1.1 reads a bare 09:00 as a
@@ -111,8 +119,33 @@ agent_sessions:
 # Per-vault extra budgets go in a top-level `kb_budgets: {glob: bytes}` map,
 # which is checked BEFORE these defaults. Mode `report` logs findings and
 # never blocks; `block` refuses the commit (override: SCOUT_LINT_OVERRIDE).
+# Privacy findings block in every mode.
 kb_lint:
   mode: report
+  # Mode per path: an ordered list, and the FIRST matching rule decides a
+  # finding's mode; a path no rule matches gets `mode` above. A rule is
+  # {glob, mode, exclude: [globs], exclude_logs: bool, checks: [check ids]}:
+  # it matches when `glob` matches, no `exclude` glob does, the path is not a
+  # `log_globs` file (with `exclude_logs: true`) and, if `checks` is given, the
+  # finding's check is listed. An excluded path falls through to the next rule.
+  # The commit hook, `kb lint --report` and `scoutctl bootstrap doctor` all name
+  # a mistake here. A bad mode reports instead of blocking; a dropped rule
+  # sends a path on to the next rule, which may block.
+  # Example — long lines and diary headings block in the KB except its log
+  # files, everything else reports (size too, since most pages start over budget):
+  #   path_modes:
+  #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
+  # The page standard's checks (`page-loose`, `page-sections`, `page-narration`,
+  # `page-bullet`: new debt on a project folder; `scoutctl kb structure`
+  # reports the existing debt) report until a rule names them in `checks:`.
+  # Neither `mode: block` nor a rule with no `checks:` makes them block.
+  # A rule's glob and exclude may use `{folder}`, the name of the folder the
+  # file is in: once, in the last segment, beside plain text only. Example —
+  # project front pages may not regrow, and nothing else changes:
+  #     - glob: "knowledge-base/projects/*/{folder}.md"
+  #       mode: block
+  #       checks: [size, page-narration, page-sections, page-bullet]
+  path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500
   # A vault that sets its own exclude_globs replaces this list: keep the
@@ -188,3 +221,44 @@ kb_lint:
     - {glob: "knowledge-base/projects/*/decision-log/**", bytes: 51200}
     - {glob: "knowledge-base/projects/*/nav-history/**", bytes: 51200}
     - {glob: "knowledge-base/**", bytes: 15360}
+
+# KB structure check — `scoutctl kb structure` (report-only): does each
+# project folder meet docs/kb-page-standard.md? `--next` picks the dreaming
+# run's nightly rebuild target. The defaults match the standard the plugin
+# seeds; a vault that tailors its standard tailors these to match. Lists
+# replace the defaults, they don't add to them. Folders and files matching
+# `kb_lint.exclude_globs` or the KB schema's `graph.exclude` are skipped.
+kb_structure:
+  projects_dir: knowledge-base/projects
+  # Folders under projects_dir that are not a project (e.g. a parking folder).
+  skip_projects: [archived]
+  # Subfolders a project folder may hold. A sub-project folder with its own
+  # <sub>/<sub>.md front page is always allowed.
+  allowed_dirs: [knowledge, documents, research, archive]
+  page_target_bytes: 8192
+  page_budget_bytes: 15360
+  # Stale = a commit to another file in the folder (archive/ aside) landed
+  # more than this many days after the front page's `as_of`.
+  stale_days: 3
+  required_sections:
+    - "Where it stands"
+    - "What's next"
+    - "Key decisions"
+    - "Open questions"
+    - "People"
+    - "Go deeper"
+    - "History"
+  # Run narration that belongs in the commit message and session log, not
+  # the page body (Python regexes; the label is what the report prints).
+  # kb lint's `page-bullet`: an entry the commit adds to one of these
+  # sections (a bullet with its wrapped lines, or a paragraph) over this many
+  # characters. The detail belongs in a knowledge/ note the bullet links to.
+  max_bullet_chars: 300
+  bullet_sections: ["Where it stands"]
+  narration_markers:
+    - {label: "Last verified", pattern: "(?i)last verified"}
+    - {label: "Finding N", pattern: "\\bFinding \\d+"}
+    - {label: "§N", pattern: "§\\d+"}
+    - {label: "masked time", pattern: "\\b\\d{1,2}:\\dx\\b"}
+    - label: "session name"
+      pattern: "\\b(?:(?:morning|midday|afternoon|evening)-consolidation|(?:morning|weekend)-briefing|dreaming-(?:evening|nightly|weekend-morning))\\b"

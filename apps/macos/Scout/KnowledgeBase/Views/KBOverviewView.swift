@@ -38,6 +38,7 @@ struct KBOverviewView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Knowledge Base")
                         .font(DS.serif(24, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                        .glossaryHelp(.knowledgeBase)
                     Text("\(net.noteCount) notes · \(net.linkCount) connections")
                         .font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
                 }
@@ -53,7 +54,7 @@ struct KBOverviewView: View {
                             ForEach(links, id: \.path) { ql in
                                 Button { onNavigate(ql.path) } label: {
                                     HStack(spacing: 10) {
-                                        Image(systemName: ql.icon).font(.system(size: 15))
+                                        Image(systemName: ql.icon).font(DS.sans(15))
                                             .foregroundStyle(DS.Accent.ink).frame(width: 20)
                                         Text(ql.label).font(DS.sans(13, weight: .medium))
                                             .foregroundStyle(DS.Ink.p1)

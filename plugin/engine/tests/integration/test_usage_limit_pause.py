@@ -31,10 +31,11 @@ RUN_TIMEOUT_S = 60
 SLOT = "morning-briefing"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-# Runs this checkout's engine for `scoutctl budget …`; records every other call.
+# Runs this checkout's engine for `scoutctl budget …` and the integrity check's `sandbox snapshot|verify`;
+# records every other call.
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ["budget"]:
+if sys.argv[1:2] == ["budget"] or sys.argv[1:3] in (["sandbox", "snapshot"], ["sandbox", "verify"]):
     os.execv({python!r}, [{python!r}, "-m", "scout.cli", *sys.argv[1:]])
 with open({calls!r}, "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
@@ -107,6 +108,7 @@ def _run_slot(vault: Path) -> None:
     runner = _render(TEMPLATES / "run-scout.sh.tmpl", vault / "run-scout.sh", vault)
     fake_bin = vault.parent / "fakebin"
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     result = subprocess.run(
         [str(runner)],
         env={**env, "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}", "SCOUT_FORCE_MODE": SLOT},
@@ -130,8 +132,10 @@ def _sessions(vault: Path) -> int:
 def test_a_weekly_limit_holds_every_slot_until_its_date(vault: Path, lifts: datetime) -> None:
     _run_slot(vault)  # the session runs and fails on the weekly limit
 
-    (tracked,) = _jsonl(vault / ".scout-logs" / "usage-tracker.jsonl")
-    assert tracked["type"] == "rate_limit"
+    # The rate-limit row, beside the runner's cost row (scoutctl budget record-run).
+    tracker_rows = _jsonl(vault / ".scout-logs" / "usage-tracker.jsonl")
+    (tracked,) = [r for r in tracker_rows if r.get("type") == "rate_limit"]
+    assert [r["source"] for r in tracker_rows if r is not tracked] == ["runner"]
     assert tracked["resets_at"] == health.iso_z(lifts)
     (failed,) = _jsonl(vault / ".scout-logs" / "run-outcomes.jsonl")
     assert (failed["outcome"], failed["failure_class"]) == ("failed", "rate_limited")
@@ -154,7 +158,10 @@ def test_health_reads_the_held_slots_as_one_pause(vault: Path, lifts: datetime) 
     report = health.evaluate(vault, now=datetime.now(UTC))
 
     assert report.severity == "yellow"
-    assert [(f.id, f.severity) for f in report.findings] == [(health.PAUSED_FINDING_ID, "yellow")]
+    # Notes don't change severity (the suite's runners have SCOUT_RUN_SANDBOX=off, which health notes).
+    assert [(f.id, f.severity) for f in report.findings if f.severity != "note"] == [
+        (health.PAUSED_FINDING_ID, "yellow")
+    ]
     assert f"runs paused until {health.iso_z(lifts)}" in report.findings[0].summary
 
 
@@ -162,10 +169,13 @@ def test_the_slot_after_the_reset_runs_again(vault: Path, lifts: datetime) -> No
     """The pause ends on its own: once the reset has passed, the gate lets a session start."""
     _run_slot(vault)
     tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
-    (row,) = _jsonl(tracker)
+    rows = _jsonl(tracker)
     past = datetime.now(UTC) - timedelta(days=4)
-    row.update(ts=health.iso_z(past - timedelta(hours=1)), resets_at=health.iso_z(past))
-    tracker.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    for row in rows:  # the rate-limit row and the runner's cost row, both moved 4 days back
+        row["ts"] = health.iso_z(past - timedelta(hours=1))
+        if row.get("type") == "rate_limit":
+            row["resets_at"] = health.iso_z(past)
+    tracker.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
     _run_slot(vault)
 

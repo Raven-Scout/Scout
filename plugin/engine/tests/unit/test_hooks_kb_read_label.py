@@ -197,7 +197,8 @@ def test_main_prints_the_label(vault, monkeypatch, capsys):
 
 
 def _entry() -> dict:
-    (entry,) = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PostToolUse"]
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PostToolUse"]
+    (entry,) = [e for e in hooks if "hook kb-read-label" in e["hooks"][0]["command"]]
     return entry
 
 

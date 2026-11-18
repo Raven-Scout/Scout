@@ -134,17 +134,30 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    # Before the session the runner asks the engine for the run's model; after
-    # it, for the connector-health roll-up. Both against this vault.
-    assert calls.read_text(encoding="utf-8").splitlines() == [
+    # Before the session the runner runs the gate probe (spec 2026-11-13 §3.5), resolves
+    # and checks the run's agent runtime (spec 2026-11-13 §8.2), asks the engine for the
+    # run's model and takes the integrity check's start state (spec 2026-11-15 §13); the
+    # session itself starts through `agent-runtime exec`; after it, the integrity check,
+    # the connector-health roll-up and the run's cost. All against this vault.
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
+    assert lines[1] == f"{vault} agent-runtime resolve --slot {slot}"
+    assert lines[2].startswith(f"{vault} agent-runtime check --slot {slot} --runtime claude-code --bin ")
+    assert lines[3:7] == [
         f"{vault} model resolve --slot {slot}",
+        f"{vault} sandbox snapshot --vault {vault}",
+        f"{vault} sandbox verify --vault {vault} --label {slot}",
         f"{vault} connector-health-report",
     ]
+    run_type = {"dreaming-nightly": "dreaming", "research": "research"}.get(slot, slot)
+    assert len(lines) == 8 and lines[7].startswith(f"{vault} budget record-run {run_type} --name scout-{slot}-")
+    assert lines[7].endswith(f"--cap 25 --exit-code {exit_code}")
     assert "connector-health: 2 sessions in window" in _runner_log(vault)
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
-def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, slot: str) -> None:
+def test_runner_without_scoutctl_skips_the_run(vault: Path, template: str, slot: str) -> None:
+    """Without scoutctl the gate probe can't run, so the run is skipped, not run ungated (spec 2026-11-13 §3.5)."""
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(vault / "bin" / "absent"))
     _stub_claude(vault, 0)
 
@@ -152,14 +165,16 @@ def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, s
 
     assert result.returncode == 0, result.stderr
     log = _runner_log(vault)
-    assert "run finished" in log
-    assert "connector-health roll-up skipped" in log
+    assert "scoutctl is missing" in log
+    assert "run finished" not in log
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot: str) -> None:
+    # Every helper fails except the gate probe, which a failing engine would turn into a skipped run.
     scoutctl = _script(
-        vault / "bin" / "scoutctl", "#!/bin/bash\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n"
+        vault / "bin" / "scoutctl",
+        "#!/bin/bash\n[ \"$1\" = gates ] && exit 0\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n",
     )
     runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)
@@ -173,6 +188,38 @@ def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot
     log = _runner_log(vault)
     assert "run-outcome: ledger not writable" in log
     assert "connector-health: fatal error: engine broken" in log
+
+
+@pytest.mark.parametrize(("template", "slot"), RUNNERS)
+def test_a_working_engine_without_the_optional_vault_helpers_still_runs(vault: Path, template: str, slot: str) -> None:
+    """scoutctl works, but run-outcome.sh, budget-check.sh, the pre-session hooks and the cost tracker are absent."""
+    scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    _stub_claude(vault, 0)
+
+    result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
+
+    assert result.returncode == 0, result.stderr
+    assert "run finished" in _runner_log(vault)
+    assert not (vault / "scripts" / "run-outcome.sh").exists()
+
+
+@pytest.mark.parametrize(("template", "slot"), RUNNERS)
+def test_an_engine_gone_mid_run_skips_the_rollup_and_falls_back_for_the_cost_row(
+    vault: Path, template: str, slot: str
+) -> None:
+    """The probe passed, then scoutctl vanished (an engine upgrade moved it): the runner's fallbacks still record."""
+    scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    _script(vault / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\nrm -f "{scoutctl}"\nexit 0\n')
+    cost_args = vault / "cost.args"
+    _script(vault / "scripts" / "write-session-cost.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{cost_args}"\n')
+
+    result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
+
+    assert result.returncode == 0, result.stderr
+    assert "connector-health roll-up skipped: scoutctl not found" in _runner_log(vault)
+    assert cost_args.read_text(encoding="utf-8").splitlines()[-1] == "runner"
 
 
 # ---------- kb-pre-filter.sh: git-truth staleness ranking ----------

@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -378,6 +379,42 @@ def test_the_newest_log_explains_why_a_lane_is_silent(vault: Path, log_text: str
     (vault / ".scout-logs" / "dreaming-2026-01-05_22-00.log").write_text(log_text, encoding="utf-8")
 
     assert _lanes(vault)["dreaming"]["newest_log"] == f"dreaming-2026-01-05_22-00.log: {verdict}"
+
+
+def test_a_later_run_in_the_same_minute_is_the_newest_log(vault: Path) -> None:
+    """A later run in a minute logs to <stem>-…_HH-MM-SS-PID.log; text order
+    would put it before the minute-named log."""
+    _dark_dreaming(vault)
+    logs = vault / ".scout-logs"
+    (logs / "dreaming-2026-01-05_22-00.log").write_text("(exit code: 0, duration: 900s)\n", encoding="utf-8")
+    (logs / "dreaming-2026-01-05_22-00-31-4242.log").write_text(
+        "=== Another Scout session running (PID 42) — skipping ===\n", encoding="utf-8"
+    )
+
+    assert _lanes(vault)["dreaming"]["newest_log"] == "dreaming-2026-01-05_22-00-31-4242.log: lock-skip"
+
+
+def test_its_log_order_matches_the_engines() -> None:
+    """The script ships to vaults standalone (stdlib only), so it carries its own
+    copy of scout.health's log-name rule; the two must agree."""
+    from scout import health
+
+    names = [
+        "dreaming-2026-01-05_22-00-25-4242.log",
+        "dreaming-2026-01-05_22-01.log",
+        "dreaming-2026-01-05_21-59-59-7.log",
+        "dreaming-2026-01-05_22-00.log",
+        "dreaming-2026-01-05_22-00-25-987.log",
+        "dreaming-notes.log",
+        "scout-2026-01-05_22-00-25.log",
+    ]
+    mod = _module()
+
+    assert sorted(names, key=mod.run_log_sort_key) == sorted(names, key=health.run_log_sort_key)
+    for name in names:
+        engine = health.run_log_pattern("dreaming").fullmatch(name)
+        script = re.compile(r"dreaming" + mod.RUN_LOG_TAIL).fullmatch(name)
+        assert bool(engine) is bool(script), name
 
 
 def test_a_shared_runner_log_is_only_blamed_on_the_lane_that_ran_it(vault: Path) -> None:

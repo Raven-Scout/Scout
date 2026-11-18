@@ -879,6 +879,71 @@ def cli_check_tier_ceiling(
         raise typer.Exit(code=1)
 
 
+@app.command("check-titles")
+def cli_check_titles(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check task titles and Today's Focus in today's file against *Clean Title, Prose Body, Refs Block*.
+
+    A task title (the bold segment) that is new or changed since the newest
+    earlier daily file must be at most 80 characters; a title committed earlier
+    today is still new. Of the carried titles over the limit, the 5 longest in
+    🔴 Urgent in the baseline (today's file as last committed, else the earlier
+    one) are named, so re-running the check after shortening them doesn't name
+    the next 5. Other carried ones are left until a run
+    touches them for a real reason, since every rewording restarts the item's
+    stale clock. Today's Focus holds at most 5 bullets of at most 300
+    characters each.
+    Run it before committing a briefing or consolidation.
+    Exit codes: 0 = all within the limits, 1 = some are not, 2 = cannot check.
+    """
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.titles import TITLE_MAX, check_titles
+
+    name = "check-titles"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_titles(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": result.checked,
+                    "long_carried": result.long_carried,
+                    "findings": [
+                        {"label": f.label, "tag": f.tag, "problem": f.problem, "chars": f.chars, "carried": f.carried}
+                        for f in result.findings
+                    ],
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif not result.passed:
+        n = len(result.findings)
+        sys.stdout.write(f"{name}: {n} problem{'s' if n != 1 else ''} with titles or Today's Focus:\n")
+        for f in result.findings:
+            sys.stdout.write(f"  {f.label} {f.problem}\n")
+        sys.stdout.write(
+            f"Rewrite each title named as a short imperative of at most {TITLE_MAX} characters (about 12 words), "
+            "and move the rest into the body after ` — ` or the task's context note: keep every fact, and keep "
+            "the [#TAG]. Trim Today's Focus to a bold lead and one sentence per bullet. Then run this again.\n"
+        )
+    else:
+        n_long = result.long_carried
+        carried = f"; {n_long} carried title(s) still long, left for a later touch" if n_long else ""
+        sys.stdout.write(f"{name}: {result.checked} task title(s) and Today's Focus within the limits{carried}\n")
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(

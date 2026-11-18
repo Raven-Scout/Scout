@@ -510,6 +510,40 @@ def test_a_move_cannot_widen_a_note_that_is_private_by_its_path(repo: Path, help
     assert _head(repo) == before
 
 
+def test_a_scheduled_commit_can_not_add_a_pages_fact_to_a_shared_source_note(
+    repo: Path, helper: Path, path_env: str
+) -> None:
+    """#569: the note's label doesn't change, only its content, so the label checks let it through."""
+    scoutctl = Path(sys.executable).with_name("scoutctl")
+    source = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
+    page = "knowledge-base/projects/widget/widget.md"
+    for rel, text in (
+        (source, "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\nThe pilot starts next week.\n"),
+        (page, "# Widget\n\nThe widget budget moves to next quarter.\n"),
+    ):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    (repo / "scout-config.yaml").write_text(
+        "privacy:\n  federation:\n    enabled: true\n  federation_defaults:\n"
+        '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "notes")
+    _script(repo / ".git" / "hooks" / "pre-commit", f'#!/bin/sh\nexec "{scoutctl}" kb lint --staged\n')
+
+    before = _head(repo)
+    with (repo / source).open("a", encoding="utf-8") as fh:
+        fh.write("\nThe widget budget moves to next quarter ([[widget]]).\n")
+    blocked = _run(helper, path_env, "consolidation: widget budget", source, SCOUT_MODE="consolidation")
+    assert blocked.returncode == 5
+    assert "privacy-widening" in blocked.stdout + blocked.stderr
+    assert _head(repo) == before
+
+    owner = _run(helper, path_env, "owner: widget budget", source)
+    assert owner.returncode == 0, owner.stderr
+
+
 def test_scout_data_dir_overrides_the_installed_vault_path(tmp_path: Path, helper: Path, path_env: str) -> None:
     other = tmp_path / "elsewhere"
     other.mkdir()

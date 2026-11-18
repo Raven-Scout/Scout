@@ -3,7 +3,7 @@
 mode: morning-consolidation
 weekdays_only: true
 personas: [slack, linear, calendar]
-checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, demotion]
+checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, title_budget, demotion]
 
 # Tag (an item in yesterday's file) or ref: (an item this run should create) → allowed sections.
 expected_placement:

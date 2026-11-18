@@ -9,6 +9,8 @@ import SwiftUI
 struct ProposalsView: View {
     @EnvironmentObject var docService: ProposalsDocumentService
     @EnvironmentObject var writerBox: ProposalsWriterBox
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
 
     @State private var resolvedExpanded = false
 
@@ -46,6 +48,7 @@ struct ProposalsView: View {
                     Image(systemName: "folder")
                 }
                 .help("Reveal the dreaming-proposals folder in Finder")
+                .accessibilityLabel("Reveal the proposals folder in Finder")
             }
         }
         .onAppear { docService.load() }
@@ -59,10 +62,8 @@ struct ProposalsView: View {
                 Text("Proposals")
                     .font(DS.serif(28, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.proposal)
                 Spacer(minLength: 0)
-                Text("repo ~/Scout")
-                    .font(DS.mono(12))
-                    .foregroundStyle(DS.Ink.p4)
             }
             Text(subtitle)
                 .font(DS.sans(13))
@@ -75,9 +76,9 @@ struct ProposalsView: View {
     private var subtitle: String {
         let pending = docService.pendingCount
         switch pending {
-        case 0:  return "Dreaming-generated SKILL.md change proposals. Nothing awaiting your decision."
-        case 1:  return "1 proposal awaiting your decision. Approving flips its status; the next dreaming run applies the change."
-        default: return "\(pending) proposals awaiting your decision. Approving flips status; the next dreaming run applies the change."
+        case 0:  return "Changes Scout suggests to how it works. Nothing is waiting for your decision."
+        case 1:  return "1 suggested change is waiting for your decision. If you approve it, the next dreaming run makes the change."
+        default: return "\(pending) suggested changes are waiting for your decision. If you approve one, the next dreaming run makes the change."
         }
     }
 
@@ -93,7 +94,7 @@ struct ProposalsView: View {
         case .missing:
             emptyState(
                 icon: "tray",
-                message: "No dreaming-proposals folder found. Dreaming runs write per-proposal files into dreaming-proposals/ when they process feedback. You can point Scout at a different folder in Settings."
+                message: "No suggested changes yet. Scout's dreaming runs suggest them after reading your feedback. If they are kept somewhere else, choose that folder in Settings."
             )
         case .failed(let err):
             Text("Couldn't load proposals: \(err)")
@@ -136,11 +137,11 @@ struct ProposalsView: View {
     private func resolvedSection(_ resolved: [Proposal]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
+                withMotion(.easeInOut(duration: 0.15)) { resolvedExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DS.sans(10, weight: .semibold))
                     Text("Resolved")
                         .font(DS.sans(11.5, weight: .semibold))
                         .tracking(0.06 * 11.5)
@@ -165,7 +166,7 @@ struct ProposalsView: View {
     private func emptyState(icon: String, message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
-                .font(.largeTitle)
+                .font(DS.sans(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
                 .font(DS.serif(14))
@@ -180,11 +181,17 @@ struct ProposalsView: View {
     // MARK: - Actions
 
     private func decide(_ proposal: Proposal, _ decision: ProposalDecision) async throws {
-        try await writerBox.writer.decide(
+        // Show the file as it is now, whether the write worked or not (C10).
+        defer { docService.reload() }
+        let writer = writerBox.writer
+        guard let change = try await writer.decide(
             decision,
             fileURL: proposal.fileURL,
             label: proposal.title
-        )
-        docService.reload()
+        ) else { return }
+        vaultUndo.register(
+            .restoring(change) { change, direction in try await writer.restore(change, direction) },
+            with: undoManager
+        ) { [docService] in docService.reload() }
     }
 }

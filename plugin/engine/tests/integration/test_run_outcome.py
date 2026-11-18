@@ -167,6 +167,25 @@ def test_the_row_records_the_model_the_runner_used(vault: Path, outcome: Path) -
     assert row["model"] == "sonnet"
 
 
+def test_the_row_records_awake_length_and_agent_runtime(vault: Path, outcome: Path) -> None:
+    """Spec 2026-11-13 §8.2, §8.6: the runner's awake length and runtime reach the row; junk never does."""
+    _record(
+        outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="2712", SCOUT_AGENT_RUNTIME="claude-code"
+    )
+    _record(outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="12 x", SCOUT_AGENT_RUNTIME='a", "b')
+    first, second = _ledger(vault)
+    assert (first["awake_s"], first["agent_runtime"]) == (2712, "claude-code")
+    assert "awake_s" not in second and "agent_runtime" not in second
+
+
+def test_a_run_stopped_at_its_timeout_is_class_timeout(vault: Path, outcome: Path) -> None:
+    banner = "=== Scout run timeout: Dummy CLI ran past 45 min of awake time (budget.per_runtime) — stopping it ===\n"
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "working\n" + banner))
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "some other exit 124\n"))
+    _record(outcome, "dreaming-nightly", 1, _log(vault, banner))
+    assert [r["failure_class"] for r in _ledger(vault)] == ["timeout", "unknown", "unknown"]
+
+
 def test_a_row_without_a_model_leaves_it_out(vault: Path, outcome: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODEL"}
     subprocess.run(
@@ -204,6 +223,36 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
     ("log_text", "klass"),
     [
         pytest.param("Error: Exceeded USD budget (20)\n", "budget", id="budget-cap"),
+        # claude-with-retry.sh withheld the retry for budget after a dropped connection (#561):
+        # the run spent its money, so it is a budget failure, not a network one.
+        pytest.param(
+            "API Error: Connection closed mid-response. The response above may be incomplete.\n"
+            "attempt cost: $25.00 (1 attempt(s) recorded); this run so far $25.00\n"
+            "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap\n"
+            "=== Budget spent — no retry (exit 1) ===\n",
+            "budget",
+            id="retry-withheld-for-budget",
+        ),
+        # The retry ran with what the run had left and hit that reduced cap; the first
+        # attempt's network error is still in the tail, but the last attempt is what ended the run.
+        pytest.param(
+            "API Error: Connection closed mid-response. The response above may be incomplete.\n"
+            "=== Transient API error detected — sleeping 60s before retry ===\n"
+            "=== Next attempt's budget: $16.60 ($25 less what this run's attempts spent) ===\n"
+            "=== Claude retry attempt 2/2 at Mon Nov  2 13:20:00 CET 2026 ===\n"
+            "Error: Exceeded USD budget (16.6)\n",
+            "budget",
+            id="retry-hit-its-reduced-cap",
+        ),
+        # A retry that died on the network again is still a network failure.
+        pytest.param(
+            "Error: something else\n"
+            "=== Claude retry attempt 2/2 at Mon Nov  2 13:20:00 CET 2026 ===\n"
+            "API Error: Connection closed mid-response.\n"
+            "=== Retry exhausted: 2 attempts, last exit 1 ===\n",
+            "network",
+            id="retry-died-on-the-network",
+        ),
         pytest.param("Failed to authenticate. API Error: 401\n", "oauth_expired", id="auth-401"),
         pytest.param("OAuth session expired, please log in again\n", "oauth_expired", id="oauth"),
         pytest.param(
@@ -213,6 +262,41 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         ),
         # A Mac set up again comes up logged out rather than expired (#267).
         pytest.param("Not logged in · Please run /login\n", "oauth_expired", id="not-logged-in"),
+        # Cloudflare's challenge page in front of the API: the CLI words it as an auth
+        # failure, but no credential was rejected, so "log in again" would be wrong.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n",
+            "network",
+            id="cloudflare-challenge",
+        ),
+        # A retry after the challenge that then hits a real 401 is still an auth failure.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/3 ===\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="cloudflare-then-real-401",
+        ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "API Error: Unable to connect to API (ECONNRESET)\n",
+            "network",
+            id="cloudflare-then-econnreset",
+        ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "Error: something unrelated broke\n",
+            "network",
+            id="cloudflare-then-unknown",
+        ),
+        pytest.param(
+            "Research summary: the vendor site returned Attention Required! | Cloudflare\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="quoted-cloudflare-then-real-401",
+        ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.

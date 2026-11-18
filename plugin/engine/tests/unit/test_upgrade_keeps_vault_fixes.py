@@ -71,7 +71,7 @@ VAULT_FIXES = [
     pytest.param("run-research.sh", _RUNNER_FIX, id="run-research"),
     pytest.param(
         "hooks/kb-pre-filter.sh",
-        ['( cd "$SCOUT_DATA_DIR" && python3 scripts/vault-freshness.py --limit 15 \\'],
+        ['( cd "$SCOUT_DATA_DIR" && python3 -I scripts/vault-freshness.py --limit 15 \\'],
         id="kb-pre-filter",
     ),
     pytest.param(

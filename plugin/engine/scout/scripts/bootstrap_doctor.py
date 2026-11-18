@@ -21,9 +21,11 @@ from pathlib import Path
 
 import yaml
 
+from scout.config import config_load_problem
 from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
 from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
+from scout.yaml_safe import load_yaml, yaml_problem
 
 
 class Severity(Enum):
@@ -179,8 +181,14 @@ def _check_launchd_jobs() -> tuple[list[str], list[str]]:
     """macOS: both scout LaunchAgents are loaded."""
     try:
         proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False, timeout=5)
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, OSError):
+        # OSError: not found, or refused to start (PermissionError inside a scheduled run's write sandbox, which
+        # denies executing launchctl, spec 2026-11-15 §3).
         return [], ["launchctl unavailable — skipped job registration check"]
+    if proc.returncode != 0:
+        # Not "no jobs": `launchctl list` itself was refused (inside a scheduled run's write sandbox, which denies
+        # launchd job creation, spec 2026-11-15) or failed. Saying the jobs are missing would be a false alarm.
+        return [], [f"launchctl list failed (exit {proc.returncode}) — skipped job registration check"]
     errors = [
         f"launchd: {label} not registered"
         for label in ("com.scout.schedule-tick", "com.scout.heartbeat")
@@ -390,6 +398,190 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_run_sandbox(*, vault: Path, home: Path | None = None) -> tuple[list[str], list[str]]:
+    """Whether the next scheduled run would run in the write sandbox (spec 2026-11-15 §8): (warnings, notes).
+
+    Builds and self-tests the profile (one short sandbox-exec), never starts claude. Inside a sandboxed run
+    the self-test can't nest, so the runner's own status is reported instead. The switch is judged as the
+    scheduler sees it: ``SCOUT_RUN_SANDBOX`` in this shell is left out (scheduled runs don't inherit it), and
+    whether the last run had it off, and from where, comes from that run's run-outcome row.
+    """
+    import os
+
+    from scout import health
+    from scout.sandbox import launch
+
+    if os.environ.get("SCOUT_SANDBOX_STATUS") == "enforced":
+        return [], ["run sandbox: enforced (this session runs inside it)"]
+    warnings: list[str] = []
+    notes: list[str] = []
+    shell_switch = os.environ.get(launch.ENV_SWITCH, "").strip()
+    env = {k: v for k, v in os.environ.items() if k != launch.ENV_SWITCH}
+    if home is not None:
+        env["HOME"] = str(home)
+    status = "unknown"
+    if shell_switch.lower() in launch.OFF_VALUES:
+        # This shell (a test, the eval harness) runs without the sandbox; building and self-testing the profile here
+        # says nothing about the scheduler's runs, so only the owner's switch is reported.
+        on, source = launch.switch(env)
+        status = "on" if on else "off"
+        notes.append(
+            f"run sandbox: not checked here ({launch.ENV_SWITCH}={shell_switch} in this shell, which scheduled runs "
+            f"don't inherit); the owner's switch says {status} ({source})"
+        )
+    else:
+        try:
+            result = launch.prepare(vault, env)
+        except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+            return [f"run sandbox: couldn't check ({e}); see `scoutctl sandbox status`"], []
+        status = result.status
+        line = f"run sandbox: {result.status} ({result.reason})"
+        if result.status == "failed":
+            warnings.append(f"{line}. Scheduled runs are skipped until `scoutctl sandbox status` says enforced.")
+        elif result.status == "conflict":
+            warnings.append(f"{line}. Scheduled runs go ahead under Claude Code's sandbox only.")
+        elif result.status == "off":
+            notes.append(f"{line}; turn it back on with `scoutctl sandbox on`")
+        else:
+            notes.append(line)
+        if shell_switch:
+            notes.append(f"this shell has {launch.ENV_SWITCH}={shell_switch}, which scheduled runs don't inherit")
+    try:
+        rows = health.read_outcomes(vault)
+    except Exception:  # noqa: BLE001 - a bug here must not break the doctor
+        rows = []
+    last = next((r for r in reversed(rows) if r.outcome not in health.SKIP_OUTCOMES and r.sandbox), None)
+    if last is not None and last.sandbox == "off" and last.sandbox_source == "env":
+        warnings.append(
+            f"the last scheduled run ran without the write sandbox: {launch.ENV_SWITCH}=off was in the environment "
+            "the scheduler started it with. Remove it from the LaunchAgent, crontab or shell that starts the tick "
+            "(it is meant for tests and the eval harness)."
+        )
+    elif last is not None and last.sandbox == "off" and last.sandbox_source == "switch" and status != "off":
+        notes.append("the last scheduled run ran with the write sandbox turned off (`scoutctl sandbox off`)")
+    notes.extend(_run_broker_notes(vault))
+    return warnings, notes
+
+
+def _run_broker_notes(vault: Path) -> list[str]:
+    """One line on the last run's commit and Telegram broker (Phase 1d), and the queue it left, if any."""
+    try:
+        from scout.sandbox import broker
+
+        status = broker.read_status(vault)
+        waiting, failed = broker.pending(vault), len(broker.failed_entries(vault))
+    except Exception:  # noqa: BLE001 - a bug here must not break the doctor
+        return []
+    out: list[str] = []
+    if status is not None:
+        out.append(f"run brokers: {status['status']} on the last run ({status.get('reason') or 'no reason given'})")
+    if waiting or failed:
+        out.append(
+            f"run broker queue: {waiting} waiting for the next drain, {failed} failed "
+            "(.scout-state/broker-queue/failed/; `scoutctl broker drain` retries the waiting ones)"
+        )
+    return out
+
+
+def _check_gate_probe(*, vault: Path) -> tuple[list[str], list[str]]:
+    """The last gate probe the runners ran (spec 2026-11-13 §3.5): (warnings, notes). Reads the cache only.
+
+    A failed probe means scheduled runs are being skipped because claude doesn't load
+    Scout's privacy hooks. No cache (no run since the probe shipped) says nothing.
+    """
+    from scout.agent_runtimes.gate_probe import read_cache
+
+    cached = read_cache(vault)
+    if cached is None:
+        return [], []
+    version = cached.claude_version or "an unknown version"
+    if not cached.ok:
+        return [
+            f"gate probe failed ({cached.checked_at}, claude {version}): {cached.reason}. Scheduled runs are "
+            "skipped until it passes. Run `scoutctl gates probe` to re-check; update Scout, or pin Claude Code "
+            "to the last version that passed."
+        ], []
+    return [], [f"gate probe passed for claude {version} at {cached.checked_at}: Scout's privacy hooks load."]
+
+
+RUN_TIMEOUT_WINDOW_DAYS = 30
+RUN_TIMEOUT_MIN_RUNS = 5
+
+
+def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
+    """Slots whose runs usually take longer than their run timeout, in awake time (spec 2026-11-13 §8.6): a warning.
+
+    Reads the run-outcome rows' ``awake_s`` (runs from Phase 1 PR D on) over the last 30 days, per slot, with at
+    least 5 runs. A slot whose runtime has a timeout and whose 90th-percentile awake length is above it gets a
+    warning. While Claude Code's timeout is off (Jordan, 2026-11-16: it comes on at 45 minutes, 90 for research,
+    once runs fit), a note says how its slots compare with those values. Silent with no awake lengths yet.
+    """
+    import json as _json
+    import math
+
+    from scout.agent_runtimes import limits as _limits
+    from scout.agent_runtimes import registry
+    from scout.agent_runtimes.resolve import default_runtime
+    from scout.schedule import load_default_schedule, load_schedule
+
+    ledger = vault / ".scout-logs" / "run-outcomes.jsonl"
+    if not ledger.exists():
+        return [], []
+    since = (now or datetime.now(UTC)).timestamp() - RUN_TIMEOUT_WINDOW_DAYS * 86400
+    lengths: dict[str, list[int]] = {}
+    try:
+        for line in ledger.read_text(encoding="utf-8").splitlines():
+            try:
+                row = _json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("outcome", "ok") not in ("ok", "failed"):
+                continue
+            awake_s, finished = row.get("awake_s"), row.get("finished_at")
+            if not isinstance(awake_s, int) or not isinstance(finished, int | float) or finished < since:
+                continue
+            lengths.setdefault(str(row.get("slot")), []).append(awake_s)
+        schedule_path = vault / ".scout-state" / "schedule.yaml"
+        schedule = load_schedule(schedule_path) if schedule_path.exists() else load_default_schedule()
+        fallback = default_runtime(vault).runtime
+    except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
+        return [], [f"could not compare run lengths with run timeouts: {e}"]
+
+    warnings: list[str] = []
+    readiness: list[str] = []
+    for key, slot in sorted(schedule.items()):
+        runs = lengths.get(key, [])
+        if len(runs) < RUN_TIMEOUT_MIN_RUNS:
+            continue
+        ordered = sorted(runs)
+        p90 = ordered[max(1, math.ceil(len(ordered) * 0.9)) - 1]
+        runtime = slot.agent_runtime or fallback
+        try:
+            adapter = registry.get(runtime)
+        except KeyError:
+            continue
+        lim = _limits.limits_for(vault, adapter, key, slot.type.value)
+        if lim.run_timeout_s is not None:
+            if p90 > lim.run_timeout_s:
+                warnings.append(
+                    f"slot {key!r}: its runs usually take {p90 // 60} min awake (90th percentile of {len(runs)} runs "
+                    f"in {RUN_TIMEOUT_WINDOW_DAYS} days), above its {lim.run_timeout_s // 60}-min run timeout on "
+                    f"{runtime}, so some runs are stopped. Raise it: scoutctl agent-runtime set-limit {runtime} "
+                    "--run-timeout-minutes <minutes>"
+                )
+        else:
+            planned = _limits.default_timeout_minutes(slot.type.value)
+            verdict = "fits" if p90 <= planned * 60 else "would be stopped"
+            readiness.append(f"{key} {p90 // 60} min p90 vs {planned} ({verdict})")
+    notes = []
+    if readiness:
+        notes.append(
+            "run timeout off; awake run lengths vs the planned timeout (45 min, 90 for research): "
+            + "; ".join(readiness)
+        )
+    return warnings, notes
+
+
 def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
     """How scheduled runs sign in to Claude (#267), as (warnings, notes).
 
@@ -484,13 +676,19 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
     """One warning per problem in connectors.custom.yaml, or in a custom connector's input
-    stored in scout-config.yaml (#344); that connector is skipped until fixed."""
-    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues
+    stored in scout-config.yaml (#344); that connector is skipped until fixed. And one
+    when the tool gate blocks every MCP tool because of the file (#564)."""
+    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues, tool_gate_problem
 
     custom = load(vault)
     warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
+    if problem := tool_gate_problem(vault):
+        warnings.append(
+            f"{problem}, so Scout can't tell whether a connector there restricts its tools "
+            "and may block every MCP tool in this vault's sessions until it is fixed"
+        )
     try:
-        cfg = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
         inputs = cfg["connectors"]["inputs"]
     except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
         inputs = None  # a missing or malformed scout-config.yaml is not this check's to report
@@ -560,6 +758,18 @@ def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
     return sum(privacy_audit_counts(vault, now=now))
 
 
+def _check_kb_lint_config(*, vault: Path) -> list[str]:
+    """A lint config mistake falls back to report, which enforces nothing and fails
+    nothing: this is where the owner hears about it, since runs commit unattended."""
+    from scout.kb.lint import config_problems
+    from scout.kb.lint_config import load_lint_config
+
+    try:
+        return [f"kb-lint: {problem}" for problem in config_problems(vault, load_lint_config(vault))]
+    except Exception as e:  # noqa: BLE001 - the doctor reports it; the hook fails open on the same error
+        return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -576,6 +786,91 @@ def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
             "this doctor reports about scoutctl, then review drafts/ and other shared files"
         )
     return out
+
+
+def _check_repo_sync_host_cache(*, vault: Path, now: datetime | None) -> list[str]:
+    """A linked vault whose cached Agnes Local-Only list is missing or stale (#596).
+
+    The commit hook checks a run's moves against that cache, offline; without a
+    current one it can only warn. Each linked run refreshes it when it takes the
+    lease, so a stale one means runs aren't reaching Agnes. ``repo sync`` still
+    refuses such a move against the list it fetches.
+    """
+    from scout.repo_sync import RepoSyncError, host_cache_problem, load_host_cache, load_state
+
+    try:
+        state = load_state(vault)
+    except RepoSyncError:
+        return []  # repo sync refuses this state, so it uploads nothing
+    if state is None:
+        return []
+    problem = host_cache_problem(load_host_cache(vault, agnes_url=state.agnes_url), now=now)
+    if problem is None:
+        return []
+    return [
+        f"repo sync: {problem}, so the commit hook can't block a scheduled run's move out of a path only Agnes "
+        "keeps local-only (it warns instead). Scheduled runs refresh it when they take the Agnes lease, so check "
+        "their logs for a lease or Agnes error; scoutctl repo sync refreshes it too"
+    ]
+
+
+def _age(delta: timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 0)} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return f"{minutes // (24 * 60)} days"
+
+
+def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[str], list[str]]:
+    """Each delegate mirror's age, as (warnings, notes) (#550 V2c). Nothing for a vault that links none.
+
+    Warns on a failed last sync, a push that didn't finish, and a mirror behind
+    HEAD that no sync has tried for an hour (the schedule tick tries every 15 min).
+    """
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
+        return [], []
+    from scout.delegate_mirror import load_links
+    from scout.repo_sync import RepoSyncError, git
+
+    try:
+        links = load_links(vault)
+    except RepoSyncError as e:
+        return [f"delegate mirrors: {e.message}"], []
+    now = now or datetime.now(UTC)
+    head = git(vault, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip() or None
+
+    def when(stamp: str | None) -> datetime | None:
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")) if stamp else None
+        except ValueError:
+            return None
+
+    warnings: list[str] = []
+    notes: list[str] = []
+    for key, link in sorted(links.items()):
+        synced = when(link.last_sync)
+        notes.append(
+            f"delegate mirror {key}: last synced {_age(now - synced)} ago"
+            if synced
+            else f"delegate mirror {key}: never synced"
+        )
+        if link.last_error is not None:
+            warnings.append(
+                f"delegate mirror {key}: the last sync failed ({link.last_error.get('code', 'unknown')}); "
+                f"see why with: scoutctl delegate sync {key}"
+            )
+        elif link.pending_mirror is not None:
+            warnings.append(f"delegate mirror {key}: a push didn't finish; the next sync checks the remote")
+        else:
+            tried = when(link.last_attempt) or synced
+            if head is not None and link.last_vault != head and (tried is None or now - tried > timedelta(hours=1)):
+                warnings.append(
+                    f"delegate mirror {key}: behind HEAD, and no sync has tried for over an hour; is the schedule "
+                    "tick running? (scoutctl delegate sync --all syncs now)"
+                )
+    return warnings, notes
 
 
 def run_doctor(
@@ -602,25 +897,25 @@ def run_doctor(
     if not schedule_path.exists():
         errors.append(f"missing schedule.yaml at {schedule_path}")
     else:
+        schedule_text = schedule_path.read_text(encoding="utf-8")
         try:
-            yaml.safe_load(schedule_path.read_text(encoding="utf-8"))
+            load_yaml(schedule_text)
         except yaml.YAMLError as e:
-            errors.append(f"schedule.yaml invalid: {e}")
+            errors.append(f"schedule.yaml invalid: {yaml_problem(e, schedule_text)}")
 
     # scout-config.yaml must record version stamps.
     config_path = vault / "scout-config.yaml"
     if not config_path.exists():
         errors.append(f"missing scout-config.yaml at {config_path}")
+    elif problem := config_load_problem(vault):
+        errors.append(f"scout-config.yaml invalid: {problem}")
     else:
-        try:
-            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            plugin = cfg.get("plugin") or {}
-            if not plugin.get("version_at_last_setup"):
-                errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
-            if not plugin.get("version_at_last_update"):
-                errors.append("scout-config.yaml: plugin.version_at_last_update missing")
-        except yaml.YAMLError as e:
-            errors.append(f"scout-config.yaml invalid: {e}")
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        plugin = cfg.get("plugin") or {}
+        if not plugin.get("version_at_last_setup"):
+            errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
+        if not plugin.get("version_at_last_update"):
+            errors.append("scout-config.yaml: plugin.version_at_last_update missing")
 
     # Cat-1 files must exist with non-zero content.
     for rel in _REQUIRED_CAT1_FILES:
@@ -696,6 +991,14 @@ def run_doctor(
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_privacy_audit(vault=vault, now=now))
+    warnings.extend(_check_kb_lint_config(vault=vault))
+    warnings.extend(_check_repo_sync_host_cache(vault=vault, now=now))
+    delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
+    warnings.extend(delegate_warnings)
+    notes.extend(delegate_notes)
+    timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
+    warnings.extend(timeout_warnings)
+    notes.extend(timeout_notes)
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)
@@ -729,6 +1032,14 @@ def run_doctor(
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
         errors.extend(claude_errors)
         warnings.extend(claude_warnings)
+        # Whether that claude loads Scout's privacy hooks, from the runners' last gate probe.
+        probe_warnings, probe_notes = _check_gate_probe(vault=vault)
+        warnings.extend(probe_warnings)
+        notes.extend(probe_notes)
+        # Whether those runs are kept from writing what decides which gates run (OS write sandbox, Phase 1c).
+        sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
+        warnings.extend(sandbox_warnings)
+        notes.extend(sandbox_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:
             auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)

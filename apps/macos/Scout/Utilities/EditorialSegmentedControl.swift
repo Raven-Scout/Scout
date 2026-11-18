@@ -7,14 +7,18 @@ struct EditorialSegmentedControl<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(label: String, value: Value)]
     var minSegmentWidth: CGFloat = 64
+    /// Names the group for VoiceOver ("View", "Status"). Each segment is a
+    /// button that reports Selected when it is the current value.
+    var accessibilityLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options.indices, id: \.self) { idx in
                 let option = options[idx]
+                let isSelected = selection == option.value
                 Button { selection = option.value } label: {
                     Text(option.label)
-                        .font(DS.sans(13, weight: .medium))
+                        .font(DS.font(.body, weight: .medium))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 12)
@@ -22,11 +26,12 @@ struct EditorialSegmentedControl<Value: Hashable>: View {
                         .frame(minWidth: minSegmentWidth)
                         .background(
                             RoundedRectangle(cornerRadius: 5)
-                                .fill(selection == option.value ? DS.Ink.p1 : .clear)
+                                .fill(isSelected ? DS.Ink.p1 : .clear)
                         )
-                        .foregroundStyle(selection == option.value ? DS.Paper.base : DS.Ink.p2)
+                        .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
                 }
                 .buttonStyle(.plainHit)
+                .accessibilitySelected(isSelected)
             }
         }
         .padding(2)
@@ -35,5 +40,7 @@ struct EditorialSegmentedControl<Value: Hashable>: View {
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(ifPresent: accessibilityLabel)
     }
 }

@@ -61,7 +61,7 @@ set `EXPECTED_SHA256` in that test to the new `shasum -a 256`; regenerate
 `scout/privacy.snapshot.json` if the policy moved (`python -m scout.scripts.privacy_snapshot`);
 all in ONE commit, and tell the indexer owners.
 
-`engine/tests/fixtures/contract/doctor-run-health.json` is a generated contract fixture with an app byte copy too — regenerate it with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
+`engine/tests/fixtures/contract/doctor-run-health.json`, `engine/tests/fixtures/contract/usage-summary.json`, `engine/tests/fixtures/contract/protection-status.json` (`scoutctl protection status --json`) and `engine/tests/fixtures/contract/run-ledger.json` (`scoutctl runs --json`) are generated contract fixtures with app byte copies too — regenerate them with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
 
 ## A behavioural rule in `phases/` gets an eval seed
 
@@ -71,4 +71,7 @@ that scores it (`engine/tests/eval/harness/checks/`), or say in the PR why not.
 This is a nudge (the PR template asks), not a gate. Model-backed runs are local
 only, on your own Claude login: `scripts/eval.sh run|compare|compare-models` (spec:
 `docs/superpowers/specs/2026-10-12-eval-harness-design.md`). CI runs the
-harness's tier-0 tests and never starts a model.
+harness's tier-0 tests and never starts a model. `scripts/eval.sh kb-gate` (one
+session of `scenarios/kb-front-page/`) is the KB-writing release gate: the
+maintainer runs it before merging a release PR. A change to how runs write
+project pages should keep `tests/unit/test_eval_kb_gate.py`'s golden cases honest.

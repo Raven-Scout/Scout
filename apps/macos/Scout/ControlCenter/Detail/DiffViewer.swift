@@ -37,7 +37,7 @@ struct DiffViewer: View {
                             )
                         ) {
                             Text(diffs[c.id] ?? "Loading…")
-                                .font(.system(.caption, design: .monospaced))
+                                .font(DS.mono(10))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 4)
@@ -45,7 +45,7 @@ struct DiffViewer: View {
                             VStack(alignment: .leading) {
                                 Text(c.subject)
                                 Text("\(c.shortSHA) · \(c.filesChanged) files · +\(c.insertions) −\(c.deletions)")
-                                    .font(.caption)
+                                    .font(DS.sans(10))
                                     .foregroundStyle(.secondary)
                             }
                         }

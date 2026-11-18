@@ -2,7 +2,8 @@
 
 Over the privacy fixture vault (spec §11.1). Private notes there: ``sam``
 (``name: sam``, alias ``Sammy``), ``task-renew-permit``, ``billing`` (a plain
-note, slug only), ``draft`` and ``broken``. A draft or a query naming one of
+note, slug only: an ordinary word, so a link or its path names it, #576),
+``draft`` and ``broken``. A draft or a query naming one of
 them fails for every shared surface and passes for owner-only ones; the
 output names line numbers only, never the matched term.
 """
@@ -37,7 +38,8 @@ HITS = {
     "wikilink-display": "See [[sam|our contractor]] for details.",
     "wikilink-path": "See [[people/sam#Open questions]].",
     "wikilink-alias": "See [[Sammy]].",
-    "plain-slug": "The billing terms changed.",
+    "common-word-slug-link": "See [[billing]] for the terms.",
+    "common-word-slug-path": "Filed under topics/billing/billing.md today.",
     "multi-word-name-case": "TASK-RENEW-PERMIT is due.",
 }
 
@@ -113,7 +115,7 @@ def test_marker_allows_only_its_own_target_and_only_for_lint(vault: Path) -> Non
     terms = outbound.private_terms(vault, load_policy(vault))
     allowed = "See [[sam]] %%privacy:allow sam%%"
     other = "See [[sam]] %%privacy:allow billing%%"
-    two = "See [[sam]] and the billing terms %%privacy:allow sam%%"
+    two = "See [[sam]] and [[billing]] %%privacy:allow sam%%"
     text = "\n".join([allowed, other, two])
     assert outbound.find_mentions(text, terms, allow_markers=True) == [2, 3]
     # sends ignore markers: every line is a hit
@@ -172,6 +174,53 @@ def test_multi_word_unicode_terms(tmp_path: Path) -> None:
     assert outbound.find_mentions("\n".join(hits), terms, allow_markers=False) == [1, 2, 3, 4, 5]
 
 
+def test_a_soft_hyphen_or_zero_width_character_inside_a_name_hides_nothing() -> None:
+    terms = outbound.terms_of([outbound.note_from_text("people/priya.md", "---\nname: Priya Sharma\n---\n")])
+    for hidden in ("Priya­ Sharma", "Pri​ya Sharma", "Priya Shar‍ma", "﻿Priya Sharma"):
+        assert outbound.find_mentions(f"one\n{hidden} two\n", terms, allow_markers=False) == [2], repr(hidden)
+
+
+def test_accents_are_optional_on_both_sides() -> None:
+    """A term matches with or without its accents, however the text spells them (precomposed or NFD)."""
+    nfd = "Rene\u0301 Lee and Project Cafe\u0301\n"
+
+    def hits(name: str, text: str) -> list[int]:
+        terms = outbound.terms_of([outbound.note_from_text(f"people/{name}.md", f"---\nname: {name}\n---\n")])
+        return outbound.find_mentions(text, terms, allow_markers=False)
+
+    assert hits("Rene Lee", nfd) == [1]  # an unaccented term, accented text
+    assert hits("Project Cafe", nfd) == [1]
+    assert hits("Ren\u00e9 Lee", "Call Rene Lee\n") == [1]  # an accented term, unaccented text
+    assert hits("Ren\u00e9 Lee", "x\nREN\u00c9 LEE\n") == [2]
+    assert hits("Rene Lee", "Renee Lee and Ren Lee\n") == []  # still whole words
+    # Hangul vowel jamo aren't accents: a Korean name, precomposed or as jamo, still matches only itself
+    assert hits(
+        "\ud55c\uad6d\uc5b4 \uc0ac\ub78c", "\u1112\u1161\u11ab\u1100\u116e\u11a8\u110b\u1165 \uc0ac\ub78c\n"
+    ) == [1]
+    assert hits("\ud55c\uad6d\uc5b4 \uc0ac\ub78c", "\u1112\u1100\u110b \uc0ac\ub78c\n") == []
+
+
+def test_accents_are_ignored_only_for_longer_terms_and_only_on_latin_greek_cyrillic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def hits(name: str, text: str) -> list[int]:
+        terms = outbound.terms_of([outbound.note_from_text(f"people/{name}.md", f"---\nname: {name}\n---\n")])
+        return outbound.find_mentions(text, terms, allow_markers=False)
+
+    assert hits("Mila", "Mil\u00e1 Jano, d\u00edky\n") == []  # one word under 5 characters: exact only
+    assert hits("Mila", "Mila said\n") == [1]
+    assert hits("Milan", "Mil\u00e1n\n") == [1]  # 5+ characters
+    assert hits("\u039d\u03af\u03ba\u03bf\u03c2 Lee", "\u039d\u03b9\u03ba\u03bf\u03c2 Lee\n") == [1]  # Greek
+    assert hits("\u0419\u043e\u0440\u0434\u0430\u043d", "\u0418\u043e\u0440\u0434\u0430\u043d\n") == [1]  # Cyrillic
+    # a Japanese voicing mark changes the word: \u30ab (ka) is not \u30ac (ga)
+    assert hits("\u30ab\u30b9\u30bf\u30e0\u8a08\u753b", "\u30ac\u30b9\u30bf\u30e0\u8a08\u753b\n") == []
+    assert hits("\u30ab\u30b9\u30bf\u30e0\u8a08\u753b", "\u30ab\u30b9\u30bf\u30e0\u8a08\u753b\n") == [1]
+    # Devanagari vowel signs stay
+    assert hits("\u0915\u093f\u0924\u093e\u092c\u0918\u0930", "\u0915\u0924\u093e\u092c\u0918\u0930\n") == []
+    monkeypatch.setattr(outbound, "UNACCENT_MIN_CHARS", outbound.MIN_TERM_CHARS)
+    assert hits("Mila", "Mil\u00e1 Jano\n") == [1]  # one setting widens it to every term
+
+
 def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     own = build_privacy_vault(tmp_path)
     outbound.clear_cache()
@@ -191,11 +240,167 @@ def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     assert outbound.find_mentions("Ask (pri pri two)!", terms, allow_markers=False) == [1]
 
 
+# ----- a private note named with an ordinary word (#576) -------------------------------
+
+
+def _private(vault: Path, rel: str, frontmatter: str = "") -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}visibility: private\n---\n\nBody.\n", encoding="utf-8")
+
+
+def test_a_common_word_slug_is_not_a_term(vault: Path) -> None:
+    """``billing``, ``draft`` and ``broken`` are private slugs here, and ordinary words."""
+    terms = outbound.private_terms(vault, load_policy(vault))
+    text = "The billing terms changed.\nKeep the draft short.\nThe build is broken."
+    assert outbound.find_mentions(text, terms, allow_markers=False) == []
+    assert outbound.check_outbound(vault, text, "slack") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "See [[billing]].",
+        "See [[topics/billing/billing|the terms]].",
+        "Filed under knowledge-base/topics/billing/billing.md",
+        "see `billing/billing`",
+        "Status: Billing CANARY-PRIV-3B5L",  # its two-word title
+    ],
+)
+def test_a_common_word_slug_still_matches_as_a_link_its_path_or_title(vault: Path, line: str) -> None:
+    terms = outbound.private_terms(vault, load_policy(vault))
+    assert outbound.find_mentions(f"{CLEAN}\n{line}", terms, allow_markers=False) == [2]
+
+
+def test_a_distinctive_one_word_slug_still_matches(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/projects/zephyrine/zephyrine.md")
+    _private(own, "knowledge-base/topics/pricing/pricing.md", "name: pricing\ntype: topic\ntitle: Pricing\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    text = "The pricing page moved.\nThe Zephyrine launch moved.\nq=zephyrine"
+    assert outbound.find_mentions(text, terms, allow_markers=False) == [2, 3]
+
+
+@pytest.mark.parametrize("ext", ["csv", "json", "pdf", "xlsx"])
+def test_a_private_file_that_isnt_a_note_follows_the_same_rule(ext: str) -> None:
+    """A non-markdown private file has only its stem: ``documents.csv`` must not make "documents" a term."""
+    terms = outbound.terms_of(
+        [
+            outbound.note_from_text(f"private/x/data/documents.{ext}", None),
+            outbound.note_from_text(f"private/x/data/zephyrine.{ext}", None),
+        ]
+    )
+    lines = [
+        "The documents are in the shared folder.",
+        f"See private/x/data/documents.{ext}",
+        f"See data/documents.{ext}",
+        f"See [[documents.{ext}]]",
+        "Zephyrine numbers are in.",
+    ]
+    assert outbound.find_mentions("\n".join(lines), terms, allow_markers=False) == [2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    ("rel", "frontmatter"),
+    [
+        ("knowledge-base/people/grace.md", "name: grace\ntype: person\n"),
+        ("knowledge-base/people/grace.md", ""),  # no `type:`: the people folder says it
+        ("knowledge-base/contacts/grace.md", "name: Grace\ntype: Person\n"),
+    ],
+)
+def test_a_person_keeps_a_name_that_is_an_ordinary_word(tmp_path: Path, rel: str, frontmatter: str) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, rel, frontmatter)
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nAsk Grace about it.", terms, allow_markers=False) == [2]
+
+
+@pytest.mark.parametrize("kind", ["organization", "pet", "Company", "client", "org"])
+def test_an_organization_or_pet_keeps_a_name_that_is_an_ordinary_word(tmp_path: Path, kind: str) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/ontology/entities/vision.md", f"name: Vision\ntype: {kind}\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nWe met Vision today.", terms, allow_markers=False) == [2]
+
+
+def test_a_project_named_with_an_ordinary_word_still_drops_it(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/projects/vision/vision.md", "name: vision\ntype: project\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(
+        "Our vision is clear.\nSee projects/vision/vision.md", terms, allow_markers=False
+    ) == [2]
+
+
+def test_a_vault_root_file_named_with_an_ordinary_word_matches_by_its_file_name() -> None:
+    """At the vault root there's no second path segment: the file name with its extension is the term."""
+    terms = outbound.terms_of(
+        [
+            outbound.note_from_text("billing.md", "---\nvisibility: private\n---\n"),
+            outbound.note_from_text("documents.csv", None),
+        ]
+    )
+    lines = [
+        "The billing terms changed.",
+        "See billing.md for the terms.",
+        "The documents are in.",
+        "documents.csv attached",
+    ]
+    assert outbound.find_mentions("\n".join(lines), terms, allow_markers=False) == [2, 4]
+
+
+def test_an_alias_is_a_term_even_when_it_is_an_ordinary_word(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/topics/house-move/house-move.md", "aliases: [Budget]\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nThe budget is due.", terms, allow_markers=False) == [2]
+
+
+# The file names a mature vault files its private notes under: one word each.
+MATURE_SLUGS = (
+    "plan notes documents readme index todo ideas journal inbox meetings agenda overview summary "
+    "roadmap backlog goals decisions research reading status updates review retro report budget "
+    "finance pricing billing invoices taxes payroll hiring interviews onboarding travel health "
+    "contracts vendors customers strategy marketing sales launch release migration "
+    "metrics analytics security privacy legal admin operations process checklist runbook guide "
+    "family home house garden recipes books gifts shopping wishlist archive misc draft scratch"
+).split()
+
+
+def test_a_mature_vault_of_one_word_slugs_lets_ordinary_text_through(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    for i, slug in enumerate(MATURE_SLUGS):
+        folder = ("topics", "projects", "personal", "areas")[i % 4]
+        _private(own, f"knowledge-base/{folder}/{slug}/{slug}.md", f"name: {slug}\ntitle: {slug.title()}\n")
+    _private(own, "knowledge-base/people/priyanka.md", "name: priyanka\ntype: person\n")
+    _private(own, "knowledge-base/projects/zephyrine/zephyrine.md", "name: zephyrine\ntype: project\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert {n.slug for n in terms.notes} >= set(MATURE_SLUGS)
+    ordinary = (
+        "Status update: the plan for the release is in the notes; see the roadmap and the backlog.\n"
+        "Budget review and pricing decisions moved to the agenda for the next meeting.\n"
+        "Hiring, onboarding and security reviews are on track. Reading list in the inbox.\n"
+        "README and index documents need a refresh before launch; the draft checklist is in misc."
+    )
+    assert outbound.find_mentions(ordinary, terms, allow_markers=False) == []
+    assert outbound.find_mentions(f"{ordinary}\nAsk Priyanka.\nZephyrine slipped.", terms, allow_markers=False) == [
+        5,
+        6,
+    ]
+    assert outbound.find_mentions("See [[roadmap]].\nSee topics/plan/plan.md", terms, allow_markers=False) == [1, 2]
+
+
 # ----- check_outbound ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("surface", SHARED + QUERY_SURFACES)
-@pytest.mark.parametrize("kind", ["slug", "alias", "wikilink", "plain-slug"])
+@pytest.mark.parametrize("kind", ["slug", "alias", "wikilink", "common-word-slug-path"])
 def test_check_outbound_blocks_shared(vault: Path, surface: str, kind: str) -> None:
     assert outbound.check_outbound(vault, f"{CLEAN}\n\n{HITS[kind]}", surface) == [3]
 

@@ -7,7 +7,7 @@ requires: null
 
 ## KB WRITE PROTOCOL — where every fact goes (checked by the pre-commit hook)
 
-The vault is a folder tree of **small, linked documents**, not a journal. A git pre-commit hook (`scoutctl kb lint --staged`) flags a file over its budget, a run-diary heading or a line over the limit. By default (`kb_lint.mode: report`) it only logs them; in `block` mode it refuses the commit. Privacy findings always block. Follow the rules either way. Read this before writing anything.
+The vault is a folder tree of **small, linked documents**, not a journal. A git pre-commit hook (`scoutctl kb lint --staged`) flags a file over its budget, a run-diary heading or a line over the limit. By default (`kb_lint.mode: report`) it only logs them; in `block` mode it refuses the commit. The mode can differ per path (`kb_lint.path_modes`), and the output tags a finding that only logs `(report)`. Privacy findings always block. Follow the rules either way. Read this before writing anything.
 
 ### Every fact has one home
 
@@ -29,8 +29,8 @@ The vault is a folder tree of **small, linked documents**, not a journal. A git 
 1. **Edit, don't append.** A changed claim is rewritten where it sits. Never add a dated paragraph below the old one.
 2. **No run narration in documents.** No session headings (`## §59 · 2026-09-07 (overnight-research …)`), no "this run found…", no per-run headline summaries, no "Demoted/Re-tiered by …" sections, no "Last verified" line (use `last_verified:` frontmatter). Git history and the commit message carry the narrative.
 3. **Split before you exceed.** If an edit would push a file over its budget, first move content into the correct layer (a new topic or source note) and link it, then make your edit.
-4. **Never rename or move existing files**, except to archive a project (kb-management), re-tag a context note (action-items) or file a project's loose files into its subfolders (kb-deep-work), each with `git mv`. Splitting content *out* into linked notes is expected; the original path stays as the current-state page or index.
+4. **Never rename or move existing files**, except to archive a project (kb-management), re-tag a context note (action-items) or file a project's loose files into its subfolders (kb-deep-work), each with `mv`, naming both paths when you commit with `scripts/git-safe-commit.sh`. Splitting content *out* into linked notes is expected; the original path stays as the current-state page or index.
 
 ### When the hook blocks your commit
 
-The hook output names the file, the check and the fix. Fix it and commit again. **Only after two failed fix attempts**, commit with `SCOUT_LINT_OVERRIDE="<why>" git commit …`. The override is logged to `.scout-logs/lint-overrides.log` and the next dreaming run must clean it up. It never lifts a privacy block: fix those. Never pass `--no-verify`.
+The hook output names the file, the check and the fix. Fix it and commit again. **Only after two failed fix attempts**, commit with `SCOUT_LINT_OVERRIDE="<why>" scripts/git-safe-commit.sh "<message>" <paths…>`. The override is logged to `.scout-logs/lint-overrides.log` and the next dreaming run must clean it up. It never lifts a privacy block: fix those. Never pass `--no-verify`.
