@@ -160,6 +160,9 @@ struct DoctorFindingsList: View {
                     Text(fix).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if !item.items.isEmpty {
+                    IssueFilesDisclosure(files: item.items)
+                }
                 if let log = item.logURL {
                     Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
                         .buttonStyle(.plainHit)
@@ -176,6 +179,29 @@ struct DoctorFindingsList: View {
         case .problem: return DS.Status.err
         case .warning: return DS.Status.warn
         case .note:    return DS.Ink.p3
+        }
+    }
+}
+
+/// The files one grouped warning stands for, folded away until asked for (UI audit R1):
+/// "34 vault scripts read the knowledge base directly" is one line, not 34 paragraphs.
+struct IssueFilesDisclosure: View {
+    let files: [String]
+    @State private var expanded = false
+
+    nonisolated static func label(_ count: Int) -> String { count == 1 ? "Show the file" : "Show all \(count) files" }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(files, id: \.self) { file in
+                    Text(file).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            Text(Self.label(files.count)).font(DS.sans(11)).foregroundStyle(DS.Ink.p2)
+                .accessibilityHint("Lists the files this warning is about")
         }
     }
 }

@@ -18,6 +18,24 @@ struct ScheduleNotLoadedError: Error, LocalizedError, Equatable {
     }
 }
 
+/// Thrown by `ScheduleEditService.save` when `scoutctl schedule validate`
+/// rejected the new schedule, so nothing was written. `output` is the
+/// validator's own words (may be empty); the app shows them only behind
+/// Details (R2).
+struct ScheduleValidationError: Error, LocalizedError, Equatable {
+    let exitCode: Int32
+    let output: String
+
+    /// What "Copy details" carries: the validator's output, or its exit code
+    /// when it printed nothing.
+    var details: String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "scoutctl schedule validate exited \(exitCode) without a message." : trimmed
+    }
+
+    var errorDescription: String? { details }
+}
+
 @MainActor
 final class ScheduleEditService: ObservableObject {
     @Published private(set) var slots: [Slot] = []
@@ -202,11 +220,7 @@ final class ScheduleEditService: ObservableObject {
         )
         guard validate.exitCode == 0 else {
             let stderr = String(data: validate.stderr, encoding: .utf8) ?? ""
-            throw NSError(
-                domain: "ScheduleEditService.save",
-                code: Int(validate.exitCode),
-                userInfo: [NSLocalizedDescriptionKey: stderr]
-            )
+            throw ScheduleValidationError(exitCode: validate.exitCode, output: stderr)
         }
 
         // 5. Atomic rename. Re-check the bytes first: `schedule validate` is a

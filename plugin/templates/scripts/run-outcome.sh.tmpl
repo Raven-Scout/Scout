@@ -75,6 +75,13 @@ AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API
 # dies on a real 401 is still oauth_expired. The retry wrapper's TRANSIENT_PATTERNS
 # carries the same string.
 EDGE_CHALLENGE_RE='API Error: 403 Attention Required! \| Cloudflare'
+# The sign-in race: the run started while another Claude Code process was refreshing
+# the shared login's token. Nothing is wrong with the login, so it is not
+# oauth_expired; the retry wrapper's TRANSIENT_PATTERNS carries the same two strings
+# and retries it. Anchored to the line start, like AUTH_RE, so the session's own output
+# quoting it doesn't count. Judged on the LAST attempt only, after AUTH_RE: a race the
+# retry got past says nothing about why the run then failed.
+AUTH_RACE_RE='^(Error: )?(Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet|^(Error: )?Claude Code .{0,80}sign-in token was still being refreshed'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response|FailedToOpenSocket'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to
@@ -108,6 +115,7 @@ classify_failure() {
     auth_txt="$(grep -vE "$EDGE_CHALLENGE_RE" <<<"$tail_txt" || true)"
     if grep -qiE "$BUDGET_RE" <<<"$last_txt"; then echo "budget"
     elif grep -qE "$AUTH_RE" <<<"$auth_txt"; then echo "oauth_expired"
+    elif grep -qE "$AUTH_RACE_RE" <<<"$last_txt"; then echo "auth_race"
     elif grep -qiE "$NETWORK_RE" <<<"$tail_txt" || grep -qE "$EDGE_CHALLENGE_RE" <<<"$tail_txt"; then echo "network"
     elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"
     elif grep -qiE "$RATE_LIMIT_RE" <<<"$tail_txt"; then echo "rate_limited"
@@ -170,11 +178,15 @@ measure_commits() {
 }
 
 # What started this run: the tick (it sets SCOUT_FORCE_MODE), the heartbeat
-# (SCOUT_TRIGGER=heartbeat), or a person.
+# (SCOUT_TRIGGER=heartbeat), a connector-event trigger (run_skill sets
+# SCOUT_TRIGGER_ID, and SCOUT_FORCE_MODE to its skill, which is no schedule),
+# or a person.
 run_trigger() {
     case "${SCOUT_TRIGGER:-}" in
-        schedule|heartbeat|manual) echo "$SCOUT_TRIGGER" ;;
-        *) if [ -n "${SCOUT_FORCE_MODE:-}" ]; then echo schedule; else echo manual; fi ;;
+        schedule|heartbeat|manual|event) echo "$SCOUT_TRIGGER" ;;
+        *) if [ -n "${SCOUT_TRIGGER_ID:-}" ]; then echo event
+           elif [ -n "${SCOUT_FORCE_MODE:-}" ]; then echo schedule
+           else echo manual; fi ;;
     esac
 }
 

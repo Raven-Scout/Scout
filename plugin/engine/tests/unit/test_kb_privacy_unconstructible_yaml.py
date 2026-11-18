@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,12 @@ from scout.scripts import privacy_migrate
 
 from .privacy_vault_helpers import build_privacy_vault, git
 
+# Nested just past where PyYAML's composer (two frames a level) hits the recursion limit, and no
+# deeper: the scanner's cost grows faster than the depth, so the 5000 levels this used to be took
+# ~1 s a parse locally and up to 50 s a test on CI's macOS runners, which parse it many times.
+_DEPTH = sys.getrecursionlimit() // 2 + 100
+DEEP_NESTING = "n: " + "[" * _DEPTH + "]" * _DEPTH
+
 # One value per exception PyYAML lets out, plus the near neighbours of the reported date.
 UNCONSTRUCTIBLE = [
     pytest.param("date: 2026-13-45", id="value-error-impossible-date"),
@@ -46,7 +53,7 @@ UNCONSTRUCTIBLE = [
     pytest.param("n: !!bool foo", id="key-error-tagged-bool"),
     pytest.param("n: !!timestamp foo", id="attribute-error-tagged-timestamp"),
     pytest.param('n: "\\U99999999"', id="overflow-error-unicode-escape"),
-    pytest.param("n: " + "[" * 5000 + "]" * 5000, id="recursion-error-deep-nesting"),
+    pytest.param(DEEP_NESTING, id="recursion-error-deep-nesting"),
 ]
 
 RUN = {"SCOUT_MODE": "morning-briefing"}

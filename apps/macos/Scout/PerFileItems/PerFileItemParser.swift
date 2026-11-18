@@ -89,6 +89,36 @@ nonisolated enum PerFileItemParser {
         return value
     }
 
+    /// The trailing comment on a keyword field's value as written (the text
+    /// after `key:`), with the whitespace before its `#`; nil when there is
+    /// none. Same rules as `keyword(_:)`: unquoted, a `#` that opens the value
+    /// or follows whitespace starts it; quoted, it's what follows the closing
+    /// quote, if that is a `#` comment. An unterminated quote has none.
+    ///
+    /// The writer uses this to carry a comment over when the app rewrites the
+    /// field, so `status: open   # why` becomes `status: done   # why`.
+    static func keywordComment(_ raw: Substring) -> Substring? {
+        let value = raw.drop(while: { $0 == " " || $0 == "\t" })
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            let inner = value.dropFirst()
+            guard let close = inner.firstIndex(of: quote) else { return nil }
+            let tail = inner[inner.index(after: close)...]
+            return tail.drop(while: \.isWhitespace).first == "#" ? tail : nil
+        }
+        var previous: Character = " "
+        for index in value.indices {
+            if value[index] == "#", previous.isWhitespace {
+                var start = index
+                while start > value.startIndex, value[value.index(before: start)].isWhitespace {
+                    start = value.index(before: start)
+                }
+                return value[start...]
+            }
+            previous = value[index]
+        }
+        return nil
+    }
+
     static func stripLeadingHeading(_ body: String) -> String {
         var lines = body.components(separatedBy: "\n")
         while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty {

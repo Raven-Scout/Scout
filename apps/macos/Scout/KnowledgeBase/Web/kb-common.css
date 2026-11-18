@@ -1,0 +1,93 @@
+/* Shared base for Scout's knowledge-base pages. Colour tokens (--paper, --ink-1,
+   --accent-fill, --g-people, …) are injected by Swift (KBWebTheme) before this
+   file loads; the fallbacks below only matter when a page is opened in a browser. */
+
+:root {
+  --font-serif: "Newsreader", "New York", ui-serif, Georgia, serif;
+  --font-sans: -apple-system, system-ui, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --scale: var(--text-scale, 1);
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px rgba(0, 0, 0, 0.35); }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink-1, #202232);
+  font-family: var(--font-sans);
+  font-size: calc(13px * var(--scale));
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: color-mix(in srgb, var(--accent-fill, #be8a3d) 32%, transparent); }
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+/* Floating surfaces (map panels, the comment composer). */
+.surface {
+  background: color-mix(in srgb, var(--paper-raised, #fff) 94%, transparent);
+  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  backdrop-filter: saturate(1.4) blur(18px);
+  border: 0.5px solid var(--rule-hard, #ddd);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0.5px solid var(--rule-hard);
+  background: var(--paper-raised);
+  color: var(--ink-1);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: calc(12px * var(--scale));
+  line-height: 1.3;
+}
+.btn:hover { background: var(--paper-sunk); }
+.btn:focus-visible { outline: 2px solid var(--accent-fill); outline-offset: 1px; }
+.btn.primary {
+  background: var(--accent-fill);
+  border-color: transparent;
+  color: var(--accent-on-fill);
+  font-weight: 600;
+}
+.btn.primary:hover { filter: brightness(1.05); }
+.btn.primary:disabled { opacity: 0.45; filter: none; }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--ink-3); }
+.btn.quiet:hover { background: var(--paper-sunk); color: var(--ink-1); }
+
+kbd {
+  font-family: var(--font-sans);
+  font-size: 0.85em;
+  color: var(--ink-4);
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink-4) 35%, transparent);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink-4) 60%, transparent); }
+::-webkit-scrollbar-track { background: transparent; }

@@ -4,7 +4,13 @@ import SwiftUI
 /// local graph and the legend. Kept deliberately small so the graph reads as a
 /// map, not a stoplight.
 nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
-    case people, projects, issues, channels, ontology, research, other
+    case people, projects, issues, channels, ontology, research
+    /// The vault's layers (sources → topics → projects) and the folders Scout
+    /// keeps for itself. Before these existed, most of the vault — sources,
+    /// topics, personal notes, session logs, the mistake audit — rendered as
+    /// one grey "Other" blob on the map.
+    case topics, sources, personal, logs, audits
+    case other
 
     /// Classify a note. The ontology `type:` the plugin writes in frontmatter
     /// wins; the path fallback (whole components, not substrings — so
@@ -26,6 +32,13 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         if dirs.contains("ontology") { return .ontology }
         if dirs.contains("research-queue") || dirs.contains("review-queue")
             || stem == "research-queue" || stem == "review-queue" { return .research }
+        if dirs.contains("topics") || stem == "topics" { return .topics }
+        if dirs.contains("sources") || stem == "sources" { return .sources }
+        if dirs.contains("personal") { return .personal }
+        if dirs.contains("session-log") || dirs.contains("enrichment-qa-log")
+            || stem == "session-log" { return .logs }
+        if dirs.contains("scout-mistake-audit") || dirs.contains("kg-audits")
+            || stem == "scout-mistake-audit" { return .audits }
         return .other
     }
 
@@ -37,6 +50,11 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .channels: return "Channels"
         case .ontology: return "Ontology"
         case .research: return "Research"
+        case .topics: return "Topics"
+        case .sources: return "Sources"
+        case .personal: return "Personal"
+        case .logs: return "Logs"
+        case .audits: return "Audits"
         case .other: return "Other"
         }
     }
@@ -47,9 +65,30 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .projects: return DS.SlotType.consolidation
         case .issues:   return DS.Priority.urgent
         case .channels: return DS.Accent.fill
-        case .ontology: return DS.SlotType.dreaming
         case .research: return DS.SlotType.research
         case .other:    return DS.Ink.p3
+        // Ontology was the dreaming violet, which sits within a few points of
+        // People's purple — the two read as one colour on the map.
+        case .ontology, .topics, .sources, .personal, .logs, .audits: return swatch.color
+        }
+    }
+
+    /// The group's colour as raw light/dark values, for surfaces that can't
+    /// take a SwiftUI `Color` (the web map). Matches `color` for every group.
+    var swatch: DS.Swatch {
+        switch self {
+        case .people:   return DS.Swatch(name: "KBPeople", light: DS.RGB(0.540, 0.440, 0.740), dark: DS.RGB(0.700, 0.620, 0.880))
+        case .projects: return DS.Palette.slotConsolidation
+        case .issues:   return DS.Swatch(name: "KBIssues", light: DS.RGB(0.750, 0.310, 0.200), dark: DS.RGB(0.880, 0.450, 0.340))
+        case .channels: return DS.Palette.accentFill
+        case .ontology: return DS.Swatch(name: "KBOntology", light: DS.RGB(0.300, 0.380, 0.720), dark: DS.RGB(0.560, 0.640, 0.950))
+        case .research: return DS.Palette.slotResearch
+        case .topics:   return DS.Swatch(name: "KBTopics", light: DS.RGB(0.180, 0.560, 0.560), dark: DS.RGB(0.380, 0.760, 0.740))
+        case .sources:  return DS.Swatch(name: "KBSources", light: DS.RGB(0.660, 0.540, 0.330), dark: DS.RGB(0.820, 0.710, 0.520))
+        case .personal: return DS.Swatch(name: "KBPersonal", light: DS.RGB(0.780, 0.380, 0.540), dark: DS.RGB(0.920, 0.560, 0.680))
+        case .logs:     return DS.Swatch(name: "KBLogs", light: DS.RGB(0.470, 0.530, 0.620), dark: DS.RGB(0.600, 0.650, 0.730))
+        case .audits:   return DS.Swatch(name: "KBAudits", light: DS.RGB(0.520, 0.540, 0.200), dark: DS.RGB(0.720, 0.730, 0.420))
+        case .other:    return DS.Palette.inkP3
         }
     }
 }
@@ -57,17 +96,28 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
 /// Whether a note counts toward vault health. On a mature vault the health
 /// rows were dominated by notes nobody maintains as live knowledge: dangling
 /// links almost all came from one archived snapshot, and the orphans were
-/// receipts and invoices. Those are set aside and counted on their own.
+/// personal paperwork: receipts, invoices, certificates, estimates. Those are
+/// set aside and counted on their own.
 nonisolated enum KBNoteKind: String, Equatable, CaseIterable {
     case live
     /// Anything under a folder named exactly `archive` or `archived`, at any depth.
     case archived
-    /// A receipt or invoice: under a folder named exactly receipt(s) or
-    /// invoice(s), or with one of those as a word of its file name or of its
-    /// frontmatter `type:`.
-    case receipt
+    /// Personal paperwork. A receipt or invoice: under a folder named exactly
+    /// receipt(s) or invoice(s), or with one of those as a word of its file
+    /// name or frontmatter `type:`, anywhere. Certificates, estimates,
+    /// warranties and payslips match the same three ways, but only under a
+    /// folder named `personal`: in a work note ("tls-certificate-rotation",
+    /// "migration-estimate") those words are live knowledge.
+    case paperwork
 
-    private static let receiptWords: Set<String> = ["receipt", "receipts", "invoice", "invoices"]
+    /// Paperwork anywhere in the knowledge base.
+    static let receiptWords: Set<String> = ["receipt", "receipts", "invoice", "invoices"]
+    /// Paperwork under a `personal` folder. "report" is left out on purpose:
+    /// research reports are live notes.
+    static let personalPaperworkWords: Set<String> = receiptWords.union([
+        "certificate", "certificates", "estimate", "estimates",
+        "warranty", "warranties", "payslip", "payslips",
+    ])
 
     /// The same rule `/scout-status` applies (plugin `commands/scout-status.md`,
     /// KB Health): folders relative to `knowledge-base/` match whole, names and
@@ -77,10 +127,11 @@ nonisolated enum KBNoteKind: String, Equatable, CaseIterable {
         if components.first == "knowledge-base" { components.removeFirst() }
         let folders = components.dropLast()
         if folders.contains(where: { $0 == "archive" || $0 == "archived" }) { return .archived }
-        if folders.contains(where: receiptWords.contains) { return .receipt }
         let stem = components.last.map { ($0 as NSString).deletingPathExtension } ?? ""
-        if words(stem).contains(where: receiptWords.contains) { return .receipt }
-        if let type, words(type.lowercased()).contains(where: receiptWords.contains) { return .receipt }
+        let typeWords = type.map { words($0.lowercased()) } ?? []
+        let marks = folders.map { [$0] } + [words(stem), typeWords]
+        let vocabulary = folders.contains("personal") ? personalPaperworkWords : receiptWords
+        if marks.contains(where: { $0.contains(where: vocabulary.contains) }) { return .paperwork }
         return .live
     }
 
@@ -299,7 +350,7 @@ nonisolated struct KBTypeCount: Identifiable, Equatable {
 ///
 /// `noteCount` and `linkCount` cover every note. Everything else — health,
 /// hubs, degree, components, by-type — covers live notes only (`KBNoteKind`),
-/// and the links between them; `archived` and `receipts` list the rest.
+/// and the links between them; `archived` and `paperwork` list the rest.
 nonisolated struct KBNetworkStats: Equatable {
     let noteCount: Int
     let linkCount: Int
@@ -315,7 +366,7 @@ nonisolated struct KBNetworkStats: Equatable {
     let largestComponentSize: Int
     /// Notes left out of the health and insight figures, path asc.
     var archived: [String] = []
-    var receipts: [String] = []
+    var paperwork: [String] = []
 
     static let empty = KBNetworkStats(
         noteCount: 0, linkCount: 0, orphans: [], weaklyLinked: [], dangling: [], islands: [],
@@ -352,12 +403,12 @@ extension KBNetworkStats {
         return (start..<end, count - end)
     }
 
-    /// "Not counted: 112 archived notes · 20 receipts", or nil when nothing
+    /// "Not counted: 112 archived notes · 20 paperwork notes", or nil when nothing
     /// was set aside.
     var setAsideSummary: String? {
         var parts: [String] = []
         if !archived.isEmpty { parts.append("\(archived.count) archived note\(archived.count == 1 ? "" : "s")") }
-        if !receipts.isEmpty { parts.append("\(receipts.count) receipt\(receipts.count == 1 ? "" : "s")") }
+        if !paperwork.isEmpty { parts.append("\(paperwork.count) paperwork note\(paperwork.count == 1 ? "" : "s")") }
         return parts.isEmpty ? nil : "Not counted: " + parts.joined(separator: " · ")
     }
 

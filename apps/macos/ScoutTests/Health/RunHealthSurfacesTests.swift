@@ -201,7 +201,8 @@ struct RunHealthBannerModelTests {
         let ledger = try RunLedgerContractTests.fixture()
         let p = try #require(RunOutcomeDisplay.bannerProblem(ledger.health))
         #expect(p.details?.contains("Finding: gates.probe_unsafe") == true)
-        #expect(p.impact == "1 more problem is on the Health page.")
+        // The integrity restore (red) and today's failed research run (yellow, R1).
+        #expect(p.impact == "2 more problems are on the Health page.")
     }
 }
 

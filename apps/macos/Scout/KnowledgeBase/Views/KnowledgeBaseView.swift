@@ -16,6 +16,8 @@ struct KnowledgeBaseView: View {
     var privacy: KBPrivacyLabelService? = nil
 
     @State private var selectedPath: String? = nil
+    /// The note the overview map should select ("Show on full map").
+    @State private var mapFocus: String? = nil
     @State private var expanded: Set<String> = []
     @State private var searchQuery: String = ""
     @State private var searchHits: [KBSearchHit] = []
@@ -66,7 +68,11 @@ struct KnowledgeBaseView: View {
                         set: { rightPanelWidth = $0 }),
                     minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
                 KBRightPanel(relPath: node.relativePath, service: service,
-                             onNavigate: { navigate(toPath: $0) })
+                             onNavigate: { navigate(toPath: $0) },
+                             onShowOnMap: { path in
+                                 mapFocus = path
+                                 selectedPath = nil
+                             })
                     .frame(width: Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth))
             }
         }
@@ -137,7 +143,7 @@ struct KnowledgeBaseView: View {
                     Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
-                .buttonStyle(.plainHit).help("New note")
+                .buttonStyle(.plainHit).help("New note") // ds-guard: hit area (an icon button)
                 .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
@@ -259,7 +265,7 @@ struct KnowledgeBaseView: View {
             )
             .id(node.id)
         } else {
-            KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) })
+            KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) }, mapFocus: mapFocus)
         }
     }
 
@@ -299,6 +305,8 @@ struct KnowledgeBaseView: View {
         }
         selectedPath = path
         searchQuery = ""
+        // A "Show on full map" request is spent once you move on to a note.
+        mapFocus = nil
     }
 
     private func scheduleSearch(_ query: String) {

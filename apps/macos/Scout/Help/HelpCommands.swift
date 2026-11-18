@@ -49,35 +49,51 @@ enum SettingsAnchor {
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
-    /// When Engine Settings… last asked for the Engine section. A Settings window that appears soon after
-    /// scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings view
-    /// scrolls on the notification instead. The request expires rather than being cleared by whichever
-    /// view sees it first, so the main window's Settings page can't swallow a new window's request.
+    /// Which Settings section something last asked for, and when. A Settings view that appears soon
+    /// after scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings
+    /// view scrolls on the notification instead. The request expires rather than being cleared by whichever
+    /// view sees it first, so the main window's Settings page can't swallow a new window's request:
+    /// every Settings view that appears within the window scrolls to the section.
     private static var settingsRequest: (anchor: String, at: Date)?
     static let engineSettingsRequestWindow: TimeInterval = 2
 
-    /// Open Settings at its Engine section.
+    /// Open the Settings window at its Engine section.
     static func showEngineSettings(_ openSettings: OpenSettingsAction) {
-        showSettings(openSettings, at: SettingsAnchor.engine)
+        showEngineSettings { openSettings() }
     }
 
-    /// Open Settings at one of its sections (a `SettingsAnchor` id).
+    /// Show Settings at its Engine section, however `open` shows it: the
+    /// Settings window, or the main window's Settings page. Every "Open
+    /// Settings ▸ Engine" button goes through here, so none opens at the top.
+    static func showEngineSettings(_ open: () -> Void, now: Date = Date()) {
+        showSettings(at: SettingsAnchor.engine, open, now: now)
+    }
+
+    /// Open the Settings window at one of its sections (a `SettingsAnchor` id).
     static func showSettings(_ openSettings: OpenSettingsAction, at anchor: String) {
-        settingsRequest = (anchor, Date())
-        openSettings()
+        showSettings(at: anchor) { openSettings() }
+    }
+
+    /// Show Settings at `anchor`'s section, however `open` shows it. Records
+    /// the request first, so a Settings view that appears during `open`
+    /// sees it, then tells any open one to scroll.
+    static func showSettings(at anchor: String, _ open: () -> Void, now: Date = Date()) {
+        settingsRequest = (anchor, now)
+        open()
         NotificationCenter.default.post(name: .scoutShowSettingsSection, object: anchor)
     }
 
-    /// The section a request asked for just now, if any; reading it clears it.
-    static func takeSettingsRequest(now: Date = Date()) -> String? {
-        defer { settingsRequest = nil }
+    /// The section something asked for just now, if any. Reading it doesn't
+    /// clear it: it only expires, so a second Settings view appearing in the
+    /// same moment still sees it.
+    static func settingsRequested(now: Date = Date()) -> String? {
         guard let request = settingsRequest, now.timeIntervalSince(request.at) <= engineSettingsRequestWindow else { return nil }
         return request.anchor
     }
 
-    /// Whether Engine Settings… asked for the Engine section just now; reading it clears it.
-    static func takeEngineSettingsRequest(now: Date = Date()) -> Bool {
-        takeSettingsRequest(now: now) == SettingsAnchor.engine
+    /// Whether something asked for the Engine section just now (see `settingsRequested`).
+    static func engineSettingsRequested(now: Date = Date()) -> Bool {
+        settingsRequested(now: now) == SettingsAnchor.engine
     }
 
     /// For tests: record a request made at `date`.

@@ -22,10 +22,10 @@ struct ButtonStyleGuardTests {
         "Shell/StatusBarView.swift": "hit area",
     ]
 
-    /// Folders skipped whole. The Knowledge Base is being rebuilt as a web
-    /// view (Raven-Scout/Scout#677); its buttons move to DS styles there, or
-    /// right after it lands.
-    static let allowedFolders: [String: String] = ["KnowledgeBase/": "#677"]
+    /// A `.plainHit`/`.plain` line carrying this marker is a hit area (an
+    /// icon button, a chip whose icon is accent), not an action button. Say
+    /// why after it, as the existing ones do.
+    static let hitAreaMarker = "ds-guard: hit area"
 
     static let systemStyle = try! NSRegularExpression(
         pattern: #"\.buttonStyle\(\.(bordered|borderedProminent|link|borderless)\)"#)
@@ -47,8 +47,7 @@ struct ButtonStyleGuardTests {
         var out: [(String, [String])] = []
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let relative = String(url.path.dropFirst(root.path.count + 1))
-            guard allowlist[relative] == nil,
-                  !allowedFolders.keys.contains(where: { relative.hasPrefix($0) }) else { continue }
+            guard allowlist[relative] == nil else { continue }
             out.append((relative, try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")))
         }
         return out
@@ -82,7 +81,8 @@ struct ButtonStyleGuardTests {
     func noHandBuiltAccentButtons() throws {
         var hits: [String] = []
         for (file, lines) in try Self.sources() {
-            for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(Self.plainStyle, line) {
+            for (i, line) in lines.enumerated()
+            where !Self.isComment(line) && Self.matches(Self.plainStyle, line) && !line.contains(Self.hitAreaMarker) {
                 // The button's own modifier chain: its label above, and the
                 // modifiers that follow `.buttonStyle` below.
                 let window = lines[max(0, i - 8)...min(lines.count - 1, i + 3)].filter { !Self.isComment($0) }
@@ -94,20 +94,10 @@ struct ButtonStyleGuardTests {
         #expect(hits.isEmpty, "a hand-built accent button — use .dsPrimary or .dsLink:\n\(hits.joined(separator: "\n"))")
     }
 
-    /// A file #677 adds. Once it exists, the KB rebuild has landed and the
-    /// `KnowledgeBase/` exemption must go, so it can't linger.
-    static let kbRebuildMarker = "KnowledgeBase/Web/KBWebBridge.swift"
-
-    @Test("the Knowledge Base exemption ends when its rebuild (#677) lands")
-    func kbExemptionExpires() {
-        let landed = FileManager.default.fileExists(atPath: Self.sourceRoot.appendingPathComponent(Self.kbRebuildMarker).path)
-        #expect(!(landed && Self.allowedFolders["KnowledgeBase/"] != nil),
-                "#677 has landed (\(Self.kbRebuildMarker) exists): move the KB buttons to DS styles and drop KnowledgeBase/ from allowedFolders")
-    }
 
     @Test("the allowlist names only files that exist")
     func allowlistIsCurrent() {
-        for file in Array(Self.allowlist.keys) + Array(Self.allowedFolders.keys) {
+        for file in Self.allowlist.keys {
             #expect(FileManager.default.fileExists(atPath: Self.sourceRoot.appendingPathComponent(file).path),
                     "\(file) is allowlisted but gone — drop it from the allowlist")
         }

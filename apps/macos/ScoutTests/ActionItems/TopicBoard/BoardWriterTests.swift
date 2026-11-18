@@ -110,3 +110,15 @@ struct BoardWriterTests {
         #expect(EngineFeatures.decode(Data("not json".utf8)).isEmpty)
     }
 }
+
+/// R2 review: Rename topic and Dismiss run `scoutctl action-items` like the
+/// List's writes, so the page's engine-check switch turns them off too.
+@MainActor
+@Suite("Topic board — writes follow the engine check")
+struct BoardWritesGateTests {
+    @Test func boardWritesNeedTheEngineCommandsAndAPassingCheck() {
+        #expect(TopicBoardView.boardWritesAllowed(engineSupports: true, writesEnabled: true))
+        #expect(!TopicBoardView.boardWritesAllowed(engineSupports: true, writesEnabled: false))
+        #expect(!TopicBoardView.boardWritesAllowed(engineSupports: false, writesEnabled: true))
+    }
+}

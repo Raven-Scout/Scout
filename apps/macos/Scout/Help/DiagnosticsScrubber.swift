@@ -51,7 +51,7 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         "mon", "tue", "wed", "thu", "fri", "sat", "sun", "fire", "skip", "collapse", "true", "false", "yes", "no",
         "on", "off", "inbound", "outbound", "lookup", "owner", "autonomous", "claude-code", "anthropic",
         "briefing", "consolidation", "dreaming", "research", "manual", "ok", "failed", "unknown", "timeout",
-        "budget", "oauth_expired", "network", "git_lock", "rate_limited", "enforced", "unavailable", "conflict",
+        "budget", "oauth_expired", "auth_race", "network", "git_lock", "rate_limited", "enforced", "unavailable", "conflict",
         "clean", "restored", "unrestored", "error", "unchecked",
     ]
     /// Report fields built from allowlists by the engine. The app checks their shape instead of scrubbing them.
