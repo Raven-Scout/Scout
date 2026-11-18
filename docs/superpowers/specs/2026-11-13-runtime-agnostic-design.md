@@ -1020,13 +1020,13 @@ excluded from non-Anthropic runs.
 
 ### 8.6 Usage, cost and budget
 
-- **Ledgers gain three keys.** `agent_runtime`, `provider`, and a cost-kind
-  key ∈ `{reported, priced, unpriced}` join the existing `model`. Absent means
+- **Ledgers gain three keys.** `agent_runtime`, `provider`, and `cost_kind`
+  ∈ `{reported, priced, unpriced}` join the existing `model`. Absent means
   Claude Code (old rows).
-  - The cost-kind key can't be called `cost_source`: usage-tracker rows
-    already carry `cost_source: "transcript"` (§6.2). Task 1.6 picks the new
-    name. Where this spec writes `cost_source: unpriced` below, read that
-    key.
+  - The cost-kind key is `cost_kind` (task 1.6, #654), not `cost_source`:
+    usage-tracker rows already carry `cost_source: "transcript"` (§6.2),
+    which keeps its meaning. Where this spec writes `cost_source: unpriced`
+    below, read `cost_kind: unpriced`.
 - **Claude Code is unchanged.** Its cost comes from the transcript's
   `cost-state`, and the native `--max-budget-usd` cap applies.
 - **Runtimes that report tokens but no USD:**
