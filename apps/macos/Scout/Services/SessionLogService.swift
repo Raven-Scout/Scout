@@ -298,19 +298,34 @@ final class SessionLogService: ObservableObject {
         )
     }
 
-    /// Promote `.running` runs whose `startedAt` is older than the
-    /// per-type `orphanAfter` threshold to `.orphaned`. All other
-    /// statuses pass through unchanged.
+    /// Promote a `.running` run to `.orphaned` once its log has been quiet for
+    /// longer than the per-type `orphanAfter` threshold. All other statuses
+    /// pass through unchanged.
+    ///
+    /// Quiet time counts from the run's last sign of life — the later of its
+    /// start and `lastActivityAt` (the log's modification time). A live run
+    /// keeps writing its log: the runner's lease keepalive appends a line
+    /// about every five minutes. Counting from the start alone marked a
+    /// healthy 23-minute consolidation "Didn't finish" while it was still
+    /// working, because consolidation's cutoff is 20 minutes.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
+        lastActivityAt: Date? = nil,
         type: RunType,
         now: Date
     ) -> RunStatus {
         guard parsedStatus == .running else { return parsedStatus }
-        return now.timeIntervalSince(startedAt) > type.orphanAfter
+        let lastSignOfLife = max(startedAt, lastActivityAt ?? startedAt)
+        return now.timeIntervalSince(lastSignOfLife) > type.orphanAfter
             ? .orphaned
             : .running
+    }
+
+    /// The log's modification time — the run's latest sign of life — or nil
+    /// when the file can't be read.
+    nonisolated static func logModifiedAt(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     /// Post-pass over an assembled run list that demotes `.running` entries
@@ -501,6 +516,7 @@ final class SessionLogService: ObservableObject {
                 let status = Self.promoteOrphan(
                     parsedStatus: body.status,
                     startedAt: filename.startedAt,
+                    lastActivityAt: meta.modifiedAt,
                     type: filename.type,
                     now: nowSnapshot
                 )
@@ -590,6 +606,7 @@ final class SessionLogService: ObservableObject {
         let status = Self.promoteOrphan(
             parsedStatus: body.status,
             startedAt: filename.startedAt,
+            lastActivityAt: Self.logModifiedAt(url),
             type: filename.type,
             now: clock.now()
         )
@@ -635,9 +652,12 @@ final class SessionLogService: ObservableObject {
     func sweepStaleStatuses() {
         let now = clock.now()
         let resweeped = runs.map { run -> Run in
+            // Only a running run can change, so only its log is stat'ed.
+            guard run.status == .running else { return run }
             let promoted = Self.promoteOrphan(
                 parsedStatus: run.status,
                 startedAt: run.startedAt,
+                lastActivityAt: Self.logModifiedAt(run.logPath),
                 type: run.type,
                 now: now
             )
@@ -672,24 +692,24 @@ extension RunType {
 }
 
 extension RunType {
-    /// How long after `startedAt` a run with no terminal marker should be
-    /// promoted from `.running` to `.orphaned`. Tuned per run type from
-    /// observed realistic upper bounds — the old thresholds (6h briefings,
-    /// 12h dreaming) were way too loose and produced multi-hour false
-    /// "running" badges in the Now strip and Sessions list. CC-1/CC-5.
+    /// How long a run with no terminal marker may go without writing its log
+    /// before it is promoted from `.running` to `.orphaned` (see
+    /// `promoteOrphan`, which counts from the later of the start and the log's
+    /// modification time). The old thresholds (6h briefings, 12h dreaming)
+    /// were way too loose and produced multi-hour false "running" badges in
+    /// the Now strip and Sessions list. CC-1/CC-5.
     ///
-    /// Observed P95s (May 2026 on Alex's box):
-    ///   briefing: ~6 min   · consolidation: ~3 min
-    ///   dreaming: ~25 min  · research: ~40 min
-    /// Cutoffs leave ~3× headroom so a legitimately long run still resolves
-    /// as running, but a missing finish-marker tips into orphan inside ~30
-    /// minutes of inactivity, not half a day.
+    /// The runner's lease keepalive writes a log line about every five
+    /// minutes, so a live run never comes near these. A runner without that
+    /// keepalive can be quiet for its whole agent phase; there the cutoff
+    /// still bounds silence since the last line, which is never longer than
+    /// the time since the start.
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
             return 30 * 60           // 30 min — briefing runs short
         case .consolidation:
-            return 20 * 60           // 20 min — consolidation runs even shorter
+            return 20 * 60           // 20 min of silence — four missed keepalives
         case .dreaming:
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:

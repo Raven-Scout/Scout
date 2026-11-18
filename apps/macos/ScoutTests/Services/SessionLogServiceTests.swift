@@ -449,6 +449,9 @@ struct SessionLogServiceTests {
         let logURL = tempDir.appendingPathComponent("dreaming-2026-04-20_22-15.log")
         try "=== SCOUT Dreaming run starting at Mon Apr 20 22:15:05 EDT 2026 ===\n"
             .write(to: logURL, atomically: true, encoding: .utf8)
+        // The log was last written at its start — silent ever since.
+        try SessionLogStaleSweepTests.setLogModified(
+            logURL, to: SessionLogService.parseFilename(logURL, timeZone: Self.ny)!.startedAt)
 
         // Clock: 13h after that start (22:15 ET + 13h = 11:15 ET next day)
         var comps = DateComponents()
@@ -527,6 +530,9 @@ struct SessionLogServiceTests {
         let logURL = tempDir.appendingPathComponent("research-2026-04-21_08-00.log")
         try "=== SCOUT Research run starting at Tue Apr 21 08:00:05 EDT 2026 ===\n"
             .write(to: logURL, atomically: true, encoding: .utf8)
+        // The log was last written at its start — silent ever since.
+        try SessionLogStaleSweepTests.setLogModified(
+            logURL, to: SessionLogService.parseFilename(logURL, timeZone: Self.ny)!.startedAt)
 
         // Clock: 3h after start (08:00 + 3h = 11:00 ET). Research cutoff is 2h.
         var comps = DateComponents()
@@ -841,5 +847,12 @@ struct SessionLogServiceTests {
 
 struct FixedClock: ClockSource {
     let date: Date
+    func now() -> Date { date }
+}
+
+/// A clock a test can move forward between sweeps.
+final class SteppableClock: ClockSource, @unchecked Sendable {
+    var date: Date
+    init(date: Date) { self.date = date }
     func now() -> Date { date }
 }

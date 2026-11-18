@@ -180,6 +180,9 @@ struct SessionLogStaleSweepTests {
             .write(to: dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                    atomically: true, encoding: .utf8)
 
+        try Self.setLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
+                                to: Self.et(day: 20, hour: 22, minute: 5))
+
         // 90 minutes later — well past consolidation's 20-minute cutoff.
         let stale = FixedClock(date: Self.et(day: 20, hour: 23, minute: 35))
         let service = SessionLogService(
@@ -215,6 +218,8 @@ struct SessionLogStaleSweepTests {
         === SCOUT run finished at Mon Apr 20 22:09:00 EDT 2026 (exit 0) ===
         """.write(to: dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                   atomically: true, encoding: .utf8)
+        try Self.setLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
+                                to: Self.et(day: 20, hour: 22, minute: 9))
 
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
@@ -228,6 +233,96 @@ struct SessionLogStaleSweepTests {
 
         service.sweepStaleStatuses()
         #expect(service.runs.first?.status == statusBefore)
+    }
+
+    // MARK: - Liveness: a run that is still writing its log is not orphaned
+
+    @Test("a long run whose log was written recently stays running past its cutoff")
+    func promoteOrphan_recentLogActivityKeepsRunRunning() {
+        let started = Self.et(day: 20, hour: 11, minute: 0)
+        let now = Self.et(day: 20, hour: 11, minute: 25)          // 25 min in, cutoff 20
+        let heartbeat = Self.et(day: 20, hour: 11, minute: 20)    // last lease keepalive
+        #expect(SessionLogService.promoteOrphan(
+            parsedStatus: .running, startedAt: started, lastActivityAt: heartbeat,
+            type: .consolidation, now: now) == .running)
+    }
+
+    @Test("a run whose log has been quiet longer than the cutoff is orphaned")
+    func promoteOrphan_quietLogIsOrphaned() {
+        let started = Self.et(day: 20, hour: 11, minute: 0)
+        let lastWrite = Self.et(day: 20, hour: 11, minute: 10)
+        let now = Self.et(day: 20, hour: 11, minute: 31)          // 21 min of silence
+        #expect(SessionLogService.promoteOrphan(
+            parsedStatus: .running, startedAt: started, lastActivityAt: lastWrite,
+            type: .consolidation, now: now) == .orphaned)
+    }
+
+    @Test("with no log activity known, the cutoff counts from the start")
+    func promoteOrphan_noActivityFallsBackToStart() {
+        let started = Self.et(day: 20, hour: 11, minute: 0)
+        #expect(SessionLogService.promoteOrphan(
+            parsedStatus: .running, startedAt: started, lastActivityAt: nil,
+            type: .consolidation, now: Self.et(day: 20, hour: 11, minute: 21)) == .orphaned)
+        // A modification time before the start can't make the run look older.
+        #expect(SessionLogService.promoteOrphan(
+            parsedStatus: .running, startedAt: started,
+            lastActivityAt: Self.et(day: 20, hour: 10, minute: 0),
+            type: .consolidation, now: Self.et(day: 20, hour: 11, minute: 15)) == .running)
+    }
+
+    @Test("loading a long consolidation that is still heartbeating shows it running")
+    func loadInitial_longRunWithRecentHeartbeatStaysRunning() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("scout-2026-04-20_11-00.log")
+        try """
+        === Scout run starting at Mon Apr 20 11:00:29 EDT 2026 ===
+        lease keepalive: renewed run scout-morning-consolidation-1's lease until 2026-04-20T15:25:32Z
+        lease keepalive: renewed run scout-morning-consolidation-1's lease until 2026-04-20T15:30:37Z
+
+        """.write(to: log, atomically: true, encoding: .utf8)
+        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
+
+        // 23 minutes after the start, 3 minutes after the last keepalive.
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: try await makeTracker(in: dir),
+            fileEvents: NoopFS(), clock: FixedClock(date: Self.et(day: 20, hour: 11, minute: 23)),
+            timeZone: Self.ny, parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+        let runs = try await service.loadInitial()
+        #expect(runs.first?.status == .running)
+    }
+
+    @Test("the sweep orphans a run once its log goes quiet, not while it is still writing")
+    func sweep_usesLogActivityNotStartTime() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("scout-2026-04-20_11-00.log")
+        try "=== Scout run starting at Mon Apr 20 11:00:29 EDT 2026 ===\n"
+            .write(to: log, atomically: true, encoding: .utf8)
+        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 10))
+
+        let clock = SteppableClock(date: Self.et(day: 20, hour: 11, minute: 12))
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: try await makeTracker(in: dir),
+            fileEvents: NoopFS(), clock: clock, timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+        _ = try await service.loadInitial()
+        #expect(service.runs.first?.status == .running)
+
+        // 25 min after the start, but a heartbeat landed at 11:20 → still running.
+        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
+        clock.date = Self.et(day: 20, hour: 11, minute: 25)
+        service.sweepStaleStatuses()
+        #expect(service.runs.first?.status == .running)
+
+        // The log then stays silent for 21 minutes → orphaned.
+        clock.date = Self.et(day: 20, hour: 11, minute: 41)
+        service.sweepStaleStatuses()
+        #expect(service.runs.first?.status == .orphaned)
+    }
+
+    /// Pin a fixture log's modification time — the liveness signal the orphan
+    /// rule reads — so tests don't depend on when they happen to run.
+    nonisolated static func setLogModified(_ url: URL, to date: Date) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
     /// April 2026 in America/New_York (EDT).
