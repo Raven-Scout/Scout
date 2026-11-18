@@ -162,9 +162,7 @@ struct SessionDetailView: View {
                 Spacer(minLength: 0)
                 if let url = pr.webURL {
                     Button("Open") { NSWorkspace.shared.open(url) }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(11.5))
-                        .foregroundStyle(DS.Accent.ink)
+                        .buttonStyle(.ds(.link, size: .small))
                 }
             }
             Text(prDetail(pr)).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)

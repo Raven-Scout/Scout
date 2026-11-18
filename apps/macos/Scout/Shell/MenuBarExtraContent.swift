@@ -88,10 +88,8 @@ struct MenuBarExtraContent: View {
                 openMainWindow()
             } label: {
                 Label("Open", systemImage: "macwindow")
-                    .font(DS.sans(11.5, weight: .medium))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Open the full Scout window")
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
@@ -117,9 +115,7 @@ struct MenuBarExtraContent: View {
             Spacer()
             if let fix = status.fix {
                 Button(fix.title) { perform(fix) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .font(DS.sans(11, weight: .medium))
+                    .buttonStyle(.ds(.secondary, size: .small))
             }
         }
         .padding(11)
