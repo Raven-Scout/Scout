@@ -51,6 +51,29 @@ struct OnboardingPlainWordsTests {
         #expect(m.vaultURL.path == "/Users/alex/Documents/Scout")
     }
 
+    /// #688 review: Return in a text field must not install the engine or
+    /// create the Scout folder; those Continues say what they do.
+    @Test("Continue that changes the Mac names it and takes a click")
+    func machineChangingContinueTakesAClick() {
+        #expect(OnboardingViewModel.continueTitle(for: .prerequisites) == "Install engine")
+        #expect(OnboardingViewModel.continueTitle(for: .connectors) == "Create Scout folder")
+        let m = model()
+        for step in [OnboardingViewModel.Step.prerequisites, .connectors] {
+            m.step = step
+            #expect(!m.continueTakesReturn, "\(step)")
+        }
+        // Engine and Scout folder with nothing installed yet offer Install,
+        // which runs the install too, so Return goes to neither button.
+        for step in [OnboardingViewModel.Step.engine, .vault] {
+            m.step = step
+            #expect(m.canRetry)
+            #expect(!m.continueTakesReturn, "\(step)")
+        }
+        m.step = .identity
+        #expect(m.continueTakesReturn)
+        #expect(m.continueTitle == "Continue")
+    }
+
     @Test("the time-zone picker keeps a value the system doesn't list")
     func timezoneChoicesKeepTheCurrentValue() {
         let choices = OnboardingViewModel.timezoneChoices(including: "Europe/Prague")
@@ -69,10 +92,13 @@ struct OnboardingPlainWordsTests {
         #expect(yellow.title.contains("2 things"))
         let one = OnboardingViewModel.readySummary(DoctorReport(severity: .yellow, errors: [], warnings: ["a"]))
         #expect(one.title.contains("1 thing "))
+        let none = OnboardingViewModel.readySummary(DoctorReport(severity: .yellow, errors: [], warnings: []))
+        #expect(none.tone == .warn)
+        #expect(!none.title.contains("0"), "\(none.title)")
         let red = OnboardingViewModel.readySummary(DoctorReport(severity: .red, errors: ["vault missing"], warnings: ["w"]))
         #expect(red.tone == .err)
         #expect(red.details == ["vault missing", "w"])
-        for s in [green, yellow, one, red] {
+        for s in [green, yellow, one, none, red] {
             let text = (s.title + " " + s.detail).lowercased()
             for word in ["green", "yellow", "red", "doctor"] {
                 #expect(!text.contains(word), "\"\(word)\" in \(s.title) / \(s.detail)")

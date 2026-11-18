@@ -14,7 +14,7 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ### Fixed
 - **Onboarding reads as a first-run flow for a new owner** (R6, #87–#91; `Scout/Onboarding/OnboardingView.swift`, `OnboardingViewModel.swift`, `EngineUpgradeSheet.swift`).
-  - Continue, Open Scout and Retry are real primary buttons: Return triggers them and they look disabled when they are (#87).
+  - Continue, Open Scout and Retry are real primary buttons that look disabled when they are (#87). Return moves on where Continue only moves on. Where it installs the engine or creates the Scout folder, the button says so ("Install engine", "Create Scout folder") and takes a click, so Return in a text field can't set up the Mac.
   - The last step says "Everything checks out", "Ready, with 2 things to look at later" or "Something needs fixing before the first run", with what to do next. The health check's own lines are under Details, no longer "Health: yellow" over a monospaced dump (#88).
   - Each step has a name and a count ("Step 3 of 7 · Install the engine"). Progress uses symbols with a spinner and spoken states, not ○ ✓ ✗. A failed step shows its whole log, selectable, with Copy details. A broken engine is titled "Repair Scout" and says why setup runs again (#89).
   - The Scout folder has a Choose… folder picker, and the time zone is a picker, not free text. The two budget fields move from Connectors to About you, under "Spending limits", named as Settings ▸ Budget names them ("Limit per run", "Daily budget") (#90).

@@ -220,6 +220,24 @@ final class OnboardingViewModel: ObservableObject {
 
     var flowTitle: String { isRepair ? "Repair Scout" : "Set up Scout" }
 
+    /// Continue's label. Where moving on changes the Mac (Check this Mac →
+    /// installs the engine, Connectors → creates the Scout folder and its
+    /// scheduled runs), the button names that instead of "Continue".
+    var continueTitle: String { Self.continueTitle(for: step) }
+
+    static func continueTitle(for step: Step) -> String {
+        switch step {
+        case .prerequisites: return "Install engine"
+        case .connectors: return "Create Scout folder"
+        default: return "Continue"
+        }
+    }
+
+    /// Whether Return may trigger Continue. Not on the steps whose Continue
+    /// installs or creates something, nor while Retry is offered: those take
+    /// a click, so Return in a text field can't set up the Mac by accident.
+    var continueTakesReturn: Bool { Self.continueTitle(for: step) == "Continue" && !canRetry }
+
     /// Set the Scout folder from a folder the user picked, written with `~`
     /// when it's inside the home folder, as the field's placeholder is.
     func chooseVault(_ url: URL) {
@@ -261,6 +279,13 @@ final class OnboardingViewModel: ObservableObject {
                                 tone: .ok, details: lines)
         case .yellow:
             let n = d.warnings.count
+            // A warning-level check with no warning lines (an older engine,
+            // or lines it didn't name): don't print "0 things".
+            guard n > 0 else {
+                return ReadySummary(title: "Ready, with something to look at later",
+                                    detail: "Nothing stops Scout from running. Settings ▸ Engine has the details.",
+                                    tone: .warn, details: lines)
+            }
             let things = n == 1 ? "1 thing" : "\(n) things"
             return ReadySummary(title: "Ready, with \(things) to look at later",
                                 detail: "Nothing stops Scout from running. Settings ▸ Engine lists them.",

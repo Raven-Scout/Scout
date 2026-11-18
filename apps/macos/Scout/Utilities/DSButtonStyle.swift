@@ -100,7 +100,11 @@ private struct DSButtonBody: View {
         let chromed = colors.fill != nil
         configuration.label
             .font(DS.font(size.textStyle, weight: .medium))
-            .lineLimit(1)
+            // Long labels wrap rather than truncate; at a large Text size
+            // a cut-off label hides what the button does.
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, chromed ? 4 : 0)
             .foregroundStyle(colors.label.color)
             .padding(.horizontal, chromed ? size.horizontalPadding : 0)
             .frame(minHeight: chromed ? size.height : nil)

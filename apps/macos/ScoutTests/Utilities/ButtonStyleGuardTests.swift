@@ -94,6 +94,17 @@ struct ButtonStyleGuardTests {
         #expect(hits.isEmpty, "a hand-built accent button — use .dsPrimary or .dsLink:\n\(hits.joined(separator: "\n"))")
     }
 
+    /// A file #677 adds. Once it exists, the KB rebuild has landed and the
+    /// `KnowledgeBase/` exemption must go, so it can't linger.
+    static let kbRebuildMarker = "KnowledgeBase/Web/KBWebBridge.swift"
+
+    @Test("the Knowledge Base exemption ends when its rebuild (#677) lands")
+    func kbExemptionExpires() {
+        let landed = FileManager.default.fileExists(atPath: Self.sourceRoot.appendingPathComponent(Self.kbRebuildMarker).path)
+        #expect(!(landed && Self.allowedFolders["KnowledgeBase/"] != nil),
+                "#677 has landed (\(Self.kbRebuildMarker) exists): move the KB buttons to DS styles and drop KnowledgeBase/ from allowedFolders")
+    }
+
     @Test("the allowlist names only files that exist")
     func allowlistIsCurrent() {
         for file in Array(Self.allowlist.keys) + Array(Self.allowedFolders.keys) {

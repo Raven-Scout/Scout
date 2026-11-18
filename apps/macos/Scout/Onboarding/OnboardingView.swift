@@ -166,7 +166,7 @@ struct OnboardingView: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Use This Folder"
-        panel.message = "Choose the folder Scout keeps your action items and notes in. A new, empty folder is fine."
+        panel.message = "Choose a new, empty folder for Scout's action items and notes, or make one with New Folder. Scout adds its own files, so don't pick a folder you already use, such as Documents."
         panel.directoryURL = model.vaultURL.deletingLastPathComponent()
         if panel.runModal() == .OK, let url = panel.url { model.chooseVault(url) }
     }
@@ -317,10 +317,9 @@ struct OnboardingView: View {
             }
             if model.canRetry {
                 // While a step can be retried, Continue is off, so Retry is
-                // the one thing this screen is for.
+                // the one thing this screen is for. No Return: it installs.
                 Button(model.retryTitle, action: retry)
                     .buttonStyle(.dsPrimary)
-                    .keyboardShortcut(.defaultAction)
             }
         }
     }
@@ -333,17 +332,18 @@ struct OnboardingView: View {
                 Button("Back") { model.back() }.buttonStyle(.dsSecondary).disabled(model.busy)
             }
             Spacer()
-            // A real primary button that Return triggers and that looks
-            // disabled when it is (audit #87). While Retry is offered it owns
-            // Return instead.
+            // A real primary button that looks disabled when it is (audit
+            // #87). Return triggers it only where it just moves on: where
+            // Continue installs the engine or creates the Scout folder, it
+            // says so and takes a click, so Return in a text field can't.
             if model.step == .ready {
                 Button("Open Scout") { model.finish() }
                     .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
             } else {
-                Button(model.busy ? "Working…" : "Continue") { Task { await model.continueTapped() } }
+                Button(model.busy ? "Working…" : model.continueTitle) { Task { await model.continueTapped() } }
                     .buttonStyle(.dsPrimary)
-                    .keyboardShortcut(model.canRetry ? nil : .defaultAction)
+                    .keyboardShortcut(model.continueTakesReturn ? .defaultAction : nil)
                     .disabled(!model.canContinue || model.busy)
             }
         }.padding(.top, 16)

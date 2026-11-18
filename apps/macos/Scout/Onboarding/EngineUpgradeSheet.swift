@@ -112,9 +112,9 @@ struct EngineUpgradeSheet: View {
                     Button("Later", action: dismiss)
                         .buttonStyle(.dsSecondary)
                         .keyboardShortcut(.cancelAction)
+                    // No Return: Retry re-runs the install.
                     Button("Retry", action: retry)
                         .buttonStyle(.dsPrimary)
-                        .keyboardShortcut(.defaultAction)
                 }
             }
         }
