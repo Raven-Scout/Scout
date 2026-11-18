@@ -2,7 +2,7 @@
    These are served from this site only — no requests to Google or any third party,
    so visiting the site does not share your IP address with anyone but the host.
    Geist and Geist Mono are © Vercel, SIL Open Font License 1.1 (assets/fonts/OFL-geist.txt).
-   inter.woff2 and jetbrains-mono.woff2 stay only because assets/og.svg still uses them. */
+   assets/og.svg loads the same two files. */
 
 @font-face {
   font-family: 'Geist';
