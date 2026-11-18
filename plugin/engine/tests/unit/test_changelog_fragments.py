@@ -219,13 +219,92 @@ def test_check_refuses_a_dropped_released_section(tmp_path):
     assert "apps/macos/CHANGELOG.md: the released [1.0.0] section is gone" in changelog.check(repo, base)
 
 
-def test_a_trailer_allows_a_deliberate_fix_to_a_released_entry(tmp_path):
+def _two_releases(repo: Path) -> str:
+    """Add a [1.1.0] above [1.0.0] in the plugin changelog and commit it as the base; returns its sha."""
+    log = repo / "plugin/CHANGELOG.md"
+    _commit(
+        repo,
+        "plugin/CHANGELOG.md",
+        log.read_text().replace("## [1.0.0]", "## [1.1.0] - 2026-02-02\n\n- new\n\n## [1.0.0]"),
+    )
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_a_trailer_naming_the_version_allows_a_fix_to_that_section_only(tmp_path):
+    repo = _repo(tmp_path)
+    base = _two_releases(repo)
+    log = repo / "plugin/CHANGELOG.md"
+    msg = f"docs: fix a typo in 1.0.0\n\nThe entry named the wrong file.\n\n{changelog.TRAILER} 1.0.0 wrong file\n"
+    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- old\n", "- older\n"), msg=msg)
+    assert changelog.trailer_versions(repo, base) == {"1.0.0"}
+    assert changelog.check(repo, base) == []
+    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- new\n", "- newer\n"))  # not covered by it
+    assert "plugin/CHANGELOG.md: the released [1.1.0] section changed" in changelog.check(repo, base)
+
+
+def test_a_line_that_only_looks_like_a_trailer_allows_nothing(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     log = repo / "plugin/CHANGELOG.md"
-    msg = f"docs: fix a typo in 1.0.0\n\n{changelog.TRAILER} the entry named the wrong file\n"
-    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- old\n", "- older\n"), msg=msg)
+    for msg in (
+        # Mid-message, wrapped prose: not in the closing trailer block, so git doesn't parse it as one.
+        f"docs: edit\n\nA sentence wraps so the next line starts\n{changelog.TRAILER} 1.0.0 by accident.\n\nMore.\n",
+        f"docs: edit\n\n{changelog.TRAILER} because I said so\n",  # a real trailer, but it names no version
+    ):
+        _commit(repo, "plugin/CHANGELOG.md", log.read_text() + "x\n", msg=msg)
+        assert changelog.trailer_versions(repo, base) == set(), msg
+        assert "plugin/CHANGELOG.md: the released [1.0.0] section changed" in changelog.check(repo, base), msg
+
+
+def test_a_pr_into_its_release_branch_may_edit_that_section_only(tmp_path):
+    """Fixes on release/vX.Y.Z (#674, dc2a3349) add to [X.Y.Z], which prepare wrote and finalize hasn't shipped."""
+    repo = _repo(tmp_path)
+    base = _two_releases(repo)
+    log = repo / "plugin/CHANGELOG.md"
+    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- new\n", "- new\n- a release-branch fix\n"))
+    assert changelog.check(repo, base, "release/v1.1.0") == []
+    assert changelog.check(repo, base, "refs/heads/release/v1.1.0") == []  # merge_group's base_ref
+    assert "plugin/CHANGELOG.md: the released [1.1.0] section changed" in changelog.check(repo, base, "main")
+    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- old\n", "- older\n"))
+    assert (
+        changelog.check(repo, base, "release/v1.1.0")[0] == "plugin/CHANGELOG.md: the released [1.0.0] section changed"
+    )
+
+
+def test_a_fragment_on_a_release_branch_is_refused(tmp_path):
+    """It would survive rc and finalize, ship in X.Y.Z, and be listed under the next release."""
+    repo = _repo(tmp_path)
+    base = _two_releases(repo)
+    _commit(repo, "plugin/changelog.d/late.fixed.md", "- too late\n")
+    problems = changelog.check(repo, base, "release/v1.1.0")
+    assert len(problems) == 1 and "late.fixed.md: a fragment on release/v1.1.0 is never assembled" in problems[0]
+    assert changelog.check(repo, base, "main") == []
+
+
+def test_changing_a_fragment_main_has_is_refused_and_deleting_one_is_not(tmp_path):
+    """Two branches whose names end the same, or a reused branch name, would overwrite another entry."""
+    repo = _repo(tmp_path)
+    _commit(repo, "plugin/changelog.d/fix-x.fixed.md", "- theirs\n")
+    _commit(repo, "plugin/changelog.d/README.md", "how to\n")
+    base = _git(repo, "rev-parse", "HEAD")
+    _commit(repo, "plugin/changelog.d/README.md", "how to, better\n")  # the README is docs, not an entry
     assert changelog.check(repo, base) == []
+    _commit(repo, "plugin/changelog.d/fix-x.fixed.md", "- mine\n")
+    problems = changelog.check(repo, base)
+    assert len(problems) == 1 and problems[0].startswith("plugin/changelog.d/fix-x.fixed.md: changes a fragment")
+    _git(repo, "rm", "-q", "plugin/changelog.d/fix-x.fixed.md")  # a revert, or the release PR, deletes it
+    _git(repo, "commit", "-q", "-m", "revert")
+    assert changelog.check(repo, base) == []
+
+
+def test_the_release_pr_may_delete_fragments_main_has(tmp_path):
+    repo = _repo(tmp_path)
+    _commit(repo, "apps/macos/changelog.d/y.added.md", "- app add\n")
+    base = _git(repo, "rev-parse", "HEAD")
+    changelog.assemble_changelogs(repo, version="1.1.0", date="2026-02-02")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "release: v1.1.0")
+    assert changelog.check(repo, base, "main") == []
 
 
 def test_check_reports_bad_fragments_and_a_base_it_cannot_read(tmp_path):

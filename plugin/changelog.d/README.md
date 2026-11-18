@@ -8,8 +8,9 @@ plugin/changelog.d/<branch-slug>.<section>.md
 ```
 
 - **`<branch-slug>`** is your branch name after its last `/`, in lowercase letters, digits and hyphens
-  (`claude/fix-run-ledger-a1b2c3` → `fix-run-ledger-a1b2c3`). No two open PRs share a branch, so no two
-  share a file, and a merge never makes another PR conflict.
+  (`claude/fix-run-ledger-a1b2c3` → `fix-run-ledger-a1b2c3`), so a merge never makes another PR conflict.
+  If that part is generic (`fix-docs`) or a branch name you used before, add a short random suffix
+  (`fix-docs-7k2p`): `jordan/fix-docs` and `claude/fix-docs` would otherwise pick the same file.
 - **`<section>`** picks the heading: `added`, `changed`, `fixed`, `removed`, `security`, `deprecated`,
   `performance`, `documentation` or `upgrade-notes`. Entries in two sections are two files
   (`fix-run-ledger-a1b2c3.fixed.md` and `fix-run-ledger-a1b2c3.changed.md`).
@@ -21,6 +22,23 @@ plugin/changelog.d/<branch-slug>.<section>.md
 ```
 
 `scripts/release.sh prepare` writes every fragment into the new `## [X.Y.Z] - date` section, grouped by
-heading and ordered by file name, and deletes them in the release commit. Nothing else moves them.
-CI's `contract` job runs `python -m scout.scripts.changelog check --base <base>`: every fragment must
-parse, and no PR may change a `## [X.Y.Z]` section that main already has.
+heading, and deletes them in the release commit. Nothing else moves them. Within a heading, entries
+still under `## [Unreleased]` come first, then the fragments **in file-name order, not merge order**.
+
+CI's `contract` job runs `python -m scout.scripts.changelog check --base <base> --target-branch <branch>`.
+It fails when:
+
+- a fragment doesn't parse;
+- a PR changes a fragment main already has (a slug collision, or a reused branch name). Deleting one
+  is fine: a revert does that, and so does the release PR;
+- a PR changes or drops a `## [X.Y.Z]` section main already has. That is what a plain merge of main
+  does when it files your `[Unreleased]` entry under a release just cut.
+
+**Fixing a release in progress.** A PR into `release/vX.Y.Z` edits the `## [X.Y.Z]` section of the
+CHANGELOG directly, and must not add a fragment: fragments there are never assembled into X.Y.Z, so the
+fix would ship in X.Y.Z but be listed under the next release. `check` allows exactly that, for that
+version only.
+
+**Fixing an entry of a published release on purpose** (a typo, a wrong path): end one commit's message
+with the trailer `Changelog-Edit-Released: X.Y.Z <why>`, naming the version. It allows edits to that
+version's section only, and only a real trailer counts (git parses the closing trailer block).

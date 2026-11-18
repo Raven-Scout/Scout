@@ -48,12 +48,16 @@ first.** The two have different languages, test runners, and release flows.
   `fixed`, `removed`, `security`, `deprecated`, `performance`, `documentation`,
   `upgrade-notes`, and the content the entry's `- ` bullets, no headings
   (format: `plugin/changelog.d/README.md`). `scripts/release.sh prepare`
-  assembles them into `## [X.Y.Z]` and deletes them. Never add to
-  `## [Unreleased]` (it is kept only for PRs opened before fragments, and goes
-  once they merge) and never touch a released `## [X.Y.Z]` section: `contract`
-  runs `python -m scout.scripts.changelog check --base <base>` and fails on
-  either a bad fragment or a changed released section. A deliberate fix to a
-  released entry needs a `Changelog-Edit-Released: <why>` commit trailer.
+  assembles them into `## [X.Y.Z]` and deletes them. If the slug is generic or
+  reused, add a short random suffix, and never edit a fragment main already
+  has. Never add to `## [Unreleased]` (it is kept only for PRs opened before
+  fragments, and goes once they merge) and never touch a `## [X.Y.Z]` section
+  main already has: `contract` runs `python -m scout.scripts.changelog check`
+  and fails on a bad fragment, a changed existing fragment, or a changed
+  versioned section. Two exceptions: a PR into `release/vX.Y.Z` edits
+  `[X.Y.Z]` directly and adds no fragment (one there would never reach X.Y.Z),
+  and a deliberate fix to a published entry ends a commit message with the
+  trailer `Changelog-Edit-Released: X.Y.Z <why>`.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is

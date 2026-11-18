@@ -67,14 +67,17 @@ jobs:
         working-directory: plugin/engine
         run: .venv/bin/python -m scout.scripts.versioning check
 
-      # Changelog fragments (plugin/changelog.d/README.md): every fragment parses, and nothing changes a
-      # `## [X.Y.Z]` section the base already has. On a PR, HEAD is the merge with the base, so an entry a
-      # merge of main would file under a just-cut release fails here. No base on a new branch's push.
+      # Changelog fragments (plugin/changelog.d/README.md): every fragment parses, no fragment the base
+      # has is changed, and nothing changes a `## [X.Y.Z]` section the base already has. On a PR, HEAD is
+      # the merge with the base, so an entry a merge of main would file under a just-cut release fails
+      # here. A PR into release/vX.Y.Z may edit [X.Y.Z] (and may not add a fragment). No base on a new
+      # branch's push.
       - name: Changelog fragments parse; released sections unchanged
         working-directory: plugin/engine
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: .venv/bin/python -m scout.scripts.changelog check --base "$BASE"
+          TARGET: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: .venv/bin/python -m scout.scripts.changelog check --base "$BASE" --target-branch "$TARGET"
 
       # 1. The canonical snapshots must match their YAML sources. (This check
       #    existed pre-merge and is retained verbatim.)
