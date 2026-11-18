@@ -214,6 +214,16 @@ section { padding: 72px 0; }
 
 /* four-stage morning, after the "assembly line" pattern: the cost before the product */
 .mock-fig.stages-fig { margin-bottom: 44px; }
+/* Scroll-driven: the figure sticks under the header while you scroll through the track,
+   and flips from "without" to "with" halfway. Only when it fits on screen (site.js sets
+   .scrolly and --fig-h); otherwise it flips once you've scrolled past it. */
+.morning-track.scrolly { height: calc(var(--fig-h, 0px) + 70vh); margin-bottom: 44px; }
+.morning-track.scrolly > .stages-fig { position: sticky; top: var(--stick, 76px); margin-bottom: 0; }
+.stages-progress { display: none; height: 2px; margin: -6px 0 16px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.stages-progress i { display: block; height: 100%; width: 0; background: var(--acc); }
+.scrolly .stages-progress { display: block; }
+.stages-hint { display: none; }
+.scrolly .stages-fig[data-view="without"] .stages-hint { display: inline; }
 .stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (min-width: 900px) { .stages { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px; } }
 .stage { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
