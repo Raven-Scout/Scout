@@ -62,8 +62,8 @@
 
   /* ---------- scroll reveal (below the fold only) ---------- */
   if (hasIO && !reduce) {
-    var groups = ['.stages', '.trio', '.bento', '.layers', '.install-grid', '.faq'];
-    var singles = '.section-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
+    var groups = ['.stages', '.trio', '.bento', '.readers-grid', '.layers', '.install-grid', '.faq'];
+    var singles = '.section-head, .hub-fig, .vault-fig, .readers-head, .feature > div, .feature > figure, .grid-2 > div:last-child > .card, .reqs';
     var rv = [];
     groups.forEach(function (g) {
       each(g, function (parent) {
@@ -371,42 +371,6 @@
       var em = b.querySelector('em'); if (em) em.textContent = on ? 'shipped' : 'queued';
     });
   });
-
-  /* ---------- knowledge graph ---------- */
-  (function () {
-    var kg = $('kg'); if (!kg) return;
-    var cap = $('kg-cap'), def = cap.innerHTML;
-    var nodes = kg.querySelectorAll('.node'), edges = kg.querySelectorAll('line');
-    function clear() {
-      kg.classList.remove('dim');
-      each('.hot', function (x) { x.classList.remove('hot'); }, kg);
-      cap.innerHTML = def;
-    }
-    Array.prototype.forEach.call(nodes, function (n) {
-      var name = n.querySelector('text').textContent;
-      n.setAttribute('tabindex', '0');
-      n.setAttribute('role', 'button');
-      n.setAttribute('aria-label', name + ': ' + n.getAttribute('data-rels'));
-      function show() {
-        var id = n.getAttribute('data-id');
-        clear(); kg.classList.add('dim'); n.classList.add('hot');
-        Array.prototype.forEach.call(edges, function (e) {
-          var a = e.getAttribute('data-a'), b = e.getAttribute('data-b');
-          if (a === id || b === id) {
-            e.classList.add('hot');
-            var o = kg.querySelector('.node[data-id="' + (a === id ? b : a) + '"]'); if (o) o.classList.add('hot');
-          }
-        });
-        cap.innerHTML = '';
-        var b = d.createElement('b'); b.textContent = name;
-        cap.appendChild(b); cap.appendChild(d.createTextNode(' — ' + n.getAttribute('data-rels')));
-      }
-      n.addEventListener('mouseenter', show); n.addEventListener('focus', show);
-      n.addEventListener('click', show);
-      n.addEventListener('blur', clear);
-    });
-    kg.querySelector('svg').addEventListener('mouseleave', clear);
-  })();
 
   /* ---------- jump palette (⌘K / Ctrl+K) ---------- */
   (function () {
