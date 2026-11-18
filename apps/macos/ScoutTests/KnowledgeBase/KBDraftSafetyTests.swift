@@ -102,6 +102,18 @@ struct KBDraftSafetyTests {
         #expect(KBEditorView.ReloadStep.forReload(isDirty: false) == .reloadNow)
     }
 
+    /// What the Reload buttons call: a dirty draft only asks, it never
+    /// reloads (discards) on the way.
+    @Test("requestReload never reloads a dirty draft; it only asks")
+    func requestReloadDispatch() {
+        for isDirty in [true, false] {
+            var reloaded = 0, asked = 0
+            KBEditorView.requestReload(isDirty: isDirty, reload: { reloaded += 1 }, askToDiscard: { asked += 1 })
+            #expect(reloaded == (isDirty ? 0 : 1), "isDirty \(isDirty)")
+            #expect(asked == (isDirty ? 1 : 0), "isDirty \(isDirty)")
+        }
+    }
+
     @Test("Esc on the Reload prompt keeps the edits")
     func reloadCancelKeepsEdits() {
         let cancel = KBEditorView.ReloadChoice.allCases.filter { $0.role == .cancel }

@@ -37,6 +37,7 @@ struct ActionItemsView: View {
     @State private var pendingScrollID: UUID?
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -122,6 +123,10 @@ struct ActionItemsView: View {
         .onAppear {
             load()
             relayout()
+        }
+        // Opening the page with the check failed tries it once more.
+        .task {
+            if !envCheck.result.ok { await envCheck.recheck?() }
         }
         .onChange(of: displayedDate) { _, _ in
             endSelectionMode()
@@ -435,9 +440,20 @@ struct ActionItemsView: View {
     }
 
     private var environmentBanner: some View {
-        ProblemView(problem: Self.environmentProblem(envCheck.result))
+        ProblemView(problem: Self.environmentProblem(envCheck.result), actions: environmentActions)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+    }
+
+    /// Try again reruns the check, so writes come back without a restart;
+    /// Open Settings lands on Settings ▸ Engine, where the fix line points.
+    private var environmentActions: [ProblemAction] {
+        var actions: [ProblemAction] = []
+        if let recheck = envCheck.recheck {
+            actions.append(.retry { Task { await recheck() } })
+        }
+        actions.append(ProblemAction("Open Settings") { HelpActions.showEngineSettings(openSettings) })
+        return actions
     }
 
     /// The engine check failed, so Done, Snooze and comments can't be saved:
@@ -518,6 +534,9 @@ struct ActionItemsView: View {
     // MARK: - Actions
 
     private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
+        // The cards' controls are off already; this catches any path that
+        // still reaches a write while the check fails.
+        guard Self.writesEnabled(envCheck.result) else { throw ActionItemsWritesOffError() }
         let writer = writerBox.writer
         let date = displayedDate
         do {
@@ -526,7 +545,8 @@ struct ActionItemsView: View {
             if case .reopen(let subject, let shortPrefix) = op {
                 revealReopened(subject: subject, shortPrefix: shortPrefix)
             }
-            if let step = Self.undoStep(for: op, result: result, writer: writer, date: date) {
+            if let step = Self.undoStep(for: op, result: result, writer: writer, date: date,
+                                        writesEnabled: { [envCheck] in Self.writesEnabled(envCheck.result) }) {
                 vaultUndo.register(step, with: undoManager) { [docService] in
                     await docService.reparseCurrent()
                 }
@@ -546,12 +566,24 @@ struct ActionItemsView: View {
     /// How a completed write is undone: the engine's inverse when the op has
     /// one (mark done ↔ reopen, by `[#TAG]`), otherwise restoring the day
     /// file's bytes. nil when the write changed nothing.
-    static func undoStep(for op: WriteOp, result: WriteResult, writer: ActionItemsWriter, date: Date) -> UndoStep? {
+    ///
+    /// The engine inverse is a `scoutctl action-items` write like any other,
+    /// so it asks `writesEnabled` at the moment of undo or redo and refuses
+    /// while the engine check fails (R2). A byte restore doesn't run the
+    /// engine and isn't gated.
+    static func undoStep(for op: WriteOp, result: WriteResult, writer: ActionItemsWriter, date: Date,
+                         writesEnabled: @escaping @MainActor () -> Bool = { true }) -> UndoStep? {
         if let inverse = op.inverse {
             return UndoStep(
                 actionName: op.actionName,
-                undo: { _ = try await writer.submit(inverse, displayedDate: date) },
-                redo: { _ = try await writer.submit(op, displayedDate: date) }
+                undo: {
+                    guard writesEnabled() else { throw ActionItemsWritesOffError() }
+                    _ = try await writer.submit(inverse, displayedDate: date)
+                },
+                redo: {
+                    guard writesEnabled() else { throw ActionItemsWritesOffError() }
+                    _ = try await writer.submit(op, displayedDate: date)
+                }
             )
         }
         guard let change = result.change else { return nil }
@@ -920,6 +952,9 @@ final class ActionItemsWriterBox: ObservableObject {
 @MainActor
 final class ActionItemsEnvironmentState: ObservableObject {
     @Published var result: ActionItemsEnvironmentResult = .okResult
+    /// Runs the check again and publishes its result: the banner's Try
+    /// again. `AppState` sets it; nil in previews and view tests.
+    var recheck: (@MainActor () async -> Void)?
 }
 
 private struct ActionItemsWritesEnabledKey: EnvironmentKey {

@@ -34,6 +34,8 @@ struct MenuBarIcon: View {
         case .paused, .skipped: "pause.circle"
         // The run list's safety-skip symbol (`RunRow`): a problem, not a pause.
         case .heldForSafety:    "shield.slash"
+        // Also the run list's symbol for this skip.
+        case .agentNotAllowed:  "nosign"
         }
     }
 

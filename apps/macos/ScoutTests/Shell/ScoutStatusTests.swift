@@ -119,7 +119,9 @@ struct ScoutStatusTests {
         let engine = EngineState.external(install, .devCheckout)
         for status in RunStatus.allCases where status.isSkip {
             let s = derive(engine, doctor: green, run: run(status))
-            #expect(s.kind == (status.isSafetySkip ? .heldForSafety : .skipped), "\(status)")
+            let kind: ScoutStatus.Kind = status.isSafetySkip ? .heldForSafety
+                : status == .skippedRuntime ? .agentNotAllowed : .skipped
+            #expect(s.kind == kind, "\(status)")
             #expect(s.detail.contains(status.skipReason!), "\(status)")
         }
         #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).tone == .err)
@@ -139,6 +141,11 @@ struct ScoutStatusTests {
             #expect(s.tone == .err, "\(status)")
         }
         #expect(derive(engine, doctor: green, run: run(.skippedBudget)).title == "Last run skipped")
+        // An agent that isn't allowed isn't routine either: its own kind, an error with a fix.
+        let runtime = derive(engine, doctor: green, run: run(.skippedRuntime))
+        #expect(runtime.kind == .agentNotAllowed)
+        #expect(runtime.tone == .err)
+        #expect(runtime.fix == .openSettings)
     }
 
     // MARK: - AppState keeps it current

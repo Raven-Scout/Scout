@@ -90,8 +90,17 @@ struct KBEditorView: View {
         static func forReload(isDirty: Bool) -> ReloadStep { isDirty ? .confirmDiscard : .reloadNow }
     }
 
+    /// What every Reload button runs (`requestReload()`): reload at once with
+    /// nothing to lose, else only ask. Static so tests drive the same code.
+    static func requestReload(isDirty: Bool, reload: () -> Void, askToDiscard: () -> Void) {
+        switch ReloadStep.forReload(isDirty: isDirty) {
+        case .reloadNow: reload()
+        case .confirmDiscard: askToDiscard()
+        }
+    }
+
     /// The Reload confirmation's buttons. "Keep Editing" has the cancel role,
-    /// so Esc or Return never discards work.
+    /// so Esc (or closing the alert) never discards work.
     enum ReloadChoice: CaseIterable {
         case keepEditing, discardAndReload
 
@@ -332,10 +341,7 @@ struct KBEditorView: View {
 
     /// A Reload button: reloads at once with nothing to lose, else asks.
     private func requestReload() {
-        switch ReloadStep.forReload(isDirty: isDirty) {
-        case .reloadNow: loadFile()
-        case .confirmDiscard: showReloadConfirm = true
-        }
+        Self.requestReload(isDirty: isDirty, reload: { loadFile() }, askToDiscard: { showReloadConfirm = true })
     }
 
     /// Load from disk, discarding any unsaved draft. A Reload button reaches

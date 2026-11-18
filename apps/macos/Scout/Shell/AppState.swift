@@ -424,6 +424,16 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
             .store(in: &cancellables)
+        // A failed Action Items check turns the page's writes off (R2), so it
+        // must not stay failed after the engine works again: rerun it after
+        // every engine health check (Settings ▸ Engine's Check now, the
+        // periodic refresh) while it is failing. A passing one is left alone.
+        engineHealth.$lastChecked
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.recheckActionItemsEnvironmentIfFailing() }
+            .store(in: &cancellables)
+        actionItemsEnvState.recheck = { [weak self] in await self?.recheckActionItemsEnvironment() }
         // The shared status follows the engine as well as the runs (card C3).
         // `receive(on:)` hops past the willSet, so the service's properties
         // already hold the new values when this reads them.
@@ -594,6 +604,12 @@ final class AppState: ObservableObject {
     func recheckActionItemsEnvironment() async {
         let check = ActionItemsEnvironmentCheck(scoutctl: scoutctlExecutable, argumentsPrefix: scoutctlArgumentsPrefix, runner: runner)
         if let result = try? await check.run() { actionItemsEnvState.result = result }
+    }
+
+    /// See the `$lastChecked` subscription: only a failing check reruns.
+    private func recheckActionItemsEnvironmentIfFailing() {
+        guard !actionItemsEnvState.result.ok else { return }
+        Task { [weak self] in await self?.recheckActionItemsEnvironment() }
     }
 
     private func engineStateDidChange() {

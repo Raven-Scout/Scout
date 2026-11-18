@@ -28,6 +28,8 @@ struct MenuBarIconTests {
         #expect(safety != MenuBarIcon.symbolName(for: .skipped))
         #expect(safety != MenuBarIcon.symbolName(for: .paused))
         #expect(safety != MenuBarIcon.symbolName(for: .ready))
+        // An error-toned skip never wears the routine pause icon.
+        #expect(MenuBarIcon.symbolName(for: .agentNotAllowed) != MenuBarIcon.symbolName(for: .skipped))
     }
 
     @Test func badgedImageIsATemplateTheSizeOfTheBaseSymbol() throws {
