@@ -504,8 +504,9 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     r = make_repo(tmp_path)
     _merge_release(r)
     assert r.run("finalize", "v0.15.0", extra_env={"FAKE_APPCAST": "1"}).returncode == 0
-    assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
-    assert any(w.endswith("/Scout.dmg") for w in next(c for c in r.calls() if c.startswith("gh release create")).split())
+    line = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "appcast.xml" in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())
 
 
 def test_the_stable_dmg_is_a_copy_never_signed_or_notarized_again(tmp_path):
