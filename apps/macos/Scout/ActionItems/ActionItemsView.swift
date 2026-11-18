@@ -78,6 +78,7 @@ struct ActionItemsView: View {
             .background(DS.Paper.base.opacity(0.94))
             .overlay(alignment: .bottom) { EditorialRule() }
             content
+                .environment(\.actionItemsWritesEnabled, Self.writesEnabled(envCheck.result))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DS.Paper.base)
@@ -439,8 +440,9 @@ struct ActionItemsView: View {
             .padding(.vertical, 6)
     }
 
-    /// The engine check failed, so Done, Snooze and comments can't be saved.
-    /// The check's own message goes to Details.
+    /// The engine check failed, so Done, Snooze and comments can't be saved:
+    /// `writesEnabled(_:)` turns them off, and the banner says so. The
+    /// check's own message goes to Details.
     static func environmentProblem(_ result: ActionItemsEnvironmentResult) -> Problem {
         let details = result.message ?? "scoutctl unavailable"
         var problem = result.engineTooOld
@@ -449,6 +451,10 @@ struct ActionItemsView: View {
         problem.impact = "You can read your action items, but marking them done, snoozing and commenting are turned off until it works."
         return problem
     }
+
+    /// Whether the card controls that save (Done, Snooze, Reopen, comments)
+    /// are on. Off exactly when the banner above says they are.
+    static func writesEnabled(_ result: ActionItemsEnvironmentResult) -> Bool { result.ok }
 
     private func missingState(url: URL) -> some View {
         let isFuture = displayedDate > Self.today()
@@ -531,7 +537,7 @@ struct ActionItemsView: View {
             // Whatever happened, show what's in the file now (C10).
             await docService.reparseCurrent()
             if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {
-                await MainActor.run { setToast("Environment problem — check python3 install.") }
+                await MainActor.run { setToast("Couldn't save: Scout's engine isn't working. See Settings ▸ Engine.") }
             }
             throw err
         }
@@ -914,4 +920,19 @@ final class ActionItemsWriterBox: ObservableObject {
 @MainActor
 final class ActionItemsEnvironmentState: ObservableObject {
     @Published var result: ActionItemsEnvironmentResult = .okResult
+}
+
+private struct ActionItemsWritesEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether Done, Snooze, Reopen and comments can be saved. Every one of
+    /// them runs `scoutctl action-items`, the command the environment check
+    /// probes, so when that check fails they are turned off rather than left
+    /// to fail one at a time (R2; audit #44).
+    var actionItemsWritesEnabled: Bool {
+        get { self[ActionItemsWritesEnabledKey.self] }
+        set { self[ActionItemsWritesEnabledKey.self] = newValue }
+    }
 }

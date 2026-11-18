@@ -32,6 +32,8 @@ struct MenuBarIcon: View {
              .lastFailed:       "exclamationmark.triangle"
         case .running:          "circle.dotted"
         case .paused, .skipped: "pause.circle"
+        // The run list's safety-skip symbol (`RunRow`): a problem, not a pause.
+        case .heldForSafety:    "shield.slash"
         }
     }
 

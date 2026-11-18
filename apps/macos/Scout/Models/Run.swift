@@ -54,6 +54,12 @@ extension RunStatus {
     /// run, never a running or orphaned one.
     var isSkip: Bool { skipReason != nil }
 
+    /// The runner held the run back because it couldn't run it safely: the
+    /// privacy check couldn't be confirmed, or write protection couldn't
+    /// start. Unlike a budget or lock skip, every later run stops the same
+    /// way until the owner fixes it, so it never reads as a routine pause.
+    var isSafetySkip: Bool { self == .skippedGates || self == .skippedSandbox }
+
     /// Why a skipped run didn't run, in the owner's words ("Over budget");
     /// nil for every status that isn't a skip. The words come from
     /// `DisplayName.skipReason`, so they match the run's status name

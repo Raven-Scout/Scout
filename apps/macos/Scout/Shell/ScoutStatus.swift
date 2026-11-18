@@ -19,7 +19,11 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         case paused
         case running
         case lastFailed
+        /// A routine skip (budget, another run going) or an agent not allowed.
         case skipped
+        /// The last run was held back for safety (`RunStatus.isSafetySkip`):
+        /// every run stops the same way until the owner fixes it.
+        case heldForSafety
         case ready
     }
 
@@ -123,7 +127,13 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox, .skippedRuntime,
              .skippedLease, .skippedRedundant:
             // Safety skips mean the run couldn't happen safely: that's a
-            // problem to fix. Budget, lock and lease skips are routine.
+            // problem to fix, and it gets its own icon and words. Budget,
+            // lock and lease skips are routine.
+            if latest.status.isSafetySkip {
+                return ScoutStatus(kind: .heldForSafety, title: "Run held back for safety",
+                                   detail: "\(name) · \(latest.status.skipReason ?? "skipped")",
+                                   tone: .err, fix: .openSettings)
+            }
             let routine: Set<RunStatus> = [.skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant]
             return ScoutStatus(kind: .skipped, title: "Last run skipped",
                                detail: "\(name) · \(latest.status.skipReason ?? "skipped")",

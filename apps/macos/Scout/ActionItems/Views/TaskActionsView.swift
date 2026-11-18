@@ -15,6 +15,8 @@ struct TaskActionsView: View {
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Off while the engine check fails; Launch and Copy still work.
+    @Environment(\.actionItemsWritesEnabled) private var writesEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -23,13 +25,16 @@ struct TaskActionsView: View {
                     EditorialActionButton("Reopen", systemImage: "arrow.uturn.backward") {
                         Task { await onOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
+                    .disabled(!writesEnabled)
                 } else {
                     EditorialActionButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
                         Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
+                    .disabled(!writesEnabled)
                     EditorialActionButton("Snooze", systemImage: "moon.zzz") {
                         showingSnooze = true
                     }
+                    .disabled(!writesEnabled)
                     .popover(isPresented: $showingSnooze) {
                         SnoozePopoverView(sourceDate: displayedDate) { target in
                             await onOp(.snooze(

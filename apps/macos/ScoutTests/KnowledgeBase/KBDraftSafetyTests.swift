@@ -94,6 +94,22 @@ struct KBDraftSafetyTests {
         #expect(KBEditorView.ConflictChoice.reload.title.contains("Discard"))
     }
 
+    // MARK: - Reload (R2)
+
+    @Test("Reload asks before discarding unsaved edits, and reloads at once without any")
+    func reloadAsksWhenDirty() {
+        #expect(KBEditorView.ReloadStep.forReload(isDirty: true) == .confirmDiscard)
+        #expect(KBEditorView.ReloadStep.forReload(isDirty: false) == .reloadNow)
+    }
+
+    @Test("Esc on the Reload prompt keeps the edits")
+    func reloadCancelKeepsEdits() {
+        let cancel = KBEditorView.ReloadChoice.allCases.filter { $0.role == .cancel }
+        #expect(cancel == [.keepEditing])
+        #expect(KBEditorView.ReloadChoice.discardAndReload.role == .destructive)
+        #expect(KBEditorView.ReloadChoice.discardAndReload.title.contains("Discard"))
+    }
+
     // MARK: - Read mode, quitting
 
     @Test("the inline editor's confirm button doesn't claim to save the file")
