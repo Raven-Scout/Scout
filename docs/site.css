@@ -5,31 +5,34 @@
 
 :root {
   color-scheme: light;
-  --bg: #fbfaf8;
+  /* Neutrals: a cool, slightly green-grey paper. The rust accent and the three
+     confidence colours (ok / warn / bad = verified / single-source / contradicted)
+     carry the brand, so new work should keep green, amber and red for those meanings. */
+  --bg: #f3f4f1;
   --surface: #ffffff;
-  --sunk: #f3f1ed;
-  --line: #e6e2db;
-  --line-2: #d6d0c5;
-  --ink: #1b1916;
-  --ink-2: #48443d;
-  --ink-3: #66615a;
+  --sunk: #e9ebe6;
+  --line: #dde0d9;
+  --line-2: #cbd0c8;
+  --ink: #15171a;
+  --ink-2: #41464b;
+  --ink-3: #5d6369;
   --acc: #a3431a;
   --acc-ink: #8a3712;
-  --acc-wash: #f6ebe3;
+  --acc-wash: #f5e8e0;
   --ok: #2c7349;
-  --ok-wash: #e6f2ea;
+  --ok-wash: #e4f1e8;
   --warn: #8a5d00;
-  --warn-wash: #fbf1d9;
+  --warn-wash: #f9f0d8;
   --bad: #b0302a;
-  --bad-wash: #fbe9e7;
-  --code-bg: #1d1b18;
-  --code-ink: #efece6;
-  --code-dim: #a7a196;
-  --shadow: 0 1px 2px rgba(27, 25, 22, .05), 0 12px 32px -16px rgba(27, 25, 22, .18);
-  --shadow-lg: 0 2px 4px rgba(27, 25, 22, .04), 0 32px 64px -32px rgba(27, 25, 22, .28);
+  --bad-wash: #fae8e6;
+  --code-bg: #16181b;
+  --code-ink: #e9ece8;
+  --code-dim: #9aa09b;
+  --shadow: 0 1px 2px rgba(21, 23, 26, .05), 0 12px 32px -16px rgba(21, 23, 26, .18);
+  --shadow-lg: 0 2px 4px rgba(21, 23, 26, .04), 0 32px 64px -32px rgba(21, 23, 26, .28);
 
-  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 14px;
   --radius-sm: 9px;
   --wrap: 1120px;
@@ -39,52 +42,52 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #121110;
-    --surface: #1b1a18;
-    --sunk: #0c0b0a;
-    --line: #2b2926;
-    --line-2: #3b3834;
-    --ink: #f3f0ea;
-    --ink-2: #cbc6bd;
-    --ink-3: #a29d94;
+    --bg: #0f1112;
+    --surface: #171a1c;
+    --sunk: #0a0b0c;
+    --line: #262a2e;
+    --line-2: #353a3f;
+    --ink: #eef0ec;
+    --ink-2: #c3c8c4;
+    --ink-3: #979d9a;
     --acc: #e8946a;
     --acc-ink: #f0a985;
-    --acc-wash: #2b1d15;
+    --acc-wash: #2a1a12;
     --ok: #6cc893;
-    --ok-wash: #15281d;
+    --ok-wash: #13271c;
     --warn: #e5b85a;
-    --warn-wash: #2b2312;
+    --warn-wash: #2a2312;
     --bad: #f08a80;
-    --bad-wash: #2e1715;
-    --code-bg: #0b0a09;
-    --code-ink: #efece6;
-    --code-dim: #9a958c;
+    --bad-wash: #2d1715;
+    --code-bg: #08090a;
+    --code-ink: #e9ece8;
+    --code-dim: #8f9691;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -16px rgba(0, 0, 0, .6);
     --shadow-lg: 0 2px 4px rgba(0, 0, 0, .3), 0 32px 64px -32px rgba(0, 0, 0, .8);
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #121110;
-  --surface: #1b1a18;
-  --sunk: #0c0b0a;
-  --line: #2b2926;
-  --line-2: #3b3834;
-  --ink: #f3f0ea;
-  --ink-2: #cbc6bd;
-  --ink-3: #a29d94;
+  --bg: #0f1112;
+  --surface: #171a1c;
+  --sunk: #0a0b0c;
+  --line: #262a2e;
+  --line-2: #353a3f;
+  --ink: #eef0ec;
+  --ink-2: #c3c8c4;
+  --ink-3: #979d9a;
   --acc: #e8946a;
   --acc-ink: #f0a985;
-  --acc-wash: #2b1d15;
+  --acc-wash: #2a1a12;
   --ok: #6cc893;
-  --ok-wash: #15281d;
+  --ok-wash: #13271c;
   --warn: #e5b85a;
-  --warn-wash: #2b2312;
+  --warn-wash: #2a2312;
   --bad: #f08a80;
-  --bad-wash: #2e1715;
-  --code-bg: #0b0a09;
-  --code-ink: #efece6;
-  --code-dim: #9a958c;
+  --bad-wash: #2d1715;
+  --code-bg: #08090a;
+  --code-ink: #e9ece8;
+  --code-dim: #8f9691;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -16px rgba(0, 0, 0, .6);
   --shadow-lg: 0 2px 4px rgba(0, 0, 0, .3), 0 32px 64px -32px rgba(0, 0, 0, .8);
 }
@@ -173,7 +176,11 @@ p { margin: 0; text-wrap: pretty; }
 section { padding: 72px 0; }
 @media (min-width: 900px) { section { padding: 104px 0; } }
 .section-alt { background: var(--sunk); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.kicker { font-size: 14px; font-weight: 600; color: var(--acc-ink); letter-spacing: .01em; margin-bottom: 12px; }
+/* Section labels read as bracketed mono tags: [ Who it's for ]. The brackets are
+   generated, so the copy stays plain text, and screen readers skip them. */
+.kicker { font: 500 13px/1.3 var(--mono); color: var(--acc-ink); letter-spacing: .04em; margin-bottom: 14px; }
+.kicker::before { content: "[ "; content: "[ " / ""; color: var(--ink-3); }
+.kicker::after { content: " ]"; content: " ]" / ""; color: var(--ink-3); }
 .section-head { max-width: 720px; margin-bottom: 44px; }
 .section-head h2 { font-size: clamp(28px, 4.2vw, 42px); line-height: 1.12; }
 .section-head p { margin-top: 16px; font-size: 18.5px; color: var(--ink-2); }
@@ -294,8 +301,12 @@ section { padding: 72px 0; }
    Illustrative mockups (HTML, not screenshots). Decorative:
    each sits in a <figure> with a caption and aria-hidden art.
    ========================================================= */
-.mock-fig { margin: 0; }
-.mock-fig figcaption { margin-top: 14px; font-size: 13.5px; color: var(--ink-3); text-align: center; }
+/* Captions are numbered like figures in a paper: "fig. 01  Live demo: …".
+   The counter skips hidden figures, so the hero's with/without pair shares one number. */
+body { counter-reset: fig; }
+.mock-fig { margin: 0; counter-increment: fig; }
+.mock-fig figcaption { margin-top: 14px; font: 400 12.5px/1.5 var(--mono); color: var(--ink-3); display: flex; gap: 10px; align-items: baseline; }
+.mock-fig figcaption::before { content: "fig. " counter(fig, decimal-leading-zero); content: "fig. " counter(fig, decimal-leading-zero) / ""; color: var(--ink); font-weight: 500; flex: none; }
 .mock { font-family: var(--sans); color: var(--ink); user-select: none; }
 .mock * { letter-spacing: 0; }
 
