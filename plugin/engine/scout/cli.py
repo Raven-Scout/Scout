@@ -416,16 +416,70 @@ app.add_typer(changes_app, name="changes")
 app.add_typer(engagement_app, name="engagement")
 
 
+def _changes_document(command: str, since: str, build: Callable[..., dict]) -> None:
+    """Shared tail of ``scoutctl changes --json`` / ``engagement --json``: resolve --since and the vault, print."""
+    import json as _json
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.run_ledger import parse_since
+
+    now = _dt.now(UTC)
+    try:
+        cutoff = parse_since(since, now=now)
+    except ValueError as e:
+        typer.echo(f"scoutctl {command}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    vault = _paths.data_dir()
+    if not vault.is_dir():
+        typer.echo(f"scoutctl {command}: vault directory missing", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(_json.dumps(build(vault, now, cutoff)))
+
+
 @changes_app.callback()
-def cli_changes(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
+def cli_changes(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+    limit: int = typer.Option(500, "--limit", min=1, max=5000, help="At most this many changes, newest first."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
         typer.echo(ctx.get_help())
+        return
+    from scout.changes.report import changes_report
+
+    _changes_document(
+        "changes", since, lambda vault, now, cutoff: changes_report(vault, now=now, since=cutoff, limit=limit)
+    )
 
 
 @engagement_app.callback()
-def cli_engagement(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
+def cli_engagement(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
         typer.echo(ctx.get_help())
+        return
+    import os
+
+    from scout.changes.report import engagement_report
+    from scout.config import resolve_timezone
+
+    _changes_document(
+        "engagement",
+        since,
+        lambda vault, now, cutoff: engagement_report(
+            vault, os.environ, now=now, since=cutoff, tz=resolve_timezone(vault)
+        ),
+    )
 
 
 @changes_app.command("scan")

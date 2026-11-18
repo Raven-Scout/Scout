@@ -1,0 +1,130 @@
+{
+  "days": [
+    {
+      "by_surface": {},
+      "date": "2026-11-02",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-03",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-04",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-05",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-06",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-07",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-08",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-09",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {
+        "kb": 1,
+        "skill": 1
+      },
+      "date": "2026-11-10",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 2
+    },
+    {
+      "by_surface": {
+        "skill": 1
+      },
+      "date": "2026-11-11",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 1
+    },
+    {
+      "by_surface": {
+        "action-items": 1,
+        "app": 1
+      },
+      "date": "2026-11-12",
+      "feedback": 2,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-13",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {
+        "slack-dm": 2
+      },
+      "date": "2026-11-14",
+      "feedback": 2,
+      "noise": 0,
+      "reliance": 0
+    },
+    {
+      "by_surface": {
+        "action-items": 1
+      },
+      "date": "2026-11-15",
+      "feedback": 0,
+      "noise": 1,
+      "reliance": 0
+    },
+    {
+      "by_surface": {},
+      "date": "2026-11-16",
+      "feedback": 0,
+      "noise": 0,
+      "reliance": 0
+    }
+  ],
+  "generated_at": "2026-11-16T12:00:00+00:00",
+  "schema_version": 1,
+  "since": "2026-11-02T12:00:00+00:00",
+  "skipped_rows": 2,
+  "totals": {
+    "feedback": 4,
+    "noise": 1,
+    "reliance": 3
+  }
+}

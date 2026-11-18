@@ -4,7 +4,7 @@ no path outside the vault); readers ignore unknown keys."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -20,7 +20,7 @@ SENTIMENTS = frozenset({"positive", "negative", "neutral"})
 
 
 def _check(value: Any, allowed: frozenset[str], name: str) -> str:
-    if value not in allowed:
+    if not isinstance(value, str) or value not in allowed:
         raise ValueError(f"{name}: {value!r} not in {sorted(allowed)}")
     return value
 
@@ -35,9 +35,11 @@ def _str(value: Any, name: str, *, optional: bool = False) -> str | None:
 
 def _ts(value: Any, name: str) -> datetime:
     try:
-        return datetime.fromisoformat(_str(value, name) or "")
+        when = datetime.fromisoformat(_str(value, name) or "")
     except ValueError as exc:
         raise ValueError(f"{name}: not an ISO timestamp: {value!r}") from exc
+    # A zoneless time is UTC, so mixed naive/aware rows can always be sorted and compared.
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
 def _strs(value: Any, name: str) -> tuple[str, ...]:

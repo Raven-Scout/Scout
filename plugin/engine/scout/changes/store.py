@@ -103,7 +103,8 @@ def read_signals(vault: Path, env: Mapping[str, str]) -> tuple[list[Signal], int
         for row in raw:
             if owned and row.get("vault_key") != key:
                 continue
-            if not owned and row.get("kind") in OWNER_KINDS:
+            kind = row.get("kind")
+            if not owned and isinstance(kind, str) and kind in OWNER_KINDS:
                 # A run writes this file; an owner-sourced kind here is a forgery, never engagement.
                 skipped += 1
                 continue
