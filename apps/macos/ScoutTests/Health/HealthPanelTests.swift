@@ -18,13 +18,13 @@ struct HealthPanelModelTests {
 
     @Test func summarisesTheRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.summary == "14 runs in the last two weeks: 4 finished, 2 failed, 8 skipped.")
+        #expect(model.summary == "15 runs in the last two weeks: 4 finished, 3 failed, 8 skipped.")
         #expect(HealthPanelModel.summary([]) == "No scheduled runs in the last two weeks.")
     }
 
     @Test func linesSpeakPlainly() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
-        #expect(model.runs.count == 14)
+        #expect(model.runs.count == 15)
         let gates = try #require(model.runs.first)
         #expect(gates.title == "Morning briefing")
         #expect(gates.outcome == DisplayName.runStatus("skipped_gates"))
@@ -48,6 +48,10 @@ struct HealthPanelModelTests {
         #expect(timeout.reason == "The run reached its time limit and Scout stopped it.")
         #expect(timeout.fix != nil)
 
+        // The sign-in race explains itself, never as "an error Scout doesn't recognise".
+        let race = try #require(model.runs.first { $0.reason == DisplayName.failureClass("auth_race").why })
+        #expect(race.fix == DisplayName.failureClass("auth_race").fix)
+
         let limited = try #require(model.runs.first { $0.resetsAt != nil })
         #expect(limited.outcome == "Paused: usage limit")
 
@@ -57,8 +61,8 @@ struct HealthPanelModelTests {
 
     @Test func problemsOnlyHidesRoutineRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture(), filter: .problems)
-        // gates, sandbox-off ok, sandbox skip, runtime skip, rate limit, integrity restore, timeout.
-        #expect(model.runs.count == 7)
+        // gates, sandbox-off ok, sandbox skip, runtime skip, rate limit, sign-in race, integrity restore, timeout.
+        #expect(model.runs.count == 8)
         #expect(!model.runs.contains { $0.tone == .ok || $0.tone == .skipped })
     }
 

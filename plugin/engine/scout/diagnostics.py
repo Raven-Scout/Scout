@@ -123,6 +123,7 @@ _FAILURE_CLASSES = frozenset(
         "timeout",
         "budget",
         "oauth_expired",
+        "auth_race",
         "network",
         "git_lock",
         "rate_limited",

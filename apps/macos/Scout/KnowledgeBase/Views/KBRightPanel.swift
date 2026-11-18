@@ -7,9 +7,11 @@ struct KBRightPanel: View {
     let relPath: String
     @ObservedObject var service: KnowledgeBaseService
     let onNavigate: (String) -> Void
+    /// Open the overview's map with this note selected.
+    var onShowOnMap: ((String) -> Void)? = nil
 
     private enum Tab: String { case links, graph }
-    @State private var tab: Tab = .links
+    @AppStorage("kbRightPanelTab") private var tab: Tab = .links
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,12 +27,20 @@ struct KBRightPanel: View {
             case .links:
                 ScrollView { linksContent.padding(12) }
             case .graph:
-                KBLocalGraphView(graph: service.localGraph(around: relPath),
-                                 onNavigate: onNavigate)
-                    .padding(.bottom, 8)
-                    // Rebuild (fresh simulation, re-centered) whenever the open
-                    // note changes, so the graph always reflects the current page.
-                    .id(relPath)
+                ZStack(alignment: .topLeading) {
+                    KBMapWebView(service: service, mode: .local(center: relPath), onOpen: onNavigate)
+                    if let onShowOnMap {
+                        Button { onShowOnMap(relPath) } label: {
+                            Label("Show on full map", systemImage: "point.3.connected.trianglepath.dotted")
+                                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(EditorialChipBackground())
+                        }
+                        .buttonStyle(.plainHit)
+                        .padding(8)
+                        .help("Open the knowledge map with this note selected")
+                    }
+                }
             }
         }
         .frame(maxHeight: .infinity)

@@ -318,8 +318,10 @@ struct KBEditorView: View {
             case .read:
                 // Rendered, but editable in place: double-click a paragraph,
                 // heading, list item or table cell to edit just that piece.
-                // A "Comment for Scout" inserts a marker and saves immediately.
-                KBEditableView(source: $draft, onRequestSave: { save() })
+                // Select any text to leave Scout a comment about it; a
+                // comment inserts a marker and saves immediately.
+                KBReaderWebView(source: $draft, resolve: { [service] in service.resolveWikilink($0) },
+                                onRequestSave: { save() })
             case .rich:
                 KBLiveEditor(text: $draft)
             case .source:
