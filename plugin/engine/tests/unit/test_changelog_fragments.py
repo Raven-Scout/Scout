@@ -271,6 +271,33 @@ def test_a_pr_into_its_release_branch_may_edit_that_section_only(tmp_path):
     )
 
 
+def test_a_push_to_main_checks_fragments_only(tmp_path):
+    """A squash merge keeps only the Co-authored-by block as trailers, so a waiver the PR passed is gone on
+    the push to main; the push must not re-run the base checks the PR (and merge queue) already ran."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    log = repo / "plugin/CHANGELOG.md"
+    squash = (
+        f"docs: fix 1.0.0 (#9)\n\n* docs: fix 1.0.0\n\n{changelog.TRAILER} 1.0.0 typo\n\n"
+        "Co-authored-by: Alex <alex@example.com>\n"
+    )
+    _commit(repo, "plugin/CHANGELOG.md", log.read_text().replace("- old\n", "- older\n"), msg=squash)
+    assert changelog.trailer_versions(repo, base) == set()  # what the reviewer saw: only Co-authored-by parses
+    for event in ("pull_request", "merge_group", None):
+        assert "plugin/CHANGELOG.md: the released [1.0.0] section changed" in changelog.check(repo, base, event=event)
+    assert changelog.check(repo, base, event="push") == []
+    assert changelog.main(["--repo-root", str(repo), "check", "--base", base, "--event", "push"]) == 0
+    _write(repo, "plugin/changelog.d/x.oops.md", "- a\n")
+    assert len(changelog.check(repo, base, event="push")) == 1  # fragments still parse on a push
+
+
+def test_contract_runs_the_base_checks_on_prs_and_the_merge_queue_only():
+    workflow = (REAL_REPO / ".github/workflows/contract.yml").read_text(encoding="utf-8")
+    assert "BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" in workflow
+    assert "EVENT: ${{ github.event_name }}" in workflow and '--event "$EVENT"' in workflow
+    assert changelog.GATED_EVENTS == ("pull_request", "merge_group")
+
+
 def test_a_fragment_on_a_release_branch_is_refused(tmp_path):
     """It would survive rc and finalize, ship in X.Y.Z, and be listed under the next release."""
     repo = _repo(tmp_path)
@@ -278,6 +305,7 @@ def test_a_fragment_on_a_release_branch_is_refused(tmp_path):
     _commit(repo, "plugin/changelog.d/late.fixed.md", "- too late\n")
     problems = changelog.check(repo, base, "release/v1.1.0")
     assert len(problems) == 1 and "late.fixed.md: a fragment on release/v1.1.0 is never assembled" in problems[0]
+    assert "this branch contains main's unreleased work: branch from release/v1.1.0" in problems[0]
     assert changelog.check(repo, base, "main") == []
 
 

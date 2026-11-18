@@ -25,10 +25,10 @@ plugin/changelog.d/<branch-slug>.<section>.md
 heading, and deletes them in the release commit. Nothing else moves them. Within a heading, entries
 still under `## [Unreleased]` come first, then the fragments **in file-name order, not merge order**.
 
-CI's `contract` job runs `python -m scout.scripts.changelog check --base <base> --target-branch <branch>`.
-It fails when:
+CI's `contract` job runs `python -m scout.scripts.changelog check`. On every run, every fragment must
+parse. On pull requests and in the merge queue (not on the push to main that follows, which a squash
+merge would trip), it also compares with the base, and fails when:
 
-- a fragment doesn't parse;
 - a PR changes a fragment main already has (a slug collision, or a reused branch name). Deleting one
   is fine: a revert does that, and so does the release PR;
 - a PR changes or drops a `## [X.Y.Z]` section main already has. That is what a plain merge of main
@@ -41,4 +41,5 @@ version only.
 
 **Fixing an entry of a published release on purpose** (a typo, a wrong path): end one commit's message
 with the trailer `Changelog-Edit-Released: X.Y.Z <why>`, naming the version. It allows edits to that
-version's section only, and only a real trailer counts (git parses the closing trailer block).
+version's section only, and only a real trailer counts (git parses the closing trailer block). The
+PR's own commits carry it; a squash merge drops it, which is why the push to main doesn't re-check.

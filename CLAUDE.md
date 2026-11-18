@@ -53,8 +53,9 @@ first.** The two have different languages, test runners, and release flows.
   has. Never add to `## [Unreleased]` (it is kept only for PRs opened before
   fragments, and goes once they merge) and never touch a `## [X.Y.Z]` section
   main already has: `contract` runs `python -m scout.scripts.changelog check`
-  and fails on a bad fragment, a changed existing fragment, or a changed
-  versioned section. Two exceptions: a PR into `release/vX.Y.Z` edits
+  and fails on a bad fragment and, on PRs and in the merge queue (not on the
+  push to main), on a changed existing fragment or a changed versioned
+  section. Two exceptions: a PR into `release/vX.Y.Z` edits
   `[X.Y.Z]` directly and adds no fragment (one there would never reach X.Y.Z),
   and a deliberate fix to a published entry ends a commit message with the
   trailer `Changelog-Edit-Released: X.Y.Z <why>`.

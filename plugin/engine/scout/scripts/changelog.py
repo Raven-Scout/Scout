@@ -17,7 +17,9 @@ release just cut. A real commit trailer `Changelog-Edit-Released: X.Y.Z <why>` b
 allows a deliberate fix to that one version's section. A PR into `release/vX.Y.Z` (`--target-branch`) may
 edit `[X.Y.Z]`, which prepare wrote and finalize has not published, and may not add a fragment, which would
 never reach X.Y.Z. `check` also refuses a PR that changes a fragment the base already has: two branches
-whose names end the same, or a reused branch name.
+whose names end the same, or a reused branch name. These base checks gate pull requests and the merge queue
+only (`--event`): on a push to main the PR was already checked, and a squash merge's message keeps only
+the Co-authored-by block as trailers, so a waiver that passed the PR would turn main red.
 """
 
 from __future__ import annotations
@@ -255,8 +257,17 @@ def _changed_fragments(repo_root: Path, base: str, diff_filter: str) -> list[str
     return [p for p in out.stdout.splitlines() if Path(p).name not in _NOT_FRAGMENTS]
 
 
-def check(repo_root: Path, base: str | None = None, target_branch: str | None = None) -> list[str]:
+# The events whose runs compare against a base. A push already merged a PR that one of these checked.
+GATED_EVENTS = ("pull_request", "merge_group")
+
+
+def check(
+    repo_root: Path, base: str | None = None, target_branch: str | None = None, event: str | None = None
+) -> list[str]:
     """Problems with the fragments and, given `base`, with what changed since it.
+
+    `event` is the CI event (`github.event_name`). Outside `GATED_EVENTS` (a push) only the fragments are
+    checked: a squash merge drops the PR's trailers, so the base checks would fail a waiver the PR passed.
 
     `target_branch` is the branch the PR merges into (`github.base_ref`). For `release/vX.Y.Z`, that
     version's section may change, and no fragment may be added: fragments there are never assembled into
@@ -267,6 +278,8 @@ def check(repo_root: Path, base: str | None = None, target_branch: str | None = 
             read_fragments(repo_root / frag_dir)
         except FragmentError as e:
             problems += str(e).splitlines()
+    if event and event not in GATED_EVENTS:
+        return problems
     if not base or set(base) == {"0"}:  # all zeros: a push that created the branch, which has no base
         return problems
     if _git(repo_root, "rev-parse", "-q", "--verify", f"{base}^{{commit}}").returncode != 0:
@@ -290,8 +303,9 @@ def check(repo_root: Path, base: str | None = None, target_branch: str | None = 
     if release:
         for path in _changed_fragments(repo_root, base, "A"):
             problems.append(
-                f"{path}: a fragment on release/v{release} is never assembled into {release}; edit its "
-                f"## [{release}] section in the CHANGELOG instead."
+                f"{path}: a fragment on release/v{release} is never assembled into {release}. If you "
+                f"didn't write it, this branch contains main's unreleased work: branch from release/v{release} "
+                f"instead. If you did, edit the ## [{release}] section in the CHANGELOG instead."
             )
     return problems
 
@@ -303,8 +317,11 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="every fragment parses; with --base, no released section changed")
     c.add_argument("--base", default=None, help="git ref to compare released sections against")
     c.add_argument("--target-branch", default=None, help="the branch the PR merges into (github.base_ref)")
+    c.add_argument(
+        "--event", default=None, help="github.event_name; base checks run only for pull_request and merge_group"
+    )
     args = ap.parse_args(argv)
-    problems = check(args.repo_root.resolve(), args.base or None, args.target_branch or None)
+    problems = check(args.repo_root.resolve(), args.base or None, args.target_branch or None, args.event or None)
     for p in problems:
         print(p, file=sys.stderr)
     if problems:
