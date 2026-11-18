@@ -6,7 +6,7 @@
   <img src="../docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
 </p>
 
-Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you — every item tagged by how many sources confirm it. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
+Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you, with each item's sources kept and disagreements flagged. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
 
 You shouldn't have to manually reconcile what happened across seven tools yesterday, what's still pending from last week, or what changed while you were in meetings. Scout does it — and when your tools disagree, it flags the contradiction instead of quietly picking a side.
 
@@ -15,7 +15,7 @@ You shouldn't have to manually reconcile what happened across seven tools yester
 Readable-markdown memory, scheduled runs, and a self-improvement loop are table stakes now — every serious agent has them. Scout's difference is what it does *before* it tells you anything:
 
 - **It cross-checks.** No single tool is treated as the truth. A calendar invite is verified against the transcript; a Linear ticket against the PR; an email against Slack. Claims only one source supports are flagged, not asserted.
-- **It shows its confidence.** Every entry is tagged — `verified` (2+ sources), `single-source`, `unverified`, `stale`, or `contradicted`. You always know how much weight to give it.
+- **It shows its confidence.** Knowledge-base claims carry a marker — none when 2+ sources agree, otherwise `single-source`, `unverified`, `stale`, or `contradicted` — so you know how much weight to give them. Action items flag the ones that are disputed or couldn't be checked.
 - **It's structured, not just stored.** A formal knowledge graph — typed people, projects, tasks, and relationships you can actually query — not a flat pile of notes.
 - **It surfaces disagreement.** When your sources conflict, that contradiction *is* the signal. Scout shows you both sides instead of guessing which is right.
 

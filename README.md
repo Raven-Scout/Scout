@@ -34,8 +34,8 @@ cross-checks them, and leaves you a short, sourced list of what needs you, plus 
 
 Scout runs as a handful of short, scheduled Claude Code sessions on your own machine. Each one reads what changed in
 Slack, email, your calendar, tickets, pull requests and meeting notes, checks the sources against each other, and
-writes the result into `~/Scout` as a git commit you can read and undo. You get a daily list you can trust, because
-every item says how sure it is, and a knowledge base of linked Markdown that opens in any editor or in Obsidian.
+writes the result into `~/Scout` as a git commit you can read and undo. You get a daily list that keeps its sources
+and says when your tools disagree, and a knowledge base of linked Markdown that opens in any editor or in Obsidian.
 
 > [!NOTE]
 > Scout runs on **your own Claude Code sign-in**, with no separate API key, no Scout account and no Scout server.
@@ -84,7 +84,7 @@ existing install as-is and never modifies an install it didn't create. You can [
 |---|---|
 | **It's scattered.** The thing that matters is half in a Slack thread, half in an email, and the rest in a ticket. | Reads every tool you've connected and puts the pieces together into one list. |
 | **It goes stale.** Notes are out of date a week later; the tracker says "done" while the pull request is still open. | Rechecks through the day, and keeps project pages to a one-screen summary that a nightly pass rebuilds. |
-| **Summaries sound sure.** An AI summary reads the same whether three sources agree or one person said it once. | Tags every item `verified`, `single-source` or `contradicted`, and shows both sides when your tools disagree. |
+| **Summaries sound sure.** An AI summary reads the same whether three sources agree or one person said it once. | Cross-checks before it writes. Knowledge-base claims carry a confidence marker (`single-source`, `contradicted`, …), and when your tools disagree the list shows both sides instead of picking one. |
 
 ## What you get
 
@@ -94,7 +94,8 @@ existing install as-is and never modifies an install it didn't create. You can [
 
 ### ✅ A list you can trust
 No single tool is taken at its word. A meeting invite is checked against the transcript, a ticket against its pull
-request. Each item carries its sources and how sure Scout is.
+request. Each item links to a note with its sources, and anything Scout couldn't confirm or found disputed is
+flagged as such.
 
 </td>
 <td width="50%" valign="top">
