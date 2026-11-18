@@ -92,4 +92,4 @@ As the very last action before exit, log this session's cost:
 {{SCOUT_DIR}}/scripts/write-session-cost.sh "$SESSION_TYPE" 0 0 0
 ```
 
-The arguments are the session type, budget cap, amount spent and exit code. Pass `0` for the cap and the amount: a session can't know its spend, and the runner records what the run cost after it ends. This row logs the session's timestamp, type and model.
+The runner records the run's cost after it ends, so the cap and spent arguments stay `0`; the row logs timestamp, type and model.
