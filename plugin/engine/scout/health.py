@@ -115,7 +115,12 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "oauth_expired": (re.compile(CLI_AUTH_FAILURE_ERE),),
     # The sign-in race (run-outcome.sh's AUTH_RACE_RE), when Claude Code's sentence opens the line. That line
     # names the account's email, which failure_line() writes as <email>.
-    "auth_race": (re.compile(_ERR + r"(?:Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet"),),
+    "auth_race": (
+        re.compile(
+            _ERR + r"(?:(?:Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet"
+            r"|Claude Code .{0,80}?sign-in token was still being refreshed)"
+        ),
+    ),
     "network": (
         re.compile(
             r"(?:API Error: .{0,80}?(?:" + _NET_CODES + r"|socket hang up|Connection error|" + _NET_STREAM + r")"
@@ -517,18 +522,21 @@ def _window_text(row: OutcomeRow) -> str:
     return f" {row.commits_in_window} commit(s) in that run's window{newest}."
 
 
+# The sign-in race (failure_class auth_race): the login is fine, and the retry wrapper already retried it.
+_AUTH_RACE_FIX = (
+    "Claude Code's sign-in was busy: another Claude Code process was refreshing it when these runs started, "
+    "and the login itself is fine. It usually clears by itself, and the retry wrapper retries it after a "
+    "short wait (SCOUT_RETRY_MAX attempts in all). If it keeps happening, move those slots away from times "
+    "you usually have Claude Code open, or store a long-lived token for scheduled runs: scoutctl auth setup-token"
+)
+
 _RECURRING_FIX = {
     "budget": (
         "These runs reached the per-session cap (claude --max-budget-usd, set by connectors.inputs.max_budget "
         "in scout-config.yaml). Compare what the runs cost with that cap, then raise it or move those slots "
         "to a cheaper model (the slot's model: in .scout-state/schedule.yaml)."
     ),
-    "auth_race": (
-        "These runs started while another Claude Code process was refreshing your sign-in; the login itself "
-        "is fine. Each run retries once after a minute. If it keeps happening, move those slots away from "
-        "times you usually open Claude Code, or store a long-lived token for scheduled runs: "
-        "scoutctl auth setup-token"
-    ),
+    "auth_race": _AUTH_RACE_FIX,
 }
 
 
@@ -636,15 +644,19 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
             )
         else:
             log_hint = f": .scout-logs/{newest.log}" if newest.log else ""
+            # A streak of sign-in races only: nothing to repair, so it stays yellow until it has cost as many
+            # runs as a recurring failure does, and says what it is rather than sending anyone to the doctor.
+            races = all(r.failure_class == "auth_race" for r in failed)
+            red_at = RECURRING_FAILURE_THRESHOLD if races else 2
             findings.append(
                 Finding(
                     id="runs.failing",
-                    severity="red" if streak >= 2 else "yellow",
+                    severity="red" if streak >= red_at else "yellow",
                     since=last_ok,
                     summary=(
                         f"The last {streak} scheduled run(s) failed ({newest.failure_class})." + _window_text(newest)
                     ),
-                    fix=f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
+                    fix=_AUTH_RACE_FIX if races else f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
                     source="ledger",
                     detail=detail,
                     log=log_path,

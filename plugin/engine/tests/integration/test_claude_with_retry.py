@@ -212,7 +212,11 @@ AUTH_RACE_LINE = (
     [
         pytest.param(AUTH_RACE_LINE, id="observed-wording"),
         pytest.param(AUTH_RACE_LINE.replace("'", "’"), id="curly-apostrophe"),
-        pytest.param("Error: sign-in failed because the sign-in token was still being refreshed", id="cause-clause"),
+        pytest.param(f"Error: {AUTH_RACE_LINE}", id="error-prefix"),
+        pytest.param(
+            "Claude Code couldn't confirm your account (its sign-in token was still being refreshed).",
+            id="cause-clause",
+        ),
     ],
 )
 def test_retries_on_the_sign_in_race(tmp_path: Path, output: str) -> None:
@@ -267,9 +271,13 @@ def test_a_sign_in_race_that_persists_is_bounded(tmp_path: Path) -> None:
         "Failed to authenticate. API Error: 401 Invalid authentication credentials",
         # Mentions the sign-in, but not the race: a login that can't be verified at all.
         "Claude Code couldn't verify your sign-in with Anthropic.",
+        # The session's own output quoting the race (a briefing about last night's runs) is not one.
+        "- Two runs failed: Claude Code couldn't verify your sign-in with Anthropic yet, so they stopped.",
+        "Summary: the sign-in token was still being refreshed by another process.",
+        "  Claude Code couldn't verify your sign-in with Anthropic yet (quoted, indented)",
     ],
 )
-def test_a_real_signed_out_state_is_not_taken_for_the_race(tmp_path: Path, output: str) -> None:
+def test_a_real_signed_out_state_or_a_quote_is_not_taken_for_the_race(tmp_path: Path, output: str) -> None:
     scout_dir = tmp_path / "Scout"
     scout_dir.mkdir()
     script = _render(TEMPLATE, scout_dir)
@@ -279,7 +287,7 @@ def test_a_real_signed_out_state_is_not_taken_for_the_race(tmp_path: Path, outpu
     result = _run(script, fake, log_file)
 
     assert result.returncode == 1
-    assert _attempts(scout_dir) == 1, "a signed-out state must not be retried"
+    assert _attempts(scout_dir) == 1, "a signed-out state, or a quote of the race, must not be retried"
 
 
 def test_existing_transient_pattern_still_retries(tmp_path: Path) -> None:

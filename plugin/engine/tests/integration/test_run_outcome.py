@@ -333,6 +333,11 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
             id="network-then-auth-race",
         ),
         pytest.param("Claude Code couldn't verify your sign-in with Anthropic.\n", "unknown", id="no-race-wording"),
+        pytest.param(
+            "Briefing: two runs stopped because Claude Code couldn't verify your sign-in with Anthropic yet.\n",
+            "unknown",
+            id="quoted-auth-race-is-not-one",
+        ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.

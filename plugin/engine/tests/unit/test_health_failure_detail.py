@@ -242,6 +242,7 @@ def test_to_dict_emits_the_new_keys(tmp_path):
             "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being refreshed)",
         ),
         ("auth_race", "AUTH_RACE_RE", "Claude Code couldn\u2019t verify your sign-in with Anthropic yet."),
+        ("auth_race", "AUTH_RACE_RE", "Claude Code couldn't confirm it: its sign-in token was still being refreshed"),
     ],
 )
 def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, var, line):
@@ -264,6 +265,7 @@ def test_a_detail_line_also_matches_the_runner_class_pattern(tmp_path, klass, va
         ("budget", "CANARY_PRIVATE_NOTE: we exceeded USD budget in Q3"),
         ("oauth_expired", "  CANARY_PRIVATE_NOTE: OAuth token has expired for the vendor"),
         ("auth_race", "CANARY_PRIVATE_NOTE: Claude Code couldn't verify your sign-in with Anthropic yet"),
+        ("auth_race", "CANARY_PRIVATE_NOTE: its sign-in token was still being refreshed"),
     ],
 )
 def test_failure_line_never_quotes_the_sessions_own_prose(tmp_path, klass, prose):
@@ -312,3 +314,26 @@ def test_recurring_auth_races_say_the_login_is_fine(tmp_path):
 
     assert finding is not None and "auth_race ×3" in finding.summary
     assert "the login itself is fine" in finding.fix and "@" not in (finding.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("classes", "severity", "race_fix"),
+    [
+        pytest.param(["auth_race", "auth_race"], "yellow", True, id="two-races-stay-yellow"),
+        pytest.param(["auth_race"] * health.RECURRING_FAILURE_THRESHOLD, "red", True, id="enough-races-turn-red"),
+        pytest.param(["network", "auth_race"], "red", False, id="a-mixed-streak-is-the-usual-one"),
+    ],
+)
+def test_a_streak_of_sign_in_races_says_what_it_is(tmp_path, classes, severity, race_fix):
+    """The login is fine and the wrapper already retried: no doctor, and red only once it has cost several runs."""
+    v = _vault(tmp_path)
+    _log(v, f"{AUTH_RACE_LINE}\n")
+    rows = [_row(NOW - timedelta(hours=10), klass="ok")]
+    rows += [_row(NOW - timedelta(hours=len(classes) - i), klass=k) for i, k in enumerate(classes)]
+    _ledger(v, rows)
+
+    finding = _only(health.evaluate(v, now=NOW))
+
+    assert finding.id == "runs.failing" and finding.severity == severity
+    assert ("sign-in was busy" in finding.fix) is race_fix
+    assert ("bootstrap doctor" in finding.fix) is not race_fix
