@@ -178,7 +178,7 @@ section { padding: 72px 0; }
 .section-alt { background: var(--sunk); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 /* Section labels read as bracketed mono tags: [ Who it's for ]. The brackets are
    generated, so the copy stays plain text, and screen readers skip them. */
-.kicker { font: 500 13px/1.3 var(--mono); color: var(--acc-ink); letter-spacing: .04em; margin-bottom: 14px; }
+.kicker, .section-head .kicker { font: 500 13px/1.3 var(--mono); color: var(--acc-ink); letter-spacing: .04em; margin: 0 0 14px; }
 .kicker::before { content: "[ "; content: "[ " / ""; color: var(--ink-3); }
 .kicker::after { content: " ]"; content: " ]" / ""; color: var(--ink-3); }
 .section-head { max-width: 720px; margin-bottom: 44px; }
