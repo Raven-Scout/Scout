@@ -73,7 +73,7 @@ struct ActionItemsView: View {
                             toggleSelectionMode()
                         } label: {
                             Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
-                                .font(DS.sans(11.5, weight: .medium))
+                                .font(DS.font(.caption, weight: .medium))
                         }
                         .buttonStyle(.borderless)
                         .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
@@ -413,18 +413,18 @@ struct ActionItemsView: View {
     private var dateline: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(longDate(displayedDate))
-                .font(DS.serif(28, weight: .medium))
+                .font(DS.font(.display, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
             Text(weekLabel(displayedDate))
-                .font(DS.sans(14))
+                .font(DS.font(.headline))
                 .foregroundStyle(DS.Ink.p3)
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 2) {
                 Text("repo ~/Scout")
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Text(displayedDate, style: .date)
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -528,12 +528,12 @@ struct ActionItemsView: View {
         let isFuture = displayedDate > Self.today()
         return VStack(spacing: 14) {
             Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
-                .font(DS.sans(26))
+                .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(isFuture
                  ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."
                  : "No action items for \(shortDate(displayedDate)) — morning briefing runs at 08:03.")
-                .font(DS.serif(14))
+                .font(DS.font(.headline, .serif))
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)
@@ -554,7 +554,7 @@ struct ActionItemsView: View {
 
     private func toastView(_ text: String) -> some View {
         Text(text)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(.ultraThinMaterial))
@@ -672,13 +672,13 @@ struct ActionItemsView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(DS.Accent.ink)
             Text("\(selectedTaskIDs.count) selected")
-                .font(DS.sans(12, weight: .semibold))
+                .font(DS.font(.label, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
             Button(allVisibleTasksSelected ? "Clear" : "Select all") {
                 toggleSelectAll()
             }
             .buttonStyle(.borderless)
-            .font(DS.sans(11))
+            .font(DS.font(.caption))
             .help("Select or clear every action item currently visible")
             Spacer()
             Button {

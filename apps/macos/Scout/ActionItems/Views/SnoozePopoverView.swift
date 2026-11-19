@@ -65,10 +65,10 @@ struct SnoozePopoverView: View {
                 showingCustom = true
             } label: {
                 HStack {
-                    Text("Other date…").font(DS.sans(12))
+                    Text("Other date…").font(DS.font(.label))
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(DS.sans(9))
+                        .font(DS.font(.micro))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
@@ -82,7 +82,7 @@ struct SnoozePopoverView: View {
             Button("Cancel", action: onCancel)
                 .buttonStyle(.plainHit)
                 .foregroundStyle(.secondary)
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -99,13 +99,13 @@ struct SnoozePopoverView: View {
                 Button {
                     showingCustom = false
                 } label: {
-                    Image(systemName: "chevron.left").font(DS.sans(10))
+                    Image(systemName: "chevron.left").font(DS.font(.caption2))
                 }
                 .buttonStyle(.plainHit)
                 .accessibilityLabel("Back")
                 .foregroundStyle(.secondary)
                 Text("Pick a date")
-                    .font(DS.sans(10, weight: .semibold))
+                    .font(DS.font(.caption2, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -155,7 +155,7 @@ struct SnoozePopoverView: View {
 
     private func header(title: String) -> some View {
         Text(title)
-            .font(DS.sans(10, weight: .semibold))
+            .font(DS.font(.caption2, weight: .semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.top, 6)
@@ -167,10 +167,10 @@ struct SnoozePopoverView: View {
             commit(days: days)
         } label: {
             HStack {
-                Text(label).font(DS.sans(12))
+                Text(label).font(DS.font(.label))
                 Spacer(minLength: 8)
                 Text(relativeLabel(days: days))
-                    .font(DS.sans(10))
+                    .font(DS.font(.caption2))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)

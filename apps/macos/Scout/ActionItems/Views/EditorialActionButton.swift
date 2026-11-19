@@ -39,13 +39,13 @@ struct EditorialActionButton: View {
             HStack(spacing: 5) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(DS.sans(10))
+                        .font(DS.font(.caption2))
                 }
                 Text(label)
-                    .font(DS.sans(11.5, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                 if let keyboardShortcut {
                     Text(ShortcutLabel.text(keyboardShortcut))
-                        .font(DS.mono(10.5, weight: .medium))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)

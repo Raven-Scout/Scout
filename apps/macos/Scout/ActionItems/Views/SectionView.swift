@@ -153,7 +153,7 @@ struct SectionView: View {
                 )
                 ForEach(Array(group.bullets.enumerated()), id: \.offset) { _, bullet in
                     InlineMarkdownText(bullet)
-                        .font(DS.serif(13))
+                        .font(DS.font(.body, .serif))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -169,12 +169,12 @@ struct SectionView: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p4)
                         .fixedSize(horizontal: false, vertical: true)
                     if !group.tasks.isEmpty {
                         Text("\(group.tasks.count)")
-                            .font(DS.mono(11, weight: .medium))
+                            .font(DS.font(.caption, .mono, weight: .medium))
                             .foregroundStyle(DS.Ink.p4)
                     }
                     Spacer(minLength: 0)
@@ -198,19 +198,19 @@ struct SectionView: View {
                 .frame(width: 15, alignment: .leading)
                 .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
             Text(section.title.uppercased())
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .tracking(0.05 * 12)   // letter-spacing: 0.04em → 0.48
                 .foregroundStyle(DS.Ink.p2)
                 .glossaryHelp(ifAny: Self.glossaryTerm(for: section))
             if showCount {
                 Text("\(section.tasks.count)")
-                    .font(DS.mono(11, weight: .medium))
+                    .font(DS.font(.caption, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
             }
             Spacer(minLength: 0)
             if let hint {
                 Text(hint)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -278,12 +278,12 @@ struct SectionView: View {
         }()
         return HStack(alignment: .top, spacing: 10) {
             Text("\(n)")
-                .font(DS.mono(11, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, alignment: .trailing)
                 .padding(.top, 3)
             InlineMarkdownText(text)
-                .font(DS.serif(14))
+                .font(DS.font(.headline, .serif))
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,7 +305,7 @@ struct SectionView: View {
     /// no number and no card.
     private func focusProse(_ text: String) -> some View {
         InlineMarkdownText(text)
-            .font(DS.serif(13))
+            .font(DS.font(.body, .serif))
             .foregroundStyle(DS.Ink.p2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -356,11 +356,11 @@ struct SectionView: View {
             } label: {
                 HStack(spacing: 8) {
                     Text("RECENTLY COMPLETED")
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .tracking(0.05 * 12)
                         .foregroundStyle(DS.Ink.p3)
                     Text("\(section.tasks.count)")
-                        .font(DS.mono(11, weight: .medium))
+                        .font(DS.font(.caption, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                     Spacer()
                 }
@@ -377,10 +377,10 @@ struct SectionView: View {
                 completedSelectionButton(t)
             }
             Image(systemName: "checkmark")
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .foregroundStyle(DS.Priority.done)
             InlineMarkdownText(t.subject)
-                .font(DS.serif(13))
+                .font(DS.font(.body, .serif))
                 .strikethrough(color: DS.Ink.decorative)
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -388,9 +388,9 @@ struct SectionView: View {
             if !t.comments.isEmpty {
                 HStack(spacing: 3) {
                     Image(systemName: "text.bubble")
-                        .font(DS.sans(9))
+                        .font(DS.font(.micro))
                     Text("\(t.comments.count)")
-                        .font(DS.mono(10.5))
+                        .font(DS.font(.caption2, .mono))
                 }
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.top, 2)
@@ -410,7 +410,7 @@ struct SectionView: View {
             }
         } label: {
             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .font(DS.sans(14, weight: .medium))
+                .font(DS.font(.headline, weight: .medium))
                 .foregroundStyle(selected ? DS.Accent.ink : DS.Ink.p4)
                 .frame(width: 26, height: 24)
                 .contentShape(Rectangle())

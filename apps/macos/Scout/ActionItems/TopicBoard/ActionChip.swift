@@ -9,7 +9,7 @@ struct ActionChip: View {
     var body: some View {
         Button(action: onTap) {
             Text(label.uppercased())
-                .font(DS.sans(10.5, weight: .semibold))
+                .font(DS.font(.caption2, weight: .semibold))
                 .tracking(0.4)
                 .foregroundStyle(DS.Paper.base)
                 .padding(.horizontal, 5)

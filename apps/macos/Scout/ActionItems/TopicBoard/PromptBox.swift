@@ -22,7 +22,7 @@ struct PromptBox: View {
         HStack(spacing: 6) {
             if let note {
                 Text(note)
-                    .font(DS.sans(13))
+                    .font(DS.font(.body))
                     .foregroundStyle(DS.Ink.p3)
             } else {
                 TextField("What should Claude do? Enter to send, Esc to cancel", text: $draft)
@@ -44,14 +44,14 @@ struct PromptBox: View {
                     .buttonStyle(.dsSecondary)
                 if let failure {
                     Text(failure)
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .foregroundStyle(DS.Status.err)
                         .lineLimit(2)
                         .help(failure)
                 }
             }
         }
-        .font(DS.sans(13))
+        .font(DS.font(.body))
         .padding(.leading, 20)
         .padding(.trailing, 14)
         .padding(.top, 6)

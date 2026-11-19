@@ -18,7 +18,7 @@ struct SideEntryRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 if let source = entry.source {
                     Text(source)
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                 }
                 if let url = entry.url {
@@ -29,13 +29,13 @@ struct SideEntryRow: View {
                     Text(entry.text)
                 }
             }
-            .font(DS.sans(13))
+            .font(DS.font(.body))
             .foregroundStyle(DS.Ink.p2)
             .frame(maxWidth: .infinity, alignment: .leading)
             if let onClose {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(DS.sans(10, weight: .semibold))
+                        .font(DS.font(.caption2, weight: .semibold))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
