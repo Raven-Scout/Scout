@@ -140,7 +140,10 @@ struct SettingsWindowTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
         #expect(SettingsPathCheck.scoutFolderNotes(for: "~/ScoutLink", engineVault: folder, home: home).isEmpty)
         #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Scout", engineVault: link, home: home).isEmpty)
-        #expect(SettingsPathCheck.sameFolder(folder, home.appendingPathComponent("scout")))
+        #expect(SettingsPathCheck.sameFolder(URL(fileURLWithPath: "/Users/alex/Scout"),
+                                             URL(fileURLWithPath: "/Users/alex/scout")))
+        #expect(!SettingsPathCheck.sameFolder(URL(fileURLWithPath: "/Users/alex/Scout"),
+                                              URL(fileURLWithPath: "/Users/alex/Scout2")))
     }
 
     // MARK: - Authorship (#85)
