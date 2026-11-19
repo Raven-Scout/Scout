@@ -6,9 +6,11 @@ laptop, a session started just before the lid closed was reaped on the first
 slot after wake while it was alive and working (two incidents in #466).
 
 Now every waiter samples the holder's session (the CPU time of its process
-group and tree, its process list, its run log's mtime) into
-``.scout-session.lock.progress``. The stall only grows while none of those move,
-and only by time on a clock that stops while the host sleeps. These tests use
+group and tree, its process list) into ``.scout-session.lock.progress``, unless
+the holder's progress watcher has a fresh line (``test_run_progress_runner.py``).
+The run log's mtime counted too until the review of #701. The stall only grows
+while none of those move, and only by time on a clock that stops while the host
+sleeps. These tests use
 fakes throughout: detached ``sleep`` and ``python3`` holders, a fake ``claude``
 and a stubbed retry wrapper. Nothing here starts a real session.
 """
@@ -62,6 +64,11 @@ exit 0
 
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
+    return make_vault(tmp_path)
+
+
+def make_vault(tmp_path: Path) -> Path:
+    """The real runner and lock library in a temporary vault, with a no-op engine and a fake claude."""
     v = tmp_path / "Scout"
     (v / ".scout-logs").mkdir(parents=True)
     text = (TEMPLATES / "run-scout.sh.tmpl").read_text(encoding="utf-8")
@@ -325,9 +332,12 @@ def test_an_idle_holder_that_resumes_working_is_not_reaped(vault: Path, holders:
     assert _lock(vault).read_text(encoding="utf-8").strip() == str(pid)
 
 
-def test_a_holder_whose_run_log_advances_is_not_reaped(vault: Path, holders: list[int]) -> None:
-    """A holder that burns no CPU but keeps writing its run log is progressing.
-    The holder names its log in ``.scout-session.lock.owner`` when it takes the lock."""
+def test_a_holder_whose_only_sign_of_life_is_its_run_log_is_reaped(vault: Path, holders: list[int]) -> None:
+    """The run log is not progress (review of #701). On a vault linked to Agnes the lease
+    keepalive appends to it every five minutes while the runner shell lives, and ``claude -p``
+    writes it only when it exits, so a hung claude kept a "moving" log for ever. With no
+    progress watcher's line for the holder (an older runner), the waiter samples CPU and the
+    process list only."""
     pid = _detached("exec sleep 300")
     holders.append(pid)
     _hold_lock(vault, pid, held_for_s=EIGHT_HOURS_S)
@@ -347,14 +357,14 @@ def test_a_holder_whose_run_log_advances_is_not_reaped(vault: Path, holders: lis
     writer = threading.Thread(target=write_log, daemon=True)
     writer.start()
     try:
-        result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="3", SCOUT_LOCK_WAIT_SECS="7")
+        result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="3", SCOUT_LOCK_WAIT_SECS="15")
     finally:
         stop.set()
         writer.join()
 
     assert result.returncode == 0, result.stderr
-    assert _group_alive(pid)
-    assert "Reaped" not in _failures(vault)
+    _wait_for(lambda: not _group_alive(pid), "the holder to be reaped")
+    assert f"Reaped wedged session PID {pid} after " in _failures(vault)
 
 
 # --- no progress past the ceiling: the whole session is reaped (#466's test) ---

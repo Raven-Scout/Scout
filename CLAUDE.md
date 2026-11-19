@@ -150,6 +150,16 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Fixtures/delegate-status.json` and update the pins in
   `apps/macos/ScoutTests/Engine/DelegateStatusTests.swift` — all in one commit.
   It never carries a key, token, vault path or note name.
+- **The run progress line has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/run-progress.alive`, the format of
+  `.scout-logs/.scout-session.lock.alive` that `scoutctl progress watch`
+  (`scout/run_progress.py`) writes beside every scheduled run and the lock
+  reaper, `scoutctl health` and the app's `RunProgress` read (the run log is
+  not progress: review of #701). Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_progress.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/run-progress.alive` and update the pins in
+  `apps/macos/ScoutTests/Services/RunProgressTests.swift` — all in one commit.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame
