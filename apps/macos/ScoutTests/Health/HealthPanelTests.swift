@@ -171,6 +171,6 @@ struct HealthViewSmokeTests {
     func sidebarHasHealth() {
         #expect(SidebarItem.allCases.contains(.health))
         #expect(SidebarItem.health.statusLabel == "health")
-        #expect(MainWindowView.showsOnboarding(state: .notInstalled, selection: .health, onboardingActive: false))
+        #expect(MainWindowView.showsOnboarding(state: .notInstalled, onboardingActive: false))
     }
 }

@@ -45,6 +45,14 @@ struct NowStripView: View {
     /// cost no run measured reads "unknown" or "≥", never $0 (UI audit R1). "—" until it loads.
     /// The budget comes from the vault's own budget settings (`scoutctl budget show`), and is
     /// left off until they have loaded — never a made-up figure (card C3).
+    /// The Next column's sub-line: when the run starts, in words ("Starts in
+    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI audit).
+    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
+    }
+
     nonisolated static func costLine(today: UsagePeriod?, dailyBudgetUSD: Double?) -> String {
         let cost: String
         if let today {
@@ -137,7 +145,7 @@ struct NowStripView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
                 bigName(u.displayName)
-                sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
+                sub(Self.nextRunLine(u.scheduledAt), color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
                 sub("check LaunchAgents", color: DS.Status.warn)

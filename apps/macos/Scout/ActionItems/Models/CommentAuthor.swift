@@ -8,6 +8,38 @@ import Foundation
 /// falls back to "user", the Settings default.
 nonisolated enum CommentAuthor {
     static let fallback = "user"
+    /// The `UserDefaults` key Settings ▸ General ▸ Your name writes, and
+    /// onboarding fills from its "About you" step (UI audit #85).
+    static let defaultsKey = "authorName"
+
+    /// The name comments are signed with: Settings' value, or "user" while
+    /// it is unset or blank (a cleared field means "not set", not "").
+    static func configuredName(_ defaults: UserDefaults = .standard) -> String {
+        let name = defaults.string(forKey: defaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? fallback : name
+    }
+
+    /// Whether the owner has told Scout their name yet. Settings asks for it
+    /// while this is false.
+    static func isNameSet(_ defaults: UserDefaults = .standard) -> Bool {
+        isNameSet(authorName: defaults.string(forKey: defaultsKey) ?? "")
+    }
+
+    /// The same rule for a value already read (Settings' field).
+    static func isNameSet(authorName: String) -> Bool {
+        let name = authorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty && name != fallback
+    }
+
+    /// Onboarding's "About you" name becomes the comment byline, unless the
+    /// owner already chose one in Settings. Returns whether it wrote.
+    @discardableResult
+    static func adoptOnboardingName(_ name: String, into defaults: UserDefaults) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isNameSet(defaults) else { return false }
+        defaults.set(trimmed, forKey: defaultsKey)
+        return true
+    }
 
     static func handle(_ name: String) -> String {
         // Diacritic folding alone drops letters that aren't accented forms

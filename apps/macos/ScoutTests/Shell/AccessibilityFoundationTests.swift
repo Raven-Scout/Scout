@@ -57,7 +57,7 @@ struct AccessibilityFoundationTests {
         var selection = SidebarItem.schedules
         let binding = Binding(get: { selection }, set: { selection = $0 })
         let nodes = await AccessibilityTree.nodes(
-            of: SidebarView(selection: binding, proposalsBadge: 2, settingsAttention: true),
+            of: SidebarView(selection: binding, proposalsBadge: 2, settingsBadge: 1, settingsAttention: true),
             size: CGSize(width: 240, height: 700))
         let ids = Set(nodes.map(\.identifier))
         for item in SidebarItem.allCases {
@@ -67,8 +67,11 @@ struct AccessibilityFoundationTests {
         let proposals = nodes.first { $0.identifier == SidebarItem.proposals.accessibilityIdentifier }
         #expect(proposals?.label == "Proposals")
         #expect(proposals?.value == "2 awaiting a decision")
-        let settings = nodes.first { $0.identifier == SidebarItem.settings.accessibilityIdentifier }
-        #expect(settings?.value == "needs attention")
+        // Settings isn't a page (UI audit #10): its row opens the ⌘, window,
+        // and still says why it needs a look.
+        let settings = nodes.first { $0.identifier == SidebarView.settingsRowIdentifier }
+        #expect(settings?.label == "Settings")
+        #expect(settings?.value == "1 update available, needs attention")
         // The system badge must not be a second element saying "2" on top of
         // the row's own "2 awaiting a decision".
         let strayBadges = nodes.filter { $0.label == "2" || $0.value == "2" }
@@ -77,13 +80,14 @@ struct AccessibilityFoundationTests {
 
     // MARK: - Sidebar and Go menu metadata
 
-    @Test("Go menu shortcuts are unique digits, ⌘1 Control Center to ⌘9 Settings")
+    @Test("Go menu shortcuts are unique digits from ⌘1 Control Center; Settings is ⌘,, not a page")
     func goShortcutsAreUnique() {
         let keys = SidebarItem.allCases.compactMap(\.goShortcutKey)
         #expect(Set(keys).count == keys.count, "two pages share a Go shortcut")
         #expect(keys.allSatisfy { "123456789".contains($0) })
         #expect(SidebarItem.controlCenter.goShortcutKey == "1")
-        #expect(SidebarItem.settings.goShortcutKey == "9")
+        #expect(SidebarItem.knowledgeBase.goShortcutKey == "8")
+        #expect(!SidebarItem.allCases.map(\.title).contains("Settings"), "Settings is the ⌘, window only (UI audit #10)")
         // Health (C8) came after the nine digits were given out: menu item only.
         #expect(SidebarItem.health.goShortcutKey == nil)
         // In sidebar order, so ⌘-numbers count down the list.
@@ -104,8 +108,10 @@ struct AccessibilityFoundationTests {
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 0, attention: false, tabsGated: false) == "")
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 1, attention: false, tabsGated: false) == "1 needs you")
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 3, attention: false, tabsGated: false) == "3 need you")
-        #expect(SidebarView.accessibilityValue(for: .settings, badge: 2, attention: true, tabsGated: true)
-                == "2 updates available, needs attention")
+        #expect(SidebarView.accessibilityValue(for: .health, badge: 0, attention: true, tabsGated: true)
+                == "needs attention, unavailable until Scout is set up")
+        #expect(SidebarView.settingsAccessibilityValue(updates: 2, attention: true) == "2 updates available, needs attention")
+        #expect(SidebarView.settingsAccessibilityValue(updates: 0, attention: false) == "")
         #expect(SidebarView.accessibilityValue(for: .wishlist, badge: 0, attention: false, tabsGated: true)
                 == "unavailable until Scout is set up")
     }

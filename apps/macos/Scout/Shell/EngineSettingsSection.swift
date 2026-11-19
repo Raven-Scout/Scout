@@ -17,6 +17,10 @@ struct EngineSettingsSection: View {
     var onUpdate: (() -> Void)? = nil
     var onSetUp: (() -> Void)? = nil
     @AppStorage("scoutDataDir") private var scoutDataDir: String = ""
+    /// "Check now" is running: the button says so and waits (UI audit #84).
+    @State private var isChecking = false
+    /// "Copy /scout-update" just copied: the button says "Copied" for a moment.
+    @State private var copied = false
 
     private var model: EngineSettingsModel {
         EngineSettingsModel(state: health.state, doctor: health.doctor, lastError: health.lastError, bundledVersion: bundledVersion,
@@ -29,21 +33,29 @@ struct EngineSettingsSection: View {
                 Text(versionText).font(DS.mono(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
             }
             if let root = model.rootPath {
-                SettingsRow(title: "Engine location", help: "The scout-plugin tree the app and launchd jobs run.") {
+                SettingsRow(title: "Engine location", help: "The engine the app and its scheduled runs use.") {
                     Text(root).font(DS.mono(11)).foregroundStyle(DS.Ink.p3).lineLimit(1).truncationMode(.middle)
                 }
             }
-            SettingsField(label: "Scout vault", help: model.vaultHelp) {
-                SettingsInput(text: $scoutDataDir, placeholder: health.state.install?.vault?.path ?? "~/Scout")
+            SettingsField(label: "Scout folder", help: model.vaultHelp) {
+                SettingsPathPicker(path: $scoutDataDir,
+                                   defaultLabel: health.state.install?.vault?.path ?? "~/Scout",
+                                   kind: .folder,
+                                   panelMessage: "Choose your Scout folder")
             }
             SettingsRow(title: "Health", help: healthHelp) {
                 HStack(spacing: 10) {
                     Text(model.healthLabel)
                         .font(DS.sans(12, weight: .medium))
                         .foregroundStyle(model.healthIsOK && !model.healthHasWarnings ? DS.Status.ok : DS.Status.warn)
-                    Button("Check now") { Task { await health.refresh() } }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(12))
+                    if isChecking {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Checking the engine")
+                    }
+                    Button(isChecking ? "Checking…" : "Check now") { checkNow() }
+                        .buttonStyle(.ds(.secondary, size: .small))
+                        .disabled(isChecking)
+                        .accessibilityIdentifier("settings-engine-check-now")
                 }
             }
             if model.showsRuns {
@@ -82,8 +94,12 @@ struct EngineSettingsSection: View {
             }
             if model.showsHandOff {
                 SettingsRow(title: model.handOffTitle, help: model.handOffHelp) {
-                    Button("Copy /scout-update") { Self.copyToPasteboard("/scout-update") }
-                        .buttonStyle(.plainHit)
+                    Button { copyHandOff() } label: {
+                        Label(copied ? "Copied" : "Copy /scout-update",
+                              systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.ds(.secondary, size: .small))
+                    .accessibilityIdentifier("settings-engine-copy-handoff")
                 }
             }
             if let vault {
@@ -102,9 +118,9 @@ struct EngineSettingsSection: View {
 
     private func upgradeHelp(_ action: EngineUpgradeAction) -> String {
         switch action {
-        case .update: return "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade the vault."
+        case .update: return "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade your Scout folder."
         case .finishUpdate: return "An earlier update stopped before Claude Code switched over. Finish it with the engine that ships with this app."
-        case .repair: return "Re-run the engine's install steps and vault upgrade with the engine that ships with this app."
+        case .repair: return "Re-run the engine's install steps and the Scout folder upgrade with the engine that ships with this app."
         }
     }
 
@@ -112,6 +128,31 @@ struct EngineSettingsSection: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
     }
+
+    /// Runs the doctor again, showing that it's working until it answers.
+    private func checkNow() {
+        guard !isChecking else { return }
+        isChecking = true
+        Task {
+            await health.refresh()
+            isChecking = false
+            AccessibilityNotification.Announcement("Engine checked: \(model.healthLabel)").post()
+        }
+    }
+
+    /// Copies the hand-off command and says so, on screen and to VoiceOver.
+    private func copyHandOff() {
+        Self.copyToPasteboard("/scout-update")
+        copied = true
+        AccessibilityNotification.Announcement("Copied /scout-update").post()
+        Task {
+            try? await Task.sleep(for: .seconds(Self.copiedFor))
+            copied = false
+        }
+    }
+
+    /// How long "Copied" stays before the button reads "Copy" again.
+    nonisolated static let copiedFor: Double = 2
 
     private var versionText: String {
         guard let bundled = model.bundledVersionLabel, bundled != model.installedVersionLabel else { return model.installedVersionLabel }

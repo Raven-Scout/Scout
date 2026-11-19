@@ -16,7 +16,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "Wishlist"
         case .research:      return "Research"
         case .knowledgeBase: return "Knowledge Base"
-        case .settings:      return "Settings"
         }
     }
 
@@ -31,7 +30,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "star"
         case .research:      return "magnifyingglass"
         case .knowledgeBase: return "books.vertical"
-        case .settings:      return "gearshape"
         }
     }
 
@@ -50,7 +48,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "6"
         case .research:      return "7"
         case .knowledgeBase: return "8"
-        case .settings:      return "9"
         }
     }
 
@@ -66,7 +63,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "sidebar-wishlist"
         case .research:      return "sidebar-research"
         case .knowledgeBase: return "sidebar-knowledge-base"
-        case .settings:      return "sidebar-settings"
         }
     }
 
@@ -76,7 +72,6 @@ nonisolated extension SidebarItem {
         case .sessions:  return "\(count) need\(count == 1 ? "s" : "") you"
         case .proposals: return "\(count) awaiting a decision"
         case .wishlist, .research: return "\(count) active"
-        case .settings:  return "\(count) update\(count == 1 ? "" : "s") available"
         default:         return "\(count)"
         }
     }
@@ -84,7 +79,8 @@ nonisolated extension SidebarItem {
 
 // MARK: - Go menu
 
-/// The Go menu: one item per page with ⌘1–⌘9, like Finder's Go menu. It
+/// The Go menu: one item per page with ⌘1–⌘8, like Finder's Go menu
+/// (Settings is the app menu's ⌘,, not a page). It
 /// fronts the main window (reopening it if it was closed) and switches the
 /// sidebar through `AppState.requestedSidebar`, the same path the menu-bar
 /// panel already uses.
@@ -110,7 +106,6 @@ private struct GoMenuItems: View {
                 NSApp.activate(ignoringOtherApps: true)   // as the menu-bar panel does
             }
             .keyboardShortcut(item.goShortcutKey.map { KeyboardShortcut(KeyEquivalent($0), modifiers: .command) })
-            if item == .knowledgeBase { Divider() }
         }
     }
 }

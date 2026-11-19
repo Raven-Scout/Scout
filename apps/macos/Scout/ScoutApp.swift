@@ -71,17 +71,23 @@ struct ScoutApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        // Help ▸ Scout Glossary is its one menu item: `commandsRemoved()`
+        // keeps the window out of the Window menu (UI audit R11).
         Window("Scout Glossary", id: GlossaryView.windowID) {
             GlossaryView()
         }
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .commandsRemoved()
 
+        // ⌘, — Scout's only Settings (UI audit #10). Every "Open Settings"
+        // button and link opens this window at its tab.
         Settings {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(updates)
         }
+        .windowResizability(.contentMinSize)
 
         // Help ▸ Run Doctor… and Help ▸ Export Diagnostics… (audit C11).
         Window("Scout Doctor", id: HelpWindow.doctor) {
@@ -90,6 +96,7 @@ struct ScoutApp: App {
         .windowResizability(.contentMinSize)
         .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
         .restorationBehavior(.disabled)
+        .commandsRemoved()                    // Help's item only, not the Window menu too
 
         Window("Export Diagnostics", id: HelpWindow.diagnostics) {
             DiagnosticsExportView()
@@ -98,6 +105,7 @@ struct ScoutApp: App {
         .windowResizability(.contentMinSize)
         .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
         .restorationBehavior(.disabled)
+        .commandsRemoved()                    // Help's item only, not the Window menu too
     }
 }
 

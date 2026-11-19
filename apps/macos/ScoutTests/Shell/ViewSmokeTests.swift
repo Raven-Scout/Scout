@@ -284,10 +284,10 @@ struct ShellViewSmokeTests {
         }
     }
 
-    @Test("gated tabs dim every sidebar row but Settings; ungated dims none")
+    @Test("gated tabs dim every page row; ungated dims none")
     func sidebarDimmingRule() {
         for item in SidebarItem.allCases {
-            #expect(SidebarView.isDimmed(item, tabsGated: true) == (item != .settings))
+            #expect(SidebarView.isDimmed(item, tabsGated: true))
             #expect(!SidebarView.isDimmed(item, tabsGated: false))
         }
     }

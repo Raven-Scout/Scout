@@ -558,7 +558,7 @@ struct TaskCardView: View {
 
             if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
-                    let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+                    let author = CommentAuthor.configuredName()
                     return await runOp(.addComment(
                         subject: task.matchableSubject,
                         shortPrefix: task.shortPrefix,

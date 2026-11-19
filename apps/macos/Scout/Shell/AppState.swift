@@ -657,6 +657,7 @@ final class AppState: ObservableObject {
                                                resolveClaude: resolveClaude),
             makeInstaller: { [weak self] sink in await self?.makeInstaller(progress: sink) },
             appVault: scoutDirectory,
+            authorDefaults: defaults,
             onFinished: { [weak self] in
                 Task { @MainActor in
                     await self?.engineHealth.refresh()

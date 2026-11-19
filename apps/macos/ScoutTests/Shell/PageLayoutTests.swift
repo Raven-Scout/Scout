@@ -56,8 +56,6 @@ struct PageLayoutTests {
             view = AnyView(KnowledgeBaseView()
                 .environmentObject(state.knowledgeBaseService)
                 .environmentObject(state.knowledgeBaseWriterBox))
-        case .settings:
-            view = AnyView(SettingsView())
         }
         return AnyView(view
             .environmentObject(state)
@@ -246,6 +244,31 @@ struct PageLayoutTests {
             minSegmentWidth: 70, accessibilityTitle: "Run detail tab")
         // The side panel is 460 pt; RunDetailView pads 16 on each side.
         #expect(LayoutHarness.minimumWidth(of: control, height: 60) <= 460 - 32)
+    }
+
+    // MARK: - Settings window
+
+    /// Settings is the ⌘, window, not a page (UI audit #10): each tab must
+    /// fit the window's minimum width and render at its sizes.
+    static let settingsSizes: [CGSize] = [CGSize(width: 620, height: 460), CGSize(width: 680, height: 620),
+                                          CGSize(width: 900, height: 900)]
+
+    static func settings(_ tab: SettingsTab, in vault: BigVault) -> some View {
+        SettingsView(initialTab: tab)
+            .environmentObject(vault.state)
+            .environmentObject(vault.updates)
+    }
+
+    @Test("every Settings tab fits the Settings window's minimum width and renders at its sizes",
+          arguments: SettingsTab.allCases)
+    func settingsTabFits(_ tab: SettingsTab) async throws {
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
+        let needed = LayoutHarness.minimumWidth(of: Self.settings(tab, in: vault), height: 460)
+        #expect(needed <= 620, "Settings ▸ \(tab.title) needs \(needed) pt; the window's minimum is 620 pt")
+        for size in Self.settingsSizes {
+            ViewHost.render(Self.settings(tab, in: vault), size: size)
+            LayoutHarness.snapshot(Self.settings(tab, in: vault), size: size, name: "settings-\(tab.rawValue)")
+        }
     }
 
     // MARK: - Every page

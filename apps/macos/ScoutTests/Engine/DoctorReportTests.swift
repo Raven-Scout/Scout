@@ -69,7 +69,7 @@ struct DoctorReportTests {
         let summary = HealthSummary(doctor: r)
         #expect(summary.issues(.warning, from: .install).map(\.title) == [
             "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
-            "2 vault scripts read the knowledge base directly, without Scout's privacy labels",
+            "2 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels",
         ])
     }
 
