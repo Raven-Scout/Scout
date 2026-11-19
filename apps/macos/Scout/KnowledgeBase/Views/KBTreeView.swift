@@ -199,12 +199,12 @@ private struct KBTreeRow: View {
     private var dirLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                .font(DS.sans(9, weight: .semibold))
+                .font(DS.font(.micro, weight: .semibold))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 10)
             Image(systemName: isExpanded ? "folder.fill" : "folder")
-                .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
-            Text(node.name).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+            Text(node.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
@@ -222,16 +222,16 @@ private struct KBTreeRow: View {
     private var fileLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: glyph)
-                .font(DS.sans(10)).foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
+                .font(DS.font(.caption2)).foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .frame(width: 10)
             Text(node.displayName)
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(isSelected ? DS.Ink.p1 : DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
             if privatePaths.contains(node.relativePath) {
                 Image(systemName: "lock.fill")
-                    .font(DS.sans(9)).foregroundStyle(DS.Ink.p4)
+                    .font(DS.font(.micro)).foregroundStyle(DS.Ink.p4)
                     .help("Private: only you and your own scheduled runs see this note")
                     .accessibilityLabel("Private")
             }

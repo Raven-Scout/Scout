@@ -69,19 +69,19 @@ struct KBReaderFindBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "magnifyingglass").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
             TextField("Find in note", text: $query)
                 .textFieldStyle(.plain)
-                .font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p1)
                 .focused($fieldFocused)
                 .onSubmit { step(backwards: NSEvent.modifierFlags.contains(.shift)) }
                 .onExitCommand { close() }
                 .accessibilityLabel("Find in note")
             if notFound {
-                Text("Not found").font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                Text("Not found").font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
             }
             Button { step(backwards: true) } label: {
-                Image(systemName: "chevron.up").font(DS.sans(11, weight: .semibold))
+                Image(systemName: "chevron.up").font(DS.font(.caption, weight: .semibold))
             }
             .buttonStyle(.plainHit) // ds-guard: hit area (an icon button)
             .keyboardShortcut(AppShortcut.findPrevious)
@@ -89,7 +89,7 @@ struct KBReaderFindBar: View {
             .accessibilityLabel("Previous match")
             .disabled(query.isEmpty)
             Button { step(backwards: false) } label: {
-                Image(systemName: "chevron.down").font(DS.sans(11, weight: .semibold))
+                Image(systemName: "chevron.down").font(DS.font(.caption, weight: .semibold))
             }
             .buttonStyle(.plainHit) // ds-guard: hit area (an icon button)
             .keyboardShortcut(AppShortcut.findNext)

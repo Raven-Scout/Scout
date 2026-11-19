@@ -56,7 +56,7 @@ struct KBRightPanel: View {
                         ForEach(outgoing) { link in
                             Button { if let r = link.resolved { onNavigate(r) } } label: {
                                 Text(link.target)
-                                    .font(DS.sans(11))
+                                    .font(DS.font(.caption))
                                     .foregroundStyle(link.resolved == nil ? DS.Ink.p4 : DS.Accent.ink)
                                     .padding(.horizontal, 8).padding(.vertical, 3)
                                     .background(EditorialChipBackground())
@@ -78,10 +78,10 @@ struct KBRightPanel: View {
                         ForEach(backlinks) { bl in
                             Button { onNavigate(bl.path) } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(bl.name).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                                    Text(bl.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                                     if !bl.excerpt.isEmpty {
                                         InlineMarkdownText(bl.excerpt)
-                                            .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                            .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                             .lineLimit(2).multilineTextAlignment(.leading)
                                     }
                                 }
@@ -100,9 +100,9 @@ struct KBRightPanel: View {
     private func section<Content: View>(title: String, count: Int, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text(title.uppercased()).font(DS.sans(10, weight: .semibold)).tracking(0.5)
+                Text(title.uppercased()).font(DS.font(.caption2, weight: .semibold)).tracking(0.5)
                     .foregroundStyle(DS.Ink.p4)
-                Text("\(count)").font(DS.mono(10)).foregroundStyle(DS.Ink.p4)
+                Text("\(count)").font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
             }
             content()
@@ -110,6 +110,6 @@ struct KBRightPanel: View {
     }
 
     private func emptyLine(_ text: String) -> some View {
-        Text(text).font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+        Text(text).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
     }
 }

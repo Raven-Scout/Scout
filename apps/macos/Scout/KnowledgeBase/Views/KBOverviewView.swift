@@ -78,11 +78,11 @@ struct KBOverviewView: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Knowledge Base")
-                        .font(DS.serif(22, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                        .font(DS.font(.hero, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
                         .glossaryHelp(.knowledgeBase)
                     Text(loading ? "Loading notes…"
                          : "\(net.noteCount.formatted()) notes · \(net.linkCount.formatted()) links\(healthNote(net))")
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 Spacer(minLength: 12)
                 EditorialSegmentedControl(
@@ -98,9 +98,9 @@ struct KBOverviewView: View {
                         ForEach(links, id: \.path) { ql in
                             Button { onNavigate(ql.path) } label: {
                                 HStack(spacing: 5) {
-                                    Image(systemName: ql.icon).font(DS.sans(10.5))
+                                    Image(systemName: ql.icon).font(DS.font(.caption2))
                                         .foregroundStyle(DS.Accent.ink)
-                                    Text(ql.label).font(DS.sans(11.5, weight: .medium))
+                                    Text(ql.label).font(DS.font(.caption, weight: .medium))
                                         .foregroundStyle(DS.Ink.p1)
                                 }
                                 .padding(.horizontal, 10).padding(.vertical, 4)

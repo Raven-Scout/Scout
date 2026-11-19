@@ -234,10 +234,10 @@ struct KBEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 breadcrumb
                 HStack(spacing: 6) {
-                    Text(node.name).font(DS.mono(11)).foregroundStyle(DS.Ink.p3)
+                    Text(node.name).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p3)
                     if isDirty {
                         Circle().fill(DS.Accent.fill).frame(width: 6, height: 6)
-                        Text("unsaved").font(DS.sans(10.5)).foregroundStyle(DS.Accent.ink)
+                        Text("unsaved").font(DS.font(.caption2)).foregroundStyle(DS.Accent.ink)
                     }
                 }
             }
@@ -255,12 +255,12 @@ struct KBEditorView: View {
             }
 
             Button { requestReload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                .buttonStyle(.plain).foregroundStyle(DS.Ink.p3).font(DS.sans(12))
+                .buttonStyle(.plain).foregroundStyle(DS.Ink.p3).font(DS.font(.label))
                 .help(isDirty ? "Reload from disk (asks before discarding your unsaved edits)" : "Reload from disk")
 
             Button(action: save) {
                 Label("Save", systemImage: "checkmark")
-                    .font(DS.sans(12, weight: .semibold))
+                    .font(DS.font(.label, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(isDirty && !isSaving ? DS.Accent.onFill : DS.Ink.p4)
@@ -282,7 +282,7 @@ struct KBEditorView: View {
                 Divider()
                 Button("Delete…", role: .destructive) { showDeleteConfirm = true }
             } label: {
-                Image(systemName: "ellipsis.circle").font(DS.sans(15)).foregroundStyle(DS.Ink.p3)
+                Image(systemName: "ellipsis.circle").font(DS.font(.headline)).foregroundStyle(DS.Ink.p3)
             }
             .menuStyle(.borderlessButton).frame(width: 28)
             .accessibilityLabel("Note actions")
@@ -294,7 +294,7 @@ struct KBEditorView: View {
         let parts = node.relativePath.components(separatedBy: "/")
         return HStack(spacing: 4) {
             ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
-                if i > 0 { Text("/").font(DS.sans(11)).foregroundStyle(DS.Ink.p4) }
+                if i > 0 { Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4) }
                 if i == 0 {
                     // Root crumb navigates back to the overview.
                     Button(action: onOverview) {
@@ -304,7 +304,7 @@ struct KBEditorView: View {
                     .help("Back to overview")
                 } else {
                     Text((part as NSString).deletingPathExtension.isEmpty ? part : (i == parts.count - 1 ? (part as NSString).deletingPathExtension : part))
-                        .font(DS.sans(11, weight: i == parts.count - 1 ? .semibold : .regular))
+                        .font(DS.font(.caption, weight: i == parts.count - 1 ? .semibold : .regular))
                         .foregroundStyle(i == parts.count - 1 ? DS.Ink.p1 : DS.Ink.p3)
                 }
             }
@@ -315,7 +315,7 @@ struct KBEditorView: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
             Text("This file changed on disk. Reload to see the new version, or save to overwrite it.")
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
             Spacer()
             Button("Reload") { requestReload() }.buttonStyle(.ds(.secondary, size: .small))
         }
@@ -329,11 +329,11 @@ struct KBEditorView: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(DS.sans(28)).foregroundStyle(DS.Status.warn)
+                .font(DS.symbol(28)).foregroundStyle(DS.Status.warn)
             Text("Couldn't read \(node.name)")
-                .font(DS.serif(17, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .font(DS.font(.title, .serif, weight: .medium)).foregroundStyle(DS.Ink.p2)
             Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
             Button("Retry") { loadFile() }.buttonStyle(.dsPrimary)
             Spacer()
@@ -748,49 +748,49 @@ struct KBEditorView: View {
                 && KBLinkRewrite.newNameCollides($0, oldPath: node.relativePath, index: service.index)
         } == true
         return VStack(alignment: .leading, spacing: 14) {
-            Text("Rename note").font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text("Rename note").font(DS.font(.headline, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
             TextField("New name", text: $renameText)
                 .accessibilityLabel("New name")
-                .textFieldStyle(.roundedBorder).font(DS.sans(13))
+                .textFieldStyle(.roundedBorder).font(DS.font(.body))
                 .onSubmit(performRename)
             if let nameProblem {
-                Text(nameProblem).font(DS.sans(11)).foregroundStyle(DS.Status.err)
+                Text(nameProblem).font(DS.font(.caption)).foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
             } else if collides, let newStem {
-                Text(RenameLinks.collisionNote(newName: newStem)).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                Text(RenameLinks.collisionNote(newName: newStem)).font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !isMarkdown {
                 EmptyView()
             } else if links.isEmpty {
-                Text("No other notes wikilink here.").font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                Text("No other notes wikilink here.").font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     if links.notes > 0 {
                         Toggle(links.toggleTitle, isOn: $renameUpdatesLinks)
-                            .toggleStyle(.checkbox).font(DS.sans(12.5))
+                            .toggleStyle(.checkbox).font(DS.font(.label))
                         Text(links.detail(updating: renameUpdatesLinks))
-                            .font(DS.sans(11)).foregroundStyle(renameUpdatesLinks ? DS.Ink.p3 : DS.Status.warn)
+                            .font(DS.font(.caption)).foregroundStyle(renameUpdatesLinks ? DS.Ink.p3 : DS.Status.warn)
                             .fixedSize(horizontal: false, vertical: true)
                         if renameUpdatesLinks, let note = links.unsavedNote {
-                            Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                            Text(note).font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         if renameUpdatesLinks,
                            let note = RenameLinks.selfUnsavedNote(selfLinks: renameSelfLinks, hasUnsavedEdits: isDirty) {
-                            Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                            Text(note).font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     if let note = links.ambiguousNote(name: node.displayName) {
-                        Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                        Text(note).font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             if let renameError {
                 Label(renameError, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11.5)).foregroundStyle(DS.Status.err)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
