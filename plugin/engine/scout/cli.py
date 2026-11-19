@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
-from scout import __version__, safe_write
+from scout import __version__
 from scout.errors import ConfigError, ScoutError
 
 if TYPE_CHECKING:
@@ -2489,6 +2489,8 @@ def _register_schedule() -> None:
             raise typer.Exit(code=1)
         target.parent.mkdir(parents=True, exist_ok=True)
         source = Path(__file__).parent / "defaults" / "schedule.yaml"
+        from scout import safe_write
+
         safe_write.atomic_write_bytes(target, source.read_bytes())
         typer.echo(f"wrote: {target}")
 
@@ -4840,6 +4842,8 @@ def _register_phases() -> None:
         total_applied = len(all_applied) if apply else 0
         if apply:
             for pf, (_old, text) in bundle.items():
+                from scout import safe_write
+
                 safe_write.atomic_write_text(pf, text)
                 typer.echo(f"  → wrote {pf}")
 
@@ -4907,6 +4911,8 @@ def self_update_run_cmd(
         # The heartbeat starts a scheduled run once per local day; this marker is what it checks.
         marker = vault / ".scout-cache" / f"self-update-{today}.done"
         marker.parent.mkdir(parents=True, exist_ok=True)
+        from scout import safe_write
+
         safe_write.atomic_write_text(marker, "")  # never through a symlink a run put in the cache
     if json_out:
         payload = {

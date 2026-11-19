@@ -647,7 +647,7 @@ def test_a_fifo_lock_is_refused_after_opening(tmp_path: Path) -> None:
 
 def test_a_taken_temp_name_is_skipped(tmp_path: Path, victim: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     names = iter(["aaaa", "bbbb"])
-    monkeypatch.setattr(safe_write.secrets, "token_hex", lambda n: next(names))
+    monkeypatch.setattr(safe_write, "_suffix", lambda: next(names))
     _plant(tmp_path / ".state.json.aaaa.tmp", victim)
     safe_write.atomic_write_text(tmp_path / "state.json", "x")
     _untouched(victim)

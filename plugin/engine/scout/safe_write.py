@@ -33,7 +33,6 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
-import secrets
 import stat
 from collections.abc import Callable
 from pathlib import Path
@@ -198,13 +197,19 @@ def _open_once(path: Path | str, flags: int, mode: int) -> int:
 def _new_temp(name: str, dir_fd: int, mode: int) -> tuple[str, int]:
     """A temp file made by this call alone: a random name, opened ``O_EXCL | O_NOFOLLOW``."""
     for _ in range(_TMP_ATTEMPTS):
-        tmp = f".{name}.{secrets.token_hex(6)}.tmp"
+        tmp = f".{name}.{_suffix()}.tmp"
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, mode, dir_fd=dir_fd)
         except FileExistsError:
             continue
         return tmp, fd
     raise FileExistsError(errno.EEXIST, "no free temporary name", name)  # pragma: no cover - 16 random collisions
+
+
+def _suffix() -> str:
+    """12 random hex digits. ``os.urandom``, not ``secrets``: importing secrets loads hashlib, random and base64,
+    which ``scoutctl version`` must not pay for (tests/perf/test_startup.py)."""
+    return os.urandom(6).hex()
 
 
 def _kept_mode(name: str, dir_fd: int) -> int | None:
