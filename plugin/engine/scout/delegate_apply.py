@@ -119,10 +119,11 @@ def _read_copy(dir_fd: int, name: str) -> bytes | None:
         fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
     except OSError:
         return None
+    st = os.fstat(fd)  # before fdopen, which raises IsADirectoryError on a folder
+    if not stat.S_ISREG(st.st_mode) or st.st_size > dp.MAX_BYTES:
+        os.close(fd)
+        return None
     with os.fdopen(fd, "rb") as fh:
-        st = os.fstat(fh.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_size > dp.MAX_BYTES:
-            return None
         return fh.read(dp.MAX_BYTES + 1)
 
 
@@ -163,7 +164,7 @@ class _Seen:
             return False
         try:
             text = (self.vault / rel).read_text(encoding="utf-8")
-        except OSError:
+        except OSError:  # pragma: no cover - HEAD has the file; only a removal from the working tree races here
             return False
         redacted = dm.redact_lines(text, scanner, markdown=True, rel=rel)
         if redacted is None or _task(redacted[0], tag) is None:

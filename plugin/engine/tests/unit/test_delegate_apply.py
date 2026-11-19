@@ -221,3 +221,59 @@ def test_a_daily_file_made_private_since_the_mirror_is_unknown(mirrored: Path) -
     _commit(mirrored, "README-x.md", "x\n", "private daily")  # HEAD now has it private
     p = _op(mirrored, "mark-done")
     assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}
+
+
+# ----- the remaining paths (coverage floor) ----------------------------------------------------
+
+
+def test_a_copy_that_is_a_folder_or_too_big_is_not_taken(mirrored: Path) -> None:
+    a = _op(mirrored, "mark-done")
+    b = _op(mirrored, "mark-done", "EF56")
+    folder = mirrored.joinpath(*di.INBOX_DIR, D)
+    (folder / f"{a.id}.json").unlink()
+    (folder / f"{a.id}.json").mkdir()
+    (folder / f"{b.id}.json").write_bytes(b"x" * (dp.MAX_BYTES + 1))
+    assert da.apply(mirrored, D).outcomes == {a.id: "not_taken", b.id: "not_taken"}
+    assert _daily(mirrored) == TASKS
+
+
+def test_a_task_line_hidden_since_the_mirror_is_unknown(mirrored: Path) -> None:
+    (mirrored / DAILY).write_text(TASKS.replace("Send the draft", "Send [[task-renew-permit]]"), encoding="utf-8")
+    p = _op(mirrored, "mark-done")
+    assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}
+
+
+def test_set_block_applies_and_a_command_refusal_is_refused(mirrored: Path) -> None:
+    ok = _op(mirrored, "set-block", args={"day": "2026-11-20", "start": "09:00", "end": "10:30"})
+    bad = _op(mirrored, "set-block", "EF56", args={"day": "2026-11-20", "start": "10:30", "end": "09:00"})
+    r = da.apply(mirrored, D)
+    assert r.outcomes == {ok.id: "applied", bad.id: "refused"}
+    assert "block: 2026-11-20 09:00-10:30" in _daily(mirrored)
+    assert di.load_state(mirrored).applied[D][bad.id]["why"] == "command"
+
+
+def test_a_delegate_with_nothing_taken_and_a_failing_apply_all(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert da.apply(mirrored, "duet").outcomes == {}  # no copies folder at all
+    _op(mirrored, "mark-done")
+    _op(mirrored, "mark-done", delegate="duet")
+    real = da.apply
+
+    def flaky(v: Path, delegate: str, **kw: object) -> da.ApplyResult:
+        if delegate == "duet":
+            raise RepoSyncError("busy", "refused: busy")
+        return real(v, delegate, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(da, "apply", flaky)
+    results = da.apply_all(mirrored)
+    assert isinstance(results[0], RepoSyncError) and results[0].detail["delegate"] == "duet"
+    assert isinstance(results[1], da.ApplyResult) and results[1].counts() == {"applied": 1}
+
+
+def test_task_lines_of_a_missing_file_or_tag(tmp_path: Path) -> None:
+    assert da._task_lines(tmp_path / "missing.md", "AB12") is None
+    (tmp_path / "day.md").write_text(TASKS, encoding="utf-8")
+    assert da._task_lines(tmp_path / "day.md", "ZZ99") is None
+    assert da._task_lines(tmp_path / "day.md", "AB12") == [
+        "- [ ] [#AB12] 🔴 Send the draft",
+        "  - scout: waiting on the numbers",
+    ]
