@@ -801,6 +801,35 @@ health show.
 **The runner commits the pull, never the run.** It runs as a step outside the
 run's sandbox, like the other runner steps.
 
+**As built in V4a1 (#718).** These changes were made while building:
+
+- **The base is the newest `main` checked**, not only Scout's last removal
+  commit. Each `main` was checked to descend from the base before it, so the
+  guarantee is the same. Without this, an inbox with nothing to remove would
+  run past the 256-commit window.
+- **Refusals are kept as the last 100 per delegate**: a hash of the path,
+  the code and the time, plus running totals per code. They aren't kept per
+  ULID, so an agent pushing junk can't grow the signed file.
+- **At most 200 taken per inbox per UTC day**, as well as 50 per pull. What
+  waits stays in the inbox. Fifty every five-minute tick would otherwise
+  flood `.scout-inbox/agents/`.
+- **`stale_id`.** A ULID more than a day behind the newest one taken is
+  refused and removed, not silently skipped.
+- **The copies' folder and the ledger are checked before anything is
+  recorded.** A symlink, a file or a hard link in the way refuses
+  (`inbox_folder_unsafe`), and the proposal stays in the inbox. If a
+  proposal was recorded but its copy never landed, the next pull copies it
+  again, provided its bytes still match the recorded HMAC.
+- **Only `inbox/<id>/` is judged and removed.** Anything else in the tree
+  stays where it is: another delegate's folder, `.github/`, or `INBOX/` in
+  another case.
+- **The agent's side.** `delegate init --inbox <clone>` puts
+  `SCOUT_INBOX_DIR` in the env file, and later runs remember it. `inbox
+  propose --push` rebases on the inbox's `main` before pushing. The agent
+  only ever adds files, so that rebase can't conflict.
+- **A local bare inbox (for tests) is bound by its file identity**, where a
+  GitHub inbox is bound by GitHub's ids.
+
 #### `scoutctl inbox apply` (action items)
 
 - **It acts only on what the signed record took.** A copy in
