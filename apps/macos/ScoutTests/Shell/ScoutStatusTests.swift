@@ -121,7 +121,7 @@ struct ScoutStatusTests {
                                                         items: (1...34).map { "scripts/s\($0).py" })])
         let s = derive(.external(install, .devCheckout), doctor: doctor, run: run(.success))
         #expect(s.title == "Ready · 1 warning")
-        #expect(s.detail == "34 vault scripts read the knowledge base directly, without Scout's privacy labels")
+        #expect(s.detail == "34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels")
     }
 
     // MARK: - Then the latest run

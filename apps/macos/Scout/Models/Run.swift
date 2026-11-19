@@ -134,6 +134,12 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// "slot" is the skill it ran, not a schedule). nil without a ledger row,
     /// or from a runner older than the field.
     var trigger: String? = nil
+    /// Why the run failed, from the run ledger's `failure_class` (`timeout`,
+    /// `rate_limited`, `auth_race`, …; `ok` for a run that didn't fail). nil
+    /// without a ledger row. The engine classifies the log; the app never
+    /// guesses a class from log text of its own.
+    var failureClass: String? = nil
+
     /// How the run was protected, from its run ledger row (card C8's `sandbox` and
     /// `integrity`); nil without a ledger row. Never worked out from the log.
     var protection: Protection? = nil
@@ -234,7 +240,8 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger, protection: protection
+            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
+            protection: protection
         )
     }
 }
@@ -258,6 +265,7 @@ extension Run {
         model: String? = nil,
         slotKey: String? = nil,
         trigger: String? = nil,
+        failureClass: String? = nil,
         protection: Protection? = nil
     ) -> Run {
         Run(
@@ -287,6 +295,7 @@ extension Run {
             model: model,
             slotKey: slotKey,
             trigger: trigger,
+            failureClass: failureClass,
             protection: protection
         )
     }

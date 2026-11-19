@@ -9,6 +9,8 @@ struct LogViewer: View {
 
     @State private var sections: [LogSection] = []
     @State private var rawText: String = ""
+    /// `rawText` split by `TextChunks`, kept beside it so a render never re-splits.
+    @State private var rawChunks: [String] = []
     @State private var search: String = ""
     @State private var showRaw: Bool = false
     @State private var watchTask: Task<Void, Never>? = nil
@@ -60,63 +62,65 @@ struct LogViewer: View {
 
     // MARK: - Pretty / structured
 
+    /// Each section is a header row plus its lines in chunks of
+    /// `TextChunks.linesPerChunk`, every one a row of the lazy stack, so a
+    /// long section is laid out only as it scrolls into view instead of as
+    /// one view thousands of lines tall (UI audit R10, #25).
     private var structuredView: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(sections) { section in
-                    sectionView(section)
+                    let lines = filteredLines(section.lines)
+                    if !(lines.isEmpty && !search.isEmpty) {
+                        sectionHeader(section)
+                            .padding(.top, 10)
+                            .padding(.bottom, 6)
+                        let chunks = TextChunks.split(lines)
+                        ForEach(Array(chunks.enumerated()), id: \.offset) { i, chunk in
+                            chunkView(chunk, first: i == 0, last: i == chunks.count - 1)
+                        }
+                    }
                 }
             }
             .padding(12)
         }
     }
 
-    @ViewBuilder
-    private func sectionView(_ section: LogSection) -> some View {
-        let kind = section.kind
-        let lines = filteredLines(section.lines)
-        if lines.isEmpty && !search.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: kind.icon)
-                        .foregroundStyle(kind.color)
-                        .font(DS.sans(10))
-                    Text(section.title)
-                        .font(DS.mono(11))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(kind.color)
-                    if let when = section.timestamp {
-                        Text(when, format: .dateTime.hour().minute().second())
-                            .font(DS.mono(10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if !lines.isEmpty {
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                            lineView(line)
-                        }
-                    }
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.secondary.opacity(0.06))
-                    )
-                }
+    private func sectionHeader(_ section: LogSection) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: section.kind.icon)
+                .foregroundStyle(section.kind.color)
+                .font(DS.sans(10))
+                .accessibilityHidden(true)
+            Text(section.title)
+                .font(DS.mono(11))
+                .fontWeight(.semibold)
+                .foregroundStyle(section.kind.color)
+            if let when = section.timestamp {
+                Text(when, format: .dateTime.hour().minute().second())
+                    .font(DS.mono(10))
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    @ViewBuilder
-    private func lineView(_ line: String) -> some View {
-        let highlighted = highlight(line: line)
-        Text(highlighted)
+    /// A run of lines as one `Text`, each line tinted as `highlight` says.
+    private func chunkView(_ lines: [String], first: Bool, last: Bool) -> some View {
+        var text = AttributedString()
+        for (i, line) in lines.enumerated() {
+            if i > 0 { text.append(AttributedString("\n")) }
+            text.append(highlight(line: line))
+        }
+        return Text(text)
             .font(DS.mono(12))
+            .lineSpacing(1)
             .textSelection(.enabled)
             .lineLimit(nil)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.top, first ? 8 : 0)
+            .padding(.bottom, last ? 8 : 0)
+            .background(Rectangle().fill(Color.secondary.opacity(0.06)))
     }
 
     /// Coloring rules: keep the line monospaced (so users still recognize
@@ -147,14 +151,23 @@ struct LogViewer: View {
 
     // MARK: - Raw
 
+    /// The raw log in chunks, one lazy row each (UI audit R10, #25). Copy
+    /// still copies the whole file.
     private var rawView: some View {
         ScrollView {
-            Text(rawText.isEmpty ? "(empty log)" : rawText)
-                .font(DS.mono(12))
-                .textSelection(.enabled)
-                .lineLimit(nil)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if rawChunks.isEmpty {
+                    Text("(empty log)").font(DS.mono(12)).foregroundStyle(.secondary)
+                }
+                ForEach(Array(rawChunks.enumerated()), id: \.offset) { _, chunk in
+                    Text(chunk)
+                        .font(DS.mono(12))
+                        .textSelection(.enabled)
+                        .lineLimit(nil)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(12)
         }
     }
 
@@ -173,8 +186,10 @@ struct LogViewer: View {
 
     private func applyText(_ text: String) async {
         let parsed = LogParser.parse(text: text)
+        let chunks = TextChunks.split(text: text)
         await MainActor.run {
             self.rawText = text
+            self.rawChunks = chunks
             self.sections = parsed
         }
     }
@@ -202,6 +217,51 @@ struct LogViewer: View {
         } onCancel: {
             src.cancel()
         }
+    }
+}
+
+// MARK: - Chunking
+
+/// Splits long text into runs of lines, so a big log or diff renders as many
+/// small `Text` views in a lazy stack or list (laid out as they scroll in)
+/// rather than one `Text` that lays out every line up front (UI audit R10, #25).
+nonisolated enum TextChunks {
+    static let linesPerChunk = 200
+    /// A chunk also ends once it holds this many UTF-8 bytes, so a log of
+    /// very long lines (minified JSON, a base64 blob) still comes in pieces.
+    static let bytesPerChunk = 64 * 1024
+
+    /// `lines` in order: a chunk ends at `size` lines or once it reaches
+    /// `maxBytes`. A single line longer than that is a chunk of its own.
+    /// Empty for no lines.
+    static func split(_ lines: [String], size: Int = linesPerChunk,
+                      maxBytes: Int = bytesPerChunk) -> [[String]] {
+        let size = max(1, size)
+        var chunks: [[String]] = []
+        var current: [String] = []
+        var bytes = 0
+        for line in lines {
+            let n = line.utf8.count + 1
+            if !current.isEmpty && (current.count >= size || bytes + n > maxBytes) {
+                chunks.append(current)
+                current = []
+                bytes = 0
+            }
+            current.append(line)
+            bytes += n
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    /// `text`'s lines in chunks (`split(_:size:maxBytes:)`), each joined back
+    /// with "\n"; empty for empty text. Any line ending counts: "\r\n" is one
+    /// `Character` in Swift, so splitting on "\n" alone would leave a CRLF log
+    /// as one line.
+    static func split(text: String, size: Int = linesPerChunk, maxBytes: Int = bytesPerChunk) -> [String] {
+        guard !text.isEmpty else { return [] }
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        return split(lines, size: size, maxBytes: maxBytes).map { $0.joined(separator: "\n") }
     }
 }
 

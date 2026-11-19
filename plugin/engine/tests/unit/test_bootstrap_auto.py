@@ -27,7 +27,6 @@ def _cfg(vault: Path) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
         managed_by="scout-app",
     )
 

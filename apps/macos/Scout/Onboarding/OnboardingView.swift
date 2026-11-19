@@ -147,7 +147,7 @@ struct OnboardingView: View {
                       detail: signedIn ? "Signed in" : "Scheduled runs need a signed-in Claude Code. You can finish setup first.",
                       actionTitle: signedIn || !claudeOK ? nil : "Sign in…", action: signIn)
             prereqRow("Command Line Tools (git)", ok: gitOK,
-                      detail: gitOK ? "Present" : "Your vault is a git repository. Apple will prompt to install the tools.",
+                      detail: gitOK ? "Present" : "Your Scout folder is a git repository. Apple will prompt to install the tools.",
                       actionTitle: gitOK || p == nil ? nil : "Install…", action: installCommandLineTools)
             Button("Re-check", action: recheck)
                 .buttonStyle(.ds(.secondary, size: .small))

@@ -94,7 +94,6 @@ def _config(vault: Path, plugin: Path, *, version: str = "0.4.0") -> BootstrapCo
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

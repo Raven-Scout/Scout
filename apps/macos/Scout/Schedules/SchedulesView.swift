@@ -15,6 +15,9 @@ struct SchedulesView: View {
     @State private var staleBannerVisible = false
     @State private var stalenessDetail: String?
     @State private var errorProblem: Problem?
+    /// A Run now from this page that didn't start (UI audit #56): the
+    /// engine's words go behind Details.
+    @State private var fireNowProblem: Problem?
     @State private var isInitialLoading = true
     /// The page's width, for `DetailPaneLayout` (UI audit C6).
     @State private var pageWidth: CGFloat?
@@ -56,7 +59,9 @@ struct SchedulesView: View {
                     onFireNow: handleFireNow,
                     onRevertNewDraft: detailIsNewDraft ? { finishNewDraft(key: newDraftSlot?.key); selectedSlotKey = nil } : nil,
                     defaultModel: modelSettings.settings?.default.model,
-                    onDirtyChange: { detailIsDirty = $0 }
+                    onDirtyChange: { detailIsDirty = $0 },
+                    existingKeys: Set(service.slots.map(\.key)),
+                    firingKeys: appState.firingSlotKeys
                 )
                 .frame(width: width)
                 .overlay(alignment: .topTrailing) {
@@ -84,6 +89,15 @@ struct SchedulesView: View {
             if newDraftSlot == nil { newDraftSlot = drafts.pendingNewSlot }
             await reload()
         }
+    }
+
+    /// The page's load-failed state: plain words, the engine's output under
+    /// Details.
+    static func loadFailedProblem(_ message: String) -> Problem {
+        Problem(severity: .error, title: "Couldn't load the schedule",
+                impact: "Scout won't change the schedule until it can read it.",
+                fix: "Try again. If it keeps failing, open Settings ▸ Engine and choose Check now.",
+                details: message)
     }
 
     /// The notice for edits a reload dropped because their slot left the
@@ -114,6 +128,11 @@ struct SchedulesView: View {
             }
             if let problem = errorProblem {
                 errorBanner(problem)
+            }
+            if let problem = fireNowProblem {
+                ProblemView(problem: problem, onDismiss: { fireNowProblem = nil })
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
             }
             if !drafts.droppedSlotNames.isEmpty {
                 droppedEditsBanner
@@ -199,22 +218,11 @@ struct SchedulesView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(DS.sans(36))
                 .foregroundStyle(DS.Status.err)
-            Text("Couldn't load the schedule")
-                .font(DS.serif(20, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
-            Text("Scout won't change the schedule until it can read it.")
-                .font(DS.sans(13))
-                .foregroundStyle(DS.Ink.p3)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Text(message)
-                .font(DS.mono(11))
-                .foregroundStyle(DS.Ink.p3)
-                .lineLimit(6)
-                .textSelection(.enabled)
-                .frame(maxWidth: 420)
-            Button("Retry") { Task { await reload() } }
-                .buttonStyle(.dsPrimary)
+            // scoutctl's own output goes behind Details (UI audit #56).
+            ProblemView(problem: Self.loadFailedProblem(message),
+                        actions: [.retry { Task { await reload() } }],
+                        style: .inline)
+                .frame(maxWidth: 460)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -368,13 +376,13 @@ struct SchedulesView: View {
         isInitialLoading = false
     }
 
-    private func handleSave(_ saved: Slot) async {
+    /// `baseline` is the slot as the form last saw it, which the edit was
+    /// typed against (not `service.slots` now: a reload may have landed).
+    private func handleSave(_ saved: Slot, baseline: Slot) async {
         if detailIsNewDraft {
             await saveNewDraft(saved)
         } else {
-            guard let key = selectedSlotKey,
-                  let original = service.slots.first(where: { $0.key == key }) else { return }
-            await saveExistingSlot(saved, original: original)
+            await saveExistingSlot(saved, baseline: baseline)
         }
     }
 
@@ -391,6 +399,7 @@ struct SchedulesView: View {
         let draftKey = newDraftSlot?.key
         do {
             let change = try await service.update(actionName: "Add Schedule") { $0 + [slot] }
+            clearStaleNotice()
             finishNewDraft(key: draftKey)
             selectedSlotKey = slot.key
             registerUndo(change)
@@ -408,6 +417,18 @@ struct SchedulesView: View {
         }
     }
 
+    private func clearStaleNotice() {
+        staleBannerVisible = false
+        stalenessDetail = nil
+    }
+
+    /// A save to a schedule that was removed outside the app.
+    static func removedSlotProblem(_ key: String) -> Problem {
+        Problem(severity: .warning,
+                title: "\(DisplayName.slotKey(key)) was removed outside the app",
+                impact: "Your edits to it weren't saved: that schedule no longer exists.")
+    }
+
     /// Shared write-problem wording (C10) for the error banner. The details
     /// stay in `Problem.details`, which `ProblemView` shows only behind
     /// "Details", never on a visible line under the title.
@@ -417,18 +438,23 @@ struct SchedulesView: View {
                        title: write.title, impact: write.message, details: write.details)
     }
 
-    private func saveExistingSlot(_ saved: Slot, original: Slot) async {
+    private func saveExistingSlot(_ saved: Slot, baseline: Slot) async {
         do {
-            registerUndo(try await service.update(actionName: "Edit Schedule") { slots in
-                slots.map { $0.key == original.key ? saved : $0 }
-            })
+            registerUndo(try await service.saveSlot(saved, baseline: baseline))
+            // The save went through, so a "not saved" notice is settled.
+            clearStaleNotice()
         } catch let written as ScheduleReloadAfterWriteError {
             // Saved; the next successful load settles the form's draft.
             registerUndo(written.change)
             errorProblem = Self.problem(written, action: "save the schedule")
         } catch let stale as StaleScheduleError {
-            staleBannerVisible = true
-            stalenessDetail = stale.errorDescription
+            if let key = stale.removedSlot {
+                // Nothing to reload into: say so, without "Reload now".
+                errorProblem = Self.removedSlotProblem(key)
+            } else {
+                staleBannerVisible = true
+                stalenessDetail = stale.errorDescription
+            }
         } catch {
             errorProblem = Self.problem(error, action: "save the schedule")
         }
@@ -484,6 +510,24 @@ struct SchedulesView: View {
     }
 
     private func handleFireNow(_ key: String) async {
+        fireNowProblem = nil
         await appState.fireNow(slotKey: key)
+        fireNowProblem = Self.fireNowProblem(appState.fireNowError, slotKey: key)
+    }
+
+    /// The banner for a Run now that didn't start, or nil when it did.
+    /// `AppState.fireNowError` carries scoutctl's own words, which go
+    /// behind Details, never on a visible line.
+    static func fireNowProblem(_ error: String?, slotKey: String) -> Problem? {
+        guard let error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let name = DisplayName.slotKey(slotKey)
+        if error.contains("already being started") {
+            return Problem(severity: .info, title: "\(name) is already starting",
+                           impact: "Scout ignored the second Run now.", details: error)
+        }
+        return Problem(severity: .error, title: "Couldn't start \(name)",
+                       impact: "Scout's engine didn't start the run.",
+                       fix: "Try again in a minute. If it keeps failing, open Settings ▸ Engine and choose Check now.",
+                       details: error)
     }
 }

@@ -82,8 +82,8 @@ struct DoctorReportTests {
         let install = summary.issues(.warning, from: .install)
         #expect(install.map(\.title) == [
             triage[0].summary,
-            "1 vault script reads the knowledge base directly, without Scout's privacy labels",
-            "2 vault scripts read the knowledge base directly, but mention no way to send what they read",
+            "1 script in your Scout folder reads the knowledge base directly, without Scout's privacy labels",
+            "2 scripts in your Scout folder read the knowledge base directly, but mention no way to send what they read",
         ])
         #expect(install.map(\.risk) == [.high, .high, .low])
         #expect(install[0].review == nil)   // no "Mark reviewed" on a run-protection warning

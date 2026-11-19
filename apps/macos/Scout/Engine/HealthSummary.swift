@@ -144,13 +144,13 @@ nonisolated struct HealthSummary: Equatable, Sendable {
         let title: String, fix: String?
         switch kind {
         case "privacy.script-raw-kb-read":
-            title = "\(n) vault script\(n == 1 ? " reads" : "s read") the knowledge base directly, without Scout's privacy labels"
+            title = "\(n) script\(n == 1 ? "" : "s") in your Scout folder \(n == 1 ? "reads" : "read") the knowledge base directly, without Scout's privacy labels"
             fix = "Have each read through `scoutctl kb files` and `scoutctl kb read`, so a private note never reaches a shared channel."
         case "privacy.script-raw-kb-read.internal":
-            title = "\(n) vault script\(n == 1 ? " reads" : "s read") the knowledge base directly, but \(n == 1 ? "mentions" : "mention") no way to send what \(n == 1 ? "it reads" : "they read")"
-            fix = "Check \(n == 1 ? "it only feeds" : "they only feed") checks inside the vault, then mark this reviewed. Or have \(n == 1 ? "it" : "them") read through `scoutctl kb files`."
+            title = "\(n) script\(n == 1 ? "" : "s") in your Scout folder \(n == 1 ? "reads" : "read") the knowledge base directly, but \(n == 1 ? "mentions" : "mention") no way to send what \(n == 1 ? "it reads" : "they read")"
+            fix = "Check \(n == 1 ? "it only feeds" : "they only feed") checks inside your Scout folder, then mark this reviewed. Or have \(n == 1 ? "it" : "them") read through `scoutctl kb files`."
         case "privacy.runner-no-reader":
-            title = "\(n) vault runner\(n == 1 ? " doesn't" : "s don't") mark their reads as unattended"
+            title = "\(n) run script\(n == 1 ? "" : "s") in your Scout folder \(n == 1 ? "doesn't" : "don't") mark their reads as unattended"
             fix = "Add `export SCOUT_MODE=\"<run-name>\"` and `export SCOUT_READER=autonomous` to each before it starts Claude."
         default:
             title = summary

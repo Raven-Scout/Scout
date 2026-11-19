@@ -50,8 +50,8 @@ struct HealthSummaryTests {
         let s = HealthSummary(doctor: doctor)
         #expect(s.warningCount == 4)
         #expect(s.issues.map(\.title) == [
-            "34 vault scripts read the knowledge base directly, without Scout's privacy labels",
-            "2 vault runners don't mark their reads as unattended",
+            "34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels",
+            "2 run scripts in your Scout folder don't mark their reads as unattended",
             futureLine,   // a kind this build doesn't know keeps the engine's words
             "a lone warning",
         ])
@@ -65,7 +65,7 @@ struct HealthSummaryTests {
 
     @Test func oneFileGroupsReadInTheSingular() {
         let issue = HealthSummary.issue(for: .init(kind: "privacy.script-raw-kb-read", summary: "s", items: ["scripts/x.py"]), id: "w")
-        #expect(issue.title == "1 vault script reads the knowledge base directly, without Scout's privacy labels")
+        #expect(issue.title == "1 script in your Scout folder reads the knowledge base directly, without Scout's privacy labels")
         #expect(IssueFilesDisclosure.label(1) == "Show the file")
         #expect(IssueFilesDisclosure.label(34) == "Show all 34 files")
     }
@@ -110,7 +110,7 @@ struct HealthSummaryTests {
         let page = HealthPanelModel(ledger: ledger, doctor: doctor)
         let pageSummary = HealthSummary(doctor: doctor, runHealth: .some(ledger.health))
         #expect(page.headline.hasSuffix("· \(pageSummary.attentionLabel ?? "")"))
-        #expect(page.engineIssues.map(\.title) == ["34 vault scripts read the knowledge base directly, without Scout's privacy labels"])
+        #expect(page.engineIssues.map(\.title) == ["34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels"])
     }
 
     // MARK: Risk and reviews (UI audit R13)
@@ -139,9 +139,9 @@ struct HealthSummaryTests {
         let s = HealthSummary(doctor: doctor)
         #expect(s.issues.map(\.risk) == [.high, .medium, .low])
         #expect(s.issues.map(\.title) == [
-            "1 vault script reads the knowledge base directly, without Scout's privacy labels",
+            "1 script in your Scout folder reads the knowledge base directly, without Scout's privacy labels",
             medium,
-            "30 vault scripts read the knowledge base directly, but mention no way to send what they read",
+            "30 scripts in your Scout folder read the knowledge base directly, but mention no way to send what they read",
         ])
         #expect(s.issues.last?.items == files)
         #expect(s.issues.last?.fix?.contains("mark this reviewed") == true)

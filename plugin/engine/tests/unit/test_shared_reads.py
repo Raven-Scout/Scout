@@ -195,7 +195,6 @@ def installed(tmp_path: Path) -> Path:
             enabled_connectors={"slack"},
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
     assert ops.add(v, dict(READER), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={}).exit_code == 0

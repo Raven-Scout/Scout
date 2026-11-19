@@ -7,7 +7,8 @@ import SwiftUI
 struct SchedulesDetailPane: View {
     let slot: Slot?
     let isNewDraft: Bool
-    let onSave: (Slot) async -> Void
+    /// The edited slot, and the slot the edit was typed against.
+    let onSave: (Slot, Slot) async -> Void
     let onDelete: () async -> Void
     let onFireNow: (String) async -> Void
     let onRevertNewDraft: (() -> Void)?
@@ -16,6 +17,10 @@ struct SchedulesDetailPane: View {
     var defaultModel: String? = nil
     /// Whether the open form has unsaved edits (see `SlotEditForm`).
     var onDirtyChange: (Bool) -> Void = { _ in }
+    /// Keys already in the schedule, so a new one can't reuse a name.
+    var existingKeys: Set<String> = []
+    /// Keys whose Run now is being started.
+    var firingKeys: Set<String> = []
 
     var body: some View {
         if let slot {
@@ -39,7 +44,9 @@ struct SchedulesDetailPane: View {
                     onFireNow: onFireNow,
                     onRevertNewDraft: onRevertNewDraft,
                     defaultModel: defaultModel,
-                    onDirtyChange: onDirtyChange
+                    onDirtyChange: onDirtyChange,
+                    existingKeys: existingKeys,
+                    isFiring: firingKeys.contains(slot.key)
                 )
                 .id(slot.key)
             }

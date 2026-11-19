@@ -382,7 +382,6 @@ def test_bootstrap_stage_installs_into_git_vault(kb_repo, tmp_path) -> None:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
     _stage_install_git_hook(cfg)
     assert MARKER in (hooks_dir(kb_repo.root) / "pre-commit").read_text()
@@ -404,7 +403,6 @@ def _stage_cfg(vault, plugin_root):
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 
@@ -449,7 +447,6 @@ def test_bootstrap_stage_skips_non_git_vault(tmp_path) -> None:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
     _stage_install_git_hook(cfg)  # must not raise
     assert not (vault / ".git").exists()

@@ -82,8 +82,8 @@ scoutctl bootstrap auto [OPTIONS]
 
   # Job lifecycle
   --no-jobs                           Skip launchd / cron registration
-  --skip-claude                       Don't shell out to Claude during
-                                      first-run sanity checks
+  --skip-claude                       Deprecated and ignored: bootstrap never
+                                      starts Claude. Hidden; prints a note.
 ```
 
 ### Semantics

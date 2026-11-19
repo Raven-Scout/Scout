@@ -65,6 +65,32 @@ def test_wishlist_cards_keep_status_and_link_a_progress_note() -> None:
     assert "Never delete a log" in text and "move it verbatim to the note in the same commit" in text
 
 
+def test_wishlist_phase_runs_check_log_move_before_commit() -> None:
+    text = _text(WISHLIST)
+    run = (
+        "`scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>`"
+        " until it exits 0"
+    )
+    assert run in text
+    # The check runs in the commit step, before the commit command.
+    assert text.index("### Step 3e: Commit") < text.index(run) < text.index("git-safe-commit.sh")
+    assert "Exit 2 (it couldn't check)" in text
+    # Bounded: a run can't loop on a line it can't reproduce; it restores the card the way git-setup allows.
+    assert "at most 3 tries" in text and "`git show HEAD:<card> > <card>`" in text
+    # The restore mustn't silently undo the run's status update.
+    assert "redo only this run's frontmatter `status:` and `## Status` edits (leave the log on the card)" in text
+    assert "`log move deferred: <item>`" in text
+    # A moved log keeps its own order, which the check enforces, even under "newest first".
+    assert "a moved log keeps its own order" in text
+
+
+def test_check_log_move_is_a_real_subcommand() -> None:
+    from scout.cli import app as scoutctl
+
+    result = CliRunner().invoke(scoutctl, ["wishlist", "check-log-move", "--help"])
+    assert result.exit_code == 0 and "Exit codes: 0" in result.stdout
+
+
 def test_wishlist_phase_reads_items_but_not_their_progress_notes() -> None:
     assert "`docs/wishlist/` (not its `progress/` folder)" in _text(WISHLIST)
 

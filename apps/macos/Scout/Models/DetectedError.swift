@@ -28,7 +28,8 @@ nonisolated struct DetectedError: Equatable, Hashable, Sendable, Codable {
     /// The 1-based log line the error starts on.
     let line: Int
     /// Which rule matched. For `.api` it is the old pattern text (`429`,
-    /// `rate.?limit`, …), which the Control Center's rate-limit signal reads.
+    /// `rate.?limit`, …). The Control Center's usage-limit signal doesn't read
+    /// it: it follows the engine's `failure_class` (UI audit R10, #23).
     let pattern: String
     /// One line that says what went wrong: the exception line of a traceback,
     /// otherwise the matching line. At most 200 characters.

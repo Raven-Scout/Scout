@@ -50,7 +50,6 @@ def _config(vault: Path, plugin: Path, *, version: str = "0.12.0") -> BootstrapC
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

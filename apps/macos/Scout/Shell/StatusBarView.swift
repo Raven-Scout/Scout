@@ -9,6 +9,7 @@ import SwiftUI
 /// downgrades when a value is unavailable (e.g. budget not yet loaded).
 struct StatusBarView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.openSettings) private var openSettings
     let viewLabel: String
 
     @State private var now: Date = Date()
@@ -47,7 +48,7 @@ struct StatusBarView: View {
         let status = state.status
         let color = status.tone.color
         return Button {
-            HelpActions.showEngineSettings { state.requestedSidebar = .settings }
+            HelpActions.showEngineSettings(openSettings)
         } label: {
             HStack(spacing: 6) {
                 Circle()
