@@ -137,7 +137,7 @@ struct TopicBoardView: View {
                     topicWindow.showMore()
                 }
                 .buttonStyle(.ds(.link, size: .small))
-                Text("\(summary) · ⌘F searches all of them")
+                Text("\(summary) · \(ShortcutLabel.text(AppShortcut.find)) searches all of them")
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)

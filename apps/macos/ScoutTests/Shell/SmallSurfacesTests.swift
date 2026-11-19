@@ -169,7 +169,12 @@ struct ProposalDerivedTests {
         #expect(!proposal(status: .approved).isAwaitingDecision)
         #expect(!proposal(status: .rejected).isAwaitingDecision)
         #expect(!proposal(status: .applied(date: "2026-06-16")).isAwaitingDecision)
-        #expect(!proposal(status: .unknown("Weird")).isAwaitingDecision)
+        #expect(!proposal(status: .closed("Superseded")).isAwaitingDecision)
+        // Audit #64 (R9): a status Scout doesn't recognise stays with the
+        // undecided ones, visible and in the badge, instead of hiding under
+        // Resolved. Its card just doesn't lead with Approve.
+        #expect(proposal(status: .unknown("Weird")).isAwaitingDecision)
+        #expect(!proposal(status: .unknown("Weird")).status.hasPrimaryApprove)
     }
 
     @Test("body blocks are derived from the markdown body")
