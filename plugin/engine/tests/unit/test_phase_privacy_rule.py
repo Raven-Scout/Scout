@@ -225,7 +225,7 @@ def _scout_ask() -> tuple[str, str]:
     return description, body
 
 
-_VAULT_SCOUTCTL = "<vault>/scripts/scoutctl "
+_SCOUTCTL = "<scoutctl> "
 
 
 def _fenced_lines(body: str) -> list[str]:
@@ -239,13 +239,18 @@ def _fenced_lines(body: str) -> list[str]:
     return lines
 
 
+def _locator(body: str) -> str:
+    (line,) = [ln for ln in _fenced_lines(body) if "kb vault" in ln]
+    return line
+
+
 def _fenced_kb_calls(body: str) -> list[list[str]]:
-    """Each fenced ``<vault>/scripts/scoutctl kb …`` line, as ``kb`` arguments with the placeholders filled.
+    """Each fenced ``<scoutctl> kb …`` line, as ``kb`` arguments with the placeholders filled.
 
     Its ``--repo <vault>`` is dropped: ``_kb`` passes the fixture vault's own."""
     calls: list[list[str]] = []
     for line in _fenced_lines(body):
-        if line.startswith(_VAULT_SCOUTCTL + "kb "):
+        if line.startswith(_SCOUTCTL + "kb "):
             words = shlex.split(line.split("#", 1)[0])[2:]
             i = words.index("--repo")
             assert words[i + 1] == "<vault>", line
@@ -280,19 +285,38 @@ def test_scout_ask_never_calls_a_kb_command_that_writes() -> None:
     assert "**Read-only.**" in body and "never write, edit, move or commit anything in the vault" in body
 
 
-def test_scout_ask_finds_the_vault_from_config_and_names_it_on_every_call() -> None:
-    """From another repo, `kb`'s default `--repo` is that repo: every call names the located vault, through
-    the vault's own scoutctl, and the vault comes from `kb vault`, never the cwd."""
+def test_scout_ask_never_runs_anything_from_the_vault_or_a_bare_scoutctl() -> None:
+    """A planted vault (a repo with scout-config.yaml and scripts/scoutctl) must never get a script run: the
+    skill runs only the engine `kb vault` names, by absolute path. Every fenced line is the locator or a kb read."""
     _, body = _scout_ask()
-    fenced = [ln for ln in _fenced_lines(body) if "scoutctl" in ln]
-    locator, *calls = fenced
-    assert "kb vault" in locator and "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" in locator
-    assert calls and all(ln.startswith(_VAULT_SCOUTCTL + "kb ") and "--repo <vault>" in ln for ln in calls), calls
-    assert not re.search(r"(?<![>/])scripts/scoutctl kb", body)  # no cwd-relative call left
+    assert "<vault>/scripts" not in body and "scripts/scoutctl" not in body
+    locator = _locator(body)
+    for line in _fenced_lines(body):
+        if line != locator:
+            assert line.startswith(_SCOUTCTL + "kb ") and "--repo <vault>" in line, line
+            assert shlex.split(line.split("#", 1)[0])[2] in KB_READ_COMMANDS, line
+    # No command word in the locator resolves through PATH but the shell's builtins: no bare scoutctl or sed.
+    commands = [seg.strip().lstrip("{ ").split(" ", 1)[0] for seg in re.split(r"[;|&]+|\|\|", locator)]
+    assert "scoutctl" not in commands and "sed" not in commands, commands
+    assert locator.endswith('"$S" kb vault --json')  # kb vault's own stderr ("not a Scout vault") is never hidden
+    # `${CLAUDE_PLUGIN_ROOT}` exactly: Claude Code substitutes only that spelling in a plugin skill's text;
+    # a `${CLAUDE_PLUGIN_ROOT:-…}` guard would be left for bash, where the variable is unset.
+    assert "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" in locator and "${CLAUDE_PLUGIN_ROOT:-" not in body
+
+
+def test_scout_ask_names_the_vault_on_every_call() -> None:
+    """From another repo, `kb`'s default `--repo` is that repo: every call names the located vault."""
+    _, body = _scout_ask()
+    assert _fenced_kb_calls(body)  # each one asserted its --repo <vault>
     # Prose `kb` calls with a path argument say `--repo <vault>` on the same line too.
     prose = [ln for ln in body.splitlines() if re.search(r"`kb (?:read|files|search) ", ln)]
     assert prose and all("--repo <vault>" in ln for ln in prose), prose
-    for needle in ("say so and stop", "Never `cd` into the vault", "never from the folder you are in"):
+    for needle in (
+        "Tell the user `reason` and stop",
+        "Never `cd` into the vault",
+        "never from the folder you are in",
+        "name the vault you read",
+    ):
         assert needle in body, needle
 
 
@@ -307,17 +331,98 @@ def test_scout_ask_treats_another_repo_as_a_shared_place() -> None:
     _, body = _scout_ask()
     section = body.split("### Outside the vault", 1)[1].split("\n## ", 1)[0]
     for needle in (
+        "When `in_vault` is false",
         "shared place, like Slack",
         "context for your answer",
         "Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text,"
-        " code, comments, files or messages",
-        "Skip `[private]` results entirely unless the user asks about something personal",
+        " code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud"
+        " or remote session",
+        "Skip `[private]` results entirely unless the user asks about their own life (health, family, money,"
+        " career); even then, use them only in your reply here",
     ):
         assert needle in section, needle
 
 
+# --- step 0's engine choice, run by bash as written --------------------------------------------------------
+
+_STUB = '#!/bin/sh\necho "{who} $*"\nexit "${{STUB_EXIT:-0}}"\n'
+
+
+def _stub(path: Path, who: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_STUB.format(who=who), encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.fixture
+def launcher(tmp_path: Path) -> dict[str, Path]:
+    """A HOME, a plugin root, and a cloned repo (the cwd) with a planted vault, scoutctl, bin/scoutctl and sed."""
+    repo = tmp_path / "cloned-repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scout-config.yaml").write_text("{}\n", encoding="utf-8")
+    for planted in ("scoutctl", "bin/scoutctl", "scripts/scoutctl", "sed"):
+        _stub(repo / planted, "PLANTED")
+    home = tmp_path / "home"
+    home.mkdir()
+    return {"repo": repo, "home": home, "plugin": tmp_path / "plugin"}
+
+
+def _run_locator(where: dict[str, Path], *, substitute: bool, stub_exit: int = 0) -> tuple[int, str, str]:
+    import subprocess
+
+    line = _locator(_scout_ask()[1])
+    if substitute:  # what Claude Code does to a plugin skill's text
+        line = line.replace("${CLAUDE_PLUGIN_ROOT}", str(where["plugin"]))
+    env = {"HOME": str(where["home"]), "PATH": ".:./bin:./scripts:/usr/bin:/bin", "STUB_EXIT": str(stub_exit)}
+    proc = subprocess.run(["/bin/bash", "-c", line], cwd=where["repo"], env=env, capture_output=True, text=True)
+    assert "PLANTED" not in proc.stdout + proc.stderr
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _pointer_to(home: Path, scoutctl: str) -> None:
+    from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
+    write_pointer(EnginePointer("0.0.0", "/e", "/e/python", scoutctl, "/v", "dev", "2026-01-01T00:00:00Z"), home=home)
+
+
+def test_step0_prefers_the_plugins_own_engine(launcher: dict[str, Path]) -> None:
+    _stub(launcher["plugin"] / "engine" / "bin" / "scoutctl", "plugin")
+    _stub(launcher["home"] / ".local" / "bin" / "scoutctl", "shim")
+    assert _run_locator(launcher, substitute=True) == (0, "plugin kb vault --json\n", "")
+
+
+def test_step0_never_falls_back_on_an_exit_code(launcher: dict[str, Path]) -> None:
+    """A denied or no-match exit from the first engine is the answer, not a cue to try another binary."""
+    _stub(launcher["plugin"] / "engine" / "bin" / "scoutctl", "plugin")
+    _stub(launcher["home"] / ".local" / "bin" / "scoutctl", "shim")
+    assert _run_locator(launcher, substitute=True, stub_exit=1)[:2] == (1, "plugin kb vault --json\n")
+
+
+@pytest.mark.parametrize("substitute", [True, False], ids=["plugin-missing", "not-substituted"])
+def test_step0_falls_back_to_the_bootstrap_shim(launcher: dict[str, Path], substitute: bool) -> None:
+    _stub(launcher["home"] / ".local" / "bin" / "scoutctl", "shim")
+    assert _run_locator(launcher, substitute=substitute)[:2] == (0, "shim kb vault --json\n")
+
+
+def test_step0_then_the_pointers_absolute_scoutctl(launcher: dict[str, Path], tmp_path: Path) -> None:
+    _pointer_to(launcher["home"], str(_stub(tmp_path / "venv" / "bin" / "scoutctl", "pointer")))
+    assert _run_locator(launcher, substitute=True)[:2] == (0, "pointer kb vault --json\n")
+
+
+@pytest.mark.parametrize("pointed", [None, "bin/scoutctl", "scoutctl"], ids=["no-pointer", "relative", "bare"])
+def test_step0_without_an_engine_stops_and_runs_nothing_from_the_repo(
+    launcher: dict[str, Path], pointed: str | None
+) -> None:
+    if pointed is not None:
+        _pointer_to(launcher["home"], pointed)
+    code, out, err = _run_locator(launcher, substitute=True)
+    assert (code, out) == (127, "") and "no Scout engine found" in err
+
+
 def test_scout_ask_locator_finds_the_vault_from_another_repo(privacy_vault: Path, tmp_path: Path) -> None:
-    """Step 0's command, run as written from a repo that isn't the vault, prints the configured vault."""
+    """`kb vault`, run from a repo that isn't the vault, prints the configured vault and an engine to call."""
+    import json
     import os
 
     other = tmp_path / "some-repo"
@@ -325,10 +430,12 @@ def test_scout_ask_locator_finds_the_vault_from_another_repo(privacy_vault: Path
     old = Path.cwd()
     os.chdir(other)
     try:
-        result = CliRunner().invoke(app, ["kb", "vault"], env={"SCOUT_DATA_DIR": str(privacy_vault)})
+        result = CliRunner().invoke(app, ["kb", "vault", "--json"], env={"SCOUT_DATA_DIR": str(privacy_vault)})
     finally:
         os.chdir(old)
-    assert (result.exit_code, result.stdout.strip()) == (0, str(privacy_vault.resolve()))
+    doc = json.loads(result.stdout)
+    assert (result.exit_code, doc["vault"], doc["in_vault"]) == (0, str(privacy_vault.resolve()), False)
+    assert doc["scoutctl"] and Path(doc["scoutctl"]).is_absolute() and os.access(doc["scoutctl"], os.X_OK)
 
 
 def test_scout_ask_keeps_the_session_reader_and_its_labels() -> None:
@@ -345,7 +452,9 @@ def test_scout_ask_stays_cheap() -> None:
     """#84: the description is in every session's context, the body in every scout-ask turn."""
     description, body = _scout_ask()
     assert len(description) <= 600
-    assert len(body.split()) <= 1250
+    assert (
+        len(body.split()) <= 1325
+    )  # was 1250; +75 for step 0's engine choice and the outside-the-vault rule (#721 review)
 
 
 @pytest.fixture(scope="module")

@@ -11,40 +11,42 @@ Find the vault, then work the three steps in order. Most questions are done afte
 
 ## 0. Find the vault
 
-Its absolute path comes from Scout's configuration, never from the folder you are in:
+The vault comes from Scout's configuration, never from the folder you are in. Run this line as written:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" kb vault 2>/dev/null || scoutctl kb vault
+S="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; { [ "$S" != /engine/bin/scoutctl ] && [ -x "$S" ]; } || S="$HOME/.local/bin/scoutctl"; [ -x "$S" ] || S="$(/usr/bin/sed -n 's|^ *"scoutctl": *"\(/[^"]*\)".*|\1|p' "$HOME/.local/state/scout/engine.json" 2>/dev/null)"; { [ -n "$S" ] && [ -x "$S" ]; } || { echo "no Scout engine found" >&2; exit 127; }; "$S" kb vault --json
 ```
 
-Exit 1, or no `scoutctl` at all, means no vault is configured: say so and stop.
+It finds Scout's engine by absolute path only. Never call a bare `scoutctl` or anything inside the vault. It prints JSON:
 
-Put the printed path in place of `<vault>` below, inside the vault too: without `--repo <vault>`, `kb` reads the working directory's repository. Never `cd` into the vault.
+- Exit 1 (`vault` is null) or 127: no usable vault or engine. Tell the user `reason` and stop.
+- Otherwise put `vault` in place of `<vault>` and `scoutctl` in place of `<scoutctl>` below. Pass `--repo <vault>` on every call, inside the vault too: without it, `kb` reads the working directory's repository. Never `cd` into the vault.
+- A `reason` beside a vault: name the vault you read in your answer.
 
-## Read through `<vault>/scripts/scoutctl kb`
+## Read through `<scoutctl> kb`
 
 Every vault read goes through `scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
 
-- **Read-only.** Run only `kb vault` and these reads; never write, edit, move or commit anything in the vault from outside it.
+- **Read-only.** Run only `kb vault` and these reads (they write only Scout's cache and read log); never write, edit, move or commit anything in the vault from outside it.
 - **Pass no `--reader`.** The default is the session's reader: the owner here, `autonomous` in a scheduled run, an agent when a host sets `SCOUT_READER`. `--reader` only narrows; `--reader owner` fails in a run.
 - **`[private]` results are for the owner only.** Use them in an answer to the owner in this conversation. In anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), leave them out and don't hint they exist. In a scheduled run, the brain file's privacy rule decides.
 - **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
 
 ### Outside the vault
 
-When your working directory isn't inside `<vault>`, the repository you are in is a shared place, like Slack. Every result is context for your answer to the user, nothing more. Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text, code, comments, files or messages. Skip `[private]` results entirely unless the user asks about something personal.
+When `in_vault` is false, the repository you are in is a shared place, like Slack. Every result is context for your answer to the user, nothing more. Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text, code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud or remote session. Skip `[private]` results entirely unless the user asks about their own life (health, family, money, career); even then, use them only in your reply here.
 
 ## 1. Resolve the entity to its canonical file
 
 ```bash
-<vault>/scripts/scoutctl kb resolve "<name>" --repo <vault>   # name, alias or slug → canonical file; exit 1 = no match
-<vault>/scripts/scoutctl kb read <path> --repo <vault>        # when it resolves: you are done searching, go to step 2
+<scoutctl> kb resolve "<name>" --repo <vault>   # name, alias or slug → canonical file; exit 1 = no match
+<scoutctl> kb read <path> --repo <vault>        # when it resolves: you are done searching, go to step 2
 ```
 
 For a project or initiative that doesn't resolve, list the projects and match the user's words to a slug:
 
 ```bash
-<vault>/scripts/scoutctl kb files --glob 'knowledge-base/projects/*/*.md' --repo <vault>
+<scoutctl> kb files --glob 'knowledge-base/projects/*/*.md' --repo <vault>
 ```
 
 The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project. Use the map below for other entity types.
@@ -52,7 +54,7 @@ The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header s
 **When nothing matches**, search the entity folders rather than the vault:
 
 ```bash
-<vault>/scripts/scoutctl kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' --repo <vault>
+<scoutctl> kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' --repo <vault>
 ```
 
 Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md --repo <vault>` (matches print line numbers), after the entity folders come up empty.
@@ -97,7 +99,4 @@ Read each with `kb read <path> --repo <vault>`; list a folder with `kb files --g
 |---|---|
 | `ls` the vault root to orient | Go straight to the map; the layout is fixed |
 | Vault-wide search for the entity | `kb resolve "<name>"`, then the project listing |
-| `cat`, Read, `rg` or `parser.py` on a vault file | `kb read`, `kb search`, `kb query`: they carry the `[private]` label |
-| Re-querying Linear/GitHub to confirm what the file states | Check the freshness gate; a recently verified timestamp is the confirmation |
 | Loading MCP connector schemas before reading the KB | Read the file first; most questions never need a connector |
-| Reading `knowledge-base/knowledge-base.md` to find where something lives | Entity files, then a scoped `kb search` |
