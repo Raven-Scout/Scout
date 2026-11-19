@@ -291,6 +291,23 @@ class ActivityLedger:
             self.observe(path.read_text(encoding="utf-8").splitlines(), on=day)
 
 
+def last_changed_by_tag(lines: list[str], *, data_dir: Path, today: _dt.date) -> dict[str, _dt.date]:
+    """When each open item in ``lines`` (``today``'s file) last changed, as the archive judges it.
+
+    Read-only: the ledger is replayed in memory from the daily files dated
+    before ``today`` and never saved, so the cached ledger is neither read nor
+    written. An item whose block differs from what that replay last saw, or
+    that it never saw, changed ``today``.
+    """
+    ledger = ActivityLedger(ActivityLedger.path_for(data_dir), {}, None)
+    ledger.catch_up(data_dir, before=today)
+    out: dict[str, _dt.date] = {}
+    for tag, digest in _fingerprints(lines).items():
+        since = ledger.last_changed(tag)
+        out[tag] = since if since is not None and ledger.unchanged(tag, digest) else today
+    return out
+
+
 def _snoozed_past(lines: list[str], today: _dt.date) -> bool:
     for line in lines:
         m = _SNOOZE_RE.search(line)

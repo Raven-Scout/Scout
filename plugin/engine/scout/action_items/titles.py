@@ -43,7 +43,7 @@ from pathlib import Path
 from scout import paths
 from scout.action_items.past_due import latest_daily
 from scout.action_items.prefetched import daily_lines, unfenced
-from scout.action_items.stale import task_blocks
+from scout.action_items.stale import STALE_AFTER_DAYS, last_changed_by_tag, task_blocks
 
 TITLE_MAX = 80
 LEGACY_PER_RUN = 5
@@ -217,3 +217,72 @@ def check_titles(*, data_dir: Path | None = None, today: str) -> TitleCheck:
         earlier=_earlier_lines(paths.data_dir(data_dir), day),
         committed=_committed_lines(daily),
     )
+
+
+# ----- the whole-file listing (`check-titles --all`) ------------------------------------
+#
+# The inventory for the one-off title cleanup (#687): every open title over the
+# budget, not just the few a run is asked to fix, with each item's stale clock so
+# the owner can see what a rewording would cost. It never prints a title, only
+# tags and lengths, so its output (and certainly its counts) can be pasted into
+# an issue or PR. It reads the vault and writes nothing.
+
+# Length bands for the summary: (label, lowest, highest or None).
+BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("81-100", TITLE_MAX + 1, 100),
+    ("101-120", 101, 120),
+    ("121+", 121, None),
+)
+
+
+@dataclass(frozen=True)
+class LongTitle:
+    tag: str
+    chars: int
+    section: str  # the section's emoji, e.g. "🔴"
+    carried: bool  # the same title under the same tag in the newest earlier daily file
+    last_changed: _dt.date  # when the item's block last changed (*Stale Items Auto-Archive*)
+    archive_due: _dt.date  # when the archive takes it if nobody touches it
+
+
+@dataclass(frozen=True)
+class TitleListing:
+    date: _dt.date
+    checked: int
+    long: list[LongTitle] = field(default_factory=list)
+
+    def buckets(self) -> dict[str, int]:
+        return {
+            label: sum(1 for t in self.long if t.chars >= low and (high is None or t.chars <= high))
+            for label, low, high in BUCKETS
+        }
+
+
+def list_long_titles(*, data_dir: Path | None = None, today: str) -> TitleListing:
+    """Every open top-level title in ``today``'s file over :data:`TITLE_MAX`, longest first.
+
+    Raises ``PrefetchCheckError`` when the file doesn't exist.
+    """
+    lines = daily_lines(data_dir, today)
+    day = _dt.date.fromisoformat(today)
+    root = paths.data_dir(data_dir)
+    before = {tag: title for tag, (_section, title) in _titles(_earlier_lines(root, day)).items()}
+    clock = last_changed_by_tag(list(lines), data_dir=root, today=day)
+    current = _titles(lines)
+    long: list[LongTitle] = []
+    for tag, (section, title) in current.items():
+        if len(title) <= TITLE_MAX:
+            continue
+        since = clock.get(tag, day)
+        long.append(
+            LongTitle(
+                tag=tag,
+                chars=len(title),
+                section=section,
+                carried=before.get(tag) == title,
+                last_changed=since,
+                archive_due=since + _dt.timedelta(days=STALE_AFTER_DAYS),
+            )
+        )
+    long.sort(key=lambda t: (-t.chars, t.tag))
+    return TitleListing(date=day, checked=len(current), long=long)

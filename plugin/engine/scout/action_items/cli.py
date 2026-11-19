@@ -886,6 +886,12 @@ def cli_check_titles(
     ),
     data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
     json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    list_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Read-only inventory instead of the check: every open title over 80 characters, carried or not, "
+        "by tag and length with its stale clock. Never prints a title. Exit 0 (2 = cannot read).",
+    ),
 ) -> None:
     """Check task titles and Today's Focus in today's file against *Clean Title, Prose Body, Refs Block*.
 
@@ -906,6 +912,9 @@ def cli_check_titles(
 
     name = "check-titles"
     day = _check_day(name, date, data_dir)
+    if list_all:
+        _list_long_titles(name, day, data_dir, json_out)
+        return
     try:
         result = check_titles(data_dir=data_dir, today=day)
     except PrefetchCheckError as e:
@@ -942,6 +951,51 @@ def cli_check_titles(
         sys.stdout.write(f"{name}: {result.checked} task title(s) and Today's Focus within the limits{carried}\n")
     if not result.passed:
         raise typer.Exit(code=1)
+
+
+def _list_long_titles(name: str, day: str, data_dir: Path | None, json_out: bool) -> None:
+    """`check-titles --all`: tags, lengths and stale clocks only, never a title."""
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.titles import TITLE_MAX, list_long_titles
+
+    try:
+        listing = list_long_titles(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+    buckets = listing.buckets()
+    longest = max((t.chars for t in listing.long), default=0)
+    if json_out:
+        payload = {
+            "date": listing.date.isoformat(),
+            "limit": TITLE_MAX,
+            "checked": listing.checked,
+            "over": len(listing.long),
+            "longest": longest,
+            "buckets": buckets,
+            "items": [
+                {
+                    "tag": t.tag,
+                    "chars": t.chars,
+                    "section": t.section,
+                    "carried": t.carried,
+                    "last_changed": t.last_changed.isoformat(),
+                    "archive_due": t.archive_due.isoformat(),
+                }
+                for t in listing.long
+            ],
+        }
+        sys.stdout.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+        return
+    bands = ", ".join(f"{label}: {n}" for label, n in buckets.items())
+    sys.stdout.write(
+        f"{name} --all: {len(listing.long)} of {listing.checked} open titles over {TITLE_MAX} characters"
+        f" (longest {longest}; {bands})\n"
+    )
+    for t in listing.long:
+        sys.stdout.write(
+            f"  [#{t.tag}] {t.chars} chars · {t.section or '-'} · {'carried' if t.carried else 'new'}"
+            f" · unchanged since {t.last_changed} · archives {t.archive_due} if untouched\n"
+        )
 
 
 @app.command("backfill-prefixes")
