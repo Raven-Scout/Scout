@@ -740,6 +740,16 @@ clone is. The format is `schema_version: 1`, with fixed fields only
 - The fetch is `--no-tags --no-recurse-submodules --depth=1
   --filter=blob:limit=16k`, of `main` only. A missing blob means the file was
   over 16 KiB, and it is refused as `too_big`.
+- **Checking `main` still builds on Scout's last removal.** A one-commit fetch
+  can't show that, so the fetch deepens (`--deepen`, blobs still filtered) in
+  steps until it reaches the recorded removal commit, at most 256 commits
+  back. If that commit isn't among them, `main` was rewritten or ran too far
+  ahead, and the pull refuses (`inbox_rewritten`), taking nothing.
+- **Recovering from `inbox_rewritten`.** The owner runs `scoutctl delegate inbox
+  <id> --reset`, at the keyboard. It shows the current `main` and, once
+  confirmed, takes it as the new base, without pushing anything. The proposals
+  already recorded still dedupe, so nothing is applied twice. A `push --force`
+  by hand doesn't help: the next pull would refuse it the same way.
 - **Nothing is ever checked out.** Entries are read with `ls-tree -z` and
   `cat-file` only. A path, a symlink, a case or NFKC collision, or a name that
   isn't UTF-8 never touches the disk.
@@ -747,30 +757,46 @@ clone is. The format is `schema_version: 1`, with fixed fields only
 **What is read:**
 
 - Only entries at `inbox/<id>/<ULID>.json`, mode `100644`, at most 16 KiB.
-- They must parse under the schema. A ULID whose time is ahead of the clock
-  (with some slack) is refused.
-- At most 50 per pull, in ULID order.
+- They must parse under the schema. A ULID whose time is more than 10 minutes
+  ahead of the laptop's clock is refused (`future_id`).
+- At most 50 per pull, in ULID order, counting only entries not already
+  recorded. An entry already recorded is only removed again, so an agent
+  that keeps pushing can't stall the inbox.
 - Anything else in the tree is counted and ignored. "No `main`" is reported
   apart from "empty inbox".
 
 **Taking a proposal, crash-safe and unforgeable, in this order:**
 
-1. **The signed "taken" record.** It records the ULID and an HMAC of the
-   proposal's bytes, under the state key (`.scout-state`, protected from runs
-   by `hook_paths`). A refused entry is recorded with its reason.
+1. **The signed "taken" record** is `.scout-state/delegate-inbox.json`, signed
+   with the state key and listed in `hook_paths.protected_specs` (beside
+   `delegate-mirrors.json` and `delegate-scan/`), so a run can't write it. It
+   records each ULID and an HMAC of the proposal's bytes; a refused entry is
+   recorded with its reason. The same signed file holds:
+   - each delegate's inbox binding and the sha of its last removal commit;
+   - the ULID-time high-water mark;
+   - every applied op's prior state, for `inbox revert`. Revert is the real
+     risk: a run that could edit that state would get its own text written
+     back by the owner's revert.
 2. **The copy.** A valid proposal goes to `.scout-inbox/agents/<id>/<ULID>.json`.
 3. **The removal.** A compare-and-swap commit on the inbox's `main` removes
    every entry taken or refused, so a refused one isn't read again. It has a
    fixed identity and message and carries no outcomes, since the agent reads
-   the inbox. Its sha is recorded.
+   the inbox. Its sha is recorded. If the agent pushed in between (the
+   compare-and-swap loses), the pull fetches again and retries once;
+   otherwise the removal waits for the next pull. Entries already recorded
+   are never taken twice either way.
 
 A crash between steps leaves an entry that the next pull recognises by its
 record, so nothing is lost or taken twice.
 
 **Dedup across computers.** The signed record is per computer. So pull also
-dedupes against a committed ledger of taken ULIDs, and against a per-delegate
+dedupes against a committed ledger of taken ULIDs,
+`.scout-inbox/agents/<id>/taken.ledger`, and against a per-delegate
 high-water mark of ULID time. That covers a new laptop, or state rebuilt by
-`trust-state`.
+`trust-state`. The ledger is add-only and used only to skip: Scout never
+removes a line from it, and never applies anything because of it. At worst a
+run that writes it hides proposals from being taken, which the counts in
+health show.
 
 **The runner commits the pull, never the run.** It runs as a step outside the
 run's sandbox, like the other runner steps.
@@ -788,8 +814,12 @@ run's sandbox, like the other runner steps.
   - `dismiss` and `rename-topic` aren't addressed by id, so they wait for the
     review queue (V4b).
 - **The delegate must have seen the item.**
-  - The commit is the delegate's signed `last_mirror`, never what the remote
-    says.
+  - The commit is the delegate's signed `last_mirror`, or its signed
+    `pending_mirror` (a push the agent may already have seen before
+    `_adopt_pending` caught up), never what the remote says. The item counts
+    if either holds it.
+  - With no mirror commit at all, the outcome is `no_mirror`, which is
+    retried at the next apply, not final.
   - Scout parses that date's daily file in that commit with the action-items
     parser, and requires a task whose short prefix is the TAG. A substring
     match isn't enough, since a TAG can appear in a visible comment.
@@ -810,7 +840,7 @@ run's sandbox, like the other runner steps.
   delegate did ("done by delegate-grok-personal").
 - **Outcomes are recorded by ULID,** never with the proposal's text:
   `applied`, `no_op`, `stale`, `unknown_item`, `limited`, `not_taken`,
-  `refused`.
+  `refused`, and `no_mirror` (retried).
 
 #### Observations (V4b), decided now because a phase rule isn't a boundary
 
