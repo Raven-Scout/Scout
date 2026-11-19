@@ -32,6 +32,7 @@ on the owner's say-so, and keeps each clock:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -97,16 +98,19 @@ def _stop_group(proc: subprocess.Popen[str], grace_s: float = 10.0) -> None:
     """Stop ``proc`` and everything it started (it leads its own session): TERM, then KILL after ``grace_s``."""
     if proc.poll() is not None:
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(proc.pid, sig)
-        except (ProcessLookupError, PermissionError):
-            return
-        try:
-            proc.wait(timeout=grace_s)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=grace_s)
 
 
 # ----- who may run it -------------------------------------------------------------------
@@ -259,9 +263,7 @@ def _json_object(text: str) -> dict[str, str]:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end < start:
         raise ValueError("no JSON object in the reply")
-    raw = json.loads(text[start : end + 1])
-    if not isinstance(raw, dict):
-        raise ValueError("the reply is not a JSON object")
+    raw = json.loads(text[start : end + 1])  # starts with "{": a dict, or a ValueError
     return {str(k): str(v).strip() for k, v in raw.items() if isinstance(v, str)}
 
 
@@ -792,7 +794,7 @@ def _rewrite_daily(
     raw = _decode(daily)
     parts = raw.splitlines(keepends=True)
     lines = ledger_lines(raw)
-    if len(parts) != len(lines):
+    if len(parts) != len(lines):  # pragma: no cover - defensive: both split at the same line breaks
         raise RetitleError(f"{daily.name} has line breaks this pass can't keep byte for byte")
     index = _task_line_index(lines)
     before = stale.fingerprints(lines)
@@ -804,7 +806,7 @@ def _rewrite_daily(
             drifted.append(tag)
             continue
         i = starts[0]
-        content = parts[i].splitlines()[0] if parts[i].splitlines() else ""
+        content = parts[i].splitlines()[0]  # a task line: never empty
         parts[i] = _with_title(content, new) + parts[i][len(content) :]
         done.append(tag)
     if not done:

@@ -199,6 +199,7 @@ def test_an_unchanged_title_is_a_problem() -> None:
 # prints the stream-json lines in reply.jsonl (and, after a `SLEEP` line, waits).
 
 FAKE_CLAUDE = """#!/bin/sh
+[ -n "$FAKE_EARLY" ] && exit 3
 cat > "$FAKE_DIR/stdin.txt"
 printf '%s\\n' "$@" > "$FAKE_DIR/argv.txt"
 env > "$FAKE_DIR/env.txt"
@@ -890,3 +891,252 @@ def test_someone_elses_commit_is_not_taken_for_ours(vault: Path) -> None:
 def test_undo_drops_a_frontmatter_block_left_empty(vault: Path) -> None:
     text = retitle._set_frontmatter('---\nformer_title: "x"\n---\n\nBody.\n', {"former_title": None, "title": None})
     assert text == "Body.\n"
+
+
+# ----- the error paths, one by one ------------------------------------------------------
+
+
+def test_stop_group_on_a_finished_or_gone_process_does_nothing() -> None:
+    done = subprocess.Popen(["true"], start_new_session=True)
+    done.wait()
+    retitle._stop_group(done)  # already exited
+
+    class Gone:
+        pid = done.pid  # reaped: no such process group any more
+
+        def poll(self) -> None:
+            return None
+
+    retitle._stop_group(Gone())  # type: ignore[arg-type]
+
+
+def test_stop_group_kills_a_process_that_ignores_term() -> None:
+    proc = subprocess.Popen(["sh", "-c", 'trap "" TERM; sleep 30'], start_new_session=True, text=True)
+    import time
+
+    time.sleep(0.3)  # let the trap be set
+    retitle._stop_group(proc, grace_s=0.5)
+    assert proc.poll() == -9
+
+
+def test_live_run_is_false_for_a_vault_nobody_runs(vault: Path) -> None:
+    assert retitle._live_run(vault) is False
+
+
+def test_a_title_with_outer_space_is_a_problem() -> None:
+    assert "leading or trailing space" in problems(" Ship it", LONG)
+
+
+def test_frontmatter_values_unquoted_or_not_strings() -> None:
+    assert retitle._frontmatter_value("---\ntitle: plain words\n---\n", "title") == "plain words"
+    assert retitle._frontmatter_value("---\ntitle: 5\n---\n", "title") == "5"
+    assert retitle._frontmatter_value("no frontmatter\n", "title") is None
+
+
+def test_a_claude_that_quits_without_reading_or_an_init_is_refused(tmp_path: Path) -> None:
+    _fake, env = _fake_claude(tmp_path, [], FAKE_EARLY="1")
+    items = [{"tag": "A1", "title": LONG, "body": "x" * 300_000}]  # past the pipe buffer: a broken pipe
+    with pytest.raises(retitle.PaidKeyRefused, match="no init message"):
+        retitle.ask_claude(env=env)(items)
+
+
+def test_noise_lines_are_skipped_and_reported_on_failure(tmp_path: Path) -> None:
+    ok = {"type": "result", "is_error": False, "result": '{"A1": "Ship it"}'}
+    _fake, env = _fake_claude(tmp_path, ["warming up", "[1]", _init(), ok])
+    assert retitle.ask_claude(env=env)([{"tag": "A1", "title": LONG, "body": ""}]) == {"A1": "Ship it"}
+    _fake, env = _fake_claude(tmp_path / "2", ["boom: out of turns", _init()], FAKE_EXIT="1")
+    with pytest.raises(RuntimeError, match="boom: out of turns"):
+        retitle.ask_claude(env=env)([{"tag": "A1", "title": LONG, "body": ""}])
+
+
+def test_a_note_without_frontmatter_gets_a_block(vault: Path) -> None:
+    _setup(vault)
+    _helper(vault)
+    note = vault / "action-items" / "context" / "YEL1.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("Just prose.\n", encoding="utf-8")
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"YEL1": SHORT}))
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert note.read_text(encoding="utf-8") == (
+        f"---\ntitle: {json.dumps(SHORT)}\nformer_title: {json.dumps(LONG)}\n---\n\nJust prose.\n"
+    )
+
+
+def test_unreadable_notes_unbolded_titles_and_corrupt_worksheets(vault: Path) -> None:
+    _setup(vault)
+    note = vault / "action-items" / "context" / "YEL1.md"
+    note.parent.mkdir(parents=True)
+    note.write_bytes(b"\xff\xfe not utf-8")
+    daily = vault / "action-items" / f"action-items-{TODAY}.md"
+    daily.write_text(daily.read_text(encoding="utf-8") + f"- [ ] [#PLAIN] {LONG} — no bold here.\n", encoding="utf-8")
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    skips = {r.tag: r.skip for r in sheet.rows}
+    assert skips["YEL1"] == "its context note can't be read" and skips["PLAIN"] == "title isn't bold"
+    sheet.path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RetitleError, match="cannot read the worksheet"):
+        retitle.load_worksheet(vault, TODAY)
+
+
+def test_head_is_none_without_git(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_git(*_args: Any) -> Any:
+        raise OSError("git: not found")
+
+    monkeypatch.setattr(retitle, "_git", no_git)
+    assert retitle._head(vault) is None
+
+
+def test_a_transaction_keeps_the_first_copy_of_a_file_written_twice(tmp_path: Path) -> None:
+    path = tmp_path / "f.md"
+    path.write_text("original\n", encoding="utf-8")
+    tx = retitle._Transaction(tmp_path)
+    tx.write(path, "one\n")
+    tx.write(path, "two\n")
+    tx.rollback()
+    assert path.read_text(encoding="utf-8") == "original\n"
+
+
+def test_a_failing_helper_after_someone_elses_commit_rolls_nothing_back(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+
+    def foreign_then_fail(v: Path, message: str, rel: list[str]) -> str:
+        (v / "other.md").write_text("x\n", encoding="utf-8")
+        _git(v, "add", "other.md")
+        _git(v, "commit", "-qm", "someone else")
+        raise RetitleError("helper failed")
+
+    with pytest.raises(RetitleError, match="isn't this pass's commit"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=foreign_then_fail)
+    assert "**Ship the export**" in "\n".join(_lines(vault, TODAY))
+
+
+def test_apply_refuses_an_older_file_or_a_missing_helper(vault: Path) -> None:
+    sheet = _planned(vault)
+    _file(vault, TODAY + dt.timedelta(days=1), yellow=_task("YEL1", LONG))
+    with pytest.raises(RetitleError, match="is not the newest daily file"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    (vault / "action-items" / f"action-items-{TODAY + dt.timedelta(days=1)}.md").unlink()
+    (vault / "scripts" / "git-safe-commit.sh").unlink()
+    with pytest.raises(RetitleError, match="is missing from the vault"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+
+
+def test_rewrite_daily_reports_rows_that_no_longer_match(vault: Path) -> None:
+    _setup(vault)
+    daily = vault / "action-items" / f"action-items-{TODAY}.md"
+    tx = retitle._Transaction(vault)
+    assert retitle._rewrite_daily(tx, daily, {"YEL1": ("not its title", SHORT)}, TODAY) == ([], ["YEL1"], [])
+    assert tx.saved == {}
+
+
+def test_records_without_a_final_newline_are_appended_to_cleanly(vault: Path) -> None:
+    sheet = _planned(vault)
+    target = stale.rewrites_path(vault)
+    target.parent.mkdir(parents=True)
+    target.write_text('{"tag": "OLD1", "on": "2026-01-01", "before": "a", "after": "b"}', encoding="utf-8")
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    rows = target.read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 3 and all(json.loads(r) for r in rows)
+
+
+def test_first_seen_skips_unreadable_files_and_stops_when_done(vault: Path) -> None:
+    _file(vault, FIRST, yellow=_task("YEL1", LONG))
+    (vault / "action-items" / f"action-items-{FIRST + dt.timedelta(days=1)}.md").write_bytes(b"\xff")
+    _file(vault, TODAY, yellow=_task("YEL1", LONG) + _task("LATE", LONG))
+    assert retitle._first_seen(vault, {"YEL1", "LATE", "NONE"}) == {"YEL1": FIRST, "LATE": TODAY}
+    assert retitle._first_seen(vault, {"YEL1"}) == {"YEL1": FIRST}
+
+
+def test_apply_with_nothing_ready_applies_nothing(vault: Path) -> None:
+    sheet = _planned(vault, {"RED1": "Ship it — now", "YEL1": SHORT})
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert result.applied == ["YEL1"]  # the row with a problem is passed over
+    again = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"RED1": "Ship it — now"}))
+    assert retitle.apply(vault=vault, today=TODAY.isoformat(), sha=again.sha, commit=Committer()).applied == []
+
+
+def test_apply_with_every_row_drifting_in_the_rewrite_commits_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _planned(vault)
+    monkeypatch.setattr(retitle, "_rewrite_daily", lambda tx, daily, changes, day: ([], list(changes), []))
+    committer = Committer()
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=committer)
+    assert result.applied == [] and result.drifted == ["RED1", "YEL1"] and committer.calls == []
+
+
+def test_a_failure_while_writing_puts_everything_back(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sheet = _planned(vault)
+    before = _snapshot(vault)
+
+    def disk_full(*_args: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(retitle, "_write_records", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert _snapshot(vault) == before
+
+
+def _cleanup_commit(vault: Path, rows: list[str]) -> str:
+    target = stale.rewrites_path(vault)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+    _git(vault, "add", "-f", str(target))
+    _git(vault, "commit", "-qm", "records")
+    return _git(vault, "rev-parse", "HEAD").strip()
+
+
+def test_plan_undo_reads_only_well_formed_rows_once(vault: Path) -> None:
+    _setup(vault)
+    _repo(vault)
+    row = json.dumps({"tag": "YEL1", "on": str(TODAY), "before": "a", "after": "b"})
+    sha = _cleanup_commit(vault, ["junk", "{}", row, row])
+    plan = retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=sha)
+    assert plan.changed == ["YEL1"] and plan.restore == {}  # its note is missing
+    with pytest.raises(RetitleError, match="nothing to undo"):
+        retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=sha)
+    junk_only = _cleanup_commit(vault, ["junk", "{}", row, row, "still junk"])
+    with pytest.raises(RetitleError, match="recorded no title rewrites"):
+        retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=junk_only)
+
+
+def test_undo_refuses_a_title_that_lost_its_bold(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit
+    daily = vault / "action-items" / f"action-items-{TODAY}.md"
+    daily.write_text(daily.read_text(encoding="utf-8").replace(f"**{SHORT}**", SHORT), encoding="utf-8")
+    before = _snapshot(vault)
+    with pytest.raises(RetitleError, match="title isn't bold"):
+        retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert _snapshot(vault) == before
+
+
+def test_undo_with_every_row_drifting_in_the_rewrite_changes_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit
+    monkeypatch.setattr(retitle, "_rewrite_daily", lambda tx, daily, changes, day: ([], list(changes), []))
+    with pytest.raises(RetitleError, match="nothing to undo"):
+        retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+
+
+def test_a_failure_while_undoing_puts_everything_back(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit
+    before = _snapshot(vault)
+
+    def disk_full(*_args: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(retitle, "_write_records", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert _snapshot(vault) == before
