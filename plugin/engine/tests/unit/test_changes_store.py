@@ -155,7 +155,7 @@ def test_readers_survive_deep_nesting_and_unreadable_files(tmp_path, vault):
     (logs / "changes.jsonl").mkdir()
     assert read_changes(vault) == ([], 1)
     since = NOW - timedelta(days=1)
-    assert changes_report(vault, now=NOW, since=since)["skipped_rows"] == 1
+    assert changes_report(vault, now=NOW, since=since, env=env, tz=ZoneInfo("UTC"))["skipped_rows"] == 1
     assert engagement_report(vault, env, now=NOW, since=since, tz=ZoneInfo("UTC"))["skipped_rows"] == 2
 
 

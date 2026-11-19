@@ -38,6 +38,10 @@ def _ts(days_ago: float) -> datetime:
     return NOW - timedelta(days=days_ago)
 
 
+# The wishlist-done change: its 14-day review window (10-27..11-09) closed before NOW, so its test is done.
+DONE_TS = _ts(20)
+
+
 def _changes() -> list[Change]:
     """One coherent row per kind, in ``sorted(CHANGE_KINDS)`` order. Extend by adding to ``specs``: a row is what a
     scan of a real commit would write (a brain edit's ``why`` is its target; a rollback names the change it undoes)."""
@@ -64,7 +68,13 @@ def _changes() -> list[Change]:
             "author_lane": "dreaming",
         },
         "upgrade": {"files": ("scripts/upgrade.sh",), "author_lane": "update"},
-        "wishlist-done": {"files": ("docs/wishlist/red-carry.md",), "author_lane": "work"},
+        # Old enough that its review is done: a recurrence of its target in the review window makes it hurt.
+        "wishlist-done": {
+            "files": ("docs/wishlist/red-carry.md",),
+            "author_lane": "work",
+            "ts": DONE_TS,
+            "targets": ("pattern-249",),
+        },
     }
     out = []
     for i, kind in enumerate(kinds):
@@ -112,6 +122,11 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
         ("dm-reaction", "slack-dm", datetime(2026, 11, 14, 9, 5, tzinfo=UTC), None, None),
         ("dm-sent", "slack-dm", datetime(2026, 11, 15, 8, 0, tzinfo=UTC), None, "1763193600.000400"),
         ("red-carried", "action-items", datetime(2026, 11, 15, 9, 0, tzinfo=UTC), None, None),
+        # Before the engagement window (since NOW - 14 d), inside the wishlist-done change's review window: its
+        # target recurred twice (hurt), and the owner marked the verdict wrong.
+        ("recurrence", "mistake-audit", datetime(2026, 11, 1, 9, 0, tzinfo=UTC), None, "pattern-249@2026-11-01"),
+        ("recurrence", "mistake-audit", datetime(2026, 11, 2, 9, 0, tzinfo=UTC), None, "pattern-249@2026-11-02"),
+        ("verdict-wrong", "app", datetime(2026, 11, 2, 10, 0, tzinfo=UTC), None, "chg-000000000006"),
     ]
     for kind, surface, ts, session, ref in rows:
         append_signal(Signal(ts=ts, kind=kind, surface=surface, session=session, ref=ref), vault=vault, env=env)
@@ -135,14 +150,43 @@ def _check_or_regen(path: Path, text: str) -> None:
 
 
 def test_changes_contract_matches_canonical(tmp_path):
-    vault, _, _ = _build(tmp_path)
-    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30))
+    vault, _, env = _build(tmp_path)
+    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), env=env, tz=PRAGUE)
     assert doc["skipped_rows"] == 1 and set(doc["counts"]) == CHANGE_KINDS
     assert doc["schema_version"] == 1 and doc["truncated"] is False and len(doc["changes"]) == 7
     stamps = [c["ts"] for c in doc["changes"]]
     assert stamps == sorted(stamps, reverse=True)
     assert any(c["why"]["inferred"] for c in doc["changes"]) and any(c["backfilled"] for c in doc["changes"])
+    # Every change carries its test: one testing, one done with a verdict, the untested lanes and kinds not tested.
+    assert doc["calibrating"] is True and doc["auto_rollback"] == "off"
+    tests = {c["kind"]: c["test"] for c in doc["changes"]}
+    assert tests["driver"]["state"] == "testing" and tests["driver"]["after"] is None
+    done = tests["wishlist-done"]
+    assert done["state"] == "done" and done["verdict"] == "hurt" and done["reasons"] == ["recurrence-up"]
+    assert done["suspect"] is True and done["marked_wrong"] is True and done["would_have_done"]["targeted"] is True
+    assert {tests[k]["state"] for k in ("kb-structure", "rollback", "upgrade")} == {"not-tested"}
+    rolled = tests["brain-edit"]
+    assert rolled["verdict"] == "rolled back" and rolled["rolled_back_by"] == "chg-000000000004"
+    # The rollback (untested) and the 16-days-older wishlist-done change are not in the phase change's overlap.
+    assert tests["phase"]["overlap"] == ["chg-000000000000", "chg-000000000001"]
     _check_or_regen(CANONICAL_CHANGES, _text(doc))
+
+
+def test_changes_report_reads_settings_from_the_owner_store(tmp_path):
+    from datetime import date
+
+    from scout.changes.settings import Settings, write_settings
+
+    vault, _, env = _build(tmp_path)
+    write_settings(Settings(auto_rollback="targeted", review_days=21, calibrated_on=date(2026, 11, 1)), env)
+    # A settings file in the run-writable logs is never read.
+    (vault / ".scout-logs" / "settings.json").write_text(json.dumps({"schema": 1, "auto_rollback": "one-at-a-time"}))
+    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), env=env, tz=PRAGUE)
+    assert doc["auto_rollback"] == "targeted" and doc["calibrating"] is False
+    tests = {c["kind"]: c["test"] for c in doc["changes"]}
+    # 21 review days: the wishlist-done change (10-27) is reviewed on 11-17, after NOW.
+    assert tests["wishlist-done"]["state"] == "testing" and tests["wishlist-done"]["review_on"] == "2026-11-17"
+    assert tests["driver"]["calibrating"] is False
 
 
 def test_engagement_contract_has_every_day(tmp_path):
@@ -173,7 +217,7 @@ def test_engagement_contract_has_every_day(tmp_path):
 def test_reports_carry_no_absolute_paths(tmp_path):
     vault, home, env = _build(tmp_path)
     docs = (
-        changes_report(vault, now=NOW, since=NOW - timedelta(days=30)),
+        changes_report(vault, now=NOW, since=NOW - timedelta(days=30), env=env, tz=PRAGUE),
         engagement_report(vault, env, now=NOW, since=NOW - timedelta(days=14), tz=PRAGUE),
     )
     for doc in docs:
@@ -182,8 +226,8 @@ def test_reports_carry_no_absolute_paths(tmp_path):
 
 
 def test_limit_truncates_but_counts_everything(tmp_path):
-    vault, _, _ = _build(tmp_path)
-    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), limit=3)
+    vault, _, env = _build(tmp_path)
+    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), limit=3, env=env, tz=PRAGUE)
     assert doc["truncated"] is True and len(doc["changes"]) == 3
     assert sum(doc["counts"].values()) == 7
 
@@ -192,6 +236,7 @@ def test_concurrent_scans_duplicate_rows_show_and_count_once(tmp_path):
     """Two overlapping scans can each append the same commit's row; the report keeps the first, once."""
     vault = tmp_path / "Scout"
     vault.mkdir()
+    env = {"HOME": str(tmp_path / "home")}
     first = Change(
         id="chg-abcdef012345",
         ts=_ts(1),
@@ -209,7 +254,7 @@ def test_concurrent_scans_duplicate_rows_show_and_count_once(tmp_path):
     append_change(vault, other)
     append_change(vault, replace(first, summary="second row"))
     assert len(read_changes(vault)[0]) == 3
-    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30))
+    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), env=env, tz=PRAGUE)
     assert [c["id"] for c in doc["changes"]].count("chg-abcdef012345") == 1
     assert next(c for c in doc["changes"] if c["id"] == "chg-abcdef012345")["summary"] == "first row"
     assert len(doc["changes"]) == 2 and sum(doc["counts"].values()) == 2
@@ -270,6 +315,8 @@ def test_cli_emits_both_documents_and_bare_prints_help(tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     doc = json.loads(out.stdout)
     assert doc["schema_version"] == 1 and len(doc["changes"]) == 2
+    assert doc["auto_rollback"] == "off" and doc["calibrating"] is True
+    assert all(c["test"]["state"] in ("testing", "done", "not-tested") for c in doc["changes"])
     out = runner.invoke(app, ["engagement", "--json", "--since", "3650d"])
     assert out.exit_code == 0, out.output
     assert json.loads(out.stdout)["schema_version"] == 1

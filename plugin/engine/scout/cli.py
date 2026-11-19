@@ -467,10 +467,17 @@ def cli_changes(
     if not json_out:
         typer.echo(ctx.get_help())
         return
+    import os
+
     from scout.changes.report import changes_report
+    from scout.config import resolve_timezone
 
     _changes_document(
-        "changes", since, lambda vault, now, cutoff: changes_report(vault, now=now, since=cutoff, limit=limit)
+        "changes",
+        since,
+        lambda vault, now, cutoff: changes_report(
+            vault, now=now, since=cutoff, env=os.environ, tz=resolve_timezone(vault), limit=limit
+        ),
     )
 
 

@@ -1,4 +1,6 @@
 {
+  "auto_rollback": "off",
+  "calibrating": true,
   "changes": [
     {
       "author_lane": "dreaming",
@@ -16,6 +18,35 @@
       "targets": [
         "pattern-288"
       ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.6429,
+          "noise": 0.0714,
+          "recurrences": {
+            "pattern-288": 0
+          }
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000001",
+          "chg-000000000003"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-29",
+        "rolled_back_by": "chg-000000000004",
+        "state": "testing",
+        "suspect": false,
+        "verdict": "rolled back",
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-15T12:00:00+00:00",
       "why": {
         "gloss": "A mistake that kept recurring",
@@ -40,6 +71,33 @@
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.5,
+          "noise": 0.0714,
+          "recurrences": {}
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000000",
+          "chg-000000000003"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-28",
+        "rolled_back_by": null,
+        "state": "testing",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-14T12:00:00+00:00",
       "why": {
         "gloss": null,
@@ -64,6 +122,24 @@
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-13T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
@@ -88,6 +164,33 @@
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.3571,
+          "noise": 0.0,
+          "recurrences": {}
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000000",
+          "chg-000000000001"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-26",
+        "rolled_back_by": null,
+        "state": "testing",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-12T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
@@ -112,6 +215,24 @@
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-11T12:00:00+00:00",
       "why": {
         "gloss": "The test found it hurt",
@@ -136,6 +257,24 @@
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-10T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
@@ -158,9 +297,45 @@
       "schema_version": 1,
       "summary": "A wishlist-done change",
       "targets": [
-        "briefing"
+        "pattern-249"
       ],
-      "ts": "2026-11-09T12:00:00+00:00",
+      "test": {
+        "after": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.0714,
+          "noise": 0.0,
+          "recurrences": {
+            "pattern-249": 2
+          }
+        },
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.0,
+          "noise": 0.0,
+          "recurrences": {
+            "pattern-249": 0
+          }
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": true,
+        "overlap": [],
+        "reasons": [
+          "recurrence-up"
+        ],
+        "review_on": "2026-11-10",
+        "rolled_back_by": null,
+        "state": "done",
+        "suspect": true,
+        "verdict": "hurt",
+        "would_have_done": {
+          "one_at_a_time": true,
+          "targeted": true
+        }
+      },
+      "ts": "2026-10-27T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
         "inferred": false,

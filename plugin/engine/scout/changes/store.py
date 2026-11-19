@@ -102,6 +102,23 @@ def _read(path: Path) -> tuple[list[dict[str, Any]], int]:
     return rows, skipped
 
 
+def atomic_write_json(path: Path, data: dict[str, Any]) -> bool:
+    """Atomic 0600 JSON write; whether it saved. A failure leaves the old file (or none) and no temp file."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, sort_keys=True) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        return False
+    return True
+
+
 def append_change(vault: Path, change: Change) -> None:
     _append(_logs(vault) / CHANGES_NAME, change.to_row())
 

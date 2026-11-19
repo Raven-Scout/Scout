@@ -5,6 +5,7 @@ import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -379,7 +380,13 @@ def _seed(repo: Path, sha: str, **fields):
 
 
 def _report(repo: Path) -> dict:
-    return changes_report(repo, now=datetime(2027, 1, 1, tzinfo=UTC), since=datetime(2026, 1, 1, tzinfo=UTC))
+    return changes_report(
+        repo,
+        now=datetime(2027, 1, 1, tzinfo=UTC),
+        since=datetime(2026, 1, 1, tzinfo=UTC),
+        env={"HOME": str(repo.parent / "home")},
+        tz=ZoneInfo("UTC"),
+    )
 
 
 def test_report_drops_a_seeded_row_for_a_non_change_commit(repo):

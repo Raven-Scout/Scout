@@ -28,11 +28,26 @@ FIELDS = ("feedback", "reliance", "noise")
 DEFAULT_LIMIT = 500
 
 
-def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = DEFAULT_LIMIT) -> dict:
+def changes_report(
+    vault: Path,
+    *,
+    now: datetime,
+    since: datetime,
+    env: Mapping[str, str],
+    tz: ZoneInfo,
+    limit: int = DEFAULT_LIMIT,
+) -> dict:
     """Changes since ``since``, newest first, at most ``limit``; ``counts`` covers every in-range change.
 
     One entry per change ``id`` (the first row in the file wins): two scans that overlap can each append a row
-    for the same commit, and the duplicate must not show twice or count twice."""
+    for the same commit, and the duplicate must not show twice or count twice.
+
+    Each change carries its ``test`` (scout.changes.verdicts), computed now from both engagement stores, the same
+    rows ``engagement_report`` reads; days are local dates in ``tz``. ``calibrating`` and ``auto_rollback`` come from
+    the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only."""
+    from scout.changes.settings import read_settings
+    from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
+
     changes, skipped = read_changes(vault)
     unique: dict[str, Change] = {}
     for c in changes:
@@ -55,6 +70,12 @@ def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = 
     counts = {kind: 0 for kind in sorted(CHANGE_KINDS)}
     for c in inside:
         counts[c.kind] += 1
+    settings = read_settings(env)
+    signals, _ = read_signals(vault, env)
+    # A shown change's overlap partners are under review_days from it, and what rolls it back comes after it, so
+    # older rows can't change what is shown. Leaving them out bounds the work a stale or forged row can cause.
+    floor = since - timedelta(days=settings.review_days + 1)
+    tests = evaluate([c for c in unique.values() if floor <= c.ts <= now], signals, now=now, tz=tz, settings=settings)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(),
@@ -62,7 +83,9 @@ def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = 
         "truncated": len(inside) > limit,
         "skipped_rows": skipped,
         "verified": verified,
-        "changes": [c.to_row() for c in inside[:limit]],
+        "calibrating": settings.calibrated_on is None,
+        "auto_rollback": settings.auto_rollback,
+        "changes": [{**c.to_row(), "test": tests[c.id]} for c in inside[:limit]],
         "counts": counts,
     }
 

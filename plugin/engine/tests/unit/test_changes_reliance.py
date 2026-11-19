@@ -364,14 +364,14 @@ def test_marker_entries_without_a_readable_time_are_dropped(vault, home):
 
 @pytest.mark.parametrize("failing", ["replace", "mkstemp"])
 def test_marker_write_failure_is_swallowed_and_leaves_no_temp_file(vault, home, monkeypatch, failing):
-    from scout.changes import reliance
+    from scout.changes import store  # the atomic write lives in store (store.atomic_write_json)
 
     env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
 
     def boom(*a, **k):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(reliance.os if failing == "replace" else reliance.tempfile, failing, boom)
+    monkeypatch.setattr(store.os if failing == "replace" else store.tempfile, failing, boom)
     t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
     assert not list(owner_dir(env).glob("reliance-seen*"))
