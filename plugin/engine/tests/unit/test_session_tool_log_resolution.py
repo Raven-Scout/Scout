@@ -255,15 +255,14 @@ def test_non_dict_content_items_are_ignored() -> None:
 
 def test_write_records_survives_an_unwritable_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A Stop hook must not raise; a failed write returns 0 written."""
+    from scout import safe_write
+
     log_dir = tmp_path / "logs"
-    real_open = Path.open
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.suffix == ".jsonl":
-            raise OSError("read-only filesystem")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write, "open_append", boom)  # connector_calls appends through it
     written = stl.write_records(
         [ToolCallRecord(tool_name="Bash", tool_input={}, tool_response={})],
         mode="dreaming",

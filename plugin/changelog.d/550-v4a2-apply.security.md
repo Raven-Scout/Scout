@@ -1,4 +1,0 @@
-- **Delegate inboxes check more on every use** (#550, `engine/scout/delegate_inbox.py`).
-  - **Mirrors, by GitHub id.** An inbox that is some delegate's mirror repository under another name is refused at every pull and key change, not only at link. A mirror repository GitHub no longer has is noted, not assumed.
-  - **No guessing at tools.** Scout refuses when git or gh isn't installed, rather than looking the bare name up again on each call.
-  - **Failures are recorded.** A failure while clearing a killed pull's leftovers is recorded on the inbox like any other pull failure.

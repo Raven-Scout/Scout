@@ -84,7 +84,7 @@ from typing import Any, Protocol
 import yaml
 
 import scout
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
     CEILING_LEVELS,
@@ -1040,9 +1040,7 @@ def load_state(vault: Path) -> LinkState | None:
 def save_state(vault: Path, state: LinkState) -> None:
     p = state_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n")
 
 
 def pending_path(vault: Path) -> Path:
@@ -1054,9 +1052,7 @@ def save_pending_pushes(vault: Path, pushes: Sequence[tuple[str, str]]) -> None:
     p = pending_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     doc = {"schema_version": SCHEMA_VERSION, "pushes": [{"laptop": c, "mirror": m} for c, m in pushes]}
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 def load_pending_pushes(vault: Path) -> dict[str, str]:
@@ -1093,9 +1089,7 @@ def save_host_cache(vault: Path, entries: Iterable[str], *, agnes_url: str, now:
         "fetched_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
         "local_only_paths": list(dict.fromkeys(entries)),
     }
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 def load_host_cache(vault: Path, *, agnes_url: str) -> HostCache | None:
@@ -1144,10 +1138,7 @@ def save_token(vault: Path, token: str) -> None:
     p = token_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(p.parent, 0o700)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token.strip() + "\n")
-    os.chmod(p, 0o600)
+    safe_write.atomic_write_text(p, token.strip() + "\n", mode=0o600)
 
 
 def load_token(vault: Path) -> str:
@@ -1331,9 +1322,7 @@ def otlp_content_off(vault: Path) -> bool:
         return False
     data["env"] = {**env, **OTLP_CONTENT_OFF}
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(data, indent=2) + "\n")
     return True
 
 
@@ -1350,7 +1339,7 @@ def ensure_ignored(vault: Path) -> list[str]:
     text = gi.read_text(encoding="utf-8") if gi.exists() else ""
     head = text if not text or text.endswith("\n") else text + "\n"
     lines = "".join(f"{rel}\n" for rel in missing)
-    gi.write_text(f"{head}# Agnes sync state (scoutctl repo): this computer's state\n{lines}", "utf-8")
+    safe_write.atomic_write_text(gi, f"{head}# Agnes sync state (scoutctl repo): this computer's state\n{lines}")
     return missing
 
 
@@ -1645,7 +1634,7 @@ def replay_one(
         elif ours is not None and ch.old is not None and ch.new is not None:
             merged, clean = _merge3(vault, ch.old, ours, ch.new)
             if not clean:
-                (vault / f"{ch.path}.proposed-merge").write_bytes(merged)
+                safe_write.atomic_write_bytes(vault / f"{ch.path}.proposed-merge", merged)
                 raise RepoSyncError(
                     "replay_conflict",
                     f"refused: {ch.path} changed both here and on Agnes; the merge is in "

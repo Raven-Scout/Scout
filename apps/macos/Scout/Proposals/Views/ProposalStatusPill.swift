@@ -1,32 +1,22 @@
 import SwiftUI
 
-/// Small color-coded capsule for a proposal's lifecycle status. Reads as part
-/// of the editorial chip family (matched-chroma hues, hairline-soft fills)
-/// rather than a stoplight.
+/// A proposal's lifecycle status as a design-system pill.
 struct ProposalStatusPill: View {
     let status: ProposalStatus
 
     var body: some View {
-        Text(status.displayName.uppercased())
-            .font(DS.font(.caption2, weight: .semibold))
-            .tracking(0.06 * 10)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(tint.opacity(0.14)))
-            .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.5))
-            .fixedSize()
+        DSPill(status.displayName, tone: Self.tone(status))
     }
 
-    private var tint: Color {
+    nonisolated static func tone(_ status: ProposalStatus) -> DS.PillTone {
         switch status {
-        case .proposed:  return DS.Priority.todo
-        case .pending:   return DS.SlotType.consolidation
-        case .approved:  return DS.Status.ok
-        case .rejected:  return DS.Status.err
-        case .applied:   return DS.Priority.watch
-        case .closed:    return DS.Ink.p3
-        case .unknown:   return DS.Ink.p3
+        case .proposed:  return .accent
+        case .pending:   return .info
+        case .approved:  return .ok
+        case .rejected:  return .err
+        case .applied:   return .ok
+        case .closed:    return .neutral
+        case .unknown:   return .neutral
         }
     }
 }

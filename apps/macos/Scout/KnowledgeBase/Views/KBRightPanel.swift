@@ -55,14 +55,9 @@ struct KBRightPanel: View {
                     FlowLayout(spacing: 6) {
                         ForEach(outgoing) { link in
                             Button { if let r = link.resolved { onNavigate(r) } } label: {
-                                Text(link.target)
-                                    .font(DS.font(.caption))
-                                    .foregroundStyle(link.resolved == nil ? DS.Ink.p4 : DS.Accent.ink)
-                                    .padding(.horizontal, 8).padding(.vertical, 3)
-                                    .background(EditorialChipBackground())
-                                    .opacity(link.resolved == nil ? 0.6 : 1)
+                                Text(link.target).dsTag(link: true)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.plainHit)  // ds-guard: hit area — a link tag; .dsTag draws it, disabled when unresolved
                             .disabled(link.resolved == nil)
                             .help(link.resolved == nil ? "Note not found" : link.resolved!)
                         }

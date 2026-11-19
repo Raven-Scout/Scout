@@ -81,8 +81,10 @@ struct SectionView: View {
                         .onAppear { taskRowAppeared?(task.id) }
                         .overlay {
                             if highlightedTaskID == task.id {
-                                RoundedRectangle(cornerRadius: 8)
+                                // The task card's own radius (it was 8 on a 10 card).
+                                RoundedRectangle(cornerRadius: 10)
                                     .strokeBorder(DS.Accent.fill, lineWidth: 1.5)
+                                    .padding(.bottom, 10)
                                     .allowsHitTesting(false)
                             }
                         }

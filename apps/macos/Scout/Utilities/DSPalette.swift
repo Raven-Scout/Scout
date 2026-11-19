@@ -166,10 +166,9 @@ extension DS {
         /// Orange, not amber: in light mode it must not read as `accentInk`
         /// (ΔE ≥ 15 from it and from `statusErr`, checked in the tests).
         static let statusWarn = Swatch(name: "StatusWarn", light: RGB(0.620, 0.280, 0.020), dark: RGB(0.880, 0.660, 0.300))
-        static let statusErr  = Swatch(name: "StatusErr",  light: RGB(0.690, 0.255, 0.180), dark: RGB(0.895, 0.480, 0.410))
-        /// Text on a solid status fill (the Action Items error banner): white
-        /// on the light-mode red, dark ink on the lighter dark-mode red.
-        static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
+        /// Dark mode lightened from (0.895, 0.480, 0.410) so error text keeps
+        /// 4.5:1 on an error pill's wash inside a card.
+        static let statusErr  = Swatch(name: "StatusErr",  light: RGB(0.690, 0.255, 0.180), dark: RGB(0.930, 0.560, 0.490))
 
         /// "Waiting on you": a topic-board item that is yours, a session that
         /// needs you. Cobalt, so it never reads as the urgent red (#107), and
@@ -177,12 +176,38 @@ extension DS {
         /// (checked in the tests). Text-safe on paper.
         static let attentionYou = Swatch(name: "AttentionYou", light: RGB(0.120, 0.330, 0.780), dark: RGB(0.480, 0.660, 1.000))
 
+        /// The urgent priority red (dots, bars, the Urgent pill's wash).
+        /// `DS.Priority.urgent` draws it. Not text-safe on its own wash.
+        static let priorityUrgent = Swatch(name: "PriorityUrgent", light: RGB(0.750, 0.310, 0.200), dark: RGB(0.880, 0.450, 0.340))
+        /// The Urgent pill's text: the urgent red, darkened (light) or
+        /// lightened (dark) until it reads on its wash. Close to `statusErr` on
+        /// purpose, and no ΔE test keeps them apart: both say "stop and look",
+        /// as the urgent hue and the error red already did before v2, and a
+        /// pill always names itself ("Urgent", "Dropped"), so colour is never
+        /// the only cue where they sit side by side on a wishlist card.
+        static let priorityUrgentInk = Swatch(name: "PriorityUrgentInk", light: RGB(0.640, 0.230, 0.130), dark: RGB(0.950, 0.600, 0.500))
+
+        /// "In progress" / "pending": a calm steel blue for status pills. The
+        /// slot-type blue it replaces isn't text-safe on paper.
+        static let statusInfo = Swatch(name: "StatusInfo", light: RGB(0.180, 0.390, 0.530), dark: RGB(0.540, 0.740, 0.880))
+
         // Slot-type hues (fills; their labels use `inkOnTint`)
         static let slotBriefing      = Swatch(name: "SlotBriefing",      light: RGB(0.860, 0.660, 0.180), dark: RGB(0.910, 0.760, 0.340))
         static let slotConsolidation = Swatch(name: "SlotConsolidation", light: RGB(0.400, 0.580, 0.760), dark: RGB(0.520, 0.700, 0.870))
         static let slotDreaming      = Swatch(name: "SlotDreaming",      light: RGB(0.560, 0.460, 0.760), dark: RGB(0.700, 0.620, 0.880))
         static let slotResearch      = Swatch(name: "SlotResearch",      light: RGB(0.420, 0.620, 0.420), dark: RGB(0.520, 0.740, 0.540))
         static let slotManual        = Swatch(name: "SlotManual",        light: RGB(0.620, 0.620, 0.640), dark: RGB(0.520, 0.520, 0.535))
+
+        /// A slot type's swatch.
+        static func slotSwatch(_ type: Scout.SlotType) -> Swatch {
+            switch type {
+            case .briefing:      return slotBriefing
+            case .consolidation: return slotConsolidation
+            case .dreaming:      return slotDreaming
+            case .research:      return slotResearch
+            case .manual:        return slotManual
+            }
+        }
     }
 
     /// The text-on-surface pairings the app draws, with the minimum ratio
@@ -227,14 +252,29 @@ extension DS {
             Surface(name: "Accent.wash", swatch: Palette.accentWash),
         ]
 
-        /// The washes `OnMissPill` and similar pills draw behind status text.
+        /// The wash a `DSPill` draws behind its text.
         static let statusWashOpacity = 0.10
+
+        /// The papers a pill sits on: the page, a card, a well.
+        static let pillPapers: [(name: String, swatch: Swatch)] = [
+            ("Paper.base", Palette.paperBase), ("Paper.raised", Palette.paperRaised), ("Paper.sunk", Palette.paperSunk),
+        ]
+
+        /// The surfaces a pill's text is drawn on: its wash over each paper,
+        /// or its solid fill.
+        static func pillSurfaces(_ colors: PillColors) -> [Surface] {
+            guard colors.washOpacity < 1 else { return [Surface(name: colors.tint.name, swatch: colors.tint)] }
+            return pillPapers.map {
+                Surface(name: "\(colors.tint.name) wash on \($0.name)", swatch: colors.tint,
+                        under: $0.swatch, opacity: colors.washOpacity)
+            }
+        }
 
         /// Swatches used as text on paper.
         static let paperText: [Swatch] = [
             Palette.inkP1, Palette.inkP2, Palette.inkP3, Palette.inkP4,
             Palette.accentInk, Palette.statusOk, Palette.statusWarn, Palette.statusErr,
-            Palette.attentionYou,
+            Palette.attentionYou, Palette.statusInfo,
         ]
 
         static let all: [Pair] = {
@@ -258,18 +298,27 @@ extension DS {
             // The selected segment of `EditorialSegmentedControl`: paper on ink.
             pairs.append(Pair(foreground: Palette.paperBase,
                               background: Surface(name: "Ink.p1", swatch: Palette.inkP1)))
-            // Status text on its own wash (the FIRE on-miss pill).
-            for status in [Palette.statusWarn, Palette.statusErr, Palette.statusOk] {
-                pairs.append(Pair(foreground: status,
-                                  background: Surface(name: "\(status.name) wash", swatch: status,
-                                                      under: Palette.paperBase, opacity: statusWashOpacity)))
+            // Every `DSPill` tone's text on its wash over each paper (or on
+            // its solid fill).
+            for tone in PillTone.all {
+                let colors = pillColors(tone)
+                for surface in pillSurfaces(colors) {
+                    pairs.append(Pair(foreground: colors.text, background: surface))
+                }
             }
             // The topic board's action chip: paper on the "waiting on you" fill.
             pairs.append(Pair(foreground: Palette.paperBase,
                               background: Surface(name: "Attention.you", swatch: Palette.attentionYou)))
-            // The Action Items error banner.
-            pairs.append(Pair(foreground: Palette.statusOnFill,
-                              background: Surface(name: "Status.err", swatch: Palette.statusErr)))
+            // A `DSBanner`'s text on each tone's wash, on the page and in a card.
+            for tone in BannerTone.allCases {
+                for paper in [Palette.paperBase, Palette.paperRaised] {
+                    let wash = Surface(name: "\(tone.tint.name) banner on \(paper.name)", swatch: tone.tint,
+                                       under: paper, opacity: bannerWashOpacity)
+                    for text in bannerText {
+                        pairs.append(Pair(foreground: text, background: wash))
+                    }
+                }
+            }
             // Slot-type pills, weekday dots and the day-circle strip.
             for slot in [Palette.slotBriefing, Palette.slotConsolidation, Palette.slotDreaming,
                          Palette.slotResearch, Palette.slotManual] {

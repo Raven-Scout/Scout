@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scout import connector_calls, paths
+from scout import connector_calls, paths, safe_write
 from scout.config import resolve_timezone
 from scout.connectors import Capability, Connector, ConnectorRegistry, load_registry
 from scout.events import Event, now_iso
@@ -121,14 +121,9 @@ def _read_index(path: Path) -> dict[str, dict[str, Any]]:
 
 def _write_index(path: Path, files: dict[str, dict[str, Any]]) -> None:
     """Replace the index atomically; a failure only costs the next run a re-read."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
+    with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"version": INDEX_VERSION, "files": files}, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        safe_write.atomic_write_text(path, json.dumps({"version": INDEX_VERSION, "files": files}, sort_keys=True))
 
 
 def _all_before(entry: dict[str, Any] | None, key: _StatKey, cutoff: datetime) -> bool:
@@ -904,7 +899,8 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
 
     # Render connector-health.md.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
+    safe_write.atomic_write_text(
+        out_path,
         render_health_md(
             now=n,
             session_list=session_list,
@@ -917,7 +913,6 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
             lint_overrides=_lint_override_count(log_dir, n),
             cap_markers=cap_markers,
         ),
-        encoding="utf-8",
     )
 
     # The app's alert state: every run rewrites it, so an alert a run clears
@@ -945,16 +940,16 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
     if alerts:
         ts_str = n.astimezone(_zone()).strftime("%Y-%m-%d %H:%M:%S %Z")
         try:
-            with alerts_path.open("a", encoding="utf-8") as f:
+            with safe_write.open_append(alerts_path) as f:
                 for a in alerts:
                     f.write(f"{ts_str} [{a.level}] run={current_mode} {a.name}: {a.reason}\n")
         except OSError:
             pass
 
         try:
-            pending_path.write_text(
+            safe_write.atomic_write_text(
+                pending_path,
                 render_pending_alerts_md(alerts, current_mode=current_mode, now=n, registry=registry),
-                encoding="utf-8",
             )
         except OSError:
             pass

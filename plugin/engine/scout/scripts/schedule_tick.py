@@ -43,7 +43,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scout import config as scout_config
-from scout import paths
+from scout import events, paths, safe_write
 from scout.errors import ConfigError
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
@@ -313,20 +313,14 @@ def _write_last_fire_cache(
     """Atomically write the last-fire index cache. Best-effort — never raises."""
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_path = state_dir / LAST_FIRE_CACHE_FILENAME
-    tmp_path = cache_path.with_suffix(".json.tmp")
     payload = {
         "schema_version": _LAST_FIRE_CACHE_SCHEMA_VERSION,
         "tracker_mtime_ns": _file_mtime_ns(tracker_path),
         "session_tokens_mtime_ns": _file_mtime_ns(session_tokens_path),
         "last_fire": {key: ts.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z") for key, ts in index.items()},
     }
-    try:
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp_path, cache_path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(cache_path, json.dumps(payload))
 
 
 def _get_last_fire_index(state_dir: Path, tracker_path: Path) -> dict[str, _dt.datetime]:
@@ -363,7 +357,7 @@ def _record_fire(tracker_path: Path, slot_key: str, slot: Slot, now: _dt.datetim
         "scout_mode": slot_key,
         "source": "schedule.tick",
     }
-    with tracker_path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(tracker_path, on_unsafe=_on_unsafe(tracker_path.parent)) as f:
         f.write(json.dumps(row) + "\n")
 
 
@@ -609,24 +603,32 @@ def _emit_event(
         "source": ev.source,
         "payload": ev.payload,
     }
-    with log_path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_dir)) as f:
         f.write(json.dumps(row) + "\n")
     return ev
+
+
+def _on_unsafe(log_dir: Path) -> safe_write.OnUnsafe:
+    """A link, hard link or non-file a run put at the tick's lock or logs is removed and made again, never
+    followed, and recorded: a refusal there would stop every tick (and every scheduled run) until someone looked."""
+    return events.unsafe_file_recorder(log_dir, kind="schedule.tick.unsafe_file_replaced", source="cli:schedule_tick")
 
 
 # ----- concurrency lock ---------------------------------------------------
 
 
 @contextlib.contextmanager
-def _try_lock(lock_path: Path) -> Iterator[bool]:
+def _try_lock(lock_path: Path, *, log_dir: Path | None = None) -> Iterator[bool]:
     """Acquire an exclusive non-blocking flock on ``lock_path``.
 
     Yields ``True`` if the lock was acquired (and releases it on exit),
-    ``False`` if another process is holding it.
+    ``False`` if another process is holding it. Never through a link a run put
+    there; with ``log_dir``, such a link is replaced and recorded rather than refused.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-    try:
+    on_unsafe = _on_unsafe(log_dir) if log_dir is not None else None
+    with safe_write.open_lock(lock_path, mode=0o644, on_unsafe=on_unsafe) as fh:
+        fd = fh.fileno()
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -637,9 +639,6 @@ def _try_lock(lock_path: Path) -> Iterator[bool]:
         finally:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(fd)
 
 
 # ----- main entry points --------------------------------------------------
@@ -692,7 +691,7 @@ def run() -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,
@@ -722,7 +721,7 @@ def _spawn_delegate_sync(vault: Path, log_dir: Path) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     from scout._spawn import python_module_argv
 
-    with (log_dir / _DELEGATE_LOG).open("a", encoding="utf-8") as log:
+    with safe_write.open_append(log_dir / _DELEGATE_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
         proc = subprocess.Popen(
             python_module_argv("scout", "delegate", "sync", "--all", "--if-moved"),
             cwd=str(Path.home()),  # never the vault, on top of -P: the vault reaches it as SCOUT_DATA_DIR
@@ -827,7 +826,7 @@ def _spawn_broker_drain(vault: Path, log_dir: Path) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     from scout._spawn import python_module_argv
 
-    with (log_dir / _BROKER_LOG).open("a", encoding="utf-8") as log:
+    with safe_write.open_append(log_dir / _BROKER_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
         proc = subprocess.Popen(
             python_module_argv("scout", "broker", "drain", "--vault", str(vault)),
             cwd=str(Path.home()),
@@ -1058,7 +1057,7 @@ def fire_now(slot_key: str) -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,

@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from scout import safe_write
 from scout.ids import leading_prefix_pattern
 from scout.kb.lint_config import load_lint_config
 
@@ -169,5 +170,5 @@ def backfill_context(*, data_dir: Path, snapshot: Path, daily: Path, write: bool
         report.to_write.append(tag)
         if write:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            safe_write.atomic_write_text(path, text)
     return report
