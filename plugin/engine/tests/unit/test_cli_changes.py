@@ -521,3 +521,98 @@ def test_calibrated_sets_today_in_the_host_zone_and_resets(cli, vault, home):
     assert json.loads(cli(["changes", "--json"]).stdout)["calibrating"] is False
     assert cli(["changes", "calibrated", "--reset"]).exit_code == 0
     assert read_settings({"HOME": str(home)}).calibrated_on is None
+
+
+# --- run-facing: due / rollback / apply / discard / announced ------------------------------------------------------
+
+
+def _due_doc(cli) -> dict:
+    r = cli(["changes", "due", "--json"])
+    assert r.exit_code == 0, r.output
+    return json.loads(r.stdout)
+
+
+def test_due_json_lists_an_owner_undo_and_rollback_prints_the_paths(cli, git_vault, home):
+    _commit_file(git_vault, "SKILL.md", "dreaming [22:30]: SKILL.md self-edit — y")
+    assert cli(["changes", "scan"]).exit_code == 0
+    doc = _due_doc(cli)
+    assert set(doc) >= {
+        "schema_version",
+        "verified",
+        "rollbacks",
+        "blocked",
+        "apply",
+        "discard",
+        "suspect_unannounced",
+        "engagement_tests_running",
+        "calibration_report_due",
+    }
+    assert doc["verified"] is True and doc["rollbacks"] == []
+    newest = next(
+        c["id"] for c in json.loads(cli(["changes", "--json"]).stdout)["changes"] if c["summary"].endswith("— y")
+    )
+    assert cli(["changes", "undo", newest]).exit_code == 0
+    assert [(r["id"], r["reason"]) for r in _due_doc(cli)["rollbacks"]] == [(newest, "owner-undo")]
+    r = cli(["changes", "rollback", newest])
+    assert r.exit_code == 0, r.output
+    assert r.stdout.splitlines() == ["SKILL.md"]
+    assert (git_vault / "SKILL.md").read_text() == "x\n"
+
+
+def test_rollback_refusal_exits_2_with_the_reason(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    r = cli(["changes", "rollback", cid])
+    assert r.exit_code == 2 and "not-due" in r.output
+    # The seed commit is the root commit: asked to undo, it is blocked, and rollback says why.
+    assert cli(["changes", "undo", cid]).exit_code == 0
+    assert [b["why_blocked"] for b in _due_doc(cli)["blocked"]] == ["root-commit"]
+    r = cli(["changes", "rollback", cid])
+    assert r.exit_code == 2 and "root-commit" in r.output
+    assert (git_vault / "SKILL.md").read_text() == "x\n"
+
+
+def test_due_and_rollback_are_open_to_a_run(cli, git_vault, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    assert cli(["changes", "due", "--json"]).exit_code == 0
+    r = cli(["changes", "rollback", "chg-ffffffffffff"])
+    assert r.exit_code == 2 and "not-due" in r.output  # refused as not due, not as a run
+
+
+def test_apply_and_discard_print_paths(cli, git_vault, home):
+    (git_vault / "SKILL.md").write_text("old\n")
+    _git(git_vault, "commit", "-qam", "scout: seed SKILL.md")
+    gov = _pending(git_vault)
+    other = _pending(git_vault, "drop-me")
+    assert cli(["changes", "apply", gov]).exit_code == 2  # awaiting the owner
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert cli(["changes", "reject", other]).exit_code == 0
+    doc = _due_doc(cli)
+    assert (doc["apply"], doc["discard"]) == ([gov], [other])
+    r = cli(["changes", "apply", gov])
+    assert r.exit_code == 0, r.output
+    assert r.stdout.splitlines() == [
+        "SKILL.md",
+        "governance-pending/applied/skip-red.md",
+        "governance-pending/skip-red.md",
+    ]
+    assert (git_vault / "SKILL.md").read_text() == "new\n"
+    r = cli(["changes", "discard", other])
+    assert r.exit_code == 0 and r.stdout.splitlines() == ["governance-pending/drop-me.md"]
+    doc = _due_doc(cli)
+    assert (doc["apply"], doc["discard"]) == ([], [])
+
+
+def test_announced_records_ids_and_refuses_junk(cli, vault):
+    assert cli(["changes", "announced", "chg-0123456789ab", "chg-0123456789ac"]).exit_code == 0
+    data = json.loads((vault / ".scout-logs/changes-announced.json").read_text())
+    assert data == {"schema": 1, "ids": ["chg-0123456789ab", "chg-0123456789ac"]}
+    assert cli(["changes", "announced", "../etc"]).exit_code == 2
+
+
+def test_due_with_a_missing_vault_prints_nothing_to_do(cli, tmp_path, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
+    r = cli(["changes", "due", "--json"])
+    assert r.exit_code == 0
+    doc = json.loads(r.stdout)
+    assert doc["rollbacks"] == [] and doc["verified"] is False

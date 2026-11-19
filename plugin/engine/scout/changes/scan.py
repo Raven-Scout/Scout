@@ -101,16 +101,14 @@ def _summary(subject: str, trailers: dict[str, str]) -> str:
     return text.strip()[:SUMMARY_MAX]
 
 
-def _git(vault: Path, *args: str) -> str | None:
+def _git_raw(vault: Path, args: Sequence[str]) -> bytes | None:
+    """The one git runner: stdout bytes, or None on a non-zero exit, a timeout or no git."""
     # Never take the index lock: a read must not make a concurrent run's `git add` fail.
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             check=False,
             timeout=GIT_TIMEOUT_S,
             env=env,
@@ -118,6 +116,19 @@ def _git(vault: Path, *args: str) -> str | None:
     except (OSError, subprocess.SubprocessError):  # SubprocessError: the timeout
         return None
     return proc.stdout if proc.returncode == 0 else None
+
+
+def _git(vault: Path, *args: str) -> str | None:
+    raw = _git_raw(vault, args)
+    if raw is None:
+        return None
+    # What text mode gave before the bytes runner existed: UTF-8, bad bytes replaced, universal newlines.
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _git_bytes(vault: Path, *args: str) -> bytes | None:
+    """:func:`_git` without decoding: file content (``git show <rev>:<path>``) byte for byte."""
+    return _git_raw(vault, args)
 
 
 def _parse_log(raw: str) -> list[tuple[str, datetime, str, str, list[tuple[str, str]]]]:

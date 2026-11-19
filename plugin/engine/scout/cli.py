@@ -741,6 +741,145 @@ def cli_changes_calibrated(
         raise typer.Exit(2) from None
 
 
+def _run_vaults(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for a run-facing ``scoutctl changes`` command (no owner gate): git, ``.scout-logs/`` and
+    ``governance-pending/`` from the CLI's vault, owner rows keyed to the installed vault. Exit 2 when either is
+    missing."""
+    import os
+
+    from scout import paths as _paths
+    from scout.changes.vault import installed_vault
+
+    try:
+        installed = installed_vault(os.environ)
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            raise ValueError("vault directory missing")
+    except ValueError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return vault, installed
+
+
+@changes_app.command("due")
+def cli_changes_due(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document a run reads."),
+) -> None:
+    """What a run must do now: rollbacks, blocked ones, governance to apply or discard, unannounced suspects.
+
+    Never fails: anything it can't read lists nothing to do."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.changes.actions import due, empty_due
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    doc = empty_due()
+    try:
+        vault = _paths.data_dir()
+        if vault.is_dir():
+            doc = due(
+                vault,
+                os.environ,
+                now=_dt.now(UTC),
+                tz=resolve_timezone(vault),
+                owner_vault=installed_vault(os.environ),
+            )
+        else:
+            typer.echo("scoutctl changes due: vault directory missing", err=True)
+    except Exception as e:  # noqa: BLE001 - a run reads this every time; a broken input is nothing to do
+        typer.echo(f"scoutctl changes due: {e}", err=True)
+    typer.echo(_json.dumps(doc))
+
+
+def _changes_action(command: str, act: Callable[[Path, Path], list[str]]) -> None:
+    """Run one action and print its paths, one per line; ``ActionRefused`` (or a failed write) is exit 2."""
+    from scout.changes.actions import ActionRefused
+
+    vault, installed = _run_vaults(command)
+    try:
+        paths = act(vault, installed)
+    except ActionRefused as e:
+        typer.echo(f"scoutctl changes {command}: {e.reason}", err=True)
+        raise typer.Exit(2) from None
+    except OSError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    for p in paths:
+        typer.echo(p)
+
+
+@changes_app.command("rollback")
+def cli_changes_rollback(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) listed in `changes due --json` rollbacks."),
+) -> None:
+    """Undo a due change in the working tree; prints the paths to commit with git-safe-commit.sh."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.actions import rollback
+    from scout.config import resolve_timezone
+
+    _changes_action(
+        "rollback",
+        lambda vault, installed: rollback(
+            vault, os.environ, change_id, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=installed
+        ),
+    )
+
+
+@changes_app.command("apply")
+def cli_changes_apply(
+    gov_id: str = typer.Argument(..., help="An approved governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Apply an approved governance change to the working tree; prints the paths to commit."""
+    import os
+
+    from scout.changes.actions import apply_governance
+
+    _changes_action(
+        "apply", lambda vault, installed: apply_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("discard")
+def cli_changes_discard(
+    gov_id: str = typer.Argument(..., help="A rejected governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Delete a rejected governance change's pending file; prints its path to commit."""
+    import os
+
+    from scout.changes.actions import discard_governance
+
+    _changes_action(
+        "discard", lambda vault, installed: discard_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("announced")
+def cli_changes_announced(
+    change_ids: list[str] = typer.Argument(..., help="Change ids (chg-...) the wrap just announced as suspect."),
+) -> None:
+    """Record that these suspects were announced, so the next run doesn't announce them again."""
+    from scout.changes.actions import mark_announced
+
+    vault, _ = _run_vaults("announced")
+    try:
+        mark_announced(vault, change_ids)
+    except (ValueError, OSError) as e:
+        typer.echo(f"scoutctl changes announced: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
 @engagement_app.command("record")
 def cli_engagement_record(
     kind: str = typer.Argument(
