@@ -84,8 +84,9 @@ RUN_LIMITS_NAME = "run-limits.json"
 # send count and the drain lock.
 RUN_BROKERS_NAME = "run-brokers"
 # The change map's owner-only engagement rows (scout.changes.store): a run that could write them could forge the
-# owner's reliance on its own work.
-CHANGES_OWNER_NAME = "change-map"
+# owner's reliance on its own work. Also a protected token, so the name is one no vault folder would carry: a
+# generic `change-map` denied a run's own `knowledge-base/change-map/` notes.
+CHANGES_OWNER_NAME = "scout-change-ledger-owner"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"

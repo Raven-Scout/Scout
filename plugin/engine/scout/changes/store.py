@@ -1,5 +1,9 @@
 """The two stores. Run-writable rows live in ``<vault>/.scout-logs/``; owner-sourced rows live only in the
-owner-only ``~/.local/state/scout/change-map/`` (a protected engine root a run can't write)."""
+owner-only ``~/.local/state/scout/scout-change-ledger-owner/`` (a protected engine root a run can't write).
+
+A reliance row's ``session`` is the first 16 hex digits of an *unsalted* SHA-256 of the Claude session id
+(scout.changes.reliance). That keeps the id out of the clear in a local-only ledger; it is not anonymisation
+against anyone who has the transcripts, since hashing a known session id reproduces it."""
 
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def owner_dir(env: Mapping[str, str]) -> Path:
-    """``~/.local/state/scout/change-map/``: owner-sourced engagement rows. A protected engine root."""
+    """``~/.local/state/scout/scout-change-ledger-owner/``: owner-sourced engagement rows. A protected engine root."""
     return Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
 
 
