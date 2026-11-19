@@ -465,9 +465,175 @@ def test_an_unreadable_lint_config_is_never_reviewable(vault: Path, home: Path, 
     assert other["reviewable"] is True and other["reviewed_at"]
 
 
-def test_data_files_are_neither_helpers_nor_callers(vault: Path) -> None:
+def test_any_text_file_a_script_runs_is_a_helper_but_only_a_script_is_a_caller(vault: Path) -> None:
+    # A run writes the sender as a .txt; a reviewed checker runs it by name: the checker is high.
+    (vault / "scripts" / "ship.txt").write_text("import requests\nrequests.post(U, data=open(0).read())\n", "utf-8")
+    (vault / "scripts" / "link-check.py").write_text(
+        "import subprocess\n"
+        "subprocess.run(['python3', 'scripts/ship.txt'], input=open('knowledge-base/i.md').read())\n",
+        "utf-8",
+    )
+    # A note that mentions tag-audit.py and a pipe doesn't run anything: tag-audit.py stays low.
     (vault / "scripts" / "notes.md").write_text("python3 scripts/tag-audit.py | slack\n", "utf-8")
-    (vault / "scripts" / "sender.txt").write_text("requests.post(U)\n", "utf-8")
-    (vault / "scripts" / "link-check.py").write_text("x = 'sender.txt'\nopen('knowledge-base/i.md').read()\n", "utf-8")
+    # A binary file a script names is no helper.
+    (vault / "scripts" / "blob.bin").write_bytes(b"requests\0\0")
+    (vault / "scripts" / "tag-audit.py").write_text("x = 'blob.bin'\nopen('knowledge-base/i.md').read()\n", "utf-8")
     ranks = doctor_triage.rank_vault_scripts(vault, ["scripts/tag-audit.py", "scripts/link-check.py"])
-    assert ranks["scripts/tag-audit.py"][0] == "low" and ranks["scripts/link-check.py"][0] == "low"
+    assert ranks["scripts/link-check.py"] == (
+        "high",
+        "it uses scripts/ship.txt, which may send what it is given out of the vault",
+    )
+    assert ranks["scripts/tag-audit.py"][0] == "low"
+
+
+def test_helpers_that_name_each_other_end(vault: Path) -> None:
+    (vault / "scripts" / "a_helper.py").write_text("import b_helper\n", "utf-8")
+    (vault / "scripts" / "b_helper.py").write_text("import a_helper\n", "utf-8")
+    (vault / "scripts" / "link-check.py").write_text("import a_helper\nopen('knowledge-base/i.md').read()\n", "utf-8")
+    assert doctor_triage.rank_vault_scripts(vault, ["scripts/link-check.py"])["scripts/link-check.py"][0] == "low"
+
+
+def test_a_vault_scout_cant_list_ranks_each_script_on_its_own(vault: Path, monkeypatch) -> None:
+    def boom(_v: Path) -> list:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(doctor_triage, "_vault_files", boom)
+    ranks = doctor_triage.rank_vault_scripts(vault, ["scripts/weekly-digest.py", "scripts/tag-audit.py"])
+    assert ranks["scripts/weekly-digest.py"][0] == "high" and ranks["scripts/tag-audit.py"][0] == "low"
+
+
+def test_a_binary_or_unreadable_file_ranks_high(tmp_path: Path) -> None:
+    blob = tmp_path / "x.bin"
+    blob.write_bytes(b"\0\1")
+    assert doctor_triage.script_risk(doctor_triage.read_script(blob)) == (
+        "high",
+        "it is a binary file, so where its output goes is unknown",
+    )
+    assert doctor_triage.file_digest(tmp_path / "missing") == "unreadable"
+    assert doctor_triage.read_script(tmp_path / "missing") is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a chmod-000 file anyway")
+def test_an_unreadable_script_is_its_own_high_finding(vault: Path, home: Path) -> None:
+    hidden = vault / "scripts" / "hidden.py"
+    hidden.write_text("print(1)\n", encoding="utf-8")
+    hidden.chmod(0)
+    try:
+        d = _doctor(vault, home)
+        high = _entry(d, "privacy.script-raw-kb-read")
+        assert "scripts/hidden.py" in high["items"] and "scripts/weekly-digest.py" in high["items"]
+        # The other scripts keep their own warnings: one bad file doesn't collapse the scan.
+        assert _entry(d, "privacy.script-raw-kb-read.internal")["items"] == [
+            "scripts/link-check.py",
+            "scripts/tag-audit.py",
+        ]
+    finally:
+        hidden.chmod(0o644)
+
+
+# -- coverage: the store and the CLI's other paths ------------------------------------------------------------------
+
+
+def test_a_failed_write_leaves_no_temp_file(tmp_path: Path, home: Path, monkeypatch) -> None:
+    def fail(*_a: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(doctor_triage.os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        doctor_triage.set_review(tmp_path, "warning.x", "0123456789abcdef", home=home)
+    folder = doctor_triage.reviews_path(home).parent
+    assert list(folder.iterdir()) == []
+
+
+def test_load_reviews_survives_a_broken_reader(tmp_path: Path, home: Path, monkeypatch) -> None:
+    def boom(_p: Path) -> dict:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(doctor_triage, "_read", boom)
+    assert doctor_triage.load_reviews(tmp_path, home=home) == {}
+    path = doctor_triage.reviews_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.undo()
+    path.write_text(json.dumps({"schema": 1, "vaults": {str(tmp_path.resolve()): ["not", "a", "dict"]}}), "utf-8")
+    assert doctor_triage.load_reviews(tmp_path, home=home) == {}
+    # A record whose block isn't a dict is replaced, not crashed on, when the owner reviews.
+    assert doctor_triage.set_review(tmp_path, "warning.x", "0123456789abcdef", home=home)
+
+
+def test_the_cli_says_what_it_did_in_text(vault: Path, home: Path) -> None:
+    e = _entry(_doctor(vault, home), "privacy.script-raw-kb-read")
+    code, out = _cli("bootstrap", "review-warning", e["id"], "--fingerprint", e["fingerprint"])
+    assert code == 0 and out.startswith(f"{e['id']}: reviewed ")
+    code, out = _cli("bootstrap", "review-warning", e["id"], "--undo")
+    assert code == 0 and out.strip() == f"{e['id']}: not reviewed"
+
+
+def test_the_cli_refuses_a_malformed_or_protection_review(vault: Path, home: Path) -> None:
+    code, out = _cli("bootstrap", "review-warning", "warning.x", "--fingerprint", "nothex")
+    assert code == 1 and "not a warning fingerprint" in out
+    code, out = _cli("bootstrap", "review-warning", "protection.abc", "--fingerprint", "0123456789abcdef")
+    assert code == 1 and "can't be marked reviewed" in out
+
+
+def test_the_cli_reports_a_store_it_cant_write(vault: Path, home: Path, monkeypatch) -> None:
+    def fail(*_a: object, **_k: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(doctor_triage, "set_review", fail)
+    code, out = _cli("bootstrap", "review-warning", "warning.x", "--fingerprint", "0123456789abcdef")
+    assert code == 1 and "couldn't save the review" in out
+
+
+def test_the_text_doctor_lists_reviewed_warnings(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import bootstrap_doctor
+
+    e = _entry(_doctor(vault, home), "privacy.script-raw-kb-read")
+    doctor_triage.set_review(vault, e["id"], e["fingerprint"], home=home, now=NOW)
+    real = bootstrap_doctor.run_doctor
+    monkeypatch.setattr(bootstrap_doctor, "run_doctor", lambda **kw: real(**{**kw, "home": home, "now": NOW}))
+    _code, out = _cli("bootstrap", "doctor", "--no-jobs")
+    assert f"reviewed 2026-11-19T09:00:00Z: {e['id']}: " in out
+    assert f"warning: {e['summary']}" not in out
+
+
+def test_duplicate_warnings_keep_unique_ids_and_reviewed_lists_reviews(tmp_path: Path, home: Path) -> None:
+    triage = doctor_triage.apply(tmp_path, ["same", "same"], {}, home=home)
+    first, second = (e.id for e in triage.entries)
+    assert second == f"{first}#2"
+    assert triage.reviewed == []
+    doctor_triage.set_review(tmp_path, first, triage.entries[0].fingerprint, home=home)
+    again = doctor_triage.apply(tmp_path, ["same", "same"], {}, home=home)
+    assert [e.id for e in again.reviewed] == [first] and again.open_warnings == ["same"]
+
+
+def test_a_wrong_schema_and_an_unresolvable_vault_are_handled(tmp_path: Path, home: Path, monkeypatch) -> None:
+    path = doctor_triage.reviews_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": 99, "vaults": {}}), encoding="utf-8")
+    assert doctor_triage.load_reviews(tmp_path, home=home) == {}
+
+    def boom(self: Path, strict: bool = False) -> Path:
+        raise OSError("loop")
+
+    monkeypatch.setattr(Path, "resolve", boom)
+    assert doctor_triage._vault_key(tmp_path) == str(tmp_path.absolute())
+
+
+def test_privacy_drift_reports_what_it_cant_look_at(tmp_path: Path, monkeypatch) -> None:
+    from scout.scripts import vault_drift
+
+    v = tmp_path / "v"
+    (v / "scripts").mkdir(parents=True)
+    (v / "run-dir.sh").mkdir()  # not a file: no runner to judge
+    (v / "scripts" / "blob.bin").write_bytes(b"\0\1knowledge-base")  # binary: readable, so not reported
+    (v / "scripts" / "odd.py").write_text("print(1)\n", encoding="utf-8")
+    real = vault_drift.snapshot_path
+
+    def flaky(vault: Path, rel: str) -> Path:
+        if rel == "scripts/odd.py":
+            raise PermissionError(13, "Permission denied")
+        return real(vault, rel)
+
+    monkeypatch.setattr(vault_drift, "snapshot_path", flaky)
+    found = vault_drift.privacy_drift(v)
+    assert [(f.path, f.rule) for f in found] == [("scripts/odd.py", "script-raw-kb-read")]

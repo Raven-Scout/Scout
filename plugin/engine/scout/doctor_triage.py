@@ -138,11 +138,12 @@ class TriageEntry:
 
 _READ_CAP = 1_000_000
 _TOO_LONG = "\0too-long"  # read_script's marker for a file longer than _READ_CAP
+_BINARY = "\0binary"  # read_script's marker for a binary file
 
 
 def read_script(path: Path) -> str | None:
-    """A script's text to rank, or None when it can't be read or is binary. A file longer than Scout
-    reads comes back as ``_TOO_LONG``: what it does past that point is unknown, so it ranks high."""
+    """A script's text to rank, or None when it can't be read. A file longer than Scout reads comes back as
+    ``_TOO_LONG`` (what it does past that point is unknown, so it ranks high); a binary one as ``_BINARY``."""
     try:
         with path.open("rb") as fh:
             data = fh.read(_READ_CAP + 1)
@@ -150,7 +151,7 @@ def read_script(path: Path) -> str | None:
         return None
     if len(data) > _READ_CAP:
         return _TOO_LONG
-    return None if b"\0" in data else data.decode("utf-8", "replace")
+    return _BINARY if b"\0" in data else data.decode("utf-8", "replace")
 
 
 def script_risk(text: str | None) -> tuple[str, str]:
@@ -159,6 +160,8 @@ def script_risk(text: str | None) -> tuple[str, str]:
         return "high", "Scout couldn't read it to see where its output goes"
     if text == _TOO_LONG:
         return "high", "it is too long for Scout to read whole, so where its output goes is unknown"
+    if text == _BINARY:
+        return "high", "it is a binary file, so where its output goes is unknown"
     for why, pattern in _OUTBOUND_RES:
         if pattern.search(text):
             return "high", f"it mentions {why}, so what it reads may leave the vault"
@@ -166,27 +169,26 @@ def script_risk(text: str | None) -> tuple[str, str]:
 
 
 _SKIP_DIRS = frozenset({".venv", "node_modules", "__pycache__", ".git"})
-# What can run or be imported: a helper or a caller is one of these (or a file with no suffix, like a shebang
-# script). Data files under scripts/ (fixtures, notes, logs) are left out of the helper and caller scan.
+# What can run another file: a caller is one of these (or a file with no suffix, like a shebang script). A
+# data file under scripts/ (notes, fixtures, logs) that names a script doesn't make it high.
 _SCRIPT_SUFFIXES = frozenset(
     {"", ".py", ".sh", ".bash", ".zsh", ".ksh", ".fish", ".command", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl"}
 )
 
 
-def _vault_scripts(vault: Path) -> list[str]:
-    """Vault-relative paths of every script under ``scripts/`` (tooling folders left out) and each root ``run-*.sh``."""
+def _vault_files(vault: Path) -> list[str]:
+    """Vault-relative paths of every file under ``scripts/`` (tooling folders left out) and each root ``run-*.sh``."""
     out = [p.name for p in sorted(vault.glob("run-*.sh")) if p.is_file()]
     scripts = vault / "scripts"
     if scripts.is_dir():
         for p in sorted(scripts.rglob("*")):
-            if (
-                p.is_file()
-                and not p.is_symlink()
-                and p.suffix.lower() in _SCRIPT_SUFFIXES
-                and not _SKIP_DIRS.intersection(p.relative_to(scripts).parts[:-1])
-            ):
+            if p.is_file() and not p.is_symlink() and not _SKIP_DIRS.intersection(p.relative_to(scripts).parts[:-1]):
                 out.append(p.relative_to(vault).as_posix())
     return out
+
+
+def _is_script(rel: str) -> bool:
+    return Path(rel).suffix.lower() in _SCRIPT_SUFFIXES
 
 
 def _forms(rel: str) -> set[str]:
@@ -211,8 +213,10 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
             texts[rel] = read_script(vault / rel)
         return texts[rel]
 
+    # A helper can be any text file a script names, whatever its suffix (`python3 scripts/ship.txt` runs it);
+    # only a script can be a caller, so a data file that mentions a script name never makes it high.
     try:
-        others = _vault_scripts(vault)
+        others = _vault_files(vault)
     except OSError:
         others = []
     others += [rel for rel in paths if rel not in others]
@@ -232,12 +236,14 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
             found: list[str] = []
             if pattern is not None and body is not None and body != _TOO_LONG:
                 for form in dict.fromkeys(m.group(0) for m in pattern.finditer(body)):
-                    found += [o for o in by_form[form] if o != rel and o not in found]
+                    found += [o for o in by_form[form] if o != rel and o not in found and text(o) != _BINARY]
             helpers[rel] = found
         return helpers[rel]
 
     callers: dict[str, str] = {}
-    for o in others:  # each file once: who names whom
+    for o in others:  # each script once: who names whom
+        if not _is_script(o):
+            continue
         for helper in named_in(o):
             callers.setdefault(helper, o)
 
