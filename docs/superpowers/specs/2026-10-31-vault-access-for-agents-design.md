@@ -1144,6 +1144,30 @@ were added, and V4b1 builds them in:
   in V4b3, with the app card that reads it, in one commit with its contract
   fixture and app copy.
 
+**After the review of #735.**
+
+- **Undo has a window.** `inbox revert` restores a task only while it reads as
+  the op left it. Once the next run's close-out moves a delegate's `[x]` into
+  Recently Completed (as it must), the row has changed, and revert refuses
+  (`revert_conflict`). Then the owner reopens the item by hand. The
+  `delegate_changes` entry and the commit name what the agent did.
+- **On Linux, the hooks are the only layer.** The hooks keep runs off the
+  copies on every platform, but a hook judges a path by its spelling: a
+  symlinked path, or a spelling the shell prefilter doesn't send to the gate,
+  can pass. On macOS the run's sandbox denies the folder in the kernel, and
+  that is the real layer. Elsewhere the copies are as safe as the hooks.
+- **Health and the doctor inside a run.** A run can't read the state's signing
+  key, so they skip the delegate checks there ("checked outside runs"); the
+  owner's terminal and the app check them. No finding ever advises moving the
+  signed state aside: revert needs its records.
+- **A killed apply.** A change a crash kept from being committed is committed
+  by the next sync under its delegate's name, when it is the only change in
+  the file. Otherwise it is left for the owner, with a note, since the next
+  run's commit would take it as the run's own.
+- **The lease** is renewed once, between the ledger commit and apply. On the
+  way out the local lease file is dropped first, then Agnes is asked to
+  release it.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
