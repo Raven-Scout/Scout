@@ -26,14 +26,32 @@ write that folder, so apply trusts nothing there on its own:
   the signed record, so ``inbox revert <ULID>`` restores them, provided the
   task still reads as the op left it.
 
+- **The owner's, between runs.** Apply and revert refuse in a scheduled run
+  or as any reader but the owner (``headless_gate``), and hold the vault's
+  session lock (refusing at once while a run is live) as well as the inbox
+  lock, so no run or other writer edits a daily file under them.
+- **A plain, committed daily file.** The day's file must be a regular file
+  in a real ``action-items/`` folder, never a symlink, and the same as HEAD
+  has it; one with uncommitted edits waits (``dirty``, retried). The task's
+  visibility is judged on HEAD's text, the same snapshot as the hidden-note
+  scan.
+- **One commit per change**, made at once through the vault's
+  ``scripts/git-safe-commit.sh`` with a message naming the delegate, so the
+  next run's commit never sweeps it in as the run's own. If no commit lands
+  and HEAD hasn't moved, the files are put back and the proposal is tried
+  again at the next apply.
+
 Outcomes are recorded by ULID, never with the proposal's text: ``applied``,
-``no_op``, ``stale``, ``unknown_item``, ``limited``, ``not_taken``,
-``refused``, ``held``, ``interrupted``, ``reverted``, and ``no_mirror``
-(retried). Nothing here commits the vault: the runner does (V4b).
+``no_op``, ``stale``, ``unknown_item``, ``limited`` (tried again on a later
+day), ``not_taken`` and ``no_mirror`` and ``dirty`` (tried again),
+``refused``, ``held``, ``interrupted``, and ``reverted``. A copy that fails
+in any unexpected way is ``refused`` (``why: error``); one delegate's failure
+never stops another's.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as dt
 import errno
@@ -41,7 +59,8 @@ import hmac
 import os
 import re
 import stat
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,7 +77,10 @@ BURST = 5  # one op from one delegate in one apply; the rest are `limited`
 SNOOZE_HORIZON = dt.timedelta(days=60)
 STALE_AFTER = dt.timedelta(days=7)
 HELD_OPS = frozenset({"add-comment"})
-RETRIED = frozenset({"no_mirror"})
+BLOCK_HORIZON = dt.timedelta(days=60)
+RETRIED = frozenset({"no_mirror", "not_taken", "dirty"})  # and `limited`, on a later day
+APPLIED_KEPT = dt.timedelta(days=90)  # how long the signed record keeps what an op changed (for revert)
+Committer = Callable[[Path, str, list[str]], str]  # (vault, message, paths) -> the new HEAD
 
 
 @dataclass
@@ -103,7 +125,7 @@ def _block(lines: list[str], line_number: int) -> tuple[int, int]:
 def _task_lines(path: Path, tag: str) -> list[str] | None:
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):  # missing, or not UTF-8 (a run can write one)
         return None
     item = _task(text, tag)
     if item is None:
@@ -157,15 +179,16 @@ class _Seen:
         return self._scanner, self._visible
 
     def still_visible(self, date: str, tag: str) -> bool:
-        """The task as the vault has it now survives the delegate's redaction."""
+        """The task as HEAD has it survives the delegate's redaction: the same snapshot as the visibility and
+        hidden-note scan (the working tree's file was just checked to be the same as HEAD's)."""
         rel = _daily_rel(date)
         scanner, visible = self._load()
         if rel not in visible:
             return False
-        try:
-            text = (self.vault / rel).read_text(encoding="utf-8")
-        except OSError:  # pragma: no cover - HEAD has the file; only a removal from the working tree races here
+        shown = git(self.vault, "show", f"HEAD:{rel}", check=False)
+        if shown.returncode != 0:  # pragma: no cover - visible means HEAD has it
             return False
+        text = shown.stdout
         redacted = dm.redact_lines(text, scanner, markdown=True, rel=rel)
         if redacted is None or _task(redacted[0], tag) is None:
             return False
@@ -212,22 +235,169 @@ def _today_count(applied: Mapping[str, Mapping[str, Any]], op: str, today: str) 
                str(e.get("at", "")).startswith(today))  # fmt: skip
 
 
-def apply(vault: Path, delegate: str, *, now: dt.datetime | None = None) -> ApplyResult:
-    """Apply ``delegate``'s taken action-item proposals, each at most once, in ULID order."""
+# ----- the vault: one plain, committed file; one commit per change -------------------------------
+
+
+def _default_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
+    """Commit through the vault's own ``scripts/git-safe-commit.sh`` (as #708's retitle does)."""
+    from scout.action_items import retitle
+
+    try:
+        return retitle.git_safe_commit(vault, message, rel_paths)
+    except (retitle.RetitleError, OSError) as e:
+        raise RepoSyncError("commit_failed", f"refused: no commit landed ({e})") from e
+
+
+@contextlib.contextmanager
+def _session(vault: Path) -> Iterator[None]:
+    """Hold the vault's session lock, refusing at once (``busy``) while a run is live."""
+    from scout.action_items import retitle
+
+    lock = retitle.session_lock(vault)
+    try:
+        lock.__enter__()
+    except retitle.RetitleError as e:
+        raise RepoSyncError(
+            "busy", "refused: a Scout run of this vault is live; inbox apply and revert wait until it has finished"
+        ) from e
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def _head(vault: Path) -> str | None:
+    out = git(vault, "rev-parse", "-q", "--verify", "HEAD", check=False)
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def _plain(vault: Path, rel: str) -> bool:
+    """Whether ``rel`` is a regular, singly linked file in a real folder: no symlink at any step."""
+    here = vault
+    for part in rel.split("/")[:-1]:
+        here = here / part
+        try:
+            if not stat.S_ISDIR(here.lstat().st_mode):
+                return False
+        except OSError:
+            return False
+    try:
+        st = (vault / rel).lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+
+
+def _clean(vault: Path, rel: str) -> bool:
+    """Whether the working tree's ``rel`` is HEAD's: tracked, and no edit since."""
+    tracked = git(vault, "ls-files", "--error-unmatch", "--", rel, check=False).returncode == 0
+    return tracked and git(vault, "diff", "--quiet", "HEAD", "--", rel, check=False).returncode == 0
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Replace ``path`` whole: written to a new mkstemp file beside it, then renamed over it, so nothing a run
+    planted (a symlink at a fixed temporary name, or at the path itself) is ever written through."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:  # pragma: no cover - a full disk: leave nothing half-written
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _snapshot(vault: Path, rels: list[str]) -> dict[Path, bytes | None]:
+    return {vault / r: ((vault / r).read_bytes() if (vault / r).is_file() else None) for r in rels}
+
+
+def _changed(vault: Path, saved: Mapping[Path, bytes | None]) -> list[str]:
+    out = []
+    for path, data in saved.items():
+        now = path.read_bytes() if path.is_file() else None
+        if now != data:
+            out.append(str(path.relative_to(vault)))
+    return sorted(out)
+
+
+def _commit_change(vault: Path, message: str, saved: Mapping[Path, bytes | None], commit: Committer) -> str | None:
+    """Commit what changed since ``saved``; the new HEAD (None: nothing changed). If no commit lands and HEAD
+    hasn't moved, every file is put back and ``commit_failed`` is raised; if HEAD moved some other way,
+    ``commit_unclear``, with nothing put back."""
+    rels = _changed(vault, saved)
+    if not rels:
+        return None
+    before = _head(vault)
+    try:
+        return commit(vault, message, rels)
+    except BaseException as e:
+        after = _head(vault)
+        if after == before:
+            for path, data in saved.items():
+                if data is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _write_bytes(path, data)
+            raise RepoSyncError("commit_failed", f"refused: no commit landed ({e}); the change was put back") from e
+        raise RepoSyncError(
+            "commit_unclear",
+            f"refused: HEAD moved to {after} but the commit didn't report ({e}); check git log -1 and git status",
+        ) from e
+
+
+ID_MAP_REL = ".scout-state/id-map.json"  # resolve_target registers a prefix it hasn't seen here
+
+
+# ----- apply -----------------------------------------------------------------------------------
+
+
+def _prune(applied: dict[str, dict[str, Any]], when: dt.datetime) -> None:
+    horizon = di._stamp(when - APPLIED_KEPT)
+    for ulid in [u for u, e in applied.items() if di._STAMP_RE.match(str(e.get("at", ""))) and e["at"] < horizon]:
+        del applied[ulid]
+
+
+def _retry(entry: Mapping[str, Any] | None, today: str) -> bool:
+    if entry is None:
+        return True
+    outcome = entry.get("outcome")
+    return outcome in RETRIED or (outcome == "limited" and not str(entry.get("at", "")).startswith(today))
+
+
+def apply(
+    vault: Path,
+    delegate: str,
+    *,
+    now: dt.datetime | None = None,
+    env: Mapping[str, str] | None = None,
+    commit: Committer | None = None,
+) -> ApplyResult:
+    """Apply ``delegate``'s taken action-item proposals, each at most once, in ULID order, one commit each.
+
+    The owner's, between runs: refused in a scheduled run or as another reader, and while a run holds the
+    vault's session lock. The runner's V4b step must run it outside any run, without SCOUT_MODE, as the owner.
+    """
+    env = os.environ if env is None else env
+    headless_gate(env, "Applying a delegate's proposals (the runner does it between runs)")
+    commit = commit or _default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
     at = di._stamp(when)
+    today = when.date().isoformat()
     result = ApplyResult(delegate=delegate)
-    with di.locked(vault):
+    with _session(vault), di.locked(vault):
         state = di.load_state(vault)
         taken = state.taken.get(delegate, {})
         applied = state.applied.setdefault(delegate, {})
+        _prune(applied, when)
         try:
             dir_fd = os.open(
                 vault.joinpath(*di.INBOX_DIR, delegate), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
             )
         except OSError as e:
             if e.errno in (errno.ENOENT,):
+                di.save_state(vault, state)
                 return result
             raise RepoSyncError("inbox_folder_unsafe", f"refused: the copies' folder can't be opened ({e})") from e
         seen = _Seen(vault, delegate)
@@ -236,10 +406,12 @@ def apply(vault: Path, delegate: str, *, now: dt.datetime | None = None) -> Appl
             names = sorted(n for n in os.listdir(dir_fd) if n.endswith(".json") and dp.ULID_RE.match(n[:-5]))
             for name in names:
                 ulid = name[:-5]
-                prior = applied.get(ulid, {}).get("outcome")
-                if prior is not None and prior not in RETRIED:
+                if not _retry(applied.get(ulid), today):
                     continue
-                decided = _decide(vault, dir_fd, name, ulid, taken, applied, seen, burst, when, delegate)
+                try:
+                    decided = _decide(vault, dir_fd, name, ulid, taken, applied, seen, burst, when, delegate)
+                except Exception:  # noqa: BLE001 - whatever one copy does, it is refused, never a stop
+                    decided = ("refused", {"why": "error"})
                 if decided is None:
                     result.waiting += 1
                     continue
@@ -250,7 +422,7 @@ def apply(vault: Path, delegate: str, *, now: dt.datetime | None = None) -> Appl
                         "at": at,
                     }
                     di.save_state(vault, state)  # a crash during the op leaves it interrupted, never re-applied
-                    outcome, entry = _apply_one(vault, entry)
+                    outcome, entry = _apply_one(vault, entry, delegate, ulid, commit, state, applied)
                 applied[ulid] = {**entry, "outcome": outcome, "at": at}
                 result.outcomes[ulid] = outcome
                 di.save_state(vault, state)
@@ -298,15 +470,23 @@ def _decide(
         until = dt.date.fromisoformat(body["args"]["until"])
         if until <= when.date() or until > when.date() + SNOOZE_HORIZON:
             return "refused", {**entry, "why": "snooze_horizon"}
+    if body["op"] == "set-block":
+        day = dt.date.fromisoformat(body["args"]["day"])
+        if day < when.date() or day > when.date() + BLOCK_HORIZON:
+            return "refused", {**entry, "why": "block_horizon"}
     today = when.date().isoformat()
     cap = DAILY_CAPS[body["op"]]
     if burst.get(body["op"], 0) >= BURST or _today_count(applied, body["op"], today) >= cap:
         return "limited", entry
+    rel = _daily_rel(body["date"])
+    if not _plain(vault, rel):
+        return "unknown_item", entry  # missing, or a symlink or a hard link a run planted: never followed
+    if not _clean(vault, rel):
+        return "dirty", entry  # an edit not committed yet: tried again once it is
     if not seen.still_visible(body["date"], body["tag"]):
         return "unknown_item", entry
     burst[body["op"]] = burst.get(body["op"], 0) + 1
-    path = vault / _daily_rel(body["date"])
-    before = _task_lines(path, body["tag"])
+    before = _task_lines(vault / rel, body["tag"])
     if before is None:  # pragma: no cover - still_visible just found it
         return "unknown_item", entry
     if _already(body, before):
@@ -314,38 +494,70 @@ def _decide(
     return "applying", {**entry, "body": body, "before": before}
 
 
-def _apply_one(vault: Path, entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _apply_one(
+    vault: Path,
+    entry: dict[str, Any],
+    delegate: str,
+    ulid: str,
+    commit: Committer,
+    state: di.InboxState,
+    applied: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
     body = entry.pop("body")
-    path = vault / _daily_rel(body["date"])
+    rel = _daily_rel(body["date"])
+    saved = _snapshot(vault, [rel, ID_MAP_REL])
     try:
         _run_op(vault, body)
     except ActionItemError:
         entry.pop("before", None)
         return "refused", {**entry, "why": "command"}
-    after = _task_lines(path, body["tag"])
+    except Exception:  # noqa: BLE001 - left `interrupted`: the op may have half-run, so never again
+        entry.pop("before", None)
+        return "interrupted", {**entry, "why": "error"}
+    after = _task_lines(vault / rel, body["tag"])
     if after is None or after == entry["before"]:
         entry.pop("before", None)
         return "no_op", entry
-    return "applied", {**entry, "after": after}
+    message = f"inbox: {body['op']} [#{body['tag']}] from delegate-{delegate} ({ulid})"
+    try:
+        sha = _commit_change(vault, message, saved, commit)
+    except RepoSyncError as e:
+        if e.code == "commit_failed":  # put back: the proposal is tried again at the next apply
+            applied.pop(ulid, None)
+            di.save_state(vault, state)
+        raise
+    return "applied", {**entry, "after": after, "commit": sha}
 
 
 # ----- revert ----------------------------------------------------------------------------------
 
 
-def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None) -> str:
-    """Put an applied op's task back as it was. The owner only. Returns the delegate."""
+def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None, commit: Committer | None = None) -> str:
+    """Put an applied op's task back as it was, in a commit of its own. The owner only. Returns the delegate."""
     env = os.environ if env is None else env
     vault = vault.resolve()
     headless_gate(env, "Reverting a delegate's change")
+    commit = commit or _default_commit
     if not dp.ULID_RE.match(ulid):
         raise RepoSyncError("bad_arguments", "refused: inbox revert takes a proposal's ULID")
-    with di.locked(vault):
+    with _session(vault), di.locked(vault):
         state = di.load_state(vault)
         found = [(d, a[ulid]) for d, a in state.applied.items() if ulid in a]
+        if len(found) > 1:
+            raise RepoSyncError(
+                "ambiguous", f"refused: {ulid} is on record for {len(found)} delegates; fix the state by hand"
+            )
         if not found or found[0][1].get("outcome") != "applied":
             raise RepoSyncError("not_applied", f"refused: {ulid} wasn't applied, so there is nothing to revert")
         delegate, entry = found[0]
-        path = vault / _daily_rel(entry["date"])
+        rel = _daily_rel(entry["date"])
+        path = vault / rel
+        if not _plain(vault, rel):
+            raise RepoSyncError("revert_conflict", f"refused: {rel} isn't a plain file any more; left alone")
+        if not _clean(vault, rel):
+            raise RepoSyncError(
+                "revert_dirty", f"refused: {rel} has edits not committed yet; commit or discard them, then revert"
+            )
         text = path.read_text(encoding="utf-8")
         item = _task(text, entry["tag"])
         lines = text.splitlines()
@@ -358,25 +570,38 @@ def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None) -> s
         start, end = _block(lines, item.line_number)
         lines[start:end] = entry["before"]
         newline = "\r\n" if "\r\n" in text else "\n"
-        tmp = path.with_name(f".{path.name}.revert.tmp")
-        tmp.write_text(newline.join(lines) + (newline if text.endswith(("\n", "\r\n")) else ""), encoding="utf-8")
-        os.replace(tmp, path)
+        saved = _snapshot(vault, [rel])
+        _write_bytes(path, (newline.join(lines) + (newline if text.endswith(("\n", "\r\n")) else "")).encode())
+        message = f"inbox: revert {entry['op']} [#{entry['tag']}] from delegate-{delegate} ({ulid})"
+        sha = _commit_change(vault, message, saved, commit)
         state.applied[delegate][ulid] = {
             **entry,
             "outcome": "reverted",
             "reverted_at": di._stamp(dt.datetime.now(dt.UTC)),
+            "revert_commit": sha,
         }
         di.save_state(vault, state)
     return delegate
 
 
-def apply_all(vault: Path, *, now: dt.datetime | None = None) -> list[ApplyResult | RepoSyncError]:
+def apply_all(
+    vault: Path,
+    *,
+    now: dt.datetime | None = None,
+    env: Mapping[str, str] | None = None,
+    commit: Committer | None = None,
+) -> list[ApplyResult | RepoSyncError]:
+    """Apply every delegate's proposals; one failing, however it fails, doesn't stop the rest."""
     out: list[ApplyResult | RepoSyncError] = []
     state = di.load_state(vault.resolve())
     for delegate in sorted(set(state.taken) | set(state.inboxes)):
         try:
-            out.append(apply(vault, delegate, now=now))
+            out.append(apply(vault, delegate, now=now, env=env, commit=commit))
         except RepoSyncError as e:
             e.detail.setdefault("delegate", delegate)
             out.append(e)
+        except Exception as e:  # noqa: BLE001 - one delegate's failure is reported, never a stop for the others
+            failure = RepoSyncError("apply_failed", f"refused: {delegate}'s apply failed ({type(e).__name__})")
+            failure.detail["delegate"] = delegate
+            out.append(failure)
     return out

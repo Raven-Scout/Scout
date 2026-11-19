@@ -530,7 +530,7 @@ def _not_a_mirror(vault: Path, link: InboxLink, gh: GhRunner) -> list[str]:
     return notes
 
 
-def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> None:
+def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> list[str]:
     """Refuse unless ``link.remote`` is still the repository it was bound to, and still passes every check.
 
     Checked before each pull and key change, whatever the (signed) state says.
@@ -548,7 +548,7 @@ def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> Non
                 "inbox_rebound",
                 f"refused: {link.remote} isn't the repository {link.id}'s inbox was linked to; link it again",
             )
-        return
+        return []
     kind, _, ids = link.bound_to.partition(":")
     repo_id, _, owner_id = ids.partition(":")
     if kind != "github" or not repo_id.isdigit():
@@ -561,7 +561,7 @@ def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> Non
             "(renamed, transferred or replaced); check it, then link the inbox again",
         )
     _check_github(repo, facts, gh, keys={k for k in (link.deploy_key_id, *link.stale_key_ids) if k is not None})
-    _not_a_mirror(vault, link, gh)
+    return _not_a_mirror(vault, link, gh)  # its notes (a mirror gone from GitHub) for the caller to show
 
 
 # ----- link, reset, unlink ---------------------------------------------------------------------
@@ -773,7 +773,7 @@ def deploy_key(
         repo = dm.github_repo(current.remote)
         if repo is None:
             raise RepoSyncError("key_needs_github", "refused: an inbox key needs a GitHub inbox repository")
-        verify(vault, current, state, gh)
+        result.notes += verify(vault, current, state, gh)
         title = key_title(delegate)
         left: list[int] = []
         for key_id in current.stale_key_ids:
@@ -1300,10 +1300,11 @@ def pull(
         current = _inbox(state, delegate)
         try:
             _sweep(vault)
-            verify(vault, current, state, gh)
+            checked = verify(vault, current, state, gh)
             result = _pull_once(vault, state, delegate, when)
             if result.raced:
                 result = _pull_once(vault, load_state(vault), delegate, when)  # the agent pushed in between: once more
+            result.notes = checked + result.notes
         except Exception as e:
             failure = (
                 e

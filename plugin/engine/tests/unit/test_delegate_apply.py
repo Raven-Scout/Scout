@@ -21,6 +21,7 @@ from scout import delegate_proposals as dp
 from scout.cli import app
 from scout.repo_sync import RepoSyncError
 
+from .privacy_vault_helpers import git
 from .test_delegate_mirror import _bare, _commit, _link, vault  # noqa: F401 - the fixture
 
 D = "grok-personal"
@@ -37,6 +38,21 @@ TASKS = (
     "- [ ] [#EF56] Book the room\n"
     "  - scout: ask about [#GH78] first\n"
 )
+
+
+REAL_DEFAULT_COMMIT = da._default_commit  # before the autouse stand-in below replaces it
+
+
+def _git_commit(v: Path, message: str, rels: list[str]) -> str:
+    """The vault's commit helper, as a test stands it in: commit exactly these paths."""
+    git(v, "add", "--", *rels)
+    git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", message, "--", *rels)
+    return git(v, "rev-parse", "HEAD").strip()
+
+
+@pytest.fixture(autouse=True)
+def _commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(da, "_default_commit", _git_commit)
 
 
 @pytest.fixture
@@ -112,7 +128,7 @@ def test_an_item_the_delegate_didnt_see_is_unknown(mirrored: Path, tag: str) -> 
 
 def test_an_item_hidden_since_the_mirror_is_unknown(mirrored: Path) -> None:
     hidden = TASKS.replace("  - scout: waiting on the numbers\n", "  - scout: see [[task-renew-permit]]\n")
-    (mirrored / DAILY).write_text(hidden, encoding="utf-8")  # the mirror still shows AB12; the vault no longer would
+    _commit(mirrored, DAILY, hidden, "hide")  # the mirror still shows AB12; the vault no longer would
     p = _op(mirrored, "mark-done")
     assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}
     assert "- [ ] [#AB12]" in _daily(mirrored)
@@ -166,17 +182,16 @@ def test_a_crash_during_the_op_is_never_applied_twice(mirrored: Path, monkeypatc
 
     real = da._run_op
     monkeypatch.setattr(da, "_run_op", boom)
-    with pytest.raises(RuntimeError):
-        da.apply(mirrored, D)
+    assert da.apply(mirrored, D).outcomes == {p.id: "interrupted"}  # recorded, and the apply carries on
     monkeypatch.setattr(da, "_run_op", real)
     assert di.load_state(mirrored).applied[D][p.id]["outcome"] == "interrupted"
-    assert da.apply(mirrored, D).outcomes == {}
+    assert da.apply(mirrored, D).outcomes == {}  # never tried again: the op may have half-run
 
 
 def test_revert_refuses_a_task_changed_since(mirrored: Path) -> None:
     p = _op(mirrored, "mark-done")
     da.apply(mirrored, D)
-    (mirrored / DAILY).write_text(_daily(mirrored).replace("Send the draft", "Send the final draft"), encoding="utf-8")
+    _commit(mirrored, DAILY, _daily(mirrored).replace("Send the draft", "Send the final draft"), "owner edit")
     with pytest.raises(RepoSyncError) as e:
         da.revert(mirrored, p.id)
     assert e.value.code == "revert_conflict"
@@ -217,8 +232,7 @@ def test_a_symlinked_copy_or_folder_is_never_followed(mirrored: Path, tmp_path: 
 
 
 def test_a_daily_file_made_private_since_the_mirror_is_unknown(mirrored: Path) -> None:
-    (mirrored / DAILY).write_text("---\nvisibility: private\n---\n" + TASKS, encoding="utf-8")
-    _commit(mirrored, "README-x.md", "x\n", "private daily")  # HEAD now has it private
+    _commit(mirrored, DAILY, "---\nvisibility: private\n---\n" + TASKS, "private daily")  # HEAD has it private
     p = _op(mirrored, "mark-done")
     assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}
 
@@ -238,7 +252,7 @@ def test_a_copy_that_is_a_folder_or_too_big_is_not_taken(mirrored: Path) -> None
 
 
 def test_a_task_line_hidden_since_the_mirror_is_unknown(mirrored: Path) -> None:
-    (mirrored / DAILY).write_text(TASKS.replace("Send the draft", "Send [[task-renew-permit]]"), encoding="utf-8")
+    _commit(mirrored, DAILY, TASKS.replace("Send the draft", "Send [[task-renew-permit]]"), "hide the line")
     p = _op(mirrored, "mark-done")
     assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}
 
@@ -277,3 +291,255 @@ def test_task_lines_of_a_missing_file_or_tag(tmp_path: Path) -> None:
         "- [ ] [#AB12] 🔴 Send the draft",
         "  - scout: waiting on the numbers",
     ]
+
+
+# ----- the #725 security review ----------------------------------------------------------------
+
+
+def _head_subject(v: Path) -> str:
+    return git(v, "log", "-1", "--format=%s").strip()
+
+
+def test_each_applied_change_is_committed_at_once_naming_the_delegate(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    da.apply(mirrored, D)
+    assert _head_subject(mirrored) == f"inbox: mark-done [#AB12] from delegate-{D} ({p.id})"
+    assert git(mirrored, "status", "--porcelain", "--", "action-items").strip() == ""
+    assert di.load_state(mirrored).applied[D][p.id]["commit"] == git(mirrored, "rev-parse", "HEAD").strip()
+    da.revert(mirrored, p.id)
+    assert _head_subject(mirrored) == f"inbox: revert mark-done [#AB12] from delegate-{D} ({p.id})"
+    assert git(mirrored, "status", "--porcelain", "--", "action-items").strip() == ""
+
+
+def test_h1_revert_never_writes_through_a_planted_symlink(mirrored: Path, tmp_path: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    da.apply(mirrored, D)
+    victim = tmp_path / "pre-commit"
+    victim.write_text("keep\n", encoding="utf-8")
+    daily = mirrored / DAILY
+    (daily.parent / f".{daily.name}.revert.tmp").symlink_to(victim)
+    da.revert(mirrored, p.id)
+    assert victim.read_text(encoding="utf-8") == "keep\n" and _daily(mirrored) == TASKS
+
+
+def test_h1_a_symlinked_daily_file_is_never_followed(mirrored: Path, tmp_path: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    da.apply(mirrored, D)
+    secret = tmp_path / "secret.md"
+    secret.write_text(_daily(mirrored), encoding="utf-8")
+    daily = mirrored / DAILY
+    daily.unlink()
+    daily.symlink_to(secret)
+    with pytest.raises(RepoSyncError) as e:
+        da.revert(mirrored, p.id)
+    assert e.value.code == "revert_conflict"
+    q = _op(mirrored, "mark-done", "EF56")
+    assert da.apply(mirrored, D).outcomes == {q.id: "unknown_item"}
+    assert "[ ] [#EF56]" in secret.read_text(encoding="utf-8")
+
+
+def test_m1_a_daily_file_that_isnt_utf8_or_any_crash_never_stops_apply(
+    mirrored: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (mirrored / DAILY).write_bytes(TASKS.encode() + b"\xff\xfe\n")
+    git(mirrored, "add", "-A")
+    git(mirrored, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "bytes")
+    p = _op(mirrored, "mark-done")
+    assert da.apply(mirrored, D).outcomes == {p.id: "unknown_item"}  # not visible as text: never a crash
+    a, b = _op(mirrored, "mark-done", "EF56"), _op(mirrored, "clear-block")
+
+    calls: list[int] = []
+    real = da._Seen.in_mirror
+
+    def once(self: object, date: str, tag: str) -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+        return real(self, date, tag)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(da._Seen, "in_mirror", once)
+    r = da.apply(mirrored, D)
+    assert r.outcomes[a.id] == "refused" and r.outcomes[b.id] in ("no_op", "unknown_item")
+    assert di.load_state(mirrored).applied[D][a.id]["why"] == "error"
+
+
+def test_m1_apply_all_carries_on_past_any_exception(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _op(mirrored, "mark-done")
+    _op(mirrored, "mark-done", delegate="duet")
+    real = da.apply
+
+    def flaky(v: Path, delegate: str, **kw: object) -> da.ApplyResult:
+        if delegate == "duet":
+            raise KeyError("boom")
+        return real(v, delegate, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(da, "apply", flaky)
+    results = da.apply_all(mirrored)
+    assert isinstance(results[0], RepoSyncError) and results[0].code == "apply_failed"
+    assert isinstance(results[1], da.ApplyResult) and results[1].counts() == {"applied": 1}
+
+
+def test_m2_apply_is_the_owners_and_waits_for_a_live_run(mirrored: Path) -> None:
+    from scout.action_items import retitle
+
+    _op(mirrored, "mark-done")
+    for env in ({"SCOUT_MODE": "briefing"}, {"SCOUT_READER": "autonomous"}):
+        with pytest.raises(RepoSyncError) as e:
+            da.apply(mirrored, D, env=env)
+        assert e.value.code == "headless_refused"
+    with retitle.session_lock(mirrored):  # a run holds the vault's session lock
+        for call in (lambda: da.apply(mirrored, D), lambda: da.revert(mirrored, "01M7T0000000000000000000AB")):
+            with pytest.raises(RepoSyncError) as e:
+                call()
+            assert e.value.code == "busy"
+    assert _daily(mirrored) == TASKS
+
+
+def test_m2_a_commit_that_doesnt_land_puts_the_change_back(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+
+    def fails(v: Path, message: str, rels: list[str]) -> str:
+        raise RepoSyncError("commit_failed", "refused: the helper failed")
+
+    with pytest.raises(RepoSyncError) as e:
+        da.apply(mirrored, D, commit=fails)
+    assert e.value.code == "commit_failed" and _daily(mirrored) == TASKS
+    assert p.id not in di.load_state(mirrored).applied[D]  # tried again next time
+    assert da.apply(mirrored, D).outcomes == {p.id: "applied"}
+
+
+def test_m2_a_commit_that_lands_elsewhere_is_left_as_it_is(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+
+    def moves_head(v: Path, message: str, rels: list[str]) -> str:
+        _commit(v, "README-other.md", "x\n", "someone else")
+        raise RuntimeError("the helper crashed")
+
+    with pytest.raises(RepoSyncError) as e:
+        da.apply(mirrored, D, commit=moves_head)
+    assert e.value.code == "commit_unclear"
+    assert di.load_state(mirrored).applied[D][p.id]["outcome"] == "interrupted"
+
+
+def test_an_uncommitted_edit_waits_and_a_planted_copy_waits(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    (mirrored / DAILY).write_text(TASKS + "- [ ] [#ZZ11] owner's new task\n", encoding="utf-8")
+    assert da.apply(mirrored, D).outcomes == {p.id: "dirty"}
+    _commit(mirrored, DAILY, (mirrored / DAILY).read_text(encoding="utf-8"), "owner commits")
+    assert da.apply(mirrored, D).outcomes == {p.id: "applied"}
+
+    q = _op(mirrored, "mark-done", "EF56")
+    copy = mirrored.joinpath(*di.INBOX_DIR, D, f"{q.id}.json")
+    good = copy.read_bytes()
+    copy.write_bytes(good.replace(b"EF56", b"AB12"))  # a run edits one byte
+    assert da.apply(mirrored, D).outcomes == {q.id: "not_taken"}
+    copy.write_bytes(good)  # not final: once the copy is right again, it applies
+    assert da.apply(mirrored, D).outcomes == {q.id: "applied"}
+
+
+def test_limited_is_tried_again_on_a_later_day(mirrored: Path) -> None:
+    ids = [_op(mirrored, "set-estimate", args={"minutes": 30 + 15 * i}).id for i in range(da.BURST + 1)]
+    assert da.apply(mirrored, D).outcomes[ids[-1]] == "limited"
+    assert da.apply(mirrored, D).outcomes == {}  # not again the same day
+    tomorrow = dt.datetime.now(dt.UTC) + dt.timedelta(days=1)
+    assert da.apply(mirrored, D, now=tomorrow).outcomes == {ids[-1]: "applied"}
+
+
+def test_set_block_beyond_the_horizon_is_refused(mirrored: Path) -> None:
+    far = (TODAY + dt.timedelta(days=90)).isoformat()
+    past = (TODAY - dt.timedelta(days=1)).isoformat()
+    a = _op(mirrored, "set-block", args={"day": far, "start": "09:00", "end": "10:00"})
+    b = _op(mirrored, "set-block", "EF56", args={"day": past, "start": "09:00", "end": "10:00"})
+    assert da.apply(mirrored, D).outcomes == {a.id: "refused", b.id: "refused"}
+    assert di.load_state(mirrored).applied[D][a.id]["why"] == "block_horizon"
+
+
+def test_revert_refuses_an_ambiguous_ulid_or_a_dirty_file(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    da.apply(mirrored, D)
+    (mirrored / DAILY).write_text(_daily(mirrored) + "\n- [ ] [#ZZ22] new\n", encoding="utf-8")
+    with pytest.raises(RepoSyncError) as e:
+        da.revert(mirrored, p.id)
+    assert e.value.code == "revert_dirty"
+    git(mirrored, "checkout", "--", DAILY)
+    state = di.load_state(mirrored)
+    state.applied["duet"] = {p.id: dict(state.applied[D][p.id])}
+    di.save_state(mirrored, state)
+    with pytest.raises(RepoSyncError) as e:
+        da.revert(mirrored, p.id)
+    assert e.value.code == "ambiguous"
+
+
+def test_old_applied_entries_are_pruned(mirrored: Path) -> None:
+    old = (dt.datetime.now(dt.UTC) - dt.timedelta(days=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state = di.load_state(mirrored)
+    state.applied[D] = {"01M7T0000000000000000000AB": {"outcome": "applied", "at": old, "before": ["x"]}}
+    di.save_state(mirrored, state)
+    da.apply(mirrored, D)
+    assert "01M7T0000000000000000000AB" not in di.load_state(mirrored).applied[D]
+
+
+def test_the_vault_commit_helper_is_scouts_own(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.action_items import retitle
+
+    seen: list[list[str]] = []
+
+    def helper(v: Path, message: str, rels: list[str]) -> str:
+        seen.append([message, *rels])
+        raise retitle.RetitleError("no helper here")
+
+    monkeypatch.setattr(retitle, "git_safe_commit", helper)
+    with pytest.raises(RepoSyncError) as e:
+        REAL_DEFAULT_COMMIT(mirrored, "m", ["a"])
+    assert e.value.code == "commit_failed" and seen == [["m", "a"]]
+
+
+def test_plain_refuses_every_odd_shape(tmp_path: Path) -> None:
+    v = tmp_path / "v"
+    v.mkdir()
+    assert not da._plain(v, DAILY)  # no folder
+    (v / "action-items").mkdir()
+    assert not da._plain(v, DAILY)  # no file
+    (v / DAILY).write_text("x\n", encoding="utf-8")
+    assert da._plain(v, DAILY)
+    (v / "elsewhere.md").hardlink_to(v / DAILY)
+    assert not da._plain(v, DAILY)  # a hard link
+    (v / "action-items").rename(v / "real")
+    (v / "action-items").symlink_to(v / "real")
+    assert not da._plain(v, DAILY)  # the folder is a symlink
+    (v / "action-items").unlink()
+    (v / "action-items").write_text("a file\n", encoding="utf-8")
+    assert not da._plain(v, DAILY)  # the folder is a file
+    assert da._commit_change(v, "m", {v / "elsewhere.md": (v / "elsewhere.md").read_bytes()}, _git_commit) is None
+
+
+def test_cli_apply_and_revert_every_output(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(mirrored))
+    p = _op(mirrored, "mark-done")
+    _take(mirrored, "observation", {"text": "The meeting moved"})
+    r = runner.invoke(app, ["inbox", "apply", D])
+    assert r.exit_code == 0 and f"{D}: applied 1" in r.output and "wait for the review queue" in r.output
+    assert runner.invoke(app, ["inbox", "apply", D]).output.startswith(f"{D}: nothing new")
+    r = runner.invoke(app, ["inbox", "revert", p.id, "--json"])
+    assert r.exit_code == 0 and json.loads(r.output) == {"ok": True, "delegate": D, "reverted": p.id}
+    r = runner.invoke(app, ["inbox", "revert", p.id])
+    assert r.exit_code == 2 and "wasn't applied" in r.output
+
+    _op(mirrored, "mark-done", delegate="duet")
+    real = da.apply
+
+    def flaky(v: Path, delegate: str, **kw: object) -> da.ApplyResult:
+        if delegate == "duet":
+            raise RepoSyncError("busy", "refused: busy")
+        return real(v, delegate, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(da, "apply", flaky)
+    r = runner.invoke(app, ["inbox", "apply", "--all"])
+    assert r.exit_code == 2 and "duet: refused: busy" in r.output
+    r = runner.invoke(app, ["inbox", "apply", "--all", "--json"])
+    assert r.exit_code == 2
+    rows = json.loads(r.stdout)
+    assert rows[0] == {"ok": False, "delegate": "duet", "code": "busy", "message": "refused: busy"}
+    for args in (["inbox", "apply", "duet"], ["inbox", "apply", "duet", "--json"]):
+        r = runner.invoke(app, args)
+        assert r.exit_code == 2 and "busy" in r.output
