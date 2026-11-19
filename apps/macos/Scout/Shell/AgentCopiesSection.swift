@@ -46,7 +46,7 @@ struct AgentCopiesSection: View {
     private func labelled<Content: View>(@ViewBuilder _ card: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("AGENT COPIES")
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.08 * 10)
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.horizontal, 4)
@@ -58,7 +58,7 @@ struct AgentCopiesSection: View {
     private var refreshButton: some View {
         Button(service.work == .checking ? "Checking…" : "Refresh") { Task { await service.refresh() } }
             .buttonStyle(.plainHit)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
             .disabled(service.work != nil)
     }
 
@@ -66,7 +66,7 @@ struct AgentCopiesSection: View {
         SettingsRow(title: row.id, help: row.help) {
             HStack(spacing: 10) {
                 Text(row.value)
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(Self.color(row.tone))
                     .multilineTextAlignment(.trailing)
                 if row.offersPreview {
@@ -74,7 +74,7 @@ struct AgentCopiesSection: View {
                         Task { await service.preview(row.id) }
                     }
                     .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Shows what a sync would put in \(row.id)'s copy. Changes nothing.")
                 }
@@ -83,7 +83,7 @@ struct AgentCopiesSection: View {
                         Task { await service.sync(row.id) }
                     }
                     .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Pushes a new copy to \(row.id)'s mirror if the vault changed what it may see.")
                 }
@@ -98,9 +98,9 @@ struct AgentCopiesSection: View {
                     .foregroundStyle(DS.Status.warn)
                     .accessibilityLabel("Warning")
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(summary).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                    Text(summary).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(fix).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p2)
+                    Text(fix).font(DS.font(.caption)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }

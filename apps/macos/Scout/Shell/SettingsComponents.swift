@@ -79,11 +79,11 @@ struct SettingsRow<Trailing: View>: View {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(DS.sans(13, weight: .medium))
+                        .font(DS.font(.body, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
                         .accessibilityHidden(titleUsedByControl)
                     Text(help)
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -108,14 +108,14 @@ struct SettingsField<Input: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(label.uppercased())
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
                 .accessibilityHidden(true)   // the input below is labelled with it
             input()
                 .environment(\.settingsControlLabel, label)
             Text(parseHelp(help))
-                .font(DS.sans(11.5))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.vertical, 14)
@@ -129,7 +129,7 @@ struct SettingsField<Input: View>: View {
               let closeIdx = rest[rest.index(after: openIdx)...].firstIndex(of: "`") {
             out.append(AttributedString(rest[rest.startIndex..<openIdx]))
             var code = AttributedString(rest[rest.index(after: openIdx)..<closeIdx])
-            code.font = DS.mono(11)
+            code.font = DS.font(.caption, .mono)
             code.backgroundColor = DS.Paper.sunk
             out.append(code)
             rest = rest[rest.index(after: closeIdx)...]
@@ -152,7 +152,7 @@ struct SettingsInput: View {
             .accessibilityLabel(accessibilityLabel ?? rowLabel ?? placeholder)
             .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
             .textFieldStyle(.plain)
-            .font(DS.sans(13, weight: .medium))
+            .font(DS.font(.body, weight: .medium))
             .foregroundStyle(DS.Ink.p1)
             .padding(.horizontal, 10)
             .frame(height: 30)

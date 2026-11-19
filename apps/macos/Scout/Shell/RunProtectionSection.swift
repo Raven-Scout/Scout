@@ -43,7 +43,7 @@ struct RunProtectionSection: View {
         SettingsRow(title: "Run protection", help: service.lastError ?? "What keeps scheduled runs from going wrong.") {
             HStack(spacing: 10) {
                 Text(model.headline)
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(Self.color(model.headlineTone))
                     .multilineTextAlignment(.trailing)
                 checkButton
@@ -57,7 +57,7 @@ struct RunProtectionSection: View {
                         help: "For working around a problem only. You'll be asked to confirm.") {
                 Button("Turn off…") { confirmingTurnOff = true }
                     .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .disabled(service.work != nil)
                     .accessibilityHint("Asks for confirmation before turning write protection off for scheduled runs")
             }
@@ -65,7 +65,7 @@ struct RunProtectionSection: View {
             SettingsRow(title: "Turn write protection back on", help: "Recommended. Takes effect from the next scheduled run.") {
                 Button(service.work == .turningOn ? "Working…" : "Turn on") { Task { await service.turnSandboxOn() } }
                     .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .disabled(service.work != nil)
             }
         }
@@ -76,14 +76,14 @@ struct RunProtectionSection: View {
             Task { await service.checkWriteProtection() }
         }
             .buttonStyle(.plainHit)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
             .disabled(service.work != nil)
     }
 
     private func lineRow(_ line: RunProtectionModel.Line) -> some View {
         SettingsRow(title: line.title, help: line.help) {
             Text(line.value)
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .foregroundStyle(Self.color(line.tone))
                 .multilineTextAlignment(.trailing)
         }
@@ -97,9 +97,9 @@ struct RunProtectionSection: View {
                     .foregroundStyle(Self.color(problem.tone))
                     .accessibilityLabel(problem.tone == .bad ? "Problem" : "Warning")
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(problem.summary).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                    Text(problem.summary).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(problem.fix).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p2)
+                    Text(problem.fix).font(DS.font(.caption)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
@@ -107,7 +107,7 @@ struct RunProtectionSection: View {
                 if let action = problem.action {
                     Button(action.buttonTitle) { perform(action) }
                         .buttonStyle(.plainHit)
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .disabled(service.work != nil)
                 }
             }

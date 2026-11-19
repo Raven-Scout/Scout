@@ -112,7 +112,7 @@ struct SettingsView: View {
                 }
                 if let launchAtLoginError {
                     Label(launchAtLoginError, systemImage: "exclamationmark.triangle.fill")
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Status.warn)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.bottom, 12)
@@ -142,7 +142,7 @@ struct SettingsView: View {
                     if !CommentAuthor.isNameSet(authorName: authorName) {
                         Label("Scout doesn't know your name yet, so comments you add are signed \u{201C}\(CommentAuthor.fallback)\u{201D}.",
                               systemImage: "person.crop.circle.badge.questionmark")
-                            .font(DS.sans(11.5))
+                            .font(DS.font(.caption))
                             .foregroundStyle(DS.Status.warn)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.top, 4)
@@ -262,7 +262,7 @@ struct SettingsView: View {
                             placeholder: "kitty -d {cwd} -e {claude}")
                         if customLaunchCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Text("Required — enter a command, or Launch Claude → Claude Code will have nothing to run.")
-                                .font(DS.sans(11.5))
+                                .font(DS.font(.caption))
                                 .foregroundStyle(DS.Status.warn)
                                 .padding(.top, 4)
                         }
@@ -377,7 +377,7 @@ struct SettingsView: View {
     private func section<Content: View>(label: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label.uppercased())
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.08 * 10)
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.horizontal, 4)
@@ -389,11 +389,11 @@ struct SettingsView: View {
     private func aboutKV(_ key: String, value: String, valueColor: Color = DS.Ink.p1) -> some View {
         HStack {
             Text(key)
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             Text(value)
-                .font(DS.mono(12, weight: .medium))
+                .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(valueColor)
         }
         .padding(.vertical, 5)
