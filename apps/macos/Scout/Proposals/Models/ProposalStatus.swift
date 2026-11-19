@@ -129,8 +129,12 @@ nonisolated enum ProposalStatus: Equatable, Sendable {
 
     // MARK: - Helpers
 
+    /// The clause must open the status's note: right after `Pending`, at the
+    /// start, or after `(`, `;` or `,`. So "do not auto-apply after <date>"
+    /// or "(not auto-apply after <date>)" is never read as auto-applying.
     private static let autoApplyRe = try! NSRegularExpression(
-        pattern: #"auto[- ]?apply after:?\s*(\d{4}-\d{2}-\d{2})"#, options: [.caseInsensitive])
+        pattern: #"(?:^|[(;,]|\bpending\b)\s*auto[- ]?apply after:?\s*(\d{4}-\d{2}-\d{2})"#,
+        options: [.caseInsensitive])
 
     /// The date of an `auto-apply after <date>` clause, and only that: any
     /// other date in a `Pending` status says nothing about applying it.

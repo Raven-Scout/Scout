@@ -106,6 +106,9 @@ final class DisplayProfileService: ObservableObject {
            profile.actionItems.topics.doneRange == ActionItemsDisplay.Topics().doneRange {
             guard status.canWrite else { return }
             update { $0.topics.doneRange = legacy }
+            // A failed write (permissions, full disk) leaves `status` .ok but
+            // sets `writeError`: keep the key so the next launch tries again.
+            guard writeError == nil, status.canWrite else { return }
         }
         defaults.removeObject(forKey: Self.legacyDoneRangeKey)
     }

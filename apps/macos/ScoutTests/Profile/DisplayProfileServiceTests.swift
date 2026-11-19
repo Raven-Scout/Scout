@@ -175,6 +175,20 @@ struct DisplayProfileServiceTests {
         }
     }
 
+    /// A write that fails on I/O (here: a read-only folder) leaves `status`
+    /// .ok and sets `writeError`; the old key must survive for the next try.
+    @Test func aFailedWriteKeepsTheOldKeyForLater() throws {
+        let service = makeService()
+        let folder = service.fileURL.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        let defaults = legacyDefaults("yesterday")
+        service.migrateLegacyDoneRange(from: defaults)
+        #expect(service.status.canWrite)
+        #expect(service.writeError != nil)
+        #expect(defaults.string(forKey: DisplayProfileService.legacyDoneRangeKey) == "yesterday")
+    }
+
     @Test func anUnwritableFileKeepsTheOldKeyForLater() throws {
         try Data("not json".utf8).write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()

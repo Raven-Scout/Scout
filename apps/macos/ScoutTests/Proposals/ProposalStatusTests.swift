@@ -98,6 +98,19 @@ struct ProposalStatusTests {
         #expect(ProposalStatus.parse("Pending (filed 2026-06-01; auto-apply after 2026-06-04)")
                 == .pending(autoApplyDate: "2026-06-04"))
         #expect(ProposalStatus.parse("pending (Auto-apply after: 2026-06-04)") == .pending(autoApplyDate: "2026-06-04"))
+        #expect(ProposalStatus.parse("Pending auto-apply after 2026-06-04") == .pending(autoApplyDate: "2026-06-04"))
+        #expect(ProposalStatus.parse("Pending, auto-apply after 2026-06-04") == .pending(autoApplyDate: "2026-06-04"))
+    }
+
+    @Test("a negated auto-apply clause is not an auto-apply date", arguments: [
+        "Pending — do not auto-apply after 2026-06-04",
+        "Pending (not auto-apply after 2026-06-04)",
+        "Pending (needs approval; never auto-apply after 2026-06-04)",
+    ])
+    func negatedAutoApplyClause(raw: String) {
+        let status = ProposalStatus.parse(raw)
+        #expect(status == .pending(autoApplyDate: nil))
+        #expect(status.explanation()?.contains("only after you approve") == true)
     }
 
     @Test("leading emoji and punctuation don't hide the status word", arguments: [
