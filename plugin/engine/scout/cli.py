@@ -94,6 +94,15 @@ def _register_planning() -> None:
 _register_planning()
 
 
+def _register_wishlist() -> None:
+    from scout.wishlist.cli import app as wishlist_app
+
+    app.add_typer(wishlist_app, name="wishlist")
+
+
+_register_wishlist()
+
+
 hook_app = typer.Typer(help="PostToolUse / lifecycle hook entry points (invoked by Claude Code).")
 app.add_typer(hook_app, name="hook")
 
