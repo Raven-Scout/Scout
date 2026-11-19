@@ -12,7 +12,7 @@ struct ProposalBodyView: View {
                 switch block {
                 case .prose(let text):
                     InlineMarkdownText(text)
-                        .font(DS.serif(13.5))
+                        .font(DS.font(.body, .serif))
                         .foregroundStyle(DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -25,7 +25,7 @@ struct ProposalBodyView: View {
 
     private func codePanel(_ code: String) -> some View {
         Text(code)
-            .font(DS.mono(12))
+            .font(DS.font(.label, .mono))
             .foregroundStyle(DS.Ink.p1)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
