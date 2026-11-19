@@ -1,4 +1,8 @@
-"""Tests for `kb structure --next` trim-only mode: a shared front page the nightly pass may cut, not rebuild."""
+"""Tests for `kb structure --next` on a shared front page.
+
+With ``privacy.shared_edits: refuse`` the nightly pass may only cut lines from one (trim-only). With
+``checked``, the default, it rebuilds one like any other page, unless a note the rebuild could write
+would be shared more widely than the page; then it falls back to trim-only."""
 
 from __future__ import annotations
 
@@ -18,9 +22,13 @@ FRONT = f"{P}/widgets/widgets.md"
 ALEX = "['person:alex@example.com']"
 
 
-def federated(*defaults: str, scope: str = ALEX) -> str:
+REFUSE = "  shared_edits: refuse\n"
+
+
+def federated(*defaults: str, scope: str = ALEX, edits: str = REFUSE) -> str:
+    """Folder shares; ``refuse`` unless ``edits=""`` (the default mode, ``checked``)."""
     rows = "".join(f"    - {{glob: '{g}', scope: {scope}}}\n" for g in defaults)
-    return f"privacy:\n  federation: {{enabled: true}}\n  federation_defaults:\n{rows}"
+    return f"privacy:\n  federation: {{enabled: true}}\n{edits}  federation_defaults:\n{rows}"
 
 
 def rows_by_name(root) -> dict[str, dict]:  # type: ignore[no-untyped-def]
@@ -54,7 +62,8 @@ def test_a_shared_front_page_over_budget_is_picked_trim_only(kb_repo) -> None:
     ],
 )
 def test_a_page_shared_without_an_effective_scope_is_still_skipped(kb_repo, config: str, frontmatter: str) -> None:
-    """The hook's shared-note check (#569) only guards an effective ``federation_scope``, so these get no trim."""
+    """The hook's shared-note check (#569) only guards an effective ``federation_scope``, so these get no trim,
+    and no rebuild in the default ``checked`` mode either (these configs don't set ``shared_edits``)."""
     kb_repo.write("scout-config.yaml", config)
     kb_repo.write(FRONT, page("widgets", frontmatter=frontmatter, extra="x" * 17000))
     row = rows_by_name(kb_repo.root)["widgets"]
@@ -202,3 +211,108 @@ def test_a_trim_commit_passes_the_scheduled_run_privacy_check(kb_repo) -> None:
     kb_repo.stage(FRONT, page("widgets", extra="Still current.\n"))
     kb_repo.stage(history, "---\nname: history\n---\n# History\n" + detail * 3)
     assert [f for f in privacy_staged(kb_repo.root, env=RUN) if f.blocking] == []
+
+
+# ----- shared_edits: checked (the default): a shared page is rebuilt --------------------------
+
+
+def test_checked_rebuilds_a_shared_page_over_budget(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    kb_repo.write(FRONT, page("widgets", extra="x" * 17000))
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["rebuild_target"] and not row["trim_only"] and not row["share_blocked"]
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["widgets"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"as_of": None}, id="no as_of"),
+        pytest.param({"extra": "x" * 9000}, id="over target, under budget"),
+    ],
+)
+def test_checked_picks_a_shared_page_cutting_cant_fix(kb_repo, kwargs: dict) -> None:
+    """Under ``refuse`` these are skipped (above); a rebuild can add the date or the section."""
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    kb_repo.write(FRONT, page("widgets", **kwargs).replace("## History", "## Old notes"))
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_checked_rebuilds_a_page_shared_alone_into_unshared_notes(kb_repo) -> None:
+    """A share on the page only: the rebuild's new notes aren't shared, which is narrower."""
+    kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.write(FRONT, old_shape_page("widgets"))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-history.md", "older detail\n")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["rebuild_target"] and not row["trim_only"]
+
+
+def test_checked_rebuilds_into_notes_shared_with_the_same_people(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    kb_repo.write(FRONT, old_shape_page("widgets"))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-team.md", f"---\nfederation_scope: {ALEX}\n---\nsame readers\n")
+    assert picked(kb_repo.root) == "widgets"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "trim"),
+    [
+        pytest.param({"extra": "x" * 17000}, True, id="over budget: trim instead"),
+        pytest.param({"as_of": None}, False, id="no as_of: skipped"),
+    ],
+)
+def test_checked_never_rebuilds_into_a_wider_note(kb_repo, kwargs: dict, trim: bool) -> None:
+    """A note in the folder shared with the whole org, the page with Alex only."""
+    kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.write(FRONT, page("widgets", **kwargs))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-wide.md", "---\nfederation_scope: org\n---\nmore readers\n")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["trim_only"] is trim and row["rebuild_target"] is trim and row["share_blocked"] is not trim
+    if trim:
+        assert cmd_structure(kb_repo.root, "owner", next_only=True).lines[:2] == ["widgets", "trim-only"]
+
+
+def test_checked_never_rebuilds_when_new_source_notes_are_shared_wider(kb_repo) -> None:
+    """Meeting notes shared with Priya, the page with Alex: Priya would read the page's facts."""
+    priya = "['person:priya@example.com']"
+    config = federated(f"{P}/widgets/**", edits="") + f"    - {{glob: 'knowledge-base/sources/**', scope: {priya}}}\n"
+    kb_repo.write("scout-config.yaml", config)
+    kb_repo.write(FRONT, page("widgets", as_of=None))
+    assert rows_by_name(kb_repo.root)["widgets"]["share_blocked"]
+    assert picked(kb_repo.root) is None
+
+
+def test_checked_rebuilds_when_new_source_notes_are_shared_with_the_same_people(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", "knowledge-base/sources/**", edits=""))
+    kb_repo.write(FRONT, page("widgets", as_of=None))
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_checked_still_skips_an_unshared_page_whose_rebuild_would_share(kb_repo) -> None:
+    """The front page's scope is ``none``: any shared note the rebuild could write is wider, as before."""
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/knowledge/**", edits=""))
+    kb_repo.write(FRONT, page("widgets", as_of=None))
+    assert rows_by_name(kb_repo.root)["widgets"]["share_blocked"]
+    assert picked(kb_repo.root) is None
+
+
+def test_a_checked_rebuild_commit_passes_the_scheduled_run_privacy_check(kb_repo) -> None:
+    """The shape of a rebuild night on a shared page: the page rewritten, detail moved into a narrower note."""
+    detail = "- 2026-09-02: an old rollout detail, long since superseded.\n"
+    kb_repo.stage("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.stage(FRONT, page("widgets", extra=detail * 3))
+    kb_repo.commit("owner: share the widgets page")
+    history = f"{P}/widgets/knowledge/widgets-history.md"
+    kb_repo.stage(FRONT, page("widgets", as_of="2026-11-19", extra="- The pilot runs through December.\n"))
+    kb_repo.stage(history, "---\nname: history\n---\n# History\n" + detail * 3)
+    assert [f for f in privacy_staged(kb_repo.root, env=RUN) if f.blocking] == []
+
+
+def test_a_checked_rebuild_that_brings_in_a_private_note_is_refused(kb_repo) -> None:
+    kb_repo.stage("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.stage(FRONT, page("widgets"))
+    kb_repo.stage(f"{P}/widgets/knowledge/widgets-secret.md", PRIVATE_NOTE)
+    kb_repo.commit("owner: share the widgets page")
+    kb_repo.stage(FRONT, page("widgets", extra="- See [[widgets-secret]].\n"))
+    blocking = [f.check for f in privacy_staged(kb_repo.root, env=RUN) if f.blocking]
+    assert blocking == ["private-link"]

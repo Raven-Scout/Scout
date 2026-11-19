@@ -713,6 +713,9 @@ def test_an_unlinked_vault_ignores_a_leftover_host_cache(vault: Path) -> None:
 
 
 # ----- a run adding to a note that is already shared (#569) -----------------------
+# These pin the freeze, which `privacy.shared_edits: refuse` keeps; the default, `checked`, is below.
+
+REFUSE = "  shared_edits: refuse\n"
 
 SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
 _SHARE_SOURCES = (
@@ -731,9 +734,9 @@ def _share(vault: Path, overlay: str) -> None:
     git(vault, "add", "scout-config.yaml")
 
 
-def _shared_source(vault: Path) -> None:
-    """A meeting note shared with Priya by a folder default, committed by the owner."""
-    _share(vault, _SHARE_SOURCES)
+def _shared_source(vault: Path, edits: str = REFUSE) -> None:
+    """A meeting note shared with Priya by a folder default, committed by the owner (``refuse`` by default)."""
+    _share(vault, _SHARE_SOURCES + edits)
     stage(vault, SOURCE, _SOURCE_TEXT)
     commit(vault, "share source notes with Priya")
 
@@ -750,7 +753,7 @@ def test_a_run_may_not_add_a_pages_fact_to_a_shared_source_note(vault: Path) -> 
 
 
 def test_a_run_may_not_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
-    _share(vault, _SHARE_TOPICS)
+    _share(vault, _SHARE_TOPICS + REFUSE)
     commit(vault, "share topics/misc with Priya")
     n = append(vault, PLAIN, "A new fact from another page.")
     assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, n)]
@@ -817,6 +820,169 @@ def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
     append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
     append(vault, WIDGET, "A new fact.")
     assert checks(vault, RUN) == []
+
+
+# ----- privacy.shared_edits: checked (the default) ---------------------------------
+# A run may keep a shared note current: its added or reworded lines pass when they pass the
+# private-link / private-mention scan, with no %%privacy:allow%% pass. Everything else stays refused.
+
+_PRIYA_AND_ALEX = "federation_scope: ['person:priya@example.com', 'person:alex@example.com']\n"
+
+
+def test_a_run_may_add_a_fact_to_a_shared_note(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == []
+    rc, out = hook(vault, RUN)
+    assert rc == 0, out
+
+
+def test_a_run_may_reword_a_line_of_a_shared_note(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    append(vault, PLAIN, "A new fact from another page.")
+    assert checks(vault, RUN) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "check"),
+    [
+        ("See [[sam]] for the details.", "private-link"),
+        ("Ask Sammy about the rollout.", "private-mention"),
+        ("The task-renew-permit list is due.", "private-mention"),
+    ],
+)
+def test_a_checked_line_naming_a_private_note_blocks(vault: Path, line: str, check: str) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, line)
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(SOURCE, check, True, n)]
+    assert "already shared" in found[0].message and "no %%privacy:allow%% pass" in found[0].message
+    assert_no_private_words(found[0].message)
+
+
+def test_a_checked_reword_of_an_owner_marked_line_gets_no_marker_pass(vault: Path) -> None:
+    """The owner allowed one line; a run rewording it can't bring more of that note in under the marker."""
+    _shared_source(vault, edits="")
+    marked = append(vault, SOURCE, "Context from [[sam]]. %%privacy:allow sam%%")
+    assert checks(vault) == []
+    commit(vault, "owner: allow one link")
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("Context from", "More context from"))
+    assert checks(vault, RUN) == [(SOURCE, "private-link", True, marked)]
+    # Leaving the marked line as it is and adding elsewhere passes.
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("More context from", "Context from"))
+    append(vault, SOURCE, "The pilot moved a week.")
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_edit_may_not_add_a_marker(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, "See [[sam]]. %%privacy:allow sam%%")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n), (SOURCE, "private-link", True, n)]
+
+
+@pytest.mark.parametrize(
+    ("old_fm", "new_fm"),
+    [
+        pytest.param("", "federation_scope: org\n", id="set"),
+        pytest.param(_PRIYA_AND_ALEX, "federation_scope: org\n", id="widen"),
+        pytest.param(_PRIYA_AND_ALEX, "federation_scope: ['person:priya@example.com']\n", id="narrow"),
+    ],
+)
+def test_a_checked_edit_may_not_change_federation_scope(vault: Path, old_fm: str, new_fm: str) -> None:
+    _shared_source(vault, edits="")
+    if old_fm:
+        stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + old_fm, 1))
+        commit(vault, "owner: the note's own scope")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + new_fm, 1) + "A new fact.\n")
+    # `org` is over a meeting note's ceiling too, which only warns.
+    assert [c for c in checks(vault, RUN) if c[2]] == [(SOURCE, "privacy-widening", True, None)]
+    assert [c for c in checks(vault) if c[2]] == []
+
+
+def test_a_checked_edit_may_reorder_a_scope_list(vault: Path) -> None:
+    """The same people in another order: not a change of who reads it."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    commit(vault, "owner: the note's own scope")
+    swapped = "federation_scope: ['person:alex@example.com', 'person:priya@example.com']\n"
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + swapped, 1))
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_edit_may_not_make_a_private_note_normal(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nvisibility: private\n", 1))
+    commit(vault, "owner: keep this one private")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nvisibility: normal\n", 1))
+    assert (SOURCE, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_checked_edit_may_not_widen_a_share_by_moving_the_note(vault: Path) -> None:
+    """A move from a share with Priya to a share with the whole org, with an edit on the way."""
+    _share(vault, _SHARE_TOPICS + '    - {glob: "knowledge-base/topics/wide/**", scope: org}\n')
+    commit(vault, "owner: two shares")
+    moved = "knowledge-base/topics/wide/plain.md"
+    (vault / "knowledge-base/topics/wide").mkdir(parents=True)
+    git(vault, "mv", PLAIN, moved)
+    append(vault, moved, "A new fact.")
+    assert checks(vault, RUN) == [(moved, "privacy-widening", True, None)]
+
+
+def test_a_checked_edit_still_refuses_the_privacy_block(vault: Path) -> None:
+    """A run can't switch the freeze off: the privacy: block is the owner's."""
+    _shared_source(vault)  # refuse
+    text = _read(vault, "scout-config.yaml").replace(REFUSE, "")
+    stage(vault, "scout-config.yaml", text)
+    append(vault, SOURCE, "A new fact.")
+    assert ("scout-config.yaml", "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_refuse_anywhere_wins(vault: Path) -> None:
+    """``refuse`` committed, ``checked`` only on disk: the run's commit is still checked against the freeze."""
+    _shared_source(vault)  # refuse, committed
+    (vault / "scout-config.yaml").write_text(
+        _read(vault, "scout-config.yaml").replace(REFUSE, ""), encoding="utf-8"
+    )  # unstaged
+    n = append(vault, SOURCE, "A new fact.")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+
+
+def test_shared_edits_refuse_restores_the_freeze(vault: Path) -> None:
+    _shared_source(vault)  # refuse
+    n = append(vault, SOURCE, "A new fact.")
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(SOURCE, "privacy-widening", True, n)]
+    assert "already shared" in found[0].message and "review queue" in found[0].message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "warned"),
+    [("checked", "checked", False), ("refuse", "refuse", False), ("sometimes", "refuse", True), (True, "refuse", True)],
+)
+def test_the_shared_edits_switch_parses_and_fails_closed(value: object, expected: str, warned: bool) -> None:
+    from scout.kb.privacy import load_policy, policy_from_overlay
+
+    policy = policy_from_overlay({"shared_edits": value})
+    assert policy.shared_edits == expected
+    assert ("privacy-overlay-invalid" in policy.warnings) is warned
+    assert load_policy(None).shared_edits == "checked"
+    # It labels nothing, so the policy Agnes indexes by doesn't change.
+    assert "shared_edits" not in policy.to_json()
+
+
+def test_a_config_that_doesnt_load_keeps_refuse_not_checked() -> None:
+    """A broken scout-config.yaml keeps only what narrows: ``refuse`` stays, ``checked`` adds nothing."""
+    from scout.kb.privacy import policy_from_config_text
+
+    broken = "user:\n  date: 2026-13-45\nprivacy:\n  shared_edits: refuse\n"
+    assert policy_from_config_text(broken).shared_edits == "refuse"
 
 
 # ----- a run changing a non-note file in a share (#594) ---------------------------

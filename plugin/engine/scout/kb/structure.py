@@ -40,13 +40,18 @@ to pick, a line on stderr says so, for the run's report. Nor does it pick a fold
 whose only problems are odd subfolders or loose files with such a label, which no
 night can clear: they would hold the pick for good.
 
-A front page with an effective ``federation_scope`` (not private or local-only) over
-budget or with narration is the exception: ``--next`` may pick it **trim-only**, after
-every other page it can act on. The pass then only cuts whole lines from it, and moves detail only into the
-existing notes in its folder that aren't shared (``move_to``), never into a new note
-or a copy. Removing lines widens nothing, so no share where a rebuild would write can
-block it. Adding a date or a section would add to a shared note, so the page's other
-problems stay the owner's.
+A front page with an effective ``federation_scope`` (not private or local-only) is the
+exception. With ``privacy.shared_edits: checked`` (the default) ``--next`` treats it as
+any other page: the hook scans each line a run adds to it (:mod:`scout.kb.lint_privacy`),
+so a full rebuild is allowed, as long as no note the rebuild could write would be read
+by someone the page isn't shared with (moving text into a narrower note is fine).
+With ``refuse``, or when a rebuild could write wider, one over budget or with narration
+may be picked **trim-only**, after every other page it can act on. The pass then only
+cuts whole lines from it, and moves detail only into the existing notes in its folder
+that aren't shared (``move_to``), never into a new note or a copy. Removing lines
+widens nothing, so no share where a rebuild would write can block it. A trim adds no
+date or section, so the page's other problems wait for a rebuild (``checked``) or the
+owner (``refuse``).
 
 History comes from ONE ``git log --name-only`` over the projects folder, not a
 call per folder, and what git tracks from one ``git ls-files``.
@@ -72,14 +77,17 @@ from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint_config import any_match, glob_match, load_lint_config
 from scout.kb.privacy import (
     FULL_READERS,
+    FederationScope,
     Label,
     Policy,
+    SharedEdits,
     classify,
     first_default,
     label_file,
     load_frontmatter_yaml,
     load_policy,
     read_head,
+    scope_widens,
 )
 
 KB_PREFIX = "knowledge-base/"
@@ -369,17 +377,32 @@ def _folder_last_change(
     return newest
 
 
-def _pinned(label: Label) -> bool:
-    """A file the nightly pass must not copy or move (the phase's rule, enforced here for its pick)."""
-    return label.visibility == "private" or label.shared_file or label.local_only
+def _pinned(label: Label, shared_edits: SharedEdits = "refuse") -> bool:
+    """A file the nightly pass must not copy or move (the phase's rule, enforced here for its pick).
+
+    With ``shared_edits: checked`` a note with an effective share isn't pinned: the hook scans
+    every line a run adds to it. One shared only by path, or private, or local-only, still is."""
+    if label.visibility == "private" or label.local_only:
+        return True
+    return label.shared_file and not (shared_edits == "checked" and _trimmable(label))
 
 
 def _trimmable(label: Label) -> bool:
-    """A pinned page the pass may still cut lines from: an effective share, and nothing else. The
-    hook's shared-note check (#569) refuses a run's added or reworded line there, not a removed one.
-    It checks the effective ``federation_scope`` only, so a page shared by path or one that declares
-    a scope while sharing is off has no such guard, and stays skipped."""
+    """A page with an effective share, and nothing else: the hook's shared-note check (#569) guards
+    it, so the pass may cut lines from it (``refuse``) or rebuild it (``checked``). It checks the
+    effective ``federation_scope`` only, so a page shared by path or one that declares a scope
+    while sharing is off has no such guard, and stays skipped."""
     return label.federation_scope != "none" and label.visibility != "private" and not label.local_only
+
+
+def _wider(label: Label, scope: FederationScope) -> bool:
+    """Whether a note labelled ``label`` could be read by someone a page shared with ``scope`` isn't.
+
+    A note shared by path, or one declaring a scope while sharing is off, has no audience to
+    compare, so it counts as wider. With ``scope`` ``none`` this is ``label.shared_file``."""
+    if not label.shared_file:
+        return False
+    return label.federation_scope == "none" or scope_widens(scope, label.federation_scope)
 
 
 def _any_file_name(share_glob: str) -> str:
@@ -418,9 +441,10 @@ def _sources_wide(probe_glob: str) -> str:
     return f"{sources}**" if reaches and ("*" in last or "?" in last) else probe_glob
 
 
-def _new_sources_shared(probes: Policy, day: dt.date) -> bool:
-    """Whether a source note a rebuild writes would be shared. They sit outside every project
-    folder, and a folder ceiling can depend on the note's ``kind``, so each kind is checked."""
+def _new_sources_shared(probes: Policy, day: dt.date, scope: FederationScope = "none") -> bool:
+    """Whether a source note a rebuild writes would be shared wider than ``scope`` (the front
+    page's; ``none``: shared at all). They sit outside every project folder, and a folder
+    ceiling can depend on the note's ``kind``, so each kind is checked."""
     wide = dataclasses.replace(
         probes,
         shared_files=tuple(_sources_wide(g) for g in probes.shared_files),
@@ -429,7 +453,7 @@ def _new_sources_shared(probes: Policy, day: dt.date) -> bool:
         ),
     )
     rel = f"{KB_PREFIX}sources/{day:%Y-%m}/{day}-new-note.md"
-    return any(classify(rel, f"---\nkind: {kind}\n---\n", wide).shared_file for kind in _SOURCE_KINDS)
+    return any(_wider(classify(rel, f"---\nkind: {kind}\n---\n", wide), scope) for kind in _SOURCE_KINDS)
 
 
 def _may_declare_a_share(text: str | None) -> bool:
@@ -449,24 +473,25 @@ def _may_declare_a_share(text: str | None) -> bool:
 
 
 def _rebuild_writes_into_a_share(
-    vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy, probes: Policy
+    vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy, probes: Policy, scope: FederationScope = "none"
 ) -> bool:
     """Whether a rebuild of this folder could put page facts where someone else reads them.
 
     The front page's own label doesn't say: a rebuild moves its facts into the
     subfolders, and a share on one reaches its readers at the next sync, with no
     way to recall them. So a new note in any subfolder the step writes to, and
-    every note already in the folder, must be unshared. The caller has already
-    labelled the front page unshared.
+    every note already in the folder, must be shared no wider than the front
+    page: ``scope``, its effective ``federation_scope`` (``none``: unshared, so
+    they must be unshared too; :func:`_wider`).
 
     Folders can hold many notes and few match a share rule, so a note is only classified
     if a rule matches its path or :func:`_may_declare_a_share`: with neither, nothing
     can make it shared."""
     for sub in sorted(cfg.allowed_dirs | _STEP_DIRS):
-        if classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes).shared_file:
+        if _wider(classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes), scope):
             return True
     # The one note the step names itself, so an exact share on it counts.
-    if classify(f"{folder.rel}/knowledge/{folder.name}-decisions.md", None, probes).shared_file:
+    if _wider(classify(f"{folder.rel}/knowledge/{folder.name}-decisions.md", None, probes), scope):
         return True
     front = vault / folder.rel / f"{folder.name}.md"
     for path in (vault / folder.rel).rglob("*.md"):
@@ -477,7 +502,9 @@ def _rebuild_writes_into_a_share(
         by_path = any(glob_match(g, rel) for g in policy.shared_files) or (
             policy.federation_enabled and first_default(policy, rel) is not None
         )
-        if (by_path or _may_declare_a_share(text)) and classify(rel, text, policy, unreadable=unreadable).shared_file:
+        if (by_path or _may_declare_a_share(text)) and _wider(
+            classify(rel, text, policy, unreadable=unreadable), scope
+        ):
             return True
     return False
 
@@ -508,6 +535,7 @@ def check_folder(
     label: Label,
     pinned_loose: int,
     day: dt.date,
+    shared_edits: SharedEdits = "refuse",
 ) -> dict[str, Any]:
     private = label.visibility == "private"
     front = f"{folder.rel}/{folder.name}.md"
@@ -547,7 +575,11 @@ def check_folder(
     half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
     # Cutting lines fixes size and narration only. It ranks after every page that only needs
     # shrinking: a trim may find nothing it can cut, and must not hold the pick night after night.
-    trim_only = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration))
+    # With `checked` a shared page is rebuilt instead; structure_rows falls back to a trim when a
+    # rebuild could write wider than the page's share.
+    trimmable = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration))
+    pinned = _pinned(label, shared_edits)
+    trim_only = trimmable and pinned
     return {
         "project": folder.name,
         "path": front,
@@ -567,10 +599,11 @@ def check_folder(
         "stale": stale,
         "conforms": not problems,
         "problems": problems,
-        "rebuild_target": (actionable and not _pinned(label)) or trim_only,
-        "resume": half_rebuilt and actionable and not _pinned(label),
+        "rebuild_target": (actionable and not pinned) or trim_only,
+        "resume": half_rebuilt and actionable and not pinned,
         "trim_only": trim_only,
         "share_blocked": False,
+        "_trimmable": trimmable,
         "_rank": (not problems, in_shape or trim_only, trim_only, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
@@ -659,25 +692,37 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         for path, changed in newest_changes(vault, cfg.projects_dir, day).items():
             history.setdefault(path.removeprefix(prefix).split("/", 1)[0], {})[path] = changed
     policy = load_policy(vault)
+    edits = policy.shared_edits
     probes = _probe_policy(policy)
     sources_shared = _new_sources_shared(probes, day)
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
+        # A loose shared file stays put in either mode: moving it could change who it is shared with.
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
-        row = check_folder(vault, folder, cfg, history.get(folder.name, {}), excluded, label, pinned_loose, day)
+        row = check_folder(vault, folder, cfg, history.get(folder.name, {}), excluded, label, pinned_loose, day, edits)
+        scope = label.federation_scope  # `none` unless an effective share; a page shared otherwise is pinned
+        sources_wider = sources_shared if scope == "none" else _new_sources_shared(probes, day, scope)
         if (
             row["rebuild_target"]
             and not row["trim_only"]
-            and (sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes))
+            and (sources_wider or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes, scope))
         ):
             row["rebuild_target"] = row["resume"] = False
-            row["share_blocked"] = True
+            if row["_trimmable"]:
+                # A shared page a rebuild can't leave alone may still have lines cut (`checked`).
+                row["rebuild_target"] = row["trim_only"] = True
+                rank = list(row["_rank"])
+                rank[1:3] = [True, True]
+                row["_rank"] = tuple(rank)
+            else:
+                row["share_blocked"] = True
         rows.append(row)
     rows.sort(key=lambda r: r["_rank"])
     for r in rows:
-        del r["_rank"]
+        for key in ("_rank", "_trimmable"):
+            del r[key]
     return rows
 
 
@@ -686,7 +731,7 @@ def trim_destinations(vault: Path, front: str) -> list[Label]:
 
     Not the front page or ``archive/``, nor a note left out of the KB or gitignored.
     Unshared is narrower than any share the page has; a note shared with the same or
-    other people isn't, and the hook's shared-note check (#569) refuses a run's addition to it anyway."""
+    other people isn't."""
     cfg = load_structure_config(vault)
     excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
     listing = _listing(vault, cfg.projects_dir)

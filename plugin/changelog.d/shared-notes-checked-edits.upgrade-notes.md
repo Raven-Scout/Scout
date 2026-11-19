@@ -1,0 +1,1 @@
+- **Shared notes are no longer frozen for scheduled runs.** If you shared notes and want runs to leave them as they are, add `shared_edits: refuse` under `privacy:` in `scout-config.yaml` and commit it. Any value other than `checked` or `refuse` counts as `refuse`.
