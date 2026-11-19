@@ -139,7 +139,7 @@ def stamp_version(checkout: Path, version: str) -> bool:
     Returns False, committing nothing, when the tree already carries ``version``.
     """
     subprocess.run(
-        [sys.executable, "-m", "scout.scripts.versioning", "--repo-root", ".", "set", version],
+        [sys.executable, "-B", "-m", "scout.scripts.versioning", "--repo-root", ".", "set", version],
         cwd=checkout,
         env={**os.environ, "PYTHONPATH": str(checkout / "plugin" / "engine")},
         check=True,
