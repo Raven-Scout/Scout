@@ -1244,6 +1244,34 @@ _KBR = typer.Option(None, "--kb-root", help=_KB_ROOT_HELP)
 _SCH = typer.Option(None, "--schema", help=_SCHEMA_HELP)
 
 
+@kb_app.command("vault")
+def kb_vault(
+    as_json: bool = typer.Option(False, "--json", help="Print {vault, scoutctl, source, in_vault, reason}."),
+) -> None:
+    """Print the vault's absolute path, from any working directory. Exit 1 = no vault is configured.
+
+    SCOUT_DATA_DIR, else the vault holding the cwd, else the engine pointer's vault, else ~/Scout.
+    Skills outside the vault pass it as `--repo` and call its `scripts/scoutctl`. Reads no note.
+    """
+    import json
+    import os
+
+    from scout.kb.locate import locate_vault
+
+    try:
+        cwd: Path | None = Path.cwd()
+    except OSError:  # the working directory was deleted
+        cwd = None
+    loc = locate_vault(os.environ, cwd)
+    if as_json:
+        typer.echo(json.dumps(loc.as_json()))
+    elif loc.vault is not None:
+        typer.echo(str(loc.vault))
+    else:
+        typer.echo(f"scoutctl kb vault: {loc.reason}", err=True)
+    raise typer.Exit(0 if loc.vault is not None else 1)
+
+
 @kb_app.command("files")
 def kb_files(
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),

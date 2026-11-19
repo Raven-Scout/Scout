@@ -225,16 +225,31 @@ def _scout_ask() -> tuple[str, str]:
     return description, body
 
 
-def _fenced_kb_calls(body: str) -> list[list[str]]:
-    """Each fenced ``scripts/scoutctl kb …`` line, as ``kb`` arguments with the placeholders filled."""
-    calls: list[list[str]] = []
+_VAULT_SCOUTCTL = "<vault>/scripts/scoutctl "
+
+
+def _fenced_lines(body: str) -> list[str]:
+    lines: list[str] = []
     fenced = False
     for line in body.splitlines():
         if line.lstrip().startswith("```"):
             fenced = not fenced
-            continue
-        if fenced and line.startswith("scripts/scoutctl kb "):
+        elif fenced:
+            lines.append(line)
+    return lines
+
+
+def _fenced_kb_calls(body: str) -> list[list[str]]:
+    """Each fenced ``<vault>/scripts/scoutctl kb …`` line, as ``kb`` arguments with the placeholders filled.
+
+    Its ``--repo <vault>`` is dropped: ``_kb`` passes the fixture vault's own."""
+    calls: list[list[str]] = []
+    for line in _fenced_lines(body):
+        if line.startswith(_VAULT_SCOUTCTL + "kb "):
             words = shlex.split(line.split("#", 1)[0])[2:]
+            i = words.index("--repo")
+            assert words[i + 1] == "<vault>", line
+            del words[i : i + 2]
             calls.append([_PLACEHOLDERS.get(w, w) for w in words])
     return calls
 
@@ -248,8 +263,72 @@ def test_scout_ask_reads_the_vault_through_scoutctl_kb() -> None:
     # Prose that sends the reader to a KB path names the `kb` command for it on the same line.
     assert [ln for ln in body.splitlines() if _READ_KB_PATH.search(ln) and not re.search(r"\bkb [a-z]", ln)] == []
     used = set(re.findall(r"\bkb ([a-z-]+)", body))
-    assert used <= KB_READ_COMMANDS, used - KB_READ_COMMANDS
-    assert {"resolve", "files", "read", "search", "query"} <= used
+    assert used <= KB_READ_COMMANDS | {"vault"}, used - KB_READ_COMMANDS
+    assert {"vault", "resolve", "files", "read", "search", "query"} <= used
+
+
+def test_scout_ask_never_calls_a_kb_command_that_writes() -> None:
+    """Read-only from outside the vault: every `kb` subcommand the CLI has that isn't a read stays out of the
+    skill (share, unshare, install-hook, lint, export, …), named in prose or run."""
+    from scout.cli import kb_app
+
+    every = {c.name for c in kb_app.registered_commands if c.name}
+    others = every - KB_READ_COMMANDS - {"vault"}
+    assert {"share", "unshare", "install-hook"} <= others  # the list really holds the writers
+    _, body = _scout_ask()
+    assert set(re.findall(r"\bkb ([a-z-]+)", body)) & others == set()
+    assert "**Read-only.**" in body and "never write, edit, move or commit anything in the vault" in body
+
+
+def test_scout_ask_finds_the_vault_from_config_and_names_it_on_every_call() -> None:
+    """From another repo, `kb`'s default `--repo` is that repo: every call names the located vault, through
+    the vault's own scoutctl, and the vault comes from `kb vault`, never the cwd."""
+    _, body = _scout_ask()
+    fenced = [ln for ln in _fenced_lines(body) if "scoutctl" in ln]
+    locator, *calls = fenced
+    assert "kb vault" in locator and "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" in locator
+    assert calls and all(ln.startswith(_VAULT_SCOUTCTL + "kb ") and "--repo <vault>" in ln for ln in calls), calls
+    assert not re.search(r"(?<![>/])scripts/scoutctl kb", body)  # no cwd-relative call left
+    # Prose `kb` calls with a path argument say `--repo <vault>` on the same line too.
+    prose = [ln for ln in body.splitlines() if re.search(r"`kb (?:read|files|search) ", ln)]
+    assert prose and all("--repo <vault>" in ln for ln in prose), prose
+    for needle in ("say so and stop", "Never `cd` into the vault", "never from the folder you are in"):
+        assert needle in body, needle
+
+
+def test_scout_ask_triggers_from_any_cwd_when_a_vault_is_configured() -> None:
+    description, _ = _scout_ask()
+    assert "ANY working directory when a Scout vault is configured" in description
+    assert "no vault is configured" in description
+    assert "no vault is present" not in description and "working directory is a Scout vault" not in description
+
+
+def test_scout_ask_treats_another_repo_as_a_shared_place() -> None:
+    _, body = _scout_ask()
+    section = body.split("### Outside the vault", 1)[1].split("\n## ", 1)[0]
+    for needle in (
+        "shared place, like Slack",
+        "context for your answer",
+        "Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text,"
+        " code, comments, files or messages",
+        "Skip `[private]` results entirely unless the user asks about something personal",
+    ):
+        assert needle in section, needle
+
+
+def test_scout_ask_locator_finds_the_vault_from_another_repo(privacy_vault: Path, tmp_path: Path) -> None:
+    """Step 0's command, run as written from a repo that isn't the vault, prints the configured vault."""
+    import os
+
+    other = tmp_path / "some-repo"
+    other.mkdir()
+    old = Path.cwd()
+    os.chdir(other)
+    try:
+        result = CliRunner().invoke(app, ["kb", "vault"], env={"SCOUT_DATA_DIR": str(privacy_vault)})
+    finally:
+        os.chdir(old)
+    assert (result.exit_code, result.stdout.strip()) == (0, str(privacy_vault.resolve()))
 
 
 def test_scout_ask_keeps_the_session_reader_and_its_labels() -> None:

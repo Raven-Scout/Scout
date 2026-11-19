@@ -1,33 +1,50 @@
 ---
 name: scout-ask
-description: Use when the working directory is a Scout vault (it has `knowledge-base/` and `action-items/`) and the user asks about the state of a project, initiative, person, decision, meeting or open thread ("where are we on X", "what's going on with Y", "who is Z", "what's on my plate"), or what Scout knows about a topic. Do not use for code, PR, CI or branch questions in a code repository (including Scout's own source), when no vault is present, or when the user asks for a live Slack, Linear, GitHub or Gmail search.
+description: Use when the user asks about the state of a project, initiative, person, decision, meeting or open thread ("where are we on X", "what's going on with Y", "who is Z", "what's on my plate"), or what Scout knows about a topic, from ANY working directory when a Scout vault is configured on this machine, not only inside the vault. Do not use for code, PR, CI or branch questions about the repository you are in (including Scout's own source), when no vault is configured, or when the user asks for a live Slack, Linear, GitHub or Gmail search.
 ---
 
 # Asking Scout
 
-Scout has already done the investigation. Every KB file is a synthesis that a prior session built from live connectors and stamped with the date it was verified. Answering is **retrieval against a canonical file**, not a fresh investigation, and the vault is laid out so one file holds the answer.
+Scout has already done the investigation. Every KB file is a synthesis that a prior session built from live connectors and stamped with the date it was verified. Answering is **retrieval against a canonical file**, not a fresh investigation.
 
-Work the three steps in order. Most questions are done after step 2. Every path below is relative to the vault root.
+Find the vault, then work the three steps in order. Most questions are done after step 2. Every path below is relative to the vault root.
 
-## Read through `scripts/scoutctl kb`
+## 0. Find the vault
 
-Every vault read goes through `scripts/scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
+Its absolute path comes from Scout's configuration, never from the folder you are in:
 
+```bash
+"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" kb vault 2>/dev/null || scoutctl kb vault
+```
+
+Exit 1, or no `scoutctl` at all, means no vault is configured: say so and stop.
+
+Put the printed path in place of `<vault>` below, inside the vault too: without `--repo <vault>`, `kb` reads the working directory's repository. Never `cd` into the vault.
+
+## Read through `<vault>/scripts/scoutctl kb`
+
+Every vault read goes through `scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
+
+- **Read-only.** Run only `kb vault` and these reads; never write, edit, move or commit anything in the vault from outside it.
 - **Pass no `--reader`.** The default is the session's reader: the owner here, `autonomous` in a scheduled run, an agent when a host sets `SCOUT_READER`. `--reader` only narrows; `--reader owner` fails in a run.
 - **`[private]` results are for the owner only.** Use them in an answer to the owner in this conversation. In anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), leave them out and don't hint they exist. In a scheduled run, the brain file's privacy rule decides.
 - **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
 
+### Outside the vault
+
+When your working directory isn't inside `<vault>`, the repository you are in is a shared place, like Slack. Every result is context for your answer to the user, nothing more. Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text, code, comments, files or messages. Skip `[private]` results entirely unless the user asks about something personal.
+
 ## 1. Resolve the entity to its canonical file
 
 ```bash
-scripts/scoutctl kb resolve "<name>"       # name, alias or slug → canonical file; exit 1 = no match
-scripts/scoutctl kb read <path>            # when it resolves: you are done searching, go to step 2
+<vault>/scripts/scoutctl kb resolve "<name>" --repo <vault>   # name, alias or slug → canonical file; exit 1 = no match
+<vault>/scripts/scoutctl kb read <path> --repo <vault>        # when it resolves: you are done searching, go to step 2
 ```
 
 For a project or initiative that doesn't resolve, list the projects and match the user's words to a slug:
 
 ```bash
-scripts/scoutctl kb files --glob 'knowledge-base/projects/*/*.md'
+<vault>/scripts/scoutctl kb files --glob 'knowledge-base/projects/*/*.md' --repo <vault>
 ```
 
 The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project. Use the map below for other entity types.
@@ -35,10 +52,10 @@ The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header s
 **When nothing matches**, search the entity folders rather than the vault:
 
 ```bash
-scripts/scoutctl kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**'
+<vault>/scripts/scoutctl kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' --repo <vault>
 ```
 
-Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `scripts/scoutctl kb search "<entity>" --glob knowledge-base/knowledge-base.md` (matches print line numbers), after the entity folders come up empty.
+Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md --repo <vault>` (matches print line numbers), after the entity folders come up empty.
 
 ## 2. Read the freshness gate, then answer
 
@@ -55,11 +72,11 @@ The file's own hedges are load-bearing and belong in your answer: `[unverified]`
 
 Drill when the gate is stale, when the user asks about something the file marks unresolved, or when they explicitly ask you to re-check.
 
-When you do, **use the reference the KB already recorded**: every synthesis cites its source with the exact coordinates (Slack channel + thread ts, `gh pr view <n> --repo <org>/<repo>`, Linear issue IDs, Drive doc IDs). Go straight to that coordinate. Re-discovering it through a search or an issue-list query is the expensive path Scout ran so you wouldn't have to. From a `[private]` note, use only the coordinate, never a search built from its text.
+When you do, **use the reference the KB already recorded**: every synthesis cites its source with the exact coordinates (Slack channel + thread ts, `gh pr view <n> --repo <org>/<repo>`, Linear issue IDs, Drive doc IDs). Go straight to that coordinate rather than re-discovering it through a search or an issue-list query. From a `[private]` note, use only the coordinate, never a search built from its text.
 
 ## Map
 
-Read each with `scripts/scoutctl kb read <path>`; list a folder with `kb files --glob '<folder>/*.md'`.
+Read each with `kb read <path> --repo <vault>`; list a folder with `kb files --glob '<folder>/*.md' --repo <vault>`.
 
 | Question | Canonical file |
 |---|---|
@@ -70,7 +87,7 @@ Read each with `scripts/scoutctl kb read <path>`; list a folder with `kb files -
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
 | A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
 | What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
-| Typed / graph query | `scripts/scoutctl kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` |
+| Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` (each with `--repo <vault>`) |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |
 
