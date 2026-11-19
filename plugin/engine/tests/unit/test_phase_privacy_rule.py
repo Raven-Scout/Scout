@@ -318,9 +318,13 @@ def test_scout_ask_names_the_vault_on_every_call() -> None:
     """From another repo, `kb`'s default `--repo` is that repo: every call names the located vault."""
     _, body = _scout_ask()
     assert _fenced_kb_calls(body, outside=True)  # each one asserted its --repo <vault> and <elsewhere>
-    # Prose `kb` calls with a path argument say `<elsewhere> --repo <vault>` on the same line too.
-    prose = [m for ln in body.splitlines() for m in re.findall(r"`kb (?:read|files|search) [^`]*`", ln)]
-    assert prose and all(m.endswith(" <elsewhere> --repo <vault>`") for m in prose), prose
+    # Every prose `kb <read>` span ends in `<elsewhere> --repo <vault>`, or its line says each one takes them.
+    each = "(each with `<elsewhere> --repo <vault>`)"
+    reads = "|".join(sorted(KB_READ_COMMANDS))
+    prose = [(m, ln) for ln in body.splitlines() for m in re.findall(rf"`kb (?:{reads})\b[^`]*`", ln)]
+    assert {m.split()[1] for m, _ in prose} >= {"read", "files", "search", "query", "related", "traverse", "path"}
+    bare = [m for m, ln in prose if not m.endswith(" <elsewhere> --repo <vault>`") and each not in ln]
+    assert bare == [], bare
     for needle in (
         "tell the user `reason` and stop",
         "Never `cd` into the vault",
@@ -351,7 +355,8 @@ def test_scout_ask_treats_another_repo_as_a_shared_place() -> None:
         " or remote session",
         # The flag is the default enforcement; the personal exception and the prose stay as its backstop.
         "Drop it only when the user explicitly asks for their own private notes about their own life (health,"
-        " family, money, career); use those only in your reply here, and skip any other `[private]` result",
+        " family, money, career), and only for the reads answering that (ideally reading the note, not searching or"
+        " listing). Use only those notes, only in your reply here; skip everything else those reads return.",
     ):
         assert needle in section, needle
 
@@ -482,8 +487,11 @@ def test_scout_ask_keeps_the_session_reader_inside_and_narrows_to_elsewhere_outs
         "Pass no `--reader` but `<elsewhere>`",
         "`[private]`",
         "owner",
-        "`denied` (exit 3), a refused `--reader` (exit 2)",
+        "`denied` (exit 3)",
         "never read around it",
+        # Exit 2 is a refused --reader, but also a usage error or an engine without `elsewhere`: never a cue to drop it.
+        "**Exit 2** (refused `--reader`, bad argument, older engine): relay the engine's error and stop;"
+        " never retry without `<elsewhere>`",
     ):
         assert needle in body, needle
 
@@ -556,7 +564,7 @@ def test_scout_ask_commands_give_an_agent_reader_nothing(privacy_vault: Path) ->
 @pytest.mark.parametrize("reader", [_AGENT, "delegate:phone"], ids=["agent", "delegate"])
 def test_scout_ask_outside_the_vault_under_an_agent_or_delegate_is_refused(privacy_vault: Path, reader: str) -> None:
     """`--reader elsewhere` can't narrow an agent (it would widen it) or swap for a delegate (another rank-1 reader
-    with other rights): every outside call exits 2, shows nothing, and the skill stops ("a refused `--reader`")."""
+    with other rights): every outside call exits 2, shows nothing, and the skill relays the error and stops."""
     for args in _fenced_kb_calls(_scout_ask()[1], outside=True):
         code, out = _kb(privacy_vault, args, {"SCOUT_READER": reader})
         assert code == 2 and "--reader" in out, (args, out)

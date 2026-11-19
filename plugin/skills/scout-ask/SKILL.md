@@ -30,11 +30,12 @@ Every vault read goes through `scoutctl kb` (`resolve`, `files`, `read`, `search
 - **Read-only.** Run only `kb vault` and these reads (they write only Scout's own cache); never write, edit, move or commit anything in the vault from outside it.
 - **Pass no `--reader` but `<elsewhere>`**, which only narrows the session's reader.
 - **`[private]` results are for the owner only**: never in anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), not even a hint. In a scheduled run, the brain file's privacy rule decides.
-- **`denied` (exit 3), a refused `--reader` (exit 2), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
+- **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
+- **Exit 2** (refused `--reader`, bad argument, older engine): relay the engine's error and stop; never retry without `<elsewhere>`.
 
 ### Outside the vault
 
-When `in_vault` is false, the repository you are in is a shared place, like Slack, and `<elsewhere>` below is `--reader elsewhere` (inside the vault, nothing): it hides private, local-only and shared-in notes. Drop it only when the user explicitly asks for their own private notes about their own life (health, family, money, career); use those only in your reply here, and skip any other `[private]` result.
+When `in_vault` is false, the repository you are in is a shared place, like Slack, and `<elsewhere>` below is `--reader elsewhere` (inside the vault, nothing): it hides private, local-only and shared-in notes. Drop it only when the user explicitly asks for their own private notes about their own life (health, family, money, career), and only for the reads answering that (ideally reading the note, not searching or listing). Use only those notes, only in your reply here; skip everything else those reads return.
 
 Every result is context for your answer, nothing more. Never paste KB text, people notes or client details into commits, PR or issue text, code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud or remote session.
 
@@ -51,7 +52,7 @@ For a project or initiative that doesn't resolve, list the projects and match th
 <scoutctl> kb files --glob 'knowledge-base/projects/*/*.md' <elsewhere> --repo <vault>
 ```
 
-The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project. Use the map below for other entity types.
+The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project.
 
 **When nothing matches**, search the entity folders rather than the vault:
 
@@ -59,13 +60,13 @@ The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header s
 <scoutctl> kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' <elsewhere> --repo <vault>
 ```
 
-Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md <elsewhere> --repo <vault>` (matches print line numbers), after the entity folders come up empty.
+Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md <elsewhere> --repo <vault>`, after the entity folders come up empty.
 
 ## 2. Read the freshness gate, then answer
 
-Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The frontmatter's `last_verified:` (with `verified_against:` naming the sources) is the last time a session checked the file against its sources even if nothing changed; older files carry it as a `**Last verified:** <timestamp> (<session type>)` line under the title instead. Gate on the newer of the two:
+The frontmatter's `last_updated:` is the last substantive change. The frontmatter's `last_verified:` (with `verified_against:` naming the sources) is the last time a session checked the file against its sources even if nothing changed; older files carry it as a `**Last verified:** <timestamp> (<session type>)` line under the title instead. Gate on the newer of the two:
 
-- **Recently verified**: answer from the file and cite the timestamp. The recorded state *is* the current state; re-querying only costs turns.
+- **Recently verified**: answer from the file and cite the timestamp.
 - **Old enough that the answer could mislead, or neither timestamp present**: answer from the file, say how old it is, and offer to drill.
 
 The file's own hedges are load-bearing and belong in your answer: `[unverified]`, `[single-source]`, "not yet decided - do not record a verdict". Carry them through rather than flattening them into fact.
@@ -91,7 +92,7 @@ Read each with `kb read <path> <elsewhere> --repo <vault>`; list a folder with `
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
 | A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
 | What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
-| Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` |
+| Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` (each with `<elsewhere> --repo <vault>`) |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |
 
@@ -100,5 +101,5 @@ Read each with `kb read <path> <elsewhere> --repo <vault>`; list a folder with `
 | Mistake | Instead |
 |---|---|
 | `ls` the vault root to orient | Go straight to the map; the layout is fixed |
-| Vault-wide search for the entity | `kb resolve "<name>"`, then the project listing |
+| Vault-wide search for the entity | Step 1's resolve, then the project listing |
 | Loading MCP connector schemas before reading the KB | Read the file first; most questions never need a connector |
