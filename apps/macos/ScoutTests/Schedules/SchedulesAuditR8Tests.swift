@@ -397,6 +397,28 @@ struct SchedulesR8ServiceTests {
         #expect(try Data(contentsOf: canonical) == before)
     }
 
+    @Test("saving a schedule removed outside the app says removed, with no reload hint")
+    func saveToRemovedSlot() async throws {
+        let (service, _, _) = try makeService(stdouts: [listJSON, "[]"])
+        try await service.loadAll()
+        let baseline = service.slots[0]
+        var draft = SlotDraft(from: baseline)
+        draft.cooldownMinutes = 120
+        try await service.loadAll()          // the slot is gone now
+        do {
+            try await service.saveSlot(draft.toSlot(), baseline: baseline)
+            Issue.record("expected StaleScheduleError")
+        } catch let stale as StaleScheduleError {
+            #expect(stale.removedSlot == "morning-briefing")
+            let text = stale.errorDescription ?? ""
+            #expect(text.contains("removed outside the app"))
+            #expect(!text.contains("Reload"))
+        }
+        let problem = SchedulesView.removedSlotProblem("morning-briefing")
+        #expect(problem.title == "Morning briefing was removed outside the app")
+        #expect(!(problem.impact ?? "").contains("Reload"))
+    }
+
     @Test("applying an edit to a slot that's gone yields nothing to write")
     func applyingToMissingSlot() {
         let slot = SchedulesR8FormTests.slot

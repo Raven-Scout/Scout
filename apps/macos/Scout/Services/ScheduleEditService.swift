@@ -239,6 +239,10 @@ final class ScheduleEditService: ObservableObject {
     @discardableResult
     func saveSlot(_ saved: Slot, baseline: Slot, actionName: String = "Edit Schedule") async throws -> VaultChange? {
         try await update(actionName: actionName) { slots in
+            guard slots.contains(where: { $0.key == baseline.key }) else {
+                throw StaleScheduleError(loadedAt: self.loadedMtime, modifiedAt: self.loadedMtime,
+                                         removedSlot: baseline.key)
+            }
             guard let next = Self.applying(saved, baseline: baseline, to: slots) else {
                 throw StaleScheduleError(loadedAt: self.loadedMtime, modifiedAt: self.loadedMtime ?? .now)
             }

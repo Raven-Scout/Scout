@@ -399,6 +399,7 @@ struct SchedulesView: View {
         let draftKey = newDraftSlot?.key
         do {
             let change = try await service.update(actionName: "Add Schedule") { $0 + [slot] }
+            clearStaleNotice()
             finishNewDraft(key: draftKey)
             selectedSlotKey = slot.key
             registerUndo(change)
@@ -416,6 +417,18 @@ struct SchedulesView: View {
         }
     }
 
+    private func clearStaleNotice() {
+        staleBannerVisible = false
+        stalenessDetail = nil
+    }
+
+    /// A save to a schedule that was removed outside the app.
+    static func removedSlotProblem(_ key: String) -> Problem {
+        Problem(severity: .warning,
+                title: "\(DisplayName.slotKey(key)) was removed outside the app",
+                impact: "Your edits to it weren't saved: that schedule no longer exists.")
+    }
+
     /// Shared write-problem wording (C10) for the error banner. The details
     /// stay in `Problem.details`, which `ProblemView` shows only behind
     /// "Details", never on a visible line under the title.
@@ -428,13 +441,20 @@ struct SchedulesView: View {
     private func saveExistingSlot(_ saved: Slot, baseline: Slot) async {
         do {
             registerUndo(try await service.saveSlot(saved, baseline: baseline))
+            // The save went through, so a "not saved" notice is settled.
+            clearStaleNotice()
         } catch let written as ScheduleReloadAfterWriteError {
             // Saved; the next successful load settles the form's draft.
             registerUndo(written.change)
             errorProblem = Self.problem(written, action: "save the schedule")
         } catch let stale as StaleScheduleError {
-            staleBannerVisible = true
-            stalenessDetail = stale.errorDescription
+            if let key = stale.removedSlot {
+                // Nothing to reload into: say so, without "Reload now".
+                errorProblem = Self.removedSlotProblem(key)
+            } else {
+                staleBannerVisible = true
+                stalenessDetail = stale.errorDescription
+            }
         } catch {
             errorProblem = Self.problem(error, action: "save the schedule")
         }
