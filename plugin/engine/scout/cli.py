@@ -5993,6 +5993,77 @@ def _register_inbox() -> None:
         if failed:
             raise typer.Exit(2)
 
+    @inbox_app.command("apply")
+    def cli_inbox_apply(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every delegate with taken proposals."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Apply the action-item proposals inbox pull took, each at most once (the owner's computer).
+
+        Only a copy whose bytes match what the pull recorded is applied, only to an
+        item the delegate's mirror showed it and still would, within daily limits.
+        Each applied change can be undone with: scoutctl inbox revert <ULID>.
+        """
+        import json as _json
+
+        from scout import delegate_apply
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_):
+            typer.echo("scoutctl inbox apply: name one delegate, or pass --all", err=True)
+            raise typer.Exit(2)
+        vault = _paths.data_dir()
+        try:
+            results = (
+                [delegate_apply.apply(vault, delegate)] if delegate is not None else delegate_apply.apply_all(vault)
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        failed = [r for r in results if isinstance(r, RepoSyncError)]
+        if as_json:
+            typer.echo(
+                _json.dumps(
+                    [
+                        {"ok": False, "delegate": r.detail.get("delegate"), "code": r.code, "message": r.message}
+                        if isinstance(r, RepoSyncError)
+                        else {"ok": True, **r.to_json()}
+                        for r in results
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for r in results:
+                if isinstance(r, RepoSyncError):
+                    typer.echo(f"{r.detail.get('delegate')}: {r.message}", err=True)
+                    continue
+                counts = ", ".join(f"{k} {v}" for k, v in r.counts().items()) or "nothing new"
+                typer.echo(f"{r.delegate}: {counts}")
+                for note in r.notes:
+                    typer.echo(note)
+        if failed:
+            raise typer.Exit(2)
+
+    @inbox_app.command("revert")
+    def cli_inbox_revert(
+        ulid: str = typer.Argument(..., help="The proposal's ULID, as inbox apply --json lists it."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Put back a task a delegate's applied proposal changed, if nothing changed it since (the owner only)."""
+        from scout import delegate_apply
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            delegate = delegate_apply.revert(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        typer.echo(f'{{"ok": true, "delegate": "{delegate}", "reverted": "{ulid}"}}' if as_json else
+                   f"reverted {delegate}'s {ulid}")  # fmt: skip
+
 
 _register_inbox()
 
