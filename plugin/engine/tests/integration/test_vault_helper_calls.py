@@ -140,7 +140,13 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     # session itself starts through `agent-runtime exec`; after it, the integrity check,
     # the changes-map scan (spec 2026-11-17 §6), the connector-health roll-up and the run's
     # cost. All against this vault.
+    # Once it holds the session lock, the runner starts the progress watcher in the
+    # background (review of #701), so its call lands anywhere among the others.
     lines = calls.read_text(encoding="utf-8").splitlines()
+    watchers = [line for line in lines if " progress watch " in line]
+    runner_pid = watchers[0].split()[6] if watchers else "?"
+    assert watchers == [f"{vault} progress watch --vault {vault} --runner-pid {runner_pid} --log {log_file}"]
+    lines = [line for line in lines if line not in watchers]
     assert lines[0].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
     assert lines[1] == f"{vault} agent-runtime resolve --slot {slot}"
     assert lines[2].startswith(f"{vault} agent-runtime check --slot {slot} --runtime claude-code --bin ")
