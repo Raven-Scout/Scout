@@ -36,7 +36,15 @@ struct AgentCopiesSectionSmokeTests {
         ViewHost.render(AgentCopiesSection(service: none, now: now))
         let failing = service(stderr: "Traceback: boom", exit: 1)
         await failing.refresh()
-        #expect(failing.status == nil && failing.lastError != nil)
-        ViewHost.render(AgentCopiesSection(service: failing, now: now))   // the error-only card
+        #expect(failing.status == nil && failing.lastError != nil && !failing.showsErrorCard)
+        ViewHost.render(AgentCopiesSection(service: failing, now: now))   // a vault with no agent copy: nothing
+        let noEngine = DelegateStatusService(runner: RuleBasedRunner(), environment: [:], scoutctl: { nil })
+        await noEngine.refresh()
+        #expect(noEngine.lastError != nil && !noEngine.showsErrorCard)
+        ViewHost.render(AgentCopiesSection(service: noEngine, now: now))  // nothing, though there is an error
+        let oldWithLink = service(stdout: #"{"ok": true, "links": [{"id": "grok-personal"}]}"#)
+        await oldWithLink.refresh()
+        #expect(oldWithLink.showsErrorCard)
+        ViewHost.render(AgentCopiesSection(service: oldWithLink, now: now))  // the error-only card
     }
 }

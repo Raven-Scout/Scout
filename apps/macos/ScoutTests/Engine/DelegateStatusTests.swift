@@ -209,6 +209,16 @@ struct DelegateStatusTests {
         await svc.refresh()
         #expect(svc.status == nil)
         #expect(svc.lastError?.contains("Update the engine") == true)
+        #expect(svc.showsErrorCard)
+    }
+
+    @Test func anOlderEngineRefusingAnExistingStateShowsTheErrorCard() async {
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["delegate", "status"],
+                  stdout: #"{"ok": false, "code": "state_unverified", "message": "refused: …"}"#, exit: 2)
+        let svc = service(runner)
+        await svc.refresh()
+        #expect(svc.status == nil && svc.showsErrorCard)
     }
 
     @Test func aFailedReadKeepsTheLastGoodStatus() async throws {
@@ -227,10 +237,21 @@ struct DelegateStatusTests {
         await svc.refresh()
         #expect(svc.status?.delegates.count == 3)   // the card stays, and says why the read failed
         #expect(svc.lastError?.hasPrefix("Couldn't read agent copies") == true)
-        // With no earlier status, the error alone is what the card shows.
+        #expect(svc.stale && !svc.showsErrorCard)
+        // A stale status offers no action: nothing runs but the status read.
+        let before = runner.calls(to: "scoutctl").count
+        await svc.sync("grok-personal")
+        await svc.preview("grok-personal")
+        #expect(runner.calls(to: "scoutctl").count == before)
+        // A read that works again clears it.
+        flag.failing = false
+        await svc.refresh()
+        #expect(!svc.stale && svc.lastError == nil)
+        // A failing first read in a vault not known to have agent copies: no card at all.
+        flag.failing = true
         let fresh = service(runner)
         await fresh.refresh()
-        #expect(fresh.status == nil && fresh.lastError?.hasPrefix("Couldn't read agent copies") == true)
+        #expect(fresh.status == nil && fresh.lastError != nil && !fresh.showsErrorCard)
     }
 
     @Test func noEngineRunsNothing() async {
@@ -239,6 +260,18 @@ struct DelegateStatusTests {
         await svc.refresh()
         #expect(runner.calls.isEmpty)
         #expect(svc.lastError == "Scout's engine isn't set up yet.")
+        #expect(!svc.showsErrorCard)   // every user without agent copies would otherwise see the card
+    }
+
+    @Test func theEngineGoingAwayKeepsTheLastStatusStale() async throws {
+        let runner = try runnerWithStatus()
+        final class Exe: @unchecked Sendable { var url: URL? = URL(fileURLWithPath: "/engine/bin/scoutctl") }
+        let exe = Exe()
+        let svc = DelegateStatusService(runner: runner, environment: [:], scoutctl: { exe.url })
+        await svc.refresh()
+        exe.url = nil
+        await svc.refresh()
+        #expect(svc.status?.delegates.count == 3 && svc.stale && !svc.showsErrorCard)
     }
 
     /// The card adds no delegate write path. Every `scoutctl delegate` command goes through
@@ -259,7 +292,10 @@ struct DelegateStatusTests {
             let count = text.components(separatedBy: #""delegate""#).count - 1
             switch file.lastPathComponent {
             case "DelegateStatusService.swift": inService = count
-            case "Glossary.swift": break   // display synonyms for the word, not a command
+            case "Glossary.swift":   // display synonyms for the word, on its one synonym line; not a command
+                let elsewhere = text.split(separator: "\n").filter { !$0.contains("case .delegate:") }
+                    .reduce(0) { $0 + $1.components(separatedBy: #""delegate""#).count - 1 }
+                #expect(elsewhere == 0, "Glossary.swift has a \"delegate\" literal off its synonym line")
             default: #expect(count == 0, "\(file.lastPathComponent) has a \"delegate\" literal outside DelegateStatusService")
             }
             // DiagnosticsScrubber reads the state's delegate ids to redact them from reports; that predates the card.

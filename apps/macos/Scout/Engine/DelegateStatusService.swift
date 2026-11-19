@@ -31,6 +31,16 @@ final class DelegateStatusService: ObservableObject {
     @Published private(set) var work: Work?
     /// The last Preview or Sync now result per delegate: counts only.
     @Published private(set) var results: [String: Outcome] = [:]
+    /// The last status read failed (or no engine was found) after an earlier one succeeded: `status` is old,
+    /// so the card disables Sync now and Preview until a read works again.
+    @Published private(set) var stale = false
+    /// Whether this vault is known to have an agent copy: an earlier status listed one, or an older engine's
+    /// output shows one (a link, or a refusal of an existing state file). Most vaults have none, so an error
+    /// before any status is shown only when this is true; otherwise the card stays hidden.
+    @Published private(set) var knowsDelegates = false
+
+    /// Settings shows the error-only card (no status, something to say) only for a vault with agent copies.
+    var showsErrorCard: Bool { status == nil && lastError != nil && knowsDelegates }
 
     nonisolated enum Outcome: Equatable, Sendable {
         case preview(DelegateMirrorCounts)
@@ -79,8 +89,8 @@ final class DelegateStatusService: ObservableObject {
     private struct Legacy: Decodable { let ok: Bool; let links: [AnyDecodable] }
     private struct AnyDecodable: Decodable { init(from decoder: Decoder) throws {} }
 
-    private func canSync(_ id: String) -> Bool { status?.delegates.first { $0.id == id }?.canSync == true }
-    private func canPreview(_ id: String) -> Bool { status?.delegates.first { $0.id == id }?.canPreview == true }
+    private func canSync(_ id: String) -> Bool { !stale && status?.delegates.first { $0.id == id }?.canSync == true }
+    private func canPreview(_ id: String) -> Bool { !stale && status?.delegates.first { $0.id == id }?.canPreview == true }
 
     /// The one place the app runs `scoutctl delegate …`.
     private func runDelegate(_ command: Command, _ id: String?, _ exe: URL) async throws -> ProcessResult {
@@ -105,7 +115,7 @@ final class DelegateStatusService: ObservableObject {
         generation += 1
         let mine = generation
         guard let exe = scoutctl() else {
-            status = nil
+            stale = status != nil
             lastError = "Scout's engine isn't set up yet."
             return
         }
@@ -120,15 +130,20 @@ final class DelegateStatusService: ObservableObject {
             guard mine == generation else { return }
             if let parsed = DelegateStatus.parse(result.stdout) {
                 status = parsed
+                stale = false
+                knowsDelegates = parsed.state != "none" || !parsed.delegates.isEmpty
                 lastError = actionError
             } else if status == nil, Self.isNothingToShow(result) {
                 // An engine from before the card with no link, or before delegates: there is no card to show.
                 lastError = actionError
             } else {
+                if Self.impliesDelegates(result) { knowsDelegates = true }
+                stale = status != nil
                 lastError = actionError ?? Self.explain(result)   // keeps the last good status, if any
             }
         } catch {
             guard mine == generation else { return }
+            stale = status != nil
             lastError = actionError ?? "Couldn't run scoutctl: \(String(describing: error).prefix(160))"
         }
     }
@@ -138,6 +153,15 @@ final class DelegateStatusService: ObservableObject {
         if String(decoding: result.stderr, as: UTF8.self).contains("No such command") { return true }
         guard let legacy = try? JSONDecoder().decode(Legacy.self, from: result.stdout) else { return false }
         return legacy.ok && legacy.links.isEmpty
+    }
+
+    /// An older engine's status output that shows an agent copy exists: links, or a refusal of its state file.
+    nonisolated static func impliesDelegates(_ result: ProcessResult) -> Bool {
+        if let legacy = try? JSONDecoder().decode(Legacy.self, from: result.stdout), legacy.ok, !legacy.links.isEmpty {
+            return true
+        }
+        guard let refused = try? JSONDecoder().decode(Refused.self, from: result.stdout) else { return false }
+        return !refused.ok && ["state_unverified", "state_unreadable"].contains(refused.code)
     }
 
     /// Why `delegate status --json` gave no status: an engine from before it, or something else.

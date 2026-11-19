@@ -18,8 +18,9 @@ struct AgentCopiesSection: View {
             if let status = service.status {
                 let model = AgentCopiesModel(status: status, results: service.results, now: now())
                 if model.isVisible { content(model) }
-            } else if let error = service.lastError {
-                // No status to show, but something to say (an engine too old for the card, a failed read).
+            } else if service.showsErrorCard, let error = service.lastError {
+                // No status, but this vault has agent copies: say why (an engine too old for the card, a failed
+                // read). A vault with none never sees the card, whatever the error.
                 labelled {
                     SettingsCard {
                         SettingsRow(title: "Agent copies", help: error) { refreshButton }
@@ -74,7 +75,7 @@ struct AgentCopiesSection: View {
                     }
                     .buttonStyle(.plainHit)
                     .font(DS.sans(12))
-                    .disabled(service.work != nil)
+                    .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Shows what a sync would put in \(row.id)'s copy. Changes nothing.")
                 }
                 if row.offersSync {
@@ -83,7 +84,7 @@ struct AgentCopiesSection: View {
                     }
                     .buttonStyle(.plainHit)
                     .font(DS.sans(12))
-                    .disabled(service.work != nil)
+                    .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Pushes a new copy to \(row.id)'s mirror if the vault changed what it may see.")
                 }
             }
