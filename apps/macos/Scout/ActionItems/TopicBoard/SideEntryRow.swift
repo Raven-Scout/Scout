@@ -1,7 +1,11 @@
 import SwiftUI
 
-/// An Inbox or Loose ends entry with a × that closes it for good.
+/// An Inbox or Loose ends entry with a × that closes it. Undo (⌘Z) brings
+/// it back. The × is always drawn, faint until the row is hovered, so it can
+/// be found without hovering (audit #45).
 struct SideEntryRow: View {
+    static let closeHelp = "Close: outdated or not relevant. Edit ▸ Undo brings it back."
+
     let entry: SideEntry
     /// `nil` hides the ×.
     let onClose: (() -> Void)?
@@ -34,10 +38,9 @@ struct SideEntryRow: View {
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(DS.Ink.p3)
-                .opacity(hovering ? 1 : 0)
-                .help("Close: outdated or not relevant")
+                .buttonStyle(.plainHit)
+                .foregroundStyle(hovering ? DS.Ink.p2 : DS.Ink.p4)
+                .help(Self.closeHelp)
                 .accessibilityLabel("Close \(entry.text)")
             }
         }

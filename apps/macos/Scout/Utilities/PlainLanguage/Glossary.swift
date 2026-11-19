@@ -7,6 +7,8 @@ import SwiftUI
 nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
     case scoutFolder, knowledgeBase, schedule, run, session, engine
     case briefing, consolidation, dreaming, research, proposal, delegate
+    /// What can happen to an action item (audit #51).
+    case done, onHold, parked, archived
 
     var id: String { rawValue }
 
@@ -24,6 +26,10 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .research:      return "Research"
         case .proposal:      return "Proposal"
         case .delegate:      return "Agent copy"
+        case .done:          return "Done"
+        case .onHold:        return "On hold"
+        case .parked:        return "Parked"
+        case .archived:      return "Archived"
         }
     }
 
@@ -53,6 +59,14 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
             return "A change Scout suggests to its own instructions. You approve or decline it on the Proposals page."
         case .delegate:
             return "A copy of part of the Scout folder that another agent may read, with private files left out."
+        case .done:
+            return "An action item you finished. It stays on the day's page, under Recently Completed, for about a week, so you can still read it and its comments."
+        case .onHold:
+            return "An action item that isn't asking for anything right now: it is snoozed until a later day, or it sits in Parked. A snoozed item comes back by itself on its date."
+        case .parked:
+            return "A section for action items set aside on purpose. They stay on the page but don't count as today's work until they are moved back."
+        case .archived:
+            return "Older lists a Scout run folded away on the day's page, such as an earlier focus list. They sit behind a collapsed row for reference; nothing in them is lost."
         }
     }
 
@@ -71,6 +85,10 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .research:      return ["research topic"]
         case .proposal:      return ["skill change", "SKILL.md proposal"]
         case .delegate:      return ["delegate", "delegate mirror"]
+        case .done:          return ["completed", "Recently Completed"]
+        case .onHold:        return ["snoozed", "hold"]
+        case .parked:        return ["🅿️ Parked"]
+        case .archived:      return ["collapsed", "details"]
         }
     }
 
@@ -91,6 +109,12 @@ extension View {
     /// A tooltip that explains a Scout word, from the glossary.
     func glossaryHelp(_ term: GlossaryTerm) -> some View {
         help(term.tooltip)
+    }
+
+    /// `glossaryHelp(_:)` when there is a term; the view unchanged otherwise.
+    @ViewBuilder
+    func glossaryHelp(ifAny term: GlossaryTerm?) -> some View {
+        if let term { help(term.tooltip) } else { self }
     }
 }
 

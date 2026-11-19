@@ -430,6 +430,13 @@ struct GlossaryTests {
         ("slot", .schedule),
         ("delegate", .delegate),
         ("scoutctl", .engine),
+        // Audit #51: the action-item states are explained too.
+        ("done", .done),
+        ("recently completed", .done),
+        ("on hold", .onHold),
+        ("snoozed", .onHold),
+        ("parked", .parked),
+        ("archived", .archived),
     ])
     func findsTerm(query: String, term: GlossaryTerm) {
         #expect(GlossaryTerm.matching(query).contains(term))

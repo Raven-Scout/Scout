@@ -168,7 +168,8 @@ struct ActionItemsView: View {
                 columns: layout?.boardColumns ?? ActionBoardColumn.columns(from: boardSections(doc)),
                 scoutDirectory: scoutDirectory,
                 density: display.density,
-                fields: display.fields
+                fields: display.fields,
+                openList: { displayProfile.currentView = .list }
             )
         } else if case .loaded(let doc) = docService.state, viewMode == .topics {
             TopicBoardView(
@@ -176,7 +177,8 @@ struct ActionItemsView: View {
                 fileDate: doc.date,
                 actionItemsDirectory: actionItemsDirectory,
                 scoutDirectory: scoutDirectory,
-                search: filter.searchText
+                search: filter.searchText,
+                doneRange: displayProfile.binding(\.topics.doneRange)
             )
         } else {
             listContent

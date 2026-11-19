@@ -15,6 +15,12 @@ struct ProposalCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let explanation = proposal.status.explanation() {
+                Label(explanation, systemImage: explanationIcon)
+                    .font(DS.sans(12))
+                    .foregroundStyle(DS.Ink.p2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !proposal.bodyBlocks.isEmpty {
                 ProposalBodyView(blocks: proposal.bodyBlocks)
             }
@@ -50,12 +56,17 @@ struct ProposalCardView: View {
         }
     }
 
+    private var explanationIcon: String {
+        if case .unknown = proposal.status { return "questionmark.circle" }
+        return "clock"
+    }
+
     // MARK: - Actions
 
     private var actions: some View {
         HStack(spacing: 6) {
-            actButton("Approve", systemImage: "checkmark", decision: .approve, primary: true)
-            actButton("Decline", systemImage: "xmark", decision: .decline, primary: false)
+            actButton(ProposalDecision.approve.actionName, systemImage: "checkmark", decision: .approve, role: .primary)
+            actButton(ProposalDecision.decline.actionName, systemImage: "xmark", decision: .decline, role: .secondary)
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
@@ -66,7 +77,7 @@ struct ProposalCardView: View {
         _ label: String,
         systemImage: String,
         decision: ProposalDecision,
-        primary: Bool
+        role: DS.ButtonRole
     ) -> some View {
         let isBusy = inFlight == decision
         Button { decide(decision) } label: {
@@ -74,25 +85,15 @@ struct ProposalCardView: View {
                 if isBusy {
                     ProgressView().controlSize(.small).frame(width: 12, height: 12)
                 } else {
-                    Image(systemName: systemImage).font(DS.sans(10))
+                    Image(systemName: systemImage)
                 }
-                Text(label).font(DS.sans(11.5, weight: .medium))
-            }
-            .foregroundStyle(primary ? DS.Status.ok : DS.Ink.p3)
-            .padding(.horizontal, 12)
-            .frame(height: 26)
-            .background {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(DS.Paper.raised)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .strokeBorder(primary ? DS.Status.ok.opacity(0.4) : DS.Rule.hard, lineWidth: 0.5)
-                    )
+                Text(label)
             }
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.ds(role, size: .small))
         .disabled(inFlight != nil)
         .keyWindowPointingHand(enabled: inFlight == nil)
+        .accessibilityLabel("\(label) \(proposal.title)")
     }
 
     private func decide(_ decision: ProposalDecision) {

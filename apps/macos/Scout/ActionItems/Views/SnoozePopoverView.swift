@@ -6,13 +6,21 @@ import SwiftUI
 /// the wrapper would sometimes silently drop the seed and ``picked`` would
 /// read as ``Date(timeIntervalSinceReferenceDate: 0)`` — formatted in ET
 /// that's ``2000-12-31``, which is what ``snooze.py`` saw on the command
-/// line. The custom date path here re-seeds the binding from ``sourceDate``
-/// inside ``onAppear`` of the expanded panel so the picker never relies on
+/// line. The custom date path here re-seeds the binding (to the day after
+/// ``SnoozeDates/anchor(sourceDate:now:calendar:)``) inside ``onAppear`` of the expanded panel so the picker never relies on
 /// an `init`-time State value.
+///
+/// Presets count from the real today, not the displayed day (audit #46): on
+/// an old file, "Tomorrow" counted from that file's day was already in the
+/// past. See `SnoozeDates`.
 struct SnoozePopoverView: View {
+    /// The day of the file the task is on.
     let sourceDate: Date
     let onCommit: (Date) async -> Void
     let onCancel: () -> Void
+    /// Injected for tests; the clock otherwise. Last, so the trailing
+    /// closures at the call sites still match `onCommit` and `onCancel`.
+    var now: () -> Date = { .now }
 
     @State private var submitting = false
     @State private var showingCustom = false
@@ -127,7 +135,7 @@ struct SnoozePopoverView: View {
                 // on the system style. Stay consistent with that.
                 Button("Snooze") { commitCustom() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(submitting || customDate <= sourceDate)
+                    .disabled(submitting || customDate < minimumCustomDate)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -137,8 +145,7 @@ struct SnoozePopoverView: View {
             // Lazy seed — see the file-level note about the macOS-26 popover
             // bug. Default to tomorrow as a sensible starting point.
             if customDate == .distantPast {
-                customDate = Calendar(identifier: .iso8601)
-                    .date(byAdding: .day, value: 1, to: sourceDate) ?? sourceDate
+                customDate = minimumCustomDate
             }
         }
     }
@@ -174,32 +181,39 @@ struct SnoozePopoverView: View {
     }
 
     private func commit(days: Int) {
-        guard let target = Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: days, to: sourceDate),
-              target > sourceDate
-        else { return }
+        guard let target = SnoozeDates.target(days: days, sourceDate: sourceDate, now: now()) else { return }
         submitting = true
         Task { await onCommit(target) }
     }
 
     private func commitCustom() {
-        guard customDate > sourceDate, customDate != .distantPast else { return }
+        guard customDate >= minimumCustomDate, customDate != .distantPast else { return }
         submitting = true
         let target = customDate
         Task { await onCommit(target) }
     }
 
     private var minimumCustomDate: Date {
-        Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: 1, to: sourceDate) ?? sourceDate
+        SnoozeDates.target(days: 1, sourceDate: sourceDate, now: now()) ?? sourceDate
     }
 
     private func relativeLabel(days: Int) -> String {
-        guard let d = Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: days, to: sourceDate) else { return "" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEE MMM d"
-        fmt.timeZone = .current
-        return fmt.string(from: d)
+        guard let d = SnoozeDates.target(days: days, sourceDate: sourceDate, now: now()) else { return "" }
+        return d.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+}
+
+/// The dates the snooze presets pick.
+nonisolated enum SnoozeDates {
+    /// The day presets count from: the real today, or the displayed day when
+    /// that is later. Counting from an old file's day made "Tomorrow" a date
+    /// already past (audit #46).
+    static func anchor(sourceDate: Date, now: Date, calendar: Calendar = .current) -> Date {
+        max(calendar.startOfDay(for: now), calendar.startOfDay(for: sourceDate))
+    }
+
+    /// `days` after the anchor, or `nil` when the calendar can't say.
+    static func target(days: Int, sourceDate: Date, now: Date, calendar: Calendar = .current) -> Date? {
+        calendar.date(byAdding: .day, value: days, to: anchor(sourceDate: sourceDate, now: now, calendar: calendar))
     }
 }
