@@ -1088,23 +1088,6 @@ def test_a_local_inbox_that_went_away_refuses(vault: Path, inbox: Path) -> None:
     assert e.value.code == "inbox_not_linked"
 
 
-def test_an_inbox_that_is_a_mirror_by_github_id_refuses(vault: Path) -> None:
-    links = dm.load_links(vault)
-    links[D] = dataclasses.replace(links[D], remote="https://github.com/someone/grok-mirror.git")
-    dm.save_links(vault, links)
-
-    class SameRepo(FakeGh):
-        def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
-            a = [str(x) for x in args]  # type: ignore[attr-defined]
-            if a[:2] == ["api", "repos/someone/grok-mirror"]:  # the mirror, renamed: GitHub's id is the inbox's
-                return super().__call__(["api", f"repos/{REPO}", *a[2:]])
-            return super().__call__(a)
-
-    with pytest.raises(RepoSyncError) as e:
-        di.link(vault, D, URL, gh=SameRepo())
-    assert e.value.code == "inbox_taken"
-
-
 def test_unlink_without_a_key_and_a_key_file_that_isnt_ours(vault: Path) -> None:
     gh = FakeGh()
     di.link(vault, D, URL, gh=gh)
@@ -1224,3 +1207,107 @@ def test_the_gh_runner_asks_github_com_with_an_absolute_gh(monkeypatch: pytest.M
     assert seen["argv"] == ["/opt/bin/gh", "api", "user"]
     env = seen["env"]
     assert isinstance(env, dict) and env["GH_HOST"] == "github.com" and "GH_REPO" not in env
+
+
+# ----- round-3 nits ----------------------------------------------------------------------------
+
+
+class MirrorGh(FakeGh):
+    """FakeGh, plus a mirror repository GitHub answers about by id (or 404s)."""
+
+    mirror = "someone/grok-mirror"
+    mirror_id: str | None = "999"
+
+    def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+        a = [str(x) for x in args]  # type: ignore[attr-defined]
+        if a[:2] == ["api", f"repos/{self.mirror}"]:
+            if self.mirror_id == "500":
+                self.calls.append(a)
+                return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+            if self.mirror_id is None:
+                self.calls.append(a)
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            self.calls.append(a)
+            return subprocess.CompletedProcess(["gh"], 0, self.mirror_id + "\n", "")
+        return super().__call__(a)
+
+
+def test_an_inbox_that_is_a_mirror_by_id_refuses_at_link_and_at_use(vault: Path) -> None:
+    links = dm.load_links(vault)
+    links[D] = dataclasses.replace(links[D], remote=f"https://github.com/{MirrorGh.mirror}.git")
+    dm.save_links(vault, links)
+    gh = MirrorGh()
+    gh.mirror_id = "777"  # the inbox's own id: the same repository, renamed
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, D, URL, gh=gh)
+    assert e.value.code == "inbox_taken"
+    gh.mirror_id = "500"  # GitHub can't say: refused, never assumed different
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, D, URL, gh=gh)
+    assert e.value.code == "remote_unverified"
+    gh.mirror_id = None  # the mirror repository is gone from GitHub
+    r = di.link(vault, D, URL, gh=gh)
+    assert any("isn't on GitHub any more" in n for n in r.notes)
+    k = di.deploy_key(vault, D, gh=gh, keygen=_fake_keygen)  # every use shows it too, not only link
+    assert any("isn't on GitHub any more" in n for n in k.notes)
+    gh.mirror_id = "777"  # and later it is the inbox after all: every use checks
+    with pytest.raises(RepoSyncError) as e:
+        di.deploy_key(vault, D, gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "inbox_taken"
+
+
+def test_a_missing_tool_refuses() -> None:
+    with pytest.raises(RepoSyncError) as e:
+        di._tool("scout-no-such-tool-xyz")
+    assert e.value.code == "tool_missing"
+
+
+def test_cli_every_inbox_command_and_output(
+    vault: Path, inbox: Path, clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
+    assert runner.invoke(app, ["inbox", "pull"]).exit_code == 2  # neither a delegate nor --all
+    with monkeypatch.context() as m:
+        m.setenv("SCOUT_READER", f"delegate:{D}")
+        m.setenv("SCOUT_INBOX_DIR", str(clone))
+        r = runner.invoke(app, ["inbox", "propose", "observation", "--text", "A deadline moved", "--about",
+                                "Project Atlas", "--source", "https://example.com/t/1", "--push"])  # fmt: skip
+        assert r.exit_code == 0 and r.output.startswith("proposed ") and ", pushed" in r.output
+        r = runner.invoke(app, ["inbox", "propose", "observation", "--text", "unpushed"])
+        assert r.exit_code == 0 and "push it with --push" in r.output
+        r = runner.invoke(app, ["inbox", "propose", "observation", "--text", "see [[x]]"])
+        assert r.exit_code == 2 and "refused" in r.output
+    bad = _valid()
+    _commit_entries(inbox, {f"inbox/{D}/{bad.id}.json": ("100644", b"{not json")})
+    r = runner.invoke(app, ["inbox", "pull", D])
+    assert r.exit_code == 0 and f"{D}: took 1, refused 1 (not_json 1)" in r.output
+    r = runner.invoke(app, ["inbox", "pull", D, "--json"])
+    assert r.exit_code == 0 and json.loads(r.output)["taken"] == []
+
+    di.link(vault, "duet", str(_bare(tmp_path, "duet-cli")))
+    subprocess.run(["rm", "-rf", str(tmp_path / "duet-cli.git")], check=True)  # duet's inbox fails
+    r = runner.invoke(app, ["inbox", "pull", "--all"])
+    assert r.exit_code == 2 and "duet: refused" in r.output and f"{D}: took 0" in r.output
+    r = runner.invoke(app, ["inbox", "pull", "duet"])
+    assert r.exit_code == 2 and "refused" in r.output
+
+    r = runner.invoke(app, ["delegate", "inbox", D, "--reset"])  # no terminal: not confirmed
+    assert r.exit_code == 2 and "confirmed" in r.output
+    r = runner.invoke(app, ["delegate", "inbox", D, "--reset", "--confirm", "--json"])
+    assert r.exit_code == 0 and json.loads(r.output)["action"] == "inbox-reset"
+    r = runner.invoke(app, ["delegate", "inbox", D, "--unlink"])
+    assert r.exit_code == 0 and "the repository is kept" in r.output
+
+    def fake_key(v: Path, delegate: str, **kw: object) -> di.Result:
+        return di.Result(delegate=delegate, action="inbox-key", notes=["added a deploy key"])
+
+    monkeypatch.setattr(di, "deploy_key", fake_key)
+    r = runner.invoke(app, ["delegate", "key", "duet", "--inbox"])
+    assert r.exit_code == 0 and "added a deploy key" in r.output
+
+    def refusing_key(v: Path, delegate: str, **kw: object) -> di.Result:
+        raise RepoSyncError("inbox_not_linked", "refused: no inbox")
+
+    monkeypatch.setattr(di, "deploy_key", refusing_key)
+    r = runner.invoke(app, ["delegate", "key", "duet", "--inbox", "--json"])
+    assert r.exit_code == 2 and json.loads(r.output)["code"] == "inbox_not_linked"
