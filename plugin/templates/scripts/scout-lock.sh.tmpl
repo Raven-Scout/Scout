@@ -58,12 +58,21 @@
 # Wedged is judged by progress, never by the lock's age (#466). Lock age is
 # wall-clock time, and a laptop's sleep counts toward it: a session started
 # just before the lid closed was reaped on the first slot after wake, while it
-# was alive and working. Instead, every waiter samples the holder's session --
-# the CPU time of its processes, its process list, and the mtime of its run
-# log -- into LOCK_PROGRESS. Any movement resets the stall; the stall only
-# grows by time on a clock that stops while the host sleeps
+# was alive and working. Instead, the holder's progress watcher (`scoutctl
+# progress watch`, started by scout_lock_acquire; engine/scout/run_progress.py)
+# samples the holder's session -- the CPU time of its processes and its process
+# list, without Scout's own helpers (the lease keepalive, the brokers, the
+# watcher) -- and writes LOCK_ALIVE: how long, in awake time, the session has
+# gone without progress. While that line is fresh a waiter takes its stall as
+# is. Without one (an older runner, a dead watcher), every waiter samples the
+# session itself into LOCK_PROGRESS: any movement resets the stall; the stall
+# only grows by time on a clock that stops while the host sleeps
 # (_scout_awake_now). The first sample of a holder is a baseline and never
 # reaps: nothing is known yet about whether it moves.
+#
+# The run log is not progress: `claude -p` writes it only when it exits, and the
+# lease keepalive appends to it every five minutes while the runner shell lives,
+# so a hung claude behind a live shell looked like a working one (review of #701).
 LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h of awake no-progress, env-overridable
 case "$LOCK_MAX_AGE_SECS" in ''|*[!0-9]*) LOCK_MAX_AGE_SECS=7200 ;; esac
 LOCK_PROGRESS_CPU_SECS="${SCOUT_LOCK_PROGRESS_CPU_SECS:-10}"
@@ -74,6 +83,11 @@ LOCK_GUARD="$LOCK_FILE.takeover"
 # (bootstrap_lock.py), and health.py reads its mtime as the time it was taken.
 LOCK_PROGRESS="$LOCK_FILE.progress"
 LOCK_OWNER="$LOCK_FILE.owner"
+# The holder's progress watcher's line (engine/scout/run_progress.py), read by
+# waiters, `scoutctl health` and the app:
+#   1 <runner pid> <last progress epoch> <stalled awake s> <fresh for s> <run log>
+LOCK_ALIVE="$LOCK_FILE.alive"
+SCOUT_PROGRESS_WATCH_PID=""
 # The run marker: "<pid> <mode>" while a scheduled run holds the lock (#595).
 # The commit hook knows a run's commits from the process table (this runner,
 # claude-with-retry.sh and the claude session: engine/scout/kb/live_run.py). The
@@ -259,47 +273,72 @@ _scout_awake_now() {
         || echo "wall $(date +%s)"
 }
 
+_scout_watcher_stall() {
+    # The awake seconds without progress that the holder $1's progress watcher
+    # reports (LOCK_ALIVE), when its line names $1 and was written within the
+    # "fresh for" it gives; nothing otherwise (no watcher, a dead one, another
+    # holder's line). See engine/scout/run_progress.py.
+    local v pid stalled fresh mtime
+    read -r v pid _ stalled fresh _ 2>/dev/null < "$LOCK_ALIVE" || return 0
+    [ "$v" = 1 ] && [ "$pid" = "$1" ] || return 0
+    _scout_uint "$stalled" && _scout_uint "$fresh" || return 0
+    mtime=$(_scout_mtime "$LOCK_ALIVE")
+    _scout_uint "$mtime" || return 0
+    [ $(( $(date +%s) - mtime )) -le "$fresh" ] || return 0
+    echo "$stalled"
+}
+
 _scout_holder_wedged() {
     # One progress sample of the live holder $1 (lock mtime $2): 0 (wedged)
     # once it has made no progress for more than LOCK_MAX_AGE_SECS of awake
     # time, else 1. Sets SCOUT_LOCK_STALLED and SCOUT_LOCK_SESSION_PIDS.
     #
-    # Progress is any of: the session burned LOCK_PROGRESS_CPU_SECS of CPU
-    # since the last progress mark, its CPU total fell or its process list
+    # The holder's own progress watcher answers when its line is fresh: the
+    # stall it reports is the stall. Otherwise this waiter samples the session
+    # itself. Progress is any of: the session burned LOCK_PROGRESS_CPU_SECS of
+    # CPU since the last progress mark, its CPU total fell, or its process list
     # changed (a process started or exited, which a stopped session never
-    # does), or its run log was written. LOCK_PROGRESS holds one line:
-    #   pid lock_mtime mark_cpu_cs mark_log_mtime mark_pids clock last_sample stalled
-    # It belongs to one holder (pid + lock mtime); any mismatch is a baseline.
-    local pid="$1" lock_mtime="${2:--}" pgid group="" cpu pids clock now log log_mtime
-    local s_pid s_lock s_cpu s_log s_pids s_clock s_last s_stalled gap stalled=0 tmp
+    # does). Its run log is not progress (see the top of this file).
+    # LOCK_PROGRESS holds one line:
+    #   pid lock_mtime mark_cpu_cs 0 mark_pids clock last_sample stalled
+    # (the 0 was the run log's mtime before the review of #701). It belongs to
+    # one holder (pid + lock mtime); any mismatch is a baseline.
+    local pid="$1" lock_mtime="${2:--}" pgid group="" cpu pids clock now watched
+    local s_pid s_lock s_cpu s_pids s_clock s_last s_stalled gap stalled=0 tmp
     pgid=$(_scout_pgid_of "$pid")
     [ "$pgid" = "$pid" ] && group="$pgid"
     read -r cpu pids <<<"$(_scout_session_cpu "$group" "$pid")"
     _scout_uint "$cpu" || cpu=0
     pids="${pids:--}"
     SCOUT_LOCK_SESSION_PIDS="$pids"
-    read -r clock now <<<"$(_scout_awake_now)"
-    log=$(head -n 1 "$LOCK_OWNER" 2>/dev/null || true)
-    log_mtime=""
-    [ -n "$log" ] && log_mtime=$(_scout_mtime "$log")
-    _scout_uint "$log_mtime" || log_mtime=0
 
-    read -r s_pid s_lock s_cpu s_log s_pids s_clock s_last s_stalled 2>/dev/null < "$LOCK_PROGRESS" || true
+    watched=$(_scout_watcher_stall "$pid")
+    if [ -n "$watched" ]; then
+        # A waiter's own marks would mix two measures; one starts afresh if
+        # the watcher ever goes quiet.
+        rm -f "$LOCK_PROGRESS" 2>/dev/null || true
+        SCOUT_LOCK_STALLED="$watched"
+        [ "$watched" -gt "$LOCK_MAX_AGE_SECS" ]
+        return
+    fi
+
+    read -r clock now <<<"$(_scout_awake_now)"
+    read -r s_pid s_lock s_cpu _ s_pids s_clock s_last s_stalled 2>/dev/null < "$LOCK_PROGRESS" || true
     if [ "${s_pid:-}" = "$pid" ] && [ "${s_lock:-}" = "$lock_mtime" ] && [ "${s_clock:-}" = "$clock" ] \
-        && _scout_uint "${s_cpu:-}" && _scout_uint "${s_log:-}" && _scout_uint "${s_last:-}" && _scout_uint "${s_stalled:-}"; then
+        && _scout_uint "${s_cpu:-}" && _scout_uint "${s_last:-}" && _scout_uint "${s_stalled:-}"; then
         if [ $(( cpu - s_cpu )) -ge $(( LOCK_PROGRESS_CPU_SECS * 100 )) ] || [ "$cpu" -lt "$s_cpu" ] \
-            || [ "$pids" != "${s_pids:-}" ] || [ "$log_mtime" -gt "$s_log" ]; then
+            || [ "$pids" != "${s_pids:-}" ]; then
             stalled=0   # progress: this sample is the new mark
         else
             gap=$(( now - s_last ))
             [ "$gap" -ge 0 ] || gap=0   # the clock went back: a reboot, so no stall is known
             stalled=$(( s_stalled + gap ))
-            cpu="$s_cpu"; log_mtime="$s_log"; pids="$s_pids"   # keep the old mark
+            cpu="$s_cpu"; pids="$s_pids"   # keep the old mark
         fi
     fi
     # Best effort: a sample that can't be written only delays a reap.
     tmp="$LOCK_PROGRESS.$$"
-    if { printf '%s %s %s %s %s %s %s %s\n' "$pid" "$lock_mtime" "$cpu" "$log_mtime" "$pids" "$clock" "$now" "$stalled" > "$tmp"; } 2>/dev/null; then
+    if { printf '%s %s %s %s %s %s %s %s\n' "$pid" "$lock_mtime" "$cpu" 0 "$pids" "$clock" "$now" "$stalled" > "$tmp"; } 2>/dev/null; then
         mv -f "$tmp" "$LOCK_PROGRESS" 2>/dev/null || rm -f "$tmp"
     fi
     SCOUT_LOCK_STALLED="$stalled"
@@ -323,7 +362,28 @@ _scout_take_guard() {
 
 _scout_on_exit() {
     _scout_lease_release
+    _scout_progress_stop
     _scout_release_lock
+}
+
+# The progress watcher (engine/scout/run_progress.py): started once the run
+# holds the lock, on every vault, and stopped on EXIT before the lock goes. It
+# samples this runner's session and keeps LOCK_ALIVE current, which waiters,
+# `scoutctl health` and the app read instead of the run log. If this shell is
+# killed before its trap runs, the watcher sees it gone and removes its line;
+# a reap takes it with the rest of the process group. Without scoutctl there is
+# no watcher, and waiters sample this session themselves.
+_scout_progress_start() {
+    [ -x "${SCOUTCTL_BIN:-}" ] || return 0
+    "$SCOUTCTL_BIN" progress watch --vault "$SCOUT_DIR" --runner-pid "$$" --log "$LOG_FILE" </dev/null >> "$LOG_FILE" 2>&1 &
+    SCOUT_PROGRESS_WATCH_PID=$!
+}
+
+_scout_progress_stop() {
+    [ -n "$SCOUT_PROGRESS_WATCH_PID" ] || return 0
+    kill "$SCOUT_PROGRESS_WATCH_PID" 2>/dev/null || true
+    wait "$SCOUT_PROGRESS_WATCH_PID" 2>/dev/null || true
+    SCOUT_PROGRESS_WATCH_PID=""
 }
 
 _scout_tampered() {
@@ -342,7 +402,7 @@ _scout_release_lock() {
             marker=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
             [ "$marker" = "$$ $MODE" ] || _scout_tampered "the run marker was removed or rewritten (it read '${marker:-nothing}')"
         fi
-        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER" "$LOCK_RUN"
+        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER" "$LOCK_RUN" "$LOCK_ALIVE"
         rm -f "$LOCK_FILE"
     else
         _scout_tampered "the session lock was removed or replaced (it read '${held:-nothing}')"
@@ -395,7 +455,7 @@ _scout_lock_try() {
                     echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
                     echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
                 elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
-                    rm -f "$LOCK_PROGRESS" "$LOCK_RUN"
+                    rm -f "$LOCK_PROGRESS" "$LOCK_RUN" "$LOCK_ALIVE"
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -411,7 +471,7 @@ _scout_lock_try() {
                 # leaves it behind, so record which (#595).
                 stale_mode=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
                 echo "Session PID $LOCK_PID (${stale_mode:-no run marker}) died without releasing the session lock (a crash, or killed) -- found by $MODE at $(date)" >> "$LOG_DIR/failures.log"
-                rm -f "$LOCK_RUN"
+                rm -f "$LOCK_RUN" "$LOCK_ALIVE"
                 rm -f "$LOCK_FILE"
             fi
             rm -f "$LOCK_GUARD"
@@ -453,6 +513,7 @@ scout_lock_acquire() {
         SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
         echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"
     fi
+    _scout_progress_start
     return 0
 }
 

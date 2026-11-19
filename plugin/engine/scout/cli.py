@@ -1818,6 +1818,40 @@ def budget_set_cmd(
     typer.echo(f"skip at: {payload['skip_at_pct']:.0f}% → ${payload['skip_threshold_usd']:.2f}")
 
 
+progress_app = typer.Typer(help="Is the run holding the vault lock making progress? (scout.run_progress)")
+app.add_typer(progress_app, name="progress")
+
+
+@progress_app.command("watch")
+def cli_progress_watch(
+    runner_pid: int = typer.Option(..., "--runner-pid", help="The runner holding the session lock."),
+    log: str = typer.Option(..., "--log", help="The run's log, named in the progress line."),
+    vault: str = typer.Option(..., "--vault", help="The vault whose session lock the runner holds."),
+) -> None:
+    """Sample the runner's session and keep .scout-logs/.scout-session.lock.alive current while it holds the lock.
+
+    Started by scripts/scout-lock.sh beside every scheduled run. The lock
+    reaper, `scoutctl health` and the app read the line it writes; see
+    scout/run_progress.py. Exits when the runner exits or loses the lock.
+    """
+    import signal
+
+    from scout import run_progress
+
+    def _stop(_signum: int, _frame: object) -> NoReturn:
+        raise SystemExit(0)  # ends the sample's sleep at once; watch() removes its line on the way out
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    run_progress.watch(
+        Path(vault),
+        runner_pid=runner_pid,
+        log=log,
+        sample_s=run_progress.env_secs(run_progress.SAMPLE_SECS_ENV, run_progress.DEFAULT_SAMPLE_SECS),
+        cpu_threshold_cs=run_progress.env_secs(run_progress.CPU_SECS_ENV, run_progress.DEFAULT_CPU_SECS) * 100,
+    )
+
+
 # `scoutctl session index` builds .scout-cache/sessions-index.json from
 # desktop records, transcripts, live PIDs and gh (Agent Sessions plan 1,
 # #74 + #75). `session list` reads that index back. `cc-cache` is the
