@@ -70,7 +70,9 @@ struct LogViewer: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(sections) { section in
-                    let lines = filteredLines(section.lines)
+                    // One line past the chunk byte cap (a minified blob) is
+                    // cut here; Raw and Copy still have all of it.
+                    let lines = filteredLines(section.lines).map { TextChunks.clipped($0) }
                     if !(lines.isEmpty && !search.isEmpty) {
                         sectionHeader(section)
                             .padding(.top, 10)
@@ -252,6 +254,20 @@ nonisolated enum TextChunks {
         }
         if !current.isEmpty { chunks.append(current) }
         return chunks
+    }
+
+    /// `line` cut to at most `maxBytes` UTF-8 bytes, at a whole character,
+    /// with a note saying how much was left out; a shorter line unchanged.
+    /// The pretty log view shows one line as one run of text, and a single
+    /// line of megabytes would still be laid out whole.
+    static func clipped(_ line: String, maxBytes: Int = bytesPerChunk) -> String {
+        let total = line.utf8.count
+        guard total > maxBytes else { return line }
+        var end = line.utf8.index(line.utf8.startIndex, offsetBy: max(0, maxBytes))
+        while end.samePosition(in: line) == nil { end = line.utf8.index(before: end) }
+        let kept = line[..<end]
+        let omitted = ByteCountFormatter.string(fromByteCount: Int64(total - kept.utf8.count), countStyle: .file)
+        return String(kept) + " … (line cut: \(omitted) more; Raw shows all of it)"
     }
 
     /// `text`'s lines in chunks (`split(_:size:maxBytes:)`), each joined back
