@@ -20,7 +20,9 @@ struct ColorMeaningGuardTests {
         "Shell/MenuBarExtraContent.swift",             // the menu-bar panel's urgent count
     ]
 
-    static let urgentRed = try! NSRegularExpression(pattern: #"DS\.Priority\.urgent\b"#)
+    /// The urgent red by any spelling: qualified, unqualified inside
+    /// `extension DS`, or through the section-kind lookup.
+    static let urgentRed = try! NSRegularExpression(pattern: #"\bPriority\.urgent\b|priorityColor\(\.urgent\)"#)
     static let systemNamed = try! NSRegularExpression(
         pattern: #"\bColor\.(red|orange|yellow|green|mint|teal|cyan|blue|indigo|purple|pink|brown)\b"#
             + #"|\.(foregroundColor|foregroundStyle|fill|tint|background)\(\.(red|orange|yellow|green|mint|teal|cyan|blue|indigo|purple|pink|brown)\b"#)
@@ -83,6 +85,13 @@ struct ColorMeaningGuardTests {
         #expect(!matches(".foregroundStyle(DS.Status.warn)"))
         #expect(!matches(".foregroundStyle(.secondary)"))
         #expect(!matches("Color.clear"))
+        func urgent(_ s: String) -> Bool {
+            Self.urgentRed.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+        }
+        #expect(urgent("DS.Priority.urgent"))
+        #expect(urgent("case .mine: return Priority.urgent"))
+        #expect(urgent("DS.priorityColor(.urgent)"))
+        #expect(!urgent("DS.Attention.you"))
     }
 
     @Test("the urgent-red allowlist names only files that exist")

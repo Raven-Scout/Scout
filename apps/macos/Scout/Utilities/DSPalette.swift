@@ -172,9 +172,10 @@ extension DS {
         static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
 
         /// "Waiting on you": a topic-board item that is yours, a session that
-        /// needs you. Blue, so it never reads as the urgent red (#107).
-        /// Text-safe on paper.
-        static let attentionYou = Swatch(name: "AttentionYou", light: RGB(0.235, 0.380, 0.700), dark: RGB(0.560, 0.690, 0.930))
+        /// needs you. Cobalt, so it never reads as the urgent red (#107), and
+        /// ΔE 15+ from the board's Doing steel blue and the People violet
+        /// (checked in the tests). Text-safe on paper.
+        static let attentionYou = Swatch(name: "AttentionYou", light: RGB(0.120, 0.330, 0.780), dark: RGB(0.480, 0.660, 1.000))
 
         // Slot-type hues (fills; their labels use `inkOnTint`)
         static let slotBriefing      = Swatch(name: "SlotBriefing",      light: RGB(0.860, 0.660, 0.180), dark: RGB(0.910, 0.760, 0.340))
@@ -263,6 +264,9 @@ extension DS {
                                   background: Surface(name: "\(status.name) wash", swatch: status,
                                                       under: Palette.paperBase, opacity: statusWashOpacity)))
             }
+            // The topic board's action chip: paper on the "waiting on you" fill.
+            pairs.append(Pair(foreground: Palette.paperBase,
+                              background: Surface(name: "Attention.you", swatch: Palette.attentionYou)))
             // The Action Items error banner.
             pairs.append(Pair(foreground: Palette.statusOnFill,
                               background: Surface(name: "Status.err", swatch: Palette.statusErr)))

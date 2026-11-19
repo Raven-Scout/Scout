@@ -112,9 +112,10 @@ struct KBEntityGroupClassificationTests {
     func color_resolvesForEveryGroup() {
         #expect(KBEntityGroup.people.color == DS.Priority.personal)
         #expect(KBEntityGroup.projects.color == DS.SlotType.consolidation)
-        // Its own hue: the urgent red means only Urgent (audit #107).
-        #expect(KBEntityGroup.issues.color != DS.Priority.urgent)
+        // Its own hue, not the urgent red, which means only Urgent (audit
+        // #107). Dynamic Colors never compare equal, so check the swatch.
         #expect(KBEntityGroup.issues.swatch.name == "KBIssues")
+        #expect(KBEntityGroup.issues.swatch.light != DS.RGB(0.750, 0.310, 0.200))  // the old red
         #expect(KBEntityGroup.channels.color == DS.Accent.fill)
         #expect(KBEntityGroup.ontology.color != KBEntityGroup.people.color)
         #expect(KBEntityGroup.research.color == DS.SlotType.research)
