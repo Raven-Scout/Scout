@@ -72,6 +72,7 @@ struct DiagnosticsExportView: View {
             if let savedTo {
                 Text("Saved \(savedTo.lastPathComponent)").font(DS.font(.label)).foregroundStyle(DS.Status.ok)
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([savedTo]) }
+                    .buttonStyle(.dsLink)
             } else if let saveError {
                 Text(saveError).font(DS.font(.label)).foregroundStyle(DS.Status.err).lineLimit(2)
             } else {
@@ -79,13 +80,16 @@ struct DiagnosticsExportView: View {
             }
             Spacer()
             Button("Collect Again") { Task { await collect() } }.disabled(bundle == nil)
+                .buttonStyle(.dsSecondary)
             Button("Copy") {
                 guard let bundle else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(bundle.text, forType: .string)
             }
+            .buttonStyle(.dsSecondary)
             .disabled(bundle == nil)
             Button("Save…") { save() }
+                .buttonStyle(.dsPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(bundle == nil)
         }

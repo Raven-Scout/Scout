@@ -112,9 +112,8 @@ struct PerFileItemDetailView: View {
         if let run = entry.source.run {
             Button { appState.requestOpenRun(run.id) } label: {
                 Label("Open run in Control Center", systemImage: "arrow.up.right.square")
-                    .font(DS.font(.caption, weight: .medium))
             }
-            .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p2)
+            .buttonStyle(.ds(.quiet, size: .small))
         }
     }
 

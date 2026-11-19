@@ -83,7 +83,7 @@ struct EngineSettingsSection: View {
             }
             if let action = model.setupAction, let onSetUp {
                 SettingsRow(title: action.rowTitle, help: model.setupHelp ?? "") {
-                    Button(action.buttonTitle) { onSetUp() }.buttonStyle(.plainHit)
+                    Button(action.buttonTitle) { onSetUp() }.buttonStyle(.dsSecondary)
                 }
             }
             if let action = model.upgradeAction, let onUpdate {
@@ -216,8 +216,7 @@ struct DoctorFindingsList: View {
                 }
                 if let log = item.logURL {
                     Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
-                        .buttonStyle(.plainHit)
-                        .font(DS.font(.caption))
+                        .buttonStyle(.ds(.link, size: .small))
                 }
             }
         }

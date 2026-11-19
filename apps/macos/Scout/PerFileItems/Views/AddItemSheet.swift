@@ -83,8 +83,10 @@ struct AddItemSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
+                    .buttonStyle(.dsSecondary)
                     .keyboardShortcut(.cancelAction)
                 Button("Add") { submit() }
+                    .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSubmit)
             }

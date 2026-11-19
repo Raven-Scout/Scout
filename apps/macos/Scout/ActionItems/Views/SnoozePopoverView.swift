@@ -80,9 +80,7 @@ struct SnoozePopoverView: View {
 
             Divider().padding(.horizontal, 8)
             Button("Cancel", action: onCancel)
-                .buttonStyle(.plainHit)
-                .foregroundStyle(.secondary)
-                .font(DS.font(.caption2))
+                .buttonStyle(.ds(.quiet, size: .small))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -128,8 +126,7 @@ struct SnoozePopoverView: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel", action: onCancel)
-                    .buttonStyle(.plainHit)
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.dsQuiet)
                 // Matches the unstyled "Send" button in
                 // CommentComposerView — Alex's UI pass (eb88094) targeted
                 // toggles/segmented controls, leaving primary-action buttons

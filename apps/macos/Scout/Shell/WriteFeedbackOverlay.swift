@@ -140,9 +140,7 @@ struct WriteProblemBanner: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString("\(problem.title)\n\(problem.message)\n\n\(details)", forType: .string)
                         }
-                        .buttonStyle(.plainHit)
-                        .font(DS.font(.label))
-                        .foregroundStyle(DS.Ink.p3)
+                        .buttonStyle(.dsQuiet)
                     }
                 }
                 .padding(.top, 2)

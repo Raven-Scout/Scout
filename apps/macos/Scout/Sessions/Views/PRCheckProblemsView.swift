@@ -52,8 +52,7 @@ struct PRCheckProblemsView: View {
                     copied = true
                 }
             }
-            .controlSize(.small)
-            .font(DS.font(.label))
+            .buttonStyle(.ds(.secondary, size: .small))
         }
         .padding(16)
         .frame(width: 380, alignment: .leading)

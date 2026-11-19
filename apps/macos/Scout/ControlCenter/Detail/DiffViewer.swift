@@ -22,6 +22,7 @@ struct DiffViewer: View {
                         Task { await copyAll() }
                     }
                 }
+                .buttonStyle(.ds(.secondary, size: .small))
                 .padding(.horizontal, 4)
                 List {
                     ForEach(commits) { c in

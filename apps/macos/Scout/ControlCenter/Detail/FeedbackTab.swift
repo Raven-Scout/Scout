@@ -65,10 +65,12 @@ struct FeedbackTab: View {
                 Button("Open feedback file") {
                     NSWorkspace.shared.open(feedbackURL)
                 }
+                .buttonStyle(.ds(.secondary, size: .small))
                 .disabled(text.isEmpty && savedAt == nil)
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([feedbackURL])
                 }
+                .buttonStyle(.ds(.secondary, size: .small))
                 .disabled(text.isEmpty && savedAt == nil)
                 Spacer()
                 Button("Save") {
@@ -76,6 +78,7 @@ struct FeedbackTab: View {
                     saveTask?.cancel()
                     save(SaveTarget(url: feedbackURL, run: run, body: text))
                 }
+                .buttonStyle(.ds(.primary, size: .small))
                 .keyboardShortcut("s", modifiers: [.command])
                 .disabled(isUnreadable)
             }

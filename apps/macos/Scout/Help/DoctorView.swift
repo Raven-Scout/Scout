@@ -123,6 +123,7 @@ struct DoctorView: View {
             Spacer()
             if running { ProgressView().controlSize(.small) }
             Button("Run Again") { Task { await run() } }
+                .buttonStyle(.dsSecondary)
                 .disabled(running || !presentation.canRun)
                 .help(presentation.canRun ? "Run the doctor again" : "Set up or repair the engine in Settings first")
         }
@@ -135,6 +136,7 @@ struct DoctorView: View {
             Spacer()
             Button("Export Diagnostics…") { openWindow(id: HelpWindow.diagnostics) }
         }
+        .buttonStyle(.dsSecondary)
         .padding(.horizontal, 20).padding(.vertical, 12)
     }
 

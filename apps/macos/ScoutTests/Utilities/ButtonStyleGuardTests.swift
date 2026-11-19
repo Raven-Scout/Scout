@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-/// Design-system v2 (#105): actions use the DS button styles (`.dsPrimary`,
+/// Design-system v2 (#105): actions use the DS button styles (`.dsPrimary`, `.dsQuiet`,
 /// `.dsSecondary`, `.dsLink`, `.dsDestructive`), so every button draws the
 /// same disabled, pressed and focus states. This scans the app's sources for
 /// the two things that drift from that: the system bordered styles, and an
@@ -95,9 +95,68 @@ struct ButtonStyleGuardTests {
     }
 
 
+    /// A grey label on a plain button: a hand-built quiet action.
+    static let greyColour = try! NSRegularExpression(
+        pattern: #"foregroundStyle\((DS\.Ink\.p[234]|\.secondary|\.tertiary)\)"#)
+    /// A button with a text title (not an icon-only hit area).
+    static let titledButton = try! NSRegularExpression(pattern: #"Button\("|Label\(""#)
+
+    @Test("no quiet text actions hand-built from .plainHit or .plain")
+    func noHandBuiltQuietButtons() throws {
+        var hits: [String] = []
+        for (file, lines) in try Self.sources() {
+            for (i, line) in lines.enumerated()
+            where !Self.isComment(line) && Self.matches(Self.plainStyle, line) && !line.contains(Self.hitAreaMarker) {
+                // The button itself: from the nearest `Button` above the
+                // style line down to it, then the modifiers that follow.
+                guard let start = (max(0, i - 8)...i).reversed().first(where: { lines[$0].contains("Button") })
+                else { continue }
+                let declaration = lines[start...i].filter { !Self.isComment($0) }
+                let modifiers = lines[i...min(lines.count - 1, i + 3)].filter { !Self.isComment($0) }
+                if declaration.contains(where: { Self.matches(Self.titledButton, $0) })
+                    && (declaration + modifiers).contains(where: { Self.matches(Self.greyColour, $0) }) {
+                    hits.append("\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        #expect(hits.isEmpty, """
+            a grey text button built by hand — use .dsQuiet (or .ds(.quiet, size: .small)) and drop its \
+            .font and .foregroundStyle; mark a real hit area "// ds-guard: hit area":
+            \(hits.joined(separator: "\n"))
+            """)
+    }
+
+    /// Files whose buttons are menu items, menu-bar commands or alert
+    /// buttons, which stay system buttons (#688: "Alerts and confirmation
+    /// dialogs should stay system buttons").
+    static let systemButtonFiles: [String: String] = [
+        "AppDelegate.swift": "NSAlert",
+        "Shell/GoCommands.swift": "menu commands",
+        "Shell/CheckForUpdatesView.swift": "a menu item",
+        "Utilities/LaunchFailureAlert.swift": "an alert",
+        "Utilities/PlainLanguage/Glossary.swift": "the Help menu item",
+    ]
+
+    static let swiftUIButton = try! NSRegularExpression(pattern: #"\bButton\s*[\(\{]"#)
+
+    @Test("sheets and windows don't fall back to system push buttons")
+    func noSystemPushButtons() throws {
+        var hits: [String] = []
+        for (file, lines) in try Self.sources() where Self.systemButtonFiles[file] == nil {
+            let code = lines.filter { !Self.isComment($0) }
+            guard code.contains(where: { Self.matches(Self.swiftUIButton, $0) }) else { continue }
+            if !code.contains(where: { $0.contains(".buttonStyle(") }) { hits.append(file) }
+        }
+        #expect(hits.isEmpty, """
+            these files draw buttons with no style, so they render as system push buttons — give each a DS role \
+            (.dsPrimary for the sheet's default action, .dsSecondary beside it):
+            \(hits.joined(separator: "\n"))
+            """)
+    }
+
     @Test("the allowlist names only files that exist")
     func allowlistIsCurrent() {
-        for file in Self.allowlist.keys {
+        for file in Array(Self.allowlist.keys) + Array(Self.systemButtonFiles.keys) {
             #expect(FileManager.default.fileExists(atPath: Self.sourceRoot.appendingPathComponent(file).path),
                     "\(file) is allowlisted but gone — drop it from the allowlist")
         }

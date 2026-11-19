@@ -285,8 +285,7 @@ struct SchedulesView: View {
                 .foregroundStyle(DS.Ink.p1)
             Spacer()
             Button("Dismiss") { drafts.clearDropped() }
-                .buttonStyle(.plainHit)
-                .foregroundStyle(DS.Ink.p3)
+                .buttonStyle(.dsQuiet)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)

@@ -56,8 +56,7 @@ struct RunProtectionSection: View {
             SettingsRow(title: "Turn off write protection",
                         help: "For working around a problem only. You'll be asked to confirm.") {
                 Button("Turn off…") { confirmingTurnOff = true }
-                    .buttonStyle(.plainHit)
-                    .font(DS.font(.label))
+                    .buttonStyle(.dsSecondary)
                     .disabled(service.work != nil)
                     .accessibilityHint("Asks for confirmation before turning write protection off for scheduled runs")
             }

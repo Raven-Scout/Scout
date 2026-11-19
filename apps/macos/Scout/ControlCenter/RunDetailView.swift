@@ -241,8 +241,7 @@ struct ProtectedFileBlock: View {
                     }
                     Button("Open log", action: openLog)
                 }
-                .buttonStyle(.plainHit)
-                .font(DS.font(.label))
+                .buttonStyle(.dsLink)
             }
             Spacer(minLength: 0)
         }

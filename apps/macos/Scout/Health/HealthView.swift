@@ -66,8 +66,7 @@ struct HealthView: View {
                         .foregroundStyle(DS.Ink.p3)
                 }
                 Button("Check now") { Task { await ledgerService.refresh() } }
-                    .buttonStyle(.plainHit)
-                    .font(DS.font(.label))
+                    .buttonStyle(.ds(.secondary, size: .small))
             }
             if ledgerService.ledger != nil {
                 HStack(spacing: 8) {
@@ -140,7 +139,7 @@ struct HealthView: View {
         HStack(spacing: 10) {
             Text("Write protection and privacy checks are set in Settings ▸ Engine.")
                 .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
-            Button("Open Settings", action: openSettings).buttonStyle(.plainHit).font(DS.font(.label))
+            Button("Open Settings", action: openSettings).buttonStyle(.dsLink)
         }
         runsSection(model)
     }
@@ -188,7 +187,7 @@ struct HealthView: View {
     private func notice(_ message: String, buttonTitle: String, action: @escaping () -> Void) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(message).font(DS.font(.body)).foregroundStyle(DS.Ink.p2)
-            Button(buttonTitle, action: action).buttonStyle(.plainHit).font(DS.font(.body))
+            Button(buttonTitle, action: action).buttonStyle(.dsLink)
         }
     }
 
@@ -402,8 +401,7 @@ struct RunLedgerRow: View {
                     if let agent = line.agent { meta(agent) }
                     if let url = logURL {
                         Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                            .buttonStyle(.plainHit)
-                            .font(DS.font(.caption))
+                            .buttonStyle(.ds(.link, size: .small))
                     }
                 }
             }

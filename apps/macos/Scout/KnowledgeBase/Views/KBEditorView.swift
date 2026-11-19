@@ -255,7 +255,7 @@ struct KBEditorView: View {
             }
 
             Button { requestReload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                .buttonStyle(.plain).foregroundStyle(DS.Ink.p3).font(DS.font(.label))
+                .buttonStyle(.dsQuiet)
                 .help(isDirty ? "Reload from disk (asks before discarding your unsaved edits)" : "Reload from disk")
 
             Button(action: save) {
