@@ -126,7 +126,7 @@ struct GlossaryView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Scout Glossary")
-                    .font(DS.font(.hero, .serif, weight: .semibold))
+                    .dsFont(.hero, .serif, weight: .semibold)
                     .foregroundStyle(DS.Ink.p1)
                 Text("The words Scout uses, in plain language.")
                     .font(DS.font(.label))

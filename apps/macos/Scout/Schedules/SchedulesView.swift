@@ -236,7 +236,7 @@ struct SchedulesView: View {
                 .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("No schedules yet")
-                .font(DS.font(.title, .serif, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("A schedule tells Scout when to run by itself, such as a briefing every weekday morning. Add one to get started.")
                 .font(DS.font(.body))

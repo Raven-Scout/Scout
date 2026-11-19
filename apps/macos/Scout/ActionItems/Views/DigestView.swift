@@ -16,7 +16,7 @@ struct DigestView: View {
                         .padding(.top, 10)
                 } else {
                     InlineMarkdownText(b)
-                        .font(DS.font(.headline, .serif))
+                        .dsFont(.headline, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)

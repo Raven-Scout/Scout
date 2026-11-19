@@ -153,7 +153,7 @@ struct SectionView: View {
                 )
                 ForEach(Array(group.bullets.enumerated()), id: \.offset) { _, bullet in
                     InlineMarkdownText(bullet)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,7 +283,7 @@ struct SectionView: View {
                 .frame(width: 22, alignment: .trailing)
                 .padding(.top, 3)
             InlineMarkdownText(text)
-                .font(DS.font(.headline, .serif))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,7 +305,7 @@ struct SectionView: View {
     /// no number and no card.
     private func focusProse(_ text: String) -> some View {
         InlineMarkdownText(text)
-            .font(DS.font(.body, .serif))
+            .dsFont(.body, .serif)
             .foregroundStyle(DS.Ink.p2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -380,7 +380,7 @@ struct SectionView: View {
                 .font(DS.font(.caption2, weight: .medium))
                 .foregroundStyle(DS.Priority.done)
             InlineMarkdownText(t.subject)
-                .font(DS.font(.body, .serif))
+                .dsFont(.body, .serif)
                 .strikethrough(color: DS.Ink.decorative)
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)

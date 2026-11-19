@@ -137,7 +137,7 @@ struct SessionsListView: View {
 
     private var emptyState: some View {
         Text("No sessions match the current filters.")
-            .font(DS.font(.body, .serif))
+            .dsFont(.body, .serif)
             .foregroundStyle(DS.Ink.p3)
             .italic()
             .padding(.vertical, 16)

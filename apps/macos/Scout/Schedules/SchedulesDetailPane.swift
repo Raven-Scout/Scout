@@ -73,7 +73,7 @@ struct SchedulesDetailPane: View {
                 .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("Pick a schedule to edit")
-                .font(DS.font(.title, .serif, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("Click a row in the list to edit its time, weekdays, cooldown, and other settings.")
                 .font(DS.font(.body))

@@ -76,7 +76,7 @@ struct EngineUpgradeSheet: View {
         let title = Self.title(targetVersion: targetVersion, isRepair: isRepair)
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
-                .font(DS.font(.title, .serif, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .dsFont(.title, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .accessibilityAddTraits(.isHeader)
             Text(Self.explanation(isRepair: isRepair))
                 .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)

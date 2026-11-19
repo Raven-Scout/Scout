@@ -116,7 +116,7 @@ struct CommentTextEditor: View {
 
     var body: some View {
         TextEditor(text: $text)
-            .font(DS.font(.body, .serif))
+            .dsFont(.body, .serif)
             .foregroundStyle(DS.Ink.p1)
             .focused(focus)
             .scrollContentBackground(.hidden)

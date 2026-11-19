@@ -129,7 +129,7 @@ struct UpcomingStripView: View {
                 .padding(.vertical, 14)
         } else {
             Text("Nothing is scheduled to run.")
-                .font(DS.font(.body, .serif))
+                .dsFont(.body, .serif)
                 .foregroundStyle(DS.Ink.p3)
                 .italic()
                 .padding(.vertical, 16)

@@ -413,7 +413,7 @@ struct ActionItemsView: View {
     private var dateline: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(longDate(displayedDate))
-                .font(DS.font(.display, .serif, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text(weekLabel(displayedDate))
                 .font(DS.font(.headline))
@@ -533,7 +533,7 @@ struct ActionItemsView: View {
             Text(isFuture
                  ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."
                  : "No action items for \(shortDate(displayedDate)) — morning briefing runs at 08:03.")
-                .font(DS.font(.headline, .serif))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

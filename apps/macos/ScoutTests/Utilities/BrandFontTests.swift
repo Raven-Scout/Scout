@@ -19,10 +19,10 @@ struct BrandFontTests {
         return names
     }
 
-    @Test("the app bundles the six faces and both OFL licence texts")
+    @Test("the app bundles the nine faces and both OFL licence texts")
     func bundlesFacesAndLicences() {
         let faces = Self.bundled("ttf")
-        for face in DS.BrandFont.newsreaderFaces + DS.BrandFont.jetBrainsMonoFaces {
+        for face in DS.BrandFont.allFaces {
             #expect(faces.contains("\(face).ttf"), "\(face).ttf isn't in the app bundle")
         }
         let texts = Self.bundled("txt")
@@ -33,9 +33,34 @@ struct BrandFontTests {
     @Test("every bundled face registers and loads by name")
     func facesLoad() {
         #expect(DS.BrandFont.available)
-        for face in DS.BrandFont.newsreaderFaces + DS.BrandFont.jetBrainsMonoFaces {
+        for face in DS.BrandFont.allFaces {
             #expect(NSFont(name: face, size: 13) != nil, "\(face) didn't load")
         }
+    }
+
+    @Test("italic serif text gets Newsreader's drawn italic at each weight")
+    func italicsResolveToRealFaces() throws {
+        #expect(DS.BrandFont.available)
+        for (upright, italic) in zip(DS.BrandFont.newsreaderFaces, DS.BrandFont.newsreaderItalicFaces) {
+            let font = try #require(NSFont(name: upright, size: 13))
+            let converted = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            #expect(converted.fontName == italic, "\(upright) italic resolved to \(converted.fontName)")
+        }
+    }
+
+    @Test("the KB web pages load every brand face from a file next to them")
+    func kbPagesLoadBundledFaces() throws {
+        let css = try #require(Bundle.main.url(forResource: "kb-common", withExtension: "css"))
+        let text = try String(contentsOf: css, encoding: .utf8)
+        let page = try #require(Bundle.main.url(forResource: "kb-reader", withExtension: "html"))
+        for face in DS.BrandFont.allFaces {
+            #expect(text.contains(#"url("\#(face).ttf")"#), "kb-common.css doesn't load \(face)")
+            // The web view may read only the reader's own folder, so the font sits there.
+            let file = page.deletingLastPathComponent().appendingPathComponent("\(face).ttf")
+            #expect(FileManager.default.fileExists(atPath: file.path), "\(face).ttf isn't beside kb-reader.html")
+        }
+        #expect(text.contains(#"--font-serif: "Scout Newsreader""#))
+        #expect(text.contains(#"--font-mono: "Scout JetBrains Mono""#))
     }
 
     @Test("each weight maps to a real face, never a synthesised one")

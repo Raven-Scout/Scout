@@ -24,7 +24,7 @@ struct BoardCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             InlineMarkdownText(task.subject)
-                .font(DS.font(.body, .serif, weight: .medium))
+                .dsFont(.body, .serif, weight: .medium)
                 .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                 .strikethrough(task.done, color: DS.Ink.decorative)
                 .lineLimit(density == .compact ? 2 : 3)

@@ -131,19 +131,28 @@ struct KBLiveEditor: NSViewRepresentable {
         // (`TextScale`), applied on the next restyle.
         static var bodyFont: NSFont { serif(14) }
         static var baseAttributes: [NSAttributedString.Key: Any] {
-            [.font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1)]
+            [.font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1), .paragraphStyle: bodyParagraph]
         }
 
+        /// The bundled Newsreader is set tighter than the system serif, so
+        /// the editor adds the same leading `dsFont(_:.serif)` does.
+        static var bodyParagraph: NSParagraphStyle {
+            let style = NSMutableParagraphStyle()
+            if DS.BrandFont.available { style.lineSpacing = (bodyFont.pointSize * DS.serifExtraLeading).rounded() }
+            return style
+        }
+
+        /// The bundled brand faces by PostScript name (their family is
+        /// "Newsreader 16pt", so the name "Newsreader" finds nothing).
         static func serif(_ size: CGFloat) -> NSFont {
             let size = DS.scaled(size)
-            return NSFont(name: "Newsreader", size: size)
-                ?? NSFont(name: "New York", size: size)
-                ?? NSFont.systemFont(ofSize: size)
+            if DS.BrandFont.available, let font = NSFont(name: DS.BrandFont.newsreader(.regular), size: size) { return font }
+            return NSFont(name: "New York", size: size) ?? NSFont.systemFont(ofSize: size)
         }
         static func mono(_ size: CGFloat) -> NSFont {
             let size = DS.scaled(size)
-            return NSFont(name: "JetBrains Mono", size: size)
-                ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            if DS.BrandFont.available, let font = NSFont(name: DS.BrandFont.jetBrainsMono(.regular), size: size) { return font }
+            return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         }
         static func bold(_ font: NSFont) -> NSFont {
             NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)

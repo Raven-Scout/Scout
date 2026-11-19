@@ -48,7 +48,7 @@ struct SlotCard: View {
     private var topRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(formattedTime)
-                .font(DS.font(.display, .serif, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text(amPm)
                 .font(DS.font(.caption))

@@ -18,5 +18,9 @@ To update one, replace the file with the same project's `dist/` (or CDN "common"
 minified build and change the version here. The d3 files must load in the order
 `kb-map.html` lists them: d3-force reads the other three from the `d3` global.
 
+The pages also load the app's bundled brand fonts (Newsreader 16 pt and JetBrains Mono
+v2.304, SIL Open Font License 1.1) from `Scout/Resources/Fonts/`, which the app build copies
+next to these pages; their `OFL.txt` texts are in that folder.
+
 Everything else in this folder (`kb-*.html`, `kb-*.css`, `kb-*.js`) is Scout's own
 code, under the app's licence.

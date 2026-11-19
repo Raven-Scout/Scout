@@ -154,7 +154,7 @@ struct ControlCenterView: View {
             .accessibilityLabel("Close run details")
 
             Text(run.displayName)
-                .font(DS.font(.headline, .serif, weight: .medium))
+                .dsFont(.headline, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Spacer()
             Button { toggleExpansion() } label: {
@@ -201,7 +201,7 @@ struct ControlCenterView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text("Control Center")
-                .font(DS.font(.display, .serif, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text("Status · Activity · Sessions")
                 .font(DS.font(.headline))

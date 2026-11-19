@@ -37,7 +37,7 @@ struct AddItemSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add \(config.title) item")
-                .font(DS.font(.title, .serif))
+                .dsFont(.title, .serif)
                 .foregroundStyle(DS.Ink.p1)
 
             field("Title") {
@@ -66,7 +66,7 @@ struct AddItemSheet: View {
 
             field("Notes") {
                 TextEditor(text: $bodyText)
-                    .font(DS.font(.body, .serif))
+                    .dsFont(.body, .serif)
                     .frame(minHeight: 120)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)

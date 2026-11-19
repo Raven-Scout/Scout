@@ -78,13 +78,28 @@ struct TypeRoleGuardTests {
     }
 
     /// A `Text` whose literal reads as words: three or more words of letters
-    /// ("No tool activity recorded today.").
-    static let sentenceLiteral = try! NSRegularExpression(pattern: #"Text\("(?:[A-Za-z][a-z'’]*[ ,.…]+){2,}[A-Za-z]"#)
-    static let monoVoice = try! NSRegularExpression(pattern: #"DS\.font\([^)]*\.mono"#)
+    /// ("No tool activity recorded today."), or two words and then an
+    /// interpolation ("Saved in \(path)").
+    static let sentenceLiteral = try! NSRegularExpression(
+        pattern: #"Text\("(?:(?:[A-Za-z][a-z'’]*[ ,.…]+){2,}[A-Za-z]|(?:[A-Za-z][a-z'’]*[ ,.…]+){2,}\\\()"#)
+    static let monoVoice = try! NSRegularExpression(pattern: #"(DS\.font|dsFont)\([^)]*\.mono"#)
+
+    /// The sentence-literal lines a container's body holds: from the line
+    /// with `}` that closes it back to the line that opened it.
+    static func blockLines(_ lines: [String], closingAt end: Int) -> ArraySlice<String> {
+        var depth = 0
+        for j in stride(from: end, through: max(0, end - 60), by: -1) {
+            for ch in lines[j].reversed() {
+                if ch == "}" { depth += 1 } else if ch == "{" { depth -= 1 }
+            }
+            if depth <= 0 { return lines[j...end] }
+        }
+        return lines[end...end]
+    }
 
     /// Audit #108: monospace is for data and identifiers (paths, commands,
     /// times, counts, logs), never for sentences. A literal sentence set in
-    /// mono reads as debug output.
+    /// mono, by its own font or its container's, reads as debug output.
     @Test("sentences aren't set in monospace")
     func noMonoSentences() throws {
         var hits: [String] = []
@@ -96,8 +111,35 @@ struct TypeRoleGuardTests {
                     hits.append("\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
                 }
             }
+            // A container's mono font: `}` then `.font(… .mono)` on the same
+            // or the next line reaches every Text inside it.
+            for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(Self.monoVoice, line) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let close: Int? = trimmed.hasPrefix("}") ? i
+                    : (i > 0 && lines[i - 1].trimmingCharacters(in: .whitespaces) == "}" ? i - 1 : nil)
+                guard let close else { continue }
+                for (k, inner) in Self.blockLines(lines, closingAt: close).enumerated()
+                where !Self.isComment(inner) && Self.matches(Self.sentenceLiteral, inner) {
+                    let lineNo = close - (Self.blockLines(lines, closingAt: close).count - 1) + k + 1
+                    hits.append("\(file):\(lineNo): \(inner.trimmingCharacters(in: .whitespaces)) (container font at line \(i + 1))")
+                }
+            }
         }
         #expect(hits.isEmpty, "set sentences in the sans or serif voice; mono is for data:\n\(hits.joined(separator: "\n"))")
+    }
+
+    /// The serif voice needs its leading (`DS.extraLeading`), which only
+    /// `View.dsFont` adds.
+    @Test("serif text goes through dsFont")
+    func serifUsesDsFont() throws {
+        let bare = try NSRegularExpression(pattern: #"\.font\(DS\.font\([^)]*\.serif"#)
+        var hits: [String] = []
+        for (file, lines) in try Self.sources() {
+            for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(bare, line) {
+                hits.append("\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+        #expect(hits.isEmpty, "use .dsFont(_:.serif) so serif text gets its leading:\n\(hits.joined(separator: "\n"))")
     }
 
     @Test("the guard catches each sized form and passes the roles")
@@ -108,6 +150,14 @@ struct TypeRoleGuardTests {
         for clean in [".font(DS.font(.body))", ".font(DS.font(.caption, .mono))", "DS.symbol(36)"] {
             #expect(!Self.matches(Self.sized, clean), "\(clean)")
         }
+        // Sentences, literal or interpolated; not data.
+        #expect(Self.matches(Self.sentenceLiteral, #"Text("No tool activity recorded today.")"#))
+        #expect(Self.matches(Self.sentenceLiteral, #"Text("Saved in \(path)")"#))
+        #expect(!Self.matches(Self.sentenceLiteral, #"Text("\(count)")"#))
+        #expect(!Self.matches(Self.sentenceLiteral, #"Text("+\(n) more")"#))
+        // A container's mono font reaches the sentence inside it.
+        let block = ["HStack {", #"    Text("Done · two hours ago")"#, "}", ".font(DS.font(.label, .mono))"]
+        #expect(Self.blockLines(block, closingAt: 2).count == 3)
     }
 
     @Test("the allowlists name only files that exist")

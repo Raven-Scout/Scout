@@ -60,7 +60,7 @@ struct ProposalsView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text("Proposals")
-                    .font(DS.font(.display, .serif, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .glossaryHelp(.proposal)
                 Spacer(minLength: 0)
@@ -169,7 +169,7 @@ struct ProposalsView: View {
                 .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
-                .font(DS.font(.headline, .serif))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

@@ -53,7 +53,7 @@ struct SessionsHeader: View {
     private func titleBlock(freshnessLines: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Sessions")
-                .font(DS.font(.display, .serif, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .fixedSize()

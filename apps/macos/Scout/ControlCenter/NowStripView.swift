@@ -162,7 +162,7 @@ struct NowStripView: View {
 
     private func bigName(_ s: String) -> some View {
         Text(s)
-            .font(DS.font(.hero, .serif, weight: .medium))
+            .dsFont(.hero, .serif, weight: .medium)
             .foregroundStyle(DS.Ink.p1)
             .lineLimit(1)
             .truncationMode(.tail)

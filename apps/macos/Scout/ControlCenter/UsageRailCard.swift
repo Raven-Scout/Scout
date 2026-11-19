@@ -44,7 +44,7 @@ struct UsageRailCard: View {
             let today = summary.today
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(UsageFormat.tokens(today.tokens.inputOutput))
-                    .font(DS.font(.hero, .serif, weight: .medium))
+                    .dsFont(.hero, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                 Text("tokens in + out")
                     .font(DS.font(.body))

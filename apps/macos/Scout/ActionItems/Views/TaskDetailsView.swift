@@ -10,10 +10,10 @@ struct TaskDetailsView: View {
             ForEach(Array(details.enumerated()), id: \.offset) { _, detail in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("•")
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p4)
                     InlineMarkdownText(detail.text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)

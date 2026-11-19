@@ -38,7 +38,7 @@ struct SessionCardView: View {
                     .foregroundStyle(DS.Ink.p4)
             }
             Text(session.displayTitle)
-                .font(DS.font(.body, .serif, weight: .medium))
+                .dsFont(.body, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)

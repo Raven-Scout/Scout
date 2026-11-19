@@ -128,7 +128,7 @@ struct PerFileItemCardView: View {
                     Text(item.date).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p4)
                 }
                 Text(item.title)
-                    .font(DS.font(.title, .serif, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
             }

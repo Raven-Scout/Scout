@@ -158,7 +158,7 @@ struct PerFileListView: View {
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close details")
-            Text(item.title).font(DS.font(.headline, .serif, weight: .medium)).foregroundStyle(DS.Ink.p1)
+            Text(item.title).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
             Spacer()
             ItemStatusPill(status: item.status)
@@ -181,7 +181,7 @@ struct PerFileListView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text(config.title)
-                    .font(DS.font(.display, .serif, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                 Spacer(minLength: 0)
             }
@@ -303,7 +303,7 @@ struct PerFileListView: View {
                 .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
-                .font(DS.font(.headline, .serif))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

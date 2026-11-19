@@ -14,7 +14,7 @@ struct MarkdownBodyView: View {
                 switch block {
                 case .prose(let text):
                     InlineMarkdownText(text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -33,7 +33,7 @@ struct MarkdownBodyView: View {
 
     private func heading(level: Int, text: String) -> some View {
         InlineMarkdownText(text)
-            .font(DS.font(level <= 2 ? .headline : .body, .serif, weight: .semibold))
+            .dsFont(level <= 2 ? .headline : .body, .serif, weight: .semibold)
             .foregroundStyle(DS.Ink.p1)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -52,7 +52,7 @@ struct MarkdownBodyView: View {
                         .foregroundStyle(task.checked ? DS.Status.ok : DS.Ink.p3)
                         .accessibilityHidden(true)
                     InlineMarkdownText(task.text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(task.checked ? DS.Ink.p3 : DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -81,7 +81,7 @@ struct MarkdownBodyView: View {
                 }
                 if !text.isEmpty {
                     InlineMarkdownText(text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -166,7 +166,7 @@ struct TaskCardView: View {
                 }
                 // Not selectable: a click on the title opens or closes the card.
                 InlineMarkdownText(task.subject)
-                    .font(DS.font(.headline, .serif, weight: .medium))
+                    .dsFont(.headline, .serif, weight: .medium)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                     .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
@@ -183,7 +183,7 @@ struct TaskCardView: View {
             }
             if !expanded && !summary.isEmpty && density == .comfortable {
                 InlineMarkdownText(summary)
-                    .font(DS.font(.body, .serif))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -614,14 +614,14 @@ struct TaskCardView: View {
                 .padding(.top, 7)
             VStack(alignment: .leading, spacing: 4) {
                 InlineMarkdownText(task.subject)
-                    .font(DS.font(.body, .serif))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
                     .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {
                     InlineMarkdownText(task.summary)
-                        .font(DS.font(.label, .serif))
+                        .dsFont(.label, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)

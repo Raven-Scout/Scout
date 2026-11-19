@@ -122,7 +122,7 @@ struct SchedulesTimelineView: View {
         return VStack(spacing: 8) {
             Spacer()
             Text(title)
-                .font(DS.font(.title, .serif, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("Pick another day, or Every day to see all schedules.")
                 .font(DS.font(.label))

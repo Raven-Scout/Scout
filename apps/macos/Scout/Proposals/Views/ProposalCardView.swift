@@ -47,7 +47,7 @@ struct ProposalCardView: View {
                         .foregroundStyle(DS.Ink.p4)
                 }
                 Text(proposal.title)
-                    .font(DS.font(.title, .serif, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
             }

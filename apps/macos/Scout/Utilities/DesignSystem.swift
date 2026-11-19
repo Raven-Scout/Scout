@@ -203,7 +203,21 @@ enum DS {
         case mono
     }
 
+    /// Extra leading for the reading voice, in ems. Newsreader's line height
+    /// is 1.00 em where New York's is 1.19, so serif text set with it alone
+    /// loses about 16% of its leading and ascenders can touch the line above.
+    /// `dsFont(_:.serif)` adds the difference back. Mono needs none: JetBrains
+    /// Mono's 1.32 em is already taller than SF Mono's.
+    nonisolated static let serifExtraLeading: CGFloat = 0.19
+
+    /// The line spacing `dsFont` adds for a role and voice.
+    static func extraLeading(_ style: TextStyle, _ voice: Voice) -> CGFloat {
+        guard voice == .serif, BrandFont.available else { return 0 }
+        return (scaled(style.pointSize) * serifExtraLeading).rounded()
+    }
+
     /// The semantic font for a role. Prefer this over a raw `sans(_:)` size.
+    /// Serif text takes `View.dsFont(_:.serif)`, which adds its leading.
     static func font(_ style: TextStyle, _ voice: Voice = .sans, weight: Font.Weight = .regular) -> Font {
         switch voice {
         case .sans:  return sans(style.pointSize, weight: weight)
@@ -214,8 +228,10 @@ enum DS {
 
     /// The brand fonts ship inside the app (audit #106): Newsreader's 16 pt
     /// optical cut for the reading voice and JetBrains Mono for data, each in
-    /// the three weights the app draws (Regular, Medium, SemiBold), with
-    /// their SIL Open Font License texts beside them in Resources/Fonts.
+    /// the three weights the app draws (Regular, Medium, SemiBold), plus
+    /// Newsreader's matching italics so `.italic()` and markdown emphasis in
+    /// serif text get the drawn italic, not a slanted roman. Their SIL Open
+    /// Font License texts sit beside them in Resources/Fonts.
     /// Nothing is fetched at run time; they are registered for this process
     /// only, the first time a serif or mono font is built.
     ///
@@ -225,13 +241,17 @@ enum DS {
     enum BrandFont {
         static let newsreaderFaces = ["Newsreader16pt-Regular", "Newsreader16pt-Medium", "Newsreader16pt-SemiBold"]
         static let jetBrainsMonoFaces = ["JetBrainsMono-Regular", "JetBrainsMono-Medium", "JetBrainsMono-SemiBold"]
+        /// Not picked by name: CoreText finds them through the family when a
+        /// view asks for italic.
+        static let newsreaderItalicFaces = ["Newsreader16pt-Italic", "Newsreader16pt-MediumItalic", "Newsreader16pt-SemiBoldItalic"]
+        static var allFaces: [String] { newsreaderFaces + newsreaderItalicFaces + jetBrainsMonoFaces }
 
         /// Registers the bundled files once, then checks every face loaded.
         /// False only if the bundle lost them; the voices then fall back to
         /// New York and SF Mono.
         static let available: Bool = {
             registerBundledFonts()
-            return (newsreaderFaces + jetBrainsMonoFaces).allSatisfy { NSFont(name: $0, size: 13) != nil }
+            return allFaces.allSatisfy { NSFont(name: $0, size: 13) != nil }
         }()
 
         static func newsreader(_ weight: Font.Weight) -> String { newsreaderFaces[index(weight)] }
@@ -293,6 +313,19 @@ enum DS {
         case .meetings: return "calendar"
         case .digest:   return "list.clipboard"
         }
+    }
+}
+
+// MARK: - Text in a role
+
+extension View {
+    /// Text in a design-system role and voice: `DS.font` plus the voice's
+    /// leading (`DS.extraLeading`). Required for the serif voice, whose
+    /// bundled face is set tighter than the system serif it replaced;
+    /// `TypeRoleGuardTests` flags `.font(DS.font(…, .serif))`.
+    func dsFont(_ style: DS.TextStyle, _ voice: DS.Voice = .sans, weight: Font.Weight = .regular) -> some View {
+        font(DS.font(style, voice, weight: weight))
+            .lineSpacing(DS.extraLeading(style, voice))
     }
 }
 

@@ -14,7 +14,7 @@ struct PRCheckProblemsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(errors.count == 1 ? "PR check problem" : "PR check problems")
-                .font(DS.font(.headline, .serif, weight: .medium))
+                .dsFont(.headline, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text(SessionsFormat.prProblemsSummary(count: errors.count))
                 .font(DS.font(.label))

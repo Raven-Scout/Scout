@@ -20,7 +20,7 @@ struct SchedulesHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Schedules")
-                    .font(DS.font(.display, .serif, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .glossaryHelp(.schedule)
                 Text(subtitle)

@@ -78,7 +78,7 @@ struct KBOverviewView: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Knowledge Base")
-                        .font(DS.font(.hero, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                        .dsFont(.hero, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
                         .glossaryHelp(.knowledgeBase)
                     Text(loading ? "Loading notes…"
                          : "\(net.noteCount.formatted()) notes · \(net.linkCount.formatted()) links\(healthNote(net))")

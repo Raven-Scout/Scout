@@ -12,7 +12,7 @@ struct ProposalBodyView: View {
                 switch block {
                 case .prose(let text):
                     InlineMarkdownText(text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)

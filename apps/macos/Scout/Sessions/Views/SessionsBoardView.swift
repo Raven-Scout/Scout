@@ -13,7 +13,7 @@ struct SessionsEmptyStateView: View {
                 .font(DS.symbol(24)).foregroundStyle(DS.Ink.p4)
                 .accessibilityHidden(true)
             Text(reason.title)
-                .font(DS.font(.headline, .serif, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p2)
             Text(reason.detail)
                 .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
@@ -86,7 +86,7 @@ struct SessionsBoardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text(title)
-                    .font(DS.font(.title, .serif, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .lineLimit(1)
                     .truncationMode(.middle)

@@ -82,7 +82,7 @@ struct MenuBarExtraContent: View {
                 .background(Circle().fill(DS.Accent.wash))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Scout")
-                    .font(DS.font(.title, .serif, weight: .semibold))
+                    .dsFont(.title, .serif, weight: .semibold)
                     .foregroundStyle(DS.Ink.p1)
                 Text("Quick control")
                     .font(DS.font(.caption2, weight: .medium))

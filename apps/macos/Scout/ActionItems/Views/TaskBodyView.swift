@@ -27,7 +27,7 @@ struct TaskBodyView: View {
                 if let label { eyebrow(label) }
                 if !text.isEmpty {
                     InlineMarkdownText(text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,7 +44,7 @@ struct TaskBodyView: View {
                             .foregroundStyle(DS.Accent.ink)
                             .frame(width: 18, alignment: .trailing)
                         InlineMarkdownText(item)
-                            .font(DS.font(.body, .serif))
+                            .dsFont(.body, .serif)
                             .foregroundStyle(DS.Ink.p2)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)

@@ -43,7 +43,7 @@ struct PerFileItemDetailView: View {
         case .loading:
             ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
         case .unavailable(let message):
-            Text(message).font(DS.font(.headline, .serif)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
+            Text(message).dsFont(.headline, .serif).foregroundStyle(DS.Ink.p3).padding(.top, 24)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(DS.font(.label)).foregroundStyle(DS.Status.err)
@@ -56,7 +56,7 @@ struct PerFileItemDetailView: View {
             }
             if entries.isEmpty {
                 Text("No activity yet — this item hasn't been committed.")
-                    .font(DS.font(.headline, .serif)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
+                    .dsFont(.headline, .serif).foregroundStyle(DS.Ink.p3).padding(.top, 24)
             } else {
                 ForEach(entries) { row($0) }
             }
@@ -83,7 +83,7 @@ struct PerFileItemDetailView: View {
                                 Text("outcome").font(DS.font(.caption2, .mono)).foregroundStyle(DS.Status.ok)
                             }
                         }
-                        Text(entry.commit.subject).font(DS.font(.body, .serif)).foregroundStyle(DS.Ink.p1)
+                        Text(entry.commit.subject).dsFont(.body, .serif).foregroundStyle(DS.Ink.p1)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("\(entry.commit.shortSHA)  +\(entry.commit.insertions) −\(entry.commit.deletions)")
                             .font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4)

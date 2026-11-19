@@ -82,7 +82,7 @@ private struct CommentRow: View {
                     editor
                 } else {
                     InlineMarkdownText(comment.text)
-                        .font(DS.font(.body, .serif))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
