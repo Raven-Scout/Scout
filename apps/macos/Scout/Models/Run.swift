@@ -140,6 +140,44 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// guesses a class from log text of its own.
     var failureClass: String? = nil
 
+    /// How the run was protected, from its run ledger row (card C8's `sandbox` and
+    /// `integrity`); nil without a ledger row. Never worked out from the log.
+    var protection: Protection? = nil
+
+    /// The ledger's word on a run's write protection and the post-run integrity check.
+    struct Protection: Equatable, Hashable, Sendable {
+        /// enforced | unavailable | off | conflict | failed; nil from an older runner.
+        var sandbox: String?
+        /// When `sandbox` is off: env | switch.
+        var sandboxSource: String? = nil
+        /// clean | restored | unrestored | error | unchecked; nil from an older runner.
+        var integrity: String? = nil
+        /// The runner's mode (`$MODE`), which the integrity check writes into its restoring
+        /// commit's subject ("… a <mode> run changed in git").
+        var mode: String? = nil
+    }
+
+    /// The run went ahead without write protection (it was off, unavailable,
+    /// clashed with another setting, or failed to start). A skipped run never
+    /// ran, so it never counts.
+    var ranUnprotected: Bool {
+        guard !status.isSkip, status != .scheduled else { return false }
+        return RunOutcomeDisplay.sandboxIsConcern(protection?.sandbox)
+    }
+
+    /// The post-run integrity check found this run had changed a protected file
+    /// in git: `restored` (Scout put it back) or `unrestored` (it couldn't).
+    var changedProtectedFile: Bool {
+        ["restored", "unrestored"].contains(protection?.integrity ?? "")
+    }
+
+    /// The integrity check didn't run after this run (`error`, or `unchecked`: no start snapshot), so
+    /// nobody knows whether it changed a protected file.
+    var protectedFilesUnchecked: Bool {
+        guard !status.isSkip else { return false }
+        return ["error", "unchecked"].contains(protection?.integrity ?? "")
+    }
+
     /// The slot "Run again" fires: this run's own, or nil when there isn't one
     /// to fire. A run started outside the schedule (`manual`,
     /// `dreaming-manual`, `research-manual`, or any `event` run, whose slot is
@@ -202,7 +240,8 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass
+            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
+            protection: protection
         )
     }
 }
@@ -226,7 +265,8 @@ extension Run {
         model: String? = nil,
         slotKey: String? = nil,
         trigger: String? = nil,
-        failureClass: String? = nil
+        failureClass: String? = nil,
+        protection: Protection? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -255,7 +295,8 @@ extension Run {
             model: model,
             slotKey: slotKey,
             trigger: trigger,
-            failureClass: failureClass
+            failureClass: failureClass,
+            protection: protection
         )
     }
 }

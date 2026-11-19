@@ -4221,7 +4221,62 @@ def _register_bootstrap() -> None:
             typer.echo(f"run health: {report.run_health.severity}")
             for f in report.run_health.findings:
                 typer.echo(f"run health {f.severity}: {f.id}: {f.summary}")
+        for entry in getattr(report, "warning_triage", None) or []:  # stand-in reports in tests lack it
+            if entry.reviewed_at:
+                typer.echo(f"reviewed {entry.reviewed_at}: {entry.id}: {entry.summary}")
         raise typer.Exit(code=report.exit_code)
+
+    @bootstrap_app.command("review-warning")
+    def cli_bootstrap_review_warning(
+        warning: str = typer.Argument(..., help="The warning's id, from `bootstrap doctor --json` warning_triage."),
+        fingerprint: str | None = typer.Option(
+            None, "--fingerprint", help="The fingerprint shown beside it: the review holds only while it matches."
+        ),
+        undo: bool = typer.Option(False, "--undo", help="Drop the review, so the warning shows again."),
+        json_out: bool = typer.Option(False, "--json", help='Emit {"id", "fingerprint", "reviewed_at"}.'),
+    ) -> None:
+        """Mark a doctor warning reviewed, or (--undo) not. The owner only, never a run (exit 2).
+
+        A reviewed warning leaves the doctor's warnings and severity until what it is about changes (its
+        files, a high-risk file's content, or its text). Kept in ~/.local/state/scout/scout-reviewed-warnings.json,
+        which runs can't write.
+        """
+        import json as _json
+        import os
+
+        from scout import doctor_triage
+        from scout import paths as _paths
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(os.environ)
+        if not why:
+            # Whatever its environment says (a run can `env -u SCOUT_MODE`): is a scheduled run the caller?
+            from scout.kb import live_run
+
+            src = live_run.commit_source_now(_paths.data_dir())
+            if src is not None and src.runs:
+                why = f"this command runs inside a scheduled run ({src.mode}, by {src.by})"
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may mark a warning reviewed; nothing was changed.", err=True)
+            raise typer.Exit(2)
+        if undo == (fingerprint is not None):
+            typer.echo("error: give --fingerprint to mark it reviewed, or --undo", err=True)
+            raise typer.Exit(1)
+        try:
+            record = doctor_triage.set_review(_paths.data_dir(), warning, None if undo else fingerprint)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        except OSError as e:
+            typer.echo(f"error: couldn't save the review: {e}", err=True)
+            raise typer.Exit(1) from e
+        if json_out:
+            out = {"id": warning, "fingerprint": None, "reviewed_at": None, **(record or {})}
+            typer.echo(_json.dumps(out))
+        elif record:
+            typer.echo(f"{warning}: reviewed {record['reviewed_at']}")
+        else:
+            typer.echo(f"{warning}: not reviewed")
 
     @bootstrap_app.command("migrate-legacy")
     def cli_bootstrap_migrate_legacy(

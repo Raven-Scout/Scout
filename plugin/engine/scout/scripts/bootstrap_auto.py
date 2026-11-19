@@ -100,6 +100,9 @@ def doctor_dict(report: DoctorReport | None) -> dict[str, Any] | None:
         "run_health": rh.to_dict() if (rh := getattr(report, "run_health", None)) else None,
         # Warnings that stand for many files of one kind (#505): each summary is in "warnings" too.
         "warning_groups": [g.to_dict() for g in getattr(report, "warning_groups", None) or []],
+        # Every warning ranked by risk (high, medium, low), open or reviewed by the owner (UI audit R13):
+        # a reviewed one has `reviewed_at` and is in neither "warnings" nor "warning_groups".
+        "warning_triage": [e.to_dict() for e in getattr(report, "warning_triage", None) or []],
     }
 
 
