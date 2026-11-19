@@ -70,12 +70,35 @@ def test_missing_folder_is_no_files(tmp_path):
         GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "--- a/../outside.md\n+++ b/../outside.md"),
         GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "--- /etc/passwd\n+++ /etc/passwd"),
         GOOD.replace("targets:\n  - briefing", "targets: briefing"),
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "--- a/ok dir/../../etc/x\n+++ b/SKILL.md"),
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", '--- "a/b c/../x"\n+++ b/SKILL.md'),
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "diff --git a/x y b/x y\n--- a/SKILL.md\n+++ b/SKILL.md"),
+        GOOD.replace(
+            "--- a/SKILL.md\n+++ b/SKILL.md", "copy from SKILL.md\ncopy to ../x\n--- a/SKILL.md\n+++ b/SKILL.md"
+        ),
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "--- ../x\n+++ SKILL.md"),
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "diff --git a/../x b/SKILL.md\n--- a/SKILL.md\n+++ b/SKILL.md"),
+        GOOD.replace(
+            "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1 +1 @@\n-old\n+new\n", "@@ -1 +1 @@\n-old\n+new\n"
+        ),  # no headers
         "---\n: : :\n---\n```diff\n```\n",
     ],
 )
 def test_files_that_do_not_fit_are_counted(tmp_path, text):
     _write(tmp_path, "x.md", text)
     assert read_pending(tmp_path) == ([], 1)
+
+
+def test_a_removed_line_that_reads_like_a_header_is_content(tmp_path):
+    body = "@@ -1,2 +1,2 @@\n-- foo\n-old\n+new\n+++ bar\n"
+    _write(tmp_path, "x.md", GOOD.replace("@@ -1 +1 @@\n-old\n+new\n", body))
+    assert [i.id for i in read_pending(tmp_path)[0]] == ["gov-x"]
+    _write(
+        tmp_path,
+        "y.md",
+        GOOD.replace("--- a/SKILL.md\n+++ b/SKILL.md", "--- a/SKILL.md\t2026-01-01 10:00\n+++ b/SKILL.md"),
+    )
+    assert [i.id for i in read_pending(tmp_path)[0]] == ["gov-x", "gov-y"]
 
 
 def test_bad_slug_is_counted(tmp_path):

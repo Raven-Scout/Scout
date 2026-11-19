@@ -21,9 +21,9 @@ ID_PREFIX = "gov-"
 _MAX_BYTES = 256 * 1024
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)(.*)\Z", re.DOTALL)
 _FENCE_RE = re.compile(r"^```[ \t]*diff[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
-_DIFF_PATH_RE = re.compile(
-    r"^(?:diff --git a/(\S+) b/(\S+)|(?:---|\+\+\+) (?:[ab]/)?(\S+)|rename (?:from|to) (\S+))", re.M
-)
+_GIT_HEADER_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_PATH_PREFIXES = ("--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to ")
 
 
 @dataclass(frozen=True)
@@ -38,20 +38,63 @@ class Pending:
 
 
 def _safe_path(raw: str) -> bool:
-    if raw == "/dev/null":
-        return True
-    if raw.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", raw):
+    """A header path that stays inside the vault; fail closed on anything odd (whitespace, quotes, controls)."""
+    if raw.startswith(("a/", "b/")):
+        raw = raw[2:]
+    if not raw or re.search(r"[\s\"\\\x00-\x1f\x7f]", raw) or raw.startswith(("/", "~")):
         return False
-    return ".." not in Path(raw).parts and "\\" not in raw
+    return ".." not in raw.split("/")
+
+
+def _header_path_ok(raw: str, *, timestamped: bool) -> bool:
+    if timestamped:
+        raw = raw.split("\t", 1)[0]  # `--- a/x<TAB>2026-01-01 ...`
+    return raw == "/dev/null" or _safe_path(raw)
 
 
 def _diff_paths_ok(diff: str) -> bool:
-    """Every path a diff names stays inside the vault (no absolute path, no ``..``)."""
-    for m in _DIFF_PATH_RE.finditer(diff):
-        for group in m.groups():
-            if group is not None and not _safe_path(group):
+    """Every file header in the diff names a path inside the vault, and there is at least one.
+
+    Only lines outside hunks are headers; a hunk's lines are counted off its ``@@`` line, so a removed line such as
+    ``-- foo`` (which reads ``--- foo``) is content. Anything that doesn't parse is unreadable."""
+    headers = 0
+    old_left = new_left = 0
+    for line in diff.split("\n"):
+        if old_left or new_left:
+            if line.startswith("\\"):
+                continue  # "\ No newline at end of file"
+            tag = line[:1]
+            if tag == "-":
+                old_left -= 1
+            elif tag == "+":
+                new_left -= 1
+            elif tag in (" ", ""):
+                old_left -= 1
+                new_left -= 1
+            else:
                 return False
-    return True
+            if old_left < 0 or new_left < 0:
+                return False
+            continue
+        hunk = _HUNK_RE.match(line)
+        if hunk:
+            old_left, new_left = (int(g) if g is not None else 1 for g in hunk.groups())
+            continue
+        if line.startswith("@@"):
+            return False
+        if line.startswith("diff --git "):
+            m = _GIT_HEADER_RE.match(line)
+            if not (m and _safe_path(m.group(1)) and _safe_path(m.group(2))):
+                return False
+            headers += 1
+            continue
+        for prefix in _PATH_PREFIXES:
+            if line.startswith(prefix):
+                if not _header_path_ok(line[len(prefix) :], timestamped=prefix in ("--- ", "+++ ")):
+                    return False
+                headers += prefix in ("--- ", "+++ ")
+                break
+    return headers > 0 and not (old_left or new_left)
 
 
 def _parse(path: Path, slug: str) -> Pending | None:
