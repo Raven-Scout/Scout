@@ -194,54 +194,101 @@ def test_an_unchanged_title_is_a_problem() -> None:
 
 
 # ----- the model call -------------------------------------------------------------------
+#
+# A fake `claude` on PATH: it records its argv, environment, stdin and cwd, then
+# prints the stream-json lines in reply.jsonl (and, after a `SLEEP` line, waits).
+
+FAKE_CLAUDE = """#!/bin/sh
+cat > "$FAKE_DIR/stdin.txt"
+printf '%s\\n' "$@" > "$FAKE_DIR/argv.txt"
+env > "$FAKE_DIR/env.txt"
+pwd > "$FAKE_DIR/cwd.txt"
+while IFS= read -r line; do
+  if [ "$line" = SLEEP ]; then sleep 20; touch "$FAKE_DIR/late"; else printf '%s\\n' "$line"; fi
+done < "$FAKE_DIR/reply.jsonl"
+exit "${FAKE_EXIT:-0}"
+"""
 
 
-def _fake_run(reply: Any, *, returncode: int = 0, seen: dict[str, Any] | None = None) -> Any:
-    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if seen is not None:
-            seen.update(kwargs, argv=argv)
-        out = reply if isinstance(reply, str) else json.dumps(reply)
-        return subprocess.CompletedProcess(argv, returncode, stdout=out, stderr="boom" if returncode else "")
-
-    return run
+def _init(source: str = "none") -> dict[str, Any]:
+    return {"type": "system", "subtype": "init", "apiKeySource": source}
 
 
-def test_the_model_runs_on_the_owners_login_with_items_on_stdin(vault: Path) -> None:
-    seen: dict[str, Any] = {}
-    env = {
-        "PATH": "/usr/bin",
-        "ANTHROPIC_API_KEY": "k",
-        "ANTHROPIC_AUTH_TOKEN": "t",
-        "ANTHROPIC_BASE_URL": "https://gateway.example.com",
-        "CLAUDE_CODE_USE_BEDROCK": "1",
-        "CLAUDE_CODE_USE_SOMETHING_NEW": "1",
-        "CLAUDE_CODE_OAUTH_TOKEN": "the-login",
-    }
-    reply = {"is_error": False, "result": 'Here you go:\n```json\n{"QMIG": " Reply to Alex "}\n```'}
-    propose = retitle.ask_claude("sonnet", run=_fake_run(reply, seen=seen), env=env)
+def _fake_claude(tmp_path: Path, events: list[Any], **extra: str) -> tuple[Path, dict[str, str]]:
+    fake = tmp_path / "fake"
+    (fake / "bin").mkdir(parents=True)
+    script = fake / "bin" / "claude"
+    script.write_text(FAKE_CLAUDE, encoding="utf-8")
+    script.chmod(0o755)
+    lines = [e if isinstance(e, str) else json.dumps(e) for e in events]
+    (fake / "reply.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    env = {"PATH": f"{fake / 'bin'}:/usr/bin:/bin", "FAKE_DIR": str(fake), **extra}
+    return fake, env
+
+
+def test_the_model_runs_on_the_owners_login_with_items_on_stdin(vault: Path, tmp_path: Path) -> None:
+    reply = {"type": "result", "is_error": False, "result": 'Here:\n```json\n{"QMIG": " Reply to Alex "}\n```'}
+    fake, env = _fake_claude(
+        tmp_path,
+        [_init(), {"type": "assistant"}, reply],
+        ANTHROPIC_API_KEY="k",
+        ANTHROPIC_AUTH_TOKEN="t",
+        ANTHROPIC_BASE_URL="https://gateway.example.com",
+        CLAUDE_CODE_USE_BEDROCK="1",
+        CLAUDE_CODE_USE_SOMETHING_NEW="1",
+        CLAUDE_CODE_OAUTH_TOKEN="the-login",
+    )
+    propose = retitle.ask_claude("sonnet", env=env)
     assert propose([{"tag": "QMIG", "title": LONG, "body": "next."}]) == {"QMIG": "Reply to Alex"}
-    child = seen["env"]
+
+    child = dict(line.split("=", 1) for line in (fake / "env.txt").read_text().splitlines() if "=" in line)
     assert not {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} & child.keys()
-    assert child["CLAUDE_CODE_OAUTH_TOKEN"] == "the-login" and child["PATH"] == "/usr/bin"
+    assert child["CLAUDE_CODE_OAUTH_TOKEN"] == "the-login"
     switches = {k: v for k, v in child.items() if k.startswith("CLAUDE_CODE_USE_")}
     assert {"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_SOMETHING_NEW"} <= switches.keys()
     assert set(switches.values()) == {"0"}
-    assert LONG in seen["input"] and not any(LONG in a for a in seen["argv"])
-    assert seen["argv"][:4] == ["claude", "-p", "--model", "sonnet"]
-    argv = seen["argv"]
+
+    argv = (fake / "argv.txt").read_text().split("\n")[:-1]
+    assert argv[:3] == ["-p", "--model", "sonnet"] and not any(LONG in a for a in argv)
+    assert argv[argv.index("--output-format") + 1] == "stream-json" and "--verbose" in argv
     assert "--strict-mcp-config" in argv and argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--setting-sources") + 1] == ""
     assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True}
-    assert not str(seen["cwd"]).startswith(str(vault))
+    assert LONG in (fake / "stdin.txt").read_text()
+    assert not (fake / "cwd.txt").read_text().strip().startswith(str(vault))
+
+
+@pytest.mark.parametrize("source", ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key", None])
+def test_a_call_that_would_bill_a_key_is_stopped_before_it_runs(tmp_path: Path, source: str | None) -> None:
+    init = _init() | {"apiKeySource": source}
+    fake, env = _fake_claude(tmp_path, [init, "SLEEP", {"type": "result", "is_error": False, "result": "{}"}])
+    started = dt.datetime.now()
+    with pytest.raises(retitle.PaidKeyRefused, match="instead of your Claude login"):
+        retitle.ask_claude(env=env)([{"tag": "A1", "title": LONG, "body": ""}])
+    assert (dt.datetime.now() - started).total_seconds() < 15 and not (fake / "late").exists()
+
+
+def test_a_paid_key_stops_the_whole_dry_run(vault: Path, tmp_path: Path) -> None:
+    _setup(vault)
+    _fake, env = _fake_claude(tmp_path, [_init("ANTHROPIC_API_KEY")])
+    with pytest.raises(retitle.PaidKeyRefused):
+        retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=retitle.ask_claude(env=env))
+    assert not retitle.worksheet_path(vault, TODAY).exists()
 
 
 @pytest.mark.parametrize(
-    ("reply", "code"),
-    [({"is_error": True, "result": "limit"}, 0), ("", 1), ({"is_error": False, "result": "no json here"}, 0)],
+    ("events", "code", "error"),
+    [
+        ([_init(), {"type": "result", "is_error": True, "result": "limit"}], "0", RuntimeError),
+        ([_init()], "1", RuntimeError),
+        ([_init(), {"type": "result", "is_error": False, "result": "no json here"}], "0", ValueError),
+        ([{"type": "result", "is_error": False, "result": "{}"}], "0", retitle.PaidKeyRefused),
+    ],
 )
-def test_a_failed_model_call_raises(reply: Any, code: int) -> None:
-    with pytest.raises(Exception):  # noqa: B017 - any failure becomes a row problem in plan()
-        retitle.ask_claude(run=_fake_run(reply, returncode=code), env={})([{"tag": "A1", "title": LONG, "body": ""}])
+def test_a_failed_model_call_raises(tmp_path: Path, events: list[Any], code: str, error: type[Exception]) -> None:
+    _fake, env = _fake_claude(tmp_path, events, FAKE_EXIT=code)
+    with pytest.raises(error):
+        retitle.ask_claude(env=env)([{"tag": "A1", "title": LONG, "body": ""}])
 
 
 # ----- the dry run ----------------------------------------------------------------------
@@ -524,8 +571,16 @@ def test_undo_leaves_items_changed_since_the_pass(vault: Path) -> None:
 def test_undo_refuses_a_commit_that_is_not_a_cleanup(vault: Path) -> None:
     _setup(vault)
     _repo(vault)
+    head = _git(vault, "rev-parse", "HEAD").strip()
     with pytest.raises(RetitleError, match="not a title-cleanup commit"):
-        retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha="HEAD")
+        retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=head)
+
+
+@pytest.mark.parametrize("sha", ["HEAD", "--output=/tmp/x", "abc", "ABCDEF12", "a" * 41])
+def test_undo_takes_only_a_commit_sha(vault: Path, sha: str) -> None:
+    _setup(vault)
+    with pytest.raises(RetitleError, match="is not a commit sha"):
+        retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=sha)
 
 
 # ----- who may run it -------------------------------------------------------------------
@@ -618,7 +673,7 @@ def test_a_commit_that_landed_is_never_rolled_back(vault: Path) -> None:
         retitle.git_safe_commit(v, message, rel)
         raise subprocess.TimeoutExpired("git-safe-commit.sh", 300)
 
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(RetitleError, match=r"committed [0-9a-f]{12}, but then: .*--undo [0-9a-f]{12} --yes"):
         retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=commits_then_times_out)
     assert "**Ship the export**" in _committed_titles(vault)
     assert _git(vault, "status", "--porcelain", "--", "action-items", ".scout-state") == ""
@@ -771,3 +826,56 @@ def test_apply_undo_apply_undo_on_one_day(vault: Path) -> None:
     assert _lines(vault, TODAY) == original
     clock = last_changed_by_tag(_lines(vault, TODAY), data_dir=vault, today=TODAY)
     assert (clock["RED1"], clock["YEL1"]) == (FIRST, FIRST)
+
+
+def _slow_helper(vault: Path, *, commit_first: bool) -> None:
+    helper = vault / "scripts" / "git-safe-commit.sh"
+    if commit_first:
+        helper.rename(vault / "scripts" / "real-git-safe-commit.sh")
+    step = '"$(dirname "$0")/real-git-safe-commit.sh" "$@"\n' if commit_first else ""
+    helper.write_text(f'#!/bin/sh\n{step}sleep 20\ntouch "$(dirname "$0")/late"\n', encoding="utf-8")
+    helper.chmod(0o755)
+
+
+def test_a_helper_that_times_out_is_stopped_and_nothing_is_rolled_back(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    _slow_helper(vault, commit_first=False)
+    monkeypatch.setattr(retitle, "COMMIT_TIMEOUT_S", 1)
+    with pytest.raises(RetitleError, match="ran past 1s and was stopped; no commit of this pass is on HEAD"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert "**Ship the export**" in "\n".join(_lines(vault, TODAY))  # left for the owner to check, not rolled back
+    assert not (vault / "scripts" / "late").exists()
+
+
+def test_a_commit_that_lands_before_the_timeout_is_named_with_its_undo(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    _slow_helper(vault, commit_first=True)
+    monkeypatch.setattr(retitle, "COMMIT_TIMEOUT_S", 3)
+    with pytest.raises(RetitleError, match=r"committed [0-9a-f]{12}, but then: .*was stopped. Undo with"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert "**Ship the export**" in _committed_titles(vault)
+    assert _git(vault, "status", "--porcelain", "--", "action-items", ".scout-state") == ""
+
+
+def test_someone_elses_commit_is_not_taken_for_ours(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    helper = vault / "scripts" / "git-safe-commit.sh"
+    helper.write_text(
+        '#!/bin/sh\ncd "$(dirname "$0")/.." && echo x > other.md && git add other.md && git commit -qm other\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RetitleError, match="isn't this pass's commit"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert "**Ship the export**" in "\n".join(_lines(vault, TODAY))  # not rolled back: HEAD moved
+
+
+def test_undo_drops_a_frontmatter_block_left_empty(vault: Path) -> None:
+    text = retitle._set_frontmatter('---\nformer_title: "x"\n---\n\nBody.\n', {"former_title": None, "title": None})
+    assert text == "Body.\n"

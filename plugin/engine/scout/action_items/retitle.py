@@ -37,9 +37,11 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -78,6 +80,33 @@ _BANNED_STRINGS = ("<!--", "-->", "//==<<", ">>==//")
 
 class RetitleError(Exception):
     """The pass refuses or can't go on; the CLI exits 2."""
+
+
+class PaidKeyRefused(RetitleError):
+    """``claude`` would bill a key or a cloud account instead of the owner's login: the whole dry run stops."""
+
+
+class CommitTimedOut(RetitleError):
+    """The commit helper ran past its time and was stopped; whether it committed is for HEAD to say."""
+
+
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{4,40}")
+
+
+def _stop_group(proc: subprocess.Popen[str], grace_s: float = 10.0) -> None:
+    """Stop ``proc`` and everything it started (it leads its own session): TERM, then KILL after ``grace_s``."""
+    if proc.poll() is not None:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=grace_s)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 # ----- who may run it -------------------------------------------------------------------
@@ -198,14 +227,19 @@ def model_env(base: Mapping[str, str]) -> dict[str, str]:
 
 
 def model_argv(model: str) -> list[str]:
-    """No settings files (so no user ``env``, ``apiKeyHelper`` or hooks), hooks off, no tools, no MCP servers."""
+    """No settings files (so no user ``env``, ``apiKeyHelper`` or hooks), hooks off, no tools, no MCP servers.
+
+    ``stream-json`` puts the session's init message first, so the call can be
+    stopped before any request when it would not run on the login.
+    """
     return [
         "claude",
         "-p",
         "--model",
         model,
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--setting-sources",
         "",
         "--settings",
@@ -231,32 +265,84 @@ def _json_object(text: str) -> dict[str, str]:
     return {str(k): str(v).strip() for k, v in raw.items() if isinstance(v, str)}
 
 
-def ask_claude(
-    model: str = DEFAULT_MODEL,
-    *,
-    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-    env: Mapping[str, str] | None = None,
-) -> Proposer:
+def _stream_claude(
+    argv: list[str], text: str, *, env: Mapping[str, str], cwd: str
+) -> tuple[int, list[dict[str, object]], list[str]]:
+    """Run ``claude``, reading its stream-json events; stop it at once if its init message isn't on the login.
+
+    ``apiKeySource`` is "none" only when ``claude`` uses the account it is
+    logged in to. Anything else (an env key, an ``apiKeyHelper``, a Console
+    key login, managed settings) would bill a key, so the process group is
+    stopped before the first request.
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd,
+        env=dict(env),
+        start_new_session=True,
+    )
+    timer = threading.Timer(MODEL_TIMEOUT_S, _stop_group, args=(proc,))
+    timer.daemon = True
+    timer.start()
+    events: list[dict[str, object]] = []
+    other: list[str] = []
+    try:
+        assert proc.stdin is not None and proc.stdout is not None
+        try:
+            proc.stdin.write(text)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                other.append(line.strip())
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                source = event.get("apiKeySource")
+                if source != "none":
+                    _stop_group(proc)
+                    raise PaidKeyRefused(
+                        f"refused: claude would bill {source!r} instead of your Claude login "
+                        "(apiKeySource must be 'none'); nothing was sent"
+                    )
+            events.append(event)
+        proc.wait()
+    except BaseException:
+        _stop_group(proc)
+        raise
+    finally:
+        timer.cancel()
+    return proc.returncode, events, other
+
+
+def ask_claude(model: str = DEFAULT_MODEL, *, env: Mapping[str, str] | None = None) -> Proposer:
     """A proposer that asks the owner's ``claude`` CLI, one call per batch, the items on stdin."""
 
     def propose(items: list[dict[str, str]]) -> dict[str, str]:
         with tempfile.TemporaryDirectory(prefix="scout-retitle-") as cwd:  # no vault CLAUDE.md
-            out = run(
+            code, events, other = _stream_claude(
                 model_argv(model),
-                input=PROMPT + json.dumps(items, ensure_ascii=False, indent=1),
-                capture_output=True,
-                text=True,
-                timeout=MODEL_TIMEOUT_S,
-                check=False,
-                cwd=cwd,
+                PROMPT + json.dumps(items, ensure_ascii=False, indent=1),
                 env=model_env(os.environ if env is None else env),
+                cwd=cwd,
             )
-        if out.returncode != 0:
-            raise RuntimeError(f"claude exited {out.returncode}: {(out.stderr or out.stdout).strip()[:200]}")
-        envelope = json.loads(out.stdout)
-        if envelope.get("is_error"):
-            raise RuntimeError(f"claude reported an error: {str(envelope.get('result'))[:200]}")
-        return _json_object(str(envelope.get("result", "")))
+        if not any(e.get("type") == "system" and e.get("subtype") == "init" for e in events):
+            raise PaidKeyRefused("refused: claude sent no init message, so its login couldn't be checked")
+        result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+        if code != 0 or result is None:
+            raise RuntimeError(f"claude exited {code}: {' '.join(other)[-200:]}")
+        if result.get("is_error"):
+            raise RuntimeError(f"claude reported an error: {str(result.get('result'))[:200]}")
+        return _json_object(str(result.get("result", "")))
 
     return propose
 
@@ -384,6 +470,9 @@ def _set_frontmatter(text: str, lines_by_key: Mapping[str, str | None]) -> str:
             placed.add(key)
     anchor = next((i + 1 for i, line in enumerate(out) if line.startswith("title:")), len(out))
     out[anchor:anchor] = [v for k, v in wanted.items() if k not in placed]
+    if not any(line.strip() for line in out):  # nothing left in it: drop the block and the blank line after
+        rest = lines[last + 1 :]
+        return nl.join(rest[1:] if rest and not rest[0].strip() else rest)
     return nl.join(lines[:first] + out + lines[last:])
 
 
@@ -519,6 +608,8 @@ def plan(
         batch = wanted[i : i + BATCH]
         try:
             got = proposer([{"tag": r.tag, "title": r.old_title, "body": r.body} for r in batch])
+        except RetitleError:
+            raise
         except Exception as e:  # noqa: BLE001 - a failed batch is a row problem, never a crash
             for r in batch:
                 r.problems = [f"no proposal: {e}"[:240]]
@@ -540,7 +631,9 @@ Committer = Callable[[Path, str, list[str]], str]
 
 
 def _git(vault: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True, timeout=30, check=False)
+    return subprocess.run(
+        ["git", "-C", str(vault), *args], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False
+    )
 
 
 def _head(vault: Path) -> str | None:
@@ -557,22 +650,30 @@ def git_safe_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
 
     Success is HEAD moving, not the helper's words: it reports ``committed
     <sha>`` on stderr, and an exit code alone can't say whether a commit
-    landed before a later step failed.
+    landed before a later step failed. The helper leads its own session, so a
+    timeout stops it and its ``git`` children together (raising
+    :class:`CommitTimedOut`); the caller then reads HEAD.
     """
     before = _head(vault)
-    out = subprocess.run(
+    proc = subprocess.Popen(
         [str(vault / COMMIT_HELPER), message, *rel_paths],
         cwd=vault,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=COMMIT_TIMEOUT_S,
-        check=False,
+        encoding="utf-8",
+        start_new_session=True,
     )
+    try:
+        out, err = proc.communicate(timeout=COMMIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        _stop_group(proc)
+        raise CommitTimedOut(f"{COMMIT_HELPER} ran past {COMMIT_TIMEOUT_S}s and was stopped") from e
     after = _head(vault)
     if after is not None and after != before:
         return after[:12]
-    detail = (out.stderr + out.stdout).strip()[-300:]
-    raise RetitleError(f"{COMMIT_HELPER} exited {out.returncode} and made no commit: {detail}")
+    detail = (err + out).strip()[-300:]
+    raise RetitleError(f"{COMMIT_HELPER} exited {proc.returncode} and made no commit: {detail}")
 
 
 class _Transaction:
@@ -608,21 +709,43 @@ class _Transaction:
                 path.write_bytes(data)
 
 
-def _commit(tx: _Transaction, vault: Path, message: str, commit: Committer) -> str:
-    """Commit ``tx``'s files. Put them back only when HEAD didn't move, whatever went wrong (a timeout too)."""
+def _ours(vault: Path, sha: str, message: str, rel: list[str]) -> bool:
+    """Whether commit ``sha`` is this pass's: our message, and every path we wrote in it."""
+    subject = _git(vault, "log", "-1", "--format=%s", sha).stdout.strip()
+    names = set(_git(vault, "show", "--name-only", "--format=", sha).stdout.splitlines())
+    return subject == message and set(rel) <= names
+
+
+def _commit(tx: _Transaction, vault: Path, message: str, commit: Committer, undo_hint: str = "") -> str:
+    """Commit ``tx``'s files, never leaving HEAD and the working tree apart.
+
+    The files are put back only when HEAD is where it was and the helper
+    finished. A timeout never rolls back: a ``git`` child may still have
+    committed. Any other outcome is reported as a ``RetitleError`` that says
+    what HEAD holds.
+    """
     before = _head(vault)
+    rel = tx.rel()
+    check = "Check `git log -1` and `git status`: nothing was rolled back."
     try:
-        sha = commit(vault, message, tx.rel())
-    except BaseException:
-        if _head(vault) == before:
+        sha = commit(vault, message, rel)
+    except BaseException as e:
+        after = _head(vault)
+        landed = after is not None and after != before and _ours(vault, after, message, rel)
+        if landed and after is not None:
+            hint = undo_hint.format(sha=after[:12])
+            raise RetitleError(f"committed {after[:12]}, but then: {e or type(e).__name__}. {hint}".strip()) from e
+        if isinstance(e, CommitTimedOut):
+            raise RetitleError(f"{e}; no commit of this pass is on HEAD. {check}") from e
+        if after == before:
             tx.rollback()
-        raise
-    records = str(stale.rewrites_path(vault).relative_to(vault))
-    landed = _git(vault, "show", "--name-only", "--format=", sha).stdout.splitlines()
-    if _head(vault) is not None and records not in landed:
+            raise
+        raise RetitleError(f"HEAD moved to {after}, which isn't this pass's commit. {check}") from e
+    if _head(vault) is not None and not _ours(vault, sha, message, rel):
+        records = str(stale.rewrites_path(vault).relative_to(vault))
         raise RetitleError(
-            f"committed {sha}, but without {records}: the clocks will restart unless it is committed today "
-            f"(`git add -f {records}` and commit it)"
+            f"HEAD is {sha}, which isn't this pass's commit or lacks some of its files (such as {records}; "
+            f"without it the clocks restart). {check}"
         )
     return sha
 
@@ -803,7 +926,11 @@ def _apply(vault: Path, day: _dt.date, sha: str, commit: Committer) -> ApplyResu
         raise
     n = len(done)
     result.commit = _commit(
-        tx, vault, f"action items: shorten {n} title{'s' if n != 1 else ''} (title cleanup)", commit
+        tx,
+        vault,
+        f"action items: shorten {n} title{'s' if n != 1 else ''} (title cleanup)",
+        commit,
+        undo_hint="Undo with: scoutctl action-items retitle --undo {sha} --yes",
     )
     result.applied = done
     return result
@@ -830,6 +957,8 @@ _DELETE = "delete"
 
 def plan_undo(*, vault: Path, today: str, commit_sha: str) -> UndoPlan:
     """What undoing the pass committed as ``commit_sha`` would do to today's file and the notes."""
+    if not _COMMIT_SHA_RE.fullmatch(commit_sha):
+        raise RetitleError(f"{commit_sha!r} is not a commit sha (4 to 40 lowercase hex characters)")
     rel = str(stale.rewrites_path(vault).relative_to(vault))
     after = _git(vault, "show", f"{commit_sha}:{rel}")
     if after.returncode != 0:
