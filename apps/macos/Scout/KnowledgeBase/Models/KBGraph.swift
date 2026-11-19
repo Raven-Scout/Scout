@@ -332,6 +332,38 @@ nonisolated struct KBDanglingLink: Identifiable, Equatable {
     var id: String { source + "→" + target }
 }
 
+/// The dangling links one note holds.
+nonisolated struct KBDanglingGroup: Identifiable, Equatable {
+    let source: String     // relative path of the note
+    let targets: [String]  // unresolved [[target]] texts
+    var id: String { source }
+}
+
+/// The figures on the Health tab, each with one plain line saying what it
+/// means and what to do about it (UI audit #73).
+nonisolated enum KBHealthMetric: CaseIterable {
+    case dangling, orphans, islands, weaklyLinked, connections, clusters, hubs
+
+    var explanation: String {
+        switch self {
+        case .dangling:
+            return "Links to a note that doesn't exist. Open the note to fix the link, or create the missing note."
+        case .orphans:
+            return "Notes nothing links to and that link to nothing. Link them from a related note so they can be found."
+        case .islands:
+            return "Small groups of notes linked to each other but not to the rest. One link to a main note joins them up."
+        case .weaklyLinked:
+            return "Notes with a single link. Easy to lose; another link or two makes them easier to find."
+        case .connections:
+            return "How many other notes each note links to or is linked from, on average and at most."
+        case .clusters:
+            return "Notes that link together form a cluster. Most notes should sit in one main cluster."
+        case .hubs:
+            return "The notes with the most connections: good places to start reading."
+        }
+    }
+}
+
 nonisolated struct KBHub: Identifiable, Equatable {
     let path: String
     let degree: Int
@@ -410,6 +442,29 @@ extension KBNetworkStats {
         if !archived.isEmpty { parts.append("\(archived.count) archived note\(archived.count == 1 ? "" : "s")") }
         if !paperwork.isEmpty { parts.append("\(paperwork.count) paperwork note\(paperwork.count == 1 ? "" : "s")") }
         return parts.isEmpty ? nil : "Not counted: " + parts.joined(separator: " · ")
+    }
+
+    /// Dangling links grouped by the note that holds them (UI audit #73):
+    /// on a real vault most of a thousand broken links sit in a handful of
+    /// notes, and one fix per note is what the owner does. Most links first,
+    /// then by path; targets in the order they were listed.
+    var danglingBySource: [KBDanglingGroup] {
+        var order: [String] = []
+        var targets: [String: [String]] = [:]
+        for link in dangling {
+            if targets[link.source] == nil { order.append(link.source) }
+            targets[link.source, default: []].append(link.target)
+        }
+        return order.map { KBDanglingGroup(source: $0, targets: targets[$0] ?? []) }
+            .sorted { $0.targets.count != $1.targets.count ? $0.targets.count > $1.targets.count : $0.source < $1.source }
+    }
+
+    /// "1,197 dangling links in 14 notes", "1 dangling link", or the clean title.
+    var danglingTitle: String {
+        let base = Self.healthTitle(dangling.count, singular: "dangling link", plural: "dangling links")
+        let notes = Set(dangling.map(\.source)).count
+        guard notes > 0 else { return base }
+        return base + " in \(notes.formatted()) note\(notes == 1 ? "" : "s")"
     }
 
     /// A health row's title: "Orphaned notes: ✓ none", "1 orphaned note",

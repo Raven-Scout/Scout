@@ -41,7 +41,7 @@ struct ScoutApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(updates)
-                .frame(minWidth: 1100, minHeight: 640)
+                .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
         }
         .commands {
             CommandGroup(replacing: .newItem) { }  // suppress File > New Window

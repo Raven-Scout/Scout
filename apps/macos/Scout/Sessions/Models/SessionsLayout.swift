@@ -12,6 +12,41 @@ nonisolated struct SessionsFilter: Equatable, Sendable {
     var showRecentlyDone: Bool = false
 }
 
+/// Why the Sessions page has nothing to show (UI audit #37).
+nonisolated enum SessionsEmptyReason: Equatable, Sendable {
+    /// Claude Code hasn't recorded a session on this Mac yet.
+    case noSessionsYet
+    /// There are sessions, but the default view hides every one: they're
+    /// Scout's own runs or finished.
+    case onlyHiddenByDefault(count: Int)
+    /// The search, project or state filters match nothing.
+    case noMatches
+
+    var title: String {
+        switch self {
+        case .noSessionsYet: return "No Claude Code sessions yet"
+        case .onlyHiddenByDefault: return "Nothing to show right now"
+        case .noMatches: return "No sessions match these filters."
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .noSessionsYet:
+            return "Sessions you start in Claude Code show up here, by project, as soon as they begin."
+        case .onlyHiddenByDefault(let count):
+            let all = count == 1 ? "Your one session is" : "All \(count) sessions are"
+            return "\(all) Scout's own runs or finished, which are hidden. "
+                + "Turn on \u{201C}Show Scout's own runs\u{201D} or \u{201C}Show recently done\u{201D} in View options to see them."
+        case .noMatches:
+            return "Clear the search, project and state filters to see every session."
+        }
+    }
+
+    /// Only chosen filters can be cleared; the other two aren't filters.
+    var offersClearFilters: Bool { self == .noMatches }
+}
+
 /// One project swimlane on the board.
 nonisolated struct SessionRow: Identifiable, Equatable, Sendable {
     /// The project key.
@@ -90,6 +125,17 @@ nonisolated enum SessionsLayout {
 
     static func visibleSessions(index: SessionIndex, filter: SessionsFilter, now: Date) -> [AgentSession] {
         index.sessions.filter { isVisible($0, filter: filter, index: index, now: now) }
+    }
+
+    /// Why nothing is on the board or in the table, or nil when something
+    /// is (UI audit #37): a first run with no sessions at all reads
+    /// differently from filters that match nothing.
+    static func emptyReason(index: SessionIndex, filter: SessionsFilter, now: Date) -> SessionsEmptyReason? {
+        guard visibleSessions(index: index, filter: filter, now: now).isEmpty else { return nil }
+        if index.sessions.isEmpty { return .noSessionsYet }
+        let chosen = !filter.states.isEmpty || filter.projectKey != nil
+            || !filter.search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return chosen ? .noMatches : .onlyHiddenByDefault(count: index.sessions.count)
     }
 
     // MARK: Ordering

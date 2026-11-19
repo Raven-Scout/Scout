@@ -127,12 +127,25 @@ actor KnowledgeBaseFileWriter {
     /// `rename`, plus both paths' bytes before and after for undo (which moves
     /// the note back).
     func renameReturningChange(fileURL: URL, to newName: String) async throws -> (url: URL, change: VaultChange?) {
+        let result = try await renameUpdatingLinks(fileURL: fileURL, to: newName, links: nil)
+        return (result.url, result.change)
+    }
+
+    /// `renameReturningChange`, also pointing the links in `links.notes` at
+    /// the new name (UI audit #75). The rewrites land in the same commit and
+    /// the same undo step as the move, so undo puts every note back. Each
+    /// note is re-read and rewritten only if it's unchanged since that read;
+    /// a note that can't be read or changed meanwhile is reported, not forced.
+    func renameUpdatingLinks(
+        fileURL: URL, to newName: String, links: KBRenameLinkPlan?
+    ) async throws -> (url: URL, change: VaultChange?, links: KBRenameLinkReport) {
         try ensureInsideKB(fileURL)
+        for url in links?.notes ?? [] { try ensureInsideKB(url) }
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.performRename(
-                fileURL: fileURL, newName: newName,
+                fileURL: fileURL, newName: newName, links: links,
                 scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
@@ -244,9 +257,9 @@ actor KnowledgeBaseFileWriter {
     }
 
     private static func performRename(
-        fileURL: URL, newName: String,
+        fileURL: URL, newName: String, links: KBRenameLinkPlan?,
         scoutDirectory: URL, gitService: GitServiceProtocol?
-    ) async throws -> (url: URL, change: VaultChange?) {
+    ) async throws -> (url: URL, change: VaultChange?, links: KBRenameLinkReport) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else {
             throw KBWriterError.notFound(fileURL.lastPathComponent)
@@ -261,13 +274,63 @@ actor KnowledgeBaseFileWriter {
         let moved = try? FileSnapshot.capture(fileURL)
         do { try fm.moveItem(at: fileURL, to: dest) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
-        try await commitOrThrow(gitService, paths: [oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
+
+        // The move succeeded: now the links. Nothing here throws, so a note
+        // that can't be updated never strands the rename half-done.
+        var report = KBRenameLinkReport(notesSkipped: links?.skipped ?? [])
+        var linkBefore: [FileSnapshot] = []
+        var linkAfter: [FileSnapshot] = []
+        if let links {
+            let newStem = (fileName as NSString).deletingPathExtension
+            let kbPrefix = "knowledge-base/"
+            let newKBPath = ((newRel.hasPrefix(kbPrefix) ? String(newRel.dropFirst(kbPrefix.count)) : newRel)
+                             as NSString).deletingPathExtension
+            for url in links.notes where url.standardizedFileURL != fileURL.standardizedFileURL {
+                let source = KnowledgeBaseService.relativePath(of: url, in: scoutDirectory)
+                guard let snapshot = try? FileSnapshot.capture(url), let data = snapshot.data,
+                      let decoded = decodeUTF8(data) else {
+                    report.notesSkipped.append(source)
+                    continue
+                }
+                let result = KBLinkRewrite.rewrite(decoded.text, source: source, oldPath: links.oldPath,
+                                                   newStem: newStem, newKBPath: newKBPath, index: links.index)
+                guard result.count > 0 else { continue }
+                let written = (decoded.bom ? utf8BOM : Data()) + Data(result.text.utf8)
+                do {
+                    try VaultWrite.replace(url, expecting: data, with: written)
+                } catch {
+                    report.notesSkipped.append(source)
+                    continue
+                }
+                linkBefore.append(snapshot)
+                linkAfter.append(FileSnapshot(url: url, data: written))
+                report.linksUpdated += result.count
+                report.notesUpdated += 1
+            }
+            report.notesSkipped.sort()
+        }
+
+        let linkPaths = linkBefore.map { relativePathInRepo(fileURL: $0.url, repo: scoutDirectory) }
+        var message = "app: rename \(oldRel) → \(newRel)"
+        if report.notesUpdated > 0 {
+            message += " (updated \(report.linksUpdated) link\(report.linksUpdated == 1 ? "" : "s")"
+                + " in \(report.notesUpdated) note\(report.notesUpdated == 1 ? "" : "s"))"
+        }
+        try await commitOrThrow(gitService, paths: [oldRel, newRel] + linkPaths, message: message)
         let change = moved.flatMap {
             VaultChange(actionName: "Rename Note",
-                        before: [$0, FileSnapshot(url: dest, data: nil)],
-                        after: [FileSnapshot(url: fileURL, data: nil), FileSnapshot(url: dest, data: $0.data)])
+                        before: [$0, FileSnapshot(url: dest, data: nil)] + linkBefore,
+                        after: [FileSnapshot(url: fileURL, data: nil), FileSnapshot(url: dest, data: $0.data)] + linkAfter)
         }
-        return (dest, change)
+        return (dest, change, report)
+    }
+
+    /// The text of a UTF-8 file, and whether it started with a byte-order
+    /// mark (dropped from the text, put back on write). nil if it isn't UTF-8.
+    static func decodeUTF8(_ data: Data) -> (text: String, bom: Bool)? {
+        let bom = data.starts(with: utf8BOM)
+        let body = bom ? data.dropFirst(utf8BOM.count) : data[...]
+        return String(data: Data(body), encoding: .utf8).map { ($0, bom) }
     }
 
     /// Where `rename(fileURL:to:)` moves the file: same directory, the new
@@ -327,6 +390,34 @@ actor KnowledgeBaseFileWriter {
         let full = fileURL.resolvingSymlinksInPath().path
         let prefix = repo.resolvingSymlinksInPath().path + "/"
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : fileURL.lastPathComponent
+    }
+}
+
+/// The links a rename should repoint (UI audit #75): built from the index the
+/// rename sheet showed, minus notes with unsaved edits.
+nonisolated struct KBRenameLinkPlan: Sendable {
+    /// The index before the rename, which decides which links point at the note.
+    let index: KBIndex
+    /// The renamed note's path relative to the Scout folder, as the index has it.
+    let oldPath: String
+    /// The notes to update.
+    let notes: [URL]
+    /// Notes that link here but were left alone up front (unsaved edits are
+    /// open in them), relative paths.
+    let skipped: [String]
+
+    /// The plan for renaming `oldPath`: every note linking to it, except
+    /// those with unsaved edits, which are listed as skipped instead.
+    @MainActor
+    static func make(renaming oldPath: String, index: KBIndex, scoutDirectory: URL,
+                     drafts: KBDraftStore) -> KBRenameLinkPlan {
+        var notes: [URL] = []
+        var skipped: [String] = []
+        for inbound in KBLinkRewrite.inboundNotes(to: oldPath, in: index) {
+            let url = scoutDirectory.appendingPathComponent(inbound.path)
+            if drafts.draft(for: url)?.isDirty == true { skipped.append(inbound.path) } else { notes.append(url) }
+        }
+        return KBRenameLinkPlan(index: index, oldPath: oldPath, notes: notes, skipped: skipped.sorted())
     }
 }
 
