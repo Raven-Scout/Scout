@@ -15,12 +15,14 @@ process tree, minus Scout's own background helpers (the lease keepalive, the
 run brokers, the watcher itself) and everything they start. The session made
 progress when its process list changed (a tool call started or ended) or it
 burned ``SCOUT_LOCK_PROGRESS_CPU_SECS`` of CPU within the last
-:data:`CPU_WINDOW_SAMPLES` samples. The window is sliding, not "since the last
+:data:`CPU_WINDOW_SECS` of awake time. The window is sliding, not "since the last
 progress": a hung ``claude -p`` still burns a trickle of CPU (timers, sockets),
 and summed over two hours a trickle reaches any threshold. A helper does
 neither on claude's behalf, so it no longer counts. A sample ``ps`` can't take
 (an error, a timeout, a table without the runner) says nothing either way: no
-progress, and no stall for that gap.
+progress, and no stall for that gap; after :data:`MAX_FAILED_SAMPLES` of them in
+a row the watcher withdraws its line until ``ps`` works again, and waiters
+sample the holder themselves.
 
 The watcher writes what it found to ``.scout-logs/.scout-session.lock.alive``
 after every sample (a fresh ``mkstemp`` file renamed over it, so a link planted
@@ -73,16 +75,20 @@ SAMPLE_SECS_ENV = "SCOUT_PROGRESS_SAMPLE_SECS"
 CPU_SECS_ENV = "SCOUT_LOCK_PROGRESS_CPU_SECS"  # the reaper's knob: one threshold for both
 MAX_AGE_SECS_ENV = "SCOUT_LOCK_MAX_AGE_SECS"  # the reaper's ceiling
 DEFAULT_SAMPLE_SECS = 60
-MAX_SAMPLE_SECS = 600
+MAX_SAMPLE_SECS = 200
 DEFAULT_CPU_SECS = 10
 DEFAULT_MAX_AGE_SECS = 7200
-# The CPU threshold must be burned within this many samples (10 min at the default rate).
-CPU_WINDOW_SAMPLES = 10
+# The CPU threshold must be burned within this much awake time, however often the watcher samples.
+CPU_WINDOW_SECS = 600
 # A line is trusted for this many samples, plus slack for a slow `ps` on a loaded host.
 FRESH_SAMPLES = 3
 FRESH_SLACK_SECS = 30
-# Readers never trust a line longer than this, whatever it says: the longest a real watcher asks for.
+# Readers never trust a line longer than this, whatever it says: the longest a real watcher asks for
+# (three samples at the slowest rate it allows, plus the slack), a little over ten minutes.
 MAX_FRESH_SECS = FRESH_SAMPLES * MAX_SAMPLE_SECS + FRESH_SLACK_SECS
+# After this many samples in a row that `ps` couldn't take, the watcher withdraws its line until one
+# succeeds: a line kept fresh with a frozen stall would vouch for a run nobody is measuring.
+MAX_FAILED_SAMPLES = 3
 MAX_LINE_BYTES = 4096
 
 # Scout's own background helpers in a run's session. They live as long as the
@@ -321,25 +327,31 @@ def _pid_alive(pid: int) -> bool:
 class _Progress:
     """The progress rule over successive samples: a changed process list, or the CPU threshold within the window."""
 
-    def __init__(self, cpu_threshold_cs: int, window_samples: int) -> None:
+    def __init__(self, cpu_threshold_cs: int, window_s: int) -> None:
         self.threshold = cpu_threshold_cs
-        self.cpus: deque[int] = deque(maxlen=window_samples + 1)
+        self.window_s = window_s
+        self.samples: deque[tuple[str, int, int]] = deque()  # (awake clock, awake s, cpu cs)
         self.pids: frozenset[int] | None = None
 
-    def moved(self, cpu: int, pids: frozenset[int]) -> bool | None:
+    def moved(self, cpu: int, pids: frozenset[int], clock: str, now: int) -> bool | None:
         """True on progress, False on none, None for a baseline (nothing known yet)."""
-        if self.pids is None:
-            verdict: bool | None = None
-        elif pids != self.pids:
-            verdict = True
-        else:
-            # A total that fell means a process went (and pids changed); otherwise the window's CPU.
-            verdict = cpu < self.cpus[-1] or cpu - self.cpus[0] >= self.threshold
-        if pids != self.pids:
-            self.cpus.clear()  # another set of processes: their totals don't compare with the old ones
-        self.cpus.append(cpu)
+        prev = self.samples[-1] if self.samples else None
+        known = self.pids is not None
+        changed = known and pids != self.pids
+        # Another set of processes, or another clock (a reboot): old totals and times don't compare.
+        if prev is None or pids != self.pids or prev[0] != clock or now < prev[1]:
+            self.samples.clear()
+        self.samples.append((clock, now, cpu))
+        # Keep one sample at or before the window's start: the CPU burned since it is the window's.
+        while len(self.samples) > 1 and self.samples[1][1] <= now - self.window_s:
+            self.samples.popleft()
         self.pids = pids
-        return verdict
+        if not known:
+            return None
+        if changed:
+            return True
+        # A total that fell means a process went; otherwise the window's CPU.
+        return (prev is not None and cpu < prev[2]) or cpu - self.samples[0][2] >= self.threshold
 
 
 def watch(
@@ -349,7 +361,7 @@ def watch(
     log: str,
     sample_s: int = DEFAULT_SAMPLE_SECS,
     cpu_threshold_cs: int = DEFAULT_CPU_SECS * 100,
-    window_samples: int = CPU_WINDOW_SAMPLES,
+    window_s: int = CPU_WINDOW_SECS,
     self_pid: int | None = None,
     ps: Callable[[], str] = run_ps,
     alive: Callable[[int], bool] = _pid_alive,
@@ -369,24 +381,29 @@ def watch(
     lock = vault / ".scout-logs" / LOCK_NAME
     path = heartbeat_path(vault)
     fresh = fresh_for(sample_s)
-    rule = _Progress(cpu_threshold_cs, window_samples)
+    rule = _Progress(cpu_threshold_cs, window_s)
     first = take_sample(ps, runner_pid, self_pid=me)
+    last_clock, last = awake_now()
     if first is not None:
-        rule.moved(*first)
+        rule.moved(*first, last_clock, last)
     progress_at = int(wall_now())
     stalled = 0
-    last_clock, last = awake_now()
+    failed = 0
     try:
         while True:
             if lock_pid(lock) != runner_pid:
                 return "not_holder"
-            write(path, Heartbeat(runner_pid, progress_at, stalled, fresh, log))
+            if failed < MAX_FAILED_SAMPLES:
+                write(path, Heartbeat(runner_pid, progress_at, stalled, fresh, log))
+            else:
+                remove_if_ours(path, runner_pid)  # nobody is measuring: let waiters sample for themselves
             sleep(sample_s)
             if not alive(runner_pid):
                 return "gone"
             sample = take_sample(ps, runner_pid, self_pid=me)
             clock, now = awake_now()
-            verdict = rule.moved(*sample) if sample is not None else None
+            failed = failed + 1 if sample is None else 0
+            verdict = rule.moved(*sample, clock, now) if sample is not None else None
             if verdict:
                 progress_at = int(wall_now())
                 stalled = 0
@@ -399,12 +416,13 @@ def watch(
 
 
 __all__ = [
-    "CPU_WINDOW_SAMPLES",
+    "CPU_WINDOW_SECS",
     "DEFAULT_CPU_SECS",
     "DEFAULT_MAX_AGE_SECS",
     "DEFAULT_SAMPLE_SECS",
     "FORMAT_VERSION",
     "HELPER_SUBCOMMANDS",
+    "MAX_FAILED_SAMPLES",
     "MAX_FRESH_SECS",
     "MAX_LINE_BYTES",
     "Heartbeat",

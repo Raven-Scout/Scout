@@ -65,8 +65,8 @@ struct RunProgressTests {
             .write(to: line, atomically: true, encoding: .utf8)
         let written = Self.et(day: 20, hour: 11, minute: 30)
         try pinLogModified(line, to: written)
-        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(1830)) != nil)
-        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(1831)) == nil)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(630)) != nil)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(631)) == nil)
         // A modification time a day ahead (`touch -t`) would otherwise stay "fresh" for a day.
         #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(-31)) == nil)
         #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(-30)) != nil)

@@ -53,8 +53,8 @@ struct RunProgress: Equatable, Sendable {
     }
 
     /// The longest any reader trusts a line, whatever it says (`MAX_FRESH_SECS` in the engine):
-    /// three samples at the slowest rate the watcher allows (600 s), plus 30 s.
-    nonisolated static let maxFreshFor: TimeInterval = 1830
+    /// three samples at the slowest rate the watcher allows (200 s), plus 30 s.
+    nonisolated static let maxFreshFor: TimeInterval = 630
     /// How far in the future a line's modification time may be (clock skew) and still count.
     nonisolated static let freshSlack: TimeInterval = 30
     nonisolated static let maxLineBytes = 4096

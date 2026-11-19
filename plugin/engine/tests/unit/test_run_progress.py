@@ -145,9 +145,9 @@ class Host:
         return table
 
     def sleep(self, secs: float) -> None:
-        beat = rp.parse(rp.heartbeat_path(self.vault).read_text(encoding="utf-8"))
-        assert beat is not None
-        self.lines.append(beat)
+        path = rp.heartbeat_path(self.vault)
+        beat = rp.parse(path.read_text(encoding="utf-8")) if path.exists() else None
+        self.lines.append(beat)  # type: ignore[arg-type]  # None: the watcher withdrew its line
         self.awake += int(secs)
         self.wall += secs
 
@@ -242,7 +242,25 @@ def test_a_failed_sample_is_neither_progress_nor_stall(tmp_path: Path) -> None:
 
     host.ps = ps  # type: ignore[method-assign]
     host.run()
-    assert [b.stalled_s for b in host.lines] == [0, 0, 0, 0, 0, 60], "only the last gap had two good samples"
+    stalls = [b.stalled_s if b else None for b in host.lines]
+    # Three failures in a row and the line is withdrawn (a fresh line must not vouch for an unmeasured run);
+    # it comes back with the next good sample, and only that last gap had two good samples to measure.
+    assert stalls == [0, 0, 0, None, None, 60]
+
+
+def test_a_long_ps_outage_leaves_no_line_to_trust(tmp_path: Path) -> None:
+    host = Host(tmp_path, [_table("1:02.30")], runner_lives=8)
+    good = host.ps
+
+    def ps() -> str:
+        if host.samples >= 1:
+            host.samples += 1
+            raise subprocess.TimeoutExpired("ps", 30)
+        return good()
+
+    host.ps = ps  # type: ignore[method-assign]
+    host.run()
+    assert [b is not None for b in host.lines] == [True, True, True] + [False] * 6
 
 
 def test_a_clock_that_went_back_adds_no_stall(tmp_path: Path) -> None:
@@ -345,9 +363,9 @@ def test_freshness_is_capped_and_never_in_the_future(tmp_path: Path) -> None:
     path = tmp_path / ".scout-session.lock.alive"
     rp.write(path, rp.Heartbeat(4242, 1, 0, 999_999_999_999, "/v/l"))
     written = path.stat().st_mtime
-    assert rp.MAX_FRESH_SECS == 1830
-    assert rp.read_fresh(path, now=written + 1830) is not None
-    assert rp.read_fresh(path, now=written + 1831) is None
+    assert rp.MAX_FRESH_SECS == 630
+    assert rp.read_fresh(path, now=written + 630) is not None
+    assert rp.read_fresh(path, now=written + 631) is None
     assert rp.read_fresh(path, now=written - 30) is not None
     assert rp.read_fresh(path, now=written - 31) is None, "an mtime in the future is forged or skewed"
 

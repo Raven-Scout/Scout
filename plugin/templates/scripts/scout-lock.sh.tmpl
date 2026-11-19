@@ -276,7 +276,7 @@ _scout_awake_now() {
 _scout_watcher_stall() {
     # The awake seconds without progress that the holder $1's progress watcher
     # reports (LOCK_ALIVE), when its line names $1 and was written within the
-    # "fresh for" it gives, capped at 1830 s (3 samples of the longest 600 s
+    # "fresh for" it gives, capped at 630 s (3 samples of the longest 200 s
     # rate, plus 30 s) whatever the line says, and not in the future; nothing
     # otherwise (no watcher, a dead one, another holder's line, no python3).
     # Read as engine/scout/run_progress.py's read_fresh reads it: never through
@@ -302,7 +302,7 @@ if len(parts) != 6 or parts[0] != "1" or parts[1] != holder or "\n" in parts[5]:
 if not all(p.isascii() and p.isdigit() for p in parts[1:5]) or int(parts[4]) <= 0:
     sys.exit(0)
 age = time.time() - st.st_mtime
-if -30 <= age <= min(int(parts[4]), 1830):
+if -30 <= age <= min(int(parts[4]), 630):
     print(int(parts[3]))
 PY
 }
