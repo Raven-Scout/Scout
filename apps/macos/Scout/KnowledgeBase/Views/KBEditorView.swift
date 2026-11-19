@@ -635,25 +635,16 @@ struct KBSourceEditor: NSViewRepresentable {
         tv.backgroundColor = NSColor(DS.Paper.sunk)
         tv.drawsBackground = true
         tv.string = text
-        Self.applyStyle(to: tv)
+        context.coordinator.applyStyle(to: tv)
         find?.textView = tv
         return scroll
-    }
-
-    /// Font and colour, applied on every update too so Settings ▸ General ▸
-    /// Text size reaches an open note without reopening it.
-    private static func applyStyle(to tv: NSTextView) {
-        let font = KBLiveEditor.Coordinator.mono(12.5)
-        if tv.font != font { tv.font = font }
-        let ink = NSColor(DS.Ink.p1)
-        if tv.textColor != ink { tv.textColor = ink }
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.text = $text
         guard let tv = scroll.documentView as? NSTextView else { return }
         find?.textView = tv
-        Self.applyStyle(to: tv)
+        context.coordinator.applyStyle(to: tv)
         if tv.string != text {
             let sel = tv.selectedRange()
             // Typing undo recorded against the old text would replay onto the
@@ -670,7 +661,21 @@ struct KBSourceEditor: NSViewRepresentable {
         /// The editor's own typing undo, kept apart from the window's, which
         /// holds the vault's undo steps (saves, renames), as in Rich mode.
         let textUndo = UndoManager()
+        /// The font and colour last applied. Compared with these, not with
+        /// `tv.font`: a note starting with an emoji or CJK reports AppKit's
+        /// fallback font there, which would restyle the note on every key.
+        private var appliedFont: NSFont?
+        private var appliedInk: NSColor?
         init(text: Binding<String>) { self.text = text }
+
+        /// Font and colour, applied on every update too so Settings ▸ General
+        /// ▸ Text size reaches an open note without reopening it.
+        func applyStyle(to tv: NSTextView) {
+            let font = KBLiveEditor.Coordinator.mono(12.5)
+            if font != appliedFont { tv.font = font; appliedFont = font }
+            let ink = NSColor(DS.Ink.p1)
+            if ink != appliedInk { tv.textColor = ink; appliedInk = ink }
+        }
 
         func undoManager(for view: NSTextView) -> UndoManager? { textUndo }
 

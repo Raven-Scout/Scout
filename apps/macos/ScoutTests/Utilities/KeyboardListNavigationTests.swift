@@ -57,6 +57,22 @@ struct KeyboardListNavigationTests {
         #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, b, c], rows: [a, b, c]) == b.id)
     }
 
+    @Test("two untagged cards with one subject: the cursor stays on its own")
+    func repeatedSubject() {
+        let a = Row(id: UUID(), shortPrefix: nil, subject: "Follow up")
+        let x = Row(id: UUID(), shortPrefix: nil, subject: "other")
+        let b = Row(id: UUID(), shortPrefix: nil, subject: "Follow up")
+        // A filter change or a write elsewhere: the cursor's card is still drawn.
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, x, b], rows: [a, x, b]) == b.id)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, x, b], rows: [x, b]) == b.id)
+        // Renumbered by an insert at the top: the nearer "Follow up", not the first.
+        let added = Row(id: UUID(), shortPrefix: nil, subject: "new")
+        let a2 = Row(id: UUID(), shortPrefix: nil, subject: "Follow up")
+        let x2 = Row(id: UUID(), shortPrefix: nil, subject: "other")
+        let b2 = Row(id: UUID(), shortPrefix: nil, subject: "Follow up")
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, x, b], rows: [added, a2, x2, b2]) == b2.id)
+    }
+
     @Test("a card that's really gone hands over to its old position")
     func cursorGone() {
         let a = Row(id: UUID(), shortPrefix: nil, subject: "first")

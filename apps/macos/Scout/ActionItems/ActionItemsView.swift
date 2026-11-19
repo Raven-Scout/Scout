@@ -207,7 +207,13 @@ struct ActionItemsView: View {
                 })
                 .environment(\.highlightedTaskID, highlightedTaskID)
                 .environment(\.actionItemsKeyboard, keyboardContext)
-                .onPreferenceChange(CommentEditorFocusedKey.self) { commentEditorFocused = $0 }
+                .onPreferenceChange(CommentEditorFocusedKey.self) { focused in
+                    // A comment sent or cancelled takes its editor (and the
+                    // focus) away: hand the keys back to the list unless
+                    // another field took them.
+                    if commentEditorFocused, !focused, !searchFocused { listFocused = true }
+                    commentEditorFocused = focused
+                }
                 // The list takes keyboard focus (a click on it, or opening the
                 // page) so the arrows move the current card rather than scroll.
                 .focusable()

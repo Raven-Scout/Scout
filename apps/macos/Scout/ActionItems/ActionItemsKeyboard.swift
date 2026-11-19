@@ -71,23 +71,28 @@ struct ActionItemsKeyboardContext: Equatable {
             .map(Row.init)
     }
 
-    /// Where the current card goes after the list changes under it. Task ids
-    /// encode a row's position, so a write anywhere above (a scheduled run
-    /// adding an item, say) renumbers the card: follow its task by `[#TAG]`,
-    /// then by subject, so ⌘↵ never lands on a neighbour. Only a card that's
-    /// really gone (done, snoozed, filtered out) hands over to whatever now
-    /// sits at its old position.
+    /// Where the current card goes after the list changes under it. A card
+    /// still drawn keeps the cursor. Task ids encode a row's position, so a
+    /// write anywhere above (a scheduled run adding an item, say) renumbers
+    /// the card: then follow its task by `[#TAG]`, then by subject. When
+    /// untagged cards share a subject, take the one in the same place among
+    /// them (the second "Follow up" stays the second), so ⌘↵ never lands on a
+    /// neighbour. Only a card that's really gone (done, snoozed, filtered out)
+    /// hands over to whatever now sits at its old position.
     static func reconcile(cursor: UUID?, previous: [Row], rows: [Row]) -> UUID? {
         guard let cursor, !rows.isEmpty else { return nil }
-        guard let old = previous.firstIndex(where: { $0.id == cursor }) else {
-            return rows.contains { $0.id == cursor } ? cursor : nil
-        }
+        if rows.contains(where: { $0.id == cursor }) { return cursor }
+        guard let old = previous.firstIndex(where: { $0.id == cursor }) else { return nil }
         let task = previous[old]
         let candidates = rows.filter { $0.snoozed == task.snoozed }
         if let tag = task.shortPrefix, let same = candidates.first(where: { $0.shortPrefix == tag }) {
             return same.id
         }
-        if let same = candidates.first(where: { $0.subject == task.subject }) { return same.id }
+        let namesakes = candidates.filter { $0.subject == task.subject }
+        if !namesakes.isEmpty {
+            let place = previous[..<old].filter { $0.subject == task.subject && $0.snoozed == task.snoozed }.count
+            return namesakes[min(place, namesakes.count - 1)].id
+        }
         return rows[min(old, rows.count - 1)].id
     }
 }
