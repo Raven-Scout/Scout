@@ -10,6 +10,7 @@ full of planted programs, and asserts none of them ever ran.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from tests.unit.test_install_venv_script import _fake_uv
 ENGINE_DIR = Path(__file__).resolve().parents[2]
 LAUNCHER = ENGINE_DIR / "bin" / "scoutctl"
 SHIM_TEMPLATE = ENGINE_DIR.parent / "templates" / "scripts" / "scoutctl.sh.tmpl"
+HOOKS_JSON = ENGINE_DIR.parent / "hooks" / "hooks.json"
 
 # Everything a launcher here looks up by name, and the interpreters it might try.
 PLANTED = (
@@ -326,3 +328,202 @@ def test_default_scoutctl_skips_relative_path_entries(tmp_path: Path, monkeypatc
 
     monkeypatch.setenv("PATH", ":".join(RELATIVE))
     assert default_scoutctl() == "scoutctl"
+
+
+def test_default_scoutctl_reads_a_leading_tilde_as_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """bash's own PATH search expands a leading `~`, so `PATH="~/.local/bin:$PATH"` works in a
+    shell; the filter keeps such an entry as $HOME/... rather than dropping it."""
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "scoutctl").write_text("#!/bin/sh\n")
+    (home / "bin" / "scoutctl").chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-venv" / "python"))
+    monkeypatch.setenv("HOME", str(home))
+
+    monkeypatch.setenv("PATH", "~/bin")
+    assert default_scoutctl() == str(home / "bin" / "scoutctl")
+
+    monkeypatch.setenv("HOME", "")
+    assert default_scoutctl() == "scoutctl"
+
+
+# --- a leading ~ in the shell filters ---------------------------------------------------------
+
+
+def test_launcher_reads_a_leading_tilde_as_home(tmp_path: Path) -> None:
+    root = _plugin_tree(tmp_path)
+    home = tmp_path / "home"
+    sysbin = home / "sysbin"
+    sysbin.mkdir(parents=True)
+    (sysbin / "python3").write_text('#!/bin/sh\nprintf "%s\\n" "$PATH"\n')
+    (sysbin / "python3").chmod(0o755)
+    repo = tmp_path / "cloned-repo"
+    marker = _plant(repo)
+
+    out = _launch(root, repo, home, "~/sysbin:.:/usr/bin::/bin:~")
+
+    _assert_nothing_planted_ran(marker, out)
+    assert out.stdout.strip() == f"{sysbin}:/usr/bin:/bin:{home}"
+
+
+def test_vault_shim_and_pre_commit_hook_read_a_leading_tilde_as_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "scoutctl").write_text('#!/bin/sh\necho "home-scoutctl $*" >&2\n')
+    (home / "bin" / "scoutctl").chmod(0o755)
+    env = {"HOME": str(home), "PATH": "~/bin:.:/usr/bin:/bin"}
+    vault = tmp_path / "vault"
+    subprocess.run(["git", "init", "-q", str(vault)], check=True)
+    marker = _plant(vault)
+    shim = vault / "scripts" / "scoutctl"
+    shim.parent.mkdir(parents=True)
+    shim.write_text(render_template(SHIM_TEMPLATE.read_text(encoding="utf-8"), {"SCOUTCTL_BIN": "/nonexistent"}))
+    shim.chmod(0o755)
+    hook = tmp_path / "pre-commit"
+    hook.write_text(render_hook(str(tmp_path / "gone" / "scoutctl")))
+    hook.chmod(0o755)
+
+    for argv in ([str(shim), "health"], ["/bin/sh", str(hook)]):
+        out = subprocess.run(argv, env=env, cwd=vault, capture_output=True, text=True, timeout=30, check=False)
+        _assert_nothing_planted_ran(marker, out)
+        assert out.returncode == 0, out
+        assert "home-scoutctl" in out.stderr, out
+
+
+# --- plugin/hooks/hooks.json -------------------------------------------------------------------
+#
+# Claude Code runs these inline in every session's cwd, on every matching tool call, in any repo.
+
+
+def _tool_hooks() -> list[tuple[str, str]]:
+    data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+    return [
+        (f"{event} {group.get('matcher')}", hook["command"])
+        for event in ("PreToolUse", "PostToolUse")
+        for group in data["hooks"][event]
+        for hook in group["hooks"]
+    ]
+
+
+def _filter_prefix() -> str:
+    command = _tool_hooks()[0][1]
+    return command[: command.index("export PATH; ") + len("export PATH; ")]
+
+
+def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
+    prefix = _filter_prefix()
+    assert prefix.startswith("sp=; ")
+    for name, command in _tool_hooks():
+        assert command.startswith(prefix), name
+    assert "dirname" not in HOOKS_JSON.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("shell", ["/bin/sh", "/bin/bash"])
+@pytest.mark.parametrize(
+    ("path", "home", "expected"),
+    [
+        ("~/x:.:/usr/bin::~:/bin:./bin", "/h", "/h/x:/usr/bin:/h:/bin"),
+        ("~/x:/usr/bin", "", "/usr/bin"),
+        (".:./bin:", "/h", "/usr/bin:/bin"),
+        ("~other/bin:/usr/bin", "/h", "/usr/bin"),
+    ],
+)
+def test_hook_path_filter(shell: str, path: str, home: str, expected: str) -> None:
+    out = subprocess.run(
+        [shell, "-c", _filter_prefix() + 'printf "%s|%s" "$PATH" "$IFS"'],
+        env={"HOME": home, "PATH": path},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert out.stdout == f"{expected}| \t\n"
+
+
+@pytest.mark.parametrize("shell", ["/bin/sh", "/bin/bash"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"tool_name": "Bash", "tool_input": {"command": "ls"}}',
+        '{"tool_name": "Read", "tool_input": {"file_path": "/v/knowledge-base/a.md"}}',
+    ],
+    ids=["bash", "kb-read"],
+)
+@pytest.mark.parametrize(("name", "command"), _tool_hooks(), ids=[n for n, _ in _tool_hooks()])
+def test_tool_hooks_never_run_a_planted_program(
+    tmp_path: Path, shell: str, payload: str, name: str, command: str
+) -> None:
+    """A scheduled run (so every gate goes past its early exit), from a cloned repo inside the
+    vault (so the vault walk climbs), with cat, dirname, grep, tr and cmp planted in the cwd."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text("x: 1\n")
+    (vault / "connectors.custom.yaml").write_text("y: 1\n")  # no restrict_tools: grep, tr, cmp all run
+    repo = vault / "projects" / "cloned-repo"
+    marker = _plant(repo)
+    plugin = tmp_path / "plugin"
+    (plugin / "engine" / "bin").mkdir(parents=True)
+    calls = tmp_path / "scoutctl.log"
+    (plugin / "engine" / "bin" / "scoutctl").write_text(f'#!/bin/sh\necho "$*" >>"{calls}"\nexit 0\n')
+    (plugin / "engine" / "bin" / "scoutctl").chmod(0o755)
+
+    out = subprocess.run(
+        [shell, "-c", command],
+        env={
+            "HOME": str(tmp_path / "home"),
+            "PATH": _hostile_path("/usr/bin", "/bin"),
+            "SCOUT_MODE": "scout",
+            "CLAUDE_PLUGIN_ROOT": str(plugin),
+        },
+        cwd=repo,
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    _assert_nothing_planted_ran(marker, out)
+    assert out.returncode == 0, out
+
+
+def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path) -> None:
+    """`${d%/*}` in place of dirname: the walk climbs to the vault, and stops at / outside one."""
+    command = dict(_tool_hooks())["PreToolUse mcp__.*"]
+    vault = tmp_path / "vault"
+    deep = vault / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (vault / "scout-config.yaml").write_text("x: 1\n")
+    (vault / "connectors.custom.yaml").write_text("restrict_tools: {}\n")
+    plugin = tmp_path / "plugin"
+    (plugin / "engine" / "bin").mkdir(parents=True)
+    (plugin / "engine" / "bin" / "scoutctl").write_text('#!/bin/sh\necho "gate $*"\n')
+    (plugin / "engine" / "bin" / "scoutctl").chmod(0o755)
+    env = {"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": str(plugin)}
+
+    out = subprocess.run(
+        ["/bin/sh", "-c", command],
+        env=env,
+        cwd=deep,
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert out.stdout.strip() == "gate hook mcp-tool-gate", out
+
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    out = subprocess.run(
+        ["/bin/sh", "-c", command],
+        env=env,
+        cwd=outside,
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (out.returncode, out.stdout) == (0, ""), out

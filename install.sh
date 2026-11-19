@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Scout one-command installer.
 #   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 # Installs the plugin + engine, then runs `scoutctl setup` (your details, connectors,
@@ -23,9 +23,11 @@ export PATH="$HOME/.local/bin:$PATH"
 # Then keep only absolute entries. A relative one (`.`, `./bin`, `node_modules/.bin`, or an empty
 # one, which also means the working directory) would let a claude, git, uv or python3 planted in
 # whatever folder this runs from stand in for the real one, here and in everything it starts.
+# A leading `~` becomes $HOME, as bash's own PATH search reads it.
 safe_path=""
 IFS=: read -r -a path_entries <<<"$PATH" || true
 for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+  case "$path_entry" in "~" | "~/"*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
   case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
 done
 export PATH="${safe_path:-/usr/bin:/bin}"

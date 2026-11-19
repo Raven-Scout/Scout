@@ -52,12 +52,14 @@ _TEMPLATE = """#!/bin/sh
 
 # Keep only absolute PATH entries: git runs this with the vault as cwd, and a
 # relative entry ('.', './bin', an empty one) would let a scoutctl, git or grep
-# planted in the vault run in place of the real one.
+# planted in the vault run in place of the real one. A leading '~' becomes
+# $HOME, as bash's own PATH search reads it.
 safe_path=
 old_ifs=$IFS
 IFS=:
 set -f
 for path_entry in $PATH; do
+  case "$path_entry" in "~" | "~/"*) [ -z "$HOME" ] || path_entry="$HOME${{path_entry#"~"}}" ;; esac
   case "$path_entry" in /*) safe_path="${{safe_path:+$safe_path:}}$path_entry" ;; esac
 done
 set +f
@@ -154,9 +156,14 @@ def default_scoutctl() -> str:
     if beside.exists():
         return str(beside)
     # Absolute PATH entries only: a relative one ('.', './bin') would bake a path that resolves
-    # against whatever the cwd is at commit time. The bare fallback is looked up by the hook
-    # itself, which also keeps only absolute entries.
-    absolute = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if os.path.isabs(p))
+    # against whatever the cwd is at commit time. A leading '~' becomes $HOME, as bash reads it.
+    # The bare fallback is looked up by the hook itself, which filters PATH the same way.
+    home = os.environ.get("HOME", "")
+    entries = (
+        home + p[1:] if home and (p == "~" or p.startswith("~/")) else p
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+    )
+    absolute = os.pathsep.join(p for p in entries if os.path.isabs(p))
     return shutil.which("scoutctl", path=absolute) or "scoutctl"
 
 

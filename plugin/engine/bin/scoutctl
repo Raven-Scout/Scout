@@ -54,10 +54,12 @@
 # same for the engine's own `python -m` children.
 set -e
 
-# Keep only absolute PATH entries (see above). An empty result falls back to the system dirs.
+# Keep only absolute PATH entries (see above). A leading `~` becomes $HOME, as bash's own PATH
+# search reads it. An empty result falls back to the system dirs.
 SAFE_PATH=""
 IFS=: read -r -a PATH_ENTRIES <<<"${PATH:-}" || true
 for PATH_ENTRY in ${PATH_ENTRIES[@]+"${PATH_ENTRIES[@]}"}; do
+    case "$PATH_ENTRY" in "~" | "~/"*) [ -z "${HOME:-}" ] || PATH_ENTRY="$HOME${PATH_ENTRY#"~"}" ;; esac
     case "$PATH_ENTRY" in /*) SAFE_PATH="${SAFE_PATH:+$SAFE_PATH:}$PATH_ENTRY" ;; esac
 done
 export PATH="${SAFE_PATH:-/usr/bin:/bin}"

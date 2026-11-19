@@ -27,10 +27,12 @@ set -euo pipefail
 export PATH="${HOME:-/nonexistent}/.local/bin:$PATH"
 # Then keep only absolute entries, before any command runs: /scout-update runs this with the vault
 # as cwd, and a relative entry (`.`, `./bin`, an empty one) would let a planted dirname, uv or
-# python3 run in place of the real one.
+# python3 run in place of the real one. A leading `~` becomes $HOME, as bash's own PATH search
+# reads it.
 safe_path=""
 IFS=: read -r -a path_entries <<<"$PATH" || true
 for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+    case "$path_entry" in "~" | "~/"*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
     case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
 done
 export PATH="${safe_path:-/usr/bin:/bin}"
