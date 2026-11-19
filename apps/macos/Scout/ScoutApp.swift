@@ -28,6 +28,7 @@ struct ScoutApp: App {
             makeAppController: { AppUpdater(onEvent: $0) }))
         // A clicked run notification opens that run (card C3).
         AppDelegate.openRun = { [weak state] id in state?.openRun(id: id) }
+        AppDelegate.retrySlot = { [weak state] slot in state?.retryFromNotification(slotKey: slot) }
     }
 
     var body: some Scene {

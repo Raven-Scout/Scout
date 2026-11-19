@@ -4,10 +4,33 @@ import UserNotifications
 final class NotificationService: @unchecked Sendable {
     /// The `userInfo` key holding the run's id; `AppDelegate` reads it back
     /// when the notification is clicked and opens that run.
-    static let runIDKey = "runId"
+    nonisolated static let runIDKey = "runId"
+    /// The `userInfo` key holding the schedule "Run again" fires
+    /// (`Run.rerunSlotKey`); absent when the run has none.
+    nonisolated static let slotKeyKey = "slotKey"
 
-    func notify(run: Run) {
+    /// A notification about a run that can be run again: it carries the
+    /// "Run again" button. A run with no schedule of its own (an event run, a
+    /// manual one) gets `runCategory`, without it.
+    static let retryableRunCategory = "scout.run.retryable"
+    static let runCategory = "scout.run"
+    static let retryActionID = "scout.run.retry"
+
+    /// Registers the two run categories. Call once at launch.
+    static func registerCategories(on center: UNUserNotificationCenter = .current()) {
+        let retry = UNNotificationAction(identifier: retryActionID, title: "Run again", options: [])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: retryableRunCategory, actions: [retry], intentIdentifiers: []),
+            UNNotificationCategory(identifier: runCategory, actions: [], intentIdentifiers: []),
+        ])
+    }
+
+    /// `quietly` replaces a notification already shown (same run, same
+    /// identifier) without sounding again: the run ledger often names a
+    /// failure's reason and schedule a moment after the run's log ended.
+    func notify(run: Run, quietly: Bool = false) {
         let content = Self.content(for: run)
+        if quietly { content.sound = nil }
         let req = UNNotificationRequest(identifier: run.id, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
@@ -18,17 +41,40 @@ final class NotificationService: @unchecked Sendable {
         content.body = body(for: run)
         content.sound = .default
         content.interruptionLevel = (run.status == .rateLimited) ? .timeSensitive : .active
-        content.userInfo = [runIDKey: run.id]
+        var info: [String: String] = [runIDKey: run.id]
+        if let slot = retrySlotKey(for: run) { info[slotKeyKey] = slot }
+        content.userInfo = info
+        content.categoryIdentifier = info[slotKeyKey] == nil ? runCategory : retryableRunCategory
         return content
     }
 
+    /// The schedule a notification's "Run again" fires: the run's own
+    /// (`Run.rerunSlotKey`, the slot RunDetailView's Run again fires), and
+    /// only for a run that failed or didn't finish. Never for an event run or
+    /// a manual one, and never for a skip: running it again would only skip
+    /// again until its cause is fixed.
+    nonisolated static func retrySlotKey(for run: Run) -> String? {
+        guard RunOutcomeDisplay.isFailure(run.status) || run.status == .orphaned else { return nil }
+        return run.rerunSlotKey
+    }
+
     /// The run a clicked notification is about, if it names one.
-    static func runID(from userInfo: [AnyHashable: Any]) -> Run.ID? {
+    nonisolated static func runID(from userInfo: [AnyHashable: Any]) -> Run.ID? {
         (userInfo[runIDKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    private static func body(for run: Run) -> String {
+    /// The schedule a notification's "Run again" should fire, if it names one.
+    nonisolated static func slotKey(from userInfo: [AnyHashable: Any]) -> String? {
+        (userInfo[slotKeyKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// One line on why, then where to look. A failure's reason is its
+    /// run-ledger failure class ("Claude login was busy"), never a line
+    /// quoted from the log, which can hold the session's own output.
+    nonisolated static func body(for run: Run) -> String {
         if let reason = run.status.skipReason { return "\(reason). Click to see the run." }
+        if let reason = RunOutcomeDisplay.failureReason(run) { return "\(reason). Click to see the run and its log." }
+        if run.status == .orphaned { return "It stopped without saying how it ended. Click to see the run and its log." }
         return "Click to see the run and its log."
     }
 
@@ -80,5 +126,25 @@ nonisolated enum RunNotificationPolicy {
         case .success, .running, .scheduled, .skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant:
             return false
         }
+    }
+
+    /// What a notification shown for a run says that can change once the run
+    /// ledger has its row: the reason and whether it offers "Run again".
+    struct Shown: Equatable, Sendable {
+        let body: String
+        let retrySlotKey: String?
+
+        init(run: Run) {
+            body = NotificationService.body(for: run)
+            retrySlotKey = NotificationService.retrySlotKey(for: run)
+        }
+    }
+
+    /// Whether a notification already shown for `run` should be replaced,
+    /// quietly, because the ledger has since said why it failed or which
+    /// schedule it ran for. Only while the run's status is the one notified.
+    static func shouldUpdate(shown: Shown?, notifiedStatus: RunStatus?, run: Run) -> Bool {
+        guard let shown, notifiedStatus == run.status else { return false }
+        return Shown(run: run) != shown
     }
 }

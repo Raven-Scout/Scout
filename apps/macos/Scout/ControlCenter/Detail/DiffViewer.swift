@@ -6,7 +6,8 @@ struct DiffViewer: View {
     @EnvironmentObject var state: AppState
 
     @State private var expanded: Set<String> = []
-    @State private var diffs: [String: String] = [:]
+    /// Each loaded commit's diff, split by `TextChunks`.
+    @State private var diffChunks: [String: [String]] = [:]
     @State private var ghosttyFailure: LaunchFailure?
 
     var body: some View {
@@ -37,11 +38,21 @@ struct DiffViewer: View {
                                 }
                             )
                         ) {
-                            Text(diffs[c.id] ?? "Loading…")
-                                .font(DS.mono(10))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 4)
+                            // One List row per chunk of lines, so the list lays a big
+                            // diff out as it scrolls in, not as one huge row (#25).
+                            if let chunks = diffChunks[c.id] {
+                                ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                                    Text(chunk)
+                                        .font(DS.mono(10))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else {
+                                Text("Loading…")
+                                    .font(DS.mono(10))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 4)
+                            }
                         } label: {
                             VStack(alignment: .leading) {
                                 Text(c.subject)
@@ -75,10 +86,11 @@ struct DiffViewer: View {
     private func loadDiff(_ sha: String) async {
         do {
             let d = try await state.gitService.diff(from: "\(sha)^", to: sha)
-            await MainActor.run { diffs[sha] = d }
+            let chunks = TextChunks.split(text: d)
+            await MainActor.run { diffChunks[sha] = chunks.isEmpty ? ["(no changes)"] : chunks }
         } catch {
             await MainActor.run {
-                diffs[sha] = "Error loading diff: \(error.localizedDescription)"
+                diffChunks[sha] = ["Couldn't load this diff: \(error.localizedDescription)"]
             }
         }
     }

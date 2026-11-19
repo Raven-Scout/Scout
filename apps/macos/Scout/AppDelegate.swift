@@ -5,9 +5,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Opens a run by id; `ScoutApp` points it at `AppState.openRun(id:)`.
     /// Static because the delegate adaptor builds this object itself.
     @MainActor static var openRun: ((Run.ID) -> Void)?
+    /// Fires a schedule from a notification's "Run again"; `ScoutApp` points
+    /// it at `AppState.retryFromNotification(slotKey:)`.
+    @MainActor static var retrySlot: ((String) -> Void)?
 
     func applicationDidFinishLaunching(_: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        NotificationService.registerCategories()
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound, .badge]
         ) { _, _ in }
@@ -67,15 +71,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .sound])
     }
 
-    /// Clicking a run notification opens that run in the Control Center.
+    /// Clicking a run notification opens that run in the Control Center;
+    /// its "Run again" fires the run's own schedule.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-           let id = NotificationService.runID(from: response.notification.request.content.userInfo) {
-            Self.openRun?(id)
+        let info = response.notification.request.content.userInfo
+        switch response.actionIdentifier {
+        case UNNotificationDefaultActionIdentifier:
+            if let id = NotificationService.runID(from: info) { Self.openRun?(id) }
+        case NotificationService.retryActionID:
+            if let slot = NotificationService.slotKey(from: info) { Self.retrySlot?(slot) }
+        default:
+            break
         }
         completionHandler()
     }

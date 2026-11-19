@@ -7,6 +7,70 @@ import Foundation
 /// words ("sandbox", "seatbelt", "gates", "lease") never reach the owner.
 nonisolated enum RunOutcomeDisplay {
 
+    // MARK: One run's status, everywhere (UI audit R10, #21)
+
+    /// The run failed: the run ledger's `failed` outcome, whatever its
+    /// failure class (a timeout and a usage limit included). Skips, runs still
+    /// going and runs that stopped without a last line are not failures. The
+    /// Today tile, the Signals card, the activity heatmap and the Health page
+    /// all count with this one rule.
+    static func isFailure(_ status: RunStatus) -> Bool {
+        switch status {
+        case .failure, .timeout, .rateLimited: return true
+        case .scheduled, .running, .success, .orphaned, .skippedBudget, .skippedConcurrency,
+             .skippedGates, .skippedSandbox, .skippedRuntime, .skippedLease, .skippedRedundant:
+            return false
+        }
+    }
+
+    /// The colour family a run's status reads in, the same one the menu-bar
+    /// panel and the status bar use for the latest run (`ScoutStatus`): a
+    /// failure, a run that didn't finish and a skip that stops every later
+    /// run until fixed are red; a routine skip is amber, never a red ✗.
+    static func tone(_ status: RunStatus) -> ScoutStatus.Tone {
+        switch status {
+        case .success: return .ok
+        case .running: return .active
+        case .scheduled: return .neutral
+        case .failure, .timeout, .rateLimited, .orphaned: return .err
+        case .skippedGates, .skippedSandbox, .skippedRuntime: return .err
+        case .skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant: return .warn
+        }
+    }
+
+    /// The small symbol beside a run's status.
+    static func symbol(_ status: RunStatus) -> String {
+        switch status {
+        case .success: return "checkmark"
+        case .running: return "circle.fill"
+        case .scheduled: return "clock"
+        case .failure, .timeout, .rateLimited, .orphaned: return "xmark"
+        case .skippedGates, .skippedSandbox: return "shield.slash"
+        case .skippedRuntime: return "nosign"
+        case .skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant: return "pause"
+        }
+    }
+
+    /// How many of `runs` failed.
+    static func failedCount(_ runs: [Run]) -> Int {
+        runs.filter { isFailure($0.status) }.count
+    }
+
+    /// The one-line reason a failed run failed, from its run-ledger failure
+    /// class ("Claude login was busy"); nil for a run that didn't fail, or
+    /// failed before the ledger could say why.
+    static func failureReason(_ run: Run) -> String? {
+        guard isFailure(run.status) else { return nil }
+        if let fc = run.failureClass?.trimmingCharacters(in: .whitespaces), !fc.isEmpty, fc != "ok" {
+            return DisplayName.failureClass(fc).title
+        }
+        switch run.status {
+        case .timeout: return DisplayName.failureClass("timeout").title
+        case .rateLimited: return DisplayName.failureClass("rate_limited").title
+        default: return nil
+        }
+    }
+
     // MARK: Write protection and the integrity check
 
     /// nil when there is nothing to say (no value from an older runner).

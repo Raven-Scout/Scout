@@ -326,13 +326,21 @@ struct RepoStateRailCard: View {
 /// One signal row backed by computed state. The whole card was previously
 /// hard-coded — every signal here is now derived from the live services so
 /// rows appear/disappear as conditions actually change.
-private struct Signal: Identifiable {
-    enum Severity { case ok, warn, err }
+struct ControlCenterSignal: Identifiable, Equatable {
+    enum Severity: Equatable { case ok, warn, err }
+    /// Where the row's button goes.
+    enum Action: Equatable {
+        case openHealth
+        var title: String { "Open Health" }
+    }
     let id: String
     let severity: Severity
     let tag: String
     let body: String
+    var action: Action? = nil
 }
+
+private typealias Signal = ControlCenterSignal
 
 struct SignalsRailCard: View {
     @EnvironmentObject var state: AppState
@@ -373,6 +381,17 @@ struct SignalsRailCard: View {
                 .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
+            if let action = signal.action {
+                Button(action.title) { perform(action) }
+                    .buttonStyle(.ds(.link, size: .small))
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func perform(_ action: Signal.Action) {
+        switch action {
+        case .openHealth: state.requestedSidebar = .health
         }
     }
 
@@ -389,59 +408,25 @@ struct SignalsRailCard: View {
     private func computeSignals() -> [Signal] {
         var out: [Signal] = []
         let runs = state.sessionLogService.runs
-        let cal = Calendar.current
         let now = Date()
 
-        // Anthropic API: surfaces only when there's an actual rate-limit /
-        // 429 / overload signal in the last 24h. No live state? No row.
-        let dayAgo = now.addingTimeInterval(-24 * 3600)
-        let recentRateLimited = runs.first { run in
-            run.startedAt >= dayAgo && (
-                run.status == .rateLimited ||
-                run.errorsDetected.contains { err in
-                    let p = err.pattern.lowercased()
-                    return p.contains("429") || p.contains("rate") ||
-                           p.contains("overload") || p.contains("throttle") ||
-                           p.contains("quota")
-                }
-            )
-        }
-        if let r = recentRateLimited {
-            out.append(Signal(
-                id: "anthropic",
-                severity: .err,
-                tag: "ANTHROPIC API",
-                body: "Rate-limited \(r.startedAt.formatted(.relative(presentation: .named))) — check live status, top-up may be needed."
-            ))
-        }
+        if let limit = Self.usageLimitSignal(runs: runs, now: now) { out.append(limit) }
 
         // Research: only call this out if no schedule is configured. Once the
-        // user adds a research plist, the row disappears.
+        // user adds a research schedule, the row disappears.
         let hasResearchSchedule = state.scheduleService.upcoming.contains { $0.type == .research }
         if !hasResearchSchedule {
             out.append(Signal(
                 id: "research-missing",
                 severity: .warn,
                 tag: "RESEARCH",
-                body: "No schedule configured — heartbeat skips research every dispatch."
+                body: "Research isn't scheduled, so Scout doesn't look outward for news about your projects. Add it on the Schedules page."
             ))
         }
 
-        // Failed runs today: surfaces a count rather than a static message,
-        // so the row reflects the day's actual situation.
-        let failedToday = runs.filter {
-            cal.isDateInToday($0.startedAt) &&
-            [.failure, .timeout].contains($0.status)
-        }
-        if !failedToday.isEmpty {
-            let n = failedToday.count
-            out.append(Signal(
-                id: "failures",
-                severity: .err,
-                tag: "FAILED RUNS",
-                body: "\(n) run\(n == 1 ? "" : "s") failed today — open Sessions to triage."
-            ))
-        }
+        // The same day and the same rule as the Today tile beside it.
+        let today = NowStripView.todayRuns(runs, today: state.scoutUsageService.summary?.today, now: now)
+        if let failed = Self.failedTodaySignal(todayRuns: today) { out.append(failed) }
 
         // Dreaming: report on the most recent dreaming run within the last
         // 36h so the message tracks reality (success vs. miss vs. failure).
@@ -484,24 +469,45 @@ struct SignalsRailCard: View {
             ))
         }
 
-        // Connector roster fallback: ConnectorHealthService publishes a
-        // reason when it can't read the canonical roster — surface it here
-        // so the user knows why the matrix may be stale.
-        // The service's reason (a file path and the engine command) goes to
-        // the app log; the signal says what it means for the table.
-        if state.connectorHealthService.rosterFallbackReason != nil {
-            out.append(Signal(
-                id: "connectors",
-                severity: .warn,
-                tag: "CONNECTORS",
-                body: {
-                    let p = Problem.connectorRosterMissing(details: nil)
-                    return [p.title + ".", p.impact, p.fix].compactMap { $0 }.joined(separator: " ")
-                }()
-            ))
-        }
+        // The connector roster fallback is said once, on the Connector
+        // health card it affects (UI audit R10, #30), not here as well.
 
         return out
+    }
+
+    /// A Claude usage limit in the last day, as the engine classified it: a
+    /// run whose ledger `failure_class` is `rate_limited` (or, before its
+    /// ledger row lands, whose runner logged "Rate limit detected"). Never a
+    /// log line that merely mentions "rate" or "429": a sign-in race
+    /// (`auth_race`) or a session talking about limits isn't a usage limit.
+    static func usageLimitSignal(runs: [Run], now: Date) -> ControlCenterSignal? {
+        let dayAgo = now.addingTimeInterval(-24 * 3600)
+        guard let r = runs.first(where: { $0.startedAt >= dayAgo && $0.status == .rateLimited }) else { return nil }
+        return ControlCenterSignal(
+            id: "usage-limit",
+            severity: .warn,
+            tag: "USAGE LIMIT",
+            body: "\(r.displayName) hit your Claude plan's usage limit \(r.startedAt.formatted(.relative(presentation: .named))). Scout tries again after it resets.")
+    }
+
+    /// Today's failed runs (`RunOutcomeDisplay.isFailure`, the Today tile's
+    /// rule), with their reason when they share one, and the Health page,
+    /// where each has its log and what to do. A day of sign-in races only is
+    /// amber: the login is fine and Scout retries by itself.
+    static func failedTodaySignal(todayRuns: [Run]) -> ControlCenterSignal? {
+        let failed = todayRuns.filter { RunOutcomeDisplay.isFailure($0.status) }
+        guard !failed.isEmpty else { return nil }
+        let n = failed.count
+        let reasons = Set(failed.map { RunOutcomeDisplay.failureReason($0) ?? "" })
+        var body = "\(n) run\(n == 1 ? "" : "s") failed today"
+        // The reason keeps its own capitals: it can start with a name ("Claude").
+        if reasons.count == 1, let reason = reasons.first, !reason.isEmpty {
+            body += " (\(reason))"
+        }
+        body += "."
+        let soft = failed.allSatisfy { $0.failureClass.map(DisplayName.normalized) == "authrace" }
+        return ControlCenterSignal(id: "failures", severity: soft ? .warn : .err, tag: "FAILED RUNS",
+                                   body: body, action: .openHealth)
     }
 }
 

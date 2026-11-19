@@ -1030,6 +1030,67 @@ final class AppState: ObservableObject {
         await scheduleService.refresh()
     }
 
+    /// What the last "Install wake schedule" did, shown in the menu-bar panel
+    /// until dismissed: `.info` when it worked. It used to run under `try?`
+    /// and report nothing either way (UI audit #4).
+    @Published var wakeScheduleResult: Problem? = nil
+    @Published private(set) var installingWakeSchedule = false
+
+    /// `scoutctl schedule install-wake-schedule`: a `pmset repeat` rule that
+    /// wakes the Mac for the earliest weekday run. A dry run first names the
+    /// exact `pmset` command, so when macOS refuses it (it needs an
+    /// administrator) the problem can say what to run instead.
+    func installWakeSchedule() async {
+        guard !installingWakeSchedule else { return }
+        installingWakeSchedule = true
+        defer { installingWakeSchedule = false }
+        let base = scoutctlArgumentsPrefix + ["schedule", "install-wake-schedule"]
+        func run(_ extra: [String]) async throws -> ProcessResult {
+            try await runner.run(executable: scoutctlExecutable, arguments: base + extra,
+                                 environment: [:], workingDirectory: scoutDirectory)
+        }
+        let dryRun = try? await run(["--dry-run"])
+        do {
+            let result = try await run([])
+            wakeScheduleResult = Self.wakeScheduleProblem(result, dryRun: dryRun)
+        } catch {
+            wakeScheduleResult = Self.wakeScheduleProblem(nil, dryRun: dryRun,
+                                                          launchError: error.localizedDescription)
+        }
+    }
+
+    /// The panel's words for an install-wake-schedule result. Pure.
+    nonisolated static func wakeScheduleProblem(_ result: ProcessResult?, dryRun: ProcessResult?,
+                                                launchError: String? = nil) -> Problem {
+        func text(_ data: Data?) -> String {
+            data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        let out = text(result?.stdout), err = text(result?.stderr)
+        // "[dry-run] would run: pmset repeat wakeorpoweron MTWRF 07:55:00"
+        let command = text(dryRun?.exitCode == 0 ? dryRun?.stdout : nil)
+            .components(separatedBy: "\n")
+            .first { $0.contains("would run: ") }
+            .map { String($0[$0.range(of: "would run: ")!.upperBound...]) }
+        let details = [out, err, launchError].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+        if let result, result.exitCode == 0 {
+            return Problem(severity: .info, title: "Wake schedule installed",
+                           impact: "Your Mac wakes itself before the first weekday run, as long as it's plugged in.",
+                           details: details)
+        }
+        if (err + out).contains("no weekday slot") {
+            return Problem(severity: .warning, title: "Nothing to wake for",
+                           impact: "No schedule runs on a weekday, so there's no time to wake the Mac.",
+                           fix: "Add a weekday time on the Schedules page, then try again.", details: details)
+        }
+        let fix = command.map {
+            "macOS needs an administrator for this. In Terminal, run: sudo \($0)"
+        } ?? "macOS needs an administrator for this. Copy the details when asking for help."
+        return Problem(severity: .error, title: "Couldn't install the wake schedule",
+                       impact: "Scheduled runs only start while the Mac is awake.",
+                       fix: fix, details: details)
+    }
+
     /// Recompute the menu-bar urgent badge for today.
     ///
     /// Runs at launch and on every menu-bar open, and used to read and parse
@@ -1155,6 +1216,16 @@ final class AppState: ObservableObject {
     /// False until the launch-time log load finishes, so runs already on
     /// disk never notify.
     private var runNotificationsArmed = false
+    /// What each run's notification said, so the ledger's later reason or
+    /// schedule can replace it (`RunNotificationPolicy.shouldUpdate`).
+    private var notified: [Run.ID: (status: RunStatus, content: RunNotificationPolicy.Shown)] = [:]
+
+    /// A notification's "Run again": fire the schedule the failed run ran for,
+    /// as Run again in its detail does. The notification only offers it for a
+    /// run with a schedule of its own (`NotificationService.retrySlotKey`).
+    func retryFromNotification(slotKey: String) {
+        Task { await fireNow(slotKey: slotKey) }
+    }
 
     private func startNotificationWatch() {
         sessionLogService.$runs.sink { [weak self] runs in
@@ -1168,8 +1239,18 @@ final class AppState: ObservableObject {
                     if RunNotificationPolicy.shouldNotify(previous: self.previousStatus[r.id], run: r,
                                                           armed: self.runNotificationsArmed, preferences: prefs) {
                         self.notificationService.notify(run: r)
+                        self.notified[r.id] = (r.status, RunNotificationPolicy.Shown(run: r))
+                    } else if let shown = self.notified[r.id],
+                              RunNotificationPolicy.shouldUpdate(shown: shown.content, notifiedStatus: shown.status, run: r) {
+                        // The ledger said why, or which schedule to run again.
+                        self.notificationService.notify(run: r, quietly: true)
+                        self.notified[r.id] = (r.status, RunNotificationPolicy.Shown(run: r))
                     }
                     self.previousStatus[r.id] = r.status
+                }
+                if !self.notified.isEmpty {
+                    let ids = Set(runs.map(\.id))
+                    self.notified = self.notified.filter { ids.contains($0.key) }
                 }
                 self.recomputeStatus()
             }

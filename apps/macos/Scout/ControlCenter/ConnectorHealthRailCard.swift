@@ -54,31 +54,75 @@ struct ConnectorHealthRailCard: View {
 
     // MARK: - Grid
 
+    /// Each column is a recent run, headed by when it started ("8 AM" today,
+    /// "Tue" before), not "r1…r5"; only connectors those runs called get a
+    /// row, and the rest are counted underneath (UI audit R10, #29).
     private func grid(matrix: ConnectorHealthMatrix) -> some View {
         let visibleSessions = Array(matrix.sessionsNewestFirst.prefix(Self.visibleSessionCount))
-        return VStack(spacing: 4) {
+        let used = Self.usedConnectors(matrix: matrix, in: visibleSessions)
+        let unused = matrix.connectors.count - used.count
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Last \(visibleSessions.count) run\(visibleSessions.count == 1 ? "" : "s"), newest first")
+                .font(DS.sans(11))
+                .foregroundStyle(DS.Ink.p3)
+                .padding(.bottom, 2)
             HStack(spacing: 4) {
                 Text("").frame(width: 80, alignment: .leading)
                 ForEach(Array(visibleSessions.enumerated()), id: \.offset) { idx, session in
-                    Text("r\(idx + 1)")
-                        .font(DS.mono(10))
+                    Text(Self.columnLabel(session.startedAt, now: now))
+                        .font(DS.mono(9.5))
                         .foregroundStyle(DS.Ink.p4)
-                        .frame(width: 22)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(width: Self.cellWidth)
                         .help(sessionHeaderTooltip(session: session, index: idx))
+                        .accessibilityLabel(sessionHeaderTooltip(session: session, index: idx))
                 }
-                HStack(spacing: 1) {
-                    Image(systemName: "checkmark").imageScale(.small)
-                    Text("%")
-                }
-                .font(DS.mono(10))
-                .foregroundStyle(DS.Ink.p4)
-                .frame(width: 40, alignment: .trailing)
-                .help("Health rate across the visible sessions where this connector was actually called.")
+                Text("Worked")
+                    .font(DS.mono(9.5))
+                    .foregroundStyle(DS.Ink.p4)
+                    .frame(width: 44, alignment: .trailing)
+                    .help("How often this connector worked in these runs, counting only the runs that used it.")
             }
-            ForEach(matrix.connectors, id: \.self) { key in
+            ForEach(used, id: \.self) { key in
                 row(matrix: matrix, key: key, visibleSessions: visibleSessions)
             }
+            if used.isEmpty {
+                Text("These runs didn't use any connectors.")
+                    .font(DS.sans(11.5))
+                    .foregroundStyle(DS.Ink.p4)
+                    .padding(.top, 4)
+            } else if unused > 0 {
+                Text("\(unused) more connector\(unused == 1 ? "" : "s") weren't used in these runs.")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p4)
+                    .padding(.top, 4)
+            }
         }
+    }
+
+    static let cellWidth: CGFloat = 26
+
+    /// Connectors any of `sessions` called, in roster order.
+    static func usedConnectors(matrix: ConnectorHealthMatrix,
+                                           in sessions: [ConnectorHealthMatrix.Session]) -> [String] {
+        matrix.connectors.filter { key in
+            sessions.contains { matrix.cell(connector: key, sessionId: $0.id) != .absent }
+        }
+    }
+
+    /// A run column's heading: its start hour today ("8 AM"), its weekday
+    /// within the week ("Tue"), its date before that ("11/3").
+    static func columnLabel(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDate(date, inSameDayAs: now) {
+            return date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+        }
+        if let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
+                                              to: calendar.startOfDay(for: now)).day, days < 7 {
+            return date.formatted(.dateTime.weekday(.abbreviated))
+        }
+        return date.formatted(.dateTime.month(.defaultDigits).day())
     }
 
     private func row(
@@ -99,13 +143,14 @@ struct ConnectorHealthRailCard: View {
             ForEach(visibleSessions, id: \.id) { session in
                 let cell = matrix.cell(connector: key, sessionId: session.id)
                 cellView(cell)
-                    .frame(width: 22)
+                    .frame(width: Self.cellWidth)
                     .help(cellTooltip(label: label(for: key), session: session, cell: cell))
+                    .accessibilityLabel(cellTooltip(label: label(for: key), session: session, cell: cell))
             }
             Text(rateText(matrix.visibleHealthRate(connector: key, in: visibleSessions)))
                 .font(DS.mono(10.5))
                 .foregroundStyle(DS.Ink.p3)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 44, alignment: .trailing)
         }
     }
 
@@ -134,9 +179,8 @@ struct ConnectorHealthRailCard: View {
     // MARK: - Tooltips
 
     private func sessionHeaderTooltip(session: ConnectorHealthMatrix.Session, index: Int) -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEE MMM d · HH:mm"
-        return "Session \(index + 1): \(session.mode) · \(fmt.string(from: session.startedAt))"
+        let when = session.startedAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+        return "\(DisplayName.slotKey(session.mode)), \(when)"
     }
 
     private func cellTooltip(
@@ -144,9 +188,7 @@ struct ConnectorHealthRailCard: View {
         session: ConnectorHealthMatrix.Session,
         cell: ConnectorHealthMatrix.Cell
     ) -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM d · HH:mm"
-        let stamp = fmt.string(from: session.startedAt)
+        let stamp = session.startedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
         let status: String
         switch cell {
         case .ok(let n):
