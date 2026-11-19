@@ -638,100 +638,222 @@ delegate writes proposals; the laptop applies them.
   `scout-config.yaml`, brain files, or send anything) are never applied
   automatically: they go to the review queue.
 
-### 7.1a V4 design in detail (2026-11-19, before building)
+### 7.1a V4 design in detail (2026-11-19; revised after the design review)
 
 §7.1 is the shape. This is how V4 builds it on what V1–V3 left, with the trust
-boundary first. **Everything an agent puts in its inbox is untrusted input from
-outside the laptop**, like a connector finding, and is never an instruction.
+boundary first. **Everything in an agent's inbox is untrusted input from
+outside the laptop**, like a connector finding, never an instruction. **So is
+anything a run can write**, since a run that read an injected observation
+may act on it. The second rule is what most of the review's changes are about.
 
 **What exists to build on** (mapped 2026-11-19):
 
 - **Action-item commands** (`scout/action_items/`) address an item by its
   `[#TAG]` short prefix in one day's daily file, and none of them commits.
-  There is no lookup from an id to the file holding it. A delegate may not see
-  every line of a daily file, because the mirror redacts lines that name a
-  hidden note.
-- **`.scout-inbox/`** is private by default and in `DELEGATE_NEVER`, so no
-  delegate ever reads it. It is tracked in git, and no code uses it yet.
-- **The review queue** is `knowledge-base/review-queue.md`, which the
-  `kb-management` phase works through. Runs read outside findings from
-  `pre-session data` (`SessionContext`), and no phase yet has an
-  "untrusted input" rule.
+  There is no lookup from an id to the file holding it.
+- **`add_comment`** writes `  - {author}: {comment}` without cleaning the text.
+  Its parser's author group allows no colon.
+- **A delegate may not see every line of a daily file.** The mirror redacts
+  whole lines that name a hidden note.
+- **`.scout-inbox/`** is private by default and in `DELEGATE_NEVER`. It is
+  tracked in git, and no code uses it yet.
+- **Runs:**
+  - The review queue is `knowledge-base/review-queue.md`.
+  - Runs read outside findings from `pre-session data` (`SessionContext`).
+  - No phase has an "untrusted input" rule, and a phase rule isn't a
+    boundary anyway.
 
-**Transport and credentials:**
+#### Transport, binding and credentials
 
-- **One inbox repository per delegate**, private, under the owner's own user,
-  never the mirror's repository. It is linked with `scoutctl delegate inbox
-  <id> --create-repo owner/name` or `--remote <url>`, and passes the same
-  checks as a mirror: `check_remote` (private, a user's, not a fork, no
-  collaborator but the owner) and the binding rules (no other link or mirror
-  uses it).
-- **GitHub Actions is turned off** on the inbox repository when Scout creates
-  it, and checked before every pull. The agent can push any file there, and a
-  pushed `.github/workflows/` file would otherwise run on the owner's account.
-  An inbox with Actions on is refused (`inbox_actions_on`).
-- **The agent writes with its own key:** a deploy key with write access on the
-  inbox repository only, titled `scout-delegate-inbox-<id>` (`delegate key
-  <id> --inbox`). Its mirror key stays read-only. The same title checks as
-  V2b apply before any deletion.
+- **Its own repository.** Each delegate has one inbox repository: private,
+  under the owner's own user, never the mirror's repository. It is linked with
+  `scoutctl delegate inbox <id> --create-repo owner/name` or `--remote <url>`.
+- **Bound by GitHub's id, not by content.** At link, Scout records the
+  repository's numeric id and its owner's id. Before every pull, it looks the
+  repository up by that id and refuses (`inbox_rebound`) on a rename, a
+  transfer, or a new repository at the old name. A manifest can't bind an
+  inbox, as it binds a mirror, because the agent writes this repository and
+  could copy the mirror's manifest, vault mark and all.
+- **Checked before every pull:**
+  - private, owned by a user, not a fork, no collaborator but the owner;
+  - GitHub Actions off (`actions/permissions`), and `has_pages` false;
+  - no other link or mirror uses it.
 
-**On the agent's side** (allowed for a delegate checkout):
+  At link, Scout warns about GitHub Apps installed on all of the owner's
+  repositories. Scout turns Actions off when it creates the repository, and
+  refuses an inbox with Actions on (`inbox_actions_on`).
+- **The agent writes with its own key.** It is a deploy key with write access on
+  the inbox repository only, titled `scout-delegate-inbox-<id>`, made by
+  `delegate key <id> --inbox`. Scout refuses unless GitHub records it as
+  writable. The mirror key stays read-only. The V2b title checks apply before
+  any deletion.
+- **What that key can do, and the guard on it.** A deploy key can push any
+  branch or tag, workflows included, and force-push or delete `main`, and a
+  free private repository has no branch protection. So:
+  - Actions stays off;
+  - Scout reads only `main`;
+  - Scout records the sha of each of its own removal commits, and refuses
+    (`inbox_rewritten`) a `main` that doesn't descend from it.
+
+#### The agent's side (allowed for a delegate checkout)
 
 - `scoutctl inbox propose observation --text … [--about <name>] [--source <url>]`
 - `scoutctl inbox propose action <op> --tag <TAG> --date <YYYY-MM-DD> [op args]`
 
-Each writes one file, `inbox/<id>/<ulid>.json`, into the agent's inbox clone
-and commits it there; `--push` also pushes. `delegate init` learns where that
-clone is. The JSON is versioned (`schema_version: 1`) with fixed fields only:
-`id` (a ULID), `delegate`, `made_at`, `kind`, and the kind's own fields.
+Each writes one file, `inbox/<id>/<ULID>.json`, into the agent's inbox clone
+and commits it there; `--push` pushes it. `delegate init` learns where that
+clone is. The format is `schema_version: 1`, with fixed fields only
+(`scout/delegate_proposals.py`):
 
-**On the laptop:**
+- `id` is a canonical ULID: 26 uppercase Crockford characters, equal to the
+  file name.
+- `delegate` and `kind`, plus the kind's own fields.
+- `made_at` is the agent's own claim. It is shown, and never used for order or
+  for judging.
 
-- **`scoutctl inbox pull [<id> | --all]`.** It checks the remote, then fetches
-  the inbox repository's `main` into a bare repository at
-  `.scout-state/delegate-inbox/<id>.git`, never the vault's object store or
-  working tree. It reads only entries that are:
-  - at `inbox/<id>/<ULID>.json`, with exactly that delegate's id;
-  - mode `100644`, at most 16 KiB, UTF-8 JSON;
-  - valid against the schema, with every field type, length and format checked.
+**One-line text only, in anything that reaches the vault:**
 
-  At most 50 proposals are taken per pull, in ULID order. Anything else in the
-  repository is ignored and counted. A valid proposal is copied to
-  `.scout-inbox/agents/<id>/<ulid>.json` (private and committed with the run);
-  an invalid one is recorded with its reason, never copied. The laptop then
-  pushes a commit to the inbox repository that removes what it took, as a
-  compare-and-swap, so a proposal pushed in between waits for the next pull.
-  What was taken is kept in the signed state, so a proposal is never taken or
-  applied twice.
-- **`scoutctl inbox apply`** applies `action_item_op` proposals through the
-  existing commands, never its own edits:
-  - ops `mark-done`, `snooze`, `add-comment`, `set-estimate`, `set-block` and
-    `clear-block`;
+- No control or bidi characters. No `[[` or `[#`, so a proposal can neither
+  link a note nor name a task.
+- A comment is capped at 1000 characters. It is written with author
+  `delegate-<id>`, which `add_comment`'s parser already reads. A colon in the
+  author would fail the parser, and changing that regex is a parser-corpus
+  change that needs the app.
+- An observation's `text` may span lines, since it never reaches a daily file
+  as written (V4b), but it follows the same character rules.
+
+#### `scoutctl inbox pull` (the laptop)
+
+**A fresh, locked-down fetch on every pull, outside the vault.**
+
+- A new bare repository each time, in a temporary folder outside the vault,
+  made with `git init --bare --template=` and removed afterwards. Never under
+  `.scout-state/`, where a hijacked run could plant `core.sshCommand` or a
+  reference-transaction hook to run outside the sandbox.
+- git runs with:
+  - `-c core.hooksPath=/dev/null -c transfer.fsckObjects=true`;
+  - `-c protocol.allow=never` with `https` or `ssh` (only the one in use)
+    allowed again;
+  - `-c submodule.recurse=false`;
+  - `GIT_NO_LAZY_FETCH=1` and `GIT_NO_REPLACE_OBJECTS=1`;
+  - a timeout and an `RLIMIT_FSIZE` cap.
+- The fetch is `--no-tags --no-recurse-submodules --depth=1
+  --filter=blob:limit=16k`, of `main` only. A missing blob means the file was
+  over 16 KiB, and it is refused as `too_big`.
+- **Nothing is ever checked out.** Entries are read with `ls-tree -z` and
+  `cat-file` only. A path, a symlink, a case or NFKC collision, or a name that
+  isn't UTF-8 never touches the disk.
+
+**What is read:**
+
+- Only entries at `inbox/<id>/<ULID>.json`, mode `100644`, at most 16 KiB.
+- They must parse under the schema. A ULID whose time is ahead of the clock
+  (with some slack) is refused.
+- At most 50 per pull, in ULID order.
+- Anything else in the tree is counted and ignored. "No `main`" is reported
+  apart from "empty inbox".
+
+**Taking a proposal, crash-safe and unforgeable, in this order:**
+
+1. **The signed "taken" record.** It records the ULID and an HMAC of the
+   proposal's bytes, under the state key (`.scout-state`, protected from runs
+   by `hook_paths`). A refused entry is recorded with its reason.
+2. **The copy.** A valid proposal goes to `.scout-inbox/agents/<id>/<ULID>.json`.
+3. **The removal.** A compare-and-swap commit on the inbox's `main` removes
+   every entry taken or refused, so a refused one isn't read again. It has a
+   fixed identity and message and carries no outcomes, since the agent reads
+   the inbox. Its sha is recorded.
+
+A crash between steps leaves an entry that the next pull recognises by its
+record, so nothing is lost or taken twice.
+
+**Dedup across computers.** The signed record is per computer. So pull also
+dedupes against a committed ledger of taken ULIDs, and against a per-delegate
+high-water mark of ULID time. That covers a new laptop, or state rebuilt by
+`trust-state`.
+
+**The runner commits the pull, never the run.** It runs as a step outside the
+run's sandbox, like the other runner steps.
+
+#### `scoutctl inbox apply` (action items)
+
+- **It acts only on what the signed record took.** A copy in
+  `.scout-inbox/agents/` is applied only when its ULID is in the signed
+  "taken" record and its bytes match the recorded HMAC. A run can write that
+  folder, so a planted or edited copy is refused (`not_taken`).
+- **Ops:**
+  - `mark-done`, `snooze`, `add-comment`, `set-estimate`, `set-block` and
+    `clear-block`, through the existing commands, addressed by id only
+    (never `by_subject`);
   - `dismiss` and `rename-topic` aren't addressed by id, so they wait for the
     review queue (V4b).
+- **The delegate must have seen the item.**
+  - The commit is the delegate's signed `last_mirror`, never what the remote
+    says.
+  - Scout parses that date's daily file in that commit with the action-items
+    parser, and requires a task whose short prefix is the TAG. A substring
+    match isn't enough, since a TAG can appear in a visible comment.
+  - At apply time, Scout redacts the current vault line again, and the item
+    must still be visible.
+  - Otherwise the outcome is `unknown_item`, the same whether the item is
+    hidden or missing.
+- **Limits:**
+  - per-op daily caps per delegate;
+  - a breaker that sends a burst (for example, a run of `mark-done`) to the
+    review queue instead of applying it;
+  - a maximum snooze horizon, since a snooze to 2099 is a dismiss.
 
-  The item must be one the delegate could see: its `[#TAG]` line must be in
-  that date's daily file **in the delegate's last pushed mirror commit**.
-  Otherwise the outcome is `unknown_item`, the same whether the item is hidden
-  or missing, so a guess learns nothing. A comment is written with author
-  `delegate:<id>`. Each outcome (`applied`, `no_op`, `stale`, `unknown_item`,
-  `refused`) is recorded with the ULID, never the proposal's text.
-- **Observations** wait in `.scout-inbox/agents/<id>/` for the run (V4b).
+  Fifty proposals per pull on a five-minute tick would otherwise be about
+  14,000 a day.
+- **Undoable.** Each applied op records the line's prior state, so
+  `scoutctl inbox revert <ULID>` restores it. The briefing lists what each
+  delegate did ("done by delegate-grok-personal").
+- **Outcomes are recorded by ULID,** never with the proposal's text:
+  `applied`, `no_op`, `stale`, `unknown_item`, `limited`, `not_taken`,
+  `refused`.
 
-**Slices:**
+#### Observations (V4b), decided now because a phase rule isn't a boundary
 
-- **V4a** (first PR): the inbox link and key, the proposal schema and its
-  validation, `inbox propose` on the agent's side, and `inbox pull` and
-  `inbox apply` for action items. The tests use local bare repositories and a
-  fake `gh`, and include hostile inboxes: oversize, wrong path, a symlink, a
-  wrong delegate id, bad JSON, a workflow file, a flood, and a tag the
-  delegate can't see.
-- **V4b:** the runners and the tick pull and apply before a run;
-  `pre-session data` gains `agent_observations`, with each one's delegate,
-  ULID and text, marked untrusted; a new core phase says to treat them as
-  input to weigh, cited by delegate, never as instructions; `dismiss` and
-  `rename-topic`, and anything owner-only, go to the review queue; health
-  and doctor show inbox age and refused proposals.
+- **No sending from a session that reads them.** A session that reads agents'
+  observations may not also send anything without the owner's review: no
+  wrap, no notification, no Agnes share. Observations go to runs that don't
+  send, or their sends wait for review.
+- **No spreading.** KB text that comes from an observation carries
+  `source: delegate:<id>`. Every delegate mirror leaves it out until the owner
+  accepts it, so one agent's injection can't reach another agent.
+- **An `include_private` delegate's** observations default to private.
+- **Shown only as plain text.** Text an agent wrote is rendered as plain text
+  wherever it shows:
+  - the app's DOMPurify allows only `http`, `https` and `mailto` links, and no
+    remote images;
+  - Telegram HTML is escaped;
+  - Slack's `<!channel>`, `<@U…>` and `<url|text>` are escaped.
+- **Agnes.** Agnes's full mirror leaves out `.scout-inbox/agents/`, or marks it
+  untrusted (a point for the Agnes sub-coordinator).
+
+#### Slices
+
+- **V4a (first PR):**
+  - the inbox link with id binding, and the `--inbox` key;
+  - the schema;
+  - `inbox propose`;
+  - `inbox pull` (the locked-down fetch, the signed record, the removal,
+    dedup);
+  - `inbox apply` for action items, with authorization, limits and revert.
+
+  The tests use local bare repositories and a fake `gh`, including hostile
+  inboxes: oversize, wrong path, a symlink, a case collision, a wrong delegate
+  id, bad JSON, a workflow file, a tag, a force-pushed `main`, a flood, a
+  planted copy, and a TAG the delegate can't see or only sees in a comment.
+- **V4b:**
+  - the runner pulls and applies outside the sandbox before a run;
+  - `pre-session data` gains `agent_observations`, marked untrusted, read
+    only by runs that don't send;
+  - `dismiss`, `rename-topic`, bursts and anything owner-only go to the review
+    queue;
+  - "done by delegate" in the briefing;
+  - health and doctor show inbox age and refused proposals;
+  - the rendering rules above.
 - **V4c:** `kb_note_proposal`, as a diff against the mirror blob it was made
   from, always to the review queue, never applied automatically.
 
