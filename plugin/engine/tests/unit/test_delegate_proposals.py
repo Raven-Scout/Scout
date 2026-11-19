@@ -333,10 +333,14 @@ def test_m3_a_path_or_id_with_a_trailing_newline_is_refused() -> None:
     assert dp.ULID_RE.match(ULID + "\n") is None
 
 
-def test_h1_a_ulid_past_128_bits_and_deep_nesting_are_refused_not_raised() -> None:
+def test_h1_a_ulid_past_128_bits_and_any_crash_are_refused_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     big = "8" + ULID[1:]
     _refused(_doc(id=big), "bad_path", f"inbox/{D}/{big}.json")
-    deep = b'{"a": ' + b"[" * 8000 + b"]" * 8000 + b"}"
+
+    def too_deep(*a: object, **k: object) -> object:
+        raise RecursionError("maximum recursion depth exceeded")  # how deep nesting fails, at whatever depth
+
+    monkeypatch.setattr(dp.json, "loads", too_deep)  # the depth that fails differs by Python version and platform
     with pytest.raises(dp.ProposalError) as e:
-        dp.parse(PATH, deep, D)
+        dp.parse(PATH, json.dumps(_doc()).encode(), D)
     assert e.value.code == "bad_entry"

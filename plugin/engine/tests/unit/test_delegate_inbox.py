@@ -754,24 +754,21 @@ def test_a_proposal_that_cant_be_pushed_stays_committed(vault: Path, clone: Path
 def test_h1_no_entry_can_wedge_a_pull(vault: Path, inbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     good = _valid()
     big_ulid = "8" + good.id[1:]  # past 2^128: ulid_time would raise if anything reached it
-    nested = b'{"a": ' + b"[" * 8000 + b"]" * 8000 + b"}"  # under 16 KiB, far past Python's recursion limit
     odd_op = json.loads(dp.make(D, "action_item_op", {"op": "mark-done", "tag": "AB12", "date": "2026-11-19",
                                                        "args": {}}).to_bytes())  # fmt: skip
     odd_op["op"] = []
     odd_id = dp.make(D, "observation", {"text": "x"}).id
     odd_op["id"] = odd_id
-    nested_id = dp.make(D, "observation", {"text": "x"}).id
     _commit_entries(
         inbox,
         {
             f"inbox/{D}/{big_ulid}.json": ("100644", b"{}"),
-            f"inbox/{D}/{nested_id}.json": ("100644", nested),
             f"inbox/{D}/{odd_id}.json": ("100644", json.dumps(odd_op).encode()),
             good.path: ("100644", good.to_bytes()),
         },
     )
     r = di.pull(vault, D)
-    assert r.taken == [good.id] and r.refused == {"bad_path": 1, "bad_entry": 1, "bad_op": 1}
+    assert r.taken == [good.id] and r.refused == {"bad_path": 1, "bad_op": 1}
     assert _main_files(inbox) == set()
 
     late = _valid()
