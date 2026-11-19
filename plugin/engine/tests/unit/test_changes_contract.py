@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -146,6 +147,35 @@ def test_limit_truncates_but_counts_everything(tmp_path):
     doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30), limit=3)
     assert doc["truncated"] is True and len(doc["changes"]) == 3
     assert sum(doc["counts"].values()) == 7
+
+
+def test_concurrent_scans_duplicate_rows_show_and_count_once(tmp_path):
+    """Two overlapping scans can each append the same commit's row; the report keeps the first, once."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    first = Change(
+        id="chg-abcdef012345",
+        ts=_ts(1),
+        kind="brain-edit",
+        summary="first row",
+        why=Why(type="unknown", ref="", inferred=True),
+        commit="abcdef012345" + "0" * 28,
+        files=("SKILL.md",),
+        targets=(),
+        governance=False,
+        author_lane="dreaming",
+    )
+    other = replace(first, id="chg-000000000001", kind="driver", summary="another")
+    append_change(vault, first)
+    append_change(vault, other)
+    append_change(vault, replace(first, summary="second row"))
+    assert len(read_changes(vault)[0]) == 3
+    doc = changes_report(vault, now=NOW, since=NOW - timedelta(days=30))
+    assert [c["id"] for c in doc["changes"]].count("chg-abcdef012345") == 1
+    assert next(c for c in doc["changes"] if c["id"] == "chg-abcdef012345")["summary"] == "first row"
+    assert len(doc["changes"]) == 2 and sum(doc["counts"].values()) == 2
+    assert doc["counts"]["brain-edit"] == 1 and doc["counts"]["driver"] == 1
+    assert doc["truncated"] is False
 
 
 def test_duplicate_reliance_rows_count_once(tmp_path):

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION
+from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change
 from scout.changes.store import read_changes, read_signals
 
 FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit"})
@@ -23,9 +23,15 @@ DEFAULT_LIMIT = 500
 
 
 def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = DEFAULT_LIMIT) -> dict:
-    """Changes since ``since``, newest first, at most ``limit``; ``counts`` covers every in-range change."""
+    """Changes since ``since``, newest first, at most ``limit``; ``counts`` covers every in-range change.
+
+    One entry per change ``id`` (the first row in the file wins): two scans that overlap can each append a row
+    for the same commit, and the duplicate must not show twice or count twice."""
     changes, skipped = read_changes(vault)
-    inside = sorted((c for c in changes if since <= c.ts <= now), key=lambda c: c.ts, reverse=True)
+    unique: dict[str, Change] = {}
+    for c in changes:
+        unique.setdefault(c.id, c)
+    inside = sorted((c for c in unique.values() if since <= c.ts <= now), key=lambda c: c.ts, reverse=True)
     limit = max(1, limit)
     counts = {kind: 0 for kind in sorted(CHANGE_KINDS)}
     for c in inside:
