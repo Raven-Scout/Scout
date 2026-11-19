@@ -366,9 +366,8 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 6) {
             fieldLabel(label)
             TextField(placeholder, text: text)
-                .accessibilityLabel(label).textFieldStyle(.plain).font(DS.font(.body, weight: .medium)).padding(.horizontal, 10).frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5)))
+                .accessibilityLabel(label)
+                .dsField()
         }
     }
 

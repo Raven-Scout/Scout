@@ -151,17 +151,7 @@ struct SettingsInput: View {
         TextField(placeholder, text: $text)
             .accessibilityLabel(accessibilityLabel ?? rowLabel ?? placeholder)
             .preference(key: SettingsRowTitleUsedKey.self, value: accessibilityLabel == nil && rowLabel != nil)
-            .textFieldStyle(.plain)
-            .font(DS.font(.body, weight: .medium))
-            .foregroundStyle(DS.Ink.p1)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(DS.Paper.sunk)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-            )
+            .dsField()
     }
 }
 
