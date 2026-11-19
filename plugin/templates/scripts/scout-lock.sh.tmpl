@@ -276,16 +276,35 @@ _scout_awake_now() {
 _scout_watcher_stall() {
     # The awake seconds without progress that the holder $1's progress watcher
     # reports (LOCK_ALIVE), when its line names $1 and was written within the
-    # "fresh for" it gives; nothing otherwise (no watcher, a dead one, another
-    # holder's line). See engine/scout/run_progress.py.
-    local v pid stalled fresh mtime
-    read -r v pid _ stalled fresh _ 2>/dev/null < "$LOCK_ALIVE" || return 0
-    [ "$v" = 1 ] && [ "$pid" = "$1" ] || return 0
-    _scout_uint "$stalled" && _scout_uint "$fresh" || return 0
-    mtime=$(_scout_mtime "$LOCK_ALIVE")
-    _scout_uint "$mtime" || return 0
-    [ $(( $(date +%s) - mtime )) -le "$fresh" ] || return 0
-    echo "$stalled"
+    # "fresh for" it gives, capped at 1830 s (3 samples of the longest 600 s
+    # rate, plus 30 s) whatever the line says, and not in the future; nothing
+    # otherwise (no watcher, a dead one, another holder's line, no python3).
+    # Read as engine/scout/run_progress.py's read_fresh reads it: never through
+    # a link, never blocking on a FIFO, at most 4096 bytes. A run can write
+    # .scout-logs, so a planted FIFO must not hang the waiter, and a forged
+    # line goes stale like a real one.
+    python3 -I - "$LOCK_ALIVE" "$1" 2>/dev/null <<'PY' || true
+import os, stat, sys, time
+path, holder = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        sys.exit(0)
+    data = os.read(fd, 4097)
+    if len(data) > 4096:
+        sys.exit(0)
+    parts = data.decode("utf-8").rstrip("\n").split(" ", 5)
+except (OSError, UnicodeDecodeError):
+    sys.exit(0)
+if len(parts) != 6 or parts[0] != "1" or parts[1] != holder or "\n" in parts[5]:
+    sys.exit(0)
+if not all(p.isascii() and p.isdigit() for p in parts[1:5]) or int(parts[4]) <= 0:
+    sys.exit(0)
+age = time.time() - st.st_mtime
+if -30 <= age <= min(int(parts[4]), 1830):
+    print(int(parts[3]))
+PY
 }
 
 _scout_holder_wedged() {
@@ -375,7 +394,9 @@ _scout_on_exit() {
 # no watcher, and waiters sample this session themselves.
 _scout_progress_start() {
     [ -x "${SCOUTCTL_BIN:-}" ] || return 0
-    "$SCOUTCTL_BIN" progress watch --vault "$SCOUT_DIR" --runner-pid "$$" --log "$LOG_FILE" </dev/null >> "$LOG_FILE" 2>&1 &
+    # Silent: an engine older than this template has no `progress watch`, and
+    # its usage error has no place in the run log (or the app's Errors tab).
+    "$SCOUTCTL_BIN" progress watch --vault "$SCOUT_DIR" --runner-pid "$$" --log "$LOG_FILE" </dev/null >/dev/null 2>&1 &
     SCOUT_PROGRESS_WATCH_PID=$!
 }
 
@@ -500,7 +521,8 @@ scout_lock_acquire() {
         sleep "$left"
     done
     trap _scout_on_exit EXIT
-    # Where this run logs, so waiters can see it progress. Best effort.
+    # Where this run logs, for people reading the lock; nothing reads it as
+    # progress any more (the run log isn't: see the top of this file). Best effort.
     { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
     # The run marker, written whole (tmp + mv) so the hook never reads half of it.
     if { printf '%s %s\n' "$$" "$MODE" > "$LOCK_RUN.$$" && mv -f "$LOCK_RUN.$$" "$LOCK_RUN"; } 2>/dev/null; then

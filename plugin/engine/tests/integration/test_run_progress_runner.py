@@ -31,6 +31,7 @@ from .test_lock_reaper_progress import (
     _env,
     _failures,
     _group_alive,
+    _hold_lock,
     _kill_group,
     _lock,
     _script,
@@ -181,3 +182,35 @@ def test_a_run_that_ends_leaves_no_line_and_no_watcher(vault: Path) -> None:
     assert not list((vault / ".scout-logs").glob(".scout-session.lock*"))
     ps = subprocess.run(["ps", "-A", "-ww", "-o", "command="], capture_output=True, text=True, check=True).stdout
     assert f"progress watch --vault {vault} " not in ps
+
+
+@pytest.mark.parametrize("plant", ["fifo", "forged_future", "forged_link"])
+def test_a_planted_progress_line_neither_hangs_a_waiter_nor_vouches_for_the_holder(
+    vault: Path, holders: list[int], plant: str
+) -> None:
+    """A run can write .scout-logs. A FIFO at the line must not hang the next run's waiter, and a forged line
+    (a far-future mtime, or a link to a line elsewhere) must not stand in for the holder's progress: the waiter
+    falls back to sampling the holder itself, as with no watcher at all."""
+    pid = _detached("exec sleep 300")
+    holders.append(pid)
+    _hold_lock(vault, pid, held_for_s=60)
+    line = rp.heartbeat_path(vault)
+    forged = f"1 {pid} 1 0 999999999 /v/forged.log\n"
+    if plant == "fifo":
+        os.mkfifo(line)
+    elif plant == "forged_future":
+        line.write_text(forged, encoding="utf-8")
+        later = time.time() + 86400
+        os.utime(line, (later, later))
+    else:
+        elsewhere = vault / "forged"
+        elsewhere.write_text(forged, encoding="utf-8")
+        line.symlink_to(elsewhere)
+
+    started = time.monotonic()
+    result = _waiter(vault, SCOUT_LOCK_WAIT_SECS="0")
+
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 30, "the waiter must not block on the planted file"
+    sample = (vault / ".scout-logs" / ".scout-session.lock.progress").read_text(encoding="utf-8").split()
+    assert sample[0] == str(pid), "the waiter sampled the holder itself: the planted line was no answer"

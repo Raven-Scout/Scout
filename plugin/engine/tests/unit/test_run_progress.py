@@ -16,6 +16,7 @@ then ``cp`` it over the app copy and update the pins in
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -176,6 +177,10 @@ def _table(claude_cpu: str, *, keepalive_cpu: str = "0:05.00", broker_cpu: str =
     )
 
 
+def _ps_time(cs: int) -> str:
+    return f"{cs // 6000}:{cs % 6000 // 100:02d}.{cs % 100:02d}"
+
+
 def test_a_hung_claude_behind_a_live_shell_stalls_however_busy_the_helpers_are(tmp_path: Path) -> None:
     """The finding from #701's review: the keepalive renews (and logs) and the broker polls, claude does nothing."""
     tables = [_table("1:02.30", keepalive_cpu=f"0:{5 + i:02d}.00", broker_cpu=f"{i}:20.00") for i in range(8)]
@@ -200,7 +205,57 @@ def test_cpu_alone_counts_as_progress(tmp_path: Path) -> None:
     tables = [_table("1:02.30"), _table("1:08.30"), _table("1:12.40"), _table("1:12.40")]
     host = Host(tmp_path, tables, runner_lives=3)
     host.run()
-    assert [b.stalled_s for b in host.lines] == [0, 60, 0, 60], "6 s is under the 10 s threshold; 10.1 s since is over"
+    # 6 s is under the 10 s threshold; 10.1 s within the window is over, and stays over while it is in the window.
+    assert [b.stalled_s for b in host.lines] == [0, 60, 0, 0]
+
+
+def test_a_trickle_of_cpu_never_adds_up_to_progress(tmp_path: Path) -> None:
+    """The review of #730: a hung ``claude -p`` still burns a little CPU. Measured on a ``claude -p`` whose API
+    accepted the connection and never answered: 0.17 s in 220 s after start-up (~0.08%), so ~0.5 s per
+    10-minute window. Summed since the last progress, as the first version did, any trickle reaches the 10 s
+    threshold eventually and resets the stall; within a sliding window it never does."""
+    trickle = [_table(_ps_time(6230 + 50 * i)) for i in range(40)]  # +0.5 s of CPU a sample
+    host = Host(tmp_path, trickle, runner_lives=30)
+    host.run()
+    assert [b.stalled_s for b in host.lines] == [60 * i for i in range(31)], "0.5 s a sample is 5 s a window: never 10"
+    assert host.lines[-1].stalled_s == 1800
+
+
+def test_a_failed_sample_is_neither_progress_nor_stall(tmp_path: Path) -> None:
+    """``ps`` timing out, failing, or returning a table without the runner says nothing either way."""
+    outcomes: list[object] = [
+        _table("1:02.30"),
+        subprocess.TimeoutExpired("ps", 30),
+        OSError("fork failed"),
+        "",
+        _table("1:02.30").replace("  100     1   100 Ss", "  999     1   999 Ss"),  # no runner row
+        _table("1:02.30"),
+    ]
+    host = Host(tmp_path, [], runner_lives=5)
+
+    def ps() -> str:
+        out = outcomes[min(host.samples, len(outcomes) - 1)]
+        host.samples += 1
+        if isinstance(out, BaseException):
+            raise out
+        return str(out)
+
+    host.ps = ps  # type: ignore[method-assign]
+    host.run()
+    assert [b.stalled_s for b in host.lines] == [0, 0, 0, 0, 0, 60], "only the last gap had two good samples"
+
+
+def test_a_clock_that_went_back_adds_no_stall(tmp_path: Path) -> None:
+    host = Host(tmp_path, [_table("1:02.30")], runner_lives=3)
+
+    def rebooted(secs: float) -> None:
+        Host.sleep(host, secs)
+        if len(host.lines) == 2:
+            host.awake = 5  # a reboot: the awake clock starts again near zero
+
+    host.sleep = rebooted  # type: ignore[method-assign]
+    host.run()
+    assert [b.stalled_s for b in host.lines] == [0, 60, 60, 120]
 
 
 def test_sleep_is_not_stall(tmp_path: Path) -> None:
@@ -243,23 +298,153 @@ def test_sigterm_ends_the_watcher_and_its_line(tmp_path: Path) -> None:
     assert not rp.heartbeat_path(tmp_path).exists()
 
 
+# --- which processes are Scout's helpers ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/usr/bin/python3 /e/scoutctl repo lease keepalive --run-id x --parent-pid 1",
+        "/Users/alex/Library/Application Support/Scout/engine/.venv/bin/python -P -m scout.cli broker serve --dir /d",
+        "/opt/py/bin/python3 -P -m scout progress watch --vault /v --runner-pid 1 --log /v/l",
+        "/bin/bash /Users/alex/My Vault/bin/scoutctl repo lease keepalive --run-id x",
+        "scoutctl broker serve",
+    ],
+)
+def test_the_engines_helpers_are_helpers(command: str) -> None:
+    assert rp.is_helper(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # claude's and the retry wrapper's argv carry the prompt: a prompt naming a helper is not one.
+        "claude --permission-mode auto --model sonnet -p Check whether scoutctl broker serve is up",
+        "/bin/bash /v/scripts/claude-with-retry.sh /v/l /e/scoutctl agent-runtime exec -p run progress watch now",
+        "caffeinate -i sandbox-exec -p (version 1) /e/scoutctl agent-runtime exec -p broker serve",
+        "/usr/bin/python3 /e/notscoutctl repo lease keepalive",
+        "/usr/bin/python3 /e/scoutctl repo lease release --run-id x",
+        "/usr/bin/python3 /e/scoutctl progress watchful",
+    ],
+)
+def test_a_command_that_only_mentions_a_helper_is_not_one(command: str) -> None:
+    assert not rp.is_helper(command)
+
+
+def test_a_prompt_naming_a_helper_does_not_hide_claudes_tree() -> None:
+    table = PS.replace("claude --name scout-x -p go", "claude --name scout-x -p restart the broker serve loop")
+    _, pids = rp.session_sample(rp.parse_ps(table), RUNNER, self_pid=102)
+    assert {106, 107} <= pids
+
+
+# --- reading and writing the line safely --------------------------------------
+
+
+def test_freshness_is_capped_and_never_in_the_future(tmp_path: Path) -> None:
+    """A run can write .scout-logs: a forged ``fresh for`` or a future mtime must not keep a line fresh."""
+    path = tmp_path / ".scout-session.lock.alive"
+    rp.write(path, rp.Heartbeat(4242, 1, 0, 999_999_999_999, "/v/l"))
+    written = path.stat().st_mtime
+    assert rp.MAX_FRESH_SECS == 1830
+    assert rp.read_fresh(path, now=written + 1830) is not None
+    assert rp.read_fresh(path, now=written + 1831) is None
+    assert rp.read_fresh(path, now=written - 30) is not None
+    assert rp.read_fresh(path, now=written - 31) is None, "an mtime in the future is forged or skewed"
+
+
+def test_a_link_or_fifo_at_the_line_is_never_followed_or_waited_on(tmp_path: Path) -> None:
+    path = tmp_path / ".scout-session.lock.alive"
+    target = tmp_path / "elsewhere"
+    target.write_text(CONTRACT.render(), encoding="utf-8")
+    path.symlink_to(target)
+    assert rp.read_fresh(path, now=target.stat().st_mtime) is None
+    path.unlink()
+    os.mkfifo(path)
+    assert rp.read_fresh(path) is None  # returns at once: never opened for a blocking read
+    rp.remove_if_ours(path, 4242)
+    assert path.exists(), "a FIFO is no line of ours"
+
+
+def test_a_file_too_big_or_not_utf8_is_unreadable(tmp_path: Path) -> None:
+    path = tmp_path / ".scout-session.lock.alive"
+    path.write_bytes(b"\xff\xfe" + b"x" * 10)
+    assert rp.read_fresh(path) is None
+    path.write_text(CONTRACT.render()[:-1] + "x" * rp.MAX_LINE_BYTES + "\n", encoding="utf-8")
+    assert rp.read_fresh(path) is None, "a line longer than MAX_LINE_BYTES is refused, not torn"
+
+
+def test_a_link_planted_where_the_watcher_writes_is_never_written_through(tmp_path: Path) -> None:
+    """The first version wrote ``<line>.<pid>``, a name a run could guess from ``ps`` and plant as a link to a
+    runner script or a secret. ``mkstemp`` names are unguessable and opened O_EXCL, and the rename replaces a
+    link at the line itself rather than writing through it."""
+    path = tmp_path / ".scout-session.lock.alive"
+    secret = tmp_path / "secret"
+    secret.write_text("keep me\n", encoding="utf-8")
+    (tmp_path / f"{path.name}.{os.getpid()}").symlink_to(secret)
+    path.symlink_to(secret)
+    rp.write(path, CONTRACT)
+    assert secret.read_text(encoding="utf-8") == "keep me\n"
+    assert not path.is_symlink() and rp.parse(path.read_text(encoding="utf-8")) == CONTRACT
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_a_write_that_cannot_land_is_skipped(tmp_path: Path) -> None:
+    rp.write(tmp_path / "missing-dir" / ".scout-session.lock.alive", CONTRACT)  # no directory: nothing, no raise
+    assert not (tmp_path / "missing-dir").exists()
+    (tmp_path / "is-a-dir").mkdir()
+    (tmp_path / "is-a-dir" / "x").write_text("", encoding="utf-8")
+    rp.write(tmp_path / "is-a-dir", CONTRACT)  # the rename fails: the tmp file goes
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["is-a-dir"]
+
+
+@pytest.mark.parametrize(("text", "pid"), [("4242\n", 4242), ("", None), ("abc\n", None), ("٣\n", None)])
+def test_the_lock_pid_reads_only_ascii_digits(tmp_path: Path, text: str, pid: int | None) -> None:
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(text, encoding="utf-8")
+    assert rp.lock_pid(lock) == pid
+    assert rp.lock_pid(tmp_path / "missing") is None
+
+
+def test_unparseable_cpu_times_are_skipped() -> None:
+    assert rp.cpu_centiseconds("1:xx.00") is None
+    assert rp.parse_ps("  100     1   100 Ss    1:xx.00 bash\nnot a row\n") == []
+
+
 def test_the_real_ps_table_parses() -> None:
     procs = rp.parse_ps(rp.run_ps())
     me = [p for p in procs if p.pid == os.getpid()]
     assert me and me[0].cpu_cs >= 0 and "python" in me[0].command.lower()
 
 
-def test_pid_alive() -> None:
+def test_pid_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rp._pid_alive(os.getpid())
     assert not rp._pid_alive(0)
     gone = subprocess.Popen([sys.executable, "-c", "pass"])
     gone.wait()
     assert not rp._pid_alive(gone.pid)
 
+    def not_ours(_pid: int, _sig: int) -> None:
+        raise PermissionError
 
-def test_env_secs_takes_only_positive_whole_numbers() -> None:
+    monkeypatch.setattr(rp.os, "kill", not_ours)
+    assert rp._pid_alive(1), "a process of another user is alive"
+
+
+def test_env_secs_takes_whole_numbers_and_zero_only_where_the_shell_does() -> None:
     assert rp.env_secs("X", 60, {"X": "5"}) == 5
-    assert [rp.env_secs("X", 60, {"X": v}) for v in ("", "0", "-1", "1.5", "five")] == [60] * 5
+    assert [rp.env_secs("X", 60, {"X": v}) for v in ("", "0", "-1", "1.5", "five", "٣")] == [60] * 6
+    assert rp.env_secs("X", 60, {"X": "0"}, allow_zero=True) == 0
+
+
+def test_the_shell_reader_uses_the_same_limits() -> None:
+    """scout-lock.sh reads the line in its own python3 snippet; its numbers must be these."""
+    lock_lib = (Path(__file__).resolve().parents[3] / "templates" / "scripts" / "scout-lock.sh.tmpl").read_text(
+        encoding="utf-8"
+    )
+    assert f"min(int(parts[4]), {rp.MAX_FRESH_SECS})" in lock_lib
+    assert f"-{rp.FRESH_SLACK_SECS} <= age" in lock_lib
+    assert f"os.read(fd, {rp.MAX_LINE_BYTES + 1})" in lock_lib and f"len(data) > {rp.MAX_LINE_BYTES}" in lock_lib
+    assert "os.O_NOFOLLOW | os.O_NONBLOCK" in lock_lib
 
 
 def test_the_cli_watches_with_the_reapers_knobs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

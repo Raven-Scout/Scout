@@ -2124,15 +2124,22 @@ def progress_findings(vault: Path, *, now: datetime, env: Mapping[str, str] | No
     stuck exactly when the next run would reap it, and a run whose log only the
     lease keepalive writes is not mistaken for one that works. Nothing without
     a fresh line: no watcher (an older runner), a dead one, or no live holder.
+
+    The ceiling is ``SCOUT_LOCK_MAX_AGE_SECS`` from *this* process's environment
+    (default 7200 s). The reaper reads it from the runner's, i.e. the launchd
+    job's: set it in both places, or health and the reaper disagree on when.
     """
     from scout import run_progress
 
     lock = vault / ".scout-logs" / run_progress.LOCK_NAME
     beat = run_progress.read_fresh(run_progress.heartbeat_path(vault), now=now.timestamp())
-    if beat is None or not is_lock_held_by_live_pid(lock) or _read_pid(lock) != beat.runner_pid:
+    if beat is None or not is_lock_held_by_live_pid(lock) or run_progress.lock_pid(lock) != beat.runner_pid:
         return []
     ceiling = run_progress.env_secs(
-        run_progress.MAX_AGE_SECS_ENV, run_progress.DEFAULT_MAX_AGE_SECS, os.environ if env is None else env
+        run_progress.MAX_AGE_SECS_ENV,
+        run_progress.DEFAULT_MAX_AGE_SECS,
+        os.environ if env is None else env,
+        allow_zero=True,
     )
     if beat.stalled_s <= ceiling:
         return []
@@ -2152,14 +2159,6 @@ def progress_findings(vault: Path, *, now: datetime, env: Mapping[str, str] | No
             log=beat.log,
         )
     ]
-
-
-def _read_pid(lock: Path) -> int | None:
-    try:
-        text = lock.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    return int(text) if text.isdigit() else None
 
 
 def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:

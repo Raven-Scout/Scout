@@ -1848,7 +1848,10 @@ def cli_progress_watch(
         runner_pid=runner_pid,
         log=log,
         sample_s=run_progress.env_secs(run_progress.SAMPLE_SECS_ENV, run_progress.DEFAULT_SAMPLE_SECS),
-        cpu_threshold_cs=run_progress.env_secs(run_progress.CPU_SECS_ENV, run_progress.DEFAULT_CPU_SECS) * 100,
+        cpu_threshold_cs=run_progress.env_secs(
+            run_progress.CPU_SECS_ENV, run_progress.DEFAULT_CPU_SECS, allow_zero=True
+        )
+        * 100,
     )
 
 

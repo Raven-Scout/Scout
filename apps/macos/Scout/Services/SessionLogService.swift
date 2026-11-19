@@ -644,22 +644,24 @@ final class SessionLogService: ObservableObject {
         // parseBody does blocking file IO plus several regex scans; run it off
         // the main actor so even a coalesced reconcile burst can't stall the UI
         // thread (issue #22). The result hops back to the main actor on return.
-        let parseTask = Task.detached(priority: .utility) {
-            try? Self.parseBody(at: url, filename: filename)
+        let logsDirectory = logsDirectory
+        let now = clock.now()
+        let parseTask = Task.detached(priority: .utility) { () -> (ParsedBody, TimeInterval?)? in
+            guard let body = try? Self.parseBody(at: url, filename: filename) else { return nil }
+            return (body, RunProgress.readFresh(logsDirectory: logsDirectory, now: now)?.stall(for: url))
         }
-        guard let body = await parseTask.value else { return }
+        guard let (body, watcherStall) = await parseTask.value else { return }
         // A skipped run spent nothing; a nearby cost row is another run's.
         let cost = body.status.isSkip ? nil : trackerService.cost(
             matching: filename.type.costTrackerKey,
             near: filename.startedAt,
             tolerance: 120
         )
-        let now = clock.now()
         let status = Self.promoteOrphan(
             parsedStatus: body.status,
             startedAt: filename.startedAt,
             lastActivityAt: Self.logModifiedAt(url),
-            watcherStall: RunProgress.readFresh(logsDirectory: logsDirectory, now: now)?.stall(for: url),
+            watcherStall: watcherStall,
             type: filename.type,
             now: now
         )
@@ -702,16 +704,29 @@ final class SessionLogService: ObservableObject {
     /// the periodic sweep timer so a long-running app session still demotes
     /// `.running` → `.orphaned` as clock time crosses the per-type cutoff,
     /// even when no file event fires.
+    ///
+    /// It also brings back a `.orphaned` run that never wrote its last line
+    /// when the progress watcher's fresh line names it and shows it working
+    /// again: a run that stalled past its cutoff and then resumed writes
+    /// nothing to its log (`claude -p` doesn't), so no file event would.
+    /// The line is read without blocking and at most 4 KB (`RunProgress`).
     func sweepStaleStatuses() {
         let now = clock.now()
-        // Read once per sweep, and only when a run is running.
-        let progress = runs.contains { $0.status == .running }
+        // Read once per sweep, and only when a run could change.
+        let progress = runs.contains(where: Self.mayChangeOnSweep)
             ? RunProgress.readFresh(logsDirectory: logsDirectory, now: now) : nil
         let resweeped = runs.map { run -> Run in
-            // Only a running run can change, so only its log is stat'ed.
-            guard run.status == .running else { return run }
+            // Only a running run, or an unfinished one the watcher still names, can change.
+            let parsedStatus: RunStatus
+            if run.status == .running {
+                parsedStatus = .running
+            } else if Self.mayChangeOnSweep(run), progress?.names(run.logPath) == true {
+                parsedStatus = .running
+            } else {
+                return run
+            }
             let promoted = Self.promoteOrphan(
-                parsedStatus: run.status,
+                parsedStatus: parsedStatus,
                 startedAt: run.startedAt,
                 lastActivityAt: Self.logModifiedAt(run.logPath),
                 watcherStall: progress?.stall(for: run.logPath),
@@ -724,6 +739,11 @@ final class SessionLogService: ObservableObject {
         // Only republish if anything actually changed — avoids needless
         // SwiftUI re-renders on every tick.
         if resolved != runs { runs = resolved }
+    }
+
+    /// A run the sweep may move: running, or orphaned without ever writing its last line.
+    nonisolated static func mayChangeOnSweep(_ run: Run) -> Bool {
+        run.status == .running || (run.status == .orphaned && run.endedAt == nil && run.exitCode == nil)
     }
 
     private func startStaleSweep() {

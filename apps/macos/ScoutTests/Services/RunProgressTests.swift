@@ -57,6 +57,63 @@ struct RunProgressTests {
         #expect(RunProgress.readFresh(logsDirectory: dir, now: sampled) == nil)
     }
 
+    @Test("a forged line goes stale like a real one: freshness is capped, and never in the future")
+    func freshnessIsCappedAndNotInTheFuture() throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let line = dir.appendingPathComponent(RunProgress.fileName)
+        try "1 4242 1763550000 0 999999999999 /v/.scout-logs/scout-2026-04-20_11-00.log\n"
+            .write(to: line, atomically: true, encoding: .utf8)
+        let written = Self.et(day: 20, hour: 11, minute: 30)
+        try pinLogModified(line, to: written)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(1830)) != nil)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(1831)) == nil)
+        // A modification time a day ahead (`touch -t`) would otherwise stay "fresh" for a day.
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(-31)) == nil)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: written.addingTimeInterval(-30)) != nil)
+    }
+
+    @Test("a link or a FIFO planted at the line is never followed or waited on")
+    func plantedLinkOrFifoIsIgnored() throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let line = dir.appendingPathComponent(RunProgress.fileName)
+        let target = dir.appendingPathComponent("elsewhere")
+        try "1 4242 1763550000 0 210 /v/.scout-logs/scout-2026-04-20_11-00.log\n"
+            .write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: line, withDestinationURL: target)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: Date()) == nil)
+        try FileManager.default.removeItem(at: line)
+        #expect(mkfifo(line.path, 0o600) == 0)
+        #expect(RunProgress.readFresh(logsDirectory: dir, now: Date()) == nil)   // returns at once
+    }
+
+    @Test("a run that stalled past its cutoff and then resumed is Running again")
+    func sweep_resumedRunIsRevived() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let log = try writeRunningLog(in: dir, keepalives: 0)
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 0))
+        try writeLine(in: dir, stalledMinutes: 25, log: log, sampledAt: Self.et(day: 20, hour: 11, minute: 30))
+        let clock = SteppableClock(date: Self.et(day: 20, hour: 11, minute: 30))
+        let service = try await makeService(in: dir, clock: clock)
+        _ = try await service.loadInitial()
+        #expect(service.runs.first?.status == .orphaned)
+
+        // The watcher sees it work again; claude wrote nothing to the log, so only the sweep can tell.
+        try writeLine(in: dir, stalledMinutes: 0, log: log, sampledAt: Self.et(day: 20, hour: 11, minute: 35))
+        clock.date = Self.et(day: 20, hour: 11, minute: 35)
+        service.sweepStaleStatuses()
+        #expect(service.runs.first?.status == .running)
+
+        // Without a line naming it, an orphaned run stays orphaned.
+        try FileManager.default.removeItem(at: dir.appendingPathComponent(RunProgress.fileName))
+        clock.date = Self.et(day: 20, hour: 12, minute: 40)
+        service.sweepStaleStatuses()
+        #expect(service.runs.first?.status == .orphaned)
+        try writeLine(in: dir, stalledMinutes: 0, log: dir.appendingPathComponent("scout-2026-04-20_09-00.log"),
+                      sampledAt: Self.et(day: 20, hour: 12, minute: 40))
+        service.sweepStaleStatuses()
+        #expect(service.runs.first?.status == .orphaned)
+    }
+
     // MARK: - SessionLogService: the watcher's stall, not the log, decides
 
     @Test("a hung claude is orphaned although the keepalive wrote its log a minute ago")

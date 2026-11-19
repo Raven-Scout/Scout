@@ -28,10 +28,10 @@ struct RunProgress: Equatable, Sendable {
     let freshFor: TimeInterval
     let logPath: String
 
-    static let fileName = ".scout-session.lock.alive"
-    static let formatVersion = "1"
+    nonisolated static let fileName = ".scout-session.lock.alive"
+    nonisolated static let formatVersion = "1"
 
-    static func parse(_ text: String) -> RunProgress? {
+    nonisolated static func parse(_ text: String) -> RunProgress? {
         var line = Substring(text)
         if line.hasSuffix("\n") { line = line.dropLast() }
         guard !line.contains("\n") else { return nil }
@@ -52,25 +52,48 @@ struct RunProgress: Equatable, Sendable {
         )
     }
 
+    /// The longest any reader trusts a line, whatever it says (`MAX_FRESH_SECS` in the engine):
+    /// three samples at the slowest rate the watcher allows (600 s), plus 30 s.
+    nonisolated static let maxFreshFor: TimeInterval = 1830
+    /// How far in the future a line's modification time may be (clock skew) and still count.
+    nonisolated static let freshSlack: TimeInterval = 30
+    nonisolated static let maxLineBytes = 4096
+
     /// The line in `logsDirectory`, while its watcher is alive at `now`; nil otherwise.
-    static func readFresh(logsDirectory: URL, now: Date) -> RunProgress? {
-        let url = logsDirectory.appendingPathComponent(fileName)
-        guard let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
-              let text = try? String(contentsOf: url, encoding: .utf8),
-              let progress = parse(text),
-              now.timeIntervalSince(modified) <= progress.freshFor else { return nil }
+    ///
+    /// A run can write `.scout-logs`, so the file is opened without following a link and
+    /// without blocking (a FIFO planted there must not hang the app), only a regular file is
+    /// read, and at most `maxLineBytes` of it. A line is trusted for its own "fresh for",
+    /// never longer than `maxFreshFor`, and never when its time is in the future: a forged
+    /// line goes stale like a real one.
+    nonisolated static func readFresh(logsDirectory: URL, now: Date) -> RunProgress? {
+        let path = logsDirectory.appendingPathComponent(fileName).path
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        var buffer = [UInt8](repeating: 0, count: maxLineBytes + 1)
+        let count = read(fd, &buffer, maxLineBytes + 1)
+        guard count > 0, count <= maxLineBytes,   // a longer file is refused, not torn
+              let text = String(bytes: buffer[0..<count], encoding: .utf8),
+              let progress = parse(text) else { return nil }
+        let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)
+                            + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
+        let age = now.timeIntervalSince(modified)
+        guard age >= -freshSlack, age <= min(progress.freshFor, maxFreshFor) else { return nil }
         return progress
     }
 
     /// Whether this line is about the run that writes `log`. Compared by file
     /// name: the runner names the log by its vault path, which may reach the
     /// same file through a symlink, and log names are unique per run.
-    func names(_ log: URL) -> Bool {
+    nonisolated func names(_ log: URL) -> Bool {
         (logPath as NSString).lastPathComponent == log.lastPathComponent
     }
 
     /// The watcher's stall for the run that writes `log`, when its fresh line is about that run.
-    func stall(for log: URL) -> TimeInterval? {
+    nonisolated func stall(for log: URL) -> TimeInterval? {
         names(log) ? stalled : nil
     }
 }

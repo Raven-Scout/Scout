@@ -13,25 +13,35 @@ started by ``scripts/scout-lock.sh`` once the run holds the session lock). Every
 reaper samples a holder: the processes of the runner's process group and
 process tree, minus Scout's own background helpers (the lease keepalive, the
 run brokers, the watcher itself) and everything they start. The session made
-progress when it burned ``SCOUT_LOCK_PROGRESS_CPU_SECS`` of CPU since the last
-progress, or its process list changed (a tool call started or ended). A helper
-does neither on claude's behalf, so it no longer counts.
+progress when its process list changed (a tool call started or ended) or it
+burned ``SCOUT_LOCK_PROGRESS_CPU_SECS`` of CPU within the last
+:data:`CPU_WINDOW_SAMPLES` samples. The window is sliding, not "since the last
+progress": a hung ``claude -p`` still burns a trickle of CPU (timers, sockets),
+and summed over two hours a trickle reaches any threshold. A helper does
+neither on claude's behalf, so it no longer counts. A sample ``ps`` can't take
+(an error, a timeout, a table without the runner) says nothing either way: no
+progress, and no stall for that gap.
 
 The watcher writes what it found to ``.scout-logs/.scout-session.lock.alive``
-after every sample (tmp + rename), one line::
+after every sample (a fresh ``mkstemp`` file renamed over it, so a link planted
+in ``.scout-logs`` is never written through), one line::
 
     1 <runner pid> <last progress, epoch s> <stalled awake s> <fresh for s> <run log path>
 
 The stall counts only awake time (``scout.agent_runtimes.awake``), so a laptop
 asleep mid-run is not stalled. The file's mtime is the last sample: a reader
-trusts the line only while ``now - mtime <= fresh for``, so a watcher that died
-(or a host that just woke) is never read as a stall. Readers:
+trusts the line only while ``0 <= now - mtime <= fresh for`` (give or take
+:data:`FRESH_SLACK_SECS`), with *fresh for* capped at :data:`MAX_FRESH_SECS`
+whatever the line says, so a watcher that died (or a host that just woke) is
+never read as a stall, and a line a run forged goes stale like any other.
+Readers open it without following links or blocking, and read at most
+:data:`MAX_LINE_BYTES`:
 
 - ``scripts/scout-lock.sh``'s ``_scout_holder_wedged``: a holder is wedged once
   its fresh line's stall passes ``SCOUT_LOCK_MAX_AGE_SECS``. Without a fresh
   line for the holder it samples CPU and the process list itself, as before.
 - ``scoutctl health``: ``session.no_progress`` for the same holder on the same
-  ceiling (:func:`holder_findings` in ``scout.health``).
+  ceiling (:func:`scout.health.progress_findings`).
 - The macOS app (``RunProgress.swift``): a running run is "Didn't finish" once
   its fresh line's stall passes the run type's cutoff.
 
@@ -43,8 +53,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
+import stat
 import subprocess
+import tempfile
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,21 +73,40 @@ SAMPLE_SECS_ENV = "SCOUT_PROGRESS_SAMPLE_SECS"
 CPU_SECS_ENV = "SCOUT_LOCK_PROGRESS_CPU_SECS"  # the reaper's knob: one threshold for both
 MAX_AGE_SECS_ENV = "SCOUT_LOCK_MAX_AGE_SECS"  # the reaper's ceiling
 DEFAULT_SAMPLE_SECS = 60
+MAX_SAMPLE_SECS = 600
 DEFAULT_CPU_SECS = 10
 DEFAULT_MAX_AGE_SECS = 7200
+# The CPU threshold must be burned within this many samples (10 min at the default rate).
+CPU_WINDOW_SAMPLES = 10
 # A line is trusted for this many samples, plus slack for a slow `ps` on a loaded host.
 FRESH_SAMPLES = 3
 FRESH_SLACK_SECS = 30
+# Readers never trust a line longer than this, whatever it says: the longest a real watcher asks for.
+MAX_FRESH_SECS = FRESH_SAMPLES * MAX_SAMPLE_SECS + FRESH_SLACK_SECS
+MAX_LINE_BYTES = 4096
 
 # Scout's own background helpers in a run's session. They live as long as the
 # runner and burn CPU or log on their own schedule, so neither says the agent
-# moved. Matched in the command line; their descendants go with them.
-HELPER_MARKERS = ("repo lease keepalive", "broker serve", "progress watch")
+# moved; their descendants go with them. A helper is a process whose argv
+# STARTS as the engine with one of these subcommands -- `[interpreter [flags]]
+# …/scoutctl <sub>` or `python [flags] -m scout[.cli] <sub>` -- never one that
+# merely mentions it: claude's and the retry wrapper's argv carry the whole
+# prompt, and a prompt that says "broker serve" must not hide claude's tree.
+HELPER_SUBCOMMANDS = ("repo lease keepalive", "broker serve", "progress watch")
+_HELPER_RE = re.compile(
+    r"^(?:\S+\s+){0,5}?(?:(?:\S*/)?scoutctl|-m\s+scout(?:\.cli)?)\s+(?:"
+    + "|".join(r"\s+".join(map(re.escape, sub.split())) for sub in HELPER_SUBCOMMANDS)
+    + r")(?:\s|$)"
+)
 
 
-def env_secs(name: str, default: int, env: Mapping[str, str] | None = None) -> int:
+def env_secs(name: str, default: int, env: Mapping[str, str] | None = None, *, allow_zero: bool = False) -> int:
+    """A whole number of seconds from *env*, else *default*. ``0`` only with *allow_zero*, as the shell takes it."""
     raw = (os.environ if env is None else env).get(name, "")
-    return int(raw) if raw.isdigit() and int(raw) > 0 else default
+    if not (raw.isascii() and raw.isdigit()):
+        return default
+    value = int(raw)
+    return value if value > 0 or allow_zero else default
 
 
 def heartbeat_path(vault: Path) -> Path:
@@ -82,6 +115,10 @@ def heartbeat_path(vault: Path) -> Path:
 
 def fresh_for(sample_s: int) -> int:
     return FRESH_SAMPLES * sample_s + FRESH_SLACK_SECS
+
+
+def is_helper(command: str) -> bool:
+    return _HELPER_RE.match(command) is not None
 
 
 # --- the line ---------------------------------------------------------------
@@ -112,41 +149,65 @@ def parse(text: str) -> Heartbeat | None:
     return Heartbeat(pid, progress_at, stalled, fresh, parts[5])
 
 
-def read_fresh(path: Path, *, now: float | None = None) -> Heartbeat | None:
-    """The line at *path* while its watcher is alive (sampled within its ``fresh for``), else None."""
+def _read_line(path: Path) -> tuple[str, float] | None:
+    """``(text, mtime)`` of a regular file at *path*, never following a link or blocking on a FIFO."""
     try:
-        mtime = path.stat().st_mtime
-        text = path.read_text(encoding="utf-8")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        data = os.read(fd, MAX_LINE_BYTES + 1)
+        return (data.decode("utf-8"), st.st_mtime) if len(data) <= MAX_LINE_BYTES else None
     except (OSError, UnicodeDecodeError):
         return None
-    beat = parse(text)
-    if beat is None:
+    finally:
+        os.close(fd)
+
+
+def read_fresh(path: Path, *, now: float | None = None) -> Heartbeat | None:
+    """The line at *path* while its watcher is alive (sampled within its capped ``fresh for``), else None."""
+    got = _read_line(path)
+    beat = parse(got[0]) if got else None
+    if got is None or beat is None:
         return None
-    age = (time.time() if now is None else now) - mtime
-    return beat if age <= beat.fresh_for_s else None
+    age = (time.time() if now is None else now) - got[1]
+    return beat if -FRESH_SLACK_SECS <= age <= min(beat.fresh_for_s, MAX_FRESH_SECS) else None
 
 
 def write(path: Path, beat: Heartbeat) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}")
+    """Replace the line at *path* with *beat*: a new ``mkstemp`` file (O_EXCL, unguessable) renamed over it."""
     try:
-        tmp.write_text(beat.render(), encoding="utf-8")
-        os.replace(tmp, path)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
     except OSError:
-        pass  # best effort: a missed write only makes the line go stale, and readers fall back
+        return  # best effort: a missed write only makes the line go stale, and readers fall back
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(beat.render())
+        os.replace(tmp, path)  # mkstemp's 0600 stays: every reader runs as this user
+    except OSError:
+        pass
     finally:
         with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+            os.unlink(tmp)
 
 
 def remove_if_ours(path: Path, runner_pid: int) -> None:
     """Remove the line if it is still this runner's; a new holder's watcher may own the path now."""
-    try:
-        beat = parse(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError):
-        return
+    got = _read_line(path)
+    beat = parse(got[0]) if got else None
     if beat is not None and beat.runner_pid == runner_pid:
         with contextlib.suppress(OSError):
             path.unlink()
+
+
+def lock_pid(lock: Path) -> int | None:
+    """The PID in the session lock, or None for a missing, unreadable or unparseable one."""
+    got = _read_line(lock)
+    text = got[0].strip() if got else ""
+    return int(text) if text.isascii() and text.isdigit() else None
 
 
 # --- sampling the session -----------------------------------------------------
@@ -214,7 +275,7 @@ def session_sample(procs: list[Proc], runner_pid: int, *, self_pid: int) -> tupl
     group = runner.pgid if runner is not None and runner.pgid == runner_pid else None
     roots = {runner_pid} | ({p.pid for p in procs if p.pgid == group} if group is not None else set())
     session = _descendants(procs, roots)
-    helpers = {p.pid for p in procs if p.pid == self_pid or any(m in p.command for m in HELPER_MARKERS)}
+    helpers = {p.pid for p in procs if p.pid != runner_pid and (p.pid == self_pid or is_helper(p.command))}
     session -= _descendants(procs, helpers & session)
     live = [by_pid[pid] for pid in session if pid in by_pid and not by_pid[pid].stat.startswith("Z")]
     return sum(p.cpu_cs for p in live), frozenset(p.pid for p in live)
@@ -231,15 +292,18 @@ def run_ps() -> str:
     return out.stdout
 
 
-# --- the watcher ---------------------------------------------------------------
-
-
-def _lock_pid(lock: Path) -> int | None:
+def take_sample(ps: Callable[[], str], runner_pid: int, *, self_pid: int) -> tuple[int, frozenset[int]] | None:
+    """The session's sample, or None when ``ps`` failed or its table has no row for the runner."""
     try:
-        text = lock.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+        procs = parse_ps(ps())
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
-    return int(text) if text.isdigit() else None
+    if not any(p.pid == runner_pid for p in procs):
+        return None
+    return session_sample(procs, runner_pid, self_pid=self_pid)
+
+
+# --- the watcher ---------------------------------------------------------------
 
 
 def _pid_alive(pid: int) -> bool:
@@ -254,6 +318,30 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+class _Progress:
+    """The progress rule over successive samples: a changed process list, or the CPU threshold within the window."""
+
+    def __init__(self, cpu_threshold_cs: int, window_samples: int) -> None:
+        self.threshold = cpu_threshold_cs
+        self.cpus: deque[int] = deque(maxlen=window_samples + 1)
+        self.pids: frozenset[int] | None = None
+
+    def moved(self, cpu: int, pids: frozenset[int]) -> bool | None:
+        """True on progress, False on none, None for a baseline (nothing known yet)."""
+        if self.pids is None:
+            verdict: bool | None = None
+        elif pids != self.pids:
+            verdict = True
+        else:
+            # A total that fell means a process went (and pids changed); otherwise the window's CPU.
+            verdict = cpu < self.cpus[-1] or cpu - self.cpus[0] >= self.threshold
+        if pids != self.pids:
+            self.cpus.clear()  # another set of processes: their totals don't compare with the old ones
+        self.cpus.append(cpu)
+        self.pids = pids
+        return verdict
+
+
 def watch(
     vault: Path,
     *,
@@ -261,6 +349,7 @@ def watch(
     log: str,
     sample_s: int = DEFAULT_SAMPLE_SECS,
     cpu_threshold_cs: int = DEFAULT_CPU_SECS * 100,
+    window_samples: int = CPU_WINDOW_SAMPLES,
     self_pid: int | None = None,
     ps: Callable[[], str] = run_ps,
     alive: Callable[[int], bool] = _pid_alive,
@@ -276,52 +365,62 @@ def watch(
     has replaced it.
     """
     me = os.getpid() if self_pid is None else self_pid
+    sample_s = min(max(sample_s, 1), MAX_SAMPLE_SECS)
     lock = vault / ".scout-logs" / LOCK_NAME
     path = heartbeat_path(vault)
     fresh = fresh_for(sample_s)
-    mark_cpu, mark_pids = session_sample(parse_ps(ps()), runner_pid, self_pid=me)
+    rule = _Progress(cpu_threshold_cs, window_samples)
+    first = take_sample(ps, runner_pid, self_pid=me)
+    if first is not None:
+        rule.moved(*first)
     progress_at = int(wall_now())
     stalled = 0
     last_clock, last = awake_now()
     try:
         while True:
-            if _lock_pid(lock) != runner_pid:
+            if lock_pid(lock) != runner_pid:
                 return "not_holder"
             write(path, Heartbeat(runner_pid, progress_at, stalled, fresh, log))
             sleep(sample_s)
             if not alive(runner_pid):
                 return "gone"
-            cpu, pids = session_sample(parse_ps(ps()), runner_pid, self_pid=me)
+            sample = take_sample(ps, runner_pid, self_pid=me)
             clock, now = awake_now()
-            if cpu - mark_cpu >= cpu_threshold_cs or cpu < mark_cpu or pids != mark_pids:
-                mark_cpu, mark_pids = cpu, pids
+            verdict = rule.moved(*sample) if sample is not None else None
+            if verdict:
                 progress_at = int(wall_now())
                 stalled = 0
-            elif clock == last_clock and now >= last:
+            elif verdict is False and clock == last_clock and now >= last:
                 stalled += now - last
-            # else the clock changed or went back (a reboot): no stall is known for that gap
+            # else no sample, a baseline, or the clock changed or went back (a reboot): no stall is known
             last_clock, last = clock, now
     finally:
         remove_if_ours(path, runner_pid)
 
 
 __all__ = [
+    "CPU_WINDOW_SAMPLES",
     "DEFAULT_CPU_SECS",
     "DEFAULT_MAX_AGE_SECS",
     "DEFAULT_SAMPLE_SECS",
     "FORMAT_VERSION",
-    "HELPER_MARKERS",
+    "HELPER_SUBCOMMANDS",
+    "MAX_FRESH_SECS",
+    "MAX_LINE_BYTES",
     "Heartbeat",
     "Proc",
     "cpu_centiseconds",
     "env_secs",
     "fresh_for",
     "heartbeat_path",
+    "is_helper",
+    "lock_pid",
     "parse",
     "parse_ps",
     "read_fresh",
     "remove_if_ours",
     "session_sample",
+    "take_sample",
     "watch",
     "write",
 ]
