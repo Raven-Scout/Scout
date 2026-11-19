@@ -49,12 +49,19 @@ Rules:
   one new to the share has its lines checked for private notes.
 - **Checked edits to a shared note** (``privacy.shared_edits: checked``, the
   default): a scheduled run may add or reword lines of a ``.md`` note with an
-  effective share at HEAD and in the commit (:func:`_checked_edit`). Each
-  added or changed line gets the ``private-link`` / ``private-mention`` scan
-  a file new to a share gets, with the private terms of every note private at
-  HEAD, in the index or on disk plus the notes shared with this person
-  (:func:`scout.kb.outbound.with_shared`), and, as for an outbound send, no
-  ``%%privacy:allow%%`` marker allows a hit. Every ``privacy-widening`` rule
+  effective share at HEAD and in the commit whose staged bytes are UTF-8 text
+  (:func:`_checked_edit`). Each added or changed line gets the
+  ``private-link`` / ``private-mention`` scan (:func:`scout.kb.outbound.find_mentions`,
+  which also reads each line with HTML entities decoded and markup stripped)
+  against the slug, ``name:``, ``title:``, aliases and links of every note
+  private at HEAD, in the index or on disk, every note whose effective share
+  leaves out someone this note is shared with (:func:`_narrower_notes`), and
+  the notes shared with this person (:func:`scout.kb.outbound.with_shared`:
+  their paths, titles and quotes). As for an outbound send, no
+  ``%%privacy:allow%%`` marker allows a hit. **Terms come from frontmatter and
+  paths, never a note's body**, and nothing here sees email, Slack or a
+  meeting: a run that restates a private fact without naming its note passes,
+  as does anything from an unshared note or a connector. Every ``privacy-widening`` rule
   above still applies to the same commit, and changing the note's declared
   ``federation_scope`` at all, narrower included, blocks too. The mode is the
   strictest of the commit's, HEAD's and the working tree's policy, so
@@ -218,6 +225,8 @@ class _Ctx:
     config_removed: bool = False  # HEAD has scout-config.yaml, the index doesn't
     head_config: str | None = None
     _terms: PrivateTerms | None = None
+    _notes: list[PrivateNote] | None = None
+    _checked_terms: dict[Any, PrivateTerms] = field(default_factory=dict)
 
     @property
     def shared_edits_checked(self) -> bool:
@@ -233,10 +242,23 @@ class _Ctx:
     def is_shared(self, rel: str, label: Label) -> bool:
         return label.shared_file or any(glob_match(g, rel) for g in self.shared_globs)
 
+    def private_notes(self) -> list[PrivateNote]:
+        if self._notes is None:
+            self._notes = _union_notes(self)
+        return self._notes
+
     def terms(self) -> PrivateTerms:
         if self._terms is None:
-            self._terms = _union_terms(self)
+            self._terms = with_shared(terms_of(self.private_notes()), self.repo)
         return self._terms
+
+    def checked_terms(self, scope: FederationScope) -> PrivateTerms:
+        """:meth:`terms` plus every note shared more narrowly than ``scope`` (a checked edit's terms)."""
+        key = frozenset(scope) if isinstance(scope, tuple) else scope
+        if key not in self._checked_terms:
+            notes = [*self.private_notes(), *_narrower_notes(self, scope)]
+            self._checked_terms[key] = with_shared(terms_of(notes), self.repo)
+        return self._checked_terms[key]
 
 
 def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
@@ -261,7 +283,7 @@ def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
     )
 
 
-def _union_terms(ctx: _Ctx) -> PrivateTerms:
+def _union_notes(ctx: _Ctx) -> list[PrivateNote]:
     """Every note private at HEAD, in the index or on disk (each under its own policy)."""
     repo = ctx.repo
     notes: list[PrivateNote] = list(private_terms(repo, ctx.disk_policy).notes)
@@ -284,7 +306,27 @@ def _union_terms(ctx: _Ctx) -> PrivateTerms:
             window = _head_window(rel, text)
             if classify(rel, window, policy).visibility == "private":
                 notes.append(note_from_text(rel, window))
-    return with_shared(terms_of(notes), repo)
+    return notes
+
+
+def _narrower_notes(ctx: _Ctx, scope: FederationScope) -> list[PrivateNote]:
+    """Notes shared, but with fewer people than ``scope`` admits, under the commit's or the working tree's policy.
+
+    Their names are as private to this note's readers as a private note's. A note with no
+    effective share isn't one: its names are the vault's ordinary words (people, projects),
+    and readers of a shared page are told about those by design.
+    """
+    root = ctx.repo.resolve()
+    seen: set[str] = set()
+    notes: list[PrivateNote] = []
+    for policy in (ctx.policy, ctx.disk_policy):
+        for rel, label in all_labels(root, policy).items():
+            if rel in seen or not _md(rel) or label.visibility == "private" or label.federation_scope == "none":
+                continue
+            if _widens(label.federation_scope, scope):
+                seen.add(rel)
+                notes.append(note_from_text(rel, read_head(root / rel)[0]))
+    return notes
 
 
 def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
@@ -385,7 +427,13 @@ def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
             head_label is not None and sp.head_rel is not None and _head_was_shared(ctx, sp.head_rel, head_label)
         )
         base = head_text if was_shared else None
-        out += _shared_findings(ctx, rel, staged, added_line_numbers(base, staged), markers_allow=not checked)
+        added = added_line_numbers(base, staged)
+        if checked:
+            out += _shared_findings(
+                ctx, rel, staged, added, markers_allow=False, terms=ctx.checked_terms(label.federation_scope)
+            )
+        else:
+            out += _shared_findings(ctx, rel, staged, added)
     if ctx.scheduled:
         out += _widening(ctx, sp, staged, facts, label, head_text, head_facts, head_label, checked=checked)
     return out
@@ -395,8 +443,10 @@ def _checked_edit(ctx: _Ctx, sp: StagedPath, label: Label, head_label: Label | N
     """Whether this is a scheduled run's edit to a note already shared that ``shared_edits: checked`` lets through.
 
     A ``.md`` note at HEAD and in the commit with an effective share on both
-    sides. The caller then scans the added lines with no marker pass, and
-    :func:`_widening` drops only its added-text block for it.
+    sides, whose staged bytes are UTF-8 text: lossy decoding would turn a
+    Latin-1 ``é`` into U+FFFD, and the term it spelled would never match, so
+    such a note keeps the freeze. The caller then scans the added lines with
+    no marker pass, and :func:`_widening` drops only its added-text block for it.
     """
     return (
         ctx.scheduled
@@ -407,6 +457,7 @@ def _checked_edit(ctx: _Ctx, sp: StagedPath, label: Label, head_label: Label | N
         and head_label is not None
         and head_label.federation_scope != "none"
         and label.federation_scope != "none"
+        and _as_text(staged_blob(ctx.repo, sp.rel)) is not None
     )
 
 
@@ -434,16 +485,26 @@ def _head_was_shared(ctx: _Ctx, head_rel: str, head_label: Label) -> bool:
     return head_label.shared_file or any(glob_match(g, head_rel) for g in ctx.head_policy.shared_files)
 
 
-def _shared_findings(ctx: _Ctx, rel: str, staged: str, added: set[int], *, markers_allow: bool = True) -> list[Finding]:
+def _shared_findings(
+    ctx: _Ctx,
+    rel: str,
+    staged: str,
+    added: set[int],
+    *,
+    markers_allow: bool = True,
+    terms: PrivateTerms | None = None,
+) -> list[Finding]:
     """``private-link`` / ``private-mention`` on the ``added`` lines of a shared file.
 
     ``markers_allow=False`` (a run's checked edit to a note already shared) scans as an
     outbound send does: a ``%%privacy:allow%%`` marker allows nothing, so a run that
-    rewords a line the owner marked can't bring more of that note in under it.
+    rewords a line the owner marked can't bring more of that note in under it. ``terms``
+    defaults to :meth:`_Ctx.terms`; a checked edit passes :meth:`_Ctx.checked_terms`.
     """
     if not added:
         return []
-    terms = ctx.terms()
+    if terms is None:
+        terms = ctx.terms()
     lines = staged.split("\n")
     out: list[Finding] = []
     for n in find_mentions(staged, terms, allow_markers=markers_allow):
@@ -462,8 +523,9 @@ _CHECKED_HINT = (
     "pass — take the private material out of the line, or leave the line as it was"
 )
 _CHECKED_MESSAGES = {
-    "private-link": "line {n} links a private note — " + _CHECKED_HINT,
-    "private-mention": "line {n} names a private note or quotes a note shared with you — " + _CHECKED_HINT,
+    "private-link": "line {n} links a private note or one shared with fewer people — " + _CHECKED_HINT,
+    "private-mention": "line {n} names a private note or one shared with fewer people, or quotes a note shared "
+    "with you — " + _CHECKED_HINT,
 }
 
 

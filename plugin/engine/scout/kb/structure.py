@@ -42,10 +42,14 @@ night can clear: they would hold the pick for good.
 
 A front page with an effective ``federation_scope`` (not private or local-only) is the
 exception. With ``privacy.shared_edits: checked`` (the default) ``--next`` treats it as
-any other page: the hook scans each line a run adds to it (:mod:`scout.kb.lint_privacy`),
-so a full rebuild is allowed, as long as no note the rebuild could write would be read
-by someone the page isn't shared with (moving text into a narrower note is fine).
-With ``refuse``, or when a rebuild could write wider, one over budget or with narration
+any other page: the hook scans each line a run adds to it for private note names
+(:mod:`scout.kb.lint_privacy`), so a full rebuild is allowed when nothing narrower can
+reach it and nothing it writes is wider: every other file in its folder reaches at least
+the page's readers, the page declares no ``federation_scope`` of its own, and no note the
+rebuild could write would be read by someone the page isn't shared with (moving text into
+a narrower note is fine). The mode is the strictest of the committed, staged and
+working-tree config, as in the hook. With ``refuse``, or when any of that fails, one over
+budget or with narration
 may be picked **trim-only**, after every other page it can act on. The pass then only
 cuts whole lines from it, and moves detail only into the existing notes in its folder
 that aren't shared (``move_to``), never into a new note or a copy. Removing lines
@@ -74,7 +78,8 @@ import yaml
 from scout.config import load_config, today
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
-from scout.kb.lint_config import any_match, glob_match, load_lint_config
+from scout.kb.git_io import head_text_lossy, index_text_lossy
+from scout.kb.lint_config import CONFIG_FILE, any_match, glob_match, load_lint_config
 from scout.kb.privacy import (
     FULL_READERS,
     FederationScope,
@@ -86,6 +91,7 @@ from scout.kb.privacy import (
     label_file,
     load_frontmatter_yaml,
     load_policy,
+    policy_from_config_text,
     read_head,
     scope_widens,
 )
@@ -509,6 +515,42 @@ def _rebuild_writes_into_a_share(
     return False
 
 
+def _shared_edits(vault: Path, disk: Policy) -> SharedEdits:
+    """The commit hook's mode: ``checked`` only when the committed, staged and working-tree config all say so."""
+    policies = [disk]
+    for text in (head_text_lossy(vault, CONFIG_FILE), index_text_lossy(vault, CONFIG_FILE)):
+        if text is not None:
+            policies.append(policy_from_config_text(text))
+    return "checked" if all(p.shared_edits == "checked" for p in policies) else "refuse"
+
+
+def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: Label) -> bool:
+    """Whether a rebuild of a shared front page could carry narrower material into it, or can't commit.
+
+    A rebuild reads the whole folder and rewrites the page from it, so a paraphrase of a
+    note its readers can't see would reach them, and the hook can't see a paraphrase.
+    So every other note in the folder (``archive/`` included) must reach at least the
+    page's readers: none private, local-only, unshared, or shared with fewer people.
+    A page declaring its own ``federation_scope`` can't be rebuilt either: step 5.1's
+    archive copy would declare it too, a new file setting a scope, which the hook
+    refuses every night. Either way the caller falls back to a trim."""
+    if front.federation_scope_declared != "none":
+        return True
+    page = vault / folder.rel / f"{folder.name}.md"
+    for path in (vault / folder.rel).rglob("*"):
+        if path == page or not path.is_file() or path.name.startswith("."):
+            continue
+        label = label_file(vault, path.relative_to(vault).as_posix(), policy)
+        if (
+            label.visibility == "private"
+            or label.local_only
+            or label.federation_scope == "none"
+            or scope_widens(label.federation_scope, front.federation_scope)
+        ):
+            return True
+    return False
+
+
 def _rebuild_under_way(vault: Path, folder: _Folder, day: dt.date) -> bool:
     """Whether the folder has an archive copy from the last :data:`RESUME_DAYS`."""
     archive = vault / folder.rel / "archive"
@@ -692,7 +734,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         for path, changed in newest_changes(vault, cfg.projects_dir, day).items():
             history.setdefault(path.removeprefix(prefix).split("/", 1)[0], {})[path] = changed
     policy = load_policy(vault)
-    edits = policy.shared_edits
+    edits = _shared_edits(vault, policy)
     probes = _probe_policy(policy)
     sources_shared = _new_sources_shared(probes, day)
     rows = []
@@ -707,7 +749,11 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         if (
             row["rebuild_target"]
             and not row["trim_only"]
-            and (sources_wider or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes, scope))
+            and (
+                sources_wider
+                or (scope != "none" and _shared_rebuild_unsafe(vault, folder, policy, label))
+                or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes, scope)
+            )
         ):
             row["rebuild_target"] = row["resume"] = False
             if row["_trimmable"]:

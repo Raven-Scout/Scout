@@ -1384,6 +1384,34 @@ def _stage_privacy_report(vault: Path) -> None:
         print(f"  {line}", file=sys.stderr)
 
 
+SHARED_EDITS_NOTICE = (
+    "privacy: scheduled runs may now add to notes you share, after the commit hook checks each line for private "
+    "note names (privacy.shared_edits: checked, the default). The hook can't see a paraphrase. To keep shared "
+    "notes frozen, set `shared_edits: refuse` under `privacy:` in scout-config.yaml and commit it."
+)
+
+
+def _stage_shared_edits_notice(vault: Path) -> None:
+    """Say on stderr, at every upgrade until the owner picks a mode, that runs may edit shared notes.
+
+    Only when sharing is on and ``privacy.shared_edits`` isn't set: the default ``checked``
+    loosened what a run may commit to a shared note, and an upgrade must not do that unsaid.
+    Never edits (repeated upgrades stay byte-identical) and never fails the upgrade.
+    """
+    from scout.kb.privacy import load_policy
+    from scout.yaml_safe import load_yaml_key
+
+    try:
+        if not load_policy(vault).federation_enabled:
+            return
+        block = load_yaml_key((vault / "scout-config.yaml").read_text(encoding="utf-8"), "privacy")
+    except Exception:  # noqa: BLE001 - a notice must never fail the upgrade
+        return
+    if isinstance(block, dict) and "shared_edits" in block:
+        return
+    print(SHARED_EDITS_NOTICE, file=sys.stderr)
+
+
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
     """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
     _refuse_interrupted_install(cfg.vault)
@@ -1425,6 +1453,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
         _stage_privacy_report(cfg.vault)
+        _stage_shared_edits_notice(cfg.vault)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)

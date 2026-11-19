@@ -238,13 +238,73 @@ def test_checked_picks_a_shared_page_cutting_cant_fix(kb_repo, kwargs: dict) -> 
     assert picked(kb_repo.root) == "widgets"
 
 
-def test_checked_rebuilds_a_page_shared_alone_into_unshared_notes(kb_repo) -> None:
+def test_checked_rebuilds_a_page_shared_alone_in_an_empty_folder(kb_repo) -> None:
     """A share on the page only: the rebuild's new notes aren't shared, which is narrower."""
     kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
     kb_repo.write(FRONT, old_shape_page("widgets"))
-    kb_repo.write(f"{P}/widgets/knowledge/widgets-history.md", "older detail\n")
     row = rows_by_name(kb_repo.root)["widgets"]
     assert row["rebuild_target"] and not row["trim_only"]
+
+
+@pytest.mark.parametrize(
+    ("config", "note"),
+    [
+        pytest.param(federated(f"{P}/widgets/**", edits=""), PRIVATE_NOTE, id="a private note"),
+        pytest.param(federated(FRONT, edits=""), "older detail\n", id="an unshared note"),
+        pytest.param(
+            federated(f"{P}/widgets/**", edits=""),
+            "---\nfederation_scope: ['person:sam@example.com']\n---\nother readers\n",
+            id="a note shared with other people",
+        ),
+        pytest.param(
+            federated(f"{P}/widgets/**", edits="") + f"  local_only_add: ['{P}/widgets/knowledge/**']\n",
+            "local\n",
+            id="a local-only note",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("kwargs", "trim"),
+    [
+        pytest.param({"extra": "x" * 17000}, True, id="over budget: trim instead"),
+        pytest.param({"as_of": None}, False, id="no as_of: skipped"),
+    ],
+)
+def test_checked_never_rebuilds_a_page_from_narrower_notes(kb_repo, config: str, note: str, kwargs, trim) -> None:
+    """A rebuild reads the folder and rewrites the shared page: a paraphrase of a narrower note would reach
+    readers who can't see it, and the hook can't see a paraphrase."""
+    kb_repo.write("scout-config.yaml", config)
+    kb_repo.write(FRONT, page("widgets", **kwargs))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", note)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["trim_only"] is trim and row["rebuild_target"] is trim and row["share_blocked"] is not trim
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "trim"),
+    [
+        pytest.param({"extra": "x" * 17000}, True, id="over budget: trim instead"),
+        pytest.param({"as_of": None}, False, id="no as_of: skipped"),
+    ],
+)
+def test_checked_never_rebuilds_a_page_that_declares_its_scope(kb_repo, kwargs: dict, trim: bool) -> None:
+    """Step 5.1's archive copy would declare the scope too, which the hook refuses every night."""
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    kb_repo.write(FRONT, page("widgets", frontmatter=f"federation_scope: {ALEX}\n", **kwargs))
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["trim_only"] is trim and row["rebuild_target"] is trim
+
+
+def test_refuse_in_the_commit_wins_over_checked_on_disk(kb_repo) -> None:
+    """The pass reads the mode as the hook does: refuse committed, checked only on disk, is refuse."""
+    kb_repo.stage("scout-config.yaml", federated(f"{P}/widgets/**"))
+    kb_repo.stage(FRONT, page("widgets", as_of=None))
+    kb_repo.commit("owner: share, frozen")
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    assert picked(kb_repo.root) is None
+    kb_repo.stage("scout-config.yaml", federated(f"{P}/widgets/**", edits=""))
+    kb_repo.commit("owner: checked")
+    assert picked(kb_repo.root) == "widgets"
 
 
 def test_checked_rebuilds_into_notes_shared_with_the_same_people(kb_repo) -> None:

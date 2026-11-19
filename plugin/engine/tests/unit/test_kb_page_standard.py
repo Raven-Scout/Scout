@@ -145,6 +145,8 @@ def test_nightly_pass_rebuilds_a_shared_page_under_the_shared_note_rule(tmp_path
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "A shared page picked without `trim-only` is rebuilt like any other" in step
     assert "into a note shared more narrowly is fine, more widely never" in step
+    # The hook can't see a paraphrase, so the rule names where a shared page's facts may come from.
+    assert "use only facts from this note, notes shared with the same people, or sources those people were in" in step
 
 
 def test_a_trim_pick_is_read_before_the_size_and_refresh_rules(tmp_path: Path) -> None:

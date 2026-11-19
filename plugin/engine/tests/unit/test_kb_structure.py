@@ -316,7 +316,9 @@ def test_history_is_read_in_one_git_call(kb_repo, monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(structure.subprocess, "run", spy)
     assert len(structure_rows(kb_repo.root)) == 3
-    assert sorted(c[1] for c in calls) == ["log", "ls-files"]
+    # Besides the history and the file list, only the committed and staged config (the shared_edits mode).
+    assert sorted(c[1] for c in calls if "cat-file" not in c) == ["log", "ls-files"]
+    assert [c[-1] for c in calls if "cat-file" in c] == ["HEAD:scout-config.yaml", ":scout-config.yaml"]
 
 
 # ----- order and --next ---------------------------------------------------------------

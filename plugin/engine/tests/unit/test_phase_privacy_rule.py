@@ -104,6 +104,8 @@ def test_every_brain_file_carries_the_privacy_rule(kind: str, connectors: set[st
         "leave a line with a `%%privacy:allow%%` marker as it is",
         "sets or changes `federation_scope` (narrower too)",
         "`privacy.shared_edits: refuse`",
+        "can't see a paraphrase or anything from email, Slack or meetings",
+        "write only what came from this note, notes shared with the same people, or sources those people were in",
     ):
         assert needle in rule, needle
     assert "Never add to a note already shared" not in rule

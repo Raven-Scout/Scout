@@ -39,7 +39,14 @@ and ``(Sammy)`` all match and ``Sammyson`` doesn't. The parts of a term match
 across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
 ``task_renew_permit``, ``Mary-Jane`` for ``Mary Jane``), so matching runs over
 the whole text, and a term split over a line break reports every line it
-spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``).
+spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``), and
+the whole text once more with HTML entities decoded and inline markup dropped
+(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!-- -->mmy``, ``Sa<b></b>mmy``; :func:`_demarked`).
+
+**What it can't see.** Terms come from a private note's path and frontmatter,
+never its body: a sentence restating what the note says, initials, a role
+("the new hire"), or a look-alike letter from another script (Cyrillic ``а``)
+doesn't match.
 
 The result is a :class:`PrivateTerms`, grouped per private note, so a lint
 marker can allow one note's hits and not another's. It is cached per process,
@@ -63,6 +70,7 @@ the note or its path to a caller that would print it.
 from __future__ import annotations
 
 import bisect
+import html
 import os
 import re
 import unicodedata
@@ -115,6 +123,9 @@ _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 ALLOW_MARKER_RE = r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%"
 ALLOW_MARKER = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
 _MARKER = ALLOW_MARKER
+# Inline markup that can sit inside a word without showing: an HTML comment or tag, and
+# markdown emphasis, strike, highlight and code marks. Within one line only.
+_MARKUP = re.compile(r"<!--.*?-->|<[^<>\n]*>|\*\*|__|~~|==|`|\*")
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
 # Not a letter or digit on either side: `_` and punctuation are boundaries.
@@ -550,6 +561,11 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     return found
 
 
+def _demarked(text: str) -> str:
+    """``text`` with HTML entities decoded and inline markup dropped, line by line (line numbers kept)."""
+    return "\n".join(_MARKUP.sub("", re.sub(r"[\r\n]", " ", html.unescape(ln))) for ln in text.split("\n"))
+
+
 def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> list[int]:
     """Sorted, unique 1-based numbers of the lines of ``text`` that name or link a private note.
 
@@ -568,6 +584,9 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
         lines = text.split("\n")
     slugs = {note.path: note.slug.casefold() for note in terms.notes}
     hits = _hits(text, terms)
+    demarked = _demarked(text)  # once more with entities decoded and markup dropped
+    if demarked != text:
+        hits += _hits(demarked, terms)
     for i, ln in enumerate(lines):  # each line once more, URL-decoded
         decoded = unquote_plus(ln)
         if decoded != ln:

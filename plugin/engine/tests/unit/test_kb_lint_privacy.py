@@ -985,6 +985,102 @@ def test_a_config_that_doesnt_load_keeps_refuse_not_checked() -> None:
     assert policy_from_config_text(broken).shared_edits == "refuse"
 
 
+def test_a_checked_latin1_edit_keeps_the_freeze(vault: Path) -> None:
+    """Lossy decoding would turn ``é`` into U+FFFD and hide the term it spelled, so non-UTF-8 isn't checked."""
+    _shared_source(vault, edits="")
+    stage_bytes(vault, SOURCE, (_SOURCE_TEXT + "Ask Ren\xe9 about it.\n").encode("utf-8").replace(b"\xc3\xa9", b"\xe9"))
+    assert [c[1] for c in checks(vault, RUN) if c[2]] == ["privacy-widening"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Ask S&#97;mmy about it.", "Ask Sa**mm**y about it.", "Ask Sa<!-- -->mmy about it.", "Ask S<b></b>ammy."],
+    ids=["entity", "bold", "comment", "tag"],
+)
+def test_a_checked_line_hiding_a_name_in_markup_blocks(vault: Path, line: str) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, line)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+def test_a_term_split_across_an_unchanged_and_an_added_line_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, "Remember the task")
+    commit(vault, "owner: a reminder")
+    n = append(vault, SOURCE, "renew permit list before Friday.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+def test_a_checked_rename_with_a_private_name_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    moved = SOURCE.replace("widget-sync", "widget-sync-notes")
+    git(vault, "mv", SOURCE, moved)
+    n = append(vault, moved, "Ask Sammy about it.")
+    assert checks(vault, RUN) == [(moved, "private-mention", True, n)]
+
+
+def test_refuse_on_disk_wins_over_checked_at_head(vault: Path) -> None:
+    _shared_source(vault, edits="")  # checked, committed
+    (vault / "scout-config.yaml").write_text(_read(vault, "scout-config.yaml") + REFUSE, encoding="utf-8")  # unstaged
+    n = append(vault, SOURCE, "A new fact.")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+
+
+def test_a_checked_line_naming_a_note_shared_with_fewer_people_blocks(vault: Path) -> None:
+    """This note reaches Priya and Alex; a note shared with Priya alone is as closed to Alex as a private one."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    narrow = "knowledge-base/sources/2026-11/2026-11-03-budget.md"
+    stage(vault, narrow, "---\nkind: meeting\ntitle: Quarterly vendor shortlist\n---\n# Budget\n")
+    commit(vault, "owner: two meeting notes")
+    n = append(vault, SOURCE, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+    # The narrow note itself may say it, and so may a note shared with the same people (the owner's commit).
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("The Quarterly vendor shortlist is final.\n", ""))
+    append(vault, narrow, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_quote_of_a_note_shared_with_you_blocks(vault: Path) -> None:
+    from scout.kb import shared_reads
+    from tests.unit.test_shared_reads import SENTENCE, read_response
+
+    _shared_source(vault, edits="")
+    shared_reads.record_tool_call(vault, {}, read_response())
+    outbound.clear_cache()
+    n = append(vault, SOURCE, SENTENCE)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+# What the line scan can't see, pinned so the docs and the code agree: these PASS by design. Terms come
+# from a private note's path and frontmatter, never its body; the phase rule covers the rest.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(f"Note: {CANARIES['knowledge-base/people/sam.md']}.", id="a private note's body text"),
+        pytest.param("S. asked about the rollout; the new hire will follow up.", id="initials and a role"),
+        pytest.param("Ask S\u0430mmy about it.", id="a Cyrillic look-alike letter"),
+    ],
+)
+def test_what_the_checked_scan_cannot_see_passes(vault: Path, line: str) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, line)
+    assert checks(vault, RUN) == []
+
+
+def test_an_uppercase_md_note_is_in_the_privacy_scope(vault: Path) -> None:
+    from scout.kb.lint_config import in_privacy_scope
+
+    assert in_privacy_scope("knowledge-base/topics/misc/Plan.MD", ())
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    rel = "knowledge-base/topics/misc/Plan.MD"
+    stage(vault, rel, "# Plan\n\nSee [[sam]] for the details.\n")
+    assert checks(vault) == [(rel, "private-link", True, 3)]
+
+
 # ----- a run changing a non-note file in a share (#594) ---------------------------
 
 SHARED = "knowledge-base/topics/misc/"
