@@ -32,7 +32,7 @@ extension DS {
         case neutral
         /// Open, proposed, collapsed: the editorial amber.
         case accent
-        /// Done, approved, running, up to date.
+        /// Done, approved, applied, up to date.
         case ok
         /// Needs a look: an update, a risk, an unprotected run.
         case warn
@@ -40,7 +40,7 @@ extension DS {
         case err
         /// An item's Urgent priority: the urgent red, which means only that.
         case urgent
-        /// In progress or pending: a calm blue.
+        /// Running, in progress or pending: a calm blue.
         case info
         /// Waiting on you (`DS.Attention.you`).
         case attention

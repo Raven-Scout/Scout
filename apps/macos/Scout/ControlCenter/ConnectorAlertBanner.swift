@@ -24,11 +24,23 @@ struct ConnectorAlertBanner: View {
     private func bannerView(alerts: [ConnectorAlert]) -> some View {
         let head = Problem(connectorAlert: alerts[0])
         let more = alerts.count - 1
-        return DSBanner(tone: Self.isCritical(alerts) ? .error : .warning,
-                        title: more > 0 ? "\(head.title) (+\(more) more)" : head.title,
-                        message: head.impact,
-                        actions: [ProblemAction("Details") { showPopover = true }])
-        .accessibilityHint("Details shows every connector problem")
+        let title = more > 0 ? "\(head.title) (+\(more) more)" : head.title
+        // The whole banner is one click target that opens the details.
+        return Button {
+            showPopover = true
+        } label: {
+            DSBanner(tone: Self.isCritical(alerts) ? .error : .warning, accessibilityTitle: title) {
+                DSBannerText(title: title, message: head.impact)
+                Label("Show details", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+                    .font(DS.font(.label, weight: .medium))
+                    .foregroundStyle(DS.Accent.ink)
+                    .padding(.top, 2)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: DS.bannerCornerRadius))
+        }
+        .buttonStyle(.plainHit) // ds-guard: hit area — the whole banner opens the details
+        .accessibilityHint("Shows every connector problem")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             popoverContent(alerts: alerts)
         }

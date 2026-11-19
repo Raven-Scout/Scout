@@ -180,7 +180,11 @@ extension DS {
         /// `DS.Priority.urgent` draws it. Not text-safe on its own wash.
         static let priorityUrgent = Swatch(name: "PriorityUrgent", light: RGB(0.750, 0.310, 0.200), dark: RGB(0.880, 0.450, 0.340))
         /// The Urgent pill's text: the urgent red, darkened (light) or
-        /// lightened (dark) until it reads on its wash.
+        /// lightened (dark) until it reads on its wash. Close to `statusErr` on
+        /// purpose, and no ΔE test keeps them apart: both say "stop and look",
+        /// as the urgent hue and the error red already did before v2, and a
+        /// pill always names itself ("Urgent", "Dropped"), so colour is never
+        /// the only cue where they sit side by side on a wishlist card.
         static let priorityUrgentInk = Swatch(name: "PriorityUrgentInk", light: RGB(0.640, 0.230, 0.130), dark: RGB(0.950, 0.600, 0.500))
 
         /// "In progress" / "pending": a calm steel blue for status pills. The

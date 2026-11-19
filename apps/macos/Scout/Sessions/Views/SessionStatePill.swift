@@ -74,7 +74,7 @@ struct SessionStatePill: View {
     nonisolated static func tone(_ state: AgentSessionState) -> DS.PillTone {
         switch state {
         case .needsYou: return .attention
-        case .running:  return .ok
+        case .running:  return .info
         case .waiting:  return .accent
         case .parked, .stale, .done: return .neutral
         }

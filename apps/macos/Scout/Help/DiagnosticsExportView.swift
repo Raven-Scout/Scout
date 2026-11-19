@@ -156,5 +156,8 @@ struct DiagnosticsReviewNotice: View {
                 .font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        // One element, read once: the banner's label already holds the text.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(DS.BannerTone.warning.word): \(Self.text)")
     }
 }

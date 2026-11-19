@@ -123,7 +123,7 @@ struct RunDetailView: View {
         case .ok:      return .ok
         case .warn:    return .warn
         case .err:     return .err
-        case .active:  return .accent
+        case .active:  return .info
         case .neutral: return .neutral
         }
     }
