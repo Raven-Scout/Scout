@@ -17,9 +17,10 @@ copied a log without removing it.
 
 A line is dated when it is:
 
-- a log heading: level 2 or deeper, with the date first or after one or two
-  words and a separator (``## 2026-01-05``, ``## Progress — 2026-01-05``), never
-  a ``Status`` heading; or any non-blank line under one, up to the next heading
+- a log heading: level 2 or deeper, with the date first, after one to three
+  words and a separator (``## 2026-01-05``, ``## Progress — 2026-01-05``), or
+  after a log label (``## Run 2026-01-05``, ``## Update (2026-01-05)``), never a
+  ``Status`` heading; or any non-blank line under one, up to the next heading
   of the same or a higher level;
 - a dated entry: a line whose text starts with a date, after any list marker,
   checkbox and emphasis (``- 2026-01-05: shipped``, ``**2026-01-05** — reviewed``),
@@ -40,7 +41,6 @@ from __future__ import annotations
 import difflib
 import re
 import subprocess
-import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -55,8 +55,16 @@ PROGRESS_DIR = "docs/wishlist/progress"
 _DATE = r"(?<![\w/-])\d{4}-\d{2}-\d{2}(?![\d-])"
 _DATE_RE = re.compile(_DATE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+\S")
-# A log heading: H2–H6 whose date leads, or follows one or two words and a separator (`Progress — `, `Run 3: `).
-_LOG_HEADING_RE = re.compile(r"^#{2,6}\s+(?:\w+(?:[ \t]+\w+)?[ \t]*[—–:-][ \t]*)?[*_\[(]*" + _DATE)
+# A log heading: H2–H6 whose date leads, follows one to three words and a separator (`Progress — `,
+# `Dreaming run 3 — `), or follows a log label and up to two more words (`Run `, `Update (`, `Session 4 `).
+# A heading that only mentions a date (`## Ideas for 2026-12-01`) has neither.
+_LOG_LABELS = r"(?i:run|session|progress|update|log|dreaming|entry)"
+_LOG_HEADING_RE = re.compile(
+    r"^#{2,6}\s+(?:"
+    r"\w+(?:[ \t]+\w+){0,2}[ \t]*[—–:-][ \t]*"
+    r"|" + _LOG_LABELS + r"(?:[ \t]+\w+){0,2}[ \t]+"
+    r")?[*_\[(]*" + _DATE
+)
 _STATUS_HEADING_RE = re.compile(r"^#{1,6}\s+[*_]*status\b", re.IGNORECASE)
 _LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 _CHECKBOX_RE = re.compile(r"^\[[ xX]\]\s+")
@@ -126,7 +134,12 @@ def dated_lines(lines: Sequence[str]) -> set[int]:
     for i in range(_frontmatter_end(lines), len(lines)):
         line = lines[i]
         if line.lstrip().startswith("```"):
+            # An opening fence belongs to a dated entry only when indented under it; else it ends the entry.
+            if not in_fence and entry_indent is not None and _indent(line) <= entry_indent:
+                entry_indent = None
             in_fence = not in_fence
+            # Nothing continues lazily past a closing fence: the next line must be indented to stay in the entry.
+            after_blank = not in_fence
             if section_level is not None or entry_indent is not None:
                 out.add(i)
             continue
@@ -198,8 +211,11 @@ def first_missing(removed: Sequence[str], note: Sequence[str]) -> str | None:
 
 
 def _loose(line: str) -> str:
-    """``line`` without the bytes a copy through an editor tends to change: trailing spaces, ``\\r``, NBSP."""
-    return unicodedata.normalize("NFKC", line).rstrip(" \t\r")
+    """``line`` without what a copy through an editor tends to change unseen: trailing spaces, ``\\r``, NBSP.
+
+    Only those: visible characters (``…``, ligatures, full-width forms) still differ.
+    """
+    return line.replace("\xa0", " ").rstrip(" \t\r")
 
 
 def near_miss(missing: str, note: Sequence[str]) -> str | None:

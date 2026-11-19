@@ -91,7 +91,7 @@ Two of four sub-tasks done; the template exists, the index link is next.
 
 ### Step 3e: Commit
 
-Before committing, run `scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>` until it exits 0, at most 3 tries. Exit 1 names an item and the first log line its card lost that its progress note lacks, quoted so trailing spaces, `\r` and `\xa0` show: copy the removed lines into the note exactly, in order (this run's entry may go above them), or put them back, and commit the note with the card. Still exit 1 after the third try: restore that card with `git show HEAD:<card> > <card>`, note `log move left for a later run: <item>` in the session log, and commit the rest. Exit 2 (it couldn't check): note `log-move check could not run: <its message>` in the session log and go on.
+Before committing, run `scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>` until it exits 0, at most 3 tries. Exit 1 names an item and the first log line its card lost that its progress note lacks, quoted so trailing spaces, `\r` and `\xa0` show: copy the removed lines into the note exactly, in order (this run's entry may go above them), or put them back, and commit the note with the card. Still exit 1 after the third try: restore that card with `git show HEAD:<card> > <card>`, redo only this run's frontmatter `status:` and `## Status` edits (leave the log on the card), note `log move deferred: <item>` in the session log, and commit. Exit 2 (it couldn't check): note `log-move check could not run: <its message>` in the session log and go on.
 
 Explicit paths, never `-A` (see Step 1f):
 

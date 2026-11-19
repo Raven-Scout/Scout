@@ -16,7 +16,13 @@ import pytest
 from typer.testing import CliRunner
 
 from scout.wishlist.cli import app
-from scout.wishlist.log_move import LogMoveCheckError, check_log_move, dated_lines, removed_dated_lines
+from scout.wishlist.log_move import (
+    LogMoveCheckError,
+    check_log_move,
+    dated_lines,
+    near_miss,
+    removed_dated_lines,
+)
 
 CARD = "docs/wishlist/2026-01-05-decision-template.md"
 NOTE = "docs/wishlist/progress/2026-01-05-decision-template.md"
@@ -109,6 +115,31 @@ def test_a_heading_that_only_mentions_a_date_is_not_a_log_heading() -> None:
 def test_log_headings_put_the_date_first_or_after_a_short_label() -> None:
     lines = ["## Run 3: 2026-01-05", "- did a", "### 2026-01-06 — verified", "- ok", "## Status", "x"]
     assert sorted(dated_lines(lines)) == [0, 1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## Run 2026-11-18",
+        "## Session 4 2026-11-18",
+        "## Dreaming 2026-11-18",
+        "## Update (2026-11-18)",
+        "## Dreaming run 3 — 2026-11-18",
+        "## log: 2026-11-18",
+    ],
+)
+def test_label_headings_without_a_separator_are_log_headings(heading: str) -> None:
+    assert sorted(dated_lines([heading, "Undated work under it."])) == [0, 1]
+
+
+def test_a_fence_after_a_dated_entry_and_a_blank_line_ends_the_entry() -> None:
+    lines = ["- 2026-11-18: did X", "", "```", "not part of the entry", "```", "Plain prose after."]
+    assert sorted(dated_lines(lines)) == [0]
+
+
+def test_a_fence_indented_under_a_dated_entry_belongs_to_it() -> None:
+    lines = ["- 2026-11-18: did X", "", "  ```", "  output", "  ```", "Plain prose after."]
+    assert sorted(dated_lines(lines)) == [0, 2, 3, 4]
 
 
 def test_a_dated_entry_takes_its_sub_bullets_and_continuation_lines() -> None:
@@ -215,6 +246,12 @@ def test_a_line_differing_only_in_invisible_characters_is_named_as_such(vault) -
 
     out = CliRunner().invoke(app, ["check-log-move", "--data-dir", str(vault.root)]).stdout
     assert "'Shipped it.  '" in out and "differing only in invisible characters" in out
+
+
+def test_a_visible_difference_is_not_called_invisible() -> None:
+    assert near_miss("Done today.  ", ["Done today."]) == "Done today."
+    assert near_miss("Waited…", ["Waited..."]) is None  # NFKC would fold these; they look different
+    assert near_miss("ﬁxed the ﬂag", ["fixed the flag"]) is None
 
 
 # ---- the commit boundary ----------------------------------------------------------------------------

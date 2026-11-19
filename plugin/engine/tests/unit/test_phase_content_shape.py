@@ -77,6 +77,9 @@ def test_wishlist_phase_runs_check_log_move_before_commit() -> None:
     assert "Exit 2 (it couldn't check)" in text
     # Bounded: a run can't loop on a line it can't reproduce; it restores the card the way git-setup allows.
     assert "at most 3 tries" in text and "`git show HEAD:<card> > <card>`" in text
+    # The restore mustn't silently undo the run's status update.
+    assert "redo only this run's frontmatter `status:` and `## Status` edits (leave the log on the card)" in text
+    assert "`log move deferred: <item>`" in text
     # A moved log keeps its own order, which the check enforces, even under "newest first".
     assert "a moved log keeps its own order" in text
 
