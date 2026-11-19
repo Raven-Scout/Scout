@@ -827,8 +827,43 @@ run's sandbox, like the other runner steps.
   `SCOUT_INBOX_DIR` in the env file, and later runs remember it. `inbox
   propose --push` rebases on the inbox's `main` before pushing. The agent
   only ever adds files, so that rebase can't conflict.
-- **A local bare inbox (for tests) is bound by its file identity**, where a
-  GitHub inbox is bound by GitHub's ids.
+- **A local bare inbox (for tests) is bound by its file identity and a random
+  token** written into it at link, where a GitHub inbox is bound by GitHub's
+  ids. Linux reuses inode numbers, so a repository deleted and made again at
+  the same path would otherwise pass.
+
+**After the security review of #718.** These changes came out of the review:
+
+- **The high-water mark is per computer.** It lives in the signed state, so
+  it gives no dedup across computers, contrary to what this section said
+  above. Only the committed ledger does that. On a new computer the ledger
+  alone keeps a proposal from being taken twice. `--reset` clears the mark,
+  so a poisoned one (a far-future ULID) can't refuse every later proposal.
+- **All the inbox's local state is one folder**, `.scout-state/delegate-inbox/`:
+  the signed state, its temporary files, the lock and each pull's throwaway
+  repository. The folder is 0700 and owner-checked, it is reached by a
+  no-follow walk, and `hook_paths` protects it as a tree. Each pull's
+  repository is made there, not in `$TMPDIR`, where a run could repoint a
+  ref or plant a pack.
+- **No input wedges a pull.** `parse` raises only `ProposalError`; any other
+  failure is `bad_entry`. A ULID must start with 0-7, since 26 characters
+  hold 130 bits and a ULID only 128. Every pattern ends at `\Z`, so a
+  trailing newline can't alias a ULID.
+- **Text can't speak for the owner.** Besides `[[` and `[#`, a text field may
+  not hold `<!--`, `-->`, `![`, `](`, a task checkbox at a line's start, or
+  the owner-directive marker (`//==<<` or `>>==//`, matched with whitespace
+  removed). No control, format, surrogate, private-use or unassigned
+  character is allowed either, nor an invisible mark such as a variation
+  selector or a tag character.
+- **Any deploy key but the agent's refuses** (`inbox_other_key`), since its
+  holder could write proposals as this delegate.
+- **The listing.** Only `inbox/<id>/` is listed, streamed, at most 2000
+  entries a pull. The removal commit rebuilds only the trees on the removed
+  paths, with `mktree`, never an index of the whole tree.
+- **The fetch.** The remote has a random name, so no `remote.<name>.*` in the
+  user's config applies, and the only credential helper is gh's. `pull`
+  refuses with `SCOUT_MODE` set: the runner pulls, outside any run. A timeout
+  kills git's whole process group.
 
 #### `scoutctl inbox apply` (action items)
 
