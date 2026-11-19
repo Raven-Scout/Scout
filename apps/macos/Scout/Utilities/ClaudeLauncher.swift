@@ -429,7 +429,9 @@ enum ClaudeLauncher {
     ///
     /// - If `override` is non-empty, it is authoritative: returned only if it
     ///   is an executable file, otherwise nil (so a typo'd override surfaces a
-    ///   "not found" error instead of being masked by the probe fallback).
+    ///   "not found" error instead of being masked by the probe fallback). A
+    ///   leading `~` expands against `home`, so an override saved as
+    ///   `~/.local/bin/claude` still resolves (#715 review).
     /// - If `override` is empty, probe well-known locations, then ask the
     ///   user's login shell (picks up mise/asdf/nvm-style installs).
     ///
@@ -439,10 +441,19 @@ enum ClaudeLauncher {
     /// `Task.detached`, since the login-shell spawn below can block for the
     /// length of a full shell startup and must never do that on the main
     /// thread (e.g. a prerequisites screen polling every few seconds).
-    nonisolated static func resolveClaudePath(override: String) -> String? {
+    nonisolated static func resolveClaudePath(override: String,
+                                              home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            return FileManager.default.isExecutableFile(atPath: trimmed) ? trimmed : nil
+            let path: String
+            if trimmed == "~" {
+                path = home.path
+            } else if trimmed.hasPrefix("~/") {
+                path = home.appendingPathComponent(String(trimmed.dropFirst(2))).path
+            } else {
+                path = trimmed
+            }
+            return FileManager.default.isExecutableFile(atPath: path) ? path : nil
         }
         if let direct = claudePaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)

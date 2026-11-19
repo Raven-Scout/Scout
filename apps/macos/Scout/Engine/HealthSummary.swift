@@ -95,10 +95,10 @@ nonisolated struct HealthSummary: Equatable, Sendable {
         let title: String, fix: String?
         switch group.kind {
         case "privacy.script-raw-kb-read":
-            title = "\(n) vault script\(n == 1 ? " reads" : "s read") the knowledge base directly, without Scout's privacy labels"
+            title = "\(n) script\(n == 1 ? "" : "s") in your Scout folder \(n == 1 ? "reads" : "read") the knowledge base directly, without Scout's privacy labels"
             fix = "Have each read through `scoutctl kb files` and `scoutctl kb read`, so a private note never reaches a shared channel."
         case "privacy.runner-no-reader":
-            title = "\(n) vault runner\(n == 1 ? " doesn't" : "s don't") mark their reads as unattended"
+            title = "\(n) run script\(n == 1 ? "" : "s") in your Scout folder \(n == 1 ? "doesn't" : "don't") mark their reads as unattended"
             fix = "Add `export SCOUT_MODE=\"<run-name>\"` and `export SCOUT_READER=autonomous` to each before it starts Claude."
         default:
             title = group.summary

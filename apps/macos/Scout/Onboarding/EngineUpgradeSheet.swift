@@ -46,7 +46,7 @@ struct EngineUpgradeSheet: View {
         if progress[.registerWithClaudeCode]?.status == .done {
             return "The new engine is installed and Claude Code uses it; Retry re-runs the health check."
         }
-        return "Your vault already runs the new engine; Retry finishes switching Claude Code over."
+        return "Your Scout folder already runs the new engine; Retry finishes switching Claude Code over."
     }
 
     /// Why this sheet opened by itself and how long it takes (audit #91):

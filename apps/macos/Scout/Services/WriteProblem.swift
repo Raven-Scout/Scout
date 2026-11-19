@@ -94,7 +94,7 @@ struct WriteProblem: Equatable, Identifiable {
             switch e {
             case .read(let m):
                 return WriteProblem(kind: .failed, title: title,
-                                    message: "Scout couldn't read the file. Check that the vault folder is still there.",
+                                    message: "Scout couldn't read the file. Check that the Scout folder is still there.",
                                     details: m, retryable: true)
             case .write(let m):
                 return writeFailure(title: title, details: m)
@@ -201,7 +201,7 @@ struct WriteProblem: Equatable, Identifiable {
 
     private static func writeFailure(title: String, details: String) -> WriteProblem {
         WriteProblem(kind: .failed, title: title,
-                     message: "Scout couldn't write the file. Check that the disk isn't full and the vault folder is writable, then try again.",
+                     message: "Scout couldn't write the file. Check that the disk isn't full and the Scout folder is writable, then try again.",
                      details: details, retryable: true)
     }
 }

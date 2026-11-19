@@ -106,7 +106,7 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     var healthLabel: String {
         if case .notInstalled = state { return "Not installed" }
         if case .broken = state { return "Broken" }
-        if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Vault not set up" }
+        if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Scout folder not set up" }
         if doctorFailed { return "Could not run doctor" }
         guard let doctor else { return "Unknown" }
         // The install's verdict, then the runs': "Healthy" never sits beside a run that needs fixing (R1).
@@ -208,9 +208,9 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     /// One line under the Set up / Repair row.
     var setupHelp: String? {
         switch state {
-        case .notInstalled: return "Install the engine that ships with this app and create your vault."
-        case .managed(_, vaultBootstrapped: false): return "The engine is installed; finish setting up your vault."
-        case .broken: return state.isBrokenOutsideApp ? nil : "Reinstall the engine that ships with this app and re-run vault setup."
+        case .notInstalled: return "Install the engine that ships with this app and create your Scout folder."
+        case .managed(_, vaultBootstrapped: false): return "The engine is installed; finish setting up your Scout folder."
+        case .broken: return state.isBrokenOutsideApp ? nil : "Reinstall the engine that ships with this app and set up your Scout folder again."
         case .managed, .external: return nil
         }
     }
@@ -277,11 +277,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         return "This engine is managed outside the app. Run `/scout-update` in Claude Code."
     }
 
-    /// The Scout vault field's help: scheduled runs follow the vault the
+    /// The Scout folder field's help: scheduled runs follow the folder the
     /// engine was set up for, which only `/scout-update` changes for an
     /// engine managed in Claude Code.
     var vaultHelp: String {
-        let base = "Folder Scout reads and writes. Blank = `~/Scout`, or the vault the engine was set up for. Points the app at a vault; never moves data. Takes effect after restarting Scout. Scheduled runs keep the vault the engine was set up for"
+        let base = "The folder Scout reads and writes. Use Default reads `~/Scout`, or the folder the engine was set up for. Points the app at a Scout folder; never moves data. Takes effect after restarting Scout. Scheduled runs keep the folder the engine was set up for"
         if case .external = state { return base + " until you run /scout-update in Claude Code." }
         return base + "."
     }

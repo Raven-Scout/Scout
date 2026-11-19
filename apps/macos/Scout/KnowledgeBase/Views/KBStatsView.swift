@@ -22,7 +22,7 @@ struct KBStatsView: View {
 
     private var healthBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("VAULT HEALTH")
+            sectionLabel("KNOWLEDGE BASE HEALTH")
             danglingRow
             row(KBNetworkStats.healthTitle(stats.orphans.count,
                                            singular: "orphaned note", plural: "orphaned notes"),

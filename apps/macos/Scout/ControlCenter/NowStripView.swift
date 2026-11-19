@@ -126,6 +126,17 @@ struct NowStripView: View {
         }
     }
 
+    /// The Next column's sub-line: when the run starts, in words ("Starts in
+    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI
+    /// audit R11). A run whose time has come reads "Due now", never "Starts
+    /// 5 minutes ago".
+    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
+        guard scheduledAt.timeIntervalSince(now) >= 60 else { return "Due now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
+    }
+
     @ViewBuilder private var nextColumn: some View {
         // CC-2: `upcoming` is now sorted by `scheduledAt` ascending and has
         // past entries already filtered out by ScheduleService, so the first
@@ -139,7 +150,7 @@ struct NowStripView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
                 bigName(u.displayName)
-                sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
+                sub(Self.nextRunLine(u.scheduledAt), color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
                 sub("check LaunchAgents", color: DS.Status.warn)

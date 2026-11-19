@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Model section of Settings: which Claude model scheduled runs use when
-/// their slot names none. A slot's own model is set in Schedules.
+/// their schedule names none. A schedule's own model is set in Schedules.
 struct ModelSettingsSection: View {
     @EnvironmentObject var service: ModelSettingsService
 
@@ -15,8 +15,8 @@ struct ModelSettingsSection: View {
             if let settings = service.settings {
                 SettingsField(
                     label: "Default model",
-                    help: "The Claude model for every scheduled run whose slot doesn't name one. "
-                        + "Give a single slot its own model in Schedules."
+                    help: "The Claude model for every scheduled run whose schedule doesn't name one. "
+                        + "Give a single schedule its own model on the Schedules page."
                 ) {
                     picker(settings)
                 }
@@ -51,7 +51,7 @@ struct ModelSettingsSection: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(
                 "Cheaper models use less of your plan but can miss things Opus catches. "
-                    + "Try one on a light slot first, such as a midday consolidation."
+                    + "Try one on a light schedule first, such as a midday consolidation."
             )
             .font(DS.sans(11.5))
             .foregroundStyle(DS.Ink.p3)
@@ -86,8 +86,8 @@ struct ModelSettingsSection: View {
             try await service.load()
             loadError = nil
         } catch {
-            loadError = "Could not read the model configuration. This engine may predate per-slot "
-                + "models; update Scout to choose them. (\(error.localizedDescription))"
+            loadError = "Could not read the model configuration. This engine may predate a model per "
+                + "schedule; update Scout to choose them. (\(error.localizedDescription))"
         }
     }
 

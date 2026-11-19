@@ -99,6 +99,10 @@ final class OnboardingViewModel: ObservableObject {
     /// that run has settled, so a hop that arrives late is dropped.
     private var liveGeneration: Int?
 
+    /// Where the "About you" name is kept as the comment byline (Settings ▸
+    /// General ▸ Your name, UI audit #85). Nil writes nothing (tests).
+    private let authorDefaults: UserDefaults?
+
     static let briefingSlotType = "briefing"   // `SlotType.BRIEFING` in plugin/engine/scout/schedule.py
 
     init(engineState: EngineState, layout: EngineLayout, release: EngineRelease?, runner: any ProcessRunner,
@@ -106,10 +110,11 @@ final class OnboardingViewModel: ObservableObject {
          makeInstaller: @escaping (@escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller?,
          handoff: @escaping @MainActor (String) throws -> Void = { try TerminalHandoff.run($0) },
          appVault: URL? = nil,
+         authorDefaults: UserDefaults? = nil,
          onFinished: @escaping () -> Void) {
         self.engineState = engineState; self.layout = layout; self.release = release; self.runner = runner
         self.checker = prerequisites; self.makeInstaller = makeInstaller; self.handoff = handoff
-        self.appVault = appVault; self.onFinished = onFinished
+        self.appVault = appVault; self.authorDefaults = authorDefaults; self.onFinished = onFinished
         let vault = engineState.install?.vault ?? layout.home.appending(path: "Scout")
         self.vaultPath = vault.path
         self.identity = Self.prefilledIdentity(gitName: nil, gitEmail: nil, vault: vault)
@@ -395,7 +400,7 @@ final class OnboardingViewModel: ObservableObject {
 
     func finish() { onFinished() }
 
-    static let changeVaultHint = "To use a different folder, choose Change… beside the vault path (it goes back to the first step, where you pick the folder)."
+    static let changeVaultHint = "To use a different folder, choose Change… beside the Scout folder (it goes back to the first step, where you pick the folder)."
 
     /// The Vault step shows the chosen folder with a Change… button while
     /// the vault isn't created yet and nothing runs.
@@ -470,6 +475,11 @@ final class OnboardingViewModel: ObservableObject {
         // only written once bootstrap created the vault. Its failure is
         // reported but never fails setup.
         if let budget, isDone(.bootstrapVault) { await setDailyBudget(budget) }
+        // The name from "About you" signs the owner's comments, so they
+        // aren't signed "user" (UI audit #85). Never over a name set in Settings.
+        if isDone(.bootstrapVault), let authorDefaults {
+            CommentAuthor.adoptOnboardingName(identity.userName, into: authorDefaults)
+        }
     }
 
     @discardableResult
@@ -572,7 +582,7 @@ final class OnboardingViewModel: ObservableObject {
         do {
             let r = try await runner.run(executable: scoutctl, arguments: ["schedule", "fire-now", slot.key], environment: environment, workingDirectory: vaultURL)
             if r.exitCode == 0 {
-                briefingStatus = "Started \u{201C}\(slot.key)\u{201D}. It runs in the background; results land in your vault."
+                briefingStatus = "Started \u{201C}\(slot.key)\u{201D}. It runs in the background; results land in your Scout folder."
             } else {
                 lastError = "Could not start the briefing: \(Self.oneLine(r.stderr.isEmpty ? r.stdout : r.stderr))"
             }
