@@ -143,7 +143,7 @@ struct PageLayoutTests {
             counts: [:], projects: SessionsLayout.menuProjects(index: index), service: service)
 
         let minimum = LayoutHarness.minimumWidth(of: header, height: 400)
-        let title = LayoutHarness.size(of: Text("Sessions").font(DS.serif(28, weight: .medium)),
+        let title = LayoutHarness.size(of: Text("Sessions").font(DS.font(.display, .serif, weight: .medium)),
                                        proposing: CGSize(width: 10_000, height: 100)).height
         for window in LayoutSize.windowWidths {
             let page = LayoutSize.pageWidth(window: window)
