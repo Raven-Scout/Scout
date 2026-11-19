@@ -73,6 +73,12 @@ _OUTBOUND = (
     ),
     ("a shared surface", r"\b(?:enrichment|digest|publish|upload)\b|\bdrafts/"),
     ("a Scout sender", r"\bscoutctl\s+(?:notify|broker|send)\b"),
+    # Code it builds at run time could do any of the above without naming it (#717 review).
+    (
+        "code it builds at run time",
+        r"(?m)\b(?:exec|eval)\s*\(|\bimportlib\b|__import__|(?:\bsource|\beval|(?:^|[\s;&|(])\.)\s+\"?\$"
+        r"|\b(?:ba|z)?sh\s+-c\s+\"?\$",
+    ),
 )
 _OUTBOUND_RES = tuple((why, re.compile(pattern, re.IGNORECASE)) for why, pattern in _OUTBOUND)
 
@@ -160,25 +166,34 @@ def script_risk(text: str | None) -> tuple[str, str]:
 
 
 _SKIP_DIRS = frozenset({".venv", "node_modules", "__pycache__", ".git"})
+# What can run or be imported: a helper or a caller is one of these (or a file with no suffix, like a shebang
+# script). Data files under scripts/ (fixtures, notes, logs) are left out of the helper and caller scan.
+_SCRIPT_SUFFIXES = frozenset(
+    {"", ".py", ".sh", ".bash", ".zsh", ".ksh", ".fish", ".command", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl"}
+)
 
 
 def _vault_scripts(vault: Path) -> list[str]:
-    """Vault-relative paths of every file under ``scripts/`` (tooling folders left out) and each root ``run-*.sh``."""
+    """Vault-relative paths of every script under ``scripts/`` (tooling folders left out) and each root ``run-*.sh``."""
     out = [p.name for p in sorted(vault.glob("run-*.sh")) if p.is_file()]
     scripts = vault / "scripts"
     if scripts.is_dir():
         for p in sorted(scripts.rglob("*")):
-            if p.is_file() and not p.is_symlink() and not _SKIP_DIRS.intersection(p.relative_to(scripts).parts[:-1]):
+            if (
+                p.is_file()
+                and not p.is_symlink()
+                and p.suffix.lower() in _SCRIPT_SUFFIXES
+                and not _SKIP_DIRS.intersection(p.relative_to(scripts).parts[:-1])
+            ):
                 out.append(p.relative_to(vault).as_posix())
     return out
 
 
-def _names(rel: str) -> list[re.Pattern[str]]:
+def _forms(rel: str) -> set[str]:
     """How another file refers to *rel*: its file name, and for a module its stem (``import helper``)."""
     name = rel.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
-    forms = {name} | ({stem} if name.endswith(".py") and len(stem) >= 3 else set())
-    return [re.compile(rf"(?<![\w.-]){re.escape(f)}(?![\w-])") for f in forms]
+    return {name} | ({stem} if name.endswith(".py") and len(stem) >= 3 else set())
 
 
 def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str, str]]:
@@ -186,7 +201,9 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
 
     A script is high when its own text could send (:func:`script_risk`), when a vault script it names is
     (followed three deep, a helper it imports, sources or runs), or when another vault script or runner names
-    it. Never raises: what can't be read ranks high."""
+    it. Each file is read and searched once, with one pattern for every name. Never raises: what can't be
+    read ranks high."""
+    paths = list(paths)
     texts: dict[str, str | None] = {}
 
     def text(rel: str) -> str | None:
@@ -198,7 +215,13 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
         others = _vault_scripts(vault)
     except OSError:
         others = []
-    names = {rel: _names(rel) for rel in others}
+    others += [rel for rel in paths if rel not in others]
+    by_form: dict[str, list[str]] = {}
+    for rel in others:
+        for form in _forms(rel):
+            by_form.setdefault(form, []).append(rel)
+    alternation = "|".join(re.escape(f) for f in sorted(by_form, key=len, reverse=True))
+    pattern = re.compile(rf"(?<![\w.-])(?:{alternation})(?![\w-])") if by_form else None
 
     helpers: dict[str, list[str]] = {}
 
@@ -206,12 +229,17 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
         """The vault scripts *rel*'s text names (its helpers)."""
         if rel not in helpers:
             body = text(rel)
-            helpers[rel] = (
-                []
-                if body is None or body == _TOO_LONG
-                else [o for o in others if o != rel and any(n.search(body) for n in names[o])]
-            )
+            found: list[str] = []
+            if pattern is not None and body is not None and body != _TOO_LONG:
+                for form in dict.fromkeys(m.group(0) for m in pattern.finditer(body)):
+                    found += [o for o in by_form[form] if o != rel and o not in found]
+            helpers[rel] = found
         return helpers[rel]
+
+    callers: dict[str, str] = {}
+    for o in others:  # each file once: who names whom
+        for helper in named_in(o):
+            callers.setdefault(helper, o)
 
     def own_or_helper(rel: str, depth: int, seen: set[str]) -> tuple[str, str]:
         risk, why = script_risk(text(rel))
@@ -228,10 +256,8 @@ def rank_vault_scripts(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str
     out: dict[str, tuple[str, str]] = {}
     for rel in paths:
         risk, why = own_or_helper(rel, 3, {rel})
-        if risk == "low":
-            caller = next((o for o in others if o != rel and rel in named_in(o)), None)
-            if caller is not None:
-                risk, why = "high", f"{caller} runs or uses it, so what it prints may be passed on"
+        if risk == "low" and rel in callers:
+            risk, why = "high", f"{callers[rel]} runs or uses it, so what it prints may be passed on"
         out[rel] = (risk, why)
     return out
 

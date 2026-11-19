@@ -237,6 +237,9 @@ extension EngineHealthServiceTests {
     @Test func aRefusedOrUnknownReviewSaysWhy() async throws {
         let refused = EngineHealthService.reviewProblem(exitCode: 2, stderr: Data("refused: SCOUT_MODE is set (a scheduled run). Only…".utf8))
         #expect(refused.hasPrefix("Scout refused"))
+        let live = EngineHealthService.reviewProblem(
+            exitCode: 2, stderr: Data("refused: this command runs inside a scheduled run (dreaming, by detached). Only…".utf8))
+        #expect(live.hasSuffix("Try again after the current run finishes."))
         let old = EngineHealthService.reviewProblem(exitCode: 2, stderr: Data("Error: No such command 'review-warning'.".utf8))
         #expect(old.contains("Update Scout"))
         #expect(EngineHealthService.reviewProblem(exitCode: 1, stderr: Data()).contains("exit 1"))

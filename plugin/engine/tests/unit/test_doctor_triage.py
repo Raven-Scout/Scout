@@ -90,6 +90,13 @@ def _entry(payload: dict, kind: str) -> dict:
         '"$CLAUDE_BIN" -p "summarise"\n',
         "cp out.md ~/Library/Mobile\\ Documents/com~apple~CloudDocs/\n",
         "cp out.md ~/Dropbox/\n",
+        "exec(open(helper).read())\n",
+        "eval (payload)\n",
+        "mod = importlib.import_module(name)\n",
+        "m = __import__(name)\n",
+        'source "$LIB"\n',
+        '. "$HOME/lib.sh"\n',
+        'bash -c "$CMD"\n',
     ],
 )
 def test_a_script_that_can_send_what_it_reads_is_high_risk(text: str) -> None:
@@ -404,3 +411,63 @@ def test_a_run_hiding_its_environment_still_cant_review(vault: Path, home: Path,
     code, out = _cli("bootstrap", "review-warning", e["id"], "--fingerprint", e["fingerprint"])
     assert code == 2 and "inside a scheduled run (dreaming, by ancestry)" in out
     assert not doctor_triage.reviews_path(home).exists()
+
+
+# -- a failed drift scan can't hide the privacy findings (delta review of #717) ------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a chmod-000 file anyway")
+def test_an_unreadable_managed_file_keeps_the_privacy_warnings(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import vault_drift
+
+    # A managed file with a snapshot, which the drift scan reads; a run makes it unreadable on purpose.
+    managed = "scripts/kb-shard-log.py"
+    (vault / managed).write_text("x = 1\n", encoding="utf-8")
+    snap = vault_drift.snapshot_path(vault, managed)
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text("x = 1\n", encoding="utf-8")
+    (vault / managed).chmod(0)
+    try:
+        d = _doctor(vault, home)
+        failure = next(e for e in d["warning_triage"] if e["summary"].startswith("could not check vault drift"))
+        assert failure["reviewable"] is False and failure["kind"] == "protection"
+        # The privacy findings are still there, high ones included.
+        assert _entry(d, "privacy.script-raw-kb-read")["summary"] in d["warnings"]
+        assert _entry(d, "privacy.script-raw-kb-read.internal")["summary"] in d["warnings"]
+        after = _review_everything(vault, home)
+        assert failure["summary"] in after["warnings"]
+        assert _entry(after, "privacy.script-raw-kb-read")["reviewed_at"]  # reviewable ones still review
+    finally:
+        (vault / managed).chmod(0o644)
+
+
+def test_a_failed_privacy_scan_is_an_unreviewable_line(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import vault_drift
+
+    def boom(_v: Path) -> list:
+        raise PermissionError(13, "Permission denied", "scripts")
+
+    monkeypatch.setattr(vault_drift, "privacy_drift", boom)
+    d = _doctor(vault, home)
+    (line,) = [e for e in d["warning_triage"] if e["summary"].startswith("privacy: could not check")]
+    assert line["reviewable"] is False and line["summary"] in d["warnings"]
+
+
+def test_an_unreadable_lint_config_is_never_reviewable(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import bootstrap_doctor
+
+    line = "kb-lint: the kb_lint config can't be read (PermissionError), so no size or line check blocks"
+    monkeypatch.setattr(bootstrap_doctor, "_check_kb_lint_config", lambda **_: [line, "kb-lint: max_lines is 0"])
+    after = _review_everything(vault, home)
+    entry = next(e for e in after["warning_triage"] if e["summary"] == line)
+    assert entry["reviewable"] is False and line in after["warnings"]
+    other = next(e for e in after["warning_triage"] if e["summary"] == "kb-lint: max_lines is 0")
+    assert other["reviewable"] is True and other["reviewed_at"]
+
+
+def test_data_files_are_neither_helpers_nor_callers(vault: Path) -> None:
+    (vault / "scripts" / "notes.md").write_text("python3 scripts/tag-audit.py | slack\n", "utf-8")
+    (vault / "scripts" / "sender.txt").write_text("requests.post(U)\n", "utf-8")
+    (vault / "scripts" / "link-check.py").write_text("x = 'sender.txt'\nopen('knowledge-base/i.md').read()\n", "utf-8")
+    ranks = doctor_triage.rank_vault_scripts(vault, ["scripts/tag-audit.py", "scripts/link-check.py"])
+    assert ranks["scripts/tag-audit.py"][0] == "low" and ranks["scripts/link-check.py"][0] == "low"

@@ -891,7 +891,16 @@ def _privacy_drift_warnings(vault: Path) -> tuple[list[str], list[WarningGroup],
 
 
 def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str], list[WarningGroup], dict[str, WarningMeta]]:
-    """Vault edits to plugin-owned files, as (warnings, notes, groups, meta), plus privacy drift.
+    """Vault edits to plugin-owned files (:func:`_check_plugin_drift`), then privacy drift
+    (:func:`_privacy_drift_warnings`), as (warnings, notes, groups, meta). The doctor runs the two apart,
+    so a scan that fails can't take the privacy findings with it."""
+    warnings, notes = _check_plugin_drift(vault=vault)
+    privacy_warnings, groups, meta = _privacy_drift_warnings(vault)
+    return warnings + privacy_warnings, notes, groups, meta
+
+
+def _check_plugin_drift(*, vault: Path) -> tuple[list[str], list[str]]:
+    """Vault edits to plugin-owned files, as (warnings, notes).
 
     A conflict is a warning: the vault runs an older version of a plugin-owned
     file until it is resolved. An edit upgrades keep, and a copy the first
@@ -930,10 +939,7 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str], list[Warni
             f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
-    # Vault-local runners and scripts that read around the privacy labels (#453), grouped by rule (#505).
-    privacy_warnings, groups, meta = _privacy_drift_warnings(vault)
-    warnings.extend(privacy_warnings)
-    return warnings, notes, groups, meta
+    return warnings, notes
 
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
@@ -1262,7 +1268,9 @@ def run_doctor(
         return found
 
     warnings.extend(protection(_check_privacy_audit(vault=vault, now=now)))
-    warnings.extend(_check_kb_lint_config(vault=vault))
+    for line in _check_kb_lint_config(vault=vault):
+        # A lint config that can't be read blocks nothing: a run could break it on purpose (#717 review).
+        warnings.extend(protection([line]) if "can't be read" in line else [line])
     warnings.extend(protection(_check_repo_sync_host_cache(vault=vault, now=now)))
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
@@ -1272,14 +1280,22 @@ def run_doctor(
     notes.extend(timeout_notes)
     warnings.extend(protection(_check_run_limits(vault=vault, now=now)))
 
-    groups: list[WarningGroup] = []
+    # Plugin-file drift and privacy drift apart (#717 review): a run can make the drift scan fail (chmod 000 on
+    # a managed file), and that must neither take the privacy findings with it nor leave a line a review hides.
     try:
-        drift_warnings, drift_notes, groups, drift_meta = _check_vault_drift(vault=vault)
-        meta.update(drift_meta)
+        drift_warnings, drift_notes = _check_plugin_drift(vault=vault)
     except OSError as e:
-        drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
+        drift_warnings, drift_notes = protection([f"could not check vault drift: {e}"]), []
     warnings.extend(drift_warnings)
     notes.extend(drift_notes)
+    # Vault-local runners and scripts that read around the privacy labels (#453), grouped by rule (#505).
+    groups: list[WarningGroup] = []
+    try:
+        privacy_warnings, groups, privacy_meta = _privacy_drift_warnings(vault)
+        meta.update(privacy_meta)
+    except OSError as e:
+        privacy_warnings = protection([f"privacy: could not check the vault's scripts and runners: {e}"])
+    warnings.extend(privacy_warnings)
 
     # Live scheduled jobs: launchd on macOS, the scout-managed crontab block on
     # Linux (#449; launchctl on Linux only ever warned, so every Linux install was yellow).

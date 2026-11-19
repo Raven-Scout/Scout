@@ -126,6 +126,11 @@ final class EngineHealthService: ObservableObject {
 
     nonisolated static func reviewProblem(exitCode: Int32, stderr: Data) -> String {
         let text = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("refused:") && text.contains("inside a scheduled run") {
+            // The engine's process check saw a live run (a development build outside /Applications can look
+            // like one): nothing is wrong with the request itself.
+            return "A Scout run is going on right now, so Scout can't tell this came from you. Try again after the current run finishes."
+        }
         if text.hasPrefix("refused:") {
             return "Scout refused: only you, not a scheduled run, can mark a warning reviewed."
         }
