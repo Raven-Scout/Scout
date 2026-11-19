@@ -211,9 +211,10 @@ def _read_state_file(dir_fd: int) -> bytes | None:
         return None
     except OSError as e:
         raise RepoSyncError("inbox_state_unreadable", f"refused: {STATE_REL} can't be read ({e.strerror})") from e
+    if not stat.S_ISREG(os.fstat(fd).st_mode):  # before fdopen, which raises IsADirectoryError on a folder
+        os.close(fd)
+        raise RepoSyncError("inbox_state_unreadable", f"refused: {STATE_REL} isn't a plain file")
     with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            raise RepoSyncError("inbox_state_unreadable", f"refused: {STATE_REL} isn't a plain file")
         return fh.read()
 
 
@@ -323,9 +324,10 @@ def ensure_ignored(vault: Path) -> bool:
         except OSError as e:
             raise RepoSyncError("inbox_gitignore_unsafe", f"refused: the vault's .gitignore can't be read ({e})") from e
         else:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):  # before fdopen, which raises on a folder
+                os.close(fd)
+                raise RepoSyncError("inbox_gitignore_unsafe", "refused: the vault's .gitignore isn't a plain file")
             with os.fdopen(fd, "rb") as fh:
-                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                    raise RepoSyncError("inbox_gitignore_unsafe", "refused: the vault's .gitignore isn't a plain file")
                 text = fh.read().decode("utf-8", "replace")
         head = text if not text or text.endswith("\n") else text + "\n"
         body = f"{head}# Delegate inboxes (scoutctl delegate inbox): this computer's state\n{IGNORE_LINE}\n"
@@ -1029,7 +1031,7 @@ class _Sandbox:
                     out.append((mode, kind, sha, path))
                 if more or not chunk:
                     break
-                if len(buf) > 1 << 20:  # one record longer than any path git allows
+                if len(buf) > 1 << 20:  # pragma: no cover - one record longer than any path git allows
                     raise RepoSyncError("inbox_fetch_failed", "refused: the inbox's tree didn't list sensibly")
             if not more and proc.wait(timeout=GIT_TIMEOUT) != 0:  # a failure must never look like an empty inbox
                 raise RepoSyncError("inbox_fetch_failed", "refused: git ls-tree failed on the inbox")
@@ -1092,7 +1094,9 @@ class _Sandbox:
         if proc.returncode == 0:
             return True
         said = (proc.stdout + proc.stderr).decode("utf-8", "replace")
-        if "stale info" in said or "rejected" in said or "fetch first" in said:
+        # A lost race is git's own lease or fast-forward refusal; "[remote rejected]" (the server refused, an
+        # unpack error) is a failure, never a race to retry.
+        if "stale info" in said or "fetch first" in said or "[rejected]" in said:
             return False
         tail = " | ".join(said.strip().splitlines()[-3:])
         raise RepoSyncError("inbox_push_failed", f"refused: the removal push to the inbox failed: {tail}")
@@ -1121,7 +1125,7 @@ def _open_folder(root: Path, parts: Sequence[str], *, mode: int = 0o755) -> int:
                         f"refused: {'/'.join(parts)} under {root} isn't a plain folder (a symlink or a file is in "
                         "the way); nothing was taken",
                     ) from e
-                raise
+                raise  # pragma: no cover - any other OS error (permissions, I/O) is not ours to name
             os.close(fd)
             fd = nxt
     except BaseException:
@@ -1140,7 +1144,7 @@ def _write_new(dir_fd: int, name: str, data: bytes, *, mode: int = 0o644) -> Non
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
         os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-    except BaseException:
+    except BaseException:  # pragma: no cover - a full disk or a failed rename: leave nothing half-written
         with contextlib.suppress(OSError):
             os.unlink(tmp, dir_fd=dir_fd)
         raise
@@ -1161,11 +1165,11 @@ def _append_ledger(dir_fd: int, ulids: Sequence[str]) -> None:
     """Add lines to the ledger: a plain file with one link only, never through a symlink or a hard link."""
     try:
         fd = os.open(LEDGER, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW, 0o644, dir_fd=dir_fd)
-    except OSError as e:
+    except OSError as e:  # pragma: no cover - _check_ledger refused anything odd just before; a race only
         raise RepoSyncError("inbox_folder_unsafe", f"refused: {LEDGER} can't be opened ({e.strerror})") from e
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
         st = os.fstat(fh.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # pragma: no cover - the same race
             raise RepoSyncError("inbox_folder_unsafe", f"refused: {LEDGER} isn't a plain file; nothing was taken")
         fh.write("".join(f"{u}\n" for u in ulids))
 

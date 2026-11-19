@@ -1036,3 +1036,191 @@ def test_a_replaced_fetch_folder_refuses(vault: Path, inbox: Path, tmp_path: Pat
         with pytest.raises(RepoSyncError) as e:
             box.fetch("--depth=1")
         assert e.value.code == "inbox_state_unsafe"
+
+
+# ----- the remaining refusal paths (coverage floor) --------------------------------------------
+
+
+def test_state_before_any_inbox_and_a_state_file_that_isnt_a_file(vault: Path) -> None:
+    assert di.load_state(vault) == di.InboxState()  # no folder yet
+    with di.locked(vault):
+        pass
+    assert di.load_state(vault) == di.InboxState()  # a folder, no state yet
+    vault.joinpath(*di.STATE_DIR, di.STATE_NAME).mkdir()
+    with pytest.raises(RepoSyncError) as e:
+        di.load_state(vault)
+    assert e.value.code == "inbox_state_unreadable"
+
+
+def test_ensure_ignored_keeps_what_the_gitignore_had_and_refuses_a_folder(vault: Path, tmp_path: Path) -> None:
+    (vault / ".gitignore").write_text("notes.tmp", encoding="utf-8")  # no final newline
+    assert di.ensure_ignored(vault)
+    assert (vault / ".gitignore").read_text(encoding="utf-8").startswith("notes.tmp\n# Delegate inboxes")
+    assert not di.ensure_ignored(vault)
+    (vault / ".gitignore").unlink()
+    (vault / ".gitignore").mkdir()
+    with pytest.raises(RepoSyncError) as e:
+        di.ensure_ignored(vault)
+    assert e.value.code == "inbox_gitignore_unsafe"
+
+
+def test_odd_github_answers_and_bindings_refuse(vault: Path, inbox: Path) -> None:
+    gh = FakeGh()
+    gh.facts["id"] = "not-a-number"
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, "duet", URL, gh=gh)
+    assert e.value.code == "remote_unverified"
+    state = di.load_state(vault)
+    state.inboxes[D].remote = URL  # bound to a local path, now claiming GitHub
+    di.save_state(vault, state)
+    with pytest.raises(RepoSyncError) as e:
+        di.deploy_key(vault, D, gh=FakeGh(), keygen=_fake_keygen)
+    assert e.value.code == "inbox_rebound"
+
+
+def test_a_local_inbox_that_went_away_refuses(vault: Path, inbox: Path) -> None:
+    subprocess.run(["rm", "-rf", str(inbox)], check=True)
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D)
+    assert e.value.code == "remote_unverified"
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, "nobody")
+    assert e.value.code == "inbox_not_linked"
+
+
+def test_an_inbox_that_is_a_mirror_by_github_id_refuses(vault: Path) -> None:
+    links = dm.load_links(vault)
+    links[D] = dataclasses.replace(links[D], remote="https://github.com/someone/grok-mirror.git")
+    dm.save_links(vault, links)
+
+    class SameRepo(FakeGh):
+        def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+            a = [str(x) for x in args]  # type: ignore[attr-defined]
+            if a[:2] == ["api", "repos/someone/grok-mirror"]:  # the mirror, renamed: GitHub's id is the inbox's
+                return super().__call__(["api", f"repos/{REPO}", *a[2:]])
+            return super().__call__(a)
+
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, D, URL, gh=SameRepo())
+    assert e.value.code == "inbox_taken"
+
+
+def test_unlink_without_a_key_and_a_key_file_that_isnt_ours(vault: Path) -> None:
+    gh = FakeGh()
+    di.link(vault, D, URL, gh=gh)
+    key = di.key_path(vault, D)
+    key.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere = key.parent / "elsewhere"
+    elsewhere.write_text("keep\n", encoding="utf-8")
+    key.symlink_to(elsewhere)  # never removed through a link
+    di.unlink(vault, D, gh=gh)
+    assert key.is_symlink() and elsewhere.read_text(encoding="utf-8") == "keep\n"
+    assert not any("revoked" in c for c in map(" ".join, gh.calls))
+
+
+def test_keys_github_wont_delete_stay_on_record(vault: Path) -> None:
+    class NoDelete(FakeGh):
+        def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+            a = [str(x) for x in args]  # type: ignore[attr-defined]
+            if a[:3] == ["api", "-X", "DELETE"]:
+                return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+            return super().__call__(a)
+
+    gh = NoDelete()
+    di.link(vault, D, URL, gh=gh)
+    di.deploy_key(vault, D, gh=gh, keygen=_fake_keygen)
+    r = di.deploy_key(vault, D, rotate=True, gh=gh, keygen=_fake_keygen)  # the old key can't be deleted
+    link = di.load_state(vault).inboxes[D]
+    assert link.deploy_key_id == 501 and link.stale_key_ids == [500] and any("warning" in n for n in r.notes)
+    di.deploy_key(vault, D, rotate=True, gh=gh, keygen=_fake_keygen)  # retried, still failing: kept
+    assert 500 in di.load_state(vault).inboxes[D].stale_key_ids
+
+
+def test_the_sandboxs_own_failures(vault: Path, inbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    link = di.load_state(vault).inboxes[D]
+    with di._Sandbox(vault, link.remote) as box:
+        with pytest.raises(RepoSyncError) as e:
+            box.git("cat-file", "-p", "0" * 40)
+        assert e.value.code == "inbox_fetch_failed"
+        with pytest.raises(RepoSyncError) as e:
+            box.entries("0" * 40, D)  # ls-tree fails: never an empty inbox
+        assert e.value.code == "inbox_fetch_failed"
+        with pytest.raises(RepoSyncError) as e:
+            box.push("1" * 40, "")  # the lease holds (no main yet), but there is no such commit to push
+        assert e.value.code == "inbox_push_failed"
+        assert box.push("0" * 40, "1" * 40) is False  # a lease on a main the inbox doesn't have: a race
+        timeout = di.GIT_TIMEOUT
+        monkeypatch.setattr(di, "GIT_TIMEOUT", 0.000001)
+        with pytest.raises(RepoSyncError) as e:
+            box._run(["hash-object", "--stdin"], input=b"x" * 1000)
+        assert e.value.code == "remote_timeout"
+        monkeypatch.setattr(di, "GIT_TIMEOUT", timeout)  # not undo(): that would drop the fixture's HOME too
+        subprocess.run(["rm", "-rf", str(box.root)], check=True)
+        with pytest.raises(RepoSyncError) as e:
+            box.fetch("--depth=1")
+        assert e.value.code == "inbox_state_unsafe"
+
+
+def test_a_leftover_file_is_swept_and_a_race_on_main_retries(
+    vault: Path, inbox: Path, clone: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = vault.joinpath(*di.STATE_DIR)
+    (folder / "fetch-stray-file").write_text("x", encoding="utf-8")
+    p = _propose(clone)
+    real = di._Sandbox.remote_main
+    calls: list[int] = []
+
+    def moved(self: di._Sandbox) -> str | None:
+        calls.append(1)
+        return "f" * 40 if len(calls) == 1 else real(self)  # the first ls-remote saw another main
+
+    monkeypatch.setattr(di._Sandbox, "remote_main", moved)
+    r = di.pull(vault, D)
+    assert r.taken == [p.id] and len(calls) == 2
+    assert not (folder / "fetch-stray-file").exists()
+
+
+def test_a_recorded_proposal_whose_bytes_changed_isnt_copied_again(vault: Path, inbox: Path, clone: Path) -> None:
+    p = _propose(clone)
+    state = di.load_state(vault)
+    state.taken[D] = {p.id: {"mac": "0" * 64, "at": "2026-11-19T00:00:00Z"}}  # recorded, but for other bytes
+    di.save_state(vault, state)
+    r = di.pull(vault, D)
+    assert r.already == 1 and r.taken == [] and not di.copy_path(vault, D, p.id).exists()
+
+
+def test_a_git_failure_while_judging_stops_the_pull(
+    vault: Path, inbox: Path, clone: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _propose(clone)
+
+    def git_failed(*a: object, **k: object) -> object:
+        raise RepoSyncError("inbox_fetch_failed", "refused: git cat-file failed")
+
+    monkeypatch.setattr(di, "_judge", git_failed)
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D)
+    assert e.value.code == "inbox_fetch_failed" and _main_files(inbox) == {p.path}
+
+
+def test_propose_reports_a_git_failure(vault: Path, clone: Path) -> None:
+    (clone / ".git" / "index.lock").write_text("", encoding="utf-8")  # another git is "running"
+    with pytest.raises(RepoSyncError) as e:
+        di.propose("observation", {"text": "x"}, env=_agent_env(clone))
+    assert e.value.code == "inbox_git_failed"
+
+
+def test_the_gh_runner_asks_github_com_with_an_absolute_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        seen["argv"], seen["env"] = argv, kw["env"]
+        return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+    monkeypatch.setattr(di, "_tool", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(di.subprocess, "run", fake_run)
+    monkeypatch.setenv("GH_REPO", "someone/elsewhere")
+    assert di._gh(["api", "user"]).stdout == "ok"
+    assert seen["argv"] == ["/opt/bin/gh", "api", "user"]
+    env = seen["env"]
+    assert isinstance(env, dict) and env["GH_HOST"] == "github.com" and "GH_REPO" not in env
