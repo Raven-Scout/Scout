@@ -10,6 +10,60 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.19] - 2026-11-19
+
+### Added
+- **Delegate inboxes, part two: `scoutctl inbox apply` and `inbox revert`** (#550 V4a2, spec §7.1a; `engine/scout/delegate_apply.py`). `inbox apply <id>|--all` applies the action-item proposals that `inbox pull` took, each at most once, in ULID order.
+  - **Only what was taken.** A copy is applied only when its bytes match the HMAC in the signed record; otherwise it is `not_taken`, tried again in case the copy is put right.
+  - **Only what the delegate saw.** The item must be a task with that `[#TAG]` in that date's daily file, in the delegate's signed `last_mirror` or `pending_mirror`. Its whole block must still survive the delegate's redaction, judged on HEAD's text. Otherwise the outcome is `unknown_item`, the same whether the item is hidden or missing. With no mirror at all it is `no_mirror`, and the next apply asks again.
+  - **The owner's, between runs.** Apply and revert refuse in a scheduled run or as any reader but the owner. They refuse at once while a run holds the vault's session lock.
+  - **The daily file.** It must be a plain file (a symlink or hard link is never followed) and committed. One with uncommitted edits waits (`dirty`).
+  - **One commit per change.** Each applied change is committed at once through `scripts/git-safe-commit.sh`, with a message naming the delegate. If no commit lands, the file is put back and the proposal is tried again.
+  - **The ops.** `mark-done`, `snooze`, `set-estimate`, `set-block` and `clear-block`, by id only. `add-comment` is `held` until the review queue (V4b): it would put the agent's text where sending runs read it. Observations wait for V4b too.
+  - **Limits.** A daily cap per op and delegate. At most 5 of one op per apply; the rest are `limited`, tried again on a later day. A snooze or a time block must be within 60 days. A proposal is `stale` after a week.
+  - **Failures.** A copy that fails in any unexpected way is `refused`. An op a crash interrupted is `interrupted` and never applied again. One delegate's failure never stops another's.
+  - **Undo.** Each applied op records its task's lines before and after, kept 90 days. `scoutctl inbox revert <ULID>` (the owner only) puts them back in a commit of its own, unless the task has changed since (`revert_conflict`) or the file has uncommitted edits (`revert_dirty`).
+  - **Outcomes** are recorded by ULID, never with the proposal's text.
+- `scoutctl kb vault [--json]` prints the vault a KB read should use, from any working directory. It goes by
+  configuration only: `SCOUT_DATA_DIR`, else the engine pointer's vault, else `~/Scout` when there is no
+  pointer. The cwd only sets `in_vault`, so a cloned repository with a planted `scout-config.yaml` is never
+  taken for the vault. A relative path, a vault that is gone or a stale pointer is an error, not a fall-back.
+  Exit 1 means no usable vault. `--json` also names the absolute `scoutctl` of the engine that answered, and
+  `reason` says when `SCOUT_DATA_DIR` overrides the installed vault. It reads no note and writes nothing.
+- A KB reader `elsewhere` (`scoutctl kb … --reader elsewhere`): the owner reading from outside the vault. It
+  sees no private, local-only or shared-in note and no phone inbox, as a delegate without `include_private`
+  would. Nothing uses it by default yet.
+
+### Changed
+- The `scout-ask` skill now answers project, person and decision questions from any repository on a machine
+  with a configured Scout vault, not only from inside the vault. It finds the vault and the engine with
+  `scoutctl kb vault --json`, choosing the engine by absolute path only (the plugin's own, else
+  `~/.local/bin/scoutctl`, else the engine pointer's, inside a venv), and never runs a bare `scoutctl` or
+  anything inside the vault. Every read passes `--repo <vault>`. It runs only read commands, which write
+  nothing but Scout's own cache. Outside the vault, the current repository counts as a shared place: KB text,
+  `[private]` results, people notes and client details stay out of its commits, PRs, issues, code, files,
+  CLAUDE.md and auto-memory, subagent prompts and cloud or remote sessions, and `[private]` results are
+  skipped unless the question is about the user's own life. With no usable vault, or an engine too old for
+  the skill, it says why and stops.
+- **`scout-ask` hides private notes by default outside the vault** (`skills/scout-ask/SKILL.md`). When
+  `kb vault --json` reports `in_vault: false`, every `kb` read the skill runs passes `--reader elsewhere`,
+  so the engine, not the prompt, keeps private, local-only and shared-in notes and the phone inbox out of
+  answers given in another repository, the graph queries (`query`, `related`, `traverse`, `path`)
+  included. The skill drops the flag only when the user explicitly asks for their own private notes about
+  their own life, only for the reads that answer that, and uses only those notes, only in its reply; the
+  prose rule stays as a backstop. Inside the vault nothing changes. On exit 2 (a session that already runs
+  as a delegate or agent, which refuses `--reader elsewhere`, a bad argument, or an engine too old to know
+  `elsewhere`), the skill relays the engine's error and stops, never retrying without the flag.
+
+### Security
+- **Delegate inboxes check more on every use** (#550, `engine/scout/delegate_inbox.py`).
+  - **Mirrors, by GitHub id.** An inbox that is some delegate's mirror repository under another name is refused at every pull and key change, not only at link. A mirror repository GitHub no longer has is noted, not assumed.
+  - **No guessing at tools.** Scout refuses when git or gh isn't installed, rather than looking the bare name up again on each call.
+  - **Failures are recorded.** A failure while clearing a killed pull's leftovers is recorded on the inbox like any other pull failure.
+- **State, lock and log writes never follow a planted link** (`engine/scout/safe_write.py`). A scheduled run could put a symlink where a later owner command or the schedule tick wrote a temp file, a lock or a log, such as `.scout-state/delegate-mirrors.json.tmp` or the action-items retitle temp file. That write then went through the link into a file the run's sandbox protects, such as the plugin's hooks, a secrets file or a git hook.
+  - **Whole-file writes.** These now use a new temp file beside the target with a random name, opened so that nothing already at that name is used, then synced and renamed into place. That covers the state, cache and config files (`scout-config.yaml` included), the vault's `.gitignore`, the daily file and worksheet `action-items retitle` writes, the `.proposed-merge` file `scoutctl repo sync` leaves on a conflict, and the files `bootstrap` installs.
+  - **Logs and locks.** A log or lock file that is a symlink, a hard link or not a plain file is never written through. The schedule tick, heartbeat, self-update, health notifier, delegate mirror and the run-health event log remove such a name and make it again, so a planted link can't stop scheduled runs. Each records an `*.unsafe_file_replaced` event in `.scout-logs/schedule-events-*.jsonl`. A rotated log still works.
+
 ## [0.18.18] - 2026-11-19
 
 ### Added
