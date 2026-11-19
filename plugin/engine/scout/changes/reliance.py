@@ -230,7 +230,7 @@ def cached_vault_roots(vault: Path, env: Mapping[str, str], *, now: datetime, cw
         vaults = {}
     entry = vaults.get(key)
     at = _fresh(entry, now)
-    if at is not None:
+    if at is not None and entry is not None:  # _fresh only returns a time for a well-formed entry
         cached = tuple(Path(r) for r in entry["roots"])
         if _in_vault(cwd, cached) or not _newer_worktree(cwd, at):
             return cached
