@@ -14,7 +14,7 @@ struct MarkdownBodyView: View {
                 switch block {
                 case .prose(let text):
                     InlineMarkdownText(text)
-                        .font(DS.serif(13.5))
+                        .font(DS.font(.body, .serif))
                         .foregroundStyle(DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -33,7 +33,7 @@ struct MarkdownBodyView: View {
 
     private func heading(level: Int, text: String) -> some View {
         InlineMarkdownText(text)
-            .font(DS.serif(level <= 2 ? 15 : 13.5, weight: .semibold))
+            .font(DS.font(level <= 2 ? .headline : .body, .serif, weight: .semibold))
             .foregroundStyle(DS.Ink.p1)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -48,11 +48,11 @@ struct MarkdownBodyView: View {
             ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: task.checked ? "checkmark.square.fill" : "square")
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(task.checked ? DS.Status.ok : DS.Ink.p3)
                         .accessibilityHidden(true)
                     InlineMarkdownText(task.text)
-                        .font(DS.serif(13.5))
+                        .font(DS.font(.body, .serif))
                         .foregroundStyle(task.checked ? DS.Ink.p3 : DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -75,13 +75,13 @@ struct MarkdownBodyView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let title {
                     InlineMarkdownText(title)
-                        .font(DS.sans(12.5, weight: .semibold))
+                        .font(DS.font(.label, weight: .semibold))
                         .foregroundStyle(DS.Ink.p1)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !text.isEmpty {
                     InlineMarkdownText(text)
-                        .font(DS.serif(13.5))
+                        .font(DS.font(.body, .serif))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -124,7 +124,7 @@ struct MarkdownBodyView: View {
 
     private func codePanel(_ code: String) -> some View {
         Text(code)
-            .font(DS.mono(12))
+            .font(DS.font(.label, .mono))
             .foregroundStyle(DS.Ink.p1)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)

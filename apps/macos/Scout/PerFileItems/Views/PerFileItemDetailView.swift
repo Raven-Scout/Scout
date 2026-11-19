@@ -43,20 +43,20 @@ struct PerFileItemDetailView: View {
         case .loading:
             ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
         case .unavailable(let message):
-            Text(message).font(DS.serif(14)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
+            Text(message).font(DS.font(.headline, .serif)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(DS.sans(12)).foregroundStyle(DS.Status.err)
+                .font(DS.font(.label)).foregroundStyle(DS.Status.err)
         case .loaded(let revisions):
             let entries = ItemActivity.entries(revisions: revisions, runs: sessionLog.runs,
                                                status: item.status, now: Date())
             if let outcome = ItemActivity.outcome(entries: entries, status: item.status) {
                 Text(outcome.summary(date: Self.dayText))
-                    .font(DS.sans(12.5, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .font(DS.font(.label, weight: .semibold)).foregroundStyle(DS.Ink.p1)
             }
             if entries.isEmpty {
                 Text("No activity yet — this item hasn't been committed.")
-                    .font(DS.serif(14)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
+                    .font(DS.font(.headline, .serif)).foregroundStyle(DS.Ink.p3).padding(.top, 24)
             } else {
                 ForEach(entries) { row($0) }
             }
@@ -72,21 +72,21 @@ struct PerFileItemDetailView: View {
             Button { toggle(entry.id) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                        .font(DS.sans(9, weight: .semibold)).foregroundStyle(DS.Ink.p4)
+                        .font(DS.font(.micro, weight: .semibold)).foregroundStyle(DS.Ink.p4)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(entry.source.label).font(DS.sans(11, weight: .semibold))
+                            Text(entry.source.label).font(DS.font(.caption, weight: .semibold))
                                 .foregroundStyle(DS.Ink.p3)
-                            Text(Self.stampText(entry.commit.timestamp)).font(DS.mono(10))
+                            Text(Self.stampText(entry.commit.timestamp)).font(DS.font(.caption2, .mono))
                                 .foregroundStyle(DS.Ink.p4)
                             if entry.isResolving {
-                                Text("outcome").font(DS.mono(10)).foregroundStyle(DS.Status.ok)
+                                Text("outcome").font(DS.font(.caption2, .mono)).foregroundStyle(DS.Status.ok)
                             }
                         }
-                        Text(entry.commit.subject).font(DS.serif(13)).foregroundStyle(DS.Ink.p1)
+                        Text(entry.commit.subject).font(DS.font(.body, .serif)).foregroundStyle(DS.Ink.p1)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("\(entry.commit.shortSHA)  +\(entry.commit.insertions) −\(entry.commit.deletions)")
-                            .font(DS.mono(10)).foregroundStyle(DS.Ink.p4)
+                            .font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4)
                     }
                     Spacer(minLength: 0)
                 }
@@ -104,7 +104,7 @@ struct PerFileItemDetailView: View {
     private func expandedBody(_ entry: ItemActivityEntry) -> some View {
         if entry.revision.patch.isEmpty {
             Text("No change to this file in this commit.")
-                .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
         } else {
             CommitDiffView(patch: entry.revision.patch)
         }
@@ -112,7 +112,7 @@ struct PerFileItemDetailView: View {
         if let run = entry.source.run {
             Button { appState.requestOpenRun(run.id) } label: {
                 Label("Open run in Control Center", systemImage: "arrow.up.right.square")
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p2)
         }
@@ -126,16 +126,16 @@ struct PerFileItemDetailView: View {
         case .loaded(let files):
             VStack(alignment: .leading, spacing: 2) {
                 Text("Also changed in this commit (\(files.count))")
-                    .font(DS.sans(10.5, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.caption2, weight: .semibold)).foregroundStyle(DS.Ink.p3)
                 ForEach(files.prefix(20), id: \.self) { path in
-                    Text(path).font(DS.mono(10)).foregroundStyle(DS.Ink.p3).lineLimit(1)
+                    Text(path).font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p3).lineLimit(1)
                 }
                 if files.count > 20 {
-                    Text("+\(files.count - 20) more").font(DS.mono(10)).foregroundStyle(DS.Ink.p4)
+                    Text("+\(files.count - 20) more").font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4)
                 }
             }
         case .failed(let message):
-            Text(message).font(DS.sans(10.5)).foregroundStyle(DS.Status.err)
+            Text(message).font(DS.font(.caption2)).foregroundStyle(DS.Status.err)
         case .loading, nil:
             ProgressView().controlSize(.small)
                 .task { await model.loadOtherFiles(for: commit) }
