@@ -130,7 +130,7 @@ struct SessionsBoardView: View {
                 isHighlighted: hoveredParentID == session.id
             )
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsCard())
         .onHover { inside in
             if inside { hoveredParentID = session.parentSessionID } else if hoveredParentID == session.parentSessionID { hoveredParentID = nil }
         }

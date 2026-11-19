@@ -112,28 +112,9 @@ struct TaskCardView: View {
                     .padding(.bottom, 10)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
-                )
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 10)
-                .opacity(task.done ? 0.5 : 1)
-        }
-        .overlay {
-            if isCursor {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(DS.Accent.fill, lineWidth: 1.5)
-                    .allowsHitTesting(false)
-            }
-        }
+        // Picked for copying is `marked`; keyboard-current is `selected`.
+        .editorialCard(padding: 0, cornerRadius: 10, selected: isCursor, marked: isSelected,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
         // A click anywhere on the card makes it keyboard-current, alongside
         // whatever the click hit (a button still does its own thing).
         .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })

@@ -448,38 +448,118 @@ struct PaperBackdrop: View {
 
 // MARK: - Shared surfaces
 
-/// Editorial card chrome. Uses the raised paper fill with a hairline rule —
-/// no drop shadows on heavy scroll-containers (they eat scroll perf). Pass
-/// `neumorphic: true` for the soft extruded variant used in hero/dashboard
-/// surfaces where shadow cost is acceptable.
+/// The design system's card (design-system v2): raised paper with a hairline,
+/// no drop shadow (cards sit in scroll views, where shadows cost scroll
+/// performance). It draws every state itself:
+///
+/// - `selected`: an accent outline (the selected schedule, session or the
+///   keyboard-current task).
+/// - `marked`: an accent wash (a task picked for copying).
+/// - hover, pressed and keyboard focus, when the card is clickable: wrap it
+///   in `Button { … }.buttonStyle(.dsCard(cornerRadius:))`, which tells the
+///   card through the environment. A card whose clickable part is only its
+///   header passes that part's hover with `.dsCardHovered(_:)`.
+/// - `accentBar`: the 3pt coloured edge that names a priority, state or type.
+///
+/// `CardStyleGuardTests` keeps hand-built card chrome out of views.
 struct EditorialCard: ViewModifier {
     var padding: CGFloat = 16
     var cornerRadius: CGFloat = 8
-    var neumorphic: Bool = false
+    var selected = false
+    var marked = false
+    var accentBar: Color? = nil
+    @Environment(\.dsCardHovered) private var hovered
+    @Environment(\.dsCardPressed) private var pressed
 
     func body(content: Content) -> some View {
-        let base = content
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-        if neumorphic {
-            return AnyView(
-                base
-                    .background(RoundedRectangle(cornerRadius: cornerRadius).fill(DS.Paper.raised))
-                    .neumorphicRaised(cornerRadius: cornerRadius, small: true)
-            )
-        }
-        return AnyView(
-            base
-                .background(RoundedRectangle(cornerRadius: cornerRadius).fill(DS.Paper.raised))
-                .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+            .background {
+                shape.fill(marked ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
+                    .overlay(shape.strokeBorder(Self.stroke(marked: marked, hovered: hovered),
+                                                lineWidth: hovered && !marked ? 1 : 0.5))
+            }
+            .overlay(alignment: .leading) {
+                if let accentBar {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(accentBar)
+                        .frame(width: 3)
+                        .padding(.vertical, cornerRadius)
+                        .accessibilityHidden(true)
+                }
+            }
+            .overlay {
+                if selected {
+                    shape.strokeBorder(DS.Accent.fill, lineWidth: 1.5).allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                if pressed {
+                    shape.fill(Color.black.opacity(0.04)).allowsHitTesting(false)
+                }
+            }
+    }
+
+    static func stroke(marked: Bool, hovered: Bool) -> Color {
+        if marked { return DS.Accent.fill.opacity(0.65) }
+        return hovered ? DS.Rule.hard : DS.Rule.soft
     }
 }
 
 extension View {
-    func editorialCard(padding: CGFloat = 16, cornerRadius: CGFloat = 8, neumorphic: Bool = false) -> some View {
-        modifier(EditorialCard(padding: padding, cornerRadius: cornerRadius, neumorphic: neumorphic))
+    /// The design system's card. See `EditorialCard`.
+    func editorialCard(padding: CGFloat = 16, cornerRadius: CGFloat = 8, selected: Bool = false,
+                       marked: Bool = false, accentBar: Color? = nil) -> some View {
+        modifier(EditorialCard(padding: padding, cornerRadius: cornerRadius, selected: selected,
+                               marked: marked, accentBar: accentBar))
     }
+
+    /// Tells an `editorialCard` inside this view that its clickable part is
+    /// under the pointer, for a card that isn't one big button.
+    func dsCardHovered(_ hovered: Bool) -> some View {
+        environment(\.dsCardHovered, hovered)
+    }
+}
+
+extension EnvironmentValues {
+    /// Whether the enclosing card is under the pointer (set by `.dsCard`).
+    @Entry var dsCardHovered: Bool = false
+    /// Whether the enclosing card is being pressed (set by `.dsCard`).
+    @Entry var dsCardPressed: Bool = false
+}
+
+/// A clickable card: the label is the card (`.editorialCard(...)`); this style
+/// passes hover and press to it and draws the keyboard focus ring at the
+/// card's corner radius.
+struct DSCardButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 8
+
+    func makeBody(configuration: Configuration) -> some View {
+        DSCardButtonBody(configuration: configuration, cornerRadius: cornerRadius)
+    }
+}
+
+private struct DSCardButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let cornerRadius: CGFloat
+    @Environment(\.isFocused) private var isFocused
+    @State private var hovering = false
+
+    var body: some View {
+        configuration.label
+            .environment(\.dsCardHovered, hovering)
+            .environment(\.dsCardPressed, configuration.isPressed)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .onHover { hovering = $0 }
+            .dsFocusRing(isFocused, cornerRadius: cornerRadius)
+    }
+}
+
+extension ButtonStyle where Self == DSCardButtonStyle {
+    /// A card that is one big button. Give the same corner radius as the card.
+    static func dsCard(cornerRadius: CGFloat = 8) -> DSCardButtonStyle { DSCardButtonStyle(cornerRadius: cornerRadius) }
 }
 
 /// A single hairline rule, full width, for separating editorial sections.

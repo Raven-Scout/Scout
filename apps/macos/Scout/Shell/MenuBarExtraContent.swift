@@ -142,12 +142,7 @@ struct MenuBarExtraContent: View {
                     .fixedSize()
             }
         }
-        .padding(11)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 11)
     }
 
     /// Setup happens in the main window (it shows the setup flow while the
@@ -183,11 +178,7 @@ struct MenuBarExtraContent: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(DS.Paper.raised)
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                )
+                .editorialCard(padding: 0)
             }
         }
     }
@@ -337,12 +328,7 @@ struct MenuBarExtraContent: View {
                 .buttonStyle(.ds(.primary, size: .small))
             }
         }
-        .padding(11)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 11)
     }
 
     private func wakeResult(_ result: AppState.WakeScheduleResult) -> some View {
