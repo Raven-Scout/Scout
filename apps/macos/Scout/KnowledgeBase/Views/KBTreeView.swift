@@ -17,6 +17,9 @@ struct KBTreeView: View {
 
     /// The keyboard's row: a note (then also `selectedPath`) or a folder.
     @State private var cursor: String?
+    /// The tree's keyboard focus. Rows are plain buttons, which don't take
+    /// focus on a click, so a click sets it and the keys work at once.
+    @FocusState private var treeFocused: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -25,13 +28,14 @@ struct KBTreeView: View {
                     ForEach(nodes) { node in
                         KBTreeRow(node: node, depth: 0, privatePaths: privatePaths, cursor: cursor,
                                   selectedPath: $selectedPath, expanded: $expanded,
-                                  onClick: { cursor = $0 })
+                                  onClick: { cursor = $0; treeFocused = true })
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
             .focusable()
+            .focused($treeFocused)
             .focusEffectDisabled()
             .onKeyPress(phases: [.down, .repeat]) { press in
                 guard let key = KBTreeKeyboard.Key(press.key, modifiers: press.modifiers) else { return .ignored }
@@ -46,10 +50,17 @@ struct KBTreeView: View {
         }
         .background(DS.Paper.sunk.opacity(0.4))
         // A note opened from elsewhere (a link, search, the map) is where the
-        // keyboard picks up.
-        .onChange(of: selectedPath) { _, path in
-            if let path { cursor = path }
-        }
+        // keyboard picks up: its folders open, so its row is drawn and ↓
+        // continues from it rather than from the top.
+        .onChange(of: selectedPath) { _, path in reveal(path) }
+        .onAppear { reveal(selectedPath) }
+    }
+
+    private func reveal(_ path: String?) {
+        guard let path else { return }
+        let folders = KBTreeKeyboard.ancestors(of: path, in: nodes)
+        if !expanded.isSuperset(of: folders) { expanded.formUnion(folders) }
+        cursor = path
     }
 }
 
@@ -100,6 +111,14 @@ nonisolated enum KBTreeKeyboard {
             }
             return rows
         }
+    }
+
+    /// The folders in the tree that hold `path`, outermost first.
+    static func ancestors(of path: String, in nodes: [KBNode]) -> [String] {
+        for node in nodes where node.isDirectory && path.hasPrefix(node.relativePath + "/") {
+            return [node.relativePath] + ancestors(of: path, in: node.children)
+        }
+        return []
     }
 
     static func handle(_ key: Key, cursor: String?, nodes: [KBNode], expanded: Set<String>) -> Outcome {

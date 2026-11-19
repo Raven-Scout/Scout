@@ -162,7 +162,11 @@ struct KBEditorView: View {
                 .accessibilityHidden(true)
         }
         .background(Color.clear)
-        .onChange(of: node.id) { _, _ in openFile() }
+        .onChange(of: node.id) { _, _ in
+            find.readerBarVisible = false   // a find bar belongs to the note it was opened on
+            openFile()
+        }
+        .onChange(of: mode) { _, _ in find.readerBarVisible = false }
         .onAppear { openFile() }
         // Mirror every change into the app-lifetime draft store, so leaving
         // this note (another note, a link, the overview, another page) keeps
@@ -630,17 +634,26 @@ struct KBSourceEditor: NSViewRepresentable {
         tv.textContainerInset = NSSize(width: 12, height: 10)
         tv.backgroundColor = NSColor(DS.Paper.sunk)
         tv.drawsBackground = true
-        tv.font = KBLiveEditor.Coordinator.mono(12.5)
-        tv.textColor = NSColor(DS.Ink.p1)
         tv.string = text
+        Self.applyStyle(to: tv)
         find?.textView = tv
         return scroll
+    }
+
+    /// Font and colour, applied on every update too so Settings ▸ General ▸
+    /// Text size reaches an open note without reopening it.
+    private static func applyStyle(to tv: NSTextView) {
+        let font = KBLiveEditor.Coordinator.mono(12.5)
+        if tv.font != font { tv.font = font }
+        let ink = NSColor(DS.Ink.p1)
+        if tv.textColor != ink { tv.textColor = ink }
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.text = $text
         guard let tv = scroll.documentView as? NSTextView else { return }
         find?.textView = tv
+        Self.applyStyle(to: tv)
         if tv.string != text {
             let sel = tv.selectedRange()
             // Typing undo recorded against the old text would replay onto the

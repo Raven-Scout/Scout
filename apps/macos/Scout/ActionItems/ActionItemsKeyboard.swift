@@ -9,13 +9,16 @@ import SwiftUI
 struct ActionItemsKeyboardContext: Equatable {
     /// The keyboard-current card.
     var cursorID: UUID?
-    /// False while a comment editor has focus: ⌘↵ is then its Send or Save,
-    /// so Done doesn't bind it too.
+    /// False while a comment editor has focus (⌘↵ is then its Send or Save,
+    /// so Done doesn't bind it too) or the search field does.
     var commitKeyFree = true
     /// The last Return or Space; the card it names opens or closes.
     var toggleRequest: ToggleRequest?
-    /// Makes a card current (a click on it).
+    /// Makes a card current (a click anywhere on it).
     var setCursor: StableAction<UUID>?
+    /// Makes a card current and gives the list keyboard focus, so the arrows
+    /// work next: a click on the card's header, which holds no text field.
+    var focusCard: StableAction<UUID>?
 
     struct ToggleRequest: Equatable {
         let id: UUID
@@ -29,23 +32,63 @@ struct ActionItemsKeyboardContext: Equatable {
         cursorID == id && commitKeyFree ? AppShortcut.commit : nil
     }
 
+    /// Whether the list's own key handlers (↑ ↓ Home End, Return, Space, Esc)
+    /// may act. Only while the list itself has focus: the handlers sit on an
+    /// ancestor of every comment editor and button, and Return or Space typed
+    /// into a comment would otherwise collapse its card and lose the draft.
+    static func listOwnsKeys(listFocused: Bool, commentEditorFocused: Bool) -> Bool {
+        listFocused && !commentEditorFocused
+    }
+
+    /// A card the arrow keys walk, with what identifies its task across a
+    /// reparse.
+    struct Row: Equatable {
+        let id: UUID
+        let shortPrefix: String?
+        let subject: String
+        /// A snoozed card is one the user just put away, not one to follow.
+        let snoozed: Bool
+
+        init(id: UUID, shortPrefix: String?, subject: String, snoozed: Bool = false) {
+            self.id = id
+            self.shortPrefix = shortPrefix
+            self.subject = subject
+            self.snoozed = snoozed
+        }
+
+        init(_ task: ActionTask) {
+            self.init(id: task.id, shortPrefix: task.shortPrefix, subject: task.matchableSubject,
+                      snoozed: task.snoozedUntil != nil)
+        }
+    }
+
     /// The cards the arrow keys walk: the built rows of the task sections, in
     /// the order drawn. Sub-tasks are left out; they have no actions of their
     /// own.
-    static func navigableIDs(in sections: [ActionSection], windows: [UUID: TaskWindow]) -> [UUID] {
+    static func navigableRows(in sections: [ActionSection], windows: [UUID: TaskWindow]) -> [Row] {
         ActionItemsLayout.selectableRows(in: sections, windows: windows)
             .filter { $0.indentLevel == 0 }
-            .map(\.id)
+            .map(Row.init)
     }
 
-    /// Where the current card goes after the list changes under it. A write
-    /// reparses the day and can renumber every row, so a card that's gone
-    /// hands over to whatever now sits at its old position.
-    static func reconcile(cursor: UUID?, previousIDs: [UUID], ids: [UUID]) -> UUID? {
-        guard let cursor else { return nil }
-        if ids.contains(cursor) { return cursor }
-        guard let old = previousIDs.firstIndex(of: cursor), !ids.isEmpty else { return nil }
-        return ids[min(old, ids.count - 1)]
+    /// Where the current card goes after the list changes under it. Task ids
+    /// encode a row's position, so a write anywhere above (a scheduled run
+    /// adding an item, say) renumbers the card: follow its task by `[#TAG]`,
+    /// then by subject, so ⌘↵ never lands on a neighbour. Only a card that's
+    /// really gone (done, snoozed, filtered out) hands over to whatever now
+    /// sits at its old position.
+    static func reconcile(cursor: UUID?, previous: [Row], rows: [Row]) -> UUID? {
+        guard let cursor, !rows.isEmpty else { return nil }
+        guard let old = previous.firstIndex(where: { $0.id == cursor }) else {
+            return rows.contains { $0.id == cursor } ? cursor : nil
+        }
+        let task = previous[old]
+        let candidates = rows.filter { $0.snoozed == task.snoozed }
+        if let tag = task.shortPrefix, let same = candidates.first(where: { $0.shortPrefix == tag }) {
+            return same.id
+        }
+        if let same = candidates.first(where: { $0.subject == task.subject }) { return same.id }
+        return rows[min(old, rows.count - 1)].id
     }
 }
 

@@ -3,12 +3,13 @@ import SwiftUI
 import Testing
 @testable import Scout
 
-/// A shortcut the UI shows must be one it binds (UI audit #42: Done showed
-/// "⌘↵" for months with nothing bound). Views build keycaps and tooltips from
-/// the `AppShortcut` they bind, through `ShortcutLabel`, so a keycap typed into
-/// a string literal is the one way a label can drift from its binding. This
-/// scans the app's sources and names any.
-@Suite("Displayed shortcuts are bound shortcuts")
+/// No keycap is typed by hand (UI audit #42: Done showed "⌘↵" for months with
+/// nothing bound). Views build keycaps and tooltips through `ShortcutLabel`
+/// from the `AppShortcut` they bind, so a label and its binding share one
+/// value. This scans the app's sources for a keycap typed into a string
+/// literal and names any. It can't prove the constant shown is also bound:
+/// that's on the view (and on the system, for `undo` and `settings`).
+@Suite("No hand-typed keycaps")
 struct ShortcutLabelGuardTests {
 
     /// The formatter itself spells the modifier glyphs.

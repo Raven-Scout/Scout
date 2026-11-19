@@ -16,6 +16,10 @@ struct SchedulesMasterTable: View {
     /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
+    /// The table's keyboard focus. A row is a plain button, which doesn't
+    /// take focus on a click, so the click sets it: the arrows work at once.
+    @FocusState private var tableFocused: Bool
+
     /// The rows in the order drawn: the new draft first, then the slots. The
     /// arrow keys walk this (UI audit #57); the Cards view shares it.
     static func keyboardOrder(slots: [Slot], newDraftSlot: Slot?) -> [String] {
@@ -56,9 +60,10 @@ struct SchedulesMasterTable: View {
                         }
                     }
                 }
-                // ↑ ↓ Home End move the selection once the table (or a row in
-                // it) has keyboard focus; a click on a row gives it focus.
+                // ↑ ↓ Home End move the selection once the table has keyboard
+                // focus; a click on a row gives it focus.
                 .focusable()
+                .focused($tableFocused)
                 .focusEffectDisabled()
                 .keyboardListNavigation(
                     ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
@@ -95,7 +100,10 @@ struct SchedulesMasterTable: View {
         let isSelected = selectedSlotKey == slot.key
         // A button, not a tap gesture, so rows take keyboard focus and
         // VoiceOver reads each one as a selectable button.
-        Button { selectedSlotKey = slot.key } label: {
+        Button {
+            selectedSlotKey = slot.key
+            tableFocused = true
+        } label: {
             SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth,
                          warnings: warnings[slot.key] ?? [])
                 .contentShape(Rectangle())

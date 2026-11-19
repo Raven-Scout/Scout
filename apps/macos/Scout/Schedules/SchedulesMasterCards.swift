@@ -9,6 +9,9 @@ struct SchedulesMasterCards: View {
     /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
+    /// Keyboard focus, set by a click on a card (see `SchedulesMasterTable`).
+    @FocusState private var cardsFocused: Bool
+
     private let columns = [
         GridItem(.adaptive(minimum: 240, maximum: 320), spacing: 12)
     ]
@@ -26,8 +29,10 @@ struct SchedulesMasterCards: View {
                 }
                 .padding(16)
             }
-            // ↑ ↓ Home End step through the cards in reading order (#57).
+            // ↑ ↓ Home End step through the cards in reading order (#57):
+            // ↓ is the next card, which in a grid is the one to the right.
             .focusable()
+            .focused($cardsFocused)
             .focusEffectDisabled()
             .keyboardListNavigation(
                 ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
@@ -43,6 +48,7 @@ struct SchedulesMasterCards: View {
         let isSelected = selectedSlotKey == slot.key
         Button {
             selectedSlotKey = slot.key
+            cardsFocused = true
         } label: {
             SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [])
         }

@@ -4,7 +4,9 @@ import SwiftUI
 /// the keycap or tooltip it shows come from the same value. A label typed by
 /// hand drifted from its binding: Done showed "⌘↵" for months with nothing
 /// bound (UI audit #42). `ShortcutLabelGuardTests` fails on a keycap typed into
-/// a string literal; build it with `ShortcutLabel.text(_:)` instead.
+/// a string literal; build it with `ShortcutLabel.text(_:)` instead. That
+/// guard can't prove a constant is bound: bind the one you show, as every
+/// view here does (`undo` and `settings` are bound by the system).
 nonisolated enum AppShortcut {
     /// Action Items: mark the keyboard-current card done; in a comment editor,
     /// send or save the comment. Never both at once (see `TaskCardView`).
@@ -14,9 +16,12 @@ nonisolated enum AppShortcut {
     static let findNext = KeyboardShortcut("g", modifiers: .command)
     static let findPrevious = KeyboardShortcut("g", modifiers: [.command, .shift])
     /// Knowledge Base: search every note, from anywhere on the page.
+    /// ⇧⌘F, the same keys as `expandDetail`: the two are bound on different
+    /// pages (KB; Control Center, Wishlist, Research), never on one screen.
     static let searchNotes = KeyboardShortcut("f", modifiers: [.command, .shift])
     /// Run details (Control Center, Wishlist, Research).
     static let closeDetail = KeyboardShortcut(".", modifiers: .command)
+    /// ⇧⌘F, shared with `searchNotes` (see there).
     static let expandDetail = KeyboardShortcut("f", modifiers: [.command, .shift])
     /// Action Items select mode: copy the selected items.
     static let copySelected = KeyboardShortcut("c", modifiers: [.command, .shift])

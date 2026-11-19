@@ -39,7 +39,7 @@ struct ActionItemsView: View {
     /// The keyboard-current card (#50) and the list's own focus, which the
     /// arrow keys need. See `ActionItemsKeyboardContext`.
     @State private var cursorTaskID: UUID?
-    @State private var navigableIDs: [UUID] = []
+    @State private var navigableRows: [ActionItemsKeyboardContext.Row] = []
     @State private var commentEditorFocused = false
     @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
     @FocusState private var listFocused: Bool
@@ -213,16 +213,22 @@ struct ActionItemsView: View {
                 .focusable()
                 .focused($listFocused)
                 .focusEffectDisabled()
-                .keyboardListNavigation(ids: { navigableIDs }, selection: $cursorTaskID) { id in
+                // Each handler acts only while the list itself has focus, never
+                // for keys typed into a comment editor or a focused button
+                // inside it (`listOwnsKeys`).
+                .keyboardListNavigation(
+                    ids: { listOwnsKeys ? navigableRows.map(\.id) : [] },
+                    selection: $cursorTaskID
+                ) { id in
                     scroll(to: id, proxy: proxy, anchor: nil)
                 }
                 .onKeyPress(keys: [.return, .space], phases: .down) { press in
-                    guard press.modifiers.isEmpty, let id = cursorTaskID else { return .ignored }
+                    guard listOwnsKeys, press.modifiers.isEmpty, let id = cursorTaskID else { return .ignored }
                     toggleRequest = .init(id: id, serial: (toggleRequest?.serial ?? 0) + 1)
                     return .handled
                 }
                 .onKeyPress(.escape) {
-                    guard cursorTaskID != nil else { return .ignored }
+                    guard listOwnsKeys, cursorTaskID != nil else { return .ignored }
                     cursorTaskID = nil
                     return .handled
                 }
@@ -230,25 +236,33 @@ struct ActionItemsView: View {
         }
     }
 
+    private var listOwnsKeys: Bool {
+        ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused, commentEditorFocused: commentEditorFocused)
+    }
+
     private var keyboardContext: ActionItemsKeyboardContext {
         ActionItemsKeyboardContext(
             cursorID: cursorTaskID,
-            commitKeyFree: !commentEditorFocused,
+            commitKeyFree: !commentEditorFocused && !searchFocused,
             toggleRequest: toggleRequest,
-            setCursor: StableAction { id in cursorTaskID = id })
+            setCursor: StableAction { id in cursorTaskID = id },
+            focusCard: StableAction { id in
+                cursorTaskID = id
+                listFocused = true
+            })
     }
 
     /// Keep the current card on screen after a write or a filter change: the
     /// same card if it's still drawn, else the one now in its place.
     private func reconcileCursor() {
-        let previous = navigableIDs
+        let previous = navigableRows
         guard case .loaded(let doc) = docService.state else {
-            navigableIDs = []
+            navigableRows = []
             cursorTaskID = nil
             return
         }
-        navigableIDs = ActionItemsKeyboardContext.navigableIDs(in: listSections(doc), windows: windows)
-        cursorTaskID = ActionItemsKeyboardContext.reconcile(cursor: cursorTaskID, previousIDs: previous, ids: navigableIDs)
+        navigableRows = ActionItemsKeyboardContext.navigableRows(in: listSections(doc), windows: windows)
+        cursorTaskID = ActionItemsKeyboardContext.reconcile(cursor: cursorTaskID, previous: previous, rows: navigableRows)
     }
 
     @ViewBuilder

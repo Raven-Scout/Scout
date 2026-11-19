@@ -36,17 +36,50 @@ struct KeyboardListNavigationTests {
         #expect(KeyboardListNavigation.move(for: .return, modifiers: []) == nil)
     }
 
-    @Test("Action Items keeps the current card's place across a reparse")
-    func cursorReconcile() {
-        let a = UUID(), b = UUID(), c = UUID(), b2 = UUID(), c2 = UUID()
-        // Still drawn: stays.
-        #expect(ActionItemsKeyboardContext.reconcile(cursor: b, previousIDs: [a, b, c], ids: [a, b, c]) == b)
-        // Renumbered by a write: the row now at its place.
-        #expect(ActionItemsKeyboardContext.reconcile(cursor: b, previousIDs: [a, b, c], ids: [a, b2, c2]) == b2)
+    typealias Row = ActionItemsKeyboardContext.Row
+
+    @Test("Action Items follows the current card's task across a reparse")
+    func cursorFollowsTask() {
+        let a = Row(id: UUID(), shortPrefix: "OPS1", subject: "first")
+        let b = Row(id: UUID(), shortPrefix: nil, subject: "second")
+        let c = Row(id: UUID(), shortPrefix: "OPS3", subject: "third")
+        // A scheduled run adds an item at the top: every id moves. The cursor
+        // stays on its own task, not on whatever took its old position.
+        let added = Row(id: UUID(), shortPrefix: "OPS9", subject: "new")
+        let b2 = Row(id: UUID(), shortPrefix: nil, subject: "second")
+        let c2 = Row(id: UUID(), shortPrefix: "OPS3", subject: "third")
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, b, c], rows: [added, a, b2, c2]) == b2.id)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: c.id, previous: [a, b, c], rows: [added, a, b2, c2]) == c2.id)
+        // A retitled task keeps its [#TAG].
+        let c3 = Row(id: UUID(), shortPrefix: "OPS3", subject: "third, reworded")
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: c.id, previous: [a, b, c], rows: [a, b, c3]) == c3.id)
+        // Unchanged: stays.
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, b, c], rows: [a, b, c]) == b.id)
+    }
+
+    @Test("a card that's really gone hands over to its old position")
+    func cursorGone() {
+        let a = Row(id: UUID(), shortPrefix: nil, subject: "first")
+        let b = Row(id: UUID(), shortPrefix: nil, subject: "second")
+        let c = Row(id: UUID(), shortPrefix: nil, subject: "third")
+        let c2 = Row(id: UUID(), shortPrefix: nil, subject: "third")
+        // b marked done: it leaves the list, and the next card takes its place.
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, b, c], rows: [a, c2]) == c2.id)
+        // b snoozed: it moves to Snoozed, and the cursor doesn't follow it there.
+        let bSnoozed = Row(id: UUID(), shortPrefix: nil, subject: "second", snoozed: true)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: b.id, previous: [a, b, c], rows: [a, c2, bSnoozed]) == c2.id)
         // Was last and the list shrank: the new last row.
-        #expect(ActionItemsKeyboardContext.reconcile(cursor: c, previousIDs: [a, b, c], ids: [a]) == a)
-        #expect(ActionItemsKeyboardContext.reconcile(cursor: c, previousIDs: [a, b, c], ids: []) == nil)
-        #expect(ActionItemsKeyboardContext.reconcile(cursor: nil, previousIDs: [a], ids: [a]) == nil)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: c.id, previous: [a, b, c], rows: [a]) == a.id)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: c.id, previous: [a, b, c], rows: []) == nil)
+        #expect(ActionItemsKeyboardContext.reconcile(cursor: nil, previous: [a], rows: [a]) == nil)
+    }
+
+    @Test("the list's keys act only while the list itself has focus")
+    func listOwnsKeys() {
+        #expect(ActionItemsKeyboardContext.listOwnsKeys(listFocused: true, commentEditorFocused: false))
+        // Typing Return or Space into a comment must not collapse its card.
+        #expect(!ActionItemsKeyboardContext.listOwnsKeys(listFocused: true, commentEditorFocused: true))
+        #expect(!ActionItemsKeyboardContext.listOwnsKeys(listFocused: false, commentEditorFocused: false))
     }
 
     @Test("Schedules walks the new draft first, then the slots as drawn")

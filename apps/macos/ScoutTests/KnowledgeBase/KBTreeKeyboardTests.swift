@@ -69,6 +69,14 @@ struct KBTreeKeyboardTests {
         #expect(KBTreeKeyboard.handle(.end, cursor: nil, nodes: tree, expanded: [people]).cursor == projects)
     }
 
+    @Test("a note opened from elsewhere opens the folders that hold it")
+    func ancestors() {
+        #expect(KBTreeKeyboard.ancestors(of: alex, in: tree) == [people])
+        #expect(KBTreeKeyboard.ancestors(of: projects, in: tree).isEmpty)
+        // A sibling folder whose name only starts the same isn't an ancestor.
+        #expect(KBTreeKeyboard.ancestors(of: "knowledge-base/people-archive/x.md", in: tree).isEmpty)
+    }
+
     @Test("only bare keys count")
     func keys() {
         #expect(KBTreeKeyboard.Key(.downArrow, modifiers: []) == .down)

@@ -138,7 +138,6 @@ struct TaskCardView: View {
         // whatever the click hit (a button still does its own thing).
         .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })
         .contextMenu { contextMenuItems }
-        .accessibilityAddTraits(isCursor ? .isSelected : [])
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
         .onChange(of: keyboard.toggleRequest) { _, request in
@@ -175,6 +174,9 @@ struct TaskCardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture { toggle() }
+                    // On the title alone: on the card it reached every
+                    // button inside ("Mark done, selected").
+                    .accessibilityAddTraits(isCursor ? .isSelected : [])
                 if !expanded { quickActions }
                 trailingStatus
                 chevron
@@ -195,6 +197,9 @@ struct TaskCardView: View {
         }
         .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
+        // The header holds no text field, so a click here can take the
+        // list's keyboard focus without pulling it out of a comment editor.
+        .simultaneousGesture(TapGesture().onEnded { keyboard.focusCard?(task.id) })
     }
 
     private var chevron: some View {
