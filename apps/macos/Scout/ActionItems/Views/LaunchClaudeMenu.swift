@@ -127,7 +127,7 @@ struct LaunchClaudeMenu: View {
         Button {
             launch(.cli(cwd: scoutDirectory, config: cliConfig))
         } label: {
-            Label(cliMenuLabel, systemImage: "terminal")
+            Label(Self.cliMenuLabel(for: CLITerminal(rawValue: cliTerminal) ?? .auto), systemImage: "terminal")
         }
         Divider()
         Button {
@@ -186,9 +186,13 @@ struct LaunchClaudeMenu: View {
         )
     }
 
-    private var cliMenuLabel: String {
-        switch CLITerminal(rawValue: cliTerminal) ?? .auto {
-        case .auto:        return "Launch Claude Code (Auto)"
+    /// The terminal item's label. Only the split button says "Launch Claude
+    /// Code" (it opens Claude Desktop); this item opens a terminal, so it
+    /// names the terminal like its siblings (audit #51: two items had the
+    /// same name and opened different apps).
+    static func cliMenuLabel(for terminal: CLITerminal) -> String {
+        switch terminal {
+        case .auto:        return "Open in a terminal → Claude Code"
         case .terminalApp: return "Open in Terminal.app → Claude Code"
         case .iterm2:      return "Open in iTerm2 → Claude Code"
         case .custom:      return "Open in custom terminal → Claude Code"

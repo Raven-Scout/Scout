@@ -25,6 +25,7 @@ struct ProposalStatusPill: View {
         case .approved:  return DS.Status.ok
         case .rejected:  return DS.Status.err
         case .applied:   return DS.Priority.watch
+        case .closed:    return DS.Ink.p3
         case .unknown:   return DS.Ink.p3
         }
     }

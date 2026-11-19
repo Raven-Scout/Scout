@@ -430,9 +430,21 @@ struct GlossaryTests {
         ("slot", .schedule),
         ("delegate", .delegate),
         ("scoutctl", .engine),
+        // Audit #51: the action-item states are explained too.
+        ("done", .done),
+        ("recently completed", .done),
+        ("on hold", .onHold),
+        ("snoozed", .onHold),
+        ("parked", .parked),
+        ("archived", .archived),
     ])
     func findsTerm(query: String, term: GlossaryTerm) {
         #expect(GlossaryTerm.matching(query).contains(term))
+    }
+
+    @Test("a search for an unrelated word doesn't turn up Archived")
+    func archivedHasNoStrayAlias() {
+        #expect(!GlossaryTerm.matching("details").contains(.archived))
     }
 
     @Test("definitions are plain sentences without engine words")

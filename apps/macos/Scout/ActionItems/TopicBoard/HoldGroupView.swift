@@ -25,6 +25,7 @@ struct HoldGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .glossaryHelp(.onHold)
 
             if expanded {
                 ForEach(steps) { step in

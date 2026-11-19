@@ -21,6 +21,7 @@ struct BoardSideListsView: View {
             SideListView(isEmpty: done.isEmpty) {
                 HStack(spacing: 4) {
                     Text("Done")
+                        .glossaryHelp(.done)
                     Button {
                         doneRange = doneRange.next
                     } label: {
@@ -30,7 +31,9 @@ struct BoardSideListsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(DS.Ink.p2)
-                    .help("Switch between the last 7 days, today and yesterday")
+                    .help("Switch between the last 7 days, today and yesterday. Also in Settings ▸ Action Items.")
+                    .accessibilityLabel("Done range: \(doneRange.label)")
+                    .accessibilityHint("Switches to \(doneRange.next.label)")
                 }
             } rows: {
                 ForEach(done) { entry in

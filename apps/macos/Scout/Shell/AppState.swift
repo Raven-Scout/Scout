@@ -498,6 +498,9 @@ final class AppState: ObservableObject {
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
         displayProfile.startWatching()
+        // A Done range the Topics board kept in UserDefaults moves into
+        // scout-display.json once (UI audit #46).
+        displayProfile.migrateLegacyDoneRange(from: defaults)
         // schedule.yaml edited outside the app reloads the Schedules page
         // (UI audit #61), drafts kept.
         scheduleEditService.startWatching(events)
