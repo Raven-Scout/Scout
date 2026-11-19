@@ -376,3 +376,36 @@ def test_a_checked_rebuild_that_brings_in_a_private_note_is_refused(kb_repo) -> 
     kb_repo.stage(FRONT, page("widgets", extra="- See [[widgets-secret]].\n"))
     blocking = [f.check for f in privacy_staged(kb_repo.root, env=RUN) if f.blocking]
     assert blocking == ["private-link"]
+
+
+def _commit_on(kb_repo, day, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    with monkeypatch.context() as m:
+        m.setenv("GIT_COMMITTER_DATE", f"{day}T12:00:00+00:00")
+        m.setenv("GIT_AUTHOR_DATE", f"{day}T12:00:00+00:00")
+        kb_repo.git("add", "-A")
+        kb_repo.commit(f"c {day}")
+
+
+@pytest.mark.parametrize("older_note", [False, True], ids=["resumes", "an older unshared note still stops it"])
+def test_a_page_shared_on_its_own_resumes_its_rebuild(
+    kb_repo, monkeypatch: pytest.MonkeyPatch, older_note: bool
+) -> None:
+    """Night 1 writes the archive copy and new unshared notes; they must not stop night 2."""
+    import datetime as dt
+
+    from scout.config import today
+
+    kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.write(FRONT, page("widgets").replace("## History", "## Old notes"))
+    if older_note:
+        kb_repo.write(f"{P}/widgets/research/widgets-old.md", "an older note its readers never saw\n")
+    _commit_on(kb_repo, (today(kb_repo.root) - dt.timedelta(days=30)).isoformat(), monkeypatch)
+    kb_repo.write(f"{P}/widgets/archive/{archive_copy('widgets', kb_repo.root, 3)}", "the old page\n")
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-topic.md", "moved out of the page\n")
+    _commit_on(kb_repo, (today(kb_repo.root) - dt.timedelta(days=2)).isoformat(), monkeypatch)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    if older_note:
+        assert not row["resume"] and not row["rebuild_target"] and row["share_blocked"]
+    else:
+        assert row["resume"] and row["rebuild_target"] and not row["trim_only"]
+        assert picked(kb_repo.root) == "widgets"

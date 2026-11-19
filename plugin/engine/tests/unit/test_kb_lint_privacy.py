@@ -1052,6 +1052,55 @@ def test_a_checked_quote_of_a_note_shared_with_you_blocks(vault: Path) -> None:
     assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
 
 
+_CLIENTS = "  local_only_add: ['knowledge-base/clients/**']\n"
+
+
+def test_a_checked_line_naming_a_local_only_note_blocks(vault: Path) -> None:
+    """A local-only note never leaves this computer, so its name mustn't reach a share either."""
+    _shared_source(vault, edits=_CLIENTS)
+    stage(vault, "knowledge-base/clients/hush.md", "---\ntitle: Hush Deal Terms\n---\n# Terms\n")
+    commit(vault, "owner: a local-only note")
+    n = append(vault, SOURCE, "The Hush Deal Terms are final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+_NARROW = "knowledge-base/sources/2026-11/2026-11-03-budget.md"
+_NARROW_TEXT = "---\nkind: meeting\ntitle: Quarterly vendor shortlist\n---\n# Budget\n"
+
+
+@pytest.mark.parametrize("unstaged", ["deleted", "widened"])
+def test_a_narrower_note_changed_only_on_disk_still_counts(vault: Path, unstaged: str) -> None:
+    """The committed version is narrower; an unstaged delete or widening on disk mustn't drop its name."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    stage(vault, _NARROW, _NARROW_TEXT)
+    commit(vault, "owner: two meeting notes")
+    if unstaged == "deleted":
+        (vault / _NARROW).unlink()
+    else:
+        (vault / _NARROW).write_text(_NARROW_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX))
+    n = append(vault, SOURCE, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Ask Sa<!--\n-->mmy about it.", "Ask Sa<b\n></b>mmy about it."],
+    ids=["comment", "tag"],
+)
+def test_markup_over_a_line_break_still_hides_nothing(vault: Path, text: str) -> None:
+    _shared_source(vault, edits="")
+    first = append(vault, SOURCE, text.split("\n")[0])
+    second = append(vault, SOURCE, text.split("\n")[1])
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, first), (SOURCE, "private-mention", True, second)]
+
+
+def test_a_link_split_inside_a_name_still_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, "Ask [Sa](x)mmy about it.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
 # What the line scan can't see, pinned so the docs and the code agree: these PASS by design. Terms come
 # from a private note's path and frontmatter, never its body; the phase rule covers the rest.
 
@@ -1062,6 +1111,8 @@ def test_a_checked_quote_of_a_note_shared_with_you_blocks(vault: Path) -> None:
         pytest.param(f"Note: {CANARIES['knowledge-base/people/sam.md']}.", id="a private note's body text"),
         pytest.param("S. asked about the rollout; the new hire will follow up.", id="initials and a role"),
         pytest.param("Ask S\u0430mmy about it.", id="a Cyrillic look-alike letter"),
+        pytest.param("The permit renew task is on the list.", id="a reordered name"),
+        pytest.param("See task.renew.permit and task/renew/permit.", id="parts joined by a dot or a slash"),
     ],
 )
 def test_what_the_checked_scan_cannot_see_passes(vault: Path, line: str) -> None:

@@ -40,13 +40,15 @@ across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
 ``task_renew_permit``, ``Mary-Jane`` for ``Mary Jane``), so matching runs over
 the whole text, and a term split over a line break reports every line it
 spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``), and
-the whole text once more with HTML entities decoded and inline markup dropped
-(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!-- -->mmy``, ``Sa<b></b>mmy``; :func:`_demarked`).
+the whole text once more with HTML comments and tags (across lines too) and a
+link's ``](…)`` dropped, then HTML entities decoded and inline markup dropped
+(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!--⏎-->mmy``, ``[Sa](x)mmy``; :func:`_demarked`).
 
 **What it can't see.** Terms come from a private note's path and frontmatter,
 never its body: a sentence restating what the note says, initials, a role
-("the new hire"), or a look-alike letter from another script (Cyrillic ``а``)
-doesn't match.
+("the new hire"), a first or last name alone (unless it is an alias), a
+reordered name ("Rivers, Sammy"), parts joined by ``.`` or ``/``, or a
+look-alike letter from another script (Cyrillic ``а``) doesn't match.
 
 The result is a :class:`PrivateTerms`, grouped per private note, so a lint
 marker can allow one note's hits and not another's. It is cached per process,
@@ -123,8 +125,10 @@ _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 ALLOW_MARKER_RE = r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%"
 ALLOW_MARKER = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
 _MARKER = ALLOW_MARKER
-# Inline markup that can sit inside a word without showing: an HTML comment or tag, and
-# markdown emphasis, strike, highlight and code marks. Within one line only.
+# Markup that can sit inside a word without showing. _SPANNING may run over line breaks: an
+# HTML comment or tag, and the `](target)` of a markdown link. _MARKUP is inline: emphasis,
+# strike, highlight and code marks, and what decoding entities turned into a comment or tag.
+_SPANNING = re.compile(r"<!--.*?-->|<[^<>]*>|\]\([^()\n]*\)", re.DOTALL)
 _MARKUP = re.compile(r"<!--.*?-->|<[^<>\n]*>|\*\*|__|~~|==|`|\*")
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
@@ -561,9 +565,36 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     return found
 
 
-def _demarked(text: str) -> str:
-    """``text`` with HTML entities decoded and inline markup dropped, line by line (line numbers kept)."""
-    return "\n".join(_MARKUP.sub("", re.sub(r"[\r\n]", " ", html.unescape(ln))) for ln in text.split("\n"))
+def _demarked(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """``text`` without its markup, and for each of its lines the span of ``text``'s lines it came from.
+
+    A comment or tag over a line break joins the lines around it (``Sa<!--⏎-->mmy`` reads
+    ``Sammy``), so a joined line maps back to every line it took in: a hit on it reports
+    them all. Then, per line, entities are decoded and inline markup dropped."""
+    lines: list[str] = []
+    spans: list[tuple[int, int]] = []
+    current: list[str] = []
+    first = line = pos = 0
+
+    def take(segment: str) -> None:
+        nonlocal current, first, line
+        for k, part in enumerate(segment.split("\n")):
+            if k:
+                lines.append("".join(current))
+                spans.append((first, line))
+                current, line = [], line + 1
+                first = line
+            current.append(part)
+
+    for m in _SPANNING.finditer(text):
+        take(text[pos : m.start()])
+        line += m.group(0).count("\n")  # swallowed: the line being built now reaches this far
+        pos = m.end()
+    take(text[pos:])
+    lines.append("".join(current))
+    spans.append((first, line))
+    cleaned = [_MARKUP.sub("", re.sub(r"[\r\n]", " ", html.unescape(ln))) for ln in lines]
+    return "\n".join(cleaned), spans
 
 
 def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> list[int]:
@@ -584,9 +615,9 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
         lines = text.split("\n")
     slugs = {note.path: note.slug.casefold() for note in terms.notes}
     hits = _hits(text, terms)
-    demarked = _demarked(text)  # once more with entities decoded and markup dropped
+    demarked, spans = _demarked(text)  # once more without markup, mapped back to text's lines
     if demarked != text:
-        hits += _hits(demarked, terms)
+        hits += [(p, spans[a][0], spans[b][1]) for p, a, b in _hits(demarked, terms)]
     for i, ln in enumerate(lines):  # each line once more, URL-decoded
         decoded = unquote_plus(ln)
         if decoded != ln:

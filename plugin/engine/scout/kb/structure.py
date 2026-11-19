@@ -524,48 +524,80 @@ def _shared_edits(vault: Path, disk: Policy) -> SharedEdits:
     return "checked" if all(p.shared_edits == "checked" for p in policies) else "refuse"
 
 
-def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: Label) -> bool:
+def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: Label, day: dt.date) -> bool:
     """Whether a rebuild of a shared front page could carry narrower material into it, or can't commit.
 
     A rebuild reads the whole folder and rewrites the page from it, so a paraphrase of a
     note its readers can't see would reach them, and the hook can't see a paraphrase.
-    So every other note in the folder (``archive/`` included) must reach at least the
+    So every other file in the folder (``archive/`` included) must reach at least the
     page's readers: none private, local-only, unshared, or shared with fewer people.
     A page declaring its own ``federation_scope`` can't be rebuilt either: step 5.1's
     archive copy would declare it too, a new file setting a scope, which the hook
-    refuses every night. Either way the caller falls back to a trim."""
+    refuses every night. Either way the caller falls back to a trim.
+
+    One exception keeps a rebuild going across nights: while it is under way, the files
+    committed to the folder since its archive copy (that copy and the notes the rebuild
+    moved the page's text into, which a page shared on its own leaves unshared) don't
+    count, unless private or local-only. They hold what the page's readers already read,
+    plus what the shared-page rule let the rebuild bring in."""
     if front.federation_scope_declared != "none":
         return True
+    started = _rebuild_started(vault, folder, day)
+    own = _added_since(vault, folder.rel, started) if started is not None else set()
     page = vault / folder.rel / f"{folder.name}.md"
     for path in (vault / folder.rel).rglob("*"):
         if path == page or not path.is_file() or path.name.startswith("."):
             continue
-        label = label_file(vault, path.relative_to(vault).as_posix(), policy)
-        if (
-            label.visibility == "private"
-            or label.local_only
-            or label.federation_scope == "none"
-            or scope_widens(label.federation_scope, front.federation_scope)
-        ):
+        rel = path.relative_to(vault).as_posix()
+        label = label_file(vault, rel, policy)
+        if label.visibility == "private" or label.local_only:
+            return True
+        if rel in own:
+            continue
+        if label.federation_scope == "none" or scope_widens(label.federation_scope, front.federation_scope):
             return True
     return False
 
 
-def _rebuild_under_way(vault: Path, folder: _Folder, day: dt.date) -> bool:
-    """Whether the folder has an archive copy from the last :data:`RESUME_DAYS`."""
+def _added_since(vault: Path, pathspec: str, since: dt.date) -> set[str]:
+    """Paths under ``pathspec`` first added in a commit on or after ``since`` (empty without git)."""
+    cmd = [
+        "git", "log", "--relative", "--no-renames", "--diff-filter=A", "--name-only", "-z", "--format=",
+        f"--since={since.isoformat()}T00:00:00", "--", pathspec,
+    ]  # fmt: skip
+    try:
+        proc = subprocess.run(cmd, cwd=vault, capture_output=True)
+    except OSError:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    tokens = proc.stdout.decode("utf-8", errors="replace").split("\0")
+    return {t.strip("\n") for t in tokens if t.strip("\n").startswith(pathspec + "/")}
+
+
+def _rebuild_started(vault: Path, folder: _Folder, day: dt.date) -> dt.date | None:
+    """The date of the folder's oldest archive copy from the last :data:`RESUME_DAYS`, if any."""
     archive = vault / folder.rel / "archive"
     if not archive.is_dir():
-        return False
+        return None
     copy = re.compile(re.escape(folder.name) + r"-(\d{4}-\d{2}-\d{2})-pre-restructure\.md")
+    dates: list[dt.date] = []
     for entry in archive.iterdir():
         match = copy.fullmatch(entry.name)
-        if match:
-            try:
-                if (day - dt.date.fromisoformat(match.group(1))).days <= RESUME_DAYS:
-                    return True
-            except ValueError:
-                continue
-    return False
+        if not match:
+            continue
+        try:
+            made = dt.date.fromisoformat(match.group(1))
+        except ValueError:
+            continue
+        if (day - made).days <= RESUME_DAYS:
+            dates.append(made)
+    return min(dates, default=None)
+
+
+def _rebuild_under_way(vault: Path, folder: _Folder, day: dt.date) -> bool:
+    """Whether the folder has an archive copy from the last :data:`RESUME_DAYS`."""
+    return _rebuild_started(vault, folder, day) is not None
 
 
 def check_folder(
@@ -751,7 +783,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
             and not row["trim_only"]
             and (
                 sources_wider
-                or (scope != "none" and _shared_rebuild_unsafe(vault, folder, policy, label))
+                or (scope != "none" and _shared_rebuild_unsafe(vault, folder, policy, label, day))
                 or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes, scope)
             )
         ):

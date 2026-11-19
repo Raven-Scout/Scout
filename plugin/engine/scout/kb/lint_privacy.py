@@ -54,8 +54,9 @@ Rules:
   ``private-link`` / ``private-mention`` scan (:func:`scout.kb.outbound.find_mentions`,
   which also reads each line with HTML entities decoded and markup stripped)
   against the slug, ``name:``, ``title:``, aliases and links of every note
-  private at HEAD, in the index or on disk, every note whose effective share
-  leaves out someone this note is shared with (:func:`_narrower_notes`), and
+  private at HEAD, in the index or on disk, every local-only note and every
+  note whose effective share leaves out someone this note is shared with
+  (:func:`_narrower_notes`, each version in play), and
   the notes shared with this person (:func:`scout.kb.outbound.with_shared`:
   their paths, titles and quotes). As for an outbound send, no
   ``%%privacy:allow%%`` marker allows a hit. **Terms come from frontmatter and
@@ -309,23 +310,53 @@ def _union_notes(ctx: _Ctx) -> list[PrivateNote]:
     return notes
 
 
-def _narrower_notes(ctx: _Ctx, scope: FederationScope) -> list[PrivateNote]:
-    """Notes shared, but with fewer people than ``scope`` admits, under the commit's or the working tree's policy.
+def _narrower(label: Label, scope: FederationScope) -> bool:
+    """Whether a note labelled ``label`` is closed to some reader of a note shared with ``scope``.
 
-    Their names are as private to this note's readers as a private note's. A note with no
-    effective share isn't one: its names are the vault's ordinary words (people, projects),
-    and readers of a shared page are told about those by design.
+    Local-only (it never leaves this computer), or shared but with fewer people. Private
+    notes are already in :meth:`_Ctx.private_notes`. A normal note with no effective share
+    isn't counted: its names are the vault's ordinary words (people, projects), which
+    readers of a shared page are told about by design.
     """
+    if label.visibility == "private":
+        return False
+    if label.local_only:
+        return True
+    return label.federation_scope != "none" and _widens(label.federation_scope, scope)
+
+
+def _narrower_notes(ctx: _Ctx, scope: FederationScope) -> list[PrivateNote]:
+    """Every note :func:`_narrower` than ``scope``: on disk under the commit's and the working
+    tree's policy, and, as :func:`_union_notes` does, the index and HEAD versions of every
+    uncommitted path under the commit's and HEAD's policy, so an unstaged delete or widening
+    can't drop one."""
     root = ctx.repo.resolve()
     seen: set[str] = set()
     notes: list[PrivateNote] = []
-    for policy in (ctx.policy, ctx.disk_policy):
+
+    def add(rel: str, text: str | None) -> None:
+        seen.add(rel)
+        notes.append(note_from_text(rel, text))
+
+    policies = [ctx.policy]
+    if policy_hash(ctx.disk_policy) != policy_hash(ctx.policy):
+        policies.append(ctx.disk_policy)
+    for policy in policies:
         for rel, label in all_labels(root, policy).items():
-            if rel in seen or not _md(rel) or label.visibility == "private" or label.federation_scope == "none":
+            if rel not in seen and _md(rel) and _narrower(label, scope):
+                add(rel, read_head(root / rel)[0])
+    for rel in sorted(uncommitted_paths(ctx.repo)):
+        if not _md(rel):
+            continue
+        for text, policy in (
+            (index_text_lossy(ctx.repo, rel), ctx.policy),
+            (head_text_lossy(ctx.repo, rel), ctx.head_policy),
+        ):
+            if text is None:
                 continue
-            if _widens(label.federation_scope, scope):
-                seen.add(rel)
-                notes.append(note_from_text(rel, read_head(root / rel)[0]))
+            window = _head_window(rel, text)
+            if _narrower(classify(rel, window, policy), scope):
+                add(rel, window)
     return notes
 
 
