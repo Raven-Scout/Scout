@@ -17,6 +17,8 @@ from scout.changes.store import append_change, read_changes, read_scan_mark, wri
 
 # One git call may take this long; past it the scan records nothing and the watermark stays put.
 GIT_TIMEOUT_S = 30.0
+# `derive` reads this many commits per git call, so a big ledger stays under ARG_MAX and the timeout.
+DERIVE_CHUNK = 500
 # How far back the first watermark scan reads (no mark yet, or its commit is gone from the repository).
 FALLBACK_WINDOW = timedelta(days=14)
 
@@ -231,23 +233,24 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
     out.update({s: None for s in dict.fromkeys(shas) if isinstance(s, str)})
     if not valid:
         return out
-    raw = _git(
-        vault,
-        "log",
-        "--no-walk=unsorted",
-        "--ignore-missing",
-        "--no-merges",
-        "-M",
-        "--name-status",
-        _LOG_FORMAT,
-        *valid,
-        "--",
-    )
-    if raw is None:
-        return None
-    for sha, ts, subject, body, paths in _parse_log(raw):
-        if sha in out:
-            out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=False)
+    for i in range(0, len(valid), DERIVE_CHUNK):
+        raw = _git(
+            vault,
+            "log",
+            "--no-walk=unsorted",
+            "--ignore-missing",
+            "--no-merges",
+            "-M",
+            "--name-status",
+            _LOG_FORMAT,
+            *valid[i : i + DERIVE_CHUNK],
+            "--",
+        )
+        if raw is None:
+            return None
+        for sha, ts, subject, body, paths in _parse_log(raw):
+            if sha in out:
+                out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=False)
     return out
 
 

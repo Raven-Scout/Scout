@@ -422,6 +422,36 @@ def test_derive_maps_each_sha_and_is_none_without_git(repo, tmp_path):
     assert derive(repo, []) == {}
 
 
+def test_derive_chunks_big_ledgers_and_stays_all_or_nothing(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    shas = [commit(repo, "SKILL.md", f"dreaming [22:{i:02d}]: SKILL.md self-edit — {i}") for i in range(5)]
+    monkeypatch.setattr(scan_mod, "DERIVE_CHUNK", 2)
+    calls = []
+    real = scan_mod._git
+
+    def spy(vault, *args):
+        calls.append(args[0])
+        return real(vault, *args)
+
+    monkeypatch.setattr(scan_mod, "_git", spy)
+    got = derive(repo, shas)
+    assert got is not None and set(got) == set(shas) and all(got[s] is not None for s in shas)
+    assert calls.count("log") == 3
+    # One chunk failing fails the whole call.
+    n = {"log": 0}
+
+    def flaky(vault, *args):
+        if args[0] == "log":
+            n["log"] += 1
+            if n["log"] == 2:
+                return None
+        return real(vault, *args)
+
+    monkeypatch.setattr(scan_mod, "_git", flaky)
+    assert derive(repo, shas) is None
+
+
 def test_git_calls_never_take_optional_locks(repo, monkeypatch):
     from scout.changes import scan as scan_mod
 
