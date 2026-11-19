@@ -18,33 +18,17 @@ struct BoardLegendView: View {
                         StateDot(state: state)
                         Text(state.label)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .foregroundStyle(pressed ? DS.Ink.p1 : DS.Ink.p3)
-                    .background(Capsule().fill(pressed ? DS.Paper.raised : .clear))
-                    .overlay(Capsule().strokeBorder(pressed ? DS.Rule.hard : .clear, lineWidth: 1))
-                    .opacity(filter.isEmpty || pressed ? 1 : 0.55)
-                    .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.dsChip(selected: pressed))
                 .help(state.help)
-                .accessibilityAddTraits(pressed ? .isSelected : [])
             }
             if !filter.isEmpty {
-                Button {
+                Button("All") {
                     filterRaw = ""
-                } label: {
-                    Text("All")
-                        .underline(pattern: .dot)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(DS.Ink.p3)
+                .buttonStyle(.ds(.quiet, size: .small))
                 .help("Show every state")
             }
         }
-        .font(DS.font(.label))
     }
 }

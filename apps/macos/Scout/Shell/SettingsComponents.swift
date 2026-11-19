@@ -46,7 +46,8 @@ extension View {
 
 // MARK: - Building blocks
 
-/// Recessed paper card holding a stack of settings rows separated by hairlines.
+/// A design-system card (`editorialCard`) holding a stack of settings rows
+/// separated by hairlines.
 struct SettingsCard<Content: View>: View {
     var padding: CGFloat = 0
     @ViewBuilder var content: () -> Content
@@ -57,12 +58,7 @@ struct SettingsCard<Content: View>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, padding > 0 ? padding : 0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 0, cornerRadius: 10)
     }
 }
 

@@ -244,10 +244,16 @@ def _locator(body: str) -> str:
     return line
 
 
-def _fenced_kb_calls(body: str) -> list[list[str]]:
+_ELSEWHERE = "<elsewhere>"
+# What step 0 makes of `<elsewhere>`: `--reader elsewhere` outside the vault, nothing inside it.
+_ELSEWHERE_IS = {True: ["--reader", "elsewhere"], False: []}
+
+
+def _fenced_kb_calls(body: str, *, outside: bool) -> list[list[str]]:
     """Each fenced ``<scoutctl> kb …`` line, as ``kb`` arguments with the placeholders filled.
 
-    Its ``--repo <vault>`` is dropped: ``_kb`` passes the fixture vault's own."""
+    Its ``--repo <vault>`` is dropped: ``_kb`` passes the fixture vault's own. ``<elsewhere>`` becomes
+    ``--reader elsewhere`` when ``outside`` (``in_vault`` false), else nothing."""
     calls: list[list[str]] = []
     for line in _fenced_lines(body):
         if line.startswith(_SCOUTCTL + "kb "):
@@ -255,7 +261,11 @@ def _fenced_kb_calls(body: str) -> list[list[str]]:
             i = words.index("--repo")
             assert words[i + 1] == "<vault>", line
             del words[i : i + 2]
-            calls.append([_PLACEHOLDERS.get(w, w) for w in words])
+            assert words.count(_ELSEWHERE) == 1, line
+            filled: list[str] = []
+            for w in words:
+                filled += _ELSEWHERE_IS[outside] if w == _ELSEWHERE else [_PLACEHOLDERS.get(w, w)]
+            calls.append(filled)
     return calls
 
 
@@ -307,10 +317,14 @@ def test_scout_ask_never_runs_anything_from_the_vault_or_a_bare_scoutctl() -> No
 def test_scout_ask_names_the_vault_on_every_call() -> None:
     """From another repo, `kb`'s default `--repo` is that repo: every call names the located vault."""
     _, body = _scout_ask()
-    assert _fenced_kb_calls(body)  # each one asserted its --repo <vault>
-    # Prose `kb` calls with a path argument say `--repo <vault>` on the same line too.
-    prose = [ln for ln in body.splitlines() if re.search(r"`kb (?:read|files|search) ", ln)]
-    assert prose and all("--repo <vault>" in ln for ln in prose), prose
+    assert _fenced_kb_calls(body, outside=True)  # each one asserted its --repo <vault> and <elsewhere>
+    # Every prose `kb <read>` span ends in `<elsewhere> --repo <vault>`, or its line says each one takes them.
+    each = "(each with `<elsewhere> --repo <vault>`)"
+    reads = "|".join(sorted(KB_READ_COMMANDS))
+    prose = [(m, ln) for ln in body.splitlines() for m in re.findall(rf"`kb (?:{reads})\b[^`]*`", ln)]
+    assert {m.split()[1] for m, _ in prose} >= {"read", "files", "search", "query", "related", "traverse", "path"}
+    bare = [m for m, ln in prose if not m.endswith(" <elsewhere> --repo <vault>`") and each not in ln]
+    assert bare == [], bare
     for needle in (
         "tell the user `reason` and stop",
         "Never `cd` into the vault",
@@ -333,12 +347,16 @@ def test_scout_ask_treats_another_repo_as_a_shared_place() -> None:
     for needle in (
         "When `in_vault` is false",
         "shared place, like Slack",
+        "`<elsewhere>` below is `--reader elsewhere` (inside the vault, nothing)",
+        "hides private, local-only and shared-in notes",
         "context for your answer",
-        "Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text,"
+        "Never paste KB text, people notes or client details into commits, PR or issue text,"
         " code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud"
         " or remote session",
-        "Skip `[private]` results entirely unless the user asks about their own life (health, family, money,"
-        " career); even then, use them only in your reply here",
+        # The flag is the default enforcement; the personal exception and the prose stay as its backstop.
+        "Drop it only when the user explicitly asks for their own private notes about their own life (health,"
+        " family, money, career), and only for the reads answering that (ideally reading the note, not searching or"
+        " listing). Use only those notes, only in your reply here; skip everything else those reads return.",
     ):
         assert needle in section, needle
 
@@ -451,13 +469,30 @@ def test_scout_ask_locator_finds_the_vault_from_another_repo(privacy_vault: Path
     assert doc["scoutctl"] and Path(doc["scoutctl"]).is_absolute() and os.access(doc["scoutctl"], os.X_OK)
 
 
-def test_scout_ask_keeps_the_session_reader_and_its_labels() -> None:
+def test_scout_ask_keeps_the_session_reader_inside_and_narrows_to_elsewhere_outside() -> None:
     """`--reader "${SCOUT_READER:-owner}"` (the plan's wording) widens a SCOUT_MODE-only run, which
-    fails, so the skill's commands pass no reader. The label and denial rules are spelt out."""
+    fails, so inside the vault the skill's commands pass no reader. Outside it every one passes exactly
+    `--reader elsewhere` (Jordan, 2026-11-19: hide private notes by default outside the vault). The label,
+    denial and refusal rules are spelt out."""
     _, body = _scout_ask()
     assert "${SCOUT_READER" not in body
-    assert all("--reader" not in arg for call in _fenced_kb_calls(body) for arg in call)
-    for needle in ("Pass no `--reader`", "`[private]`", "owner", "`denied` (exit 3)", "never read around it"):
+    inside, outside = _fenced_kb_calls(body, outside=False), _fenced_kb_calls(body, outside=True)
+    assert len(inside) == len(outside) >= 4
+    assert all("--reader" not in arg for call in inside for arg in call)
+    for call in outside:
+        assert call.count("--reader") == 1 and call[call.index("--reader") + 1] == "elsewhere", call
+    # The only `--reader` the skill ever names is `--reader elsewhere`.
+    assert set(re.findall(r"--reader \S+", body)) == {"--reader elsewhere`"}
+    for needle in (
+        "Pass no `--reader` but `<elsewhere>`",
+        "`[private]`",
+        "owner",
+        "`denied` (exit 3)",
+        "never read around it",
+        # Exit 2 is a refused --reader, but also a usage error or an engine without `elsewhere`: never a cue to drop it.
+        "**Exit 2** (refused `--reader`, bad argument, older engine): relay the engine's error and stop;"
+        " never retry without `<elsewhere>`",
+    ):
         assert needle in body, needle
 
 
@@ -465,9 +500,9 @@ def test_scout_ask_stays_cheap() -> None:
     """#84: the description is in every session's context, the body in every scout-ask turn."""
     description, body = _scout_ask()
     assert len(description) <= 600
-    assert (
-        len(body.split()) <= 1325
-    )  # was 1250; +75 for step 0's engine choice and the outside-the-vault rule (#721 review)
+    # Was 1250; +75 for step 0's engine choice and the outside-the-vault rule (#721 review). `<elsewhere>`
+    # took no more: the prose the flag made redundant came out.
+    assert len(body.split()) <= 1325
 
 
 @pytest.fixture(scope="module")
@@ -485,8 +520,8 @@ def _kb(vault: Path, args: list[str], env: dict[str, str]) -> tuple[int, str]:
     "env", [{}, {"SCOUT_MODE": "briefing"}, {"SCOUT_READER": "autonomous"}], ids=["owner", "run", "autonomous"]
 )
 def test_scout_ask_commands_label_a_private_note(privacy_vault: Path, env: dict[str, str]) -> None:
-    """Each fenced command runs as written, and those that reach the private person note label it."""
-    calls = _fenced_kb_calls(_scout_ask()[1])
+    """Inside the vault each fenced command runs as written, and those that reach the private person note label it."""
+    calls = _fenced_kb_calls(_scout_ask()[1], outside=False)
     assert len(calls) >= 4
     labelled = 0
     for args in calls:
@@ -498,8 +533,24 @@ def test_scout_ask_commands_label_a_private_note(privacy_vault: Path, env: dict[
     assert labelled >= 3  # resolve by alias, read, the entity-folder search
 
 
+@pytest.mark.parametrize(
+    "env", [{}, {"SCOUT_MODE": "briefing"}, {"SCOUT_READER": "autonomous"}], ids=["owner", "run", "autonomous"]
+)
+def test_scout_ask_commands_outside_the_vault_never_reach_a_private_note(
+    privacy_vault: Path, env: dict[str, str]
+) -> None:
+    """Outside the vault the same commands, with `--reader elsewhere`, never show the private person note:
+    resolve and search find nothing, and read of it is denied (exit 3: the skill stops)."""
+    calls = _fenced_kb_calls(_scout_ask()[1], outside=True)
+    assert len(calls) >= 4
+    for args in calls:
+        code, out = _kb(privacy_vault, args, env)
+        assert CANARIES[SAM] not in out and SAM not in out, (args, out)
+        assert code == 3 if args[0] == "read" else code in (0, 1), (args, out)
+
+
 def test_scout_ask_commands_give_an_agent_reader_nothing(privacy_vault: Path) -> None:
-    calls = _fenced_kb_calls(_scout_ask()[1])
+    calls = _fenced_kb_calls(_scout_ask()[1], outside=False)
     assert len(calls) >= 4
     for args in calls:
         code, out = _kb(privacy_vault, args, {"SCOUT_READER": _AGENT})
@@ -508,3 +559,13 @@ def test_scout_ask_commands_give_an_agent_reader_nothing(privacy_vault: Path) ->
             assert code == 3 and '"denied": true' in out
         else:
             assert code in (0, 1), (args, out)
+
+
+@pytest.mark.parametrize("reader", [_AGENT, "delegate:phone"], ids=["agent", "delegate"])
+def test_scout_ask_outside_the_vault_under_an_agent_or_delegate_is_refused(privacy_vault: Path, reader: str) -> None:
+    """`--reader elsewhere` can't narrow an agent (it would widen it) or swap for a delegate (another rank-1 reader
+    with other rights): every outside call exits 2, shows nothing, and the skill relays the error and stops."""
+    for args in _fenced_kb_calls(_scout_ask()[1], outside=True):
+        code, out = _kb(privacy_vault, args, {"SCOUT_READER": reader})
+        assert code == 2 and "--reader" in out, (args, out)
+        assert CANARIES[SAM] not in out and SAM not in out, (args, out)

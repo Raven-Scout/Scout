@@ -18,6 +18,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from scout import safe_write
+
 POINTER_SCHEMA_VERSION = 1
 MANAGED_BY_VALUES = ("scout-app", "install.sh", "claude-code", "dev", "unknown")
 # The CLI default for --managed-by: keep whatever manager already owns THIS
@@ -78,9 +80,7 @@ def write_pointer(pointer: EnginePointer, *, home: Path) -> Path:
     """Atomically write the pointer; returns its path."""
     target = pointer_path(home)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(pointer.to_json(), encoding="utf-8")
-    tmp.replace(target)
+    safe_write.atomic_write_text(target, pointer.to_json())
     return target
 
 

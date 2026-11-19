@@ -16,8 +16,6 @@ struct ColorMeaningGuardTests {
     static let urgentRedFiles: Set<String> = [
         "Utilities/DesignSystem.swift",               // priorityColor(.urgent)
         "ActionItems/Views/SectionView.swift",         // the Urgent section's priority level
-        "PerFileItems/Views/ItemPriorityPill.swift",   // a wishlist item's Urgent pill
-        "Shell/MenuBarExtraContent.swift",             // the menu-bar panel's urgent count
     ]
 
     /// The urgent red by any spelling: qualified, unqualified inside

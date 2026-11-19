@@ -29,11 +29,11 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import json
-import os
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from scout import safe_write
 from scout.config import resolve_timezone
 
 DEFAULT_RECENT_WINDOW = 100
@@ -140,12 +140,6 @@ class DedupStore:
 
     def _save(self) -> None:
         """Atomic write (tmp + rename). Best-effort — never raises."""
-        tmp = self._path.with_suffix(".json.tmp")
-        try:
+        with contextlib.suppress(OSError):
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with tmp.open("w", encoding="utf-8") as f:
-                json.dump(self._state, f, indent=1)
-            os.replace(tmp, self._path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
+            safe_write.atomic_write_text(self._path, json.dumps(self._state, indent=1))

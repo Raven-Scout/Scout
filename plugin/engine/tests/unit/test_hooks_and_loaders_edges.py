@@ -549,7 +549,7 @@ def test_a_backup_write_failure_does_not_mask_a_successful_crontab_apply(
     def boom(*_a: object, **_k: object):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(install_cron.safe_write, "atomic_write_text", boom)
 
     install_cron.install_cron(home=tmp_path, backup_dir=tmp_path / "backups")
     assert applied, "the crontab apply must still happen"
