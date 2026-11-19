@@ -84,8 +84,13 @@ RUN_LIMITS_NAME = "run-limits.json"
 # send count and the drain lock.
 RUN_BROKERS_NAME = "run-brokers"
 # The owner's reviewed doctor warnings (scout.doctor_triage): a run that could write them could mark its own
-# privacy warnings reviewed and hide them from the owner.
-REVIEWED_WARNINGS_NAME = "reviewed-warnings.json"
+# privacy warnings reviewed and hide them from the owner. Also a protected token, so the name carries Scout's
+# prefix (see CHANGES_OWNER_NAME): no vault file of a run's would be called this.
+REVIEWED_WARNINGS_NAME = "scout-reviewed-warnings.json"
+# The change map's owner-only engagement rows (scout.changes.store): a run that could write them could forge the
+# owner's reliance on its own work. Also a protected token, so the name is one no vault folder would carry: a
+# generic `change-map` denied a run's own `knowledge-base/change-map/` notes.
+CHANGES_OWNER_NAME = "scout-change-ledger-owner"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
@@ -271,6 +276,7 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     # The run brokers' limits and counts (Phase 1d): a run that could write them could lift its own send limit.
     roots.append(state / RUN_BROKERS_NAME)
     roots.append(state / REVIEWED_WARNINGS_NAME)
+    roots.append(state / CHANGES_OWNER_NAME)
     return roots
 
 
@@ -611,6 +617,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     "run-limits.json",
     RUN_BROKERS_NAME,
     REVIEWED_WARNINGS_NAME,
+    CHANGES_OWNER_NAME,
     "hooks.json",
     "pyvenv.cfg",
     ".scout-secrets",

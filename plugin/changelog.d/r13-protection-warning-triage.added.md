@@ -9,5 +9,5 @@
   privacy check's blocked or unchecked counts, the gate probe, write protection, run limits, the repo-sync
   commit hook, an unreadable kb-lint config, a drift scan that couldn't run) are `reviewable: false`: the
   engine never lets a review hide them. A drift scan that fails no longer takes the privacy findings with it. Reviews live in
-  `~/.local/state/scout/reviewed-warnings.json`, a protected engine root that the write gate and the OS
+  `~/.local/state/scout/scout-reviewed-warnings.json`, a protected engine root that the write gate and the OS
   write sandbox keep runs from writing.

@@ -25,7 +25,7 @@ in ``warning_triage`` with ``reviewed_at``. A review holds the warning's *finger
 warning its files and each file's content; for any other warning, its text. When that changes, the
 review no longer matches and the warning is back. Errors can't be reviewed.
 
-Reviews live in ``~/.local/state/scout/reviewed-warnings.json`` (``REVIEWED_WARNINGS_NAME``), one block
+Reviews live in ``~/.local/state/scout/scout-reviewed-warnings.json`` (``REVIEWED_WARNINGS_NAME``), one block
 per vault, outside the vault: the write gate and the OS write sandbox protect it as an engine root, and
 the CLI refuses a scheduled run (its environment, and the live-run process check), so a run can't mark its
 own warnings reviewed.
