@@ -105,8 +105,12 @@ ALLOW_LOCAL_ENV = "SCOUT_INBOX_ALLOW_LOCAL"  # "1" lets an inbox be a local path
 
 @functools.cache
 def _tool(name: str) -> str:
-    """``git`` or ``gh`` as an absolute path, found once: never re-resolved through PATH between calls."""
-    return shutil.which(name) or name
+    """``git`` or ``gh`` as an absolute path, found once: never re-resolved through PATH between calls. Refuses
+    when it isn't installed, rather than leaving the bare name for each call to look up."""
+    found = shutil.which(name)
+    if found is None:
+        raise RepoSyncError("tool_missing", f"refused: {name} isn't installed (or isn't on PATH)")
+    return found
 
 
 def _gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -426,6 +430,8 @@ def _local_allowed() -> None:
     A local bare repository on this computer can be written by a run, which could commit a proposal straight
     into it; and git's upload-pack would read that repository's config as the owner. A real inbox is on GitHub.
     """
+    # os.environ on purpose, never a caller's ``env`` mapping: no code path can hand this check a dict that says
+    # yes. Only the process's own environment, set by whoever started scoutctl, can.
     if os.environ.get(ALLOW_LOCAL_ENV) != "1":
         raise RepoSyncError(
             "inbox_local_refused",
@@ -493,6 +499,37 @@ def _bind(vault: Path, remote: str, gh: GhRunner) -> str:
     return _local_identity(local, mint=True)
 
 
+def _not_a_mirror(vault: Path, link: InboxLink, gh: GhRunner) -> list[str]:
+    """Refuse a GitHub inbox that is some delegate's mirror under another name, by GitHub's repository id.
+
+    A mirror repository GitHub no longer has (404) can't be this inbox, which gh can see; it is skipped, with a
+    note naming it. Any other failure to ask refuses.
+    """
+    if not link.bound_to.startswith("github:"):
+        return []
+    inbox_id = link.bound_to.split(":")[1]
+    notes: list[str] = []
+    for mirror in dm.load_links(vault).values():
+        mrepo = dm.github_repo(mirror.remote)
+        if mrepo is None:
+            continue
+        proc = dm._run_gh(gh, ["api", f"repos/{mrepo}", "--jq", ".id"], mrepo)
+        if proc.returncode != 0:
+            if dm._not_found(proc):
+                notes.append(
+                    f"warning: {mirror.id}'s mirror repository {mrepo} isn't on GitHub any more (404); link the "
+                    f"mirror again, or unlink it (scoutctl delegate unlink {mirror.id})"
+                )
+                continue
+            why = (proc.stderr or proc.stdout).strip().splitlines()
+            raise RepoSyncError(
+                "remote_unverified", f"refused: can't ask GitHub about {mrepo}: {why[-1] if why else ''}"
+            )
+        if proc.stdout.strip() == inbox_id:
+            raise RepoSyncError("inbox_taken", f"refused: {link.remote} is {mirror.id}'s mirror repository")
+    return notes
+
+
 def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> None:
     """Refuse unless ``link.remote`` is still the repository it was bound to, and still passes every check.
 
@@ -524,6 +561,7 @@ def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> Non
             "(renamed, transferred or replaced); check it, then link the inbox again",
         )
     _check_github(repo, facts, gh, keys={k for k in (link.deploy_key_id, *link.stale_key_ids) if k is not None})
+    _not_a_mirror(vault, link, gh)
 
 
 # ----- link, reset, unlink ---------------------------------------------------------------------
@@ -606,12 +644,7 @@ def link(
         dm._check_rewrites(vault, remote)
         draft.bound_to = _bind(vault, remote, gh)
         _not_shared(vault, draft, state)  # again, by GitHub's ids now that they are known
-        if draft.bound_to.startswith("github:"):  # and no mirror is that same repository under another name
-            inbox_id = draft.bound_to.split(":")[1]
-            for mirror in dm.load_links(vault).values():
-                mrepo = dm.github_repo(mirror.remote)
-                if mrepo is not None and _facts(gh, f"repos/{mrepo}", mrepo)["id"] == inbox_id:
-                    raise RepoSyncError("inbox_taken", f"refused: {remote} is {mirror.id}'s mirror repository")
+        result.notes += _not_a_mirror(vault, draft, gh)  # and no mirror is that same repository under another name
         state.inboxes[delegate] = draft
         ensure_ignored(vault)
         save_state(vault, state)
@@ -1263,10 +1296,10 @@ def pull(
     vault = vault.resolve()
     when = now or _now()
     with locked(vault):
-        _sweep(vault)
         state = load_state(vault)
         current = _inbox(state, delegate)
         try:
+            _sweep(vault)
             verify(vault, current, state, gh)
             result = _pull_once(vault, state, delegate, when)
             if result.raced:
