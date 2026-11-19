@@ -32,9 +32,19 @@ struct AccessibilityFoundationTests {
     func settingsInputIsLabelled() async {
         var text = ""
         let binding = Binding(get: { text }, set: { text = $0 })
-        let nodes = await AccessibilityTree.nodes(of: SettingsField(label: "Linear workspace", help: "Your workspace.") {
-            SettingsInput(text: binding, placeholder: "e.g. acme-co")
-        })
+        // A loaded CI runner can settle the tree before the field takes its
+        // label from the environment (it flaked at 7.5–10 s), so read again
+        // until the label shows or a generous deadline passes. Each read is a
+        // fresh host, so a slow first one doesn't poison the next.
+        let deadline = Date().addingTimeInterval(30)
+        var nodes: [AccessibilityTree.Node] = []
+        repeat {
+            nodes = await AccessibilityTree.nodes(of: SettingsField(label: "Linear workspace", help: "Your workspace.") {
+                SettingsInput(text: binding, placeholder: "e.g. acme-co")
+            })
+            if nodes.contains(where: { $0.label == "Linear workspace" }) { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        } while Date() < deadline
         #expect(nodes.contains { $0.label == "Linear workspace" },
                 "\(nodes.map(\.description).joined(separator: "\n"))")
     }
