@@ -92,6 +92,43 @@ def test_dated_entries_outside_a_dated_section() -> None:
     assert sorted(dated_lines(lines)) == [0, 1, 2]
 
 
+def test_a_heading_that_only_mentions_a_date_is_not_a_log_heading() -> None:
+    lines = [
+        "# Prep for the 2026-12-01 offsite",
+        "Book the room.",
+        "## Status (updated 2026-11-18)",
+        "Half done.",
+        "## Status — 2026-11-18",
+        "Still half done.",
+        "## Ideas for 2026-12-01",
+        "- a thing",
+    ]
+    assert dated_lines(lines) == set()
+
+
+def test_log_headings_put_the_date_first_or_after_a_short_label() -> None:
+    lines = ["## Run 3: 2026-01-05", "- did a", "### 2026-01-06 — verified", "- ok", "## Status", "x"]
+    assert sorted(dated_lines(lines)) == [0, 1, 2, 3]
+
+
+def test_a_dated_entry_takes_its_sub_bullets_and_continuation_lines() -> None:
+    lines = [
+        "- 2026-11-18: did X",
+        "  - sub-step one",
+        "  - sub-step two",
+        "    detail of step two",
+        "",
+        "  - after a blank, still nested",
+        "- [ ] Next open sub-task",
+        "  - its own child",
+        "- [x] Drafted 2026-11-17",
+        "  wrapped continuation",
+        "",
+        "A new paragraph.",
+    ]
+    assert sorted(dated_lines(lines)) == [0, 1, 2, 3, 5, 8, 9]
+
+
 def test_a_dated_line_moved_within_the_card_was_not_removed() -> None:
     old = ["## Status", "- [x] Draft it — completed 2026-01-05", "- [ ] Link it"]
     new = ["## Status", "- [ ] Link it", "- [x] Draft it — completed 2026-01-05"]
@@ -147,7 +184,51 @@ def test_unrelated_edits_pass(vault) -> None:  # type: ignore[no-untyped-def]
     assert result.passed and result.moved == 0
 
 
+def test_a_status_heading_with_a_date_can_be_rewritten(kb_repo) -> None:  # type: ignore[no-untyped-def]
+    """A Status heading that carries a date is the card's status, not its log: rewriting it every run passes."""
+    status = "## Status (updated 2026-11-18)\nTwo of four sub-tasks done.\n- [ ] Backfill the decisions\n"
+    kb_repo.stage(CARD, _card(REQUEST, status))
+    kb_repo.commit("card")
+    kb_repo.write(CARD, _card(REQUEST, "## Status (updated 2026-11-19)\nThree of four done.\n"))
+    assert check_log_move(data_dir=kb_repo.root).passed
+
+
+def test_a_dropped_sub_bullet_of_a_dated_entry_fails(kb_repo) -> None:  # type: ignore[no-untyped-def]
+    entry = "- 2026-11-18: wired the template\n  - linked it from the index\n  - checked the link\n"
+    kb_repo.stage(CARD, _card(REQUEST, STATUS, entry))
+    kb_repo.commit("card")
+    kb_repo.write(CARD, _card(REQUEST, STATUS))
+    kb_repo.write(NOTE, entry.replace("  - checked the link\n", ""))
+    (finding,) = check_log_move(data_dir=kb_repo.root).findings
+    assert finding.missing == "  - checked the link"
+    kb_repo.write(NOTE, entry)
+    assert check_log_move(data_dir=kb_repo.root).passed
+
+
+def test_a_line_differing_only_in_invisible_characters_is_named_as_such(vault) -> None:  # type: ignore[no-untyped-def]
+    vault.stage(CARD, _card(REQUEST, STATUS, "## 2026-02-01\nShipped it.  \n- [x] Done today 2026-02-01\n"))
+    vault.commit("hard break and nbsp")
+    vault.write(CARD, _card(REQUEST, STATUS))
+    vault.write(NOTE, "## 2026-02-01\nShipped it.\n- [x] Done today 2026-02-01\n")
+    (finding,) = check_log_move(data_dir=vault.root).findings
+    assert finding.missing == "Shipped it.  " and finding.near == "Shipped it."
+
+    out = CliRunner().invoke(app, ["check-log-move", "--data-dir", str(vault.root)]).stdout
+    assert "'Shipped it.  '" in out and "differing only in invisible characters" in out
+
+
 # ---- the commit boundary ----------------------------------------------------------------------------
+
+
+def test_directories_in_paths_cover_what_is_under_them(vault) -> None:  # type: ignore[no-untyped-def]
+    """git-safe-commit.sh takes directories; so does the check."""
+    _move(vault, LOG)
+    assert check_log_move(data_dir=vault.root, paths=[CARD, "docs/wishlist/progress/"]).passed
+    assert check_log_move(data_dir=vault.root, paths=["docs/wishlist"]).passed
+    assert check_log_move(data_dir=vault.root, paths=["docs/wishlist"]).checked == [CARD]
+    (finding,) = check_log_move(data_dir=vault.root, paths=["docs/wishlist/2026-01-05-decision-template.md"]).findings
+    assert finding.missing == "## Progress — 2026-01-07"
+    assert check_log_move(data_dir=vault.root, paths=["."]).passed
 
 
 def test_a_progress_note_left_out_of_the_commit_does_not_count(vault) -> None:  # type: ignore[no-untyped-def]
@@ -239,6 +320,18 @@ def test_cli_cannot_check_exits_2(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["check-log-move", "--data-dir", str(tmp_path)])
     assert result.exit_code == 2
     assert "check-log-move: cannot check" in result.stdout
+
+
+def test_cli_an_unexpected_error_exits_2_not_1(vault, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    import scout.wishlist.log_move as log_move
+
+    def boom(**_kw: object) -> None:
+        raise RuntimeError("surprise")
+
+    monkeypatch.setattr(log_move, "check_log_move", boom)
+    result = CliRunner().invoke(app, ["check-log-move", "--data-dir", str(vault.root)])
+    assert result.exit_code == 2
+    assert "cannot check — internal error: RuntimeError: surprise" in result.stdout
 
 
 def test_cli_help_states_exit_codes() -> None:

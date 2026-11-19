@@ -17,16 +17,22 @@ copied a log without removing it.
 
 A line is dated when it is:
 
-- a heading with an ISO date in it (``## 2026-01-05``, ``## Progress — 2026-01-05``),
-  or any non-blank line under one, up to the next heading of the same or a
-  higher level;
-- a line whose text starts with a date, after any list marker, checkbox and
-  emphasis (``- 2026-01-05: shipped``, ``**2026-01-05** — reviewed``);
-- a ticked sub-task with a date in it (``- [x] Draft it — completed 2026-01-05``).
+- a log heading: level 2 or deeper, with the date first or after one or two
+  words and a separator (``## 2026-01-05``, ``## Progress — 2026-01-05``), never
+  a ``Status`` heading; or any non-blank line under one, up to the next heading
+  of the same or a higher level;
+- a dated entry: a line whose text starts with a date, after any list marker,
+  checkbox and emphasis (``- 2026-01-05: shipped``, ``**2026-01-05** — reviewed``),
+  or a ticked sub-task with a date in it (``- [x] Draft it — completed 2026-01-05``);
+- a continuation of a dated entry: a more-indented line (its sub-bullets), or
+  a lazy continuation line right after it, until a blank line followed by a
+  line that isn't indented, a heading, or the next item at its indent or less.
 
 Frontmatter never counts, nor does a date inside a path or a wikilink target
-(``progress/2026-01-05-x``), an open sub-task or request prose that mentions one.
-A dated line that only moved within the card wasn't removed from it.
+(``progress/2026-01-05-x``), a heading that only mentions a date
+(``## Status (updated 2026-11-18)``, ``# Prep for the 2026-12-01 offsite``), an
+open sub-task or request prose that mentions one. A dated line that only moved
+within the card wasn't removed from it.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from __future__ import annotations
 import difflib
 import re
 import subprocess
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -48,9 +55,12 @@ PROGRESS_DIR = "docs/wishlist/progress"
 _DATE = r"(?<![\w/-])\d{4}-\d{2}-\d{2}(?![\d-])"
 _DATE_RE = re.compile(_DATE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+\S")
-_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+# A log heading: H2–H6 whose date leads, or follows one or two words and a separator (`Progress — `, `Run 3: `).
+_LOG_HEADING_RE = re.compile(r"^#{2,6}\s+(?:\w+(?:[ \t]+\w+)?[ \t]*[—–:-][ \t]*)?[*_\[(]*" + _DATE)
+_STATUS_HEADING_RE = re.compile(r"^#{1,6}\s+[*_]*status\b", re.IGNORECASE)
+_LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 _CHECKBOX_RE = re.compile(r"^\[[ xX]\]\s+")
-_TICKED_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[xX]\]\s+")
+_TICKED_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[xX]\]\s+")
 _LEADS_WITH_DATE_RE = re.compile(r"^[\s*_\[(`]*" + _DATE)
 
 
@@ -64,6 +74,9 @@ class MoveFinding:
     note: str  # the progress note's vault-relative path
     missing: str  # the first dated line the card lost that the note doesn't hold, in order
     removed: int  # dated lines the card lost
+    # A note line equal to ``missing`` but for invisible characters (trailing spaces, ``\r``, a
+    # non-breaking space), so the run can be told what differs instead of seeing two identical lines.
+    near: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,39 +100,67 @@ def _frontmatter_end(lines: Sequence[str]) -> int:
     return 0
 
 
+def _indent(line: str) -> int:
+    return len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip(" "))
+
+
 def _is_dated_entry(line: str) -> bool:
     if _TICKED_RE.match(line) and _DATE_RE.search(line):
         return True
-    text = _LIST_MARKER_RE.sub("", line, count=1)
+    text = _LIST_ITEM_RE.sub("", line, count=1)
     text = _CHECKBOX_RE.sub("", text, count=1)
     return bool(_LEADS_WITH_DATE_RE.match(text))
+
+
+def _is_log_heading(line: str) -> bool:
+    return bool(_LOG_HEADING_RE.match(line)) and not _STATUS_HEADING_RE.match(line)
 
 
 def dated_lines(lines: Sequence[str]) -> set[int]:
     """Indexes of the dated log lines in a card's ``lines`` (see the module docstring)."""
     out: set[int] = set()
-    section_level: int | None = None  # the level of the dated heading we're under, if any
+    section_level: int | None = None  # the level of the log heading we're under, if any
+    entry_indent: int | None = None  # the indent of the dated entry whose continuation we may be in
+    after_blank = False
     in_fence = False
     for i in range(_frontmatter_end(lines), len(lines)):
         line = lines[i]
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
-            if section_level is not None:
+            if section_level is not None or entry_indent is not None:
                 out.add(i)
             continue
-        heading = None if in_fence else _HEADING_RE.match(line)
+        if in_fence:
+            if (section_level is not None or entry_indent is not None) and line.strip():
+                out.add(i)
+            continue
+        heading = _HEADING_RE.match(line)
         if heading:
+            entry_indent = None
             level = len(heading.group(1))
             if section_level is not None and level <= section_level:
                 section_level = None
-            if section_level is None and _DATE_RE.search(line):
+            if section_level is None and _is_log_heading(line):
                 section_level = level
             if section_level is not None:
                 out.add(i)
             continue
         if not line.strip():
+            after_blank = True
             continue
-        if section_level is not None or (not in_fence and _is_dated_entry(line)):
+        if entry_indent is not None:
+            indent = _indent(line)
+            is_item = bool(_LIST_ITEM_RE.match(line))
+            if indent > entry_indent or (not after_blank and not is_item):
+                out.add(i)  # a sub-bullet or a continuation line of the dated entry
+                after_blank = False
+                continue
+            entry_indent = None
+        after_blank = False
+        if _is_dated_entry(line):
+            entry_indent = _indent(line)
+            out.add(i)
+        elif section_level is not None:
             out.add(i)
     return out
 
@@ -154,6 +195,17 @@ def first_missing(removed: Sequence[str], note: Sequence[str]) -> str | None:
             return line
         j += 1
     return None
+
+
+def _loose(line: str) -> str:
+    """``line`` without the bytes a copy through an editor tends to change: trailing spaces, ``\\r``, NBSP."""
+    return unicodedata.normalize("NFKC", line).rstrip(" \t\r")
+
+
+def near_miss(missing: str, note: Sequence[str]) -> str | None:
+    """A note line that differs from ``missing`` only in invisible characters, if there is one."""
+    want = _loose(missing)
+    return next((line for line in note if line != missing and _loose(line) == want), None)
 
 
 def _lines(data: bytes, rel: str) -> list[str]:
@@ -201,6 +253,7 @@ def _is_card(rel: str) -> bool:
 
 
 def _rel(repo: Path, path: str) -> str:
+    """``path`` relative to the vault, POSIX-style; ``"."`` for the vault itself."""
     p = Path(path)
     if p.is_absolute():
         try:
@@ -210,8 +263,16 @@ def _rel(repo: Path, path: str) -> str:
     return PurePosixPath(path).as_posix()
 
 
+def _covered(rel: str, committing: Iterable[str]) -> bool:
+    """Whether the commit holds ``rel``: it is named, or sits under a named directory (as git-safe-commit takes)."""
+    for entry in committing:
+        if entry in ("", ".") or rel == entry or rel.startswith(entry.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None = None) -> LogMoveCheck:
-    """Judge the cards this commit changes. ``paths`` (vault-relative or absolute) is what the commit will hold.
+    """Judge the cards this commit changes. ``paths`` (files or directories) is what the commit will hold.
 
     With no ``paths``, every changed card is checked and every progress note is
     taken as on disk, as if the commit will hold the whole working tree.
@@ -228,7 +289,7 @@ def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None 
         raise LogMoveCheckError(f"{repo} is not a git working tree")
 
     head = _head_files(repo)
-    committing = None if paths is None else {_rel(repo, p) for p in paths}
+    committing = None if paths is None else [_rel(repo, p) for p in paths]
 
     def at_head(rel: str) -> list[str]:
         if head is None or rel not in head:
@@ -244,12 +305,11 @@ def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None 
         except OSError as e:
             raise LogMoveCheckError(f"cannot read {rel}: {e}") from e
 
+    wishlist = repo / WISHLIST_DIR
+    on_disk_cards = {f"{WISHLIST_DIR}/{p.name}" for p in wishlist.glob("*.md") if p.is_file()}
+    cards = sorted(on_disk_cards | {rel for rel in (head or ()) if _is_card(rel)})
     if committing is not None:
-        cards = sorted(rel for rel in committing if _is_card(rel))
-    else:
-        wishlist = repo / WISHLIST_DIR
-        on_disk_cards = {f"{WISHLIST_DIR}/{p.name}" for p in wishlist.glob("*.md") if p.is_file()}
-        cards = sorted(on_disk_cards | {rel for rel in (head or ()) if _is_card(rel)})
+        cards = [card for card in cards if _covered(card, committing)]
 
     checked: list[str] = []
     findings: list[MoveFinding] = []
@@ -264,10 +324,18 @@ def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None 
             continue
         name = PurePosixPath(card).name
         note_rel = f"{PROGRESS_DIR}/{name}"
-        note = on_disk(note_rel) if committing is None or note_rel in committing else at_head(note_rel)
+        note = on_disk(note_rel) if committing is None or _covered(note_rel, committing) else at_head(note_rel)
         missing = first_missing(removed, note)
         if missing is None:
             moved += len(removed)
         else:
-            findings.append(MoveFinding(item=name, note=note_rel, missing=missing, removed=len(removed)))
+            findings.append(
+                MoveFinding(
+                    item=name,
+                    note=note_rel,
+                    missing=missing,
+                    removed=len(removed),
+                    near=near_miss(missing, note),
+                )
+            )
     return LogMoveCheck(checked=checked, moved=moved, findings=findings)

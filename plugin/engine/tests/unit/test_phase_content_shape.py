@@ -75,6 +75,10 @@ def test_wishlist_phase_runs_check_log_move_before_commit() -> None:
     # The check runs in the commit step, before the commit command.
     assert text.index("### Step 3e: Commit") < text.index(run) < text.index("git-safe-commit.sh")
     assert "Exit 2 (it couldn't check)" in text
+    # Bounded: a run can't loop on a line it can't reproduce; it restores the card the way git-setup allows.
+    assert "at most 3 tries" in text and "`git show HEAD:<card> > <card>`" in text
+    # A moved log keeps its own order, which the check enforces, even under "newest first".
+    assert "a moved log keeps its own order" in text
 
 
 def test_check_log_move_is_a_real_subcommand() -> None:

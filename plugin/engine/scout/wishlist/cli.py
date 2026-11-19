@@ -36,11 +36,12 @@ def cli_check_log_move(
     """Check that a log leaving a wishlist card lands verbatim in its progress note, in the same commit.
 
     For each card (`docs/wishlist/<item>.md`) changed since the last commit,
-    every dated line it lost (a line under a dated heading, a line that starts
-    with a date, or a ticked sub-task with a date) must be in
-    `docs/wishlist/progress/<item>.md` as this commit will hold it: byte for
-    byte, in the card's order. A progress note not among PATHS counts as last
-    committed. Run it before committing a wishlist change, with the same paths.
+    every dated line it lost (a line under a log heading such as
+    `## 2026-01-05`, an entry that starts with a date and its sub-lines, or a
+    ticked sub-task with a date) must be in `docs/wishlist/progress/<item>.md`
+    as this commit will hold it: byte for byte, in the card's order. A progress
+    note not among PATHS (files or directories) counts as last committed. Run
+    it before committing a wishlist change, with the same paths.
     Exit codes: 0 = every removed log line was moved, 1 = some were not, 2 = cannot check.
     """
     from scout.wishlist.log_move import LogMoveCheckError, check_log_move
@@ -48,11 +49,12 @@ def cli_check_log_move(
     name = "check-log-move"
     try:
         result = check_log_move(data_dir=data_dir, paths=paths or None)
-    except LogMoveCheckError as e:
+    except Exception as e:  # noqa: BLE001 — any failure is "cannot check" (2), never a finding (1)
+        why = str(e) if isinstance(e, LogMoveCheckError) else f"internal error: {type(e).__name__}: {e}"
         if json_out:
-            sys.stdout.write(_json.dumps({"error": str(e)}) + "\n")
+            sys.stdout.write(_json.dumps({"error": why}) + "\n")
         else:
-            sys.stdout.write(f"{name}: cannot check — {e}\n")
+            sys.stdout.write(f"{name}: cannot check — {why}\n")
         raise typer.Exit(code=2) from e
 
     if json_out:
@@ -62,7 +64,7 @@ def cli_check_log_move(
                     "checked": result.checked,
                     "moved": result.moved,
                     "findings": [
-                        {"item": f.item, "note": f.note, "missing": f.missing, "removed": f.removed}
+                        {"item": f.item, "note": f.note, "missing": f.missing, "removed": f.removed, "near": f.near}
                         for f in result.findings
                     ],
                     "passed": result.passed,
@@ -74,7 +76,13 @@ def cli_check_log_move(
         n = len(result.findings)
         sys.stdout.write(f"{name}: {n} card{'s' if n != 1 else ''} lost log lines their progress note doesn't hold:\n")
         for f in result.findings:
-            sys.stdout.write(f"  {f.item}: first missing line, in {f.note}:\n    {f.missing}\n")
+            # repr() shows what a plain print hides: trailing spaces, \r, a non-breaking space.
+            sys.stdout.write(f"  {f.item}: first missing line, in {f.note}:\n    {f.missing!r}\n")
+            if f.near is not None:
+                sys.stdout.write(
+                    "    The note has this line differing only in invisible characters (trailing spaces, line "
+                    f"ending or non-breaking spaces):\n    {f.near!r}\n"
+                )
         sys.stdout.write(
             "Copy each card's removed dated lines into its progress note exactly as they were on the card "
             "(same characters, same order; new entries may go above them), or put them back on the card. "
