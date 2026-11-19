@@ -22,6 +22,15 @@ from scout.kb.structure import (
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _no_nightly_size_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests use 16-20 KB pages to exercise the pick's order and resume. Pages over
+    ``nightly_max_bytes`` leave the pick (test_kb_structure_linked_and_pick.py), so lift it here."""
+    from scout.kb import structure
+
+    monkeypatch.setattr(structure, "NIGHTLY_MAX_BYTES", 10**9)
+
+
 def archive_copy(name: str, vault: Path, days_ago: int) -> str:
     return f"{name}-{today(vault) - dt.timedelta(days=days_ago)}-pre-restructure.md"
 
@@ -179,7 +188,10 @@ def test_what_no_night_can_clear_does_not_lift_a_big_page(kb_repo, stray: dict[s
     ],
 )
 def test_a_big_page_with_other_work_left_keeps_its_place(kb_repo, big: dict, extra_file: str | None) -> None:
-    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    # The smaller page fails on a loose file at the same `as_of`, so only priority × staleness
+    # tells them apart: a missing `as_of` counts as the most behind a page can be (pick_score).
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢"))
+    kb_repo.write(f"{P}/widgets/notes.md", "a note\n")
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 17000, **big))
     if extra_file:
         kb_repo.write(f"{P}/gadgets/{extra_file}", "a note\n")

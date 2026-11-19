@@ -109,6 +109,10 @@ class SessionContext:
     # scout.action_items.past_due. None when it couldn't be computed; `action-items check-demotion`.
     past_due_tasks: list[dict[str, Any]] | None = field(default_factory=list)
     past_due_source: str = ""  # the date of the daily file they were read from
+    # The KB notes changed in the last few days that no run has re-verified since, most consequential
+    # first, each labelled: the dreaming fact-check pass's work list (scout.kb.fact_check). None when it
+    # couldn't be computed; `kb check-fact-check` holds a deep-work run to it before it commits.
+    fact_check_targets: list[dict[str, Any]] | None = field(default_factory=list)
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -482,6 +486,7 @@ def gather(
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
+    fact_check = get_fact_check_targets(target, now_dt.date(), reader)
 
     return SessionContext(
         generated_at=generated_at,
@@ -501,6 +506,7 @@ def gather(
         linear_report_before=linear_report_before,
         past_due_tasks=past_due,
         past_due_source=past_due_source,
+        fact_check_targets=fact_check,
     )
 
 
@@ -514,6 +520,17 @@ def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, 
     except Exception:
         return "", None
     return source or "", [t.to_json() for t in tasks]
+
+
+def get_fact_check_targets(scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """The dreaming fact-check pass's targets; see :mod:`scout.kb.fact_check`.
+    None when it fails, so `kb check-fact-check` says it couldn't check."""
+    from scout.kb.fact_check import fact_check_targets
+
+    try:
+        return [t.to_json() for t in fact_check_targets(scout_dir, day, reader)]
+    except Exception:
+        return None
 
 
 def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
@@ -567,6 +584,7 @@ __all__ = [
     "gather",
     "gather_kb_file_dates",
     "get_daily_before",
+    "get_fact_check_targets",
     "get_git_recent",
     "get_linear_own_activity",
     "get_past_due_tasks",
