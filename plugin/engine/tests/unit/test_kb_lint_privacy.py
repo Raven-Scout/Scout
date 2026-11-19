@@ -1101,6 +1101,28 @@ def test_a_link_split_inside_a_name_still_blocks(vault: Path) -> None:
     assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "if a < b\nSa**mm**y Rivers\nx -> y",
+        "cost <= 5\nS&#97;mmy Rivers\nok ->",
+        "`a < b`\nSa**mm**y Rivers\n`c > d`",
+        "a < b\n[Sa](x)mmy Rivers\nc > d",
+        "see <!-- draft\nSa**mm**y Rivers\nx -> y",
+        "a < Sa**mm**y > b",
+        "Ask Sa![](x)mmy about it.",
+    ],
+    ids=["less-than", "less-or-equal", "code spans", "link", "unclosed comment", "one line", "image link"],
+)
+def test_a_less_than_or_an_unclosed_comment_hides_nothing(vault: Path, text: str) -> None:
+    """Only a real tag (`<` then a letter) is markup; an unclosed `<!--` is literal text. Neither may
+    swallow the lines after it and the name they hide."""
+    _shared_source(vault, edits="")
+    numbers = [append(vault, SOURCE, line) for line in text.split("\n")]
+    hit = next(n for n, line in zip(numbers, text.split("\n"), strict=True) if "mm" in line)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, hit)]
+
+
 # What the line scan can't see, pinned so the docs and the code agree: these PASS by design. Terms come
 # from a private note's path and frontmatter, never its body; the phase rule covers the rest.
 

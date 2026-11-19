@@ -535,15 +535,14 @@ def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: 
     archive copy would declare it too, a new file setting a scope, which the hook
     refuses every night. Either way the caller falls back to a trim.
 
-    One exception keeps a rebuild going across nights: while it is under way, the files
-    committed to the folder since its archive copy (that copy and the notes the rebuild
-    moved the page's text into, which a page shared on its own leaves unshared) don't
-    count, unless private or local-only. They hold what the page's readers already read,
-    plus what the shared-page rule let the rebuild bring in."""
+    One exception keeps a rebuild going across nights (:func:`_rebuild_own_files`): an
+    unshared normal file the rebuild itself added (its archive copy, and the notes a page
+    shared on its own moves its text into, which are unshared) doesn't count. Nothing
+    else is exempt: not a note the owner added meanwhile, not one shared with fewer people,
+    and never a private or local-only one."""
     if front.federation_scope_declared != "none":
         return True
-    started = _rebuild_started(vault, folder, day)
-    own = _added_since(vault, folder.rel, started) if started is not None else set()
+    own = _rebuild_own_files(vault, folder, day) if _rebuild_under_way(vault, folder, day) else set()
     page = vault / folder.rel / f"{folder.name}.md"
     for path in (vault / folder.rel).rglob("*"):
         if path == page or not path.is_file() or path.name.startswith("."):
@@ -552,27 +551,68 @@ def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: 
         label = label_file(vault, rel, policy)
         if label.visibility == "private" or label.local_only:
             return True
-        if rel in own:
-            continue
-        if label.federation_scope == "none" or scope_widens(label.federation_scope, front.federation_scope):
+        if label.federation_scope == "none":
+            if rel in own:
+                continue
+            return True
+        if scope_widens(label.federation_scope, front.federation_scope):
             return True
     return False
 
 
-def _added_since(vault: Path, pathspec: str, since: dt.date) -> set[str]:
-    """Paths under ``pathspec`` first added in a commit on or after ``since`` (empty without git)."""
-    cmd = [
-        "git", "log", "--relative", "--no-renames", "--diff-filter=A", "--name-only", "-z", "--format=",
-        f"--since={since.isoformat()}T00:00:00", "--", pathspec,
-    ]  # fmt: skip
+REBUILD_SUBJECT = "nightly KB pass"
+
+
+def _git_out(vault: Path, *args: str) -> str | None:
     try:
-        proc = subprocess.run(cmd, cwd=vault, capture_output=True)
+        proc = subprocess.run(["git", *args], cwd=vault, capture_output=True)
     except OSError:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else None
+
+
+def _rebuild_own_files(vault: Path, folder: _Folder, day: dt.date) -> set[str]:
+    """Files the rebuild under way added to the folder, by its commits.
+
+    The window opens at the commit that added the folder's oldest archive copy (its commit
+    date, not the date in its name, which a run could write), and only a copy added within
+    :data:`RESUME_DAYS` and still tracked counts; an uncommitted or untracked copy opens
+    none. A file counts when a commit in the window added it (a move in counts as an add)
+    and that commit is the rebuild's: its subject starts with ``nightly KB pass``, or it
+    also changed the front page."""
+    front = f"{folder.rel}/{folder.name}.md"
+    archive = vault / folder.rel / "archive"
+    copy = re.compile(re.escape(folder.name) + r"-\d{4}-\d{2}-\d{2}-pre-restructure\.md")
+    opened: list[dt.datetime] = []
+    tracked = set((_git_out(vault, "ls-files", "-z", "--", f"{folder.rel}/archive") or "").split("\0"))
+    for entry in sorted(archive.iterdir()) if archive.is_dir() else []:
+        if not copy.fullmatch(entry.name) or f"{folder.rel}/archive/{entry.name}" not in tracked:
+            continue  # a copy git doesn't track now opens no window, whatever its history says
+        out = _git_out(
+            vault, "log", "--relative", "--diff-filter=A", "--format=%cI", "--", f"{folder.rel}/archive/{entry.name}"
+        )
+        for stamp in (out or "").split():
+            when = dt.datetime.fromisoformat(stamp)
+            if 0 <= (day - when.date()).days <= RESUME_DAYS:
+                opened.append(when)
+    if not opened:
         return set()
-    if proc.returncode != 0:
-        return set()
-    tokens = proc.stdout.decode("utf-8", errors="replace").split("\0")
-    return {t.strip("\n") for t in tokens if t.strip("\n").startswith(pathspec + "/")}
+    since = min(opened)
+    out = _git_out(
+        vault, "log", "--relative", "--no-renames", "--name-status", "--format=%x01%cI%x02%s",
+        f"--since={since.isoformat()}", "--", folder.rel,
+    )  # fmt: skip
+    own: set[str] = set()
+    for block in (out or "").split("\x01")[1:]:
+        head, _, body = block.partition("\n")
+        stamp, _, subject = head.partition("\x02")
+        if dt.datetime.fromisoformat(stamp) < since:
+            continue
+        changes = [line.split("\t") for line in body.splitlines() if "\t" in line]
+        added = {parts[-1] for parts in changes if parts[0].startswith("A")}
+        if subject.startswith(REBUILD_SUBJECT) or any(parts[-1] == front for parts in changes):
+            own |= added
+    return own
 
 
 def _rebuild_started(vault: Path, folder: _Folder, day: dt.date) -> dt.date | None:

@@ -378,34 +378,89 @@ def test_a_checked_rebuild_that_brings_in_a_private_note_is_refused(kb_repo) -> 
     assert blocking == ["private-link"]
 
 
-def _commit_on(kb_repo, day, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+REBUILD = f"nightly KB pass — {FRONT}"
+
+
+def _commit_on(kb_repo, day, monkeypatch: pytest.MonkeyPatch, message: str = "owner edit") -> None:  # type: ignore[no-untyped-def]
     with monkeypatch.context() as m:
         m.setenv("GIT_COMMITTER_DATE", f"{day}T12:00:00+00:00")
         m.setenv("GIT_AUTHOR_DATE", f"{day}T12:00:00+00:00")
         kb_repo.git("add", "-A")
-        kb_repo.commit(f"c {day}")
+        kb_repo.commit(message)
 
 
-@pytest.mark.parametrize("older_note", [False, True], ids=["resumes", "an older unshared note still stops it"])
-def test_a_page_shared_on_its_own_resumes_its_rebuild(
-    kb_repo, monkeypatch: pytest.MonkeyPatch, older_note: bool
-) -> None:
-    """Night 1 writes the archive copy and new unshared notes; they must not stop night 2."""
+def _ago(kb_repo, days: int) -> str:  # type: ignore[no-untyped-def]
     import datetime as dt
 
     from scout.config import today
 
+    return (today(kb_repo.root) - dt.timedelta(days=days)).isoformat()
+
+
+def _half_rebuilt(
+    kb_repo, monkeypatch: pytest.MonkeyPatch, *, copy_days_ago: int = 3, committed_days_ago: int = 2
+) -> None:  # type: ignore[no-untyped-def]
+    """A page shared on its own, 30 days old, then a rebuild night: its archive copy and an unshared topic note."""
     kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
     kb_repo.write(FRONT, page("widgets").replace("## History", "## Old notes"))
-    if older_note:
-        kb_repo.write(f"{P}/widgets/research/widgets-old.md", "an older note its readers never saw\n")
-    _commit_on(kb_repo, (today(kb_repo.root) - dt.timedelta(days=30)).isoformat(), monkeypatch)
-    kb_repo.write(f"{P}/widgets/archive/{archive_copy('widgets', kb_repo.root, 3)}", "the old page\n")
+    _commit_on(kb_repo, _ago(kb_repo, 30), monkeypatch)
+    kb_repo.write(f"{P}/widgets/archive/{archive_copy('widgets', kb_repo.root, copy_days_ago)}", "the old page\n")
     kb_repo.write(f"{P}/widgets/knowledge/widgets-topic.md", "moved out of the page\n")
-    _commit_on(kb_repo, (today(kb_repo.root) - dt.timedelta(days=2)).isoformat(), monkeypatch)
+    kb_repo.write(FRONT, page("widgets").replace("## History", "## Old notes") + "- moved one detail out\n")
+    _commit_on(kb_repo, _ago(kb_repo, committed_days_ago), monkeypatch, REBUILD)
+
+
+def test_a_page_shared_on_its_own_resumes_its_rebuild(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Night 1 writes the archive copy and new unshared notes; they must not stop night 2."""
+    _half_rebuilt(kb_repo, monkeypatch)
     row = rows_by_name(kb_repo.root)["widgets"]
-    if older_note:
-        assert not row["resume"] and not row["rebuild_target"] and row["share_blocked"]
-    else:
-        assert row["resume"] and row["rebuild_target"] and not row["trim_only"]
-        assert picked(kb_repo.root) == "widgets"
+    assert row["resume"] and row["rebuild_target"] and not row["trim_only"]
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_an_older_unshared_note_still_stops_the_resume(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb_repo.write(f"{P}/widgets/research/widgets-old.md", "an older note its readers never saw\n")
+    _half_rebuilt(kb_repo, monkeypatch)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["resume"] and not row["rebuild_target"] and row["share_blocked"]
+
+
+def test_a_note_the_owner_added_mid_rebuild_still_stops_it(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the rebuild's own commits are exempt: an owner commit in the window isn't."""
+    _half_rebuilt(kb_repo, monkeypatch)
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-hr-notes.md", "the owner's notes\n")
+    _commit_on(kb_repo, _ago(kb_repo, 1), monkeypatch, "owner: hr notes")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["resume"] and row["share_blocked"]
+
+
+def test_a_narrower_note_the_rebuild_added_still_stops_it(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exempt means unshared and the rebuild's own; a note shared with someone else never is."""
+    _half_rebuilt(kb_repo, monkeypatch)
+    kb_repo.write(
+        f"{P}/widgets/knowledge/widgets-sam.md", "---\nfederation_scope: ['person:sam@example.com']\n---\nn\n"
+    )
+    kb_repo.write(FRONT, (kb_repo.root / FRONT).read_text(encoding="utf-8") + "- one more\n")
+    _commit_on(kb_repo, _ago(kb_repo, 1), monkeypatch, REBUILD)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["resume"] and row["share_blocked"]
+
+
+def test_a_backdated_archive_name_opens_no_window(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The window opens at the commit that added the copy, not the date in its name."""
+    kb_repo.write("scout-config.yaml", federated(FRONT, edits=""))
+    kb_repo.write(FRONT, page("widgets").replace("## History", "## Old notes"))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-owner.md", "an owner note, 30 days old\n")
+    _commit_on(kb_repo, _ago(kb_repo, 30), monkeypatch, REBUILD)
+    kb_repo.write(f"{P}/widgets/archive/{archive_copy('widgets', kb_repo.root, 44)}", "a copy named 44 days ago\n")
+    _commit_on(kb_repo, _ago(kb_repo, 0), monkeypatch, REBUILD)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["rebuild_target"] and row["share_blocked"]
+
+
+def test_an_uncommitted_archive_copy_opens_no_window(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    _half_rebuilt(kb_repo, monkeypatch)
+    kb_repo.git("rm", "-q", "--cached", f"{P}/widgets/archive/{archive_copy('widgets', kb_repo.root, 3)}")
+    kb_repo.commit("owner: untrack the copy")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["resume"] and row["share_blocked"]

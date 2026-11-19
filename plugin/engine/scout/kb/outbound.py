@@ -42,7 +42,9 @@ the whole text, and a term split over a line break reports every line it
 spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``), and
 the whole text once more with HTML comments and tags (across lines too) and a
 link's ``](…)`` dropped, then HTML entities decoded and inline markup dropped
-(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!--⏎-->mmy``, ``[Sa](x)mmy``; :func:`_demarked`).
+(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!--⏎-->mmy``, ``[Sa](x)mmy``, ``Sa![](x)mmy``;
+:func:`_demarked`), and once more line by line. Only real tags count (``<`` then a
+letter), and an unclosed ``<!--`` is literal text, as CommonMark renders it.
 
 **What it can't see.** Terms come from a private note's path and frontmatter,
 never its body: a sentence restating what the note says, initials, a role
@@ -125,14 +127,13 @@ _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 ALLOW_MARKER_RE = r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%"
 ALLOW_MARKER = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
 _MARKER = ALLOW_MARKER
-# Markup that can sit inside a word without showing. _SPANNING may run over line breaks: an
-# HTML comment or tag, and the `](target)` of a markdown link. _MARKUP is inline: emphasis,
-# strike, highlight and code marks, and what decoding entities turned into a comment or tag.
-# A comment's end is found with str.find, not a lazy `.*?`: that scanned to the end of the text
-# for every unclosed `<!--`, quadratic on a note full of them.
-_SPANNING = re.compile(r"<!--|<[^<>]*>|\]\([^()\n]*\)")
-_SPANNING_NO_COMMENT = re.compile(r"<[^<>]*>|\]\([^()\n]*\)")
-_MARKUP = re.compile(r"\*\*|__|~~|==|`|\*")
+# Markup that can sit inside a word without showing. _SPANNING may run over line breaks: an HTML
+# comment start (its end is found with str.find: a lazy `.*?` was quadratic on unclosed ones), a
+# real CommonMark tag (`<` then a letter, so `a < b` and `<!` never open one), and the `](target)`
+# of a markdown link. _MARKUP is inline: emphasis, strike, highlight and code marks, and `![`.
+_TAG = r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>"
+_SPANNING = re.compile(r"<!--|" + _TAG + r"|\]\([^()\n]*\)")
+_MARKUP = re.compile(r"\*\*|__|~~|==|`|\*|!\[")
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
 # Not a letter or digit on either side: `_` and punctuation are boundaries.
@@ -571,17 +572,18 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
 def _spanning(text: str) -> Iterator[tuple[int, int]]:
     """``(start, end)`` of each comment, tag and link target in ``text``, in order, in linear time.
 
-    A ``<!--`` runs to the next ``-->``. With no ``-->`` after it, no later comment can
-    close either, so the rest of the text is read for tags and link targets only."""
-    pattern, pos = _SPANNING, 0
-    while (m := pattern.search(text, pos)) is not None:
+    A ``<!--`` runs to the next ``-->``. With none after it, it is literal text, as
+    CommonMark renders it: skipped, and since no later ``<!--`` can close either, those
+    are skipped without another search."""
+    pos, closable = 0, True
+    while (m := _SPANNING.search(text, pos)) is not None:
         if m.group(0) != "<!--":
             yield m.start(), m.end()
             pos = m.end()
             continue
-        close = text.find("-->", m.end())
+        close = text.find("-->", m.end()) if closable else -1
         if close < 0:
-            pattern, pos = _SPANNING_NO_COMMENT, m.start()
+            closable, pos = False, m.end()
             continue
         yield m.start(), close + 3
         pos = close + 3
@@ -615,8 +617,12 @@ def _demarked(text: str) -> tuple[str, list[tuple[int, int]]]:
     take(text[pos:])
     lines.append("".join(current))
     spans.append((first, line))
-    cleaned = [_MARKUP.sub("", _without_spans(re.sub(r"[\r\n]", " ", html.unescape(ln)))) for ln in lines]
-    return "\n".join(cleaned), spans
+    return "\n".join(_clean_line(ln) for ln in lines), spans
+
+
+def _clean_line(line: str) -> str:
+    """One line with entities decoded, then comments, tags, link targets and inline marks dropped."""
+    return _MARKUP.sub("", _without_spans(re.sub(r"[\r\n]", " ", html.unescape(line))))
 
 
 def _without_spans(line: str) -> str:
@@ -651,6 +657,10 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
     demarked, spans = _demarked(text)  # once more without markup, mapped back to text's lines
     if demarked != text:
         hits += [(p, spans[a][0], spans[b][1]) for p, a, b in _hits(demarked, terms)]
+    # And line by line, so markup a join swallowed (a comment that does close, lines later) can't hide one.
+    per_line = "\n".join(_clean_line(ln) for ln in text.split("\n"))
+    if per_line not in (text, demarked):
+        hits += _hits(per_line, terms)
     for i, ln in enumerate(lines):  # each line once more, URL-decoded
         decoded = unquote_plus(ln)
         if decoded != ln:

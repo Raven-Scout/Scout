@@ -55,3 +55,14 @@ def test_find_mentions_is_linear_on_adversarial_markup(terms: outbound.PrivateTe
         outbound.find_mentions(text, terms, allow_markers=False)
         best = min(best, time.perf_counter() - start)
     assert best < BUDGET_S, f"{best:.2f}s on {len(text)} chars (budget {BUDGET_S}s)"
+
+
+def test_a_name_after_an_unclosed_comment_still_blocks_within_budget(terms: outbound.PrivateTerms) -> None:
+    """An unclosed `<!--` is literal text: the name markup hides after it, 50 KB on, is still found."""
+    filler = "<!-- draft note\n" + "plain prose with a < b and c > d in it\n" * (SIZE // 39)
+    text = filler + "Ask Sa**mm**y about it.\n"
+    start = time.perf_counter()
+    found = outbound.find_mentions(text, terms, allow_markers=False)
+    elapsed = time.perf_counter() - start
+    assert found == [text.count("\n")]
+    assert elapsed < BUDGET_S, f"{elapsed:.2f}s on {len(text)} chars (budget {BUDGET_S}s)"
