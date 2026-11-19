@@ -82,8 +82,12 @@ INBOX_DIR = (".scout-inbox", "agents")  # then <delegate>/<ULID>.json and <deleg
 LEDGER = "taken.ledger"
 COPIES_IGNORE = ".gitignore"  # in .scout-inbox/agents/: the copies stay on this computer, never committed (V4b)
 COPIES_IGNORE_TEXT = (
-    "# Copies of what agents wrote (#550): kept on this computer, never committed. Each ledger is committed.\n"
-    "*/*.json\n"
+    "# Copies of what agents wrote (#550): kept on this computer, never committed, temporary files included.\n"
+    "# Only this file and each delegate's taken.ledger are committed.\n"
+    "*\n"
+    "!.gitignore\n"
+    "!*/\n"
+    "!*/taken.ledger\n"
 )
 SIGN_KIND = "inbox"
 REMOTE_MAIN = "refs/heads/main"

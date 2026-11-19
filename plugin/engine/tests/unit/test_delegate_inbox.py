@@ -1328,7 +1328,11 @@ def test_pull_keeps_the_copies_out_of_commits(vault: Path, inbox: Path, clone: P
     kept = subprocess.run(
         ["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/{di.LEDGER}"], check=False
     )
-    assert ignored.returncode == 0 and kept.returncode == 1
+    temp = subprocess.run(
+        ["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/.{p.id}.json.42.tmp"], check=False
+    )
+    gi_kept = subprocess.run(["git", "-C", str(vault), "check-ignore", "-q", ".scout-inbox/agents/.gitignore"])
+    assert ignored.returncode == 0 and temp.returncode == 0 and kept.returncode == 1 and gi_kept.returncode == 1
     q = _propose(clone)
     di.pull(vault, D)  # the file is right already: left as it is
     assert gi.read_text(encoding="utf-8") == di.COPIES_IGNORE_TEXT and di.copy_path(vault, D, q.id).exists()

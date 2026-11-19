@@ -1099,6 +1099,10 @@ def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[
     """
     if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
         return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate mirrors: checked outside runs (a run can't read the state's signing key)"]
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError, git
 
@@ -1145,6 +1149,10 @@ def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[
     """Each delegate inbox at a glance, as (warnings, notes) (#550 V4b1). Nothing for a vault with no inbox."""
     if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists():
         return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate inboxes: checked outside runs (a run can't read the state's signing key)"]
     from scout.delegate_inbox_sync import summary
     from scout.repo_sync import RepoSyncError
 
@@ -1173,6 +1181,16 @@ def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[
         if box["untaken"]:
             warnings.append(f"delegate inbox {key}: {box['untaken']} file(s) in its copies folder were never taken "
                             "by a pull; they are ignored")  # fmt: skip
+    from scout.repo_sync import git
+
+    tracked = git(vault, "ls-files", "--", ".scout-inbox/agents", check=False).stdout.split()
+    stray = [t for t in tracked if t != ".scout-inbox/agents/.gitignore" and not t.endswith("/taken.ledger")]
+    if stray:
+        warnings.append(
+            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b); "
+            "untrack them, keeping the files: git rm -r -q --cached .scout-inbox/agents && git add "
+            ".scout-inbox/agents && git commit -m 'inbox: untrack the copies'"
+        )
     return warnings, notes
 
 

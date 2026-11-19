@@ -693,3 +693,16 @@ def test_the_shell_prefilters_send_the_copies_to_the_gate(vault: Path, copies: P
     cmd = _payload("Bash", {"command": "scoutctl inbox apply --all"}, vault).getvalue()
     res = _sh(env, cmd, vault)
     assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Grep", {"pattern": "x", "glob": "*.js?n"}),
+        ("Grep", {"pattern": "x", "glob": "*.[j]son"}),
+        ("Glob", {"pattern": "*/*/*/*.tmp"}),
+        ("Bash", {"command": "cat .scout-in*/agents/*/*"}),
+    ],
+)
+def test_the_copies_are_judged_by_what_a_filter_matches(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, tool, tool_input))

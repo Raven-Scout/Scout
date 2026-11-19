@@ -15,6 +15,7 @@ import platform
 import re
 import subprocess
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from itertools import takewhile
@@ -1377,10 +1378,23 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
-def delegate_inbox_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+def delegate_state_unchecked(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the delegate state can't be checked here: a scheduled run (#517's rule) that can't read the state's
+    signing key (the run's sandbox denies ~/.scout-secrets). Such a check would report every signed state as
+    forged on every run; the owner's terminal, the doctor and the app check it instead."""
+    from scout.delegate_mirror import _state_key
+    from scout.kb.reader import is_scheduled
+
+    return is_scheduled(os.environ if env is None else env) and _state_key(create=False) is None
+
+
+def delegate_inbox_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
     """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, or whose copies
-    folder holds files no pull took (#550 V4b1). Nothing for a vault with no inbox."""
-    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists():
+    folder holds files no pull took (#550 V4b1). Nothing for a vault with no inbox, nor in a run that can't read
+    the state's key (:func:`delegate_state_unchecked`)."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists() or delegate_state_unchecked(env):
         return []
     from scout.delegate_inbox_sync import summary
     from scout.repo_sync import RepoSyncError
@@ -1393,8 +1407,11 @@ def delegate_inbox_findings(vault: Path, *, now: datetime | None = None) -> list
                 id="delegate.inbox_state",
                 severity="yellow",
                 since=None,
-                summary=f"The delegate inbox state can't be trusted ({e.code}), so no agent's proposals are taken",
-                fix="Move .scout-state/delegate-inbox/ aside and link each inbox again: scoutctl delegate inbox <id>",
+                summary=f"The delegate inbox state can't be trusted ({e.code}), so no agent's proposals are taken "
+                "or applied",
+                fix="Check it from a terminal with: scoutctl bootstrap doctor. Don't move or delete "
+                ".scout-state/delegate-inbox/: its signed records are what inbox revert needs, and if the state key "
+                "(~/.scout-secrets/delegate-mirrors/state.key) went missing, restore it from a backup",
                 source="state",
             )
         ]
@@ -1441,7 +1458,9 @@ def delegate_inbox_findings(vault: Path, *, now: datetime | None = None) -> list
     return found
 
 
-def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+def delegate_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
     """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
     (#550 V2c): its agent reads an older copy until one works.
 
@@ -1449,8 +1468,8 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
     this is where it shows. "No sync tried" covers what records nothing itself: a tick
     that stopped, a sync that couldn't start, or one that died before it began.
     """
-    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
-        return []
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists() or delegate_state_unchecked(env):
+        return []  # nothing to check, or a run that can't read the signing key: checked outside runs
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError
 

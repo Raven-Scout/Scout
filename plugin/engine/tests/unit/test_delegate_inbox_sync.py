@@ -147,9 +147,9 @@ def test_an_agnes_lease_that_isnt_granted_commits_nothing(linked: tuple[Path, Pa
     for code, why in ((repo_lease.HELD_CODE, "lease_held"), ("remote_unverified", "lease_unavailable")):
 
         @contextmanager
-        def refused(w: Path, code: str = code) -> Iterator[list[str]]:
+        def refused(w: Path, code: str = code) -> Iterator[dis.HeldLease]:
             raise RepoSyncError(code, "refused: no lease")
-            yield []  # pragma: no cover
+            yield dis.HeldLease()  # pragma: no cover
 
         r = dis.sync(v, commit=_git_commit, lease=refused)
         assert r.skipped == why and r.applied == [] and git(v, "rev-parse", "HEAD").strip() == head
@@ -164,16 +164,18 @@ def test_a_granted_lease_spans_the_commits_and_is_always_given_back(linked: tupl
     events: list[str] = []
 
     @contextmanager
-    def granted(w: Path) -> Iterator[list[str]]:
+    def granted(w: Path) -> Iterator[dis.HeldLease]:
         events.append("acquire")
         try:
-            yield ["lease: held"]
+            yield dis.HeldLease(notes=["lease: held"], renew=lambda: events.append("renew"))
         finally:
             events.append("release")
 
     r = dis.sync(v, commit=_git_commit, lease=granted)
     assert (
-        events == ["acquire", "release"] and r.applied[0]["outcomes"] == {ulid: "applied"} and "lease: held" in r.notes
+        events == ["acquire", "renew", "release"]
+        and r.applied[0]["outcomes"] == {ulid: "applied"}
+        and "lease: held" in r.notes
     )
     _propose(clone, "clear-block", "EF56")
 
@@ -184,6 +186,16 @@ def test_a_granted_lease_spans_the_commits_and_is_always_given_back(linked: tupl
         dis.sync(v, commit=fails, lease=granted)
     assert events[-1] == "release"  # given back even when a commit fails
 
+    @contextmanager
+    def lost(w: Path) -> Iterator[dis.HeldLease]:
+        def renew() -> None:
+            raise RepoSyncError("repository_lease_lost", "refused: taken over")
+
+        yield dis.HeldLease(renew=renew)
+
+    r = dis.sync(v, commit=_git_commit, lease=lost)
+    assert r.skipped == "lease_lost" and r.applied == []
+
 
 def test_the_real_lease_takes_its_own_holder_and_gives_it_back(
     mirrored: Path,  # noqa: F811
@@ -193,26 +205,32 @@ def test_the_real_lease_takes_its_own_holder_and_gives_it_back(
 
     from scout import repo_lease, repo_sync
 
-    assert list(_drain(dis.agnes_lease(mirrored))) == [[]]  # not linked: nothing to take
+    assert [h.notes for h in _drain(dis.agnes_lease(mirrored))] == [[]]  # not linked: nothing to take
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(repo_sync, "load_state", lambda w: SimpleNamespace(agnes_url="https://agnes.example"))
     monkeypatch.setattr(repo_sync, "load_token", lambda w: "token")
-    monkeypatch.setattr(repo_sync, "AgnesHost", lambda url, token: ("host", url))
+
+    class Host:
+        def lease_release(self, token: str) -> None:
+            calls.append(("release", {"token": token}))
+            raise RepoSyncError("unreachable", "refused: Agnes is down")  # it expires after its TTL: never raised
+
+    monkeypatch.setattr(repo_sync, "AgnesHost", lambda url, token: Host())
 
     def acquire(w: Path, host: object, **kw: object) -> tuple[object, list[str]]:
         calls.append(("acquire", kw))
-        return object(), ["lease: cleared a stale holder"]
-
-    def release(w: Path, host: object, run_id: str) -> bool:
-        calls.append(("release", {"run_id": run_id}))
-        raise RepoSyncError("unreachable", "refused: Agnes is down")  # it expires after its TTL: never raised
+        return SimpleNamespace(token="tok-1"), ["lease: cleared a stale holder"]
 
     monkeypatch.setattr(repo_lease, "acquire_for_run", acquire)
-    monkeypatch.setattr(repo_lease, "release", release)
-    assert list(_drain(dis.agnes_lease(mirrored))) == [["lease: cleared a stale holder"]]
-    (_, got), (_, gave) = calls
+    monkeypatch.setattr(repo_lease, "renew", lambda w, host, run_id: calls.append(("renew", {"run_id": run_id})))
+    monkeypatch.setattr(repo_lease, "forget", lambda w, token: calls.append(("forget", {"token": token})))
+    with dis.agnes_lease(mirrored) as held:
+        assert held.notes == ["lease: cleared a stale holder"]
+        held.renew()
+    (_, got), (_, renewed), (_, forgot), (_, gave) = calls
     assert got["what"] == "inbox-sync" and got["wait_s"] == 0 and str(got["run_id"]).startswith("inbox-sync-")
-    assert gave["run_id"] == got["run_id"]
+    assert renewed["run_id"] == got["run_id"]
+    assert forgot == gave == {"token": "tok-1"}  # the file here goes first, then Agnes is asked
 
 
 def _drain(cm: object) -> Iterator[object]:
@@ -431,3 +449,171 @@ def test_rows_ledger_paths_and_a_commit_that_lands_elsewhere(linked: tuple[Path,
     with pytest.raises(RepoSyncError) as e:
         dis.commit_ledgers(v, lands_elsewhere)
     assert e.value.code == "commit_failed"
+
+
+# ----- the #735 review ---------------------------------------------------------------------------
+
+
+def test_a_run_that_cant_read_the_key_never_reports_the_state_forged(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fix 2: inside a run the sandbox denies the state key, so a check would call every signed state forged
+    on every run. Health and the doctor skip it there; outside runs, the advice never moves signed state aside."""
+    from scout import delegate_mirror as dm
+    from scout import health
+    from scout.scripts import bootstrap_doctor as bd
+
+    v, _clone = linked
+    monkeypatch.setattr(dm, "_state_key", lambda create: None)  # unreadable, as in a run's sandbox
+    monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
+    monkeypatch.setenv("SCOUT_READER", "autonomous")
+    assert health.delegate_inbox_findings(v) == [] and health.delegate_findings(v) == []
+    assert bd._check_delegate_inboxes(vault=v, now=None) == (
+        [],
+        ["delegate inboxes: checked outside runs (a run can't read the state's signing key)"],
+    )
+    assert bd._check_delegate_mirrors(vault=v, now=None)[1][0].startswith("delegate mirrors: checked outside runs")
+    monkeypatch.delenv("SCOUT_MODE")
+    monkeypatch.delenv("SCOUT_READER")
+    found = health.delegate_inbox_findings(v)  # the owner, with the key really gone: said, and safely
+    assert [f.id for f in found] == ["delegate.inbox_state"]
+    assert "Don't move or delete" in found[0].fix and "Move .scout-state" not in found[0].fix
+
+
+def test_a_tick_inside_a_run_starts_no_owner_step(linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import schedule_tick as st
+
+    v, _clone = linked
+    monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
+    started: list[Path] = []
+    st._sync_inboxes(vault=v, log_dir=v / ".scout-logs", now=dt.datetime.now(dt.UTC),
+                     spawn=lambda w, logs: started.append(w) or 1)  # fmt: skip
+    (v / ".scout-state" / "delegate-mirrors.json").touch(exist_ok=True)
+    st._sync_delegates(vault=v, log_dir=v / ".scout-logs", spawn=lambda w, logs: started.append(w) or 1)
+    assert started == []
+
+
+def test_the_slot_guard_sees_tomorrows_first_slot(linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import schedule_tick as st
+
+    v, _clone = linked
+
+    class Early:  # 00:02 every day
+        def target_today(self, *, now: dt.datetime) -> dt.datetime:
+            return now.replace(hour=0, minute=2, second=0, microsecond=0)
+
+    monkeypatch.setattr(st, "_load_or_default", lambda w: {"briefing": Early()})
+    started: list[Path] = []
+    late = dt.datetime(2026, 11, 19, 23, 59, tzinfo=dt.UTC)  # 3 minutes before tomorrow's 00:02
+    st._sync_inboxes(vault=v, log_dir=v / ".scout-logs", now=late, spawn=lambda w, logs: started.append(w) or 1)
+    assert started == []
+
+
+def test_the_log_is_opened_without_following_a_link(linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+                                                     tmp_path: Path) -> None:  # fmt: skip
+    from scout.scripts import schedule_tick as st
+
+    v, _clone = linked
+    log_dir = v / ".scout-logs"
+    log_dir.mkdir(exist_ok=True)
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n", encoding="utf-8")
+    (log_dir / st._INBOX_LOG).symlink_to(victim)
+
+    class FakePopen:
+        def __init__(self, argv: list[str], **kw: object) -> None:
+            kw["stdout"].write("written")  # type: ignore[attr-defined]
+            self.pid = 9
+
+    monkeypatch.setattr(st.subprocess, "Popen", FakePopen)
+    st._spawn_inbox_sync(v, log_dir)
+    assert victim.read_text(encoding="utf-8") == "keep\n" and not (log_dir / st._INBOX_LOG).is_symlink()
+
+
+def test_an_interrupted_change_is_committed_for_its_delegate(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v, clone = linked
+    ulid = _propose(clone)
+
+    class Killed(BaseException):
+        pass
+
+    def killed(*a: object, **k: object) -> object:
+        raise Killed  # the process dies between the op and its commit
+
+    real = da._commit_change
+    monkeypatch.setattr(da, "_commit_change", killed)
+    with pytest.raises(Killed):
+        dis.sync(v, commit=_git_commit)
+    monkeypatch.setattr(da, "_commit_change", real)  # not undo(): that would drop the fixture's HOME too
+    assert git(v, "status", "--porcelain", "--", DAILY).strip()  # the change is there, uncommitted
+    r = dis.sync(v, commit=_git_commit)
+    assert r.settled == [ulid] and git(v, "status", "--porcelain", "--", DAILY).strip() == ""
+    assert _subject(v).endswith(f"({ulid}), after an interruption")
+    assert di.load_state(v).applied[D][ulid]["outcome"] == "applied"
+
+
+def test_an_interrupted_change_among_other_edits_is_left_for_the_owner(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v, clone = linked
+    ulid = _propose(clone)
+
+    class Killed(BaseException):
+        pass
+
+    def killed(*a: object, **k: object) -> object:
+        raise Killed
+
+    real = da._commit_change
+    monkeypatch.setattr(da, "_commit_change", killed)
+    with pytest.raises(Killed):
+        dis.sync(v, commit=_git_commit)
+    monkeypatch.setattr(da, "_commit_change", real)  # not undo(): that would drop the fixture's HOME too
+    (v / DAILY).write_text((v / DAILY).read_text(encoding="utf-8") + "- [ ] [#ZZ44] the owner's own edit\n", "utf-8")
+    r = dis.sync(v, commit=_git_commit)
+    assert r.settled == [] and any("among other edits" in n for n in r.notes)
+    assert di.load_state(v).applied[D][ulid]["outcome"] == "interrupted"
+
+
+def test_the_doctor_flags_copies_committed_before_v4b(linked: tuple[Path, Path]) -> None:
+    from scout.scripts import bootstrap_doctor as bd
+
+    v, clone = linked
+    ulid = _propose(clone)
+    di.pull_all(v)
+    git(v, "add", "-f", "--", f".scout-inbox/agents/{D}/{ulid}.json")
+    git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "an old commit")
+    warnings, _ = bd._check_delegate_inboxes(vault=v, now=None)
+    assert any("are committed" in w and "git rm -r -q --cached" in w for w in warnings)
+
+
+def test_settling_a_commit_that_fails_unstages_and_a_clean_file_is_left(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v, clone = linked
+    ulid = _propose(clone)
+
+    class Killed(BaseException):
+        pass
+
+    def killed(*a: object, **k: object) -> object:
+        raise Killed
+
+    real = da._commit_change
+    monkeypatch.setattr(da, "_commit_change", killed)
+    with pytest.raises(Killed):
+        dis.sync(v, commit=_git_commit)
+    monkeypatch.setattr(da, "_commit_change", real)
+
+    def stages_then_fails(w: Path, message: str, rels: list[str]) -> str:
+        git(w, "add", "--", *rels)
+        raise RuntimeError("helper failed")
+
+    settled, notes = dis.settle_interrupted(v, stages_then_fails)
+    assert settled == [] and "couldn't commit" in notes[0]
+    assert git(v, "diff", "--cached", "--name-only").strip() == ""
+    git(v, "checkout", "--", DAILY)  # the owner put the file back: nothing left to settle
+    assert dis.settle_interrupted(v, _git_commit) == ([], [])
+    assert di.load_state(v).applied[D][ulid]["outcome"] == "interrupted"

@@ -740,7 +740,7 @@ def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path],
     So hand edits (Obsidian) reach the owner's agents between scheduled runs,
     which sync at their own end. A vault with no delegate links costs one stat.
     """
-    if not (vault / _DELEGATE_STATE).exists():
+    if not (vault / _DELEGATE_STATE).exists() or _in_a_run():
         return
     try:
         from scout import delegate_mirror
@@ -764,6 +764,14 @@ _INBOX_STATE = ".scout-state/delegate-inbox/state.json"
 _INBOX_LOG = "delegate-inbox-sync.log"
 
 
+def _in_a_run() -> bool:
+    """Whether this tick runs inside a scheduled run (#517's rule): it then starts no step that acts as the owner
+    (the mirror sync, the inbox sync), since those drop SCOUT_MODE and SCOUT_READER for their child."""
+    from scout.kb.reader import is_scheduled
+
+    return is_scheduled(os.environ)
+
+
 def _spawn_inbox_sync(vault: Path, log_dir: Path) -> int:
     """Start ``scoutctl inbox sync`` detached. ``SCOUT_MODE`` and ``SCOUT_READER`` are both removed: the sync is
     the owner's (apply refuses a run's reader by design), and it holds the session lock only briefly."""
@@ -774,7 +782,7 @@ def _spawn_inbox_sync(vault: Path, log_dir: Path) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     from scout._spawn import python_module_argv
 
-    with (log_dir / _INBOX_LOG).open("a", encoding="utf-8") as log:
+    with safe_write.open_append(log_dir / _INBOX_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
         proc = subprocess.Popen(
             python_module_argv("scout", "inbox", "sync"),
             cwd=str(Path.home()),  # never the vault: the vault reaches it as SCOUT_DATA_DIR
@@ -792,13 +800,16 @@ def _sync_inboxes(
 ) -> None:
     """Start an inbox sync when an inbox is linked, none started for 15 minutes, and no slot fires within the next
     5 minutes (a sync never stands in a run's way). Never raises; a vault with no inbox costs one stat."""
-    if not (vault / _INBOX_STATE).exists():
+    if not (vault / _INBOX_STATE).exists() or _in_a_run():
         return
     try:
         from scout import delegate_inbox_sync
 
         schedule = _load_or_default(vault)
-        targets = [t for t in (slot.target_today(now=now) for slot in schedule.values()) if t is not None]
+        soon = now + delegate_inbox_sync.SLOT_GUARD  # tomorrow's first slot counts too, across midnight
+        targets = [
+            t for slot in schedule.values() for t in (slot.target_today(now=now), slot.target_today(now=soon)) if t
+        ]
         if not delegate_inbox_sync.due(vault, now=now, slot_times=targets):
             return
         delegate_inbox_sync.mark_started(vault)

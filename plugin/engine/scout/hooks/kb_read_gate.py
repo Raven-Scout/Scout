@@ -372,7 +372,13 @@ def decide(
             target = resolve(raw)
             if target is None:
                 return None
-            return hook_paths.secret_read(target, env) or hook_paths.agent_text_read(target, vault, env)
+            # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
+            targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
+            for one in targets:
+                found = hook_paths.secret_read(one, env) or hook_paths.agent_text_read(one, vault, env)
+                if found is not None:
+                    return found
+            return None
 
         escape = run_escape(command, protect=protect, secret=secret)
         if escape == "env":
@@ -437,8 +443,31 @@ def _secret_tool_read(tool: str, tool_input: Mapping[str, Any], cwd: Path, env: 
     return None
 
 
-# A Grep/Glob filter that could match a copy (``<ULID>.json``) or a ledger under ``.scout-inbox/agents/``.
-_AGENT_TEXT_FILTER = re.compile(r"inbox|agents|\*\*|\.json|\.ledger|^\*$|^\*\.\*$", re.IGNORECASE)
+# What a Grep/Glob filter must not be able to match: a copy, its crash-temp, or a ledger, as paths under the
+# searched folder would read. A filter is judged by matching these, never by spelling (``*.js?n`` is ``*.json``).
+_AGENT_TEXT_SAMPLES = (
+    ".scout-inbox/agents/d/01JD5Z0000000000000000ABCD.json",
+    ".scout-inbox/agents/d/.01JD5Z0000000000000000ABCD.json.1.tmp",
+    ".scout-inbox/agents/d/taken.ledger",
+    "agents/d/01JD5Z0000000000000000ABCD.json",
+    "d/01JD5Z0000000000000000ABCD.json",
+    "01JD5Z0000000000000000ABCD.json",
+    "taken.ledger",
+)
+
+
+def _filter_reaches_copies(pattern: str) -> bool:
+    import fnmatch
+
+    from scout.kb.lint_config import glob_match
+
+    if re.search(r"inbox|agents", pattern, re.IGNORECASE):
+        return True
+    for sample in _AGENT_TEXT_SAMPLES:
+        name = sample.rsplit("/", 1)[-1]
+        if fnmatch.fnmatch(sample, pattern) or fnmatch.fnmatch(name, pattern) or glob_match(pattern, sample):
+            return True
+    return False
 
 
 def _deny_agent_text_read(
@@ -472,7 +501,7 @@ def _agent_text_tool_read(
     if not hook_paths.holds_agent_text(root, vault, env):
         return None
     pattern = str(tool_input.get("pattern" if tool == "Glob" else "glob") or "").strip()
-    if (tool == "Grep" and not pattern) or _AGENT_TEXT_FILTER.search(pattern):
+    if (tool == "Grep" and not pattern) or _filter_reaches_copies(pattern):
         return hook_paths.AGENT_TEXT
     return None
 
