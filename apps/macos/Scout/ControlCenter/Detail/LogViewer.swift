@@ -227,22 +227,41 @@ struct LogViewer: View {
 /// rather than one `Text` that lays out every line up front (UI audit R10, #25).
 nonisolated enum TextChunks {
     static let linesPerChunk = 200
+    /// A chunk also ends once it holds this many UTF-8 bytes, so a log of
+    /// very long lines (minified JSON, a base64 blob) still comes in pieces.
+    static let bytesPerChunk = 64 * 1024
 
-    /// `lines` in order, `size` at a time; empty for no lines.
-    static func split(_ lines: [String], size: Int = linesPerChunk) -> [[String]] {
+    /// `lines` in order: a chunk ends at `size` lines or once it reaches
+    /// `maxBytes`. A single line longer than that is a chunk of its own.
+    /// Empty for no lines.
+    static func split(_ lines: [String], size: Int = linesPerChunk,
+                      maxBytes: Int = bytesPerChunk) -> [[String]] {
         let size = max(1, size)
-        return stride(from: 0, to: lines.count, by: size).map {
-            Array(lines[$0..<min($0 + size, lines.count)])
+        var chunks: [[String]] = []
+        var current: [String] = []
+        var bytes = 0
+        for line in lines {
+            let n = line.utf8.count + 1
+            if !current.isEmpty && (current.count >= size || bytes + n > maxBytes) {
+                chunks.append(current)
+                current = []
+                bytes = 0
+            }
+            current.append(line)
+            bytes += n
         }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
     }
 
-    /// `text`'s lines, `size` at a time, each chunk joined back with
-    /// newlines; empty for empty text. Joining the chunks with "\n" gives
-    /// `text` back.
-    static func split(text: String, size: Int = linesPerChunk) -> [String] {
+    /// `text`'s lines in chunks (`split(_:size:maxBytes:)`), each joined back
+    /// with "\n"; empty for empty text. Any line ending counts: "\r\n" is one
+    /// `Character` in Swift, so splitting on "\n" alone would leave a CRLF log
+    /// as one line.
+    static func split(text: String, size: Int = linesPerChunk, maxBytes: Int = bytesPerChunk) -> [String] {
         guard !text.isEmpty else { return [] }
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return split(lines, size: size).map { $0.joined(separator: "\n") }
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        return split(lines, size: size, maxBytes: maxBytes).map { $0.joined(separator: "\n") }
     }
 }
 

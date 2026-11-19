@@ -492,8 +492,9 @@ struct SignalsRailCard: View {
 
     /// Today's failed runs (`RunOutcomeDisplay.isFailure`, the Today tile's
     /// rule), with their reason when they share one, and the Health page,
-    /// where each has its log and what to do. A day of sign-in races only is
-    /// amber: the login is fine and Scout retries by itself.
+    /// where each has its log and what to do. A day whose failures all clear
+    /// by themselves (`Problem.softFailureClasses`: a usage limit, a busy
+    /// login, the network, a busy folder) is amber, as the Health page has them.
     static func failedTodaySignal(todayRuns: [Run]) -> ControlCenterSignal? {
         let failed = todayRuns.filter { RunOutcomeDisplay.isFailure($0.status) }
         guard !failed.isEmpty else { return nil }
@@ -505,7 +506,7 @@ struct SignalsRailCard: View {
             body += " (\(reason))"
         }
         body += "."
-        let soft = failed.allSatisfy { $0.failureClass.map(DisplayName.normalized) == "authrace" }
+        let soft = failed.allSatisfy { RunOutcomeDisplay.failureClass($0).map(Problem.isSoftFailureClass) ?? false }
         return ControlCenterSignal(id: "failures", severity: soft ? .warn : .err, tag: "FAILED RUNS",
                                    body: body, action: .openHealth)
     }

@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        completionHandler(NotificationService.presentationOptions(for: notification.request.content.userInfo))
     }
 
     /// Clicking a run notification opens that run in the Control Center;

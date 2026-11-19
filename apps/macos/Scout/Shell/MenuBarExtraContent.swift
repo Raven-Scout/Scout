@@ -330,7 +330,7 @@ struct MenuBarExtraContent: View {
             Text("Wake this Mac for scheduled runs?")
                 .font(DS.sans(12, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
-            Text("Scout asks macOS to wake the Mac a few minutes before the first weekday run. It only works while the Mac is plugged in.")
+            Text("Scout asks macOS to wake the Mac at the time of the earliest weekday run, on that run's days. It only works while the Mac is plugged in, and it replaces any repeating wake or power-on time already set on this Mac.")
                 .font(DS.sans(11))
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -354,10 +354,29 @@ struct MenuBarExtraContent: View {
         )
     }
 
-    private func wakeResult(_ problem: Problem) -> some View {
+    private func wakeResult(_ result: AppState.WakeScheduleResult) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            ProblemView(problem: problem, style: .inline)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                ProblemView(problem: result.problem, style: .inline)
+                if let command = result.sudoCommand {
+                    // The command on its own line, selectable and copyable:
+                    // Copy details would bring the whole engine output along.
+                    Text(command)
+                        .font(DS.mono(10.5))
+                        .foregroundStyle(DS.Ink.p1)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.sunk))
+                    Button("Copy command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                    }
+                    .buttonStyle(.ds(.secondary, size: .small))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button {
                 state.wakeScheduleResult = nil
             } label: {

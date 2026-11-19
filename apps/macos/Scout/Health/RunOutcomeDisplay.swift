@@ -60,13 +60,20 @@ nonisolated enum RunOutcomeDisplay {
     /// class ("Claude login was busy"); nil for a run that didn't fail, or
     /// failed before the ledger could say why.
     static func failureReason(_ run: Run) -> String? {
+        failureClass(run).map { DisplayName.failureClass($0).title }
+    }
+
+    /// A failed run's failure class: the ledger's, or before its row lands
+    /// the one its status already implies (`timeout`, `rate_limited`). nil
+    /// for a run that didn't fail, or failed without saying why yet.
+    static func failureClass(_ run: Run) -> String? {
         guard isFailure(run.status) else { return nil }
         if let fc = run.failureClass?.trimmingCharacters(in: .whitespaces), !fc.isEmpty, fc != "ok" {
-            return DisplayName.failureClass(fc).title
+            return fc
         }
         switch run.status {
-        case .timeout: return DisplayName.failureClass("timeout").title
-        case .rateLimited: return DisplayName.failureClass("rate_limited").title
+        case .timeout: return "timeout"
+        case .rateLimited: return "rate_limited"
         default: return nil
         }
     }

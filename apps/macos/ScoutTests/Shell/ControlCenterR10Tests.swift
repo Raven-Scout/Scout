@@ -98,6 +98,13 @@ struct ControlCenterR10Tests {
         #expect(soft?.body == "2 runs failed today (Claude login was busy).")
         #expect(soft?.body.contains("Sessions") == false)
 
+        // Every class that clears by itself is amber, as Problem has it.
+        let softMix = [Run.make(startedAt: t0, status: .rateLimited),
+                       Run.make(startedAt: t0, status: .failure, failureClass: "network"),
+                       Run.make(startedAt: t0, status: .failure, failureClass: "git_lock")]
+        #expect(SignalsRailCard.failedTodaySignal(todayRuns: softMix)?.severity == .warn)
+        #expect(SignalsRailCard.failedTodaySignal(todayRuns: [Run.make(startedAt: t0, status: .failure)])?.severity == .err)
+
         let mixed = races + [Run.make(startedAt: t0, status: .timeout, failureClass: "timeout")]
         let hard = SignalsRailCard.failedTodaySignal(todayRuns: mixed)
         #expect(hard?.severity == .err)
@@ -126,6 +133,15 @@ struct ControlCenterR10Tests {
         #expect(TextChunks.split(text: "").isEmpty)
         #expect(TextChunks.split(text: "a\n\nb", size: 1) == ["a", "", "b"])
         #expect(TextChunks.split(["a", "b", "c"], size: 0) == [["a"], ["b"], ["c"]])
+    }
+
+    @Test("chunks end at the byte cap too, and CRLF lines split")
+    func chunkBytesAndCRLF() {
+        let long = String(repeating: "x", count: 40_000)
+        let chunks = TextChunks.split([long, long, "short"])
+        #expect(chunks == [[long], [long, "short"]])
+        #expect(TextChunks.split(text: "a\r\nb\r\nc") == ["a\nb\nc"])
+        #expect(TextChunks.split(text: "a\r\nb", size: 1) == ["a", "b"])
     }
 
     // MARK: #28–#29 connector cards
@@ -184,6 +200,8 @@ struct ControlCenterR10Tests {
         #expect(NotificationService.retrySlotKey(for: noLedger) == nil)
     }
 
+    private let prefs = RunNotificationPolicy.Preferences(onFailure: true, onRateLimit: true)
+
     @Test("a notification shown before the ledger row is replaced once the ledger says why")
     func updateWhenLedgerArrives() {
         let early = Run.make(status: .failure)
@@ -191,10 +209,48 @@ struct ControlCenterR10Tests {
         var late = early
         late.failureClass = "network"
         late.slotKey = "morning-briefing"
-        #expect(RunNotificationPolicy.shouldUpdate(shown: shown, notifiedStatus: .failure, run: late))
-        #expect(!RunNotificationPolicy.shouldUpdate(shown: shown, notifiedStatus: .failure, run: early))
-        #expect(!RunNotificationPolicy.shouldUpdate(shown: nil, notifiedStatus: nil, run: late))
-        #expect(!RunNotificationPolicy.shouldUpdate(shown: shown, notifiedStatus: .running, run: late))
+        #expect(RunNotificationPolicy.shouldUpdate(shown: shown, run: late, preferences: prefs))
+        #expect(!RunNotificationPolicy.shouldUpdate(shown: shown, run: early, preferences: prefs))
+        #expect(!RunNotificationPolicy.shouldUpdate(shown: nil, run: late, preferences: prefs))
+    }
+
+    @Test("the ledger turning a log failure into a usage limit replaces the notification, without Run again")
+    func failureBecomesUsageLimit() {
+        let early = Run.make(status: .failure, slotKey: "morning-briefing", trigger: "schedule")
+        let shown = RunNotificationPolicy.Shown(run: early)
+        #expect(shown.retrySlotKey == "morning-briefing")
+        var late = early.with(status: .rateLimited)
+        late.failureClass = "rate_limited"
+        #expect(RunNotificationPolicy.shouldUpdate(shown: shown, run: late, preferences: prefs))
+        let updated = RunNotificationPolicy.Shown(run: late)
+        #expect(updated.title.hasSuffix("hit a usage limit"))
+        #expect(updated.body.hasPrefix("Usage limit reached."))
+        #expect(updated.retrySlotKey == nil)
+        // The owner turned usage-limit notifications off: leave it be.
+        #expect(!RunNotificationPolicy.shouldUpdate(shown: shown, run: late,
+                                                    preferences: .init(onFailure: true, onRateLimit: false)))
+    }
+
+    @Test("didn't finish → failed replaces the notification too")
+    func orphanBecomesFailed() {
+        let early = Run.make(status: .orphaned)
+        var late = early.with(status: .failure)
+        late.failureClass = "timeout"
+        #expect(RunNotificationPolicy.shouldUpdate(shown: .init(run: early), run: late, preferences: prefs))
+    }
+
+    @Test("a usage limit gets no Run again: it would fail again until the limit resets")
+    func noRetryForUsageLimit() {
+        let run = Run.make(status: .rateLimited, slotKey: "morning-briefing", trigger: "schedule",
+                           failureClass: "rate_limited")
+        #expect(NotificationService.retrySlotKey(for: run) == nil)
+        #expect(NotificationService.content(for: run).categoryIdentifier == NotificationService.runCategory)
+    }
+
+    @Test("a quiet replacement lands in Notification Center without a banner")
+    func quietPresentation() {
+        #expect(NotificationService.presentationOptions(for: [NotificationService.quietUpdateKey: true]) == [.list])
+        #expect(NotificationService.presentationOptions(for: [:]) == [.banner, .sound])
     }
 
     // MARK: #4 wake schedule
@@ -203,27 +259,48 @@ struct ControlCenterR10Tests {
         ProcessResult(exitCode: code, stdout: Data(out.utf8), stderr: Data(err.utf8))
     }
 
-    @Test("a refused wake schedule says what to run, with the exact pmset command")
+    private let dry = "Note: AC-only.\n[dry-run] would run: pmset repeat wakeorpoweron MTWRF 07:55:00"
+
+    @Test("a refused wake schedule gives the exact sudo command on its own")
     func wakeRefused() {
-        let dry = result(0, out: "Note: AC-only.\n[dry-run] would run: pmset repeat wakeorpoweron MTWRF 07:55:00")
-        let p = AppState.wakeScheduleProblem(result(1, err: "RuntimeError: pmset failed: must be run as root"),
-                                             dryRun: dry)
-        #expect(p.severity == .error)
-        #expect(p.fix?.contains("sudo pmset repeat wakeorpoweron MTWRF 07:55:00") == true)
-        #expect(p.details?.contains("must be run as root") == true)
+        let r = AppState.wakeScheduleResult(result(1, err: "RuntimeError: pmset failed: must be run as root"),
+                                            dryRun: result(0, out: dry), check: nil)
+        #expect(r.problem.severity == .error)
+        #expect(r.sudoCommand == "sudo pmset repeat wakeorpoweron MTWRF 07:55:00")
+        #expect(r.problem.fix?.contains("replaces any repeating wake time") == true)
+        #expect(r.problem.details?.contains("must be run as root") == true)
     }
 
-    @Test("an installed wake schedule says so; one with no weekday run says why not")
+    @Test("installed only once pmset lists the wake; otherwise unconfirmed")
+    func wakeConfirmed() {
+        let sched = "Repeating power events:\n  wakepoweron at 7:55AM weekdays only\nScheduled power events:\n [0]  wake at 11/18/2026 14:20:00"
+        let ok = AppState.wakeScheduleResult(result(0, out: "installed: …"), dryRun: result(0, out: dry),
+                                             check: result(0, out: sched))
+        #expect(ok.problem.severity == .info)
+        #expect(ok.problem.title == "Wake schedule installed")
+        #expect(ok.sudoCommand == nil)
+
+        let other = "Repeating power events:\n  wakepoweron at 1:00AM weekdays only\n"
+        let stale = AppState.wakeScheduleResult(result(0), dryRun: result(0, out: dry), check: result(0, out: other))
+        #expect(stale.problem.title == "Couldn't confirm the wake schedule")
+        let unchecked = AppState.wakeScheduleResult(result(0), dryRun: result(0, out: dry), check: nil)
+        #expect(unchecked.problem.severity == .warning)
+
+        #expect(AppState.wakeScheduleConfirmed(sched: "Repeating power events:\n  wakepoweron at 12:30PM weekdays only",
+                                               command: "pmset repeat wakeorpoweron MTWRF 12:30:00"))
+        #expect(!AppState.wakeScheduleConfirmed(sched: "Scheduled power events:\n [0] wake at 7:55AM", command: nil))
+    }
+
+    @Test("no weekday run, and a scoutctl that won't start, say why")
     func wakeOutcomes() {
-        let ok = AppState.wakeScheduleProblem(result(0, out: "installed: pmset repeat wakeorpoweron MTWRF 07:55:00"),
-                                              dryRun: nil)
-        #expect(ok.severity == .info)
-        #expect(ok.title == "Wake schedule installed")
-        let none = AppState.wakeScheduleProblem(
-            result(1, err: "ValueError: no weekday slot found in schedule; cannot compute wake time"), dryRun: nil)
-        #expect(none.title == "Nothing to wake for")
-        let launch = AppState.wakeScheduleProblem(nil, dryRun: nil, launchError: "scoutctl not found")
-        #expect(launch.severity == .error)
-        #expect(launch.details == "scoutctl not found")
+        let none = AppState.wakeScheduleResult(
+            result(1, err: "ValueError: no weekday slot found in schedule; cannot compute wake time"),
+            dryRun: nil, check: nil)
+        #expect(none.problem.title == "Nothing to wake for")
+        let launch = AppState.wakeScheduleResult(nil, dryRun: nil, check: nil, launchError: "scoutctl not found")
+        #expect(launch.problem.severity == .error)
+        #expect(launch.problem.details == "scoutctl not found")
+        #expect(launch.sudoCommand == nil)
+        #expect(AppState.wakeCommand(fromDryRun: result(0, out: "[dry-run] would run: rm -rf /")) == nil)
     }
 }

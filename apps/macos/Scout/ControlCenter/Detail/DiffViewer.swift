@@ -46,6 +46,9 @@ struct DiffViewer: View {
                                         .font(DS.mono(10))
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        // Chunks read as one diff: no rule or gap between them.
+                                        .listRowSeparator(.hidden)
+                                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                                 }
                             } else {
                                 Text("Loading…")
