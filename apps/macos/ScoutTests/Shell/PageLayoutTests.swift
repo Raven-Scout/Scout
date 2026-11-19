@@ -288,6 +288,31 @@ struct PageLayoutTests {
         }
     }
 
+    // MARK: - Largest text size (review shots)
+
+    /// Every page and Settings tab at Settings ▸ General ▸ Text size ▸
+    /// Largest (×1.4), for a visual check of leading and of fixed-height rows
+    /// holding mono text. Runs only when snapshots are being written: it sets
+    /// the app-wide `TextScale.shared`, which other suites running at the
+    /// same time would see.
+    @Test("every page and Settings tab renders at the Largest text size (review shots)",
+          .enabled(if: ProcessInfo.processInfo.environment["SCOUT_LAYOUT_SNAPSHOTS"]?.isEmpty == false))
+    func largestTextSnapshots() async throws {
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
+        let previous = TextScale.shared.size
+        TextScale.shared.size = .largest
+        defer { TextScale.shared.size = previous }
+        for item in SidebarItem.allCases {
+            let size = CGSize(width: 1280, height: 900)
+            ViewHost.render(Self.window(item, in: vault), size: size)
+            LayoutHarness.snapshot(Self.window(item, in: vault), size: size, name: "largest-window-\(item)")
+        }
+        for tab in SettingsTab.allCases {
+            let size = CGSize(width: 680, height: 620)
+            LayoutHarness.snapshot(Self.settings(tab, in: vault), size: size, name: "largest-settings-\(tab.rawValue)")
+        }
+    }
+
     // MARK: - Every page
 
     @Test("every page renders at the minimum, 1100, 1280 and 1600 pt and the minimum height", arguments: SidebarItem.allCases)
