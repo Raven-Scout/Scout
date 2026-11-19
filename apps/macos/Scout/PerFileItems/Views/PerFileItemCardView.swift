@@ -72,13 +72,7 @@ struct PerFileItemCardView: View {
                     .foregroundStyle(DS.Status.err)
             }
         }
-        .editorialCard(padding: 18)
-        .overlay(alignment: .leading) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 2).fill(DS.Ink.p1)
-                    .frame(width: 3).padding(.vertical, 6)
-            }
-        }
+        .editorialCard(padding: 18, selected: isSelected)
     }
 
     // MARK: - Body

@@ -338,22 +338,15 @@ struct RiskChip: View {
     let risk: DoctorReport.Risk
 
     var body: some View {
-        Text(risk.title.uppercased())
-            .font(DS.font(.micro, weight: .semibold))
-            .tracking(0.05 * 9.5)
-            .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.12)))
-            .fixedSize()
+        DSPill(risk.title, tone: tone)
             .accessibilityHidden(true)   // the row's label says it
     }
 
-    private var color: Color {
+    private var tone: DS.PillTone {
         switch risk {
-        case .high: return DS.Status.err
-        case .medium: return DS.Status.warn
-        case .low: return DS.Ink.p3
+        case .high: return .err
+        case .medium: return .warn
+        case .low: return .neutral
         }
     }
 }

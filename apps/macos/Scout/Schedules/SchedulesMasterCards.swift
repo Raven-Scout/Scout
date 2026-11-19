@@ -52,7 +52,7 @@ struct SchedulesMasterCards: View {
         } label: {
             SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [])
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsCard(cornerRadius: 10))
         .accessibilitySelected(isSelected)
         .id(slot.key)
     }

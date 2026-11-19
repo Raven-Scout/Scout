@@ -456,10 +456,7 @@ def write_overlay(vault: Path, overlay: Overlay, data: dict[str, Any]) -> None:
     result = _dump_keeping_comments(overlay.text, data)
     if not _same_value(yaml.safe_load(result) or {}, data):
         raise RuntimeError("could not write scout-config.yaml → privacy")
-    if config.exists():
-        _atomic_write_bytes(config, result.encode("utf-8"))
-    else:
-        config.write_text(result, encoding="utf-8")
+    _atomic_write_bytes(config, result.encode("utf-8"))  # a symlink there, dangling or not, is replaced
 
 
 # ----- notes under a target ----------------------------------------------------------

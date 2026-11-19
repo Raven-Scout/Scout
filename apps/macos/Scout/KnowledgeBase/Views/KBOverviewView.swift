@@ -100,12 +100,9 @@ struct KBOverviewView: View {
                                 HStack(spacing: 5) {
                                     Image(systemName: ql.icon).font(DS.font(.caption2))
                                         .foregroundStyle(DS.Accent.ink)
-                                    Text(ql.label).font(DS.font(.caption, weight: .medium))
-                                        .foregroundStyle(DS.Ink.p1)
+                                    Text(ql.label)
                                 }
-                                .padding(.horizontal, 10).padding(.vertical, 4)
-                                .background(EditorialChipBackground())
-                                .contentShape(Capsule())
+                                .dsTag()
                             }
                             .buttonStyle(.plainHit) // ds-guard: hit area (a link chip; only its icon is accent)
                             .help("Open \(ql.label)")

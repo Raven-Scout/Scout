@@ -53,6 +53,16 @@ enum LayoutHarness {
         return URL(fileURLWithPath: raw, isDirectory: true)
     }
 
+    /// The Largest-text review shots (`PageLayoutTests.largestTextSnapshots`,
+    /// `DetailSmokeTests.monoPaneSnapshots`) run only when asked for by name:
+    /// `SCOUT_LARGEST_SNAPSHOTS` set as well as `SCOUT_LAYOUT_SNAPSHOTS`. They
+    /// set the app-wide `TextScale.shared`, so an ordinary snapshot run must
+    /// never start them alongside the width tests.
+    nonisolated static var largestSnapshotsEnabled: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["SCOUT_LAYOUT_SNAPSHOTS"]?.isEmpty == false && env["SCOUT_LARGEST_SNAPSHOTS"]?.isEmpty == false
+    }
+
     /// Render `view` in an off-screen window of `size` and write
     /// `<name>-<width>x<height>-<light|dark>.png`, in both appearances. A
     /// no-op unless `SCOUT_LAYOUT_SNAPSHOTS` is set.

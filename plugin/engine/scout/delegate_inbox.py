@@ -69,6 +69,7 @@ from typing import Any
 
 from scout import delegate_mirror as dm
 from scout import delegate_proposals as dp
+from scout import safe_write
 from scout.repo_sync import RepoSyncError, git, headless_gate
 
 SCHEMA_VERSION = 1
@@ -833,7 +834,7 @@ def deploy_key(
             shutil.move(str(new.with_name("key.pub")), key.with_name(key.name + ".pub"))
             os.chmod(key, 0o600)
             known = key.with_name(key.name + ".known_hosts")
-            known.write_text(dm.GITHUB_KNOWN_HOSTS + "\n", encoding="utf-8")
+            safe_write.atomic_write_text(known, dm.GITHUB_KNOWN_HOSTS + "\n")
         state.inboxes[delegate] = dataclasses.replace(added, key_file=str(key))
         save_state(vault, state)
     result.notes += [

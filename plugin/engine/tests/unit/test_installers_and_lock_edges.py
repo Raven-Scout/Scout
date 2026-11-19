@@ -139,7 +139,9 @@ def test_shim_is_skipped_when_the_write_fails(tmp_path: Path, real_bin: Path, mo
     def boom(*_a: object, **_k: object):
         raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    from scout import safe_write
+
+    monkeypatch.setattr(safe_write, "atomic_write_text", boom)
     assert install_scoutctl_shim(home=home, target_bin=real_bin) is None
 
 

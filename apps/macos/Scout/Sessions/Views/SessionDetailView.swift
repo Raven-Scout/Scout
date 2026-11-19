@@ -91,12 +91,11 @@ struct SessionDetailView: View {
                 .foregroundStyle(DS.Ink.p1)
                 .textSelection(.enabled)
             HStack(spacing: 8) {
-                Text(SessionsLayout.projectName(for: session.projectKey, in: index))
-                    .font(DS.font(.caption, weight: .medium))
-                    .foregroundStyle(DS.Ink.p2)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(DS.Paper.sunk))
+                // A project name is free text and a pill doesn't wrap: shortened
+                // in the middle so it can't widen the header past the page.
+                let project = SessionsLayout.projectName(for: session.projectKey, in: index)
+                DSPill(SessionsHeader.menuTitle(project, limit: 24))
+                    .help(project)
                 SessionStatePill(state: session.state, isOpen: session.isOpen)
                 if session.isOpen {
                     Label("open", systemImage: "circle.fill")

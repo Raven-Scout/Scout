@@ -68,12 +68,7 @@ struct RunDetailView: View {
             HStack(spacing: 8) {
                 Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
-                    Text("Started by you")
-                        .font(DS.font(.caption2))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.secondary)
+                    DSPill("Started by you")
                 }
             }
             HStack(spacing: 14) {
@@ -119,15 +114,19 @@ struct RunDetailView: View {
     }
 
     private var statusPill: some View {
-        HStack(spacing: 5) {
-            Circle().fill(statusColor).frame(width: 6, height: 6)
-            Text(run.status.displayName)
-                .font(DS.font(.caption2))
-                .foregroundStyle(statusColor)
-        }
+        DSPill(run.status.displayName, tone: statusTone)
     }
 
-    private var statusColor: Color { RunOutcomeDisplay.tone(run.status).color }
+    /// The run's status tone (`RunOutcomeDisplay.tone`), as a pill tone.
+    private var statusTone: DS.PillTone {
+        switch RunOutcomeDisplay.tone(run.status) {
+        case .ok:      return .ok
+        case .warn:    return .warn
+        case .err:     return .err
+        case .active:  return .info
+        case .neutral: return .neutral
+        }
+    }
 
     /// "Run again" fires this run's own schedule (`Run.rerunSlotKey`, from the
     /// run ledger), never one guessed from the run type: several schedules
@@ -220,31 +219,19 @@ struct ProtectedFileBlock: View {
     let openLog: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(DS.Status.err)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(DS.font(.body, weight: .semibold)).foregroundStyle(DS.Status.err)
-                Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                HStack(spacing: 12) {
-                    if restored && !commits.isEmpty {
-                        Button("Show the change", action: showChange)
-                    }
-                    Button("Open log", action: openLog)
+        DSBanner(tone: .error, symbol: "exclamationmark.shield.fill", accessibilityTitle: title) {
+            Text(title).font(DS.font(.label, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                if restored && !commits.isEmpty {
+                    Button("Show the change", action: showChange)
                 }
-                .buttonStyle(.dsLink)
+                Button("Open log", action: openLog)
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.ds(.link, size: .small))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Status.err.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Status.err.opacity(0.35), lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
     }
 
     var title: String {

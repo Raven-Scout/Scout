@@ -97,10 +97,18 @@ struct DetailSmokeTests {
     }
 
     /// Review shots of the mono-heavy panes (run detail, log viewer, diff
-    /// viewer) at the Standard and Largest text sizes. Only when snapshots
-    /// are being written: it sets the app-wide `TextScale.shared`.
+    /// viewer) at the Standard and Largest text sizes.
+    /// Gated on `SCOUT_LARGEST_SNAPSHOTS` as well as `SCOUT_LAYOUT_SNAPSHOTS`, and
+    /// meant to run alone: it sets the app-wide `TextScale.shared` to Largest,
+    /// which races the width tests in other suites running at the same time
+    /// (the Sessions header measured 560 pt for a 508 pt board). Run each one on
+    /// its own, one at a time (the two also race each other: one resets the
+    /// scale while the other expects Largest), e.g.
+    /// `TEST_RUNNER_SCOUT_LAYOUT_SNAPSHOTS=<dir> TEST_RUNNER_SCOUT_LARGEST_SNAPSHOTS=1 xcodebuild test …
+    /// -only-testing:ScoutTests/PageLayoutTests/largestTextSnapshots()`, then the same with
+    /// `-only-testing:ScoutTests/DetailSmokeTests/monoPaneSnapshots()`.
     @Test("run detail, the log viewer and the diff viewer at Standard and Largest (review shots)",
-          .enabled(if: ProcessInfo.processInfo.environment["SCOUT_LAYOUT_SNAPSHOTS"]?.isEmpty == false))
+          .enabled(if: LayoutHarness.largestSnapshotsEnabled))
     func monoPaneSnapshots() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         let previous = TextScale.shared.size

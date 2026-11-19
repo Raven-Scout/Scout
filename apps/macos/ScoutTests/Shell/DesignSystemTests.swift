@@ -127,10 +127,14 @@ struct DesignSystemTests {
 
         #expect(EditorialCard().padding == 16)
         #expect(EditorialCard().cornerRadius == 8)
-        #expect(EditorialCard().neumorphic == false)
-        let custom = EditorialCard(padding: 4, cornerRadius: 2, neumorphic: true)
+        #expect(EditorialCard().selected == false)
+        #expect(EditorialCard().marked == false)
+        #expect(EditorialCard().accentBar == nil)
+        let custom = EditorialCard(padding: 4, cornerRadius: 2, selected: true, marked: true)
         #expect(custom.padding == 4)
         #expect(custom.cornerRadius == 2)
-        #expect(custom.neumorphic)
+        #expect(custom.selected && custom.marked)
+        #expect(EditorialCard.stroke(marked: false, hovered: true) == DS.Rule.hard)
+        #expect(EditorialCard.stroke(marked: false, hovered: false) == DS.Rule.soft)
     }
 }

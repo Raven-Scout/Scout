@@ -151,25 +151,12 @@ private struct UpdateTrackRow: View {
 
     @ViewBuilder private var chip: some View {
         switch status.state {
-        case .available: UpdateChip(text: "Update available", color: DS.Status.warn)
-        case .upToDate:  UpdateChip(text: "Up to date",       color: DS.Status.ok)
-        case .checking:  UpdateChip(text: "Checking…",        color: DS.Ink.p3)
-        case .error:     UpdateChip(text: "Couldn't check",   color: DS.Status.err)
+        case .available: DSPill("Update available", tone: .warn)
+        case .upToDate:  DSPill("Up to date", tone: .ok)
+        case .checking:  DSPill("Checking…")
+        case .error:     DSPill("Couldn't check", tone: .err)
         case .idle:      EmptyView()
         }
     }
 }
 
-private struct UpdateChip: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        Text(text)
-            .font(DS.font(.caption2, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.12)))
-    }
-}

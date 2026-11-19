@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from scout import paths
+from scout import paths, safe_write
 from scout.config import resolve_timezone
 from scout.events import Event, now_iso
 from scout.hooks import run_context
@@ -304,7 +304,7 @@ def _append_row(record: dict[str, Any], vault: Path | None = None) -> None:
     tracker = _tracker_path(vault)
     try:
         tracker.parent.mkdir(parents=True, exist_ok=True)
-        with tracker.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(tracker) as f:
             # Compact output to match `jq -nc` (bash line 41 etc.).
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
@@ -359,7 +359,7 @@ def record_run_cost(vault: Path, *, mode: str, session_id: str, cost_usd: float,
         row["model"] = model
     try:
         tracker.parent.mkdir(parents=True, exist_ok=True)
-        with tracker.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(tracker) as f:
             f.write(json.dumps(row, separators=(",", ":")) + "\n")
     except OSError:
         return 0.0

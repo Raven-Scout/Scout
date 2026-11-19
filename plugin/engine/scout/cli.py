@@ -2584,7 +2584,6 @@ def _register_schedule() -> None:
         force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing vault file."),
     ) -> None:
         """Seed the vault schedule.yaml from plugin defaults."""
-        import shutil
 
         from scout import paths as _paths
 
@@ -2597,7 +2596,9 @@ def _register_schedule() -> None:
             raise typer.Exit(code=1)
         target.parent.mkdir(parents=True, exist_ok=True)
         source = Path(__file__).parent / "defaults" / "schedule.yaml"
-        shutil.copy2(source, target)
+        from scout import safe_write
+
+        safe_write.atomic_write_bytes(target, source.read_bytes())
         typer.echo(f"wrote: {target}")
 
     @schedule_app.command("reload")
@@ -4948,7 +4949,9 @@ def _register_phases() -> None:
         total_applied = len(all_applied) if apply else 0
         if apply:
             for pf, (_old, text) in bundle.items():
-                pf.write_text(text, encoding="utf-8")
+                from scout import safe_write
+
+                safe_write.atomic_write_text(pf, text)
                 typer.echo(f"  → wrote {pf}")
 
         if apply:
@@ -5015,7 +5018,9 @@ def self_update_run_cmd(
         # The heartbeat starts a scheduled run once per local day; this marker is what it checks.
         marker = vault / ".scout-cache" / f"self-update-{today}.done"
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        from scout import safe_write
+
+        safe_write.atomic_write_text(marker, "")  # never through a symlink a run put in the cache
     if json_out:
         payload = {
             "row": attempt.row.to_json() if attempt.row else None,

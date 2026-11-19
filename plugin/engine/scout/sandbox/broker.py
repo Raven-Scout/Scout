@@ -40,6 +40,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.kb import hook_paths
 
 PROTOCOL = 1
@@ -393,9 +394,7 @@ def _read_sends(env: Mapping[str, str], now: datetime) -> list[dict[str, str]]:
 
 def _write_sends(env: Mapping[str, str], rows: list[dict[str, str]]) -> None:
     path = owner_dir(env) / TELEGRAM_LOG_NAME
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    os.replace(tmp, path)
+    safe_write.atomic_write_text(path, "".join(json.dumps(r) + "\n" for r in rows))
 
 
 def _hour(rows: list[dict[str, str]], now: datetime) -> int:
@@ -473,10 +472,7 @@ def close_run(env: Mapping[str, str], run: str, rids: Sequence[str]) -> None:
 
 
 def _write_record(env: Mapping[str, str], run: str, data: Mapping[str, Any]) -> None:
-    path = _run_record(env, run)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, path)
+    safe_write.atomic_write_text(_run_record(env, run), json.dumps(data))
 
 
 def _read_record(env: Mapping[str, str], run: str) -> dict[str, Any] | None:
@@ -1244,9 +1240,7 @@ def write_status(vault: Path, status: str, reason: str, *, now: datetime | None 
     with contextlib.suppress(OSError):
         logs = paths.logs_dir(vault)
         logs.mkdir(parents=True, exist_ok=True)
-        tmp = logs / f".{STATUS_FILE}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(data) + "\n", encoding="utf-8")
-        os.replace(tmp, logs / STATUS_FILE)
+        safe_write.atomic_write_text(logs / STATUS_FILE, json.dumps(data) + "\n")
 
 
 def read_status(vault: Path) -> dict[str, Any] | None:

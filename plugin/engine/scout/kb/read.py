@@ -70,7 +70,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from scout import __version__
+from scout import __version__, safe_write
 from scout.errors import KBError
 from scout.kb.lint_config import glob_match
 from scout.kb.ontology import PARSE_ERROR_KEY, KnowledgeGraph, find_vault, parse_lookup_types
@@ -314,18 +314,10 @@ def _read_index(path: Path) -> tuple[str | None, dict[str, Any]]:
 
 def _write_index(path: Path, policy: str, files: dict[str, Any]) -> None:
     """Replace the index atomically; a failure only costs the next call a re-read."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
+    with contextlib.suppress(OSError, ValueError, TypeError, RecursionError):
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Owner-only: entries hold private notes' frontmatter.
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps({**_index_header(policy), "files": files}))
-        os.chmod(tmp, 0o600)  # a stale temp file of ours may predate the mode
-        os.replace(tmp, path)
-    except (OSError, ValueError, TypeError, RecursionError):
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        # Owner-only: entries hold private notes' frontmatter. A fresh temp name, never through a symlink.
+        safe_write.atomic_write_text(path, json.dumps({**_index_header(policy), "files": files}), mode=0o600)
 
 
 def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = (), *, persist: bool = True) -> dict[str, Label]:

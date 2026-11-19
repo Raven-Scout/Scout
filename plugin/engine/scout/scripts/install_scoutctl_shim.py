@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scout import safe_write
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 
 SHIM_NAME = "scoutctl"
@@ -73,8 +74,7 @@ def install_scoutctl_shim(*, home: Path | None = None, target_bin: Path | None =
         f'exec "{real}" "$@"\n'
     )
     try:
-        shim.write_text(script, encoding="utf-8")
-        shim.chmod(0o755)
+        safe_write.atomic_write_text(shim, script, mode=0o755)  # a link there is replaced, never followed
     except OSError:
         return None
     return shim

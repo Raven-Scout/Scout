@@ -62,6 +62,7 @@ hitting the network.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import html
@@ -77,7 +78,7 @@ from typing import Any
 
 import requests
 
-from scout import paths
+from scout import paths, safe_write
 from scout.errors import ConfigError, ScoutError
 from scout.events import Event, append_event
 from scout.ids import new_ulid
@@ -168,12 +169,8 @@ def _recent_rows(log: Path, now: datetime) -> list[dict[str, str]]:
 
 def _record_sent(log: Path, rows: list[dict[str, str]], new_row: dict[str, str]) -> None:
     """Rewrite the log with the live rows plus the new one (atomic; failures swallowed)."""
-    tmp = log.with_name(log.name + ".tmp")
-    try:
-        tmp.write_text("".join(json.dumps(r) + "\n" for r in [*rows, new_row]), encoding="utf-8")
-        os.replace(tmp, log)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(log, "".join(json.dumps(r) + "\n" for r in [*rows, new_row]))
 
 
 # ----- secret loading ------------------------------------------------------

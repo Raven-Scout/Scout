@@ -36,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, TextIO
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items.context_notes import context_note_rel
 from scout.ids import leading_prefix_pattern
 from scout.kb.git_io import (
@@ -842,7 +842,7 @@ def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
 
 def _append_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(path) as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
