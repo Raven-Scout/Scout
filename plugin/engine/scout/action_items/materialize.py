@@ -28,6 +28,7 @@ Creating the day's file is also when items untouched for 60+ days leave it
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from pathlib import Path
 
@@ -276,6 +277,18 @@ def _drop_dismissed(data_dir: Path | None, body: str) -> str:
     return "\n".join(kept) + trailing
 
 
+def _record_red_carried(data_dir: Path | None, today: _dt.date, content: str, now: _dt.datetime) -> None:
+    """Note the 🔴 items nobody has touched for 3+ days (changes map noise signal).
+    Best-effort: the day's file is already written, and this must never change the result or raise."""
+    try:
+        from scout.changes import carried
+
+        vault = paths.data_dir() if data_dir is None else data_dir
+        carried.record_red_carried(vault, content.splitlines(), today=today, now=now, env=os.environ)
+    except Exception:  # noqa: BLE001 - housekeeping must never block the copy
+        pass
+
+
 def materialize(
     data_dir: Path | None = None,
     date: _dt.date | None = None,
@@ -333,6 +346,7 @@ def materialize(
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         tmp.replace(target)
+        _record_red_carried(data_dir, target_date, content, now)
         return target
 
     return None
