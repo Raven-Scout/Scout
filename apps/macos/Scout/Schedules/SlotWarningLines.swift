@@ -13,11 +13,11 @@ struct SlotWarningLines: View {
                 ForEach(warnings) { warning in
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Image(systemName: ProblemView.symbol(warning.severity))
-                            .font(DS.sans(10, weight: .semibold))
+                            .font(DS.font(.caption2, weight: .semibold))
                             .foregroundStyle(ProblemView.tint(warning.severity))
                             .accessibilityHidden(true)
                         Text(warning.text)
-                            .font(DS.sans(11))
+                            .font(DS.font(.caption))
                             .foregroundStyle(DS.Ink.p2)
                             .fixedSize(horizontal: false, vertical: true)
                     }

@@ -56,7 +56,7 @@ struct SchedulesDetailPane: View {
     private func header(for slot: Slot) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(slot.displayName)
-                .font(DS.sans(15, weight: .semibold))
+                .font(DS.font(.headline, weight: .semibold))
                 .help(slot.key)
                 .foregroundStyle(DS.Ink.p1)
             TypePill(type: slot.type)
@@ -70,13 +70,13 @@ struct SchedulesDetailPane: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "cursorarrow.click")
-                .font(DS.sans(36))
+                .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("Pick a schedule to edit")
-                .font(DS.serif(18, weight: .medium))
+                .font(DS.font(.title, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
             Text("Click a row in the list to edit its time, weekdays, cooldown, and other settings.")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)

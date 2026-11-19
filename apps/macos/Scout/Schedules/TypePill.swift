@@ -12,7 +12,7 @@ struct TypePill: View {
                 .fill(DS.SlotType.color(for: type))
                 .frame(width: 6, height: 6)
             Text(type.displayName)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
         }
     }

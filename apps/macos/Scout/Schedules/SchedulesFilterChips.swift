@@ -60,9 +60,9 @@ struct SchedulesFilterChips: View {
                         .frame(width: 6, height: 6)
                 }
                 Text(label)
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                 Text("\(count)")
-                    .font(DS.mono(11))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
             }
             .padding(.horizontal, 10)

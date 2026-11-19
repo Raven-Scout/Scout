@@ -10,7 +10,7 @@ struct OnMissPill: View {
 
     var body: some View {
         Text(policy.displayName)
-            .font(DS.sans(11, weight: .medium))
+            .font(DS.font(.caption, weight: .medium))
             .foregroundStyle(foreground)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
