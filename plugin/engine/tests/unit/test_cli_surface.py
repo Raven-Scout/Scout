@@ -703,7 +703,6 @@ def _install_argv(*extra: str) -> list[str]:
         "--instance-name",
         "TestScout",
         "--no-jobs",
-        "--skip-claude",
         *extra,
     ]
 
@@ -856,7 +855,6 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
             connectors=set(cfg.enabled_connectors),
             inputs=dict(cfg.connector_inputs),
             skip_jobs=cfg.skip_jobs,
-            skip_claude=cfg.skip_claude,
         )
 
         class R:
@@ -877,6 +875,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
 
     monkeypatch.setattr("scout.scripts.bootstrap.upgrade", fake_upgrade)
 
+    # --skip-claude is deprecated: still accepted, ignored, with a note (spec 2026-11-13 §8.9).
     result = runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
     assert result.exit_code == 0, result.output
     assert f"upgraded: {vault}" in result.stdout
@@ -892,7 +891,8 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
     assert seen["platform"] == "linux"
     assert seen["connectors"] == {"github"}
     assert seen["inputs"] == {"github_username": "alex"}
-    assert seen["skip_jobs"] is True and seen["skip_claude"] is True
+    assert seen["skip_jobs"] is True
+    assert "note: --skip-claude is deprecated and does nothing" in result.output
 
 
 def test_bootstrap_upgrade_without_a_vault_exits_two(vault: Path) -> None:
@@ -999,7 +999,7 @@ def test_bootstrap_migrate_legacy_reports_snapshots_and_backups(vault: Path, mon
     seen: dict[str, object] = {}
 
     def fake_migrate(cfg):
-        seen.update(skip_jobs=cfg.skip_jobs, skip_claude=cfg.skip_claude, inputs=dict(cfg.connector_inputs))
+        seen.update(skip_jobs=cfg.skip_jobs, inputs=dict(cfg.connector_inputs))
 
         class R:
             vault = cfg.vault
@@ -1029,9 +1029,8 @@ def test_bootstrap_migrate_legacy_reports_snapshots_and_backups(vault: Path, mon
     assert "snapshots recorded: SKILL, DREAMING" in result.stdout
     assert "backup: run-briefing.sh.bak.2026-04-15" in result.stdout
     assert "warning: legacy runner backed up" in result.output
-    # migrate-legacy defaults to --no-jobs and never runs Claude.
+    # migrate-legacy defaults to --no-jobs.
     assert seen["skip_jobs"] is True
-    assert seen["skip_claude"] is True
 
 
 def test_bootstrap_migrate_legacy_rebootstrap_jobs_flips_skip_jobs(

@@ -35,7 +35,6 @@ def _config(vault: Path) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

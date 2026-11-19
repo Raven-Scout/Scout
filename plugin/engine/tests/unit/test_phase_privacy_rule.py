@@ -60,7 +60,6 @@ def _assembled(kind: str, connectors: set[str]) -> str:
         enabled_connectors=connectors,
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
     return _assemble(cfg, kind, custom={})
 

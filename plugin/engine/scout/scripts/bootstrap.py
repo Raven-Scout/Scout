@@ -66,7 +66,6 @@ class BootstrapConfig:
     enabled_connectors: set[str]
     connector_inputs: dict[str, str]
     skip_jobs: bool = False
-    skip_claude: bool = False
     managed_by: str = "unknown"
     # Install-time auto-update preference from /scout-setup. None = not asked:
     # leave scout-config.yaml's auto_update block untouched.
@@ -766,7 +765,6 @@ def config_from_vault(
     plugin_root: Path,
     plugin_version: str,
     skip_jobs: bool = False,
-    skip_claude: bool = False,
     managed_by: str = "unknown",
 ) -> BootstrapConfig:
     """BootstrapConfig for an existing vault, read back from its scout-config.yaml.
@@ -822,7 +820,6 @@ def config_from_vault(
         enabled_connectors=enabled,
         connector_inputs=dict(inputs or {}),
         skip_jobs=skip_jobs,
-        skip_claude=skip_claude,
         managed_by=managed_by,
         wrap_channels=wrap_channels,
     )
