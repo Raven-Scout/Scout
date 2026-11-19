@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Yellow on-battery banner. Hidden when on AC or unknown — only the
+/// On-battery warning banner, in the status warning colour (audit #107: no
+/// hard-coded yellow). Hidden when on AC or unknown — only the
 /// `.onBattery` case warrants screen real estate. Dropped at the top of
 /// `ControlCenterView` above `UpcomingStripView`.
 struct PowerStateBanner: View {
@@ -15,8 +16,8 @@ struct PowerStateBanner: View {
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.yellow.opacity(0.15))
-            .foregroundColor(.yellow)
+            .background(DS.Status.warn.opacity(DS.Status.washOpacity))
+            .foregroundStyle(DS.Status.warn)
             .cornerRadius(6)
         }
     }

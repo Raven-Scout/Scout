@@ -32,11 +32,11 @@ struct FeedbackTab: View {
                 } else if isUnreadable {
                     Text("Couldn't read the saved note")
                         .font(DS.sans(10))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.Status.err)
                 } else if let err = saveError {
                     Text("Error: \(err)")
                         .font(DS.sans(10))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.Status.err)
                 }
             }
             Text("Like a Slack reply — leave a note about what worked, what didn't, or what you'd want next time. Markdown is fine.")

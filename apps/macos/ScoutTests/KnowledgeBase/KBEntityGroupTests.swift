@@ -112,7 +112,9 @@ struct KBEntityGroupClassificationTests {
     func color_resolvesForEveryGroup() {
         #expect(KBEntityGroup.people.color == DS.Priority.personal)
         #expect(KBEntityGroup.projects.color == DS.SlotType.consolidation)
-        #expect(KBEntityGroup.issues.color == DS.Priority.urgent)
+        // Its own hue: the urgent red means only Urgent (audit #107).
+        #expect(KBEntityGroup.issues.color != DS.Priority.urgent)
+        #expect(KBEntityGroup.issues.swatch.name == "KBIssues")
         #expect(KBEntityGroup.channels.color == DS.Accent.fill)
         #expect(KBEntityGroup.ontology.color != KBEntityGroup.people.color)
         #expect(KBEntityGroup.research.color == DS.SlotType.research)

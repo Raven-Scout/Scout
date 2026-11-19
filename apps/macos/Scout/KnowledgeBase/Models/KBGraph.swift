@@ -63,7 +63,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         switch self {
         case .people:   return DS.Priority.personal
         case .projects: return DS.SlotType.consolidation
-        case .issues:   return DS.Priority.urgent
+        case .issues:   return swatch.color
         case .channels: return DS.Accent.fill
         case .research: return DS.SlotType.research
         case .other:    return DS.Ink.p3
@@ -79,7 +79,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         switch self {
         case .people:   return DS.Swatch(name: "KBPeople", light: DS.RGB(0.540, 0.440, 0.740), dark: DS.RGB(0.700, 0.620, 0.880))
         case .projects: return DS.Palette.slotConsolidation
-        case .issues:   return DS.Swatch(name: "KBIssues", light: DS.RGB(0.750, 0.310, 0.200), dark: DS.RGB(0.880, 0.450, 0.340))
+        case .issues:   return DS.Swatch(name: "KBIssues", light: DS.RGB(0.600, 0.300, 0.620), dark: DS.RGB(0.820, 0.580, 0.850))
         case .channels: return DS.Palette.accentFill
         case .ontology: return DS.Swatch(name: "KBOntology", light: DS.RGB(0.300, 0.380, 0.720), dark: DS.RGB(0.560, 0.640, 0.950))
         case .research: return DS.Palette.slotResearch

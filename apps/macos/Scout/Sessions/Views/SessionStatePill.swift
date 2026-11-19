@@ -5,7 +5,7 @@ import SwiftUI
 enum SessionStateStyle {
     static func color(_ state: AgentSessionState, isOpen: Bool = false) -> Color {
         switch state {
-        case .needsYou: return DS.Priority.urgent
+        case .needsYou: return DS.Attention.you
         case .running:  return DS.Status.ok
         case .waiting:  return DS.Priority.todo
         case .parked:   return isOpen ? DS.Ink.p3 : DS.Ink.p4
