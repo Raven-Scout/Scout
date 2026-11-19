@@ -2,31 +2,26 @@
 
 ## 💡 Today's Focus
 
-1. **Send the gateway capacity numbers** before the platform sync at 15:00, since Priya's launch plan waits on them.
-2. **Settle the catalog quota question.** The ticket and the thread disagree, so decide it once rather than answering twice.
-3. **Close out the vendor survey.** It is two weeks late and only needs the answers you already have.
+- **Send the gateway capacity numbers** — Priya's launch plan waits on them, and the platform sync is at 15:00.
+- **Settle the catalog quota** — the tracker and Sam's thread give different limits; the review queue has both.
+- **Decide on the vendor survey** — it is two weeks past due; send it or drop it.
 
 ## 🔴 Urgent
 
-- [ ] [#LATE] **Send the gateway capacity numbers** — due {{d-2}}; Priya asked again in the launch thread this morning, and the platform sync is at 15:00. `[verified]` (ticket + thread + calendar)
-  - Refs: OPS-312 · [[projects/api-gateway/api-gateway]] · [[people/priya]]
-- [ ] [#QUOTA] **Answer the catalog quota question** — the ticket says the limit is 500 per tenant; Sam's reply in the thread says 1,000. `[contradicted]`: both versions are below, pick one before the plan is final.
-  - Ticket PROJ-1207: "500 per tenant"
-  - Thread with Sam, {{d-1}}: "we agreed 1,000 last week"
-  - Refs: [[people/sam]] · [[projects/widgets/widgets]]
-- [ ] [#OVRD] **Send the vendor survey answers** — the form was due {{d-14}}; no reply or follow-up since.
-  - Refs: [[projects/billing-cleanup/billing-cleanup]]
+- [ ] [#LATE] **Send the gateway capacity numbers** — Priya asked again this morning; she needs them before the 15:00 sync · due {{d-2}} · → [[projects/api-gateway/api-gateway]]
+  - Refs: OPS-312 · [[people/priya]]
+- [ ] [#QUOTA] **Decide the per-workspace catalog quota** — Priya can't finish the launch plan without it; the two sources disagree · → [[knowledge-base/review-queue]]
+  - Refs: PROJ-1207 · [[people/sam]] · [[projects/widgets/widgets]]
 
 ## 🟡 To Do
 
-- [ ] [#LCHK] **Finish the launch checklist item** — the rollout notes are the last open step.
-  - Refs: PROJ-1207 · [[projects/widgets/widgets]]
-- [ ] [#RUNB] **Update the gateway runbook** — add the new rate-limit alert to the on-call steps.
-  - Refs: [[projects/api-gateway/api-gateway]]
-- [ ] [#INVX] **Check the invoice export numbers** — Sam mentioned in passing that last month's totals look low. `[single-source]`: nothing in the tracker yet.
-  - Refs: DESK-88 · [[projects/billing-cleanup/billing-cleanup]]
-- [ ] [#ONBD] **Draft the onboarding guide outline** — a one-page outline is enough to restart the docs refresh.
-  - Refs: [[projects/docs-refresh/docs-refresh]]
+- [ ] [#OVRD] **Send the vendor survey answers** — due {{d-14}}; still want this? · → [[projects/billing-cleanup/billing-cleanup]]
+- [ ] [#LCHK] **Finish the launch checklist item** — the rollout notes are the last open step · → [[projects/widgets/widgets]]
+  - Refs: PROJ-1207
+- [ ] [#RUNB] **Update the gateway runbook** — add the new rate-limit alert to the on-call steps · → [[projects/api-gateway/api-gateway]]
+- [ ] [#INVX] **Check the invoice export numbers** — compare last month's totals before the cleanup cutover · → [[projects/billing-cleanup/billing-cleanup]]
+  - Refs: DESK-88
+- [ ] [#ONBD] **Draft the onboarding guide outline** — a one-page outline is enough to restart the docs refresh · → [[projects/docs-refresh/docs-refresh]]
 
 ## 🟢 Watching
 
@@ -34,13 +29,12 @@
   - Refs: DESK-88 · [[people/sam]]
 - [ ] [#DOCS] **Docs refresh restart date** — waiting on Priya since {{d-5}}
   - Refs: [[people/priya]] · [[projects/docs-refresh/docs-refresh]]
-- [ ] [#DEPR] **Move off the old auth header** — the cutover is {{d+60}}; the deprecation email says "action required", but 60 days out this is not urgent yet.
-  - Refs: OPS-311 · [[projects/api-gateway/api-gateway]]
+- [ ] [#DEPR] **Move off the old auth header** — the cutover is {{d+60}}; nothing to do until next month · → [[projects/api-gateway/api-gateway]]
+  - Refs: OPS-311
 
 ## 🅿️ Parked
 
-- [ ] [#CACHE] **Explore a response cache for the gateway** — parked until the launch ships.
-  - Refs: [[projects/api-gateway/api-gateway]]
+- [ ] [#CACHE] **Explore a response cache for the gateway** — parked until the launch ships · → [[projects/api-gateway/api-gateway]]
 
 ## 📅 Meetings
 
@@ -48,9 +42,9 @@
 
 ## ✅ Recently Completed
 
-- [x] [#ALRT] **Tune the noisy cache alert** — done {{d-1}}; the alert has been quiet since the threshold change.
+- [x] [#ALRT] **Tune the noisy cache alert** — done {{d-1}}; quiet since the threshold change
 - [x] [#KICK] **Run the widgets launch kickoff** — done {{d-4}}
 
 ## 🪵 Run notes & connector availability
 
-- {{today}} morning-briefing: Slack, Linear, Calendar, GitHub all answered.
+- **{{today}} 08:00 UTC** (morning briefing) — 1 new / 1 completed / 12 carried forward. Connectors: Slack, Linear, Calendar, GitHub.

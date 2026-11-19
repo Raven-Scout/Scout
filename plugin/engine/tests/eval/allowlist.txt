@@ -356,6 +356,17 @@ Dec
 
 # --- demo vault overlay (docs/demo/vault) ---
 Settle
-Close
-Ticket
-Thread
+# the product's own name, as the review-queue template renders INSTANCE_NAME
+Scout
+Decide
+Without
+Evidence
+Both
+Catalog
+Queue
+Pending
+Found
+Claim
+Affected
+Reviewed
+Item
