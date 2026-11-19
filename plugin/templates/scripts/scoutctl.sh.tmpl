@@ -5,7 +5,7 @@
 # vault) instead of a bare `scoutctl`, which is only there when the engine put
 # itself on PATH. This finds the engine and runs it against THIS vault:
 #
-#   1. `scoutctl` on PATH (a normal install: same engine as before)
+#   1. `scoutctl` in an absolute PATH entry (a normal install: same engine as before)
 #   2. the engine this vault was rendered with
 #   3. $CLAUDE_PLUGIN_ROOT/engine/bin/scoutctl
 #   4. the newest Scout plugin in Claude Code's plugin cache
@@ -13,8 +13,21 @@
 # SCOUT_DATA_DIR defaults to the folder holding this script's scripts/, not to
 # the path the vault was rendered at, so a vault that moved (or runs inside a
 # sandbox at another path) still finds itself. An explicit SCOUT_DATA_DIR wins.
+#
+# PATH first loses its relative and empty entries (`.`, `./bin`,
+# `node_modules/.bin`; an empty one means the cwd too), so a scoutctl, dirname or
+# sort planted in the working directory never runs in place of the real one. A
+# leading `~` becomes $HOME, as bash's own PATH search reads it.
 
 set -euo pipefail
+
+safe_path=""
+IFS=: read -r -a path_entries <<<"${PATH:-}" || true
+for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+    case "$path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
+    case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
+done
+export PATH="${safe_path:-/usr/bin:/bin}"
 
 VAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-$VAULT}"
