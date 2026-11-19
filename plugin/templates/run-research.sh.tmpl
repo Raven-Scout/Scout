@@ -4,6 +4,20 @@
 
 set -euo pipefail
 
+# Keep only absolute PATH entries before anything runs. A manual run (the scout-briefing skill,
+# the app's Run now) inherits the user's PATH with the vault as cwd, and a relative entry (`.`,
+# `./bin`, an empty one) would let a python3, date or claude planted there run in place of the
+# real one, here and in everything this run starts. A leading `~` becomes $HOME, as bash's own
+# PATH search reads it. (Scheduled runs already get a fixed absolute PATH from their plist.)
+_scout_safe_path=""
+IFS=: read -r -a _scout_path_entries <<<"${PATH:-}" || true
+for _scout_path_entry in ${_scout_path_entries[@]+"${_scout_path_entries[@]}"}; do
+    case "$_scout_path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || _scout_path_entry="$HOME${_scout_path_entry#"~"}" ;; esac
+    case "$_scout_path_entry" in /*) _scout_safe_path="${_scout_safe_path:+$_scout_safe_path:}$_scout_path_entry" ;; esac
+done
+export PATH="${_scout_safe_path:-/usr/bin:/bin}"
+unset _scout_safe_path _scout_path_entries _scout_path_entry
+
 SCOUT_DIR="{{SCOUT_DIR}}"
 # Exported so any consumer of scout-plugin's engine package resolves the vault.
 export SCOUT_DATA_DIR="$SCOUT_DIR"
