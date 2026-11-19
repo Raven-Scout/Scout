@@ -10,6 +10,88 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.18] - 2026-11-19
+
+### Added
+- **Delegate inboxes, part one: an agent proposes, the laptop pulls** (#550 V4a1, spec §7.1a; `engine/scout/delegate_inbox.py`, `engine/scout/delegate_proposals.py`). Nothing is applied yet: `inbox apply` is the next PR.
+  - `scoutctl delegate inbox <id> --create-repo owner/name` (or `--remote <url>`) links a delegate to its own private GitHub inbox repository. A local path is refused unless `SCOUT_INBOX_ALLOW_LOCAL=1` is set, for tests only, since a run on the same computer could write it. Scout binds it by GitHub's numeric repository and owner ids. Before every pull it checks the repository: private, owned by a user, not a fork, no collaborators, no deploy key but the agent's, GitHub Actions and Pages off, and used by no other inbox or mirror. It can't see GitHub Apps; link warns about those that can reach all your repositories. `--create-repo` turns Actions off itself. `--reset` takes the inbox as it is after `inbox_rewritten`, clears the newest-taken mark, and pushes nothing. `--unlink` forgets the inbox.
+  - `scoutctl delegate key <id> --inbox` gives the agent a deploy key titled `scout-delegate-inbox-<id>`. Scout refuses unless GitHub records the key as writable. The mirror key stays read-only.
+  - `scoutctl inbox propose observation|action` is the agent's side, and is allowed in a delegate checkout. It writes one proposal, `inbox/<id>/<ULID>.json`, in the agent's inbox clone and commits it there; `--push` pushes it. `scoutctl delegate init --inbox <clone>` tells the agent's setup where that clone is, and the env file remembers it.
+  - `scoutctl inbox pull <id>|--all` runs on the owner's computer.
+    - **The fetch.** Each pull uses a fresh bare repository in `.scout-state/delegate-inbox/` (0700 and owner-checked; the run gate protects it, and on macOS so does the OS sandbox), and checks nothing out. Git runs with no hooks and with fsck on. It may use only the inbox's own transport, under a remote name no config can target and with only gh's credential helper, with no submodules, no lazy fetch and no replace refs. A file-size limit applies, and a timeout kills git and everything it started.
+    - **What it reads.** It reads `main` only, by its sha, never tags. It lists only `inbox/<id>/` and filters out blobs over 16 KiB. Proposal text can't hold controls, invisible or unassigned characters, markup (`[[`, `[#`, `<!--`, `![`, `](`, a task checkbox), or the owner-directive marker. An entry that fails in an unexpected way is refused as `bad_entry`, and a path of any depth is removed by its top folder. `main` must build on the last one this computer saw: the pull deepens at most 256 commits to find it, or refuses with `inbox_rewritten`.
+    - **The order.** Every proposal is checked strictly. Each one taken is recorded in `.scout-state/delegate-inbox/state.json`, which is signed, in that protected folder. Then it is copied to `.scout-inbox/agents/<id>/`, and its ULID goes in a `taken.ledger` there. Last, everything taken or refused is removed from the inbox in one compare-and-swap commit.
+    - **Limits.** A pull lists at most 2000 entries and takes at most 50 proposals, and at most 200 a day; the rest stay in the inbox. Nothing is taken twice on this computer, even after a crash. Another computer skips what the ledger lists.
+- **The doctor checks each agent runtime the schedule uses** (spec §8.9; Phase 1, task 1.8, PR D3; `engine/scout/scripts/bootstrap_doctor.py`). A slot's runtime is its `agent_runtime:`, else `agent_runtimes.default`, else `claude-code`. Claude Code keeps its runner-binary and sign-in checks, worded as before (a test pins them). Any other runtime a slot uses gets a check that its CLI is installed and its version readable, and a note or warning on how it signs in. When the schedule or config can't be read, the doctor checks Claude Code alone and says so. With only `claude-code` registered, the doctor's output is unchanged.
+- **`docs/runtimes.md`**, the evidence table of spec §13 (Phase 1, task 1.8). One row per runtime: the CLI version the gate probe passed on, the tier, the probe, the conformance suite, `kb-gate`, the privacy scenario, the plan a run needs, and the release that shipped it. Claude Code's row: Tier F; gate probe passed on claude 2.1.318, 2026-11-16; `kb-gate` not yet run through the new path (task 1.9 records it); privacy scenario not yet; paid Claude plan; v0.18.15.
+- **The phases stop passing `CLAUDE_MAX_BUDGET_USD` / `CLAUDE_BUDGET_SPENT_USD`** to `write-session-cost.sh` (`phases/core/git-setup.md`, `phases/research/commit-notify.md`). Claude Code never sets them, so they always expanded to `0`. The phases now pass `0` for the budget cap and the amount spent, and the row is unchanged. The runner records what a run cost (`scoutctl budget record-run`, #561).
+- **The changes map, part 1: ledgers and capture.** Nothing reads them yet; the app tab and the digest come later.
+  - `scoutctl changes scan [--since] [--backfill]` reads the vault's git history and records Scout's own changes (brain edits, drivers, knowledge-base moves, wishlist items done, rollbacks, upgrades) in a changes ledger, once per commit. The scheduled runners run it after each session. Without `--since` it reads from where the last scan stopped (the first time, the last 14 days), so commits made while runs were skipped are still recorded.
+  - `scoutctl engagement record KIND --surface …` logs owner engagement. `scoutctl engagement consent --out-of-vault yes|no` (or `--show`) answers the consent question. `scoutctl changes --json` and `scoutctl engagement --json` are the contracts the app will read.
+  - The owner's store is `~/.local/state/scout/scout-change-ledger-owner/`, which scheduled runs can't write. A Stop hook records once per session per surface when an owner Claude session relies on Scout. The vault is the installed one (`SCOUT_DATA_DIR`, else the engine pointer's `vault`, else `~/Scout`), never the cwd's, and a session in any git worktree of it counts as in the vault. Sessions outside the vault count only after the owner answers yes.
+- **Doctor warnings are ranked by risk, and the owner can mark one reviewed** (UI audit R13, #505;
+  `engine/scout/doctor_triage.py`). `scoutctl bootstrap doctor --json` gains `warning_triage`: every
+  warning with its `risk` (`high`, `medium` or `low`), the `reason`, its files, a `fingerprint`,
+  `reviewable`, and `reviewed_at` once the owner has reviewed it. `scoutctl bootstrap review-warning ID
+  --fingerprint FP` (and `--undo`) records a review. It is the owner's only: it refuses a scheduled run by
+  its environment and by the live-run process check (exit 2). A reviewed warning leaves `warnings`,
+  `warning_groups` and the doctor's severity until its fingerprint changes: a file-backed warning's files
+  or any byte of their content, any other warning's text. Warnings about run protection itself (the
+  privacy check's blocked or unchecked counts, the gate probe, write protection, run limits, the repo-sync
+  commit hook, an unreadable kb-lint config, a drift scan that couldn't run) are `reviewable: false`: the
+  engine never lets a review hide them. A drift scan that fails no longer takes the privacy findings with it. Reviews live in
+  `~/.local/state/scout/scout-reviewed-warnings.json`, a protected engine root that the write gate and the OS
+  write sandbox keep runs from writing.
+- **`scoutctl action-items check-titles --all`** lists every open action-item title over 80 characters,
+  longest first, by tag and length (never the title), with when each item's 60-day stale clock runs out.
+  It is read-only and exits 0 (`engine/scout/action_items/titles.py`).
+- **`scoutctl action-items retitle`**, the owner's one-off title cleanup (`engine/scout/action_items/retitle.py`).
+  - **Dry run (the default):** your own `claude` proposes shorter titles and each is checked against the
+    title rule. The run writes only a worksheet you can edit, and prints its sha.
+  - **`--apply <sha>`:** changes only the bold titles in today's file and keeps each original as
+    `former_title` in the item's context note, in one commit.
+  - **`--undo <commit> --yes`:** puts them back.
+  - **Model call:** `claude` runs without settings files, hooks, tools or MCP servers. API keys and base
+    URLs are removed from its environment, and every provider switch is set off.
+- **Rewrite records keep an item's stale clock** (`engine/scout/action_items/stale.py`):
+  `.scout-state/title-rewrites.jsonl` names a block change that isn't a touch, and only an exact match
+  counts. Scheduled runs can't write the file: it is a protected path.
+- **A wishlist log that leaves a card lands verbatim in its progress note** (`engine/scout/wishlist/log_move.py`). The new `scoutctl wishlist check-log-move --data-dir <vault> <paths>` holds the wishlist phase's *the item file is a card, not a log* rule at commit, and the phase's commit step (`phases/modes/wishlist.md`, Step 3e) runs it with the paths it will commit, at most 3 tries. For each card in `docs/wishlist/` changed since the last commit, every dated line it lost must be in `docs/wishlist/progress/<item file name>` as the commit will hold it: byte for byte, in the card's order. Dated lines are those under a log heading (`## 2026-01-05`, `## Progress — 2026-01-05`; not a `Status` heading or one that only mentions a date), an entry that starts with a date or a ticked sub-task with a date, and that entry's sub-bullets and continuation lines. New entries may sit above the moved log, lines the note already held count, and a path may be a directory, as `git-safe-commit.sh` takes. Exit 1 names the item and the first missing line, quoted, and says when the note has it differing only in trailing spaces, line ending or non-breaking spaces; exit 2 means it couldn't check.
+
+### Changed
+- **`scoutctl delegate status --json` prints a versioned status document for the app's Agent copies card**
+  (#550; `engine/scout/delegate_status.py`). Per delegate: whether it is linked and listed, its mirror
+  remote (GitHub `owner/name`, or a local path with home as `~`, and only to the owner at the keyboard), the
+  last sync and its result, why a sync was refused (its code and a fixed sentence, never the refusal's
+  message), whether the mirror is behind, deploy-key counts, what the last mirror held (files, withheld,
+  left out, lines removed, and the files left out as agent config, #693), and whether the state's signature
+  matched (`state_unverified`). Every field it reads from `.scout-state/delegate-mirrors.json` is
+  shape-checked, and a state it can't trust (or can't parse, however deeply nested) shows in the document
+  instead of failing it. It never holds the key file's path, fingerprints, commit ids or note names. It
+  replaces the old `--json` dump of the raw link state. The text form prints the remote the same way, and only
+  to the owner at the keyboard; a delegate link state nested too deeply to parse is now refused as
+  `state_unreadable` rather than raising. `tests/fixtures/contract/delegate-status.json` is its contract fixture
+  (`SCOUT_REGEN_CONTRACT=1`), byte-copied to the app and checked by `contract.yml`.
+- **A delegate link remembers what its last mirror held**, as counts only (`last_counts`), so the status can
+  show them without a scan; `delegate sync` and `delegate preview --json` also report `agent_config`, the
+  number of files left out as agent config.
+- **Changelog entries are per-PR fragment files, so merging one PR no longer makes every other open PR conflict** (`changelog.d/README.md`, `engine/scout/scripts/changelog.py`, `scripts/release.sh`). A PR adds `plugin/changelog.d/<branch-slug>.<section>.md` and/or `apps/macos/changelog.d/<branch-slug>.<section>.md` holding its entry's bullets, instead of editing `## [Unreleased]`. `scripts/release.sh prepare` writes them into the new `## [X.Y.Z]` section, grouped by heading, after any entries still under `[Unreleased]`, and deletes them in the release commit; release notes, `rc` and `finalize` are unchanged. The `contract` job runs `python -m scout.scripts.changelog check`: every fragment must parse (a known section, `- ` bullets, no headings) and, on pull requests and in the merge queue, a PR may not change a fragment main already has, and it may not change a `## [X.Y.Z]` section main already has, which is how a merge of main after a release used to file an entry under the release just cut. A PR into `release/vX.Y.Z` may edit `[X.Y.Z]` (and may not add a fragment, which would never reach X.Y.Z), and a `Changelog-Edit-Released: X.Y.Z <why>` commit trailer allows a deliberate fix to that version's section. `.github/scripts/version-bump-only.sh` counts deleted fragments as part of a release bump, so release PRs still skip the heavy suites.
+- **Vault scripts that read the knowledge base around `scoutctl kb` are split by risk** (#505). A script
+  stays a `privacy.script-raw-kb-read` warning, ranked high, when what it reads can leave the vault: it
+  mentions a way to send (chat, mail, a web or network call, `ssh`/`rsync`/`git push`, a notifier or the
+  broker, `gh`, a Claude session, a synced folder, `drafts/`, code it builds at run time), it uses a vault script that does, another
+  vault script or runner runs it (so what it prints may be piped on), or it is too long or can't be read. Any
+  other, a checker whose output stays in the vault, is now a separate low-risk warning,
+  `privacy.script-raw-kb-read.internal`, grouped the same way, so a mature vault's checkers become one
+  low-risk line the owner can review once.
+
+### Deprecated
+- **`scoutctl bootstrap install|upgrade|auto --skip-claude`** (spec §8.9; Phase 1, task 1.8; `engine/scout/cli.py`, `engine/scout/scripts/bootstrap.py`). Bootstrap never starts Claude, so the flag did nothing. It is now hidden, still accepted and ignored, and prints a note to stderr. `BootstrapConfig.skip_claude` and `config_from_vault(skip_claude=…)` are removed. Scout.app never passed the flag.
+
+### Documentation
+- **A demo vault of invented data for screenshots** (`../docs/demo/build-demo-vault.sh`). It builds the eval fixture vault with a "today" page in the shape a real run writes, the item notes behind it, and a source conflict recorded as a `[contradicted]` KB note plus a review-queue entry. The builder's absolute paths are rewritten to `/Users/alex`, and a unit test holds the overlay to the eval allowlist, so a real name or home directory can't reach a public screenshot.
+- **The README says what Scout actually marks.** Confidence markers apply to knowledge-base claims (no marker means 2+ sources; `speculative` is now listed). Action items keep their sources in a note, and a conflict between sources goes to the review queue. It no longer promises a confidence tag on every action item.
+
 ## [0.18.17] - 2026-11-18
 
 ### Added
