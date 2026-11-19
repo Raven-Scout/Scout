@@ -46,7 +46,7 @@ struct ControlCenterR10FollowUpTests {
         t.update(runs: [late], armed: true, preferences: prefs)
         // Not marked as shown until it was actually posted.
         #expect(t.shown[late.id] == RunNotificationPolicy.Shown(run: early))
-        await t.waitForReplacements()
+        await t.waitForBackgroundWork()
 
         #expect(fake.checks == 2)
         #expect(fake.posts.map(\.quietly) == [false, true])
@@ -63,11 +63,11 @@ struct ControlCenterR10FollowUpTests {
         t.update(runs: [early], armed: true, preferences: prefs)
         fake.delivered.removeAll()   // the owner dismissed it
         t.update(runs: [late], armed: true, preferences: prefs)
-        await t.waitForReplacements()
+        await t.waitForBackgroundWork()
         #expect(fake.posts.count == 1)
         #expect(fake.checks == 2)    // looked, and once more
         t.update(runs: [late], armed: true, preferences: prefs)
-        await t.waitForReplacements()
+        await t.waitForBackgroundWork()
         #expect(fake.checks == 2)
     }
 
@@ -82,7 +82,7 @@ struct ControlCenterR10FollowUpTests {
         var later = late
         later.failureClass = "auth_race"
         t.update(runs: [later], armed: true, preferences: prefs)
-        await t.waitForReplacements()
+        await t.waitForBackgroundWork()
         #expect(fake.posts.map(\.quietly) == [false, true])
         #expect(fake.posts.last?.body == NotificationService.body(for: later))
     }
@@ -98,24 +98,77 @@ struct ControlCenterR10FollowUpTests {
             t.update(runs: [running], armed: true, preferences: prefs)
             t.update(runs: [early], armed: true, preferences: prefs)
             t.update(runs: [early.with(status: outcome)], armed: true, preferences: prefs)
-            await t.waitForReplacements()
-            #expect(fake.removed == [early.id], "\(outcome)")
+            #expect(fake.removed == [early.id], "\(outcome)")   // at once
+            await t.waitForBackgroundWork()
+            #expect(fake.removed == [early.id, early.id], "\(outcome)")   // and once more
             #expect(!fake.delivered.contains(early.id), "\(outcome)")
             #expect(t.shown[early.id] == nil, "\(outcome)")
             #expect(fake.posts.count == 1, "\(outcome)")
         }
     }
 
-    @Test("only a change to a success or routine skip withdraws")
+    @Test("a notified failure the ledger calls a usage limit, with that toggle off, is taken back with its Run again")
+    func withdrawUsageLimitToggledOff() async {
+        let fake = FakeRunNotifications()
+        let t = tracker(fake)
+        let quietLimits = RunNotificationPolicy.Preferences(onFailure: true, onRateLimit: false)
+        let running = Run.make(status: .running, slotKey: "morning-briefing", trigger: "schedule")
+        let failed = running.with(status: .failure)
+        t.update(runs: [running], armed: true, preferences: quietLimits)
+        t.update(runs: [failed], armed: true, preferences: quietLimits)
+        #expect(NotificationService.retrySlotKey(for: failed) == "morning-briefing")   // it offered Run again
+        var limited = failed.with(status: .rateLimited)
+        limited.failureClass = "rate_limited"
+        t.update(runs: [limited], armed: true, preferences: quietLimits)
+        await t.waitForBackgroundWork()
+        #expect(!fake.delivered.contains(failed.id))
+        #expect(t.shown[failed.id] == nil)
+        #expect(fake.posts.map(\.quietly) == [false])
+    }
+
+    @Test("a withdrawal before Notification Center lists the notification still removes it")
+    func withdrawRace() async {
+        let fake = FakeRunNotifications()
+        fake.deliverOnPost = false
+        let t = tracker(fake)
+        let (running, early, _) = failedRun()
+        t.update(runs: [running], armed: true, preferences: prefs)
+        t.update(runs: [early], armed: true, preferences: prefs)
+        t.update(runs: [early.with(status: .success)], armed: true, preferences: prefs)
+        // The first removal found nothing; now the notification shows up.
+        fake.delivered.insert(early.id)
+        await t.waitForBackgroundWork()
+        #expect(!fake.delivered.contains(early.id))
+        #expect(fake.removed == [early.id, early.id])
+    }
+
+    @Test("the second removal is skipped when the run was notified again meanwhile")
+    func withdrawThenNotifiedAgain() async {
+        let fake = FakeRunNotifications()
+        let t = tracker(fake)
+        let (running, early, _) = failedRun()
+        t.update(runs: [running], armed: true, preferences: prefs)
+        t.update(runs: [early], armed: true, preferences: prefs)
+        t.update(runs: [early.with(status: .success)], armed: true, preferences: prefs)
+        t.update(runs: [early.with(status: .timeout)], armed: true, preferences: prefs)
+        await t.waitForBackgroundWork()
+        #expect(fake.posts.map(\.quietly) == [false, false])
+        #expect(fake.delivered.contains(early.id))
+        #expect(fake.removed == [early.id])
+    }
+
+    @Test("a status change to one not worth telling under the toggles withdraws; a toggle alone doesn't")
     func withdrawPolicy() {
+        let quietLimits = RunNotificationPolicy.Preferences(onFailure: true, onRateLimit: false)
         let shown = RunNotificationPolicy.Shown(run: Run.make(status: .failure))
         let run = Run.make(status: .failure)
-        #expect(!RunNotificationPolicy.shouldWithdraw(shown: nil, run: run.with(status: .success)))
-        #expect(!RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .rateLimited)))
-        #expect(!RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .skippedGates)))
-        #expect(RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .success)))
-        let skip = RunNotificationPolicy.Shown(run: Run.make(status: .skippedBudget))
-        #expect(!RunNotificationPolicy.shouldWithdraw(shown: skip, run: Run.make(status: .skippedBudget)))
+        #expect(!RunNotificationPolicy.shouldWithdraw(shown: nil, run: run.with(status: .success), preferences: prefs))
+        #expect(!RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .rateLimited), preferences: prefs))
+        #expect(RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .rateLimited), preferences: quietLimits))
+        #expect(!RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .skippedGates), preferences: prefs))
+        #expect(RunNotificationPolicy.shouldWithdraw(shown: shown, run: run.with(status: .success), preferences: prefs))
+        #expect(!RunNotificationPolicy.shouldWithdraw(shown: shown, run: run,
+                                                      preferences: .init(onFailure: false, onRateLimit: false)))
     }
 
     // MARK: 3. the ledger making a run worth telling posts
@@ -134,7 +187,7 @@ struct ControlCenterR10FollowUpTests {
         #expect(fake.posts.first?.title.hasSuffix("failed") == true)
         // Once told, a repeat of the same outcome stays quiet.
         t.update(runs: [running.with(status: .failure)], armed: true, preferences: quietLimits)
-        await t.waitForReplacements()
+        await t.waitForBackgroundWork()
         #expect(fake.posts.count == 1)
     }
 
@@ -266,6 +319,10 @@ struct ControlCenterR10FollowUpTests {
         #expect(content.title.hasSuffix(" again"))
         #expect(!content.title.contains("morning-briefing"))
         #expect(NotificationService.runID(from: content.userInfo) == nil)
+        #expect(content.sound != nil)
+        let starting = NotificationService.runAgainRefusedContent(
+            slotKey: "morning-briefing", error: "morning-briefing is already being started — request ignored.")
+        #expect(starting.sound == nil)
     }
 
     private static func tempDir() -> URL {
@@ -300,7 +357,7 @@ final class FakeRunNotifications: RunNotificationPosting {
         return delivered.contains(runID)
     }
 
-    func removeDelivered(runID: Run.ID) {
+    func withdraw(runID: Run.ID) {
         removed.append(runID)
         delivered.remove(runID)
     }

@@ -52,8 +52,12 @@ final class NotificationService: @unchecked Sendable {
         }
     }
 
-    func removeDelivered(runID: Run.ID) {
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [runID])
+    /// Takes this run's notification back, whether Notification Center
+    /// lists it yet or it's still on its way.
+    func withdraw(runID: Run.ID) {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [runID])
+        center.removeDeliveredNotifications(withIdentifiers: [runID])
     }
 
     /// A notification's Run again that Scout's engine refused (an unknown
@@ -72,7 +76,8 @@ final class NotificationService: @unchecked Sendable {
         let content = UNMutableNotificationContent()
         content.title = "Couldn't run \(DisplayName.slotKey(slotKey)) again"
         content.body = runAgainRefusedReason(error)
-        content.sound = .default
+        // "It's already starting" is good news: no sound for it.
+        content.sound = error.contains("already being started") ? nil : .default
         content.categoryIdentifier = runCategory
         return content
     }
@@ -198,17 +203,15 @@ nonisolated enum RunNotificationPolicy {
     }
 
     /// Whether the notification shown for this run should be taken back: the
-    /// ledger says it succeeded after all, or was a routine skip (budget,
-    /// lock, lease, redundant), so the "failed" in Notification Center is
-    /// wrong and there's nothing to tell instead.
-    static func shouldWithdraw(shown: Shown?, run: Run) -> Bool {
+    /// ledger changed its status to one not worth telling under the owner's
+    /// toggles. It succeeded after all, was a routine skip, or became a usage
+    /// limit with that toggle off; either way the "failed" in Notification
+    /// Center is wrong, and its Run again would only start a run that fails
+    /// again, at a cost. A toggle turned off with no change to the run leaves
+    /// what's already shown alone.
+    static func shouldWithdraw(shown: Shown?, run: Run, preferences: Preferences) -> Bool {
         guard let shown, run.status != shown.status else { return false }
-        switch run.status {
-        case .success, .skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant:
-            return true
-        default:
-            return false
-        }
+        return !isWorthTelling(run.status, preferences: preferences)
     }
 
     /// The outcomes a notification is raised for, under the owner's toggles.

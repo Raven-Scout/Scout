@@ -5,7 +5,8 @@ protocol RunNotificationPosting: AnyObject {
     func post(run: Run, quietly: Bool)
     /// Whether this run's notification is still in Notification Center.
     func isDelivered(runID: Run.ID) async -> Bool
-    func removeDelivered(runID: Run.ID)
+    /// Removes this run's notification, delivered or still pending.
+    func withdraw(runID: Run.ID)
     func postRunAgainRefused(slotKey: String, error: String)
 }
 
@@ -18,7 +19,8 @@ extension NotificationService: RunNotificationPosting {}
 final class RunNotificationTracker {
     private let poster: any RunNotificationPosting
     /// How long a quiet replacement waits before looking a second time for
-    /// the notification it replaces (`replace(_:)`).
+    /// the notification it replaces (`replace(_:)`), and a withdrawal before
+    /// removing it a second time (`withdraw(_:)`).
     private let recheckDelay: Duration
 
     /// What each run's notification says now, so a later change can replace it.
@@ -29,7 +31,8 @@ final class RunNotificationTracker {
     /// The run a quiet replacement in flight will post: the latest wanted, so
     /// one that changes again while the check is out posts its newest words.
     private var pending: [Run.ID: Run] = [:]
-    private var replacing: [Run.ID: Task<Void, Never>] = [:]
+    /// Replacements and second removals still running (`waitForBackgroundWork`).
+    private var background: [UUID: Task<Void, Never>] = [:]
 
     init(poster: any RunNotificationPosting, recheckDelay: Duration = .seconds(1)) {
         self.poster = poster
@@ -56,16 +59,18 @@ final class RunNotificationTracker {
                                               shown: current, isLive: live.contains(run.id)) {
             poster.post(run: run, quietly: false)
             shown[run.id] = RunNotificationPolicy.Shown(run: run)
-        } else if RunNotificationPolicy.shouldWithdraw(shown: current, run: run) {
-            poster.removeDelivered(runID: run.id)
+        } else if RunNotificationPolicy.shouldWithdraw(shown: current, run: run, preferences: preferences) {
             shown[run.id] = nil
             pending[run.id] = nil
+            let id = run.id
+            poster.withdraw(runID: id)
+            spawn { await self.withdrawAgain(id) }
         } else if RunNotificationPolicy.shouldUpdate(shown: current, run: run, preferences: preferences) {
             let inFlight = pending[run.id] != nil
             pending[run.id] = run
             if !inFlight {
                 let id = run.id
-                replacing[id] = Task { await self.replace(id) }
+                spawn { await self.replace(id) }
             }
         } else {
             // Nothing to replace any more (it changed back, or the owner
@@ -81,7 +86,6 @@ final class RunNotificationTracker {
     /// `recheckDelay`; still missing then means the owner dismissed it, and
     /// it stays dismissed.
     private func replace(_ id: Run.ID) async {
-        defer { replacing[id] = nil }
         for attempt in 0..<2 {
             if attempt > 0 { try? await Task.sleep(for: recheckDelay) }
             let delivered = await poster.isDelivered(runID: id)
@@ -98,8 +102,26 @@ final class RunNotificationTracker {
         pending[id] = nil
     }
 
-    /// Waits for every quiet replacement in flight. For tests.
-    func waitForReplacements() async {
-        while let task = replacing.values.first { await task.value }
+    /// The second half of a withdrawal. A notification posted milliseconds
+    /// before the ledger took it back may not be listed (or even pending)
+    /// yet, so the first removal finds nothing; this one, `recheckDelay`
+    /// later, catches it. Skipped if the run has been notified again since.
+    private func withdrawAgain(_ id: Run.ID) async {
+        try? await Task.sleep(for: recheckDelay)
+        guard shown[id] == nil else { return }
+        poster.withdraw(runID: id)
+    }
+
+    private func spawn(_ work: @escaping @MainActor () async -> Void) {
+        let key = UUID()
+        background[key] = Task {
+            await work()
+            self.background[key] = nil
+        }
+    }
+
+    /// Waits for every replacement and second removal in flight. For tests.
+    func waitForBackgroundWork() async {
+        while let task = background.values.first { await task.value }
     }
 }
