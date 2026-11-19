@@ -60,15 +60,15 @@ struct StatusBarView: View {
                             .frame(width: 10, height: 10)
                     )
                 Text("Scout ·")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                 Text(status.title)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(DS.Ink.p2)
                     .lineLimit(1)
                 if let fix = status.fix {
                     Text(fix.title)
-                        .font(DS.sans(11, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                         .foregroundStyle(DS.Accent.ink)
                 }
             }
@@ -83,10 +83,10 @@ struct StatusBarView: View {
     private var nextRun: some View {
         HStack(spacing: 6) {
             Text("next run")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(nextRunValue)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -94,10 +94,10 @@ struct StatusBarView: View {
     private var todayCost: some View {
         HStack(spacing: 6) {
             Text("runs today")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(todayCostValue)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -105,10 +105,10 @@ struct StatusBarView: View {
     private var viewItem: some View {
         HStack(spacing: 6) {
             Text("view")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(viewLabel)
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p2)
         }
     }

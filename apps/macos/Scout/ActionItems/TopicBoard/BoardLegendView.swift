@@ -45,6 +45,6 @@ struct BoardLegendView: View {
                 .help("Show every state")
             }
         }
-        .font(DS.sans(12))
+        .font(DS.font(.label))
     }
 }

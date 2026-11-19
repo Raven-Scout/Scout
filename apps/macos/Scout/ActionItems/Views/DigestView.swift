@@ -10,13 +10,13 @@ struct DigestView: View {
             ForEach(Array(section.bullets.enumerated()), id: \.offset) { _, b in
                 if isBoldOnly(b) {
                     InlineMarkdownText(b)
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .tracking(0.04 * 12)
                         .foregroundStyle(DS.Ink.p3)
                         .padding(.top, 10)
                 } else {
                     InlineMarkdownText(b)
-                        .font(DS.serif(14.5))
+                        .dsFont(.headline, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)

@@ -18,7 +18,7 @@ struct SessionCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             if let projectName {
                 Text(projectName)
-                    .font(DS.sans(10.5, weight: .medium))
+                    .font(DS.font(.caption2, weight: .medium))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -26,7 +26,7 @@ struct SessionCardView: View {
             }
             if let parentTitle {
                 Text("↳ \(parentTitle)")
-                    .font(DS.sans(10.5))
+                    .font(DS.font(.caption2))
                     .foregroundStyle(DS.Ink.p4)
                     .lineLimit(1)
             }
@@ -34,31 +34,31 @@ struct SessionCardView: View {
                 SessionStateLabel(state: session.state, isOpen: session.isOpen)
                 Spacer(minLength: 0)
                 Text(SessionsFormat.ago(session.lastActivityAt, now: now))
-                    .font(DS.sans(10.5))
+                    .font(DS.font(.caption2))
                     .foregroundStyle(DS.Ink.p4)
             }
             Text(session.displayTitle)
-                .font(DS.serif(13.5, weight: .medium))
+                .dsFont(.body, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let reason = session.primaryReason {
                 Text(reason)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(1)
             }
             if let pr = session.pr {
                 Text(SessionsFormat.prChip(pr))
-                    .font(DS.mono(10.5))
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(DS.Ink.p2)
                     .lineLimit(1)
             }
             HStack(spacing: 6) {
                 if let branch = session.worktree?.branch {
                     Text(branch)
-                        .font(DS.mono(10))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(DS.Ink.p3)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -66,7 +66,7 @@ struct SessionCardView: View {
                 Spacer(minLength: 0)
                 if let model = session.model {
                     Text(SessionsFormat.shortModel(model))
-                        .font(DS.mono(10))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(DS.Ink.p4)
                 }
             }

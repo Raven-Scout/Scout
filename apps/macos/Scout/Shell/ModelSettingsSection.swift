@@ -53,17 +53,17 @@ struct ModelSettingsSection: View {
                 "Cheaper models use less of your plan but can miss things Opus catches. "
                     + "Try one on a light schedule first, such as a midday consolidation."
             )
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(DS.Ink.p3)
             .fixedSize(horizontal: false, vertical: true)
             if settings.defaultIsBuiltIn {
                 Text("No default set in scout-config.yaml, so runs use Opus.")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
             }
             if let saveError {
                 Text(saveError)
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -73,7 +73,7 @@ struct ModelSettingsSection: View {
 
     private func message(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(DS.sans(12.5))
+            .font(DS.font(.label))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 14)

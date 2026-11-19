@@ -41,30 +41,30 @@ struct ProblemView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: Self.symbol(problem.severity))
                 .foregroundStyle(Self.tint(problem.severity))
-                .font(DS.sans(13, weight: .semibold))
+                .font(DS.font(.body, weight: .semibold))
                 .accessibilityHidden(true)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 4) {
                 Text(problem.title)
-                    .font(DS.sans(12.5, weight: .semibold))
+                    .font(DS.font(.label, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
                 if let impact = problem.impact {
                     Text(impact)
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let fix = problem.fix {
                     (Text("What to do: ").fontWeight(.semibold) + Text(fix))
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .foregroundStyle(DS.Ink.p1)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 buttons
                 if showDetails, let details = problem.details {
                     Text(details)
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption, .mono))
                         .foregroundStyle(DS.Ink.p2)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -76,7 +76,7 @@ struct ProblemView: View {
             Spacer(minLength: 0)
             if let onDismiss {
                 Button(action: onDismiss) {
-                    Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
+                    Image(systemName: "xmark").font(DS.font(.caption2, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(DS.Ink.p3)

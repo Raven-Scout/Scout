@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreText
 
 /// Editorial + native-macOS design system.
 ///
@@ -77,21 +78,34 @@ enum DS {
         static let washOpacity = ContrastPairs.statusWashOpacity
     }
 
+    /// Workflow states that mean "this is waiting on you": a topic-board item
+    /// that is yours ("Mine") and a session that needs you. Kept apart from
+    /// `Priority.urgent` so the urgent red means only Urgent (audit #107).
+    enum Attention {
+        static let you = Palette.attentionYou.color
+    }
+
     // MARK: - Typography
     //
     // macOS has no Dynamic Type: `.dynamicTypeSize` and `Font.TextStyle` sizes
     // don't change with any system setting (checked on macOS 26 — a `.body`
     // Text measures the same at every `DynamicTypeSize`). So every size the
     // app draws goes through ONE knob instead: `TextScale.shared`, set in
-    // Settings ▸ General ▸ Text size. `serif`/`mono`/`sans` multiply their
-    // point size by it, and new code should prefer the semantic
-    // `DS.font(_:_:weight:)` styles, which are defined in one place below.
+    // Settings ▸ General ▸ Text size.
+    //
+    // Views pick a role, never a point size (design-system v2, audit #104):
+    // `DS.font(.caption)`, `DS.font(.body, .serif)`, `DS.font(.label, .mono)`.
+    // The roles live in `TextStyle` below. The sized `serif`/`mono`/`sans`
+    // functions are the scale's own building blocks, and `TypeRoleGuardTests`
+    // fails on a call to them from anywhere else. An SF Symbol drawn as a
+    // picture (an empty-state glyph) takes `DS.symbol(_:)` instead.
 
     /// Reading voice. Falls back to Apple's "New York" serif on macOS.
+    /// Views call `DS.font(_:.serif)`; this is the scale's building block.
     static func serif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
-        if FontAvailability.newsreader {
-            return .custom("Newsreader", size: size).weight(weight)
+        if BrandFont.available {
+            return .custom(BrandFont.newsreader(weight), size: size)
         }
         if FontAvailability.newYork {
             return .custom("New York", size: size).weight(weight)
@@ -99,18 +113,27 @@ enum DS {
         return .system(size: size, weight: weight, design: .serif)
     }
 
-    /// IDs, timestamps, key counts.
+    /// IDs, timestamps, key counts. Views call `DS.font(_:.mono)`.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
-        if FontAvailability.jetBrainsMono {
-            return .custom("JetBrains Mono", size: size).weight(weight)
+        if BrandFont.available {
+            return .custom(BrandFont.jetBrainsMono(weight), size: size)
         }
         return .system(size: size, weight: weight, design: .monospaced)
     }
 
-    /// UI chrome (buttons, labels, filters). SF Pro on macOS.
+    /// UI chrome (buttons, labels, filters). SF Pro on macOS. Views call
+    /// `DS.font(_:)`.
     static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: scaled(size), weight: weight, design: .default)
+    }
+
+    /// A glyph drawn as a picture at a fixed design size: an empty-state
+    /// glyph, or a symbol sized to the shape around it (the day-circle
+    /// strip). Text never uses this; it takes a role through `DS.font`.
+    /// It still follows the Text size setting.
+    static func symbol(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        sans(size, weight: weight)
     }
 
     /// A design point size at the user's chosen text size. Reading
@@ -128,10 +151,14 @@ enum DS {
         return (size * factor * 2).rounded() / 2
     }
 
-    /// The semantic type scale. New views pick a role, not a point size; the
+    /// The semantic type scale. Views pick a role, not a point size; the
     /// scale maps each role to one design size, and `TextScale` grows them
-    /// all together.
+    /// all together. Nine sizes cover the whole app: the 26 sizes views used
+    /// before design-system v2 snapped to the nearest role.
     enum TextStyle: CaseIterable, Sendable {
+        /// The smallest type: count badges, chevrons and keycaps inside a
+        /// control, timeline tick labels.
+        case micro
         /// Small uppercase group labels, badges, dense metadata.
         case caption2
         /// Help text, secondary lines, timestamps.
@@ -144,18 +171,23 @@ enum DS {
         case headline
         /// Page section titles.
         case title
+        /// A large figure or the title of a sheet or window that isn't a
+        /// page: a usage total, the onboarding and glossary titles.
+        case hero
         /// Page titles.
         case display
 
         /// Design size in points at the standard text size.
         nonisolated var pointSize: CGFloat {
             switch self {
+            case .micro:    return 9
             case .caption2: return 10.5
             case .caption:  return 11.5
             case .label:    return 12.5
             case .body:     return 13
             case .headline: return 15
             case .title:    return 18
+            case .hero:     return 22
             case .display:  return 28
             }
         }
@@ -171,7 +203,21 @@ enum DS {
         case mono
     }
 
+    /// Extra leading for the reading voice, in ems. Newsreader's line height
+    /// is 1.00 em where New York's is 1.19, so serif text set with it alone
+    /// loses about 16% of its leading and ascenders can touch the line above.
+    /// `dsFont(_:.serif)` adds the difference back. Mono needs none: JetBrains
+    /// Mono's 1.32 em is already taller than SF Mono's.
+    nonisolated static let serifExtraLeading: CGFloat = 0.19
+
+    /// The line spacing `dsFont` adds for a role and voice.
+    static func extraLeading(_ style: TextStyle, _ voice: Voice) -> CGFloat {
+        guard voice == .serif, BrandFont.available else { return 0 }
+        return (scaled(style.pointSize) * serifExtraLeading).rounded()
+    }
+
     /// The semantic font for a role. Prefer this over a raw `sans(_:)` size.
+    /// Serif text takes `View.dsFont(_:.serif)`, which adds its leading.
     static func font(_ style: TextStyle, _ voice: Voice = .sans, weight: Font.Weight = .regular) -> Font {
         switch voice {
         case .sans:  return sans(style.pointSize, weight: weight)
@@ -180,12 +226,72 @@ enum DS {
         }
     }
 
-    /// Brand fonts are optional installs; look each one up once, not on every
+    /// The brand fonts ship inside the app (audit #106): Newsreader's 16 pt
+    /// optical cut for the reading voice and JetBrains Mono for data, each in
+    /// the three weights the app draws (Regular, Medium, SemiBold), plus
+    /// Newsreader's matching italics so `.italic()` and markdown emphasis in
+    /// serif text get the drawn italic, not a slanted roman. Their SIL Open
+    /// Font License texts sit beside them in Resources/Fonts.
+    /// Nothing is fetched at run time; they are registered for this process
+    /// only, the first time a serif or mono font is built.
+    ///
+    /// Faces are picked by PostScript name rather than `.weight(_:)`, so a
+    /// weight the app doesn't bundle maps to the nearest real face instead of
+    /// a synthesised one.
+    enum BrandFont {
+        static let newsreaderFaces = ["Newsreader16pt-Regular", "Newsreader16pt-Medium", "Newsreader16pt-SemiBold"]
+        static let jetBrainsMonoFaces = ["JetBrainsMono-Regular", "JetBrainsMono-Medium", "JetBrainsMono-SemiBold"]
+        /// Not picked by name: CoreText finds them through the family when a
+        /// view asks for italic.
+        static let newsreaderItalicFaces = ["Newsreader16pt-Italic", "Newsreader16pt-MediumItalic", "Newsreader16pt-SemiBoldItalic"]
+        static var allFaces: [String] { newsreaderFaces + newsreaderItalicFaces + jetBrainsMonoFaces }
+
+        /// Registers the bundled files once, then checks every face loaded.
+        /// False only if the bundle lost them; the voices then fall back to
+        /// New York and SF Mono.
+        static let available: Bool = {
+            registerBundledFonts()
+            return allFaces.allSatisfy { NSFont(name: $0, size: 13) != nil }
+        }()
+
+        static func newsreader(_ weight: Font.Weight) -> String { newsreaderFaces[index(weight)] }
+
+        /// The bundled face AppKit text (the KB editor) uses for bold: the
+        /// SemiBold of the same family and slant. Nil for a face that isn't
+        /// a bundled brand face.
+        static func boldFace(of name: String) -> String? {
+            if newsreaderItalicFaces.contains(name) { return newsreaderItalicFaces[2] }
+            if newsreaderFaces.contains(name) { return newsreaderFaces[2] }
+            if jetBrainsMonoFaces.contains(name) { return jetBrainsMonoFaces[2] }
+            return nil
+        }
+        static func jetBrainsMono(_ weight: Font.Weight) -> String { jetBrainsMonoFaces[index(weight)] }
+
+        /// Regular for regular and lighter, Medium for medium, SemiBold for
+        /// semibold and heavier.
+        static func index(_ weight: Font.Weight) -> Int {
+            switch weight {
+            case .medium: return 1
+            case .semibold, .bold, .heavy, .black: return 2
+            default: return 0
+            }
+        }
+
+        private static func registerBundledFonts() {
+            guard let resources = Bundle.main.resourceURL,
+                  let files = FileManager.default.enumerator(at: resources, includingPropertiesForKeys: nil)
+            else { return }
+            for case let url as URL in files where url.pathExtension == "ttf" {
+                // Already registered (a second app instance in tests) is fine.
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+            }
+        }
+    }
+
+    /// The fallback serif is a system install; look it up once, not on every
     /// font call (the old per-call `NSFont(name:)` probe ran on every render).
     private enum FontAvailability {
-        static let newsreader    = NSFont(name: "Newsreader", size: 13) != nil
         static let newYork       = NSFont(name: "New York", size: 13) != nil
-        static let jetBrainsMono = NSFont(name: "JetBrains Mono", size: 13) != nil
     }
 
     // MARK: - Kind → priority mapping
@@ -217,6 +323,19 @@ enum DS {
         case .meetings: return "calendar"
         case .digest:   return "list.clipboard"
         }
+    }
+}
+
+// MARK: - Text in a role
+
+extension View {
+    /// Text in a design-system role and voice: `DS.font` plus the voice's
+    /// leading (`DS.extraLeading`). Required for the serif voice, whose
+    /// bundled face is set tighter than the system serif it replaced;
+    /// `TypeRoleGuardTests` flags `.font(DS.font(…, .serif))`.
+    func dsFont(_ style: DS.TextStyle, _ voice: DS.Voice = .sans, weight: Font.Weight = .regular) -> some View {
+        font(DS.font(style, voice, weight: weight))
+            .lineSpacing(DS.extraLeading(style, voice))
     }
 }
 

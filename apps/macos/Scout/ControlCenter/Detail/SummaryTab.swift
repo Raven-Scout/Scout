@@ -25,10 +25,10 @@ struct SummaryTab: View {
                             .foregroundStyle(.secondary)
                             .italic()
                         Text("Showing the last lines so you can still see what happened:")
-                            .font(DS.sans(10))
+                            .font(DS.font(.caption2))
                             .foregroundStyle(.secondary)
                         Text(fallbackPreview)
-                            .font(DS.mono(13))
+                            .font(DS.font(.body, .mono))
                             .textSelection(.enabled)
                             .padding(8)
                             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
@@ -112,11 +112,11 @@ struct SummaryTab: View {
         switch block {
         case .heading(let text):
             Text(attributed(text))
-                .font(DS.sans(15))
+                .font(DS.font(.headline))
                 .fontWeight(.semibold)
         case .paragraph(let text):
             Text(attributed(text))
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .bullet(let items):

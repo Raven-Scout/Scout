@@ -13,9 +13,9 @@ struct DiagnosticsExportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Export Diagnostics").font(DS.sans(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                Text("Export Diagnostics").font(DS.font(.headline, weight: .semibold)).foregroundStyle(DS.Ink.p1)
                 Text("Check what's below, then save it and attach the file to a bug report. Nothing is sent anywhere. Scout leaves out note text, note and folder names, secrets, tokens, transcripts and run logs.")
-                    .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                    .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
                 DiagnosticsReviewNotice()
             }
@@ -27,7 +27,7 @@ struct DiagnosticsExportView: View {
                     Divider()
                     ScrollView {
                         Text(bundle.text)
-                            .font(DS.mono(11)).foregroundStyle(DS.Ink.p1)
+                            .font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p1)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(16)
@@ -37,7 +37,7 @@ struct DiagnosticsExportView: View {
             } else {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Collecting diagnostics…").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                    Text("Collecting diagnostics…").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -52,12 +52,12 @@ struct DiagnosticsExportView: View {
     private func contents(_ bundle: DiagnosticsBundle) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("WHAT'S INCLUDED").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+                Text("WHAT'S INCLUDED").font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p3)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(bundle.sections) { section in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(section.title).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                        Text(section.about).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                        Text(section.title).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                        Text(section.about).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .accessibilityElement(children: .combine)
@@ -70,22 +70,26 @@ struct DiagnosticsExportView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             if let savedTo {
-                Text("Saved \(savedTo.lastPathComponent)").font(DS.sans(12)).foregroundStyle(DS.Status.ok)
+                Text("Saved \(savedTo.lastPathComponent)").font(DS.font(.label)).foregroundStyle(DS.Status.ok)
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([savedTo]) }
+                    .buttonStyle(.dsLink)
             } else if let saveError {
-                Text(saveError).font(DS.sans(12)).foregroundStyle(DS.Status.err).lineLimit(2)
+                Text(saveError).font(DS.font(.label)).foregroundStyle(DS.Status.err).lineLimit(2)
             } else {
-                Text(DiagnosticsReviewNotice.short).font(DS.sans(12)).foregroundStyle(DS.Status.warn)
+                Text(DiagnosticsReviewNotice.short).font(DS.font(.label)).foregroundStyle(DS.Status.warn)
             }
             Spacer()
             Button("Collect Again") { Task { await collect() } }.disabled(bundle == nil)
+                .buttonStyle(.dsSecondary)
             Button("Copy") {
                 guard let bundle else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(bundle.text, forType: .string)
             }
+            .buttonStyle(.dsSecondary)
             .disabled(bundle == nil)
             Button("Save…") { save() }
+                .buttonStyle(.dsPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(bundle == nil)
         }
@@ -149,7 +153,7 @@ struct DiagnosticsReviewNotice: View {
     var body: some View {
         Label {
             Text(Self.text)
-                .font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: "eye").foregroundStyle(DS.Status.warn)

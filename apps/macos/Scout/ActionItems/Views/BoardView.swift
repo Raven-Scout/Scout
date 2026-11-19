@@ -82,7 +82,7 @@ struct BoardView: View {
             }
             Spacer(minLength: 0)
         }
-        .font(DS.sans(11.5))
+        .font(DS.font(.caption))
         .padding(.horizontal, 28)
         .padding(.top, 14)
         .accessibilityElement(children: .contain)
@@ -98,7 +98,7 @@ struct BoardView: View {
                 EmptyView()
             } else if column.tasks.isEmpty {
                 Text("Nothing here")
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.vertical, 8)
             } else {
@@ -121,11 +121,11 @@ struct BoardView: View {
         let row = HStack(spacing: 8) {
             KindMarker(kind: column.kind, size: 14)
             Text(column.title)
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .tracking(0.4)
                 .foregroundStyle(DS.Ink.p2)
             Text("\(column.count)")
-                .font(DS.mono(11, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
             Spacer(minLength: 0)
             if column.kind == .done {

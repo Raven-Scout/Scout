@@ -38,7 +38,7 @@ struct AdaptiveSegmentedControl<Value: Hashable>: View {
             }
         } label: {
             Text(Self.currentLabel(selection, in: options))
-                .font(DS.sans(13, weight: .medium))
+                .font(DS.font(.body, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)

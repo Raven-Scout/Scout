@@ -21,7 +21,7 @@ struct WriteFeedbackOverlay: View {
             }
             if let notice = controller.notice {
                 Text(notice)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p1)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -54,13 +54,13 @@ struct WriteFeedbackOverlay: View {
     private func undoToast(_ latest: VaultUndoController.Registered) -> some View {
         HStack(spacing: 10) {
             Text(Self.doneLine(for: latest.actionName))
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p1)
             Button("Undo") { controller.undoLatest(with: undoManager) }
                 .buttonStyle(.ds(.link, size: .small))
                 .help(ShortcutLabel.help("Undo", AppShortcut.undo))
             Button { controller.dismissLatest() } label: {
-                Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
+                Image(systemName: "xmark").font(DS.font(.caption2, weight: .semibold))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
@@ -124,10 +124,10 @@ struct WriteProblemBanner: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(problem.title)
-                    .font(DS.sans(13, weight: .semibold))
+                    .font(DS.font(.body, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
                 Text(problem.message)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
@@ -140,16 +140,14 @@ struct WriteProblemBanner: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString("\(problem.title)\n\(problem.message)\n\n\(details)", forType: .string)
                         }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(12))
-                        .foregroundStyle(DS.Ink.p3)
+                        .buttonStyle(.dsQuiet)
                     }
                 }
                 .padding(.top, 2)
             }
             Spacer(minLength: 0)
             Button(action: onDismiss) {
-                Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
+                Image(systemName: "xmark").font(DS.font(.caption2, weight: .semibold))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)

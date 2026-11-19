@@ -8,7 +8,7 @@ struct UpcomingStripView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Text("Heartbeat schedule")
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(0.06 * 11)
                     .foregroundStyle(DS.Ink.p4)
                 Spacer()
@@ -36,7 +36,7 @@ struct UpcomingStripView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(DS.Status.warn)
                     Text(fireErr)
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -60,10 +60,10 @@ struct UpcomingStripView: View {
                 .frame(width: 88, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
                 Text(up.displayName)
-                    .font(DS.sans(12.5, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(subtitle(for: up.type))
-                    .font(DS.mono(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,10 +72,8 @@ struct UpcomingStripView: View {
                     await state.fireNow(slotKey: up.slotKey)
                 }
             }
-            .buttonStyle(.plainHit)
+            .buttonStyle(.ds(.quiet, size: .small))
             .accessibilityLabel("Run \(up.displayName) now")
-            .font(DS.sans(11, weight: .medium))
-            .foregroundStyle(DS.Ink.p2)
             .padding(.horizontal, 8)
             .frame(height: 20)
             .background(EditorialChipBackground())
@@ -90,10 +88,10 @@ struct UpcomingStripView: View {
         fmt.amSymbol = "AM"; fmt.pmSymbol = "PM"
         return VStack(alignment: .leading, spacing: 1) {
             Text(fmt.string(from: up.scheduledAt))
-                .font(DS.mono(12, weight: .medium))
+                .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
             Text(relativeDay(up.scheduledAt))
-                .font(DS.mono(10.5))
+                .font(DS.font(.caption2))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -131,7 +129,7 @@ struct UpcomingStripView: View {
                 .padding(.vertical, 14)
         } else {
             Text("Nothing is scheduled to run.")
-                .font(DS.serif(13))
+                .dsFont(.body, .serif)
                 .foregroundStyle(DS.Ink.p3)
                 .italic()
                 .padding(.vertical, 16)
@@ -141,12 +139,12 @@ struct UpcomingStripView: View {
     private var footerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Updates every minute.")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .help("Read from the engine with `scoutctl schedule list-upcoming` every 60 seconds.")
             if !state.scheduleService.upcoming.contains(where: { $0.type == .research }) {
                 Text("Research isn't scheduled.")
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Status.warn)
             }
         }

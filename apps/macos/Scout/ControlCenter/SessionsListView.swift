@@ -60,11 +60,11 @@ struct SessionsListView: View {
             HStack(spacing: 10) {
                 Button { window.showMore() } label: {
                     Label("Show \(window.nextPageCount(in: runs)) more", systemImage: "chevron.down")
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                 }
                 .buttonStyle(.borderless)
                 Text(summary)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
             }
@@ -76,7 +76,7 @@ struct SessionsListView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("Sessions".uppercased())
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
@@ -89,11 +89,11 @@ struct SessionsListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .foregroundStyle(DS.Ink.p4)
             TextField("Search sessions", text: $search)
                 .textFieldStyle(.plain)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p1)
                 .frame(width: 160)
         }
@@ -131,13 +131,13 @@ struct SessionsListView: View {
             }
         }
         .menuStyle(.button)
-        .font(DS.sans(12))
+        .font(DS.font(.label))
         .frame(height: 24)
     }
 
     private var emptyState: some View {
         Text("No sessions match the current filters.")
-            .font(DS.serif(13))
+            .dsFont(.body, .serif)
             .foregroundStyle(DS.Ink.p3)
             .italic()
             .padding(.vertical, 16)

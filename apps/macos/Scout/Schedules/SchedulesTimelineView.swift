@@ -122,10 +122,10 @@ struct SchedulesTimelineView: View {
         return VStack(spacing: 8) {
             Spacer()
             Text(title)
-                .font(DS.serif(17, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("Pick another day, or Every day to see all schedules.")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }
@@ -202,7 +202,7 @@ struct SchedulesTimelineView: View {
                     .position(x: center, y: t.y)
                 if t.major {
                     Text(formatHour(t.h))
-                        .font(DS.mono(10.5, weight: .medium))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p3)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -223,7 +223,7 @@ struct SchedulesTimelineView: View {
             let center = geo.size.width / 2
             VStack(spacing: 0) {
                 Text("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
-                    .font(DS.mono(10, weight: .medium))
+                    .font(DS.font(.caption2, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 3)
@@ -254,7 +254,7 @@ struct SchedulesTimelineView: View {
                     .frame(width: 10, height: 10)
                     .position(x: center, y: y)
                 Text("NOW")
-                    .font(DS.mono(9, weight: .semibold))
+                    .font(DS.font(.micro, .mono, weight: .semibold))
                     .tracking(1.5)
                     .foregroundStyle(DS.Status.err)
                     .padding(.horizontal, 6)
@@ -336,14 +336,14 @@ struct SchedulesTimelineView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(t.hh + ":" + t.mm)
-                    .font(DS.mono(13, weight: .medium))
+                    .font(DS.font(.body, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(t.suffix.uppercased())
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
                 Text(slot.type.displayName)
-                    .font(DS.sans(9, weight: .medium))
+                    .font(DS.font(.micro, weight: .medium))
                     .tracking(0.8)
                     .foregroundStyle(DS.Ink.onTint)
                     .padding(.horizontal, 6)
@@ -351,7 +351,7 @@ struct SchedulesTimelineView: View {
                     .background(Capsule().fill(ring))
             }
             Text(slot.displayName)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -359,7 +359,7 @@ struct SchedulesTimelineView: View {
                 weekdayStrip(weekdays: slot.weekdays, ring: ring)
                 Spacer(minLength: 0)
                 Text("\(slot.cooldownMinutes)m cool")
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -375,7 +375,7 @@ struct SchedulesTimelineView: View {
             ForEach(names, id: \.self) { name in
                 let isOn = on.contains(name)
                 Text(String(name.prefix(1)))
-                    .font(DS.sans(8.5, weight: .medium))
+                    .font(DS.font(.micro, weight: .medium))
                     .foregroundStyle(isOn ? DS.Ink.onTint : DS.Ink.p4)
                     .frame(width: DS.scaled(12), height: DS.scaled(12))   // grows with Text size
                     .background(

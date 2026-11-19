@@ -96,6 +96,30 @@ struct DetailSmokeTests {
             size: paneSize)
     }
 
+    /// Review shots of the mono-heavy panes (run detail, log viewer, diff
+    /// viewer) at the Standard and Largest text sizes. Only when snapshots
+    /// are being written: it sets the app-wide `TextScale.shared`.
+    @Test("run detail, the log viewer and the diff viewer at Standard and Largest (review shots)",
+          .enabled(if: ProcessInfo.processInfo.environment["SCOUT_LAYOUT_SNAPSHOTS"]?.isEmpty == false))
+    func monoPaneSnapshots() async throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        let previous = TextScale.shared.size
+        defer { TextScale.shared.size = previous }
+        for size in [TextScale.Size.standard, .largest] {
+            TextScale.shared.size = size
+            let r = run(in: vault)
+            for (name, view) in [
+                ("run-detail", AnyView(RunDetailView(run: r).environmentObject(vault.state))),
+                ("log-viewer", AnyView(LogViewer(logPath: r.logPath))),
+                ("diff-viewer", AnyView(DiffViewer(commits: SmokeFixtures.commits).environmentObject(vault.state))),
+            ] {
+                ViewHost.render(view, size: paneSize)
+                // The panes load in a `.task`; shoot once they have.
+                await LayoutHarness.snapshot(view, size: paneSize, name: "\(size.rawValue)-\(name)", settle: .milliseconds(600))
+            }
+        }
+    }
+
     @Test("the errors tab renders with and without errors")
     func errorsTabRenders() {
         ViewHost.render(ErrorsTab(errors: SmokeFixtures.errors), size: paneSize)

@@ -13,7 +13,7 @@ enum CardStyle {
     /// editorial direction; this single constant is referenced by older code
     /// and is left sans + semibold to stay safe for callers that don't want
     /// the full header restyle.
-    static var sectionHeadingFont: Font { DS.sans(13, weight: .semibold) }
+    static var sectionHeadingFont: Font { DS.font(.body, weight: .semibold) }
 
     /// Priority hue for a section kind — now sourced from `DS`.
     static func accent(_ kind: ActionSection.Kind) -> Color {

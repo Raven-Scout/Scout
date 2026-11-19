@@ -20,7 +20,7 @@ struct ItemStatusPill: View {
         Text(Self.label(for: status))
             .help(status.displayName)
             .accessibilityLabel(status.displayName)
-            .font(DS.sans(10, weight: .semibold))
+            .font(DS.font(.caption2, weight: .semibold))
             .tracking(0.06 * 10)
             .foregroundStyle(tint)
             .padding(.horizontal, 8)

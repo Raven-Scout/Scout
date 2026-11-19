@@ -76,29 +76,29 @@ struct EngineUpgradeSheet: View {
         let title = Self.title(targetVersion: targetVersion, isRepair: isRepair)
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
-                .font(DS.serif(20, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .dsFont(.title, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .accessibilityAddTraits(.isHeader)
             Text(Self.explanation(isRepair: isRepair))
-                .font(DS.sans(12.5)).foregroundStyle(DS.Ink.p2)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(EngineUpgrader.upgradeSteps, id: \.rawValue) { s in
                     HStack(spacing: 10) {
                         InstallStepStatusIcon(status: progress[s]?.status)
-                        Text(s.title).font(DS.sans(13)).foregroundStyle(DS.Ink.p1)
+                        Text(s.title).font(DS.font(.body)).foregroundStyle(DS.Ink.p1)
                     }
                     .accessibilityElement(children: .combine)
                 }
             }
             if !isRunning, let failure = Self.failure(progress: progress, error: error) {
                 ScrollView {
-                    Text(failure).font(DS.mono(11)).foregroundStyle(DS.Status.err)
+                    Text(failure).font(DS.font(.caption, .mono)).foregroundStyle(DS.Status.err)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
                 .frame(maxHeight: 120)
                 Text(Self.statusNote(progress))
-                    .font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Button(copied ? "Copied" : "Copy details") {

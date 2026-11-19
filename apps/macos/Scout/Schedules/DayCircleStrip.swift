@@ -31,7 +31,7 @@ struct DayCircleStrip: View {
                 Circle().stroke(DS.Ink.decorative, lineWidth: 1)
             }
             Text(letterFor(day))
-                .font(DS.sans(max(8, diameter * 0.55), weight: .medium))
+                .font(DS.symbol(max(8, diameter * 0.55), weight: .medium))
                 // Paper on the slot hue was 2.1–3.7:1 in light mode.
                 .foregroundStyle(active ? DS.Ink.onTint : DS.Ink.p3)
         }

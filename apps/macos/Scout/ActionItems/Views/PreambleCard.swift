@@ -34,12 +34,12 @@ struct PreambleCard: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Image(systemName: "chevron.right")
-                        .font(DS.sans(10, weight: .semibold))
+                        .font(DS.font(.caption2, weight: .semibold))
                         .foregroundStyle(DS.Ink.p3)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: 12)
                     InlineMarkdownText(headline)
-                        .font(DS.serif(14.5, weight: .medium))
+                        .dsFont(.headline, .serif, weight: .medium)
                         .foregroundStyle(DS.Ink.p1)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,7 +55,7 @@ struct PreambleCard: View {
             // when expanded.
             if isExpanded {
                 InlineMarkdownText(text)
-                    .font(DS.serif(13.5))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(DS.Ink.p2)
                     .lineSpacing(2.5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -65,7 +65,7 @@ struct PreambleCard: View {
                     .padding(.leading, 12)   // align with headline text past the chevron
             } else if !text.isEmpty {
                 InlineMarkdownText(bodyTeaser(text))
-                    .font(DS.serif(13))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(DS.Ink.p3)
                     .lineSpacing(2)
                     .lineLimit(2)

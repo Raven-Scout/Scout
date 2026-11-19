@@ -197,7 +197,7 @@ struct InlineMarkdownText: View {
         // iterating `s.runs` would be walking a collection as it reshapes.
         let ranges = s.runs.filter { $0.link?.scheme == KBTag.scheme }.map(\.range)
         for range in ranges {
-            s[range].font = DS.mono(11.5, weight: .medium)
+            s[range].font = DS.font(.caption, .mono, weight: .medium)
             s[range].foregroundColor = DS.Accent.ink
             s[range].backgroundColor = DS.Accent.wash
             // Markdown links default to underlined accent-blue; a chip is

@@ -52,10 +52,10 @@ struct TopicSectionView: View {
                     rowHovered: hovered,
                     onRename: { onRename?($0) }
                 )
-                .font(DS.sans(15, weight: .semibold))
+                .font(DS.font(.headline, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
                 subtitle
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(1)
             }

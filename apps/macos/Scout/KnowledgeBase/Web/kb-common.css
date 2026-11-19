@@ -2,10 +2,22 @@
    --accent-fill, --g-people, …) are injected by Swift (KBWebTheme) before this
    file loads; the fallbacks below only matter when a page is opened in a browser. */
 
+/* The brand faces the app bundles (Resources/, beside these pages; OFL texts there too).
+   WKWebView can't see fonts the app registers for itself, so the pages load the files. */
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; }
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-Medium.ttf") format("truetype"); font-weight: 500; font-style: normal; }
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-SemiBold.ttf") format("truetype"); font-weight: 600; font-style: normal; }
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-Italic.ttf") format("truetype"); font-weight: 400; font-style: italic; }
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-MediumItalic.ttf") format("truetype"); font-weight: 500; font-style: italic; }
+@font-face { font-family: "Scout Newsreader"; src: url("Newsreader16pt-SemiBoldItalic.ttf") format("truetype"); font-weight: 600; font-style: italic; }
+@font-face { font-family: "Scout JetBrains Mono"; src: url("JetBrainsMono-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; }
+@font-face { font-family: "Scout JetBrains Mono"; src: url("JetBrainsMono-Medium.ttf") format("truetype"); font-weight: 500; font-style: normal; }
+@font-face { font-family: "Scout JetBrains Mono"; src: url("JetBrainsMono-SemiBold.ttf") format("truetype"); font-weight: 600; font-style: normal; }
+
 :root {
-  --font-serif: "Newsreader", "New York", ui-serif, Georgia, serif;
+  --font-serif: "Scout Newsreader", "New York", ui-serif, Georgia, serif;
   --font-sans: -apple-system, system-ui, "SF Pro Text", "Helvetica Neue", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: "Scout JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --scale: var(--text-scale, 1);
   --radius: 8px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);

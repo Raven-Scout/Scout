@@ -27,7 +27,7 @@ struct TaskBodyView: View {
                 if let label { eyebrow(label) }
                 if !text.isEmpty {
                     InlineMarkdownText(text)
-                        .font(DS.serif(13.5))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -40,11 +40,11 @@ struct TaskBodyView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { i, item in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text("\(i + 1)")
-                            .font(DS.mono(11, weight: .semibold))
+                            .font(DS.font(.caption, .mono, weight: .semibold))
                             .foregroundStyle(DS.Accent.ink)
                             .frame(width: 18, alignment: .trailing)
                         InlineMarkdownText(item)
-                            .font(DS.serif(13.5))
+                            .dsFont(.body, .serif)
                             .foregroundStyle(DS.Ink.p2)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,7 +67,7 @@ struct TaskBodyView: View {
     /// affordance in Scout's palette.
     private func eyebrow(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(DS.sans(10, weight: .semibold))
+            .font(DS.font(.caption2, weight: .semibold))
             .tracking(0.06 * 10)
             .foregroundStyle(DS.Ink.p3)
     }
@@ -78,7 +78,7 @@ struct TaskBodyView: View {
     private func contextPill(_ target: String) -> some View {
         let display = target.split(separator: "/").last.map(String.init) ?? target
         return InlineMarkdownText("[[\(target)|\(display)]]")
-            .font(DS.mono(10.5))
+            .font(DS.font(.caption2, .mono))
             .lineLimit(1)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)

@@ -20,11 +20,11 @@ struct SchedulesHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Schedules")
-                    .font(DS.serif(28, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .glossaryHelp(.schedule)
                 Text(subtitle)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
             Spacer()
@@ -49,7 +49,7 @@ struct SchedulesHeader: View {
     private var viewToggle: some View {
         HStack(spacing: 4) {
             Text("View")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.trailing, 4)
             EditorialSegmentedControl(

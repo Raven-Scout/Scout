@@ -94,7 +94,7 @@ struct FilterChipsView: View {
             }
         } label: {
             Text(Self.kindMenuTitle(for: filter.kinds))
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -112,7 +112,7 @@ struct FilterChipsView: View {
             .pickerStyle(.inline)
         } label: {
             Text("Show: \(Self.statusTitle(filter.status))")
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -144,7 +144,7 @@ struct FilterChipsView: View {
             filter.status = s
         } label: {
             Text(Self.statusTitle(s))
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
                 .fixedSize()
                 .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p2)
@@ -206,12 +206,12 @@ struct FilterChipsView: View {
                         .accessibilityHidden(true)
                 }
                 Text(label)
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                     .lineLimit(1)
                     .fixedSize()
                 if let count {
                     Text("\(count)")
-                        .font(DS.mono(10.5, weight: .medium))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                 }
             }

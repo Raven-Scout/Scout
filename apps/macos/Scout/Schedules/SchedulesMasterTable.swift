@@ -90,7 +90,7 @@ struct SchedulesMasterTable: View {
 
     private func headerCell(_ text: String) -> some View {
         Text(text)
-            .font(DS.sans(10, weight: .medium))
+            .font(DS.font(.caption2, weight: .medium))
             .tracking(1)
             .foregroundStyle(DS.Ink.p4)
     }

@@ -48,7 +48,7 @@ struct SlotTableRow: View {
     private var nameCell: some View {
         HStack(spacing: 6) {
             Text(slot.displayName)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -65,7 +65,7 @@ struct SlotTableRow: View {
 
     private var timeCell: some View {
         Text(slot.firesAtLocal)
-            .font(DS.mono(14, weight: .semibold))
+            .font(DS.font(.headline, .mono, weight: .semibold))
             .foregroundStyle(DS.Ink.p1)
     }
 
@@ -77,7 +77,7 @@ struct SlotTableRow: View {
                 diameter: 16
             )
             Text(WeekdaysFormatter.label(for: slot.weekdays))
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
     }
@@ -89,10 +89,10 @@ struct SlotTableRow: View {
     private var cooldownCell: some View {
         HStack(spacing: 4) {
             Text("\(slot.cooldownMinutes)m")
-                .font(DS.mono(13))
+                .font(DS.font(.body, .mono))
                 .foregroundStyle(DS.Ink.p2)
             Image(systemName: "bolt.fill")
-                .font(DS.sans(8))
+                .font(DS.font(.micro))
                 .foregroundStyle(DS.Ink.p4)
         }
     }

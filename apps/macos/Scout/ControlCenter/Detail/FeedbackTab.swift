@@ -23,28 +23,28 @@ struct FeedbackTab: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Notes for this run")
-                    .font(DS.sans(13, weight: .bold))
+                    .font(DS.font(.body, weight: .bold))
                 Spacer()
                 if let s = savedAt {
                     Text("Saved \(s.formatted(.relative(presentation: .named)))")
-                        .font(DS.sans(10))
+                        .font(DS.font(.caption2))
                         .foregroundStyle(.secondary)
                 } else if isUnreadable {
                     Text("Couldn't read the saved note")
-                        .font(DS.sans(10))
-                        .foregroundStyle(.red)
+                        .font(DS.font(.caption2))
+                        .foregroundStyle(DS.Status.err)
                 } else if let err = saveError {
                     Text("Error: \(err)")
-                        .font(DS.sans(10))
-                        .foregroundStyle(.red)
+                        .font(DS.font(.caption2))
+                        .foregroundStyle(DS.Status.err)
                 }
             }
             Text("Like a Slack reply — leave a note about what worked, what didn't, or what you'd want next time. Markdown is fine.")
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .foregroundStyle(.secondary)
 
             TextEditor(text: $text)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .frame(minHeight: 220)
                 .padding(6)
                 .overlay(
@@ -65,10 +65,12 @@ struct FeedbackTab: View {
                 Button("Open feedback file") {
                     NSWorkspace.shared.open(feedbackURL)
                 }
+                .buttonStyle(.ds(.secondary, size: .small))
                 .disabled(text.isEmpty && savedAt == nil)
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([feedbackURL])
                 }
+                .buttonStyle(.ds(.secondary, size: .small))
                 .disabled(text.isEmpty && savedAt == nil)
                 Spacer()
                 Button("Save") {
@@ -76,6 +78,7 @@ struct FeedbackTab: View {
                     saveTask?.cancel()
                     save(SaveTarget(url: feedbackURL, run: run, body: text))
                 }
+                .buttonStyle(.ds(.primary, size: .small))
                 .keyboardShortcut("s", modifiers: [.command])
                 .disabled(isUnreadable)
             }

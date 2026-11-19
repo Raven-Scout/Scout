@@ -146,7 +146,7 @@ struct ControlCenterView: View {
         HStack(alignment: .center, spacing: 10) {
             Button { closeDetail() } label: {
                 Image(systemName: "chevron.left")
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
@@ -154,14 +154,14 @@ struct ControlCenterView: View {
             .accessibilityLabel("Close run details")
 
             Text(run.displayName)
-                .font(DS.serif(16, weight: .medium))
+                .dsFont(.headline, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Spacer()
             Button { toggleExpansion() } label: {
                 Image(systemName: isExpanded
                       ? "arrow.down.right.and.arrow.up.left"
                       : "arrow.up.left.and.arrow.down.right")
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
@@ -201,10 +201,10 @@ struct ControlCenterView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text("Control Center")
-                .font(DS.serif(28, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text("Status · Activity · Sessions")
-                .font(DS.sans(14))
+                .font(DS.font(.headline))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }
@@ -256,7 +256,7 @@ struct RailCardHeader: View {
     let title: String
     var body: some View {
         Text(title.uppercased())
-            .font(DS.sans(11, weight: .medium))
+            .font(DS.font(.caption, weight: .medium))
             .tracking(0.06 * 11)
             .foregroundStyle(DS.Ink.p4)
             .padding(.bottom, 10)
@@ -310,11 +310,11 @@ struct RepoStateRailCard: View {
     private func row(_ key: String, _ value: String, _ color: Color) -> some View {
         HStack {
             Text(key)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             Text(value)
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .foregroundStyle(color)
                 // A real vault path can be long; keep the rail one line per row.
                 .lineLimit(1)
@@ -351,7 +351,7 @@ struct SignalsRailCard: View {
             let signals = computeSignals()
             if signals.isEmpty {
                 Text("All clear.")
-                    .font(DS.sans(13))
+                    .font(DS.font(.body))
                     .foregroundStyle(DS.Ink.p3)
                     .italic()
                     .padding(.top, 2)
@@ -374,11 +374,11 @@ struct SignalsRailCard: View {
             HStack(spacing: 6) {
                 Circle().fill(color(for: signal.severity)).frame(width: 6, height: 6)
                 Text(signal.tag)
-                    .font(DS.mono(11, weight: .medium))
+                    .font(DS.font(.caption, .mono, weight: .medium))
                     .foregroundStyle(color(for: signal.severity))
             }
             Text(signal.body)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
             if let action = signal.action {
@@ -537,11 +537,11 @@ struct KeyboardRailCard: View {
     private func kb(_ keys: String, _ label: String) -> some View {
         HStack(spacing: 10) {
             Text(keys)
-                .font(DS.mono(12, weight: .medium))
+                .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
                 .frame(width: 32, alignment: .leading)
             Text(label)
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }

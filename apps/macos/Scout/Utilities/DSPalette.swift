@@ -171,6 +171,12 @@ extension DS {
         /// on the light-mode red, dark ink on the lighter dark-mode red.
         static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
 
+        /// "Waiting on you": a topic-board item that is yours, a session that
+        /// needs you. Cobalt, so it never reads as the urgent red (#107), and
+        /// ΔE 15+ from the board's Doing steel blue and the People violet
+        /// (checked in the tests). Text-safe on paper.
+        static let attentionYou = Swatch(name: "AttentionYou", light: RGB(0.120, 0.330, 0.780), dark: RGB(0.480, 0.660, 1.000))
+
         // Slot-type hues (fills; their labels use `inkOnTint`)
         static let slotBriefing      = Swatch(name: "SlotBriefing",      light: RGB(0.860, 0.660, 0.180), dark: RGB(0.910, 0.760, 0.340))
         static let slotConsolidation = Swatch(name: "SlotConsolidation", light: RGB(0.400, 0.580, 0.760), dark: RGB(0.520, 0.700, 0.870))
@@ -228,6 +234,7 @@ extension DS {
         static let paperText: [Swatch] = [
             Palette.inkP1, Palette.inkP2, Palette.inkP3, Palette.inkP4,
             Palette.accentInk, Palette.statusOk, Palette.statusWarn, Palette.statusErr,
+            Palette.attentionYou,
         ]
 
         static let all: [Pair] = {
@@ -257,6 +264,9 @@ extension DS {
                                   background: Surface(name: "\(status.name) wash", swatch: status,
                                                       under: Palette.paperBase, opacity: statusWashOpacity)))
             }
+            // The topic board's action chip: paper on the "waiting on you" fill.
+            pairs.append(Pair(foreground: Palette.paperBase,
+                              background: Surface(name: "Attention.you", swatch: Palette.attentionYou)))
             // The Action Items error banner.
             pairs.append(Pair(foreground: Palette.statusOnFill,
                               background: Surface(name: "Status.err", swatch: Palette.statusErr)))

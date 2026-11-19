@@ -44,13 +44,13 @@ struct TaskLinksView: View {
     private func chipBody(for link: TaskDeepLink, external: Bool = true) -> some View {
         HStack(spacing: 5) {
             Image(systemName: iconName(for: link))
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .foregroundStyle(iconColor(for: link))
             Text(label(for: link))
-                .font(DS.sans(11.5, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
             Image(systemName: external ? "arrow.up.right" : "arrow.right")
-                .font(DS.sans(9))
+                .font(DS.font(.micro))
                 .foregroundStyle(DS.Ink.p4)
         }
         .padding(.horizontal, 8)

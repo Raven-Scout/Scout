@@ -17,7 +17,7 @@ struct ProposalCardView: View {
             header
             if let explanation = proposal.status.explanation() {
                 Label(explanation, systemImage: explanationIcon)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -29,7 +29,7 @@ struct ProposalCardView: View {
             }
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
             }
         }
@@ -43,11 +43,11 @@ struct ProposalCardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if !proposal.code.isEmpty {
                     Text(proposal.code)
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption, .mono))
                         .foregroundStyle(DS.Ink.p4)
                 }
                 Text(proposal.title)
-                    .font(DS.serif(17, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
             }

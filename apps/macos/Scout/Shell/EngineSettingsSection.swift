@@ -33,11 +33,11 @@ struct EngineSettingsSection: View {
     var body: some View {
         SettingsCard {
             SettingsRow(title: "Engine", help: model.sourceLabel) {
-                Text(versionText).font(DS.mono(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text(versionText).font(DS.font(.label, .mono, weight: .medium)).foregroundStyle(DS.Ink.p1)
             }
             if let root = model.rootPath {
                 SettingsRow(title: "Engine location", help: "The engine the app and its scheduled runs use.") {
-                    Text(root).font(DS.mono(11)).foregroundStyle(DS.Ink.p3).lineLimit(1).truncationMode(.middle)
+                    Text(root).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p3).lineLimit(1).truncationMode(.middle)
                 }
             }
             SettingsField(label: "Scout folder", help: model.vaultHelp) {
@@ -54,7 +54,7 @@ struct EngineSettingsSection: View {
             SettingsRow(title: "Health", help: healthHelp) {
                 HStack(spacing: 10) {
                     Text(model.healthLabel)
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .foregroundStyle(model.healthIsOK && !model.healthHasWarnings ? DS.Status.ok : DS.Status.warn)
                     if isChecking {
                         ProgressView().controlSize(.small)
@@ -70,7 +70,7 @@ struct EngineSettingsSection: View {
                 // The findings list below has each finding's fix and log.
                 SettingsRow(title: "Runs", help: model.runsHelp) {
                     Text(model.runsLabel)
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .foregroundStyle(model.runsIsOK ? DS.Status.ok : model.runsIsPaused ? DS.Ink.p2 : DS.Status.warn)
                 }
             }
@@ -78,25 +78,25 @@ struct EngineSettingsSection: View {
                 DoctorFindingsList(groups: model.findingGroups)
             } else if model.messages.count > 1 {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(model.messages.dropFirst(), id: \.self) { Text($0).font(DS.mono(11)).foregroundStyle(DS.Ink.p3) }
+                    ForEach(model.messages.dropFirst(), id: \.self) { Text($0).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p3) }
                 }.padding(.vertical, 10)
             }
             if let action = model.setupAction, let onSetUp {
                 SettingsRow(title: action.rowTitle, help: model.setupHelp ?? "") {
-                    Button(action.buttonTitle) { onSetUp() }.buttonStyle(.plainHit)
+                    Button(action.buttonTitle) { onSetUp() }.buttonStyle(.dsSecondary)
                 }
             }
             if let action = model.upgradeAction, let onUpdate {
                 SettingsRow(title: action.rowTitle, help: upgradeHelp(action)) {
                     Button(isUpdating ? "Working…" : action.buttonTitle) { onUpdate() }
-                        .buttonStyle(.plainHit)
+                        .buttonStyle(.dsPrimary)
                         .disabled(isUpdating)
                 }
             }
             if model.updatesAutomatically {
                 SettingsRow(title: "Updates", help: model.updatesHelp) {
                     Text(model.updatesIsOK ? "Automatic" : "Needs attention")
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .foregroundStyle(model.updatesIsOK ? DS.Status.ok : DS.Status.warn)
                 }
             }
@@ -180,7 +180,7 @@ struct DoctorFindingsList: View {
             ForEach(groups, id: \.severity) { group in
                 VStack(alignment: .leading, spacing: 8) {
                     Text("\(group.severity.title.uppercased()) · \(group.items.count)")
-                        .font(DS.sans(10, weight: .semibold))
+                        .font(DS.font(.caption2, weight: .semibold))
                         .tracking(0.6)
                         .foregroundStyle(color(group.severity))
                         .accessibilityAddTraits(.isHeader)
@@ -198,17 +198,17 @@ struct DoctorFindingsList: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.summary)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 if let detail = item.detail {
-                    Text(detail).font(DS.mono(11)).foregroundStyle(DS.Ink.p2)
+                    Text(detail).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
                 if let fix = item.fix {
-                    Text(fix).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                    Text(fix).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !item.items.isEmpty {
@@ -216,8 +216,7 @@ struct DoctorFindingsList: View {
                 }
                 if let log = item.logURL {
                     Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(11))
+                        .buttonStyle(.ds(.link, size: .small))
                 }
             }
         }
@@ -246,12 +245,12 @@ struct IssueFilesDisclosure: View {
         DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(files, id: \.self) { file in
-                    Text(file).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
+                    Text(file).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
                 }
             }
             .padding(.top, 4)
         } label: {
-            Text(Self.label(files.count)).font(DS.sans(11)).foregroundStyle(DS.Ink.p2)
+            Text(Self.label(files.count)).font(DS.font(.caption)).foregroundStyle(DS.Ink.p2)
                 .accessibilityHint("Lists the files this warning is about")
         }
     }

@@ -41,10 +41,10 @@ struct BoardSideListsView: View {
                         Text([entry.task.shortPrefix, entry.date?.formatted(.dateTime.day().month(.abbreviated))]
                             .compactMap { $0 }
                             .joined(separator: " · "))
-                            .font(DS.sans(11.5))
+                            .font(DS.font(.caption))
                             .foregroundStyle(DS.Ink.p3)
                         Text(entry.task.plainSubject)
-                            .font(DS.sans(13))
+                            .font(DS.font(.body))
                             .foregroundStyle(DS.Ink.p2)
                     }
                 }

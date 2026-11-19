@@ -77,4 +77,31 @@ enum LayoutHarness {
             window.contentView = nil
         }
     }
+
+    /// `snapshot`, for a view that loads in a `.task` (the log viewer): the
+    /// host stays up for `settle` before the shot, so the loaded content is
+    /// what's drawn.
+    static func snapshot<V: View>(_ view: V, size: CGSize, name: String, settle: Duration) async {
+        guard let directory = snapshotDirectory else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for dark in [false, true] {
+            let host = NSHostingView(rootView: view)
+            host.frame = CGRect(origin: .zero, size: size)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
+                                  backing: .buffered, defer: true)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: settle)
+            host.layoutSubtreeIfNeeded()
+            host.displayIfNeeded()
+            if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: rep)
+                let file = directory.appendingPathComponent(
+                    "\(name)-\(Int(size.width))x\(Int(size.height))-\(dark ? "dark" : "light").png")
+                try? rep.representation(using: .png, properties: [:])?.write(to: file)
+            }
+            window.contentView = nil
+        }
+    }
 }

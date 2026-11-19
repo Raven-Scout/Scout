@@ -143,7 +143,7 @@ struct PageLayoutTests {
             counts: [:], projects: SessionsLayout.menuProjects(index: index), service: service)
 
         let minimum = LayoutHarness.minimumWidth(of: header, height: 400)
-        let title = LayoutHarness.size(of: Text("Sessions").font(DS.serif(28, weight: .medium)),
+        let title = LayoutHarness.size(of: Text("Sessions").font(DS.font(.display, .serif, weight: .medium)),
                                        proposing: CGSize(width: 10_000, height: 100)).height
         for window in LayoutSize.windowWidths {
             let page = LayoutSize.pageWidth(window: window)
@@ -285,6 +285,31 @@ struct PageLayoutTests {
         for size in Self.settingsSizes {
             ViewHost.render(Self.settings(tab, in: vault), size: size)
             LayoutHarness.snapshot(Self.settings(tab, in: vault), size: size, name: "settings-\(tab.rawValue)")
+        }
+    }
+
+    // MARK: - Largest text size (review shots)
+
+    /// Every page and Settings tab at Settings ▸ General ▸ Text size ▸
+    /// Largest (×1.4), for a visual check of leading and of fixed-height rows
+    /// holding mono text. Runs only when snapshots are being written: it sets
+    /// the app-wide `TextScale.shared`, which other suites running at the
+    /// same time would see.
+    @Test("every page and Settings tab renders at the Largest text size (review shots)",
+          .enabled(if: ProcessInfo.processInfo.environment["SCOUT_LAYOUT_SNAPSHOTS"]?.isEmpty == false))
+    func largestTextSnapshots() async throws {
+        let vault = try await Self.loadedVault(); defer { vault.tearDown() }
+        let previous = TextScale.shared.size
+        TextScale.shared.size = .largest
+        defer { TextScale.shared.size = previous }
+        for item in SidebarItem.allCases {
+            let size = CGSize(width: 1280, height: 900)
+            ViewHost.render(Self.window(item, in: vault), size: size)
+            LayoutHarness.snapshot(Self.window(item, in: vault), size: size, name: "largest-window-\(item)")
+        }
+        for tab in SettingsTab.allCases {
+            let size = CGSize(width: 680, height: 620)
+            LayoutHarness.snapshot(Self.settings(tab, in: vault), size: size, name: "largest-settings-\(tab.rawValue)")
         }
     }
 

@@ -66,10 +66,10 @@ struct RunDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(run.displayName).font(DS.sans(17)).fontWeight(.bold)
+                Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
                     Text("Started by you")
-                        .font(DS.mono(10))
+                        .font(DS.font(.caption2))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
@@ -90,7 +90,7 @@ struct RunDetailView: View {
                     Text("· \(n) commit\(n == 1 ? "" : "s")")
                 }
             }
-            .font(DS.sans(10))
+            .font(DS.font(.caption2))
             .foregroundStyle(.secondary)
             if let problem = Problem(run: run) {
                 ProblemView(problem: problem)
@@ -105,13 +105,13 @@ struct RunDetailView: View {
             if run.ranUnprotected {
                 Label(RunOutcomeDisplay.sandbox(run.protection?.sandbox, source: run.protection?.sandboxSource)
                       ?? "Write protection off", systemImage: "shield.slash")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .help("This run could change Scout's own files. Write protection is set in Settings ▸ Engine.")
             }
             if run.protectedFilesUnchecked {
                 Label("Scout couldn't check this run's protected files afterwards", systemImage: "questionmark.diamond")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .help("The run's log has the integrity check's line saying why.")
             }
@@ -122,19 +122,12 @@ struct RunDetailView: View {
         HStack(spacing: 5) {
             Circle().fill(statusColor).frame(width: 6, height: 6)
             Text(run.status.displayName)
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .foregroundStyle(statusColor)
         }
     }
 
-    private var statusColor: Color {
-        switch run.status {
-        case .success: return .green
-        case .failure, .timeout, .rateLimited: return .red
-        case .running: return .orange
-        default: return .secondary
-        }
-    }
+    private var statusColor: Color { RunOutcomeDisplay.tone(run.status).color }
 
     /// "Run again" fires this run's own schedule (`Run.rerunSlotKey`, from the
     /// run ledger), never one guessed from the run type: several schedules
@@ -157,9 +150,10 @@ struct RunDetailView: View {
                 }
                 Spacer()
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             if let reason = rerunUnavailableReason {
                 Text(reason)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             } else if askedToRerun, let error = state.fireNowError {
@@ -168,7 +162,7 @@ struct RunDetailView: View {
                         .foregroundStyle(DS.Status.warn)
                         .accessibilityHidden(true)
                     Text(error)
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
@@ -231,8 +225,8 @@ struct ProtectedFileBlock: View {
                 .foregroundStyle(DS.Status.err)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(DS.sans(13, weight: .semibold)).foregroundStyle(DS.Status.err)
-                Text(message).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                Text(title).font(DS.font(.body, weight: .semibold)).foregroundStyle(DS.Status.err)
+                Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 HStack(spacing: 12) {
@@ -241,8 +235,7 @@ struct ProtectedFileBlock: View {
                     }
                     Button("Open log", action: openLog)
                 }
-                .buttonStyle(.plainHit)
-                .font(DS.sans(12))
+                .buttonStyle(.dsLink)
             }
             Spacer(minLength: 0)
         }

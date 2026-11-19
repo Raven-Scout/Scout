@@ -103,24 +103,24 @@ private struct UpdateTrackRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Text(title)
-                            .font(DS.sans(13, weight: .medium))
+                            .font(DS.font(.body, weight: .medium))
                             .foregroundStyle(DS.Ink.p1)
                         chip
                     }
                     Text(disabledNote ?? versionLine)
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                     if disabledNote == nil, let error = UpdateRowFormatting.errorLine(state: status.state) {
                         Text(error)
-                            .font(DS.sans(11.5))
+                            .font(DS.font(.caption))
                             .foregroundStyle(DS.Status.err)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let footnote {
                         Text(footnote)
-                            .font(DS.sans(11.5))
+                            .font(DS.font(.caption))
                             .foregroundStyle(DS.Ink.p3)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -166,7 +166,7 @@ private struct UpdateChip: View {
 
     var body: some View {
         Text(text)
-            .font(DS.sans(10.5, weight: .semibold))
+            .font(DS.font(.caption2, weight: .semibold))
             .foregroundStyle(color)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)

@@ -17,6 +17,11 @@ import SwiftUI
 //                                 Re-detect, What's new, Show more).
 //   .buttonStyle(.dsDestructive)  an action that discards or removes
 //                                 something. Shaped like secondary, red label.
+//   .buttonStyle(.dsQuiet)        a low-key action that shouldn't draw the
+//                                 eye: Dismiss, Hide, Clear, an icon-and-text
+//                                 action in a row. Grey text, no chrome,
+//                                 darker on hover. Not accent, so it never
+//                                 reads as a link.
 //
 // Each takes a size, `.ds(.secondary, size: .small)`, for dense rows. The
 // style sets the font and colours itself, so callers don't add `.font` or
@@ -33,7 +38,7 @@ extension DS {
 
     /// What a button is for. See the overview above.
     nonisolated enum ButtonRole: CaseIterable, Sendable {
-        case primary, secondary, link, destructive
+        case primary, secondary, link, destructive, quiet
     }
 
     /// Regular for forms and footers, small for dense rows and cards.
@@ -60,7 +65,7 @@ extension DS {
     nonisolated static func buttonColors(_ role: ButtonRole, enabled: Bool) -> ButtonColors {
         let P = Palette.self
         guard enabled else {
-            if role == .link { return ButtonColors(label: P.inkP4, fill: nil, stroke: nil) }
+            if role == .link || role == .quiet { return ButtonColors(label: P.inkP4, fill: nil, stroke: nil) }
             return ButtonColors(label: P.inkP4, fill: P.paperSunk, stroke: P.ruleSoft)
         }
         switch role {
@@ -68,8 +73,13 @@ extension DS {
         case .secondary:   return ButtonColors(label: P.inkP1, fill: P.paperRaised, stroke: P.ruleHard)
         case .link:        return ButtonColors(label: P.accentInk, fill: nil, stroke: nil)
         case .destructive: return ButtonColors(label: P.statusErr, fill: P.paperRaised, stroke: P.ruleHard)
+        case .quiet:       return ButtonColors(label: P.inkP3, fill: nil, stroke: nil)
         }
     }
+
+    /// A quiet button's label under the pointer: one step darker, so it
+    /// shows it can be clicked without looking like a link.
+    nonisolated static let quietHoverLabel = Palette.inkP2
 
     /// Corner radius of every chromed button.
     static let buttonCornerRadius: CGFloat = 6
@@ -93,9 +103,11 @@ private struct DSButtonBody: View {
     @Environment(\.isEnabled) private var isEnabled
     /// Inside a button style this is the button's own focus.
     @Environment(\.isFocused) private var isFocused
+    @State private var isHovering = false
 
     var body: some View {
         let colors = DS.buttonColors(role, enabled: isEnabled)
+        let label = role == .quiet && isEnabled && isHovering ? DS.quietHoverLabel : colors.label
         let shape = RoundedRectangle(cornerRadius: DS.buttonCornerRadius)
         let chromed = colors.fill != nil
         configuration.label
@@ -105,7 +117,7 @@ private struct DSButtonBody: View {
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, chromed ? 4 : 0)
-            .foregroundStyle(colors.label.color)
+            .foregroundStyle(label.color)
             .padding(.horizontal, chromed ? size.horizontalPadding : 0)
             .frame(minHeight: chromed ? size.height : nil)
             .background {
@@ -127,6 +139,7 @@ private struct DSButtonBody: View {
             }
             .opacity(!chromed && configuration.isPressed ? 0.7 : 1)
             .contentShape(shape)
+            .onHover { hovering in if role == .quiet { isHovering = hovering } }
             .dsFocusRing(isFocused, cornerRadius: DS.buttonCornerRadius)
     }
 }
@@ -140,6 +153,8 @@ extension ButtonStyle where Self == DSButtonStyle {
     static var dsLink: DSButtonStyle { DSButtonStyle(role: .link) }
     /// Discards or removes something.
     static var dsDestructive: DSButtonStyle { DSButtonStyle(role: .destructive) }
+    /// A low-key action (Dismiss, Hide, Clear): grey text, no chrome.
+    static var dsQuiet: DSButtonStyle { DSButtonStyle(role: .quiet) }
     /// Any role at either size.
     static func ds(_ role: DS.ButtonRole, size: DS.ButtonSize = .regular) -> DSButtonStyle {
         DSButtonStyle(role: role, size: size)

@@ -9,7 +9,7 @@ struct SideListView<Header: View, Row: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-                .font(DS.sans(12.5, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .foregroundStyle(DS.Ink.p3)
             if isEmpty {
                 Text("–").foregroundStyle(DS.Ink.p3)

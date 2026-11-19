@@ -174,7 +174,7 @@ struct BudgetSettingsSection: View {
                 format: "%dh window → $%.2f budget · sessions skip at $%.2f",
                 values.hours, gate.windowBudgetUSD, gate.skipThresholdUSD
             ))
-            .font(DS.mono(11.5))
+            .font(DS.font(.caption, .mono))
             .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -202,7 +202,7 @@ struct BudgetSettingsSection: View {
             )
         case .vault:
             Text(settings.configPath)
-                .font(DS.mono(10.5))
+                .font(DS.font(.caption2, .mono))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -223,14 +223,14 @@ struct BudgetSettingsSection: View {
 
     private func advisory(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private func message(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(DS.sans(12.5))
+            .font(DS.font(.label))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 14)

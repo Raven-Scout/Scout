@@ -57,7 +57,7 @@ struct PerFileItemCardView: View {
             if let label = optionalLabel, let value = optionalValue, !value.isEmpty {
                 // Through the inline renderer, so its wikilinks and URLs can be clicked.
                 InlineMarkdownText(Self.provenanceMarkdown(label: label, value: value))
-                    .font(DS.mono(11))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(DS.Ink.p4)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -68,7 +68,7 @@ struct PerFileItemCardView: View {
             actions
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
             }
         }
@@ -125,10 +125,10 @@ struct PerFileItemCardView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 if !item.date.isEmpty {
-                    Text(item.date).font(DS.mono(11)).foregroundStyle(DS.Ink.p4)
+                    Text(item.date).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p4)
                 }
                 Text(item.title)
-                    .font(DS.serif(17, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -216,8 +216,8 @@ struct PerFileItemCardView: View {
 
     private func actionLabel(_ label: String, systemImage: String, tint: Color) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: systemImage).font(DS.sans(10))
-            Text(label).font(DS.sans(11.5, weight: .medium))
+            Image(systemName: systemImage).font(DS.font(.caption2))
+            Text(label).font(DS.font(.caption, weight: .medium))
         }
         .foregroundStyle(tint)
         .padding(.horizontal, 12)

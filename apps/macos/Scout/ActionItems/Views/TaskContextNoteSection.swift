@@ -41,7 +41,7 @@ struct TaskContextNoteSection: View {
                 .padding(.top, 6)
             } label: {
                 Text("Context note")
-                    .font(DS.sans(12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(DS.Ink.p2)
             }
             .onChange(of: isExpanded) { _, open in
