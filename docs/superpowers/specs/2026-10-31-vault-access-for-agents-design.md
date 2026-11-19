@@ -951,6 +951,154 @@ run's sandbox, like the other runner steps.
 - **V4c:** `kb_note_proposal`, as a diff against the mirror blob it was made
   from, always to the review queue, never applied automatically.
 
+### 7.1b V4b design (2026-11-19, after V4a merged as #718 and #725)
+
+V4a gave the laptop `inbox pull`, `apply` and `revert`, all run by hand. V4b
+makes the inbox run by itself and gives the owner one place to see what agents
+sent. It was mapped against the engine as it is on main. Five facts from that
+mapping change the plan in §7.1a:
+
+- **A run can't host apply.** Every `run-*.sh` exports `SCOUT_MODE` and
+  `SCOUT_READER=autonomous`, and holds `.scout-logs/.scout-session.lock` from
+  start to exit. `kb/live_run.commit_source` also counts any commit whose
+  process ancestry reaches the runner as the run's own. `apply` refuses all
+  three by design (#725), and must keep doing so.
+- **Every scheduled run sends.** Each runner prompt ends with the wrap (Slack,
+  Telegram, the Digest). No run "doesn't send", so §7.1a's "observations go
+  to runs that don't send" has nowhere to go.
+- **`knowledge-base/review-queue.md` is the wrong home.** It is free prose,
+  written by the model. Every wrap reads its pending count, and as a normal
+  note it goes to every delegate mirror and to Agnes. One delegate's text
+  there would reach the next run's sends and every other delegate.
+- **Pulled copies are in limbo.** Nothing commits, ignores or keeps local
+  `.scout-inbox/agents/`. Committed, it would sync to Agnes: `.scout-inbox/**`
+  is only `visibility: private`, not local-only. An `autonomous` run can read
+  it.
+- **The run gate doesn't know the inbox.** `live_run._DELEGATE_WRITES` names
+  link, unlink, key and trust-state, not `inbox pull`, `apply` or `revert`.
+
+**The rule V4b keeps: agent text never reaches a run.** What runs see from the
+inbox is ids, ops, tags, dates and commits, read from the signed state. Agent
+text (observations, comments) goes only to the owner, who decides what, if
+anything, becomes vault content.
+
+#### The tick step: `scoutctl inbox sync`
+
+- **Where it runs.** `schedule_tick._do_tick` starts it beside
+  `_sync_delegates`, detached, the same way as `_spawn_delegate_sync`:
+  - its working folder is outside the vault;
+  - `SCOUT_MODE` and `SCOUT_READER` are both removed, so it runs as the owner;
+  - it is gated on `.scout-state/delegate-inbox/state.json` existing.
+
+  It never runs inside a run.
+- **What it does,** in order, under the session lock (a live run makes it wait
+  for the next tick, `busy`, which is not an error):
+  1. `pull --all`.
+  2. A commit of the pull, through `git-safe-commit.sh`, as
+     `inbox: pull from delegate-<id>`. It commits only `taken.ledger`; the
+     copies stay uncommitted (below).
+  3. `apply --all`. Each change is its own commit, as in #725.
+- **Agnes.** In an Agnes-linked vault (`.scout-state/repo-sync.json`) it takes
+  the repo lease (`scoutctl repo lease acquire`) for its commits, or skips this
+  tick.
+- **Pace.** It runs at most every 15 minutes, like the mirror sync (`due`), and
+  records events through `schedule_tick._emit_event`.
+
+#### Where agent text lives: the owner's inbox, never the vault
+
+- **Copies stay on this computer.** `.scout-inbox/agents/*/*.json` is
+  gitignored, and `.scout-inbox/agents/**` goes under `local_only.always`
+  (`defaults/privacy.yaml`, with the snapshot regenerated). Copies are never
+  committed, so never synced to Agnes or another clone. The ledger, which
+  holds ULIDs only, is committed, for dedup across computers.
+- **Runs can't read copies.** The run read gate (`hooks/kb_read_gate.py`)
+  denies `.scout-inbox/agents/` to every run (Read, Grep, Glob, and a Bash
+  command that names it), not only to delegate readers.
+- **The run gate refuses the inbox.** `inbox pull`, `apply` and `revert` join
+  `_DELEGATE_WRITES` in `kb/live_run.py`.
+- **`scoutctl inbox review`** (owner only, `headless_gate`) lists what waits
+  for a decision:
+  - held `add-comment` ops;
+  - `limited` ops on their last day;
+  - observations;
+  - `dismiss` and `rename-topic`, once the schema allows them (V4c).
+
+  The agent's text is printed as plain text: control characters are already
+  refused by the schema, and the terminal output is never interpreted.
+
+  `inbox review accept <ULID>`:
+  - **A comment** is written with author `delegate-<id>` by the owner's own
+    hand, in a commit naming both.
+  - **An observation** becomes a note at `knowledge-base/from-agents/<id>/<ULID>.md`,
+    with `source: delegate:<id>` and `visibility: private` (§7.1a: no
+    spreading). The privacy classifier gains `delegate_source`, which
+    `visible_to` hides from every delegate, the author included.
+
+  `inbox review reject <ULID>` records the decision. Both outcomes are
+  recorded by ULID in the signed state.
+- **The app** shows the same list later, through `inbox review --json`, as
+  plain `Text` (no markdown, no links). That is a separate app PR, for the app
+  session that owns the agent-copies card.
+
+#### What runs do see, all of it from the signed state
+
+- **Done by a delegate.** `pre-session data` gains `delegate_changes`: for each
+  op applied since the last run, the delegate id, op, `[#TAG]`, the date and
+  the commit. It holds no agent text.
+- **The close-out rule.** `phases/core/action-items.md` (the rule at about
+  :335) gains a sub-rule: a `[x]` that `delegate_changes` names gets
+  `Completed by: delegate-<id>` with that commit as evidence. It is never
+  taken as the owner's.
+- **The wrap** may count "N done by agents". The count is a number, so no
+  escaping is needed.
+
+#### Health, doctor and status
+
+- **`health.delegate_inbox_findings`.** It is gated on the inbox state, like
+  `delegate_findings`. It warns on:
+  - an inbox not pulled in a day, or failing (`last_error`);
+  - copies waiting on review for more than a week;
+  - `dirty`, `busy` or `stale` counts above a floor;
+  - untaken copies (planted files).
+
+  A vault with no inbox has no finding, so the doctor contract fixture is
+  unchanged.
+- **The doctor** adds `_check_delegate_inboxes`, beside
+  `_check_delegate_mirrors`.
+- **`delegate status --json`** gains each inbox's last pull, error and counts,
+  for the app's agent-copies card.
+
+#### Smaller fixes in V4b
+
+- **Only today's daily file.** `apply` acts only on today's file (as
+  `retitle._require_today` does); a proposal for another date is `stale`.
+  Consolidation carries open items forward into today's file, so a change to
+  an older file would be lost or applied twice.
+- **Events.** Each applied change appends an event,
+  `source: delegate:<id>`, holding ULID, op, tag and commit only, to
+  `schedule-events-*.jsonl`. It is telemetry, not proof: `.scout-logs/` is
+  run-writable. The proof is the signed state and the commit.
+- **Agnes.** `.scout-inbox/agents/**` also goes into Agnes's own
+  always-local list (`repo_sync.HOST_ALWAYS_LOCAL`, mirrored from Agnes). That
+  is a note for the Agnes sub-coordinator.
+
+#### Slices
+
+- **V4b1 (engine, one PR):**
+  - the tick step and `inbox sync`;
+  - gitignore and local-only for the copies;
+  - the read gate and run gate;
+  - today's file only;
+  - events;
+  - `delegate_changes` and the close-out sub-rule;
+  - health, doctor and status.
+- **V4b2 (engine):** `inbox review` (list, accept, reject), the
+  `delegate_source` classifier fact, and the `from-agents/` notes.
+- **V4b3 (app):** the review list in plain text, for the app session.
+
+**For the owner to decide:** whether an accepted observation should ever reach
+the accepting agent's own mirror. The draft says no, for any delegate.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
