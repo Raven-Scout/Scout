@@ -82,6 +82,9 @@ def test_step_1d_routes_governance_to_a_pending_file() -> None:
     assert "```diff" in step_1d or "`diff` block" in step_1d
     assert "never applied by the run that wrote it" in step_1d
     assert "Harness fallback" in step_1d
+    # I2: a fallback item is an ordinary change once applied; I3: a decision is bound to the diff the owner saw.
+    assert "`governance: false`" in step_1d
+    assert "Never edit a pending file once committed" in step_1d and "new slug" in step_1d
 
 
 def test_step_1e_is_its_own_dreaming_fragment_with_no_connector() -> None:
@@ -107,8 +110,18 @@ def test_step_1e_acts_on_due() -> None:
         assert trailer in step_1e, trailer
     assert "verdict:" in step_1e
     assert "scoutctl changes apply" in step_1e and "scoutctl changes discard" in step_1e
-    assert "Scout-Change-Governance: yes" in step_1e
+    # I2: the move into applied/ makes a governance change, never a trailer; a fallback item is deleted instead.
+    assert "Scout-Change-Governance" not in step_1e
+    assert "move into `applied/` is what marks the commit as a governance change" in step_1e
+    assert "`governance: false`" in step_1e
     assert "blocked" in step_1e and "edited-since" in step_1e
+    # I5: a blocked undo is reported once.
+    assert "scripts/scoutctl changes announced --blocked <id>" in step_1e
+    # m2: a suspect `undo` would refuse is worded, not offered.
+    assert "`undo_blocked`" in step_1e and "only you can undo it, by hand" in step_1e
+    # m10: one engagement-targeted change per run, on top of none under test.
+    assert "at most one per run" in step_1e
+    assert "Never edit a pending file once committed" in step_1e
     assert "Slack" not in step_1e.replace("with or without Slack", "")  # the wrap, whatever its channel
     assert "Undo in the Changes tab, or run `scoutctl changes undo <id>`" in step_1e
     assert "scoutctl changes announced" in step_1e
@@ -130,6 +143,25 @@ def test_step_1f_lists_the_trailers() -> None:
     step_1f = _step(_text(FEEDBACK), "### Step 1f")
     for trailer in ("Scout-Change-Why:", "Scout-Change-Summary:", "Scout-Change-Reverts:"):
         assert trailer in step_1f, trailer
+    assert "Scout-Change-Governance" not in step_1f  # I2: a run never claims governance on an ordinary commit
+    assert "at most one change per run" in step_1f
+
+
+_OWNER_ONLY = r"scripts/scoutctl changes (?:approve|reject|undo|wrong|auto-rollback|calibrated)\b"
+
+
+def test_no_phase_tells_a_run_to_run_an_owner_only_command() -> None:
+    """T8: a run executes `scripts/scoutctl ...`. Owner-only commands appear only in the owner-facing wrap line
+    ("run `scoutctl changes undo <id>`", no `scripts/` prefix) and in the "Never run" list."""
+    hits = [
+        f"{p.relative_to(PHASES)}: {line.strip()[:80]}"
+        for p in sorted(PHASES.rglob("*.md"))
+        for line in _text(p).splitlines()
+        if re.search(_OWNER_ONLY, line)
+    ]
+    assert hits == []
+    assert re.search(_OWNER_ONLY, "run `scripts/scoutctl changes undo chg-0123456789ab`")
+    assert not re.search(_OWNER_ONLY, "or run `scoutctl changes undo <id>`")
 
 
 def test_no_phase_routes_to_dreaming_proposals() -> None:
@@ -179,7 +211,6 @@ def test_git_setup_names_the_trailers() -> None:
         "Scout-Change-Why:",
         "Scout-Change-Summary:",
         "Scout-Change-Targets:",
-        "Scout-Change-Governance: yes",
         "`pattern-<N>`",
         "`owner-ask:<Slack ts>`",
         "`wishlist:<slug>`",
@@ -192,7 +223,9 @@ def test_git_setup_names_the_trailers() -> None:
         "engagement_tests_running",
     ):
         assert needle in rule, needle
-    assert re.search(r"git-safe-commit\.sh \$'[^']*\\n\\nScout-Change-Why: ", rule)
+    assert "Scout-Change-Governance" not in rule  # I2: only the apply step's move makes a governance change
+    assert "at most one such change per run" in rule  # m10
+    assert re.search(r"git-safe-commit\.sh \$'(?:[^'\\]|\\.)*\\n\\nScout-Change-Why: ", rule)
     for kind in ("SKILL", "DREAMING", "RESEARCH"):
         brain = _assemble(_config(set()), kind, custom={})
         assert "Scout-Change-Why:" in brain and "Scout-Change-Summary:" in brain, kind
@@ -242,3 +275,31 @@ def test_every_engagement_record_names_a_run_kind_and_a_known_surface() -> None:
     assert {"dm-sent", "dm-reply", "dm-reaction", "recurrence", "owner-away"} <= {
         k for kinds, _ in calls for k in kinds.split("|")
     }
+
+
+# --- $'…' commit messages survive an apostrophe (I6) ----------------------------------------------------------------
+
+
+def _dollar_quoted(text: str) -> list[str]:
+    """Every `$'…'` string in ``text``, escapes kept (a `\\'` doesn't end it)."""
+    return re.findall(r"\$'((?:[^'\\]|\\.)*)'", text)
+
+
+@pytest.mark.parametrize("path", [GIT_SETUP, DECISIONS])
+def test_commit_messages_say_how_to_write_an_apostrophe(path: Path) -> None:
+    import shutil
+    import subprocess
+
+    text = _text(path)
+    assert "write `\\'` for an apostrophe and `\\\\` for a backslash" in text
+    examples = [e for e in _dollar_quoted(text) if "\\'" in e]
+    if path == GIT_SETUP:
+        assert examples, "the example message carries an apostrophe"
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - every CI image has bash
+        pytest.skip("no bash")
+    for example in examples:
+        out = subprocess.run(
+            [bash, "-c", f"printf '%s' $'{example}'"], capture_output=True, text=True, check=True
+        ).stdout
+        assert "'s " in out and "\n\nScout-Change-Why: " in out, out
