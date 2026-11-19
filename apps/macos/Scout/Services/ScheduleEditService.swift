@@ -36,6 +36,16 @@ struct ScheduleValidationError: Error, LocalizedError, Equatable {
     var errorDescription: String? { details }
 }
 
+/// Thrown by `ScheduleEditService.save` when two slots share a key. The
+/// engine reads schedule.yaml with a YAML loader that keeps the last of two
+/// same-named entries, so writing both would silently replace one schedule
+/// with the other (UI audit #58). The form refuses this first; this is the
+/// write path's own guard.
+struct ScheduleDuplicateKeyError: Error, LocalizedError, Equatable {
+    let keys: [String]
+    var errorDescription: String? { "Duplicate schedule keys: \(keys.joined(separator: ", "))" }
+}
+
 @MainActor
 final class ScheduleEditService: ObservableObject {
     @Published private(set) var slots: [Slot] = []
@@ -59,6 +69,12 @@ final class ScheduleEditService: ObservableObject {
     /// off screen (an undo from another page, a save that finished after the
     /// page closed). nil: none (tests that don't need it).
     private let drafts: SlotDraftStore?
+    /// Bumped each time a change made outside the app (by hand, another
+    /// app, a sync) was picked up from disk, so the page can drop a notice
+    /// that asked the user to reload (UI audit #61).
+    @Published private(set) var externalReloadCount = 0
+    private var watchTask: Task<Void, Never>?
+    private var pendingExternalReload: Task<Void, Never>?
 
     init(
         scoutctl: URL,
@@ -122,6 +138,64 @@ final class ScheduleEditService: ObservableObject {
         }
     }
 
+    // MARK: - Watching schedule.yaml (UI audit #61)
+
+    /// Reload whenever schedule.yaml changes on disk, so the page never
+    /// shows (or saves against) a schedule that's out of date. Watches the
+    /// file's folder, since a save replaces the file rather than editing it.
+    ///
+    /// A reload respects unsaved edits: `loadAll` reconciles `SlotDraftStore`
+    /// (#669), and an open form rebases its draft onto the new slot, keeping
+    /// the user's values and naming any field changed on both sides (C10).
+    /// Reloads queue behind saves (`serialized`), and one that finds the
+    /// bytes the app last loaded (its own write) does nothing.
+    func startWatching(_ source: any FileSystemEventSource, debounce: Duration = .milliseconds(300)) {
+        watchTask?.cancel()
+        let folder = canonicalSchedulePath.deletingLastPathComponent().resolvingRealPath()
+        let name = canonicalSchedulePath.lastPathComponent
+        // Subscribe before the task starts so no early event is lost.
+        let events = source.events(for: folder)
+        watchTask = Task { [weak self] in
+            for await event in events where event.url.lastPathComponent == name {
+                self?.scheduleExternalReload(after: debounce)
+            }
+        }
+    }
+
+    func stopWatching() {
+        watchTask?.cancel()
+        watchTask = nil
+        pendingExternalReload?.cancel()
+        pendingExternalReload = nil
+    }
+
+    /// Coalesce a burst of events (an editor's save is several) into one reload.
+    private func scheduleExternalReload(after delay: Duration) {
+        guard pendingExternalReload == nil else { return }
+        pendingExternalReload = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingExternalReload = nil
+            await self.reloadIfChangedOnDisk()
+        }
+    }
+
+    /// Reload if schedule.yaml no longer holds what the last load read.
+    /// Queued behind any save, delete or undo in flight. Returns whether it
+    /// reloaded. A failed reload lands in `loadState` like any other.
+    @discardableResult
+    func reloadIfChangedOnDisk() async -> Bool {
+        (try? await serialized { () async throws -> Bool in
+            let onDisk = try? FileSnapshot.capture(self.canonicalSchedulePath)
+            if self.loadState == .loaded, let loaded = self.loadedSnapshot, onDisk?.data == loaded.data {
+                return false
+            }
+            try? await self.loadAll()
+            self.externalReloadCount += 1
+            return true
+        }) ?? false
+    }
+
     private func currentMtime() -> Date? {
         (try? FileManager.default
             .attributesOfItem(atPath: canonicalSchedulePath.path)[.modificationDate]) as? Date
@@ -175,6 +249,11 @@ final class ScheduleEditService: ObservableObject {
     private func performSave(allSlots: [Slot], actionName: String) async throws -> VaultChange? {
         // 0. Never write from a page that doesn't know what's in the file.
         guard loadState == .loaded else { throw ScheduleNotLoadedError() }
+        // Never write two slots under one key: the engine would keep only
+        // the last (UI audit #58).
+        let duplicates = Dictionary(grouping: allSlots.map(\.key), by: { $0 })
+            .filter { $0.value.count > 1 }.keys.sorted()
+        guard duplicates.isEmpty else { throw ScheduleDuplicateKeyError(keys: duplicates) }
 
         // 1. Stale-check. Compares the optionals directly, so a file that
         // appeared, vanished or changed (in either direction) since the load

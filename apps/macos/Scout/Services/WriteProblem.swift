@@ -80,6 +80,11 @@ struct WriteProblem: Equatable, Identifiable {
                 kind: .failed, title: title,
                 message: "Scout's check didn't accept the schedule, so nothing was saved. Check the fields and try again; the check's own words are under Details.",
                 details: e.details, retryable: false)
+        case let e as ScheduleDuplicateKeyError:
+            return WriteProblem(
+                kind: .failed, title: title,
+                message: "Two schedules would have the same name, and Scout would keep only one of them, so nothing was saved. Give the new schedule another name.",
+                details: e.errorDescription, retryable: false)
         case let e as ScheduleNotLoadedError:
             return WriteProblem(
                 kind: .stale, title: title,

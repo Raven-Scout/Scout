@@ -15,6 +15,9 @@ struct SchedulesView: View {
     @State private var staleBannerVisible = false
     @State private var stalenessDetail: String?
     @State private var errorProblem: Problem?
+    /// A Run now from this page that didn't start (UI audit #56): the
+    /// engine's words go behind Details.
+    @State private var fireNowProblem: Problem?
     @State private var isInitialLoading = true
     /// The page's width, for `DetailPaneLayout` (UI audit C6).
     @State private var pageWidth: CGFloat?
@@ -56,7 +59,9 @@ struct SchedulesView: View {
                     onFireNow: handleFireNow,
                     onRevertNewDraft: detailIsNewDraft ? { finishNewDraft(key: newDraftSlot?.key); selectedSlotKey = nil } : nil,
                     defaultModel: modelSettings.settings?.default.model,
-                    onDirtyChange: { detailIsDirty = $0 }
+                    onDirtyChange: { detailIsDirty = $0 },
+                    existingKeys: Set(service.slots.map(\.key)),
+                    firingKeys: appState.firingSlotKeys
                 )
                 .frame(width: width)
                 .overlay(alignment: .topTrailing) {
@@ -78,12 +83,24 @@ struct SchedulesView: View {
             }
         }
         .background(DS.Paper.base)
+        // schedule.yaml changed outside the app and the service reloaded it
+        // (UI audit #61): a notice asking to reload is moot now.
+        .onChange(of: service.externalReloadCount) { _, _ in staleBannerVisible = false }
         .task {
             // A new slot added before leaving the page comes back with it.
             // (ScheduleEditService reconciles stored drafts on every load.)
             if newDraftSlot == nil { newDraftSlot = drafts.pendingNewSlot }
             await reload()
         }
+    }
+
+    /// The page's load-failed state: plain words, the engine's output under
+    /// Details.
+    static func loadFailedProblem(_ message: String) -> Problem {
+        Problem(severity: .error, title: "Couldn't load the schedule",
+                impact: "Scout won't change the schedule until it can read it.",
+                fix: "Try again. If it keeps failing, open Settings ▸ Engine and choose Check now.",
+                details: message)
     }
 
     /// The notice for edits a reload dropped because their slot left the
@@ -114,6 +131,11 @@ struct SchedulesView: View {
             }
             if let problem = errorProblem {
                 errorBanner(problem)
+            }
+            if let problem = fireNowProblem {
+                ProblemView(problem: problem, onDismiss: { fireNowProblem = nil })
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
             }
             if !drafts.droppedSlotNames.isEmpty {
                 droppedEditsBanner
@@ -199,22 +221,11 @@ struct SchedulesView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(DS.sans(36))
                 .foregroundStyle(DS.Status.err)
-            Text("Couldn't load the schedule")
-                .font(DS.serif(20, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
-            Text("Scout won't change the schedule until it can read it.")
-                .font(DS.sans(13))
-                .foregroundStyle(DS.Ink.p3)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Text(message)
-                .font(DS.mono(11))
-                .foregroundStyle(DS.Ink.p3)
-                .lineLimit(6)
-                .textSelection(.enabled)
-                .frame(maxWidth: 420)
-            Button("Retry") { Task { await reload() } }
-                .buttonStyle(.dsPrimary)
+            // scoutctl's own output goes behind Details (UI audit #56).
+            ProblemView(problem: Self.loadFailedProblem(message),
+                        actions: [.retry { Task { await reload() } }],
+                        style: .inline)
+                .frame(maxWidth: 460)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -484,6 +495,24 @@ struct SchedulesView: View {
     }
 
     private func handleFireNow(_ key: String) async {
+        fireNowProblem = nil
         await appState.fireNow(slotKey: key)
+        fireNowProblem = Self.fireNowProblem(appState.fireNowError, slotKey: key)
+    }
+
+    /// The banner for a Run now that didn't start, or nil when it did.
+    /// `AppState.fireNowError` carries scoutctl's own words, which go
+    /// behind Details, never on a visible line.
+    static func fireNowProblem(_ error: String?, slotKey: String) -> Problem? {
+        guard let error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let name = DisplayName.slotKey(slotKey)
+        if error.contains("already being started") {
+            return Problem(severity: .info, title: "\(name) is already starting",
+                           impact: "Scout ignored the second Run now.", details: error)
+        }
+        return Problem(severity: .error, title: "Couldn't start \(name)",
+                       impact: "Scout's engine didn't start the run.",
+                       fix: "Try again in a minute. If it keeps failing, open Settings ▸ Engine and choose Check now.",
+                       details: error)
     }
 }

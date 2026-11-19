@@ -15,6 +15,10 @@ struct SchedulesTimelineView: View {
     @Binding var selectedSlotKey: String?
 
     @State private var nowMin: Int = currentMinute()
+    /// The day the timeline draws: a weekday token ("Mon"…"Sun"), or nil for
+    /// every schedule regardless of day. Starts on today, so a weekday-only
+    /// schedule no longer shows on a Saturday (UI audit #60).
+    @State private var day: String? = Self.weekdayToken(for: .now)
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     // Layout constants — keep in sync with schedules.jsx
@@ -29,7 +33,74 @@ struct SchedulesTimelineView: View {
     private let cardSlotHeight: CGFloat = 64      // height reserved per card
 
     var body: some View {
-        let sorted = slots.sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
+        VStack(alignment: .leading, spacing: 0) {
+            dayPicker
+            if Self.slots(slots, on: day).isEmpty, let day {
+                emptyDay(day)
+            } else {
+                timeline
+            }
+        }
+    }
+
+    // MARK: - Day (UI audit #60)
+
+    static let weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                               "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+
+    /// The schedules that run on `day` (a weekday token), or all of them
+    /// when `day` is nil.
+    nonisolated static func slots(_ slots: [Slot], on day: String?) -> [Slot] {
+        guard let day else { return slots }
+        return slots.filter { $0.weekdays.contains(day) }
+    }
+
+    /// `date`'s weekday as the schedule spells it ("Mon"…"Sun").
+    nonisolated static func weekdayToken(for date: Date, calendar: Calendar = .current) -> String {
+        // Calendar weekdays run 1 = Sunday … 7 = Saturday.
+        let tokens = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        return tokens[(calendar.component(.weekday, from: date) - 1 + 7) % 7]
+    }
+
+    /// Whether the timeline's "now" line belongs on the day shown: today,
+    /// or every day at once.
+    nonisolated static func showsNow(day: String?, today: String) -> Bool {
+        day == nil || day == today
+    }
+
+    private var dayPicker: some View {
+        let today = Self.weekdayToken(for: .now)
+        let options: [(label: String, value: String?)] = Self.weekdayOrder.map { token in
+            (token == today ? "Today" : token, token)
+        } + [("Every day", nil)]
+        return AdaptiveSegmentedControl(
+            selection: $day,
+            options: options,
+            minSegmentWidth: 44,
+            accessibilityTitle: "Day shown"
+        )
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+
+    private func emptyDay(_ day: String) -> some View {
+        VStack(spacing: 8) {
+            Spacer()
+            Text("Nothing runs on \(Self.weekdayNames[day] ?? day)")
+                .font(DS.serif(17, weight: .medium))
+                .foregroundStyle(DS.Ink.p2)
+            Text("Pick another day, or Every day to see all schedules.")
+                .font(DS.sans(12))
+                .foregroundStyle(DS.Ink.p3)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var timeline: some View {
+        let sorted = Self.slots(slots, on: day).sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
         let timeline = computeSegments(events: sorted.map { minutes($0.firesAtLocal) })
         let positioned = layoutCards(sorted: sorted, yFor: timeline.yForMinute)
 
@@ -51,7 +122,7 @@ struct SchedulesTimelineView: View {
                 }
 
                 // NOW marker.
-                if showNow(timeline: timeline) {
+                if Self.showsNow(day: day, today: Self.weekdayToken(for: .now)) && showNow(timeline: timeline) {
                     nowMarker(y: timeline.yForMinute(nowMin), totalH: timeline.totalH)
                 }
 

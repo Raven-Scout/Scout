@@ -132,42 +132,95 @@ struct SlotDraft: Equatable {
     }
 
     /// Returns the first per-field validation error, or nil if all clean.
-    /// Used by the form to disable the Save button.
-    var firstError: String? {
+    /// Used by the form to disable the Save button. `existingKeys` are the
+    /// schedules already saved; pass them for a new schedule so its name
+    /// can't land on one of them (an existing schedule's own key is fine).
+    /// Worded in the form's own field names (`SlotFieldLabel`), never the
+    /// file's (`runner`, `cooldown_minutes`, `missed_window_hours`): UI
+    /// audit #55.
+    func firstError(existingKeys: Set<String> = []) -> String? {
         if let e = SlotDraft.validateSlotKey(key) { return e }
+        if let e = SlotDraft.validateNewSlotKey(key, existingKeys: existingKeys) { return e }
         if let e = SlotDraft.validateFiresAtLocal(firesAtLocal) { return e }
         if let e = SlotDraft.validateWeekdays(Array(weekdays)) { return e }
-        if runner.trimmingCharacters(in: .whitespaces).isEmpty {
-            return "Runner can't be empty"
-        }
-        if cooldownMinutes < 0 { return "Cooldown must be >= 0" }
-        if missedWindowHours <= 0 { return "Missed window must be > 0" }
+        if let e = SlotDraft.validateScript(runner) { return e }
+        if cooldownMinutes < 0 { return SlotValidationMessage.negativeWait }
+        if missedWindowHours <= 0 { return SlotValidationMessage.catchUpTooShort }
         return nil
     }
 
     // MARK: - Static field validators (for unit tests + live form errors).
 
     static func validateSlotKey(_ s: String) -> String? {
-        guard !s.isEmpty else { return "Enter a name" }
+        guard !s.isEmpty else { return SlotValidationMessage.emptyName }
         // kebab-case: lowercase letter, then lowercase letters/digits/hyphens.
         let re = try! NSRegularExpression(pattern: #"^[a-z][a-z0-9-]*$"#)
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
         return re.firstMatch(in: s, range: range) == nil
-            ? "Use lowercase letters, digits and dashes, starting with a letter, like evening-research"
+            ? SlotValidationMessage.badName
             : nil
+    }
+
+    /// A new schedule's name must not be one already in the schedule: the
+    /// engine reads schedule.yaml with a YAML loader that keeps the last of
+    /// two same-named entries, so a duplicate would silently replace the
+    /// saved schedule (UI audit #58).
+    static func validateNewSlotKey(_ s: String, existingKeys: Set<String>) -> String? {
+        existingKeys.contains(s) ? SlotValidationMessage.duplicateName(s) : nil
     }
 
     static func validateFiresAtLocal(_ s: String) -> String? {
         let re = try! NSRegularExpression(pattern: #"^([01]\d|2[0-3]):[0-5]\d$"#)
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
         return re.firstMatch(in: s, range: range) == nil
-            ? "Time must be HH:MM (24-hour, leading zero required)"
+            ? SlotValidationMessage.badTime
             : nil
     }
 
     static func validateWeekdays(_ days: [String]) -> String? {
-        days.isEmpty ? "Pick at least one weekday" : nil
+        days.isEmpty ? SlotValidationMessage.noWeekdays : nil
     }
+
+    static func validateScript(_ s: String) -> String? {
+        s.trimmingCharacters(in: .whitespaces).isEmpty ? SlotValidationMessage.emptyScript : nil
+    }
+
+    // MARK: - Time of day (the form's time picker, UI audit #58)
+
+    /// `firesAtLocal` as a time today, for the form's time picker, or nil
+    /// when the file holds something that isn't a time. Accepts a missing
+    /// leading zero ("8:00"), which a hand-edited file may have.
+    static func date(fromFiresAt s: String, calendar: Calendar = .current, on day: Date = .now) -> Date? {
+        let parts = s.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let h = Int(parts[0]), let m = Int(parts[1]),
+              (0...23).contains(h), (0...59).contains(m),
+              parts[1].count == 2 else { return nil }
+        return calendar.date(bySettingHour: h, minute: m, second: 0, of: day)
+    }
+
+    /// The `fires_at_local` value for a time the picker chose: always
+    /// zero-padded 24-hour "HH:MM", whatever the user's clock format.
+    static func firesAt(from date: Date, calendar: Calendar = .current) -> String {
+        let c = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0)
+    }
+}
+
+/// What the schedule form says when a field can't be saved, in the form's
+/// own words (`SlotFieldLabel`), so a message names the field the user can
+/// see (UI audit #55).
+nonisolated enum SlotValidationMessage {
+    static let emptyName = "Enter a name"
+    static let badName = "Use lowercase letters, digits and dashes, starting with a letter, like evening-research"
+    static func duplicateName(_ key: String) -> String {
+        "There's already a schedule called \(DisplayName.slotKey(key)). Pick another name."
+    }
+    static let badTime = "Pick a time"
+    static let noWeekdays = "Pick at least one weekday"
+    static let emptyScript = "\(SlotFieldLabel.script) can't be empty. Open Advanced and enter the script to start, usually run-scout.sh."
+    static let negativeWait = "\(SlotFieldLabel.waitBetweenRuns) can't be less than 0 minutes"
+    static let catchUpTooShort = "\(SlotFieldLabel.catchUpWindow) must be at least 1 hour"
 }
 
 /// The schedule form's field names (UI audit C4's wording), shared by the

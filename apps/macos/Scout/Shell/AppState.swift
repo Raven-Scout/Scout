@@ -484,6 +484,9 @@ final class AppState: ObservableObject {
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
         displayProfile.startWatching()
+        // schedule.yaml edited outside the app reloads the Schedules page
+        // (UI audit #61), drafts kept.
+        scheduleEditService.startWatching(events)
 
         // A finished run adds a runner row to the usage tracker, and the
         // tracker service re-reads the file on every change to it, so re-read

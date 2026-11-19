@@ -17,6 +17,11 @@ struct SlotEditForm: View {
     /// Told whether the draft differs from `liveSlot`, so the page can refuse
     /// to close the pane over unsaved edits (UI audit C6).
     let onDirtyChange: (Bool) -> Void
+    /// Keys of the schedules already saved, so a new schedule can't take one
+    /// of their names (UI audit #58). Ignored for an existing schedule.
+    let existingKeys: Set<String>
+    /// A Run now for this schedule is being started (`AppState.firingSlotKeys`).
+    let isFiring: Bool
     /// Where unsaved edits outlive this view: the page tears the form down on
     /// every slot switch (`.id(slot.key)`), so `@State` alone would drop them.
     private let drafts: SlotDraftStore
@@ -42,6 +47,8 @@ struct SlotEditForm: View {
         onRevertNewDraft: (() -> Void)? = nil,
         defaultModel: String? = nil,
         onDirtyChange: @escaping (Bool) -> Void = { _ in },
+        existingKeys: Set<String> = [],
+        isFiring: Bool = false,
         drafts: SlotDraftStore? = nil
     ) {
         self.liveSlot = liveSlot
@@ -52,6 +59,8 @@ struct SlotEditForm: View {
         self.onRevertNewDraft = onRevertNewDraft
         self.defaultModel = defaultModel
         self.onDirtyChange = onDirtyChange
+        self.existingKeys = existingKeys
+        self.isFiring = isFiring
         let drafts = drafts ?? .shared
         self.drafts = drafts
         let initial = Self.initialDraft(live: liveSlot, stashed: drafts.entry(for: liveSlot.key))
@@ -63,6 +72,19 @@ struct SlotEditForm: View {
 
     nonisolated static func requiresTypeChangeConfirmation(draft: SlotDraft, live: Slot) -> Bool {
         draft.type != live.type
+    }
+
+    /// The names a schedule's name must not clash with: the saved ones for a
+    /// new schedule, none for a saved one (its key is fixed).
+    nonisolated static func takenKeys(isNewDraft: Bool, existingKeys: Set<String>, liveKey: String) -> Set<String> {
+        isNewDraft ? existingKeys.subtracting([liveKey]) : []
+    }
+
+    /// Why Save is off, when a field can't be saved; nil when it can (or
+    /// when there's simply nothing to save). Shown under the buttons, since
+    /// some fields sit in the collapsed Advanced group.
+    nonisolated static func saveBlockedReason(draft: SlotDraft, live: Slot, isNewDraft: Bool, existingKeys: Set<String>) -> String? {
+        draft.firstError(existingKeys: takenKeys(isNewDraft: isNewDraft, existingKeys: existingKeys, liveKey: live.key))
     }
 
     /// What the form opens with: the slot's unsaved draft if there is one,
@@ -101,7 +123,9 @@ struct SlotEditForm: View {
             actionBar
         }
         .padding(20)
-        .disabled(isDeleting)
+        // Locked while a save or delete runs, so nothing typed now is lost
+        // to it (UI audit #58: the save shows its progress on the button).
+        .disabled(isDeleting || isSaving)
         .onAppear { onDirtyChange(draft.isDirty(against: liveSlot)) }
         .onChange(of: draft) { _, newDraft in
             // Typing a field back to the file's value settles its conflict.
@@ -135,6 +159,27 @@ struct SlotEditForm: View {
 
     // MARK: - Private helpers
 
+    private var takenKeys: Set<String> {
+        Self.takenKeys(isNewDraft: isNewDraft, existingKeys: existingKeys, liveKey: liveSlot.key)
+    }
+
+    private var saveBlockedReason: String? {
+        Self.saveBlockedReason(draft: draft, live: liveSlot, isNewDraft: isNewDraft, existingKeys: existingKeys)
+    }
+
+    /// The time picker's view of `draft.firesAtLocal`. A value the file
+    /// holds that isn't a time shows as midnight until the user picks one;
+    /// the field's error says so meanwhile.
+    private var timeBinding: Binding<Date> {
+        Binding(
+            get: {
+                SlotDraft.date(fromFiresAt: draft.firesAtLocal)
+                    ?? Calendar.current.startOfDay(for: .now)
+            },
+            set: { draft.firesAtLocal = SlotDraft.firesAt(from: $0) }
+        )
+    }
+
     private func performSave() async {
         isSaving = true
         defer { isSaving = false }
@@ -154,8 +199,11 @@ struct SlotEditForm: View {
                     .foregroundStyle(DS.Ink.p3)
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
-                if let err = SlotDraft.validateSlotKey(draft.key) {
-                    Text(err).font(DS.sans(10)).foregroundStyle(.red)
+                    .accessibilityLabel(SlotFieldLabel.name)
+                if let err = SlotDraft.validateSlotKey(draft.key)
+                    ?? SlotDraft.validateNewSlotKey(draft.key, existingKeys: takenKeys) {
+                    Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
                         .font(DS.sans(10)).foregroundStyle(.secondary)
@@ -183,12 +231,15 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-            TextField("HH:MM", text: $draft.firesAtLocal)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Time")
-                .frame(width: 120)
+            // A time picker, not "HH:MM" text (UI audit #58): it shows the
+            // user's own clock format and always writes zero-padded 24-hour.
+            DatePicker(SlotFieldLabel.time, selection: timeBinding, displayedComponents: .hourAndMinute)
+                .labelsHidden()
+                .datePickerStyle(.stepperField)
+                .accessibilityLabel(SlotFieldLabel.time)
+                .fixedSize()
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
-                Text(err).font(DS.sans(10)).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
             }
         }
         VStack(alignment: .leading, spacing: 4) {
@@ -226,7 +277,7 @@ struct SlotEditForm: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Weekdays")
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
-                Text(err).font(DS.sans(10)).foregroundStyle(.red)
+                Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
             }
         }
     }
@@ -318,7 +369,8 @@ struct SlotEditForm: View {
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
-                TextField("run-scout.sh", text: $draft.runner)
+                TextField(SlotFieldLabel.script, text: $draft.runner)
+                    .accessibilityLabel(SlotFieldLabel.script)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
@@ -359,15 +411,27 @@ struct SlotEditForm: View {
 
     @ViewBuilder
     private var actionBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
         HStack {
             if !isNewDraft {
                 Button("Delete") { isConfirmingDelete = true }
                     .buttonStyle(.dsDestructive)
-                Button("Run now") {
+                Button {
                     Task { await onFireNow(draft.key) }
+                } label: {
+                    if isFiring {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Starting…")
+                        }
+                    } else {
+                        Text("Run now")
+                    }
                 }
                 .buttonStyle(.dsSecondary)
-                .disabled(draft.isDirty(against: liveSlot))
+                .disabled(isFiring || draft.isDirty(against: liveSlot))
+                .help(draft.isDirty(against: liveSlot) ? "Save or revert your changes first." : "Start this schedule's run now.")
+                .accessibilityLabel(isFiring ? "Starting the run" : "Run now")
             }
             Spacer()
             Button("Revert") {
@@ -387,11 +451,29 @@ struct SlotEditForm: View {
                     Task { await performSave() }
                 }
             } label: {
-                Text("Save")
+                if isSaving {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…")
+                    }
+                } else {
+                    Text("Save")
+                }
             }
             .buttonStyle(.dsPrimary)
             .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
+            .disabled(isSaving || saveBlockedReason != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
+            .accessibilityLabel(isSaving ? "Saving" : "Save")
+        }
+            if let reason = saveBlockedReason {
+                // Some fields sit in the collapsed Advanced group, so say
+                // why Save is off rather than leave a dead button.
+                Label(reason, systemImage: "exclamationmark.circle")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Can't save yet: \(reason)")
+            }
         }
         .padding(.top, 8)
         .alert(
