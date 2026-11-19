@@ -65,6 +65,25 @@ def test_wishlist_cards_keep_status_and_link_a_progress_note() -> None:
     assert "Never delete a log" in text and "move it verbatim to the note in the same commit" in text
 
 
+def test_wishlist_phase_runs_check_log_move_before_commit() -> None:
+    text = _text(WISHLIST)
+    run = (
+        "`scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>`"
+        " until it exits 0"
+    )
+    assert run in text
+    # The check runs in the commit step, before the commit command.
+    assert text.index("### Step 3e: Commit") < text.index(run) < text.index("git-safe-commit.sh")
+    assert "Exit 2 (it couldn't check)" in text
+
+
+def test_check_log_move_is_a_real_subcommand() -> None:
+    from scout.cli import app as scoutctl
+
+    result = CliRunner().invoke(scoutctl, ["wishlist", "check-log-move", "--help"])
+    assert result.exit_code == 0 and "Exit codes: 0" in result.stdout
+
+
 def test_wishlist_phase_reads_items_but_not_their_progress_notes() -> None:
     assert "`docs/wishlist/` (not its `progress/` folder)" in _text(WISHLIST)
 

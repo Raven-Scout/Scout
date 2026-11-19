@@ -34,7 +34,10 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # (a sandboxed run can't change the repository: the helper, mv/rm, git show, untracking) and Step 0's sandbox guard,
 # +~150 in every mode, trimmed to the replacements runs used in the 50-run replay. RESEARCH also absorbs +237 of drift
 # already on main, which had left it 112 tokens under the limit. SKILL and DREAMING stay inside their headroom.
-PINS = {"SKILL": 44_613, "DREAMING": 19_758, "RESEARCH": 7_375}
+# 2026-11-19 (wishlist check-log-move, C12 follow-up): DREAMING re-pinned to its measure. The wishlist phase's commit
+# step runs `scoutctl wishlist check-log-move` (+~125: the command, exit 1's fix, exit 2's note). DREAMING also
+# absorbs ~980 of drift already on main, which had left it about 5 tokens under the limit.
+PINS = {"SKILL": 44_613, "DREAMING": 20_867, "RESEARCH": 7_375}
 GROWTH = 0.05
 SHRINK = 0.10
 

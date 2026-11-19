@@ -91,6 +91,8 @@ Two of four sub-tasks done; the template exists, the index link is next.
 
 ### Step 3e: Commit
 
+Before committing, run `scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>` until it exits 0. Exit 1 names an item and the first log line its card lost that its progress note lacks: copy the removed lines into the note exactly, in order (this run's entry may go above them), or put them back, and commit the note with the card. Exit 2 (it couldn't check): note `log-move check could not run: <its message>` in the session log and go on.
+
 Explicit paths, never `-A` (see Step 1f):
 
 ```bash
