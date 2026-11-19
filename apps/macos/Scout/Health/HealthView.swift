@@ -15,6 +15,7 @@ struct HealthView: View {
 
     @State private var filter: HealthPanelModel.Filter = .all
     @State private var everythingElseExpanded = false
+    @State private var reviewedExpanded = false
 
     private var model: HealthPanelModel {
         HealthPanelModel(ledger: ledgerService.ledger, doctor: engineHealth.doctor, filter: filter)
@@ -102,7 +103,22 @@ struct HealthView: View {
         if !model.engineIssues.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("Scout's engine")
-                ForEach(model.engineIssues) { EngineIssueRow(issue: $0) }
+                ForEach(model.engineIssues) { EngineIssueRow(issue: $0, setReviewed: setReviewed) }
+            }
+        }
+        if !model.reviewedIssues.isEmpty {
+            DisclosureGroup(isExpanded: $reviewedExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("You looked at these and marked them reviewed. Each comes back on its own if what it's about changes.")
+                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(model.reviewedIssues) { EngineIssueRow(issue: $0, setReviewed: setReviewed) }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Reviewed (\(model.reviewedIssues.count))")
+                    .font(DS.sans(13, weight: .medium))
+                    .foregroundStyle(DS.Ink.p2)
             }
         }
         if !model.everythingElse.isEmpty {
@@ -154,6 +170,10 @@ struct HealthView: View {
         }
     }
 
+
+    private func setReviewed(_ review: HealthSummary.Review, _ reviewed: Bool) async -> String? {
+        await engineHealth.setReviewed(review, reviewed: reviewed)
+    }
 
     // MARK: Pieces
 
@@ -222,15 +242,31 @@ struct FindingRow: View {
 }
 
 /// One of the engine's own warnings or problems (the doctor's install checks), with its
-/// fix and, for a grouped warning, its files behind a disclosure (UI audit R1).
+/// fix and, for a grouped warning, its files behind a disclosure (UI audit R1). A ranked
+/// warning shows its risk and lets the owner mark it reviewed, or show it again (R13).
 struct EngineIssueRow: View {
     let issue: HealthSummary.Issue
+    /// Marks the issue's warning reviewed (`true`) or shows it again; nil where reviewing isn't offered.
+    /// Returns what went wrong, or nil.
+    var setReviewed: ((HealthSummary.Review, Bool) async -> String?)? = nil
+
+    @State private var busy = false
+    @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(issue.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let risk = issue.risk {
+                    RiskChip(risk: risk)
+                }
+                Text(issue.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let reason = issue.riskReason {
+                Text("Why: \(reason).").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let fix = issue.fix {
                 (Text("What to do: ").fontWeight(.semibold) + Text(fix))
                     .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
@@ -239,16 +275,88 @@ struct EngineIssueRow: View {
             if !issue.items.isEmpty {
                 IssueFilesDisclosure(files: issue.items)
             }
+            if let review = issue.review, let setReviewed {
+                reviewBar(review, setReviewed)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk))
         .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 1.5).fill(issue.severity == .problem ? DS.Status.err : DS.Status.warn)
-                .frame(width: 3).accessibilityHidden(true)
+            RoundedRectangle(cornerRadius: 1.5).fill(stripe).frame(width: 3).accessibilityHidden(true)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(issue.severity.singular.capitalized): \(issue.title)")
+        .accessibilityLabel(accessibilityTitle)
+    }
+
+    private var isReviewed: Bool { issue.reviewedAt != nil }
+
+    private var stripe: Color {
+        if isReviewed { return DS.Ink.p4 }
+        return issue.severity == .problem ? DS.Status.err : DS.Status.warn
+    }
+
+    private var accessibilityTitle: String {
+        let risk = issue.risk.map { "\($0.title), " } ?? ""
+        let state = isReviewed ? "Reviewed warning" : issue.severity.singular.capitalized
+        return "\(state): \(risk)\(issue.title)"
+    }
+
+    private func reviewBar(_ review: HealthSummary.Review,
+                           _ setReviewed: @escaping (HealthSummary.Review, Bool) async -> String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                if let at = issue.reviewedAt {
+                    Text("Reviewed \(at.formatted(date: .abbreviated, time: .shortened))")
+                        .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                }
+                Button(busy ? "Saving…" : (isReviewed ? "Show again" : "Mark reviewed")) {
+                    busy = true
+                    failure = nil
+                    Task {
+                        failure = await setReviewed(review, !isReviewed)
+                        busy = false
+                    }
+                }
+                .buttonStyle(.plainHit)
+                .font(DS.sans(12))
+                .disabled(busy)
+                .help(isReviewed
+                      ? "Count this warning again."
+                      : "Hide this warning until what it's about changes. Only you can do this; scheduled runs can't.")
+            }
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+    }
+}
+
+/// "High risk" / "Medium risk" / "Low risk", tinted by how much it matters.
+struct RiskChip: View {
+    let risk: DoctorReport.Risk
+
+    var body: some View {
+        Text(risk.title.uppercased())
+            .font(DS.sans(9.5, weight: .semibold))
+            .tracking(0.05 * 9.5)
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.12)))
+            .fixedSize()
+            .accessibilityHidden(true)   // the row's label says it
+    }
+
+    private var color: Color {
+        switch risk {
+        case .high: return DS.Status.err
+        case .medium: return DS.Status.warn
+        case .low: return DS.Ink.p3
+        }
     }
 }
 

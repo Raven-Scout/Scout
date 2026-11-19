@@ -207,3 +207,47 @@ private final class Locked: @unchecked Sendable {
     func increment() -> Int { lock.withLock { value += 1; return value } }
     var current: Int { lock.withLock { value } }
 }
+
+// MARK: Reviewing a warning (UI audit R13)
+
+@MainActor
+extension EngineHealthServiceTests {
+
+    @Test func markingAWarningReviewedPassesItsFingerprintAndRechecks() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "review-warning"], stdout: #"{"id": "w"}"#)
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: #"{"severity": "green", "errors": [], "warnings": []}"#)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner, environment: ["SCOUT_DATA_DIR": "/v"])
+        await svc.refresh()
+        let review = HealthSummary.Review(id: "privacy.script-raw-kb-read.internal", fingerprint: "0123456789abcdef")
+        #expect(await svc.setReviewed(review, reviewed: true) == nil)
+        #expect(await svc.setReviewed(review, reviewed: false) == nil)
+        let calls = runner.calls(to: "scoutctl").filter { $0.starts(with: ["bootstrap", "review-warning"]) }
+        #expect(calls == [
+            ["bootstrap", "review-warning", review.id, "--json", "--fingerprint", review.fingerprint],
+            ["bootstrap", "review-warning", review.id, "--json", "--undo"],
+        ])
+        // Each review re-runs the doctor, so the page shows the new state.
+        #expect(runner.calls(to: "scoutctl").filter { $0.starts(with: ["bootstrap", "doctor"]) }.count == 3)
+        #expect(runner.calls.allSatisfy { $0.environment["SCOUT_DATA_DIR"] == "/v" })
+    }
+
+    @Test func aRefusedOrUnknownReviewSaysWhy() async throws {
+        let refused = EngineHealthService.reviewProblem(exitCode: 2, stderr: Data("refused: SCOUT_MODE is set (a scheduled run). Only…".utf8))
+        #expect(refused.hasPrefix("Scout refused"))
+        let old = EngineHealthService.reviewProblem(exitCode: 2, stderr: Data("Error: No such command 'review-warning'.".utf8))
+        #expect(old.contains("Update Scout"))
+        #expect(EngineHealthService.reviewProblem(exitCode: 1, stderr: Data()).contains("exit 1"))
+    }
+
+    @Test func reviewingWithoutAnEngineChangesNothing() async {
+        let runner = RuleBasedRunner()
+        let svc = EngineHealthService(locator: EngineLocator(layout: EngineLayout(home: URL(fileURLWithPath: "/nonexistent-\(UUID())"))),
+                                      runner: runner)
+        let problem = await svc.setReviewed(.init(id: "w", fingerprint: "0123456789abcdef"), reviewed: true)
+        #expect(problem != nil)
+        #expect(runner.calls.isEmpty)
+    }
+}

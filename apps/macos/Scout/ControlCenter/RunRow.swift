@@ -25,6 +25,12 @@ struct RunRow: View {
                     if run.wasManuallyTriggered && run.type != .manual {
                         manualBadge
                     }
+                    if run.changedProtectedFile {
+                        ProtectionBadge(kind: .fileChanged(restored: run.protection?.integrity == "restored"))
+                    } else if run.ranUnprotected {
+                        ProtectionBadge(kind: .unprotected(RunOutcomeDisplay.sandbox(run.protection?.sandbox,
+                                                                                     source: run.protection?.sandboxSource)))
+                    }
                 }
                 Text(run.startedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(DS.mono(11.5))
@@ -123,6 +129,65 @@ struct RunRow: View {
         case .failure, .timeout, .rateLimited:           return DS.Status.err
         case .running:                                   return DS.Status.warn
         default:                                         return DS.Ink.p3
+        }
+    }
+}
+
+/// A run's protection, when it isn't the normal "write protection on, nothing
+/// changed": it ran without write protection, or the check after it found a
+/// protected file it had changed (card C9, from the run ledger).
+struct ProtectionBadge: View {
+    enum Kind: Equatable {
+        /// What the ledger says about write protection, in the owner's words.
+        case unprotected(String?)
+        /// Scout put the file back (`restored`), or couldn't.
+        case fileChanged(restored: Bool)
+    }
+    let kind: Kind
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .labelStyle(.titleAndIcon)
+            .font(DS.sans(10, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.12)))
+            .fixedSize()
+            .help(help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(help)
+    }
+
+    var title: String {
+        switch kind {
+        case .unprotected: return "Unprotected"
+        case .fileChanged(let restored): return restored ? "File put back" : "Protected file changed"
+        }
+    }
+
+    var help: String {
+        switch kind {
+        case .unprotected(let line):
+            return (line ?? "Write protection off") + ". This run could change Scout's own files."
+        case .fileChanged(true):
+            return "This run changed a protected file, and Scout put it back. Open the run to see the change."
+        case .fileChanged(false):
+            return "This run changed a protected file, and Scout couldn't put it back. Open the run to see what to do."
+        }
+    }
+
+    private var symbol: String {
+        switch kind {
+        case .unprotected: return "shield.slash"
+        case .fileChanged: return "exclamationmark.shield.fill"
+        }
+    }
+
+    private var color: Color {
+        switch kind {
+        case .unprotected: return DS.Status.warn
+        case .fileChanged: return DS.Status.err
         }
     }
 }

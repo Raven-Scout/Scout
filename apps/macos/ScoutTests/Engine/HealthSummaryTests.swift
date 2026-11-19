@@ -112,4 +112,56 @@ struct HealthSummaryTests {
         #expect(page.headline.hasSuffix("· \(pageSummary.attentionLabel ?? "")"))
         #expect(page.engineIssues.map(\.title) == ["34 vault scripts read the knowledge base directly, without Scout's privacy labels"])
     }
+
+    // MARK: Risk and reviews (UI audit R13)
+
+    @Test func installWarningsListHighestRiskFirstAndReviewedOnesCountForNothing() {
+        let low = "privacy: 30 vault scripts read … but mention no way to send …"
+        let high = "privacy: scripts/digest.py reads the knowledge base directly …"
+        let medium = "runner backup present: run-scout.sh.bak.1"
+        let reviewed = "a warning the owner looked at"
+        func entry(_ id: String, _ kind: String, _ risk: DoctorReport.Risk, _ summary: String, items: [String] = [],
+                   reviewedAt: Date? = nil) -> DoctorReport.TriageEntry {
+            .init(id: id, kind: kind, risk: risk, reason: "because", summary: summary, items: items,
+                  fingerprint: "0123456789abcdef", reviewedAt: reviewedAt)
+        }
+        let files = (1...30).map { "scripts/c\($0).py" }
+        let doctor = DoctorReport(
+            severity: .yellow, errors: [], warnings: [low, medium, high],
+            warningGroups: [.init(kind: "privacy.script-raw-kb-read.internal", summary: low, items: files)],
+            warningTriage: [
+                entry("privacy.script-raw-kb-read:scripts/digest.py", "privacy.script-raw-kb-read", .high, high,
+                      items: ["scripts/digest.py"]),
+                entry("warning.a", "install", .medium, medium),
+                entry("warning.b", "install", .medium, reviewed, reviewedAt: Date(timeIntervalSince1970: 1_800_000_000)),
+                entry("privacy.script-raw-kb-read.internal", "privacy.script-raw-kb-read.internal", .low, low, items: files),
+            ])
+        let s = HealthSummary(doctor: doctor)
+        #expect(s.issues.map(\.risk) == [.high, .medium, .low])
+        #expect(s.issues.map(\.title) == [
+            "1 vault script reads the knowledge base directly, without Scout's privacy labels",
+            medium,
+            "30 vault scripts read the knowledge base directly, but mention no way to send what they read",
+        ])
+        #expect(s.issues.last?.items == files)
+        #expect(s.issues.last?.fix?.contains("mark this reviewed") == true)
+        #expect(s.issues.allSatisfy { $0.riskReason == "because" && $0.review != nil && $0.reviewedAt == nil })
+        #expect(s.issues.first?.review == .init(id: "privacy.script-raw-kb-read:scripts/digest.py", fingerprint: "0123456789abcdef"))
+        #expect(s.warningCount == 3)
+        #expect(s.reviewed.map(\.title) == [reviewed])
+        #expect(s.reviewed.first?.reviewedAt == Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(s.reviewed.first?.review?.id == "warning.b")
+        // The Health page lists the reviewed ones apart, for "Show again".
+        let page = HealthPanelModel(ledger: nil, doctor: doctor)
+        #expect(page.reviewedIssues.map(\.title) == [reviewed])
+        #expect(page.engineIssues.count == 3)
+    }
+
+    @Test func anOlderEngineWithoutTriageKeepsTheDoctorsOrder() {
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: ["b", "a"])
+        let s = HealthSummary(doctor: doctor)
+        #expect(s.issues.map(\.title) == ["b", "a"])
+        #expect(s.issues.allSatisfy { $0.risk == nil && $0.review == nil })
+        #expect(s.reviewed.isEmpty)
+    }
 }

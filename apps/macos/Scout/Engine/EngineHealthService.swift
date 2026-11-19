@@ -103,6 +103,39 @@ final class EngineHealthService: ObservableObject {
         }
     }
 
+    /// Marks a doctor warning reviewed at the fingerprint the owner saw, or (`reviewed: false`)
+    /// shows it again, through `scoutctl bootstrap review-warning` (UI audit R13), then re-runs
+    /// the doctor. The engine keeps reviews outside the vault, where scheduled runs can't write.
+    /// Returns nil when it worked, else what went wrong in the owner's words.
+    func setReviewed(_ review: HealthSummary.Review, reviewed: Bool) async -> String? {
+        guard let scoutctl = state.scoutctl else { return "Scout's engine isn't set up, so nothing was changed." }
+        let args = ["bootstrap", "review-warning", review.id, "--json"]
+            + (reviewed ? ["--fingerprint", review.fingerprint] : ["--undo"])
+        do {
+            let result = try await runner.run(executable: scoutctl, arguments: args, environment: environment,
+                                              workingDirectory: nil)
+            if result.exitCode != 0 {
+                return Self.reviewProblem(exitCode: result.exitCode, stderr: result.stderr)
+            }
+        } catch {
+            return "Couldn't run Scout's engine: \(String(describing: error).prefix(160))"
+        }
+        await refresh()
+        return nil
+    }
+
+    nonisolated static func reviewProblem(exitCode: Int32, stderr: Data) -> String {
+        let text = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("refused:") {
+            return "Scout refused: only you, not a scheduled run, can mark a warning reviewed."
+        }
+        if text.contains("No such command") {
+            return "This version of Scout's engine can't mark warnings reviewed. Update Scout, then try again."
+        }
+        let detail = text.isEmpty ? "exit \(exitCode)" : String(text.prefix(200))
+        return "Couldn't save the review (\(detail))."
+    }
+
     /// Re-check every 10 minutes (spec §4.4).
     func startPeriodicRefresh(interval: TimeInterval = 600) {
         timer?.invalidate()

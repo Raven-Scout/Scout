@@ -59,18 +59,53 @@ struct DoctorReportTests {
         #expect(r?.runHealth?.firstActionable?.log == "/Users/alex/Scout/.scout-logs/scout-2026-10-09_06-00.log")
         #expect(r?.runHealth?.firstActionable?.until == nil)
         #expect(r?.runHealth?.findings.last?.detail == nil)
-        // Two KB-reading vault scripts are ONE warning with both files (#505, UI audit R1).
+        // Two KB-reading vault scripts that send nothing are ONE warning with both files (#505, UI audit R1).
         #expect(r?.warnings.count == 2)
         let group = try #require(r?.warningGroups.first)
         #expect(r?.warningGroups.count == 1)
-        #expect(group.kind == "privacy.script-raw-kb-read")
+        #expect(group.kind == "privacy.script-raw-kb-read.internal")
         #expect(group.items == ["scripts/link-check.py", "scripts/tag-audit.py"])
         #expect(r?.warnings.contains(group.summary) == true)
+        // Every warning ranked by risk, the owner's reviewed one included (UI audit R13).
+        let triage = try #require(r?.warningTriage)
+        #expect(triage.map(\.risk) == [.high, .medium, .low])
+        #expect(triage[0].id == "privacy.script-raw-kb-read:scripts/weekly-digest.py")
+        #expect(triage[0].items == ["scripts/weekly-digest.py"] && triage[0].reviewedAt == nil)
+        #expect(triage[0].reason == "it mentions a web request, so what it reads may leave the vault")
+        #expect(triage[1].reviewedAt == RunLedgerTime.parse("2026-10-10T12:00:00Z"))
+        #expect(r?.warnings.contains(triage[1].summary) == false)
+        #expect(triage[2].id == group.kind && triage[2].summary == group.summary)
+        #expect(triage.allSatisfy { $0.fingerprint.count == 16 })
         let summary = HealthSummary(doctor: r)
         #expect(summary.issues(.warning, from: .install).map(\.title) == [
-            "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
-            "2 vault scripts read the knowledge base directly, without Scout's privacy labels",
+            "1 vault script reads the knowledge base directly, without Scout's privacy labels",
+            "2 vault scripts read the knowledge base directly, but mention no way to send what they read",
         ])
+        #expect(summary.issues(.warning, from: .install).map(\.risk) == [.high, .low])
+        #expect(summary.issues(.warning, from: .install).first?.review
+                == HealthSummary.Review(id: triage[0].id, fingerprint: triage[0].fingerprint))
+        #expect(summary.reviewed.map(\.title) == [
+            "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
+        ])
+        // The reviewed one counts for nothing: without it there'd be three install warnings.
+        #expect(summary.issues(.warning, from: .install).count == 2)
+        #expect(summary.attentionCount == summary.issues.filter { $0.severity != .note }.count)
+    }
+
+    @Test func triageIsOptionalAndAnEntryItCantReadCostsOnlyThatEntry() throws {
+        let old = DoctorReport.parse(stdout: Data(#"{"severity": "yellow", "errors": [], "warnings": ["w"]}"#.utf8), stderr: Data())
+        #expect(old?.warningTriage == [])
+        let json = #"""
+        {"severity": "yellow", "errors": [], "warnings": ["a", "b"], "warning_triage": [
+          {"id": "warning.1", "kind": "install", "risk": "purple", "reason": null, "summary": "a", "items": [],
+           "fingerprint": "0123456789abcdef", "reviewed_at": null},
+          {"id": 7, "summary": "b"}
+        ]}
+        """#
+        let r = try #require(DoctorReport.parse(stdout: Data(json.utf8), stderr: Data()))
+        #expect(r.warnings == ["a", "b"])
+        #expect(r.warningTriage.map(\.id) == ["warning.1"])
+        #expect(r.warningTriage.first?.risk == .medium)   // a risk this build doesn't know is shown, not buried
     }
 
     @Test func warningGroupsAreOptionalAndNeverCostTheReport() throws {

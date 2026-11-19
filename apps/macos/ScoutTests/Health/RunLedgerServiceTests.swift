@@ -193,3 +193,53 @@ struct RerunSlotTests {
         }
     }
 }
+
+/// Card C9, part two: each run's write protection and integrity check, from its ledger row.
+@MainActor
+@Suite("Run protection on each run")
+struct RunProtectionOnRunsTests {
+
+    @Test func overlayCarriesEachRunsProtectionFromTheLedger() {
+        let t = Date(timeIntervalSince1970: 1_800_000_000)
+        let a = Run.make(startedAt: t, endedAt: t.addingTimeInterval(60), logPath: URL(fileURLWithPath: "/l/scout-a.log"))
+        let b = Run.make(startedAt: t, endedAt: t.addingTimeInterval(60), logPath: URL(fileURLWithPath: "/l/scout-b.log"))
+        let off = Run.Protection(sandbox: "off", sandboxSource: "switch", integrity: "clean")
+        let out = SessionLogService.overlayLedger([a, b], statuses: [:], protection: ["scout-a.log": off])
+        #expect(out[0].protection == off && out[0].ranUnprotected && !out[0].changedProtectedFile)
+        #expect(out[1].protection == nil && !out[1].ranUnprotected)
+    }
+
+    @Test func onlyARunThatRanCountsAsUnprotected() {
+        let off = Run.Protection(sandbox: "failed")
+        #expect(Run.make(status: .success, protection: off).ranUnprotected)
+        #expect(Run.make(status: .failure, protection: off).ranUnprotected)
+        #expect(!Run.make(status: .skippedSandbox, protection: off).ranUnprotected)   // it never ran
+        #expect(!Run.make(status: .success, protection: .init(sandbox: "enforced")).ranUnprotected)
+        #expect(!Run.make(status: .success, protection: .init(sandbox: nil)).ranUnprotected)   // an older runner
+        #expect(Run.make(protection: .init(sandbox: "enforced", integrity: "restored")).changedProtectedFile)
+        #expect(Run.make(protection: .init(sandbox: "enforced", integrity: "unrestored")).changedProtectedFile)
+        #expect(!Run.make(protection: .init(sandbox: "enforced", integrity: "error")).changedProtectedFile)
+    }
+
+    @Test func theProtectedFileBlockNamesTheRestoringCommit() {
+        let commit = Commit(id: String(repeating: "a", count: 40), shortSHA: "aaaaaaa", timestamp: Date(),
+                            subject: "Scout: restore protected files a scout run changed in git",
+                            filesChanged: 1, insertions: 1, deletions: 1)
+        let found = ProtectedFileBlock(restored: true, commits: [commit], showChange: {}, openLog: {})
+        #expect(found.title == "Scout put the protected file back")
+        #expect(found.message.hasSuffix("in commit aaaaaaa."))
+        let notFound = ProtectedFileBlock(restored: true, commits: [], showChange: {}, openLog: {})
+        #expect(notFound.message.contains("The run's log names the file and the commit."))
+        let stuck = ProtectedFileBlock(restored: false, commits: [], showChange: {}, openLog: {})
+        #expect(stuck.title.contains("couldn't put it back") && stuck.message.contains("by hand"))
+        #expect(SessionLogService.restoreCommitPrefix == "Scout: restore protected files")
+    }
+
+    @Test func theRunBadgeSaysWhatHappened() {
+        #expect(ProtectionBadge(kind: .unprotected("Write protection turned off in Settings")).title == "Unprotected")
+        #expect(ProtectionBadge(kind: .unprotected("Write protection turned off in Settings")).help
+                .hasPrefix("Write protection turned off in Settings."))
+        #expect(ProtectionBadge(kind: .fileChanged(restored: true)).title == "File put back")
+        #expect(ProtectionBadge(kind: .fileChanged(restored: false)).title == "Protected file changed")
+    }
+}

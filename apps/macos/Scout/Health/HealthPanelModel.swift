@@ -46,6 +46,8 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
     /// The engine's own problems and warnings (doctor install checks), grouped by kind,
     /// so the page lists what Settings counts (UI audit R1).
     let engineIssues: [HealthSummary.Issue]
+    /// Engine warnings the owner marked reviewed (UI audit R13): listed apart, counted nowhere.
+    let reviewedIssues: [HealthSummary.Issue]
     /// Run-health notes, then the doctor's informational notes.
     let everythingElse: [String]
     let runs: [RunLine]
@@ -63,6 +65,7 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
             grouped[g].map { FindingGroup(group: g, findings: $0) }
         }
         engineIssues = shared.issues.filter { $0.source == .install && $0.severity != .note }
+        reviewedIssues = shared.reviewed
         everythingElse = (grouped[.note] ?? []).map(\.summary) + (doctor?.notes ?? [])
         let entries = ledger?.runs ?? []
         summary = Self.summary(entries)

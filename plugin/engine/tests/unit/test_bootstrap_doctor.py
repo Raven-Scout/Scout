@@ -231,7 +231,7 @@ def test_doctor_json_carries_run_health(tmp_path):
     _populate_minimal_vault(tmp_path)
     _expired_ledger(tmp_path)
     payload = doctor_dict(run_doctor(vault=tmp_path, check_jobs=False))
-    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health", "warning_groups"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health", "warning_groups", "warning_triage"}
     assert payload["warning_groups"] == []
     assert payload["run_health"]["findings"][0]["id"] == "auth.expired"
 

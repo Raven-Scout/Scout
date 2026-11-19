@@ -24,6 +24,8 @@ struct RunDetailView: View {
     /// The owner pressed Run again here, so a `fireNowError` is this view's to show.
     @State private var askedToRerun = false
     @State private var resolvedCommits: [Commit] = []
+    /// The commits that put back the protected files this run changed (integrity `restored`).
+    @State private var restoreCommits: [Commit] = []
     @SceneStorage("runDetailTab") private var tab: RunDetailTab = .summary
 
     var body: some View {
@@ -44,6 +46,7 @@ struct RunDetailView: View {
         .task(id: run.id) {
             // Resolve commits lazily on run selection to keep launch fast.
             resolvedCommits = await state.sessionLogService.commits(for: run)
+            restoreCommits = await state.sessionLogService.restoreCommits(for: run)
         }
     }
 
@@ -52,7 +55,7 @@ struct RunDetailView: View {
         switch tab {
         case .summary:  SummaryTab(logPath: run.logPath)
         case .log:      LogViewer(logPath: run.logPath)
-        case .diff:     DiffViewer(commits: resolvedCommits)
+        case .diff:     DiffViewer(commits: restoreCommits + resolvedCommits.filter { c in !restoreCommits.contains(c) })
         case .files:    FilesTab(run: run)
         case .tools:    ToolsTab(run: run)
         case .errors:   ErrorsTab(errors: run.errorsDetected, runFailed: [.failure, .timeout, .orphaned].contains(run.status))
@@ -92,6 +95,19 @@ struct RunDetailView: View {
             if let problem = Problem(run: run) {
                 ProblemView(problem: problem)
                     .padding(.top, 4)
+            }
+            if run.changedProtectedFile {
+                ProtectedFileBlock(restored: run.protection?.integrity == "restored", commits: restoreCommits,
+                                   showChange: { tab = .diff },
+                                   openLog: { NSWorkspace.shared.open(run.logPath) })
+                    .padding(.top, 4)
+            }
+            if run.ranUnprotected {
+                Label(RunOutcomeDisplay.sandbox(run.protection?.sandbox, source: run.protection?.sandboxSource)
+                      ?? "Write protection off", systemImage: "shield.slash")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.warn)
+                    .help("This run could change Scout's own files. Write protection is set in Settings ▸ Engine.")
             }
         }
     }
@@ -189,5 +205,64 @@ struct RunDetailView: View {
             return "This run wasn't started by a schedule, so there's none to run again. Use Run now on the Schedules page."
         }
         return "Scout doesn't know which schedule started this run. Use Run now on the Schedules page."
+    }
+}
+
+/// The red block on a run whose post-run integrity check found a protected file
+/// it had changed in git (card C9, from the run ledger's `integrity`): Scout put
+/// it back in a new commit (`restored`), or couldn't (`unrestored`: a tag or the
+/// stash still holds the change).
+struct ProtectedFileBlock: View {
+    let restored: Bool
+    /// The restoring commits, when git has them; empty while loading or when not found.
+    let commits: [Commit]
+    let showChange: () -> Void
+    let openLog: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(DS.Status.err)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(DS.sans(13, weight: .semibold)).foregroundStyle(DS.Status.err)
+                Text(message).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                HStack(spacing: 12) {
+                    if restored && !commits.isEmpty {
+                        Button("Show the change", action: showChange)
+                    }
+                    Button("Open log", action: openLog)
+                }
+                .buttonStyle(.plainHit)
+                .font(DS.sans(12))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Status.err.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Status.err.opacity(0.35), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+
+    var title: String {
+        restored ? "Scout put the protected file back" : "A protected file changed, and Scout couldn't put it back"
+    }
+
+    var message: String {
+        if !restored {
+            return "This run changed a file Scout protects, and a tag or the stash still holds the change. "
+                + "The run's log names the file; put it back by hand."
+        }
+        guard let first = commits.first else {
+            return "This run changed a file Scout protects, and the check after the run put it back in a new commit. "
+                + "The run's log names the file and the commit."
+        }
+        let more = commits.count > 1 ? " and \(commits.count - 1) more" : ""
+        return "This run changed a file Scout protects, and the check after the run put it back "
+            + "in commit \(first.shortSHA)\(more)."
     }
 }

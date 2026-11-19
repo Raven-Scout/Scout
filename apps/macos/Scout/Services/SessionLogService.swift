@@ -24,6 +24,8 @@ final class SessionLogService: ObservableObject {
     private var ledgerSlots: [String: String] = [:]
     /// Each ledger row's `trigger`, by log file name (`Run.trigger`).
     private var ledgerTriggers: [String: String] = [:]
+    /// Each ledger row's write protection and integrity check, by log file name (`Run.protection`).
+    private var ledgerProtection: [String: Run.Protection] = [:]
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -379,15 +381,16 @@ final class SessionLogService: ObservableObject {
     /// exactly one run.
     nonisolated static func overlayLedger(
         _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
-        triggers: [String: String] = [:]
+        triggers: [String: String] = [:], protection: [String: Run.Protection] = [:]
     ) -> [Run] {
-        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty else { return runs }
+        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty || !protection.isEmpty else { return runs }
         return runs.map { run in
             let name = run.logPath.lastPathComponent
             var out = run
             if let status = statuses[name], status != out.status { out = out.with(status: status) }
             if let slot = slots[name], slot != out.slotKey { out.slotKey = slot }
             if let trigger = triggers[name], trigger != out.trigger { out.trigger = trigger }
+            if let facts = protection[name], facts != out.protection { out.protection = facts }
             return out
         }
     }
@@ -397,12 +400,17 @@ final class SessionLogService: ObservableObject {
         ledgerStatuses = entries.mapValues(\.runStatus)
         ledgerSlots = entries.mapValues(\.slot)
         ledgerTriggers = entries.compactMapValues(\.trigger)
+        ledgerProtection = entries.compactMapValues { e in
+            guard e.sandbox != nil || e.integrity != nil else { return nil }
+            return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity)
+        }
         let updated = Self.resolveStaleRunning(overlaid(runs))
         if updated != runs { runs = updated }
     }
 
     private func overlaid(_ runs: [Run]) -> [Run] {
-        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers)
+        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers,
+                           protection: ledgerProtection)
     }
 
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
@@ -576,6 +584,19 @@ final class SessionLogService: ObservableObject {
         )) ?? []
         return all.filter(run.claims)
     }
+
+    /// The commits in which the post-run integrity check put back the protected files this run
+    /// changed (`scout.sandbox.integrity`: "Scout: restore protected files a <mode> run changed in
+    /// git"). Only asked for a run whose ledger row says `restored`, so nothing is guessed from
+    /// the log. They don't name a run family, so `commits(for:)` never claims them.
+    func restoreCommits(for run: Run) async -> [Commit] {
+        guard let git = gitService, run.protection?.integrity == "restored" else { return [] }
+        let window = run.commitWindow(now: clock.now())
+        return (try? await git.commits(between: window.lowerBound, and: window.upperBound,
+                                       matchingPrefix: Self.restoreCommitPrefix)) ?? []
+    }
+
+    nonisolated static let restoreCommitPrefix = "Scout: restore protected files"
 
     private func startWatching() {
         watchTask?.cancel()

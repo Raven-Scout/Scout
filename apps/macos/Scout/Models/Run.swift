@@ -134,6 +134,33 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// "slot" is the skill it ran, not a schedule). nil without a ledger row,
     /// or from a runner older than the field.
     var trigger: String? = nil
+    /// How the run was protected, from its run ledger row (card C8's `sandbox` and
+    /// `integrity`); nil without a ledger row. Never worked out from the log.
+    var protection: Protection? = nil
+
+    /// The ledger's word on a run's write protection and the post-run integrity check.
+    struct Protection: Equatable, Hashable, Sendable {
+        /// enforced | unavailable | off | conflict | failed; nil from an older runner.
+        var sandbox: String?
+        /// When `sandbox` is off: env | switch.
+        var sandboxSource: String? = nil
+        /// clean | restored | unrestored | error | unchecked; nil from an older runner.
+        var integrity: String? = nil
+    }
+
+    /// The run went ahead without write protection (it was off, unavailable,
+    /// clashed with another setting, or failed to start). A skipped run never
+    /// ran, so it never counts.
+    var ranUnprotected: Bool {
+        guard !status.isSkip, status != .scheduled else { return false }
+        return RunOutcomeDisplay.sandboxIsConcern(protection?.sandbox)
+    }
+
+    /// The post-run integrity check found this run had changed a protected file
+    /// in git: `restored` (Scout put it back) or `unrestored` (it couldn't).
+    var changedProtectedFile: Bool {
+        ["restored", "unrestored"].contains(protection?.integrity ?? "")
+    }
 
     /// The slot "Run again" fires: this run's own, or nil when there isn't one
     /// to fire. A run started outside the schedule (`manual`,
@@ -197,7 +224,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger
+            model: model, slotKey: slotKey, trigger: trigger, protection: protection
         )
     }
 }
@@ -220,7 +247,8 @@ extension Run {
         headerStartedAt: Date? = nil,
         model: String? = nil,
         slotKey: String? = nil,
-        trigger: String? = nil
+        trigger: String? = nil,
+        protection: Protection? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -248,7 +276,8 @@ extension Run {
             retryOf: retryOf,
             model: model,
             slotKey: slotKey,
-            trigger: trigger
+            trigger: trigger,
+            protection: protection
         )
     }
 }
