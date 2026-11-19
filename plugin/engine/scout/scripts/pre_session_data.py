@@ -80,7 +80,8 @@ class SessionContext:
     # These three come first so a plain Read of the file reaches them before the long kb_file_dates.
     # Each active project's Go deeper map and its knowledge/ notes with their as_of: read the ones a
     # front page edit touches first (scout.scripts.session_context_kb.project_knowledge).
-    project_knowledge: list[dict[str, Any]] = field(default_factory=list)
+    # {"projects": [...], "total", "truncated"}.
+    project_knowledge: dict[str, Any] = field(default_factory=dict)
     # Leave states, and role and manager relations for the people today's items name, plus the
     # owner's managers (session_context_kb.people_context): the leave and leadership-ping rules.
     people_context: dict[str, Any] = field(default_factory=dict)
@@ -530,7 +531,7 @@ def _owner_keys(scout_dir: Path) -> list[str]:
 
 def get_kb_sections(
     scout_dir: Path, reader: str, labels: dict[str, str], graph: Any | None, day: date
-) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """``(project_knowledge, people_context, research_queue)``; each empty when it can't be built.
 
     A reader that sees nothing gets all three empty. Only a full reader's people
@@ -539,12 +540,12 @@ def get_kb_sections(
     from scout.scripts import session_context_kb as kbs
 
     if not reads_any(reader):
-        return [], {}, {}
+        return {}, {}, {}
     full = reader in FULL_READERS
     try:
         projects = kbs.project_knowledge(scout_dir, labels, full=full)
     except Exception:
-        projects = []
+        projects = {}
     try:
         items = kbs.items_text_for(scout_dir, day) if full else ""
         people = kbs.people_context(graph, day, items_text=items, owner_keys=_owner_keys(scout_dir))

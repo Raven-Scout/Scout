@@ -24,7 +24,7 @@ Report what {{USER_NAME}} did in Linear since the last run — the issues {{USER
 
 `list_issues` + issue comments **miss project-level status-update comments**, which is where leadership often pings. For every Linear project {{USER_NAME}} leads or owns, call `get_status_updates` (and `list_comments` on the project) for updates since the last run.
 
-**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (`.scout-cache/session-context.json` → `people_context.owner_managers` lists them, from the ontology's `manages`/`managed_by`/`reports_to` relations; for someone not listed, check `people.md` or `scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
+**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (`.scout-cache/session-context.json` → `people_context.owner_managers` lists them, from the ontology's `manages`/`managed_by`/`reports_to` relations, when its `generated_at` is today; for someone not listed, or with no file from today, check `people.md` or `scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
 
 ### Status Changes
 

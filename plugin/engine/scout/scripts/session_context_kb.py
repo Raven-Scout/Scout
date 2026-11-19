@@ -46,21 +46,27 @@ GO_DEEPER_ENTRY_CHARS = 200
 KNOWLEDGE_MAX_NOTES = 40
 RELEVANT_PEOPLE_MAX = 40
 RESEARCH_TITLE_CHARS = 140
-HEAD_LINES = 60  # a note's frontmatter and its top-of-file status block live here
+NOTE_MAX_BYTES = 256_000  # a note read whole (frontmatter, body headers); a bigger one is read this far
+FRONTMATTER_MAX_LINES = 2_000
 
-# A project whose front page `status:` (or priority) says it is over or on hold.
+# A project whose front page `status:` (or priority) LEADS with a word or emoji saying it is over or
+# on hold: "⚪ paused", "Done", "🟡 Archived". "🟡 Active — phase 1 done" stays active.
 _INACTIVE = re.compile(
-    r"⚪|\b(done|completed?|archived?|paused|on hold|dropped|cancell?ed|closed|inactive|shelved|retired|abandoned)\b",
+    r"^\W*(?:⚪|(?:[🟢🟡🔴]\W*)?(?:done|completed?|archived?|paused|on hold|dropped|cancell?ed|closed|inactive"
+    r"|shelved|retired|abandoned)\b)",
     re.IGNORECASE,
 )
 _LEAVE_WORDS = re.compile(
     r"\b(leave|oof|ooo|out of office|vacation|holiday|paternity|maternity|parental|sabbatical)\b", re.IGNORECASE
 )
-_BACK = re.compile(r"^\s*(back|returned|active)\b", re.IGNORECASE)
-_RETURNED = re.compile(r"^\s*(back|returned)\b", re.IGNORECASE)
-_DEPARTED = re.compile(r"\b(departed|left the company|former|offboarded)\b", re.IGNORECASE)
+_BACK = re.compile(r"^\W*(back|returned|active)\b", re.IGNORECASE)
+_RETURNED = re.compile(r"^\W*(back|returned)\b", re.IGNORECASE)
+# Leading only: "Active (formerly the platform lead)" is not departed.
+_DEPARTED = re.compile(r"^\W*(departed|left|offboarded)\b", re.IGNORECASE)
 _ENDED = re.compile(r"\b(ended|closed|cancell?ed|over|done)\b", re.IGNORECASE)
-_ACTIVE_STATUS_HEADER = re.compile(r"^#{1,4}\s.*\bACTIVE STATUS\b", re.IGNORECASE)
+# The gate's body signal: a heading with 🚨 or the words ACTIVE STATUS, anywhere in the note.
+_ACTIVE_STATUS_HEADER = re.compile(r"^#{1,4}\s.*(?:🚨|\bACTIVE STATUS\b)", re.IGNORECASE)
+_LEAVE_KEYS = ("oof", "leave", "ooo", "out_of_office", "on_leave")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]")
 _MANAGER_RELS = ("managed_by", "reports_to")
 _REPORT_RELS = ("manages",)
@@ -83,19 +89,36 @@ def _date(value: Any) -> dt.date | None:
         return None
 
 
-def _head(path: Path, lines: int = HEAD_LINES) -> str:
+def read_note(path: Path, max_bytes: int = NOTE_MAX_BYTES) -> str:
+    """The note's text, at most ``max_bytes`` of it; "" when it can't be read."""
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            return "".join(line for _, line in zip(range(lines), f, strict=False))
+        with path.open("rb") as f:
+            return f.read(max_bytes).decode("utf-8", errors="replace")
     except OSError:
         return ""
 
 
-def _frontmatter(text: str) -> dict[str, Any]:
+def read_frontmatter(path: Path) -> dict[str, Any]:
+    """The note's whole frontmatter block, however long, read only as far as its closing fence.
+
+    ``{}`` when there is none, it doesn't close within :data:`FRONTMATTER_MAX_LINES`, or it isn't a mapping.
+    """
+    from scout.kb.frontmatter import FENCE
     from scout.kb.structure import split_page
 
+    lines: list[str] = []
     try:
-        return split_page(text)[0]
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f):
+                lines.append(line)
+                if n == 0 and line.rstrip() != FENCE:
+                    return {}
+                if (n > 0 and line.rstrip() == FENCE) or n >= FRONTMATTER_MAX_LINES:
+                    break
+    except OSError:
+        return {}
+    try:
+        return split_page("".join(lines))[0]
     except Exception:
         return {}
 
@@ -115,20 +138,40 @@ def _visibility(rel: str, labels: Mapping[str, str], full: bool) -> str | None:
 
 
 def is_active_project(frontmatter: Mapping[str, Any]) -> bool:
-    """True unless the front page's ``status:`` (or ``priority:``) says it is done, paused or archived."""
-    return not _INACTIVE.search(f"{_text(frontmatter.get('status'))} {_text(frontmatter.get('priority'))}")
+    """True unless the front page's ``status:`` (or ``priority:``) starts by saying it is done, paused or archived."""
+    return not any(_INACTIVE.match(_text(frontmatter.get(k))) for k in ("status", "priority"))
+
+
+def knowledge_notes(vault: Path, knowledge_rel: str, labels: Mapping[str, str], *, full: bool) -> list[dict[str, Any]]:
+    """Each note under ``knowledge_rel`` the reader may see, ``{"path", "as_of", "visibility"}``, newest first."""
+    from scout.kb.structure import page_as_of
+
+    folder = vault / knowledge_rel
+    notes: list[dict[str, Any]] = []
+    if not folder.is_dir():
+        return notes
+    for note in sorted(folder.rglob("*.md")):
+        note_rel = note.relative_to(vault).as_posix()
+        visibility = _visibility(note_rel, labels, full)
+        if visibility is None or not note.is_file():
+            continue
+        as_of = page_as_of(read_frontmatter(note))
+        notes.append({"path": note_rel, "as_of": as_of.isoformat() if as_of else None, "visibility": visibility})
+    notes.sort(key=lambda n: (n["as_of"] or "", n["path"]), reverse=True)
+    return notes
 
 
 def project_knowledge(
     vault: Path, labels: Mapping[str, str], *, full: bool, projects_dir: str | None = None
-) -> list[dict[str, Any]]:
-    """One row per active project folder ``<projects_dir>/<name>/<name>.md``.
+) -> dict[str, Any]:
+    """``{"projects": [row, …], "total": N, "truncated": False}``, one row per active project folder.
 
-    ``{"project", "path", "visibility", "as_of", "go_deeper": [entry, …], "knowledge":
-    [{"path", "as_of", "visibility"}, …], "knowledge_total"}``. ``go_deeper`` is the
-    front page's **Go deeper** section, one entry per bullet, clipped; ``knowledge``
-    is every ``.md`` under the folder's ``knowledge/``, newest ``as_of`` first, at most
-    :data:`KNOWLEDGE_MAX_NOTES` (``knowledge_total`` counts them all).
+    A row is ``{"project", "path", "visibility", "as_of", "go_deeper": [entry, …], "knowledge":
+    [{"path", "as_of", "visibility"}, …], "knowledge_total"}`` for ``<projects_dir>/<name>/<name>.md``.
+    ``go_deeper`` is the front page's **Go deeper** section, one entry per bullet, clipped;
+    ``knowledge`` is every ``.md`` under the folder's ``knowledge/``, newest ``as_of`` first, at
+    most :data:`KNOWLEDGE_MAX_NOTES` (``knowledge_total`` counts them all). ``total`` counts the
+    projects before :func:`fit_budget`, which sets ``truncated`` when it shortens anything.
     """
     from scout.kb.structure import load_structure_config, page_as_of, section_entries, split_page
 
@@ -139,9 +182,9 @@ def project_knowledge(
     except Exception:
         root, skip = projects_dir or "knowledge-base/projects", frozenset()
     base = vault / root
-    if not base.is_dir():
-        return []
     out: list[dict[str, Any]] = []
+    if not base.is_dir():
+        return {"projects": out, "total": 0, "truncated": False}
     for folder in sorted(p for p in base.iterdir() if p.is_dir()):
         name = folder.name
         front = folder / f"{name}.md"
@@ -151,25 +194,14 @@ def project_knowledge(
         visibility = _visibility(rel, labels, full)
         if visibility is None:
             continue
-        try:
-            text = front.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        text = read_note(front)
+        if not text:
             continue
         fm, _ = split_page(text)
         if not is_active_project(fm):
             continue
         go_deeper = [_clip(entry, GO_DEEPER_ENTRY_CHARS) for _, _, entry in section_entries(text, ["Go deeper"])]
-        notes: list[dict[str, Any]] = []
-        knowledge = folder / "knowledge"
-        if knowledge.is_dir():
-            for note in sorted(knowledge.rglob("*.md")):
-                note_rel = note.relative_to(vault).as_posix()
-                note_vis = _visibility(note_rel, labels, full)
-                if note_vis is None:
-                    continue
-                as_of = page_as_of(_frontmatter(_head(note)))
-                notes.append({"path": note_rel, "as_of": as_of.isoformat() if as_of else None, "visibility": note_vis})
-        notes.sort(key=lambda n: (n["as_of"] or "", n["path"]), reverse=True)
+        notes = knowledge_notes(vault, f"{root}/{name}/knowledge", labels, full=full)
         page_as = page_as_of(fm)
         out.append(
             {
@@ -183,24 +215,26 @@ def project_knowledge(
                 "knowledge_total": len(notes),
             }
         )
-    return out
+    return {"projects": out, "total": len(out), "truncated": False}
 
 
 # ----- people --------------------------------------------------------------------
 
 
 def _leave_block(fm: Mapping[str, Any], day: dt.date) -> dict[str, Any] | None:
-    """A dated ``oof:``/``leave:`` frontmatter mapping that covers ``day`` and hasn't ended."""
-    for key in ("oof", "leave", "ooo"):
+    """An ``oof:``/``leave:``/``ooo:``/``out_of_office:``/``on_leave:`` frontmatter entry in force on ``day``.
+
+    A mapping counts unless its ``status`` says it ended or its dates exclude ``day``; one with
+    no dates at all counts (a declared leave with no end). ``on_leave: true`` counts too.
+    """
+    for key in _LEAVE_KEYS:
         block = fm.get(key)
-        if not isinstance(block, Mapping):
-            continue
-        if _ENDED.search(_text(block.get("status"))):
+        if block is True:
+            return {"since": None, "until": None, "source": key}
+        if not isinstance(block, Mapping) or _ENDED.search(_text(block.get("status"))):
             continue
         start = _date(block.get("from") or block.get("start") or block.get("from_approx"))
         end = _date(block.get("until") or block.get("end") or block.get("to"))
-        if start is None and end is None:
-            continue
         if (start is None or start <= day) and (end is None or day <= end):
             return {
                 "since": start.isoformat() if start else None,
@@ -210,12 +244,14 @@ def _leave_block(fm: Mapping[str, Any], day: dt.date) -> dict[str, Any] | None:
     return None
 
 
-def leave_state(fm: Mapping[str, Any], head: str, day: dt.date) -> dict[str, Any] | None:
+def leave_state(fm: Mapping[str, Any], text: str, day: dt.date) -> dict[str, Any] | None:
     """The person's current leave state, by the Leave-State Compose Gate's own signals, or None.
 
     ``{"state": "leave" | "departed" | "active_status_block", "since", "until", "source"}``.
-    ``active_status_block`` means the note opens with a ``### 🚨 ACTIVE STATUS``
-    header (unless ``status:`` says they are back): read it before naming them as an owner.
+    ``text`` is the note (frontmatter and body). ``active_status_block`` means a heading in the
+    body carries 🚨 or the words ACTIVE STATUS (unless ``status:`` says they are back): read the
+    note before naming them as an owner. None is not proof of availability: only a positive
+    result is precomputed, and the gate still reads the note of anyone not listed.
     """
     block = _leave_block(fm, day)
     if block:
@@ -223,11 +259,11 @@ def leave_state(fm: Mapping[str, Any], head: str, day: dt.date) -> dict[str, Any
     status = _text(fm.get("status"))
     if status and _LEAVE_WORDS.search(status) and not _BACK.match(status):
         return {"state": "leave", "since": None, "until": None, "source": "status"}
-    if status and _DEPARTED.search(status):
+    if status and _DEPARTED.match(status):
         return {"state": "departed", "since": None, "until": None, "source": "status"}
     from scout.kb.structure import split_page
 
-    _, body = split_page(head)
+    _, body = split_page(text)
     if not _RETURNED.match(status) and any(_ACTIVE_STATUS_HEADER.match(line) for line in body.splitlines()):
         return {"state": "active_status_block", "since": None, "until": None, "source": "body"}
     return None
@@ -272,6 +308,25 @@ def _relations(graph: Any, name: str, kinds: tuple[str, ...]) -> list[str]:
         return []
 
 
+def _label_row(name: str, label: Mapping[str, Any] | None) -> dict[str, Any]:
+    label = label or {}
+    return {
+        "name": name,
+        "path": _text(label.get("path")),
+        "visibility": "normal" if label.get("visibility") == "normal" else "private",
+    }
+
+
+def _related_rows(graph: Any, name: str, kinds: tuple[str, ...]) -> list[dict[str, Any]]:
+    """``{name, path, visibility}`` per relation target that is a loaded entity; a dangling name is left out."""
+    rows = []
+    for target in _relations(graph, name, kinds):
+        label = graph.label_of(target)
+        if label:
+            rows.append(_label_row(target, label))
+    return rows
+
+
 def _owner(people: Mapping[str, Mapping[str, Any]], owner_keys: list[str]) -> str | None:
     keys = {k.strip().lower() for k in owner_keys if k and k.strip()}
     for name, entity in people.items():
@@ -290,9 +345,11 @@ def people_context(
     """Leave states and manager relations, so the leave and leadership rules need no lookups.
 
     - ``on_leave``: every person (not under ``archive/``) whose note shows a current
-      leave state (:func:`leave_state`), with ``name``, ``path``, ``visibility``.
+      leave state (:func:`leave_state`), with ``name``, ``path``, ``visibility``. Only
+      this list is trusted: a person missing from it still gets the gate's lookup.
     - ``relevant``: each person today's items name (``items_text``, the daily file),
-      with ``role``, ``team``, ``managers``, ``reports`` and ``leave``.
+      with ``role``, ``team``, ``managers`` and ``reports`` (``{name, path, visibility}``
+      each) and ``leave`` (the state when listed in ``on_leave``, else None).
     - ``owner_managers``: who manages the vault owner (``managed_by``/``reports_to``,
       and the inverse ``manages``): a project-update comment from one is a leadership ping.
     """
@@ -309,19 +366,14 @@ def people_context(
         return empty
 
     def row(name: str) -> dict[str, Any]:
-        label = people[name].get("_label") or {}
-        return {
-            "name": name,
-            "path": _text(label.get("path")),
-            "visibility": "normal" if label.get("visibility") == "normal" else "private",
-        }
+        return _label_row(name, people[name].get("_label"))
 
     leave: dict[str, dict[str, Any]] = {}
     for name, entity in people.items():
         source = entity.get("_source_path")
-        head = _head(Path(source)) if isinstance(source, str) and source else ""
+        text = read_note(Path(source)) if isinstance(source, str) and source else ""
         try:
-            state = leave_state(entity, head, day)
+            state = leave_state(entity, text, day)
         except Exception:
             state = None
         if state:
@@ -341,8 +393,8 @@ def people_context(
                 **row(name),
                 "role": _text(entity.get("role")) or None,
                 "team": _text(entity.get("team")) or None,
-                "managers": _relations(graph, name, _MANAGER_RELS),
-                "reports": _relations(graph, name, _REPORT_RELS),
+                "managers": _related_rows(graph, name, _MANAGER_RELS),
+                "reports": _related_rows(graph, name, _REPORT_RELS),
                 "leave": leave.get(name, {}).get("state"),
             }
         )
@@ -394,7 +446,7 @@ def research_queue(vault: Path, labels: Mapping[str, str], *, full: bool) -> dic
         visibility = _visibility(rel, labels, full)
         if visibility is None:
             continue
-        fm = _frontmatter(_head(entry))
+        fm = read_frontmatter(entry)
         status = _text(fm.get("status")).lower()
         counts[status or "none"] = counts.get(status or "none", 0) + 1
         if status not in _QUEUE_OPEN:
@@ -424,22 +476,23 @@ def _size(value: Any) -> int:
     return len(json.dumps(value, indent=2, default=str).encode("utf-8"))
 
 
-def _trim_projects(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """Halve every project's lists until the section fits; then drop the go-deeper text, then the oldest notes."""
-    rows = [dict(r) for r in rows]
-    for cap in (20, 12, 8, 4, 2, 0):
-        if _size(rows) <= limit:
-            break
+def _trim_projects(section: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Shorten every project's lists until the section fits, down to one note and no Go deeper text each; only then
+    drop whole projects from the end. ``truncated`` says something went; ``total`` still counts every project."""
+    rows = [dict(r) for r in section.get("projects") or []]
+    out = {**section, "projects": rows}
+    for cap in (20, 12, 8, 4, 2, 1, 0):
+        if _size(out) <= limit:
+            return out
         for r in rows:
-            r["go_deeper"] = r["go_deeper"][:cap]
-            r["knowledge"] = r["knowledge"][: max(cap, 3)]
+            r["go_deeper"] = list(r.get("go_deeper") or [])[:cap]
+            r["knowledge"] = list(r.get("knowledge") or [])[: max(cap, 1)]
             r["truncated"] = True
-    while rows and _size(rows) > limit:
-        for r in rows:
-            r["knowledge"] = r["knowledge"][:1]
-        if _size(rows) > limit:
-            rows.pop()
-    return rows
+        out["truncated"] = True
+    while rows and _size(out) > limit:
+        rows.pop()
+        out["truncated"] = True
+    return out
 
 
 def _trim_people(ctx: dict[str, Any], limit: int) -> dict[str, Any]:

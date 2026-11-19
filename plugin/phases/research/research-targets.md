@@ -12,7 +12,7 @@ requires: null
 
 Each file in `knowledge-base/research-queue/` is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings. The thin `knowledge-base/research-queue.md` is just the run log (see the end of this step).
 
-**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
+**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if the file's `generated_at` isn't today, or `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
 
 `status: open` and `in-progress` (or no status) are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
 

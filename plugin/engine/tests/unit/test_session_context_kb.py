@@ -75,7 +75,9 @@ def _labels(vault: Path, private: tuple[str, ...] = ()) -> dict[str, str]:
 
 
 def test_each_active_project_lists_its_go_deeper_map_and_notes(vault: Path) -> None:
-    rows = {r["project"]: r for r in kbs.project_knowledge(vault, _labels(vault), full=True)}
+    section = kbs.project_knowledge(vault, _labels(vault), full=True)
+    assert section["total"] == 2 and section["truncated"] is False
+    rows = {r["project"]: r for r in section["projects"]}
     assert set(rows) == {"widgets", "gateway"}  # status Done is not active
     widgets = rows["widgets"]
     assert widgets["path"] == f"{PROJECTS}/widgets/widgets.md" and widgets["as_of"] == "2026-04-10"
@@ -94,13 +96,13 @@ def test_each_active_project_lists_its_go_deeper_map_and_notes(vault: Path) -> N
 
 def test_labels_carry_through_and_a_delegate_sees_only_its_paths(vault: Path) -> None:
     private = f"{PROJECTS}/widgets/knowledge/widgets-decisions.md"
-    rows = kbs.project_knowledge(vault, _labels(vault, (private,)), full=True)
+    rows = kbs.project_knowledge(vault, _labels(vault, (private,)), full=True)["projects"]
     notes = {n["path"]: n["visibility"] for r in rows for n in r["knowledge"]}
     assert notes[private] == "private"
-    unlabelled = kbs.project_knowledge(vault, {}, full=True)
+    unlabelled = kbs.project_knowledge(vault, {}, full=True)["projects"]
     assert {n["visibility"] for r in unlabelled for n in r["knowledge"]} == {"private"}  # fail closed
     shown = {f"{PROJECTS}/widgets/widgets.md": "normal", f"{PROJECTS}/widgets/knowledge/widgets-release.md": "normal"}
-    delegate = kbs.project_knowledge(vault, shown, full=False)
+    delegate = kbs.project_knowledge(vault, shown, full=False)["projects"]
     assert [r["project"] for r in delegate] == ["widgets"]
     assert [n["path"] for n in delegate[0]["knowledge"]] == [f"{PROJECTS}/widgets/knowledge/widgets-release.md"]
 
@@ -116,7 +118,8 @@ def test_is_active_project(status: str, active: bool) -> None:
 def test_long_maps_are_capped(vault: Path) -> None:
     for i in range(kbs.KNOWLEDGE_MAX_NOTES + 5):
         _write(vault, f"{PROJECTS}/gateway/knowledge/n{i:02}.md", _note("2026-01-01"))
-    gateway = next(r for r in kbs.project_knowledge(vault, _labels(vault), full=True) if r["project"] == "gateway")
+    rows = kbs.project_knowledge(vault, _labels(vault), full=True)["projects"]
+    gateway = next(r for r in rows if r["project"] == "gateway")
     assert len(gateway["knowledge"]) == kbs.KNOWLEDGE_MAX_NOTES
     assert gateway["knowledge_total"] == kbs.KNOWLEDGE_MAX_NOTES + 5
 
@@ -140,11 +143,32 @@ def test_long_maps_are_capped(vault: Path) -> None:
         ({}, "---\nname: x\n---\n### 🚨 ACTIVE STATUS\nOut until further notice.\n", "active_status_block"),
         ({}, "---\nname: x\n---\n# Alex\nNothing special.\n", None),
         ({"status": "back from leave"}, "---\nname: x\n---\n### 🚨 ACTIVE STATUS\nOld block.\n", None),
+        ({"status": "Active (formerly the platform lead)"}, "", None),  # "former" is no longer departed
+        ({"status": "left in March"}, "", "departed"),
+        ({"ooo": {"until": "2026-04-30"}}, "", "leave"),
+        ({"out_of_office": {"note": "parental leave, no dates yet"}}, "", "leave"),  # undated and not ended
+        ({"on_leave": True}, "", "leave"),
+        ({"oof": "see body"}, "", None),  # not a mapping
+        ({"oof": {"from": "not a date"}}, "", "leave"),  # undated in effect
+        ({}, "---\nname: x\n---\n## 🚨 Out sick this week\n", "active_status_block"),  # 🚨 alone
+        ({}, "---\nname: x\n---\n" + "filler\n" * 200 + "### ACTIVE STATUS\n", "active_status_block"),  # deep
     ],
 )
 def test_leave_state(frontmatter: dict, head: str, state: str | None) -> None:
     found = kbs.leave_state(frontmatter, head, DAY)
     assert (found or {}).get("state") == state
+
+
+def test_dates_may_be_dates_or_datetimes() -> None:
+    import datetime as _dt
+
+    block = {"oof": {"from": _dt.datetime(2026, 4, 10, 9, 0), "until": _dt.date(2026, 4, 20)}}
+    assert kbs.leave_state(block, "", DAY) == {
+        "state": "leave",
+        "since": "2026-04-10",
+        "until": "2026-04-20",
+        "source": "oof",
+    }
 
 
 def test_a_dated_block_reports_its_dates() -> None:
@@ -194,7 +218,9 @@ def test_people_context_lists_leave_relations_and_the_owners_managers(people_vau
     assert on_leave == {"Alex Chen": "leave", "Jo Park": "active_status_block"}  # archive/ is left out
     relevant = {r["name"]: r for r in ctx["relevant"]}
     assert set(relevant) == {"Alex Chen", "Jo Park"}
-    assert relevant["Alex Chen"]["managers"] == ["Priya Shah"] and relevant["Alex Chen"]["leave"] == "leave"
+    priya = {"name": "Priya Shah", "path": "knowledge-base/people/priya-shah.md", "visibility": "normal"}
+    assert relevant["Alex Chen"]["managers"] == [priya] and relevant["Alex Chen"]["leave"] == "leave"
+    assert relevant["Jo Park"]["managers"] == [] and relevant["Jo Park"]["reports"] == []
     assert relevant["Alex Chen"]["role"] == "Engineer" and relevant["Alex Chen"]["path"].endswith("alex-chen.md")
     assert relevant["Jo Park"]["leave"] == "active_status_block"
     assert [m["name"] for m in ctx["owner_managers"]] == ["Priya Shah"]
@@ -302,7 +328,8 @@ def _big_sections() -> dict:
         "owner_managers": [],
     }
     queue = {"open": [{"id": "i" * 40, "title": "t" * 140}] * 300, "open_total": 300, "counts": {"open": 300}}
-    return {"project_knowledge": projects, "people_context": people, "research_queue": queue}
+    section = {"projects": projects, "total": len(projects), "truncated": False}
+    return {"project_knowledge": section, "people_context": people, "research_queue": queue}
 
 
 def test_each_section_is_kept_within_its_budget() -> None:
@@ -311,7 +338,9 @@ def test_each_section_is_kept_within_its_budget() -> None:
     assert _size(out["project_knowledge"]) <= kbs.PROJECT_KNOWLEDGE_MAX_BYTES
     assert _size(out["people_context"]) <= kbs.PEOPLE_CONTEXT_MAX_BYTES
     assert _size(out["research_queue"]) <= kbs.RESEARCH_QUEUE_MAX_BYTES
-    assert out["project_knowledge"] and all(r.get("truncated") for r in out["project_knowledge"])
+    projects = out["project_knowledge"]
+    assert projects["truncated"] and projects["total"] == 30 and projects["projects"]
+    assert all(r.get("truncated") and r["knowledge"] for r in projects["projects"])
     assert out["research_queue"]["truncated"] and out["people_context"]["truncated"]
     assert out["kb_file_dates"] == data["kb_file_dates"]
     assert _size(out) <= kbs.SESSION_CONTEXT_MAX_BYTES
@@ -327,7 +356,10 @@ def test_a_large_file_shrinks_only_the_new_sections() -> None:
 
 
 def test_a_small_context_is_unchanged() -> None:
-    data = {"project_knowledge": [{"project": "p", "go_deeper": ["- a"], "knowledge": []}], "people_context": {}}
+    data = {
+        "project_knowledge": {"projects": [{"project": "p", "go_deeper": ["- a"], "knowledge": []}], "total": 1},
+        "people_context": {},
+    }
     assert kbs.fit_budget(data) == data
 
 
@@ -343,7 +375,7 @@ def test_gather_and_write_carry_the_sections_near_the_top(
     monkeypatch.setattr(psd, "get_pr_authored", lambda: [])
     monkeypatch.setattr(psd, "get_pr_review_requested", lambda: [])
     ctx = psd.gather("research", scout_dir=vault, now=dt.datetime(2026, 4, 15, 9, 0, tzinfo=dt.UTC))
-    assert {r["project"] for r in ctx.project_knowledge} == {"widgets", "gateway"}
+    assert {r["project"] for r in ctx.project_knowledge["projects"]} == {"widgets", "gateway"}
     assert [r["id"] for r in ctx.research_queue["open"]] == ["2026-04-02-b"]
     assert set(ctx.people_context) >= {"on_leave", "relevant", "owner_managers"}
     out = tmp_path / "session-context.json"
@@ -358,7 +390,7 @@ def test_a_reader_that_sees_nothing_gets_no_kb_sections(vault: Path, monkeypatch
 
     monkeypatch.setenv("SCOUT_READER", "agent:person:priya@example.com")
     ctx = psd.gather("research", scout_dir=vault)
-    assert ctx.project_knowledge == [] and ctx.people_context == {} and ctx.research_queue == {}
+    assert ctx.project_knowledge == {} and ctx.people_context == {} and ctx.research_queue == {}
 
 
 def test_a_section_that_fails_is_empty(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,4 +402,195 @@ def test_a_section_that_fails_is_empty(vault: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(kbs, "project_knowledge", broken)
     monkeypatch.setattr(kbs, "research_queue", broken)
     projects, people, queue = psd.get_kb_sections(vault, "owner", {}, None, DAY)
-    assert projects == [] and queue == {} and people["on_leave"] == []
+    assert projects == {} and queue == {} and people["on_leave"] == []
+
+
+# ----- review follow-ups: parsing, anchoring, delegates, trimming ----------------------
+
+
+def test_a_long_frontmatter_block_is_read_whole(vault: Path) -> None:
+    filler = "".join(f"k{i}: v\n" for i in range(120))
+    _entry(vault, "long-done", f"title: Finished long\n{filler}status: done\n")
+    queue = kbs.research_queue(vault, _labels(vault), full=True)
+    assert queue["counts"] == {"done": 1} and queue["open"] == []
+    note = vault / f"{PROJECTS}/widgets/knowledge/widgets-long.md"
+    note.write_text(f"---\n{filler}as_of: 2026-04-14\n---\n# Long\n", encoding="utf-8")
+    widgets = kbs.project_knowledge(vault, _labels(vault), full=True)["projects"][1]
+    assert widgets["project"] == "widgets" and widgets["knowledge"][0]["as_of"] == "2026-04-14"
+
+
+def test_read_frontmatter_edges(tmp_path: Path) -> None:
+    _write(tmp_path, "plain.md", "# no frontmatter\n")
+    _write(tmp_path, "open.md", "---\nname: x\n")
+    _write(tmp_path, "list.md", "---\n- a\n- b\n---\n")
+    assert kbs.read_frontmatter(tmp_path / "plain.md") == {}
+    assert kbs.read_frontmatter(tmp_path / "open.md") == {}
+    assert kbs.read_frontmatter(tmp_path / "list.md") == {}
+    assert kbs.read_frontmatter(tmp_path / "missing.md") == {}
+    assert kbs.read_note(tmp_path / "missing.md") == ""
+
+
+@pytest.mark.parametrize(
+    ("front", "active"),
+    [
+        ({"status": "🟡 Active — phase 1 done"}, True),
+        ({"status": "Active (closed beta)"}, True),
+        ({"status": "🟡 Done"}, False),
+        ({"status": "Active", "priority": "⚪"}, False),
+    ],
+)
+def test_only_a_leading_word_makes_a_project_inactive(front: dict, active: bool) -> None:
+    assert kbs.is_active_project(front) is active
+
+
+def test_project_knowledge_falls_back_without_a_usable_config(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.kb.structure
+
+    def broken(*_: object) -> None:
+        raise RuntimeError("bad config")
+
+    monkeypatch.setattr(scout.kb.structure, "load_structure_config", broken)
+    assert kbs.project_knowledge(vault, _labels(vault), full=True)["total"] == 2
+    empty = {"projects": [], "total": 0, "truncated": False}
+    assert kbs.project_knowledge(vault / "nowhere", {}, full=True) == empty
+
+
+def test_skipped_projects_are_left_out(vault: Path) -> None:
+    config = "schema_version: 1\nkb_structure:\n  skip_projects: [gateway]\n"
+    (vault / "scout-config.yaml").write_text(config, encoding="utf-8")
+    rows = kbs.project_knowledge(vault, _labels(vault), full=True)["projects"]
+    assert [r["project"] for r in rows] == ["widgets"]
+
+
+def test_a_name_two_people_share_matches_neither() -> None:
+    people = {
+        "Alex Chen": {"_label": {"path": "knowledge-base/people/alex-chen.md"}, "aliases": ["AC"]},
+        "Ana Cruz": {"_label": {"path": "knowledge-base/people/ana-cruz.md"}, "aliases": ["AC"]},
+    }
+    assert kbs.mentioned_people("[[AC]]", people) == []
+    assert kbs.mentioned_people("[[ana-cruz]]", people) == ["Ana Cruz"]
+
+
+def test_a_dangling_manager_is_left_out(people_vault: Path) -> None:
+    _person(people_vault, "kim-lee", "Kim Lee", rels='  - type: managed_by\n    target: "[[Nobody Here]]"\n')
+    ctx = kbs.people_context(_graph(people_vault), DAY, items_text="[[kim-lee]]")
+    assert ctx["relevant"][0]["managers"] == []
+
+
+def test_a_delegate_sees_only_the_people_it_may(people_vault: Path) -> None:
+    from scout.kb.read import load_graph
+
+    config = "schema_version: 1\nprivacy:\n  delegates:\n    helper: {}\n"
+    (people_vault / "scout-config.yaml").write_text(config, encoding="utf-8")
+    _person(people_vault, "pat-gray", "Pat Gray", "status: on leave\nvisibility: private\n")
+    owner_view = kbs.people_context(_graph(people_vault), DAY)
+    assert "Pat Gray" in {r["name"] for r in owner_view["on_leave"]}
+    clear_frontmatter_cache()
+    delegate_view = kbs.people_context(load_graph(people_vault, "delegate:helper"), DAY)
+    assert "Pat Gray" not in json.dumps(delegate_view)
+    assert "Alex Chen" in {r["name"] for r in delegate_view["on_leave"]}
+
+
+def test_a_graph_that_cannot_be_walked_gives_an_empty_context() -> None:
+    class Broken:
+        @property
+        def entities(self) -> dict:
+            raise RuntimeError("boom")
+
+    assert kbs.people_context(Broken(), DAY)["on_leave"] == []
+
+
+def test_relations_survive_a_failing_graph() -> None:
+    class Broken:
+        def related(self, _: str) -> list:
+            raise RuntimeError("boom")
+
+    assert kbs._relations(Broken(), "x", ("manages",)) == []
+
+
+def test_projects_are_dropped_only_after_every_row_is_at_its_floor() -> None:
+    section = _big_sections()["project_knowledge"]
+    out = kbs._trim_projects(section, 4_000)
+    assert out["truncated"] is True and out["total"] == 30
+    assert 0 < len(out["projects"]) < 30
+    assert all(len(r["knowledge"]) == 1 and r["go_deeper"] == [] for r in out["projects"])
+    assert _size(out) <= 4_000
+    assert kbs._trim_projects(section, 10)["projects"] == []
+
+
+def test_write_context_keeps_the_file_in_budget(tmp_path: Path) -> None:
+    """Guards the budget across a refactor of write_context (an atomic writer must still call fit_budget)."""
+    from scout.scripts import pre_session_data as psd
+
+    big = _big_sections()
+    ctx = psd.SessionContext(
+        generated_at="2026-04-15T09:00:00",
+        session_type="briefing",
+        project_knowledge=big["project_knowledge"],
+        people_context=big["people_context"],
+        research_queue=big["research_queue"],
+    )
+    out = tmp_path / "session-context.json"
+    psd.write_context(ctx, out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["project_knowledge"]["truncated"] is True
+    assert written["research_queue"]["truncated"] is True and written["people_context"]["truncated"] is True
+    assert out.stat().st_size <= kbs.SESSION_CONTEXT_MAX_BYTES
+
+
+def test_owner_keys_without_a_readable_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import pre_session_data as psd
+
+    _write(tmp_path, "scout-config.yaml", "schema_version: 1\nuser:\n  name: Sam Rivera\n  email: sam@example.com\n")
+    assert psd._owner_keys(tmp_path) == ["Sam Rivera", "", "sam@example.com"]
+
+    def broken(*_: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(psd.scout_config, "load_config", broken)
+    assert psd._owner_keys(tmp_path) == []
+
+
+def test_a_failing_people_section_is_empty(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import pre_session_data as psd
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kbs, "people_context", broken)
+    assert psd.get_kb_sections(vault, "owner", {}, None, DAY)[1] == {}
+
+
+def test_failures_inside_a_section_are_contained(
+    people_vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scout.kb.structure
+
+    graph = _graph(people_vault)
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kbs, "leave_state", broken)
+    assert kbs.people_context(graph, DAY)["on_leave"] == []  # one bad note never sinks the section
+    _write(tmp_path, "note.md", "---\nname: x\n---\n")
+    monkeypatch.setattr(scout.kb.structure, "split_page", broken)
+    assert kbs.read_frontmatter(tmp_path / "note.md") == {}
+
+
+def test_an_empty_front_page_is_skipped(vault: Path) -> None:
+    (vault / f"{PROJECTS}/gateway/gateway.md").write_text("", encoding="utf-8")
+    rows = kbs.project_knowledge(vault, _labels(vault), full=True)["projects"]
+    assert [r["project"] for r in rows] == ["widgets"]
+
+
+def test_an_unreadable_daily_file_gives_no_items(tmp_path: Path) -> None:
+    (tmp_path / "action-items" / "action-items-2026-04-14.md").mkdir(parents=True)  # a folder, not a file
+    assert kbs.items_text_for(tmp_path, DAY) == ""
+
+
+def test_old_fields_alone_over_the_cap_are_left_whole() -> None:
+    dates = {f"knowledge-base/n{i:05}.md": {"last_updated": "2026-01-01"} for i in range(5000)}
+    data = {"kb_file_dates": dates, "people_context": {"on_leave": [], "relevant": []}}
+    out = kbs.fit_budget(data)
+    assert out["kb_file_dates"] == dates and _size(out) > kbs.SESSION_CONTEXT_MAX_BYTES

@@ -7,20 +7,25 @@ detail. This hook makes the gap visible at the moment it happens.
 
   - **When**: after a scheduled run's ``Write``/``Edit``/``MultiEdit`` of a
     project's front page, ``<projects_dir>/<name>/<name>.md`` (``kb_structure.
-    projects_dir``, default ``knowledge-base/projects``), whose ``knowledge/``
-    folder holds at least one note.
-  - **What counts as reading one**: anything earlier in this session's transcript
-    that touched a note under that ``knowledge/`` folder: a ``Read``, ``Write``,
-    ``Edit`` or ``MultiEdit`` of it, or a ``scoutctl kb read``/``kb search`` whose
-    command or result names a path there. The transcript is the source because
-    ``.scout-logs/kb-reads.jsonl`` holds counts and an argument hash, never a
-    path (#453 §7.4), so it can't say which project a read was about.
-  - **What it does**: adds ``additionalContext`` naming the front page and the
-    project's newest notes. **Warn only**: it never blocks, never changes the
-    call, and any failure (no transcript, an unreadable vault) adds nothing.
+    projects_dir``, default ``knowledge-base/projects``), when the run's reader may
+    see that page and at least one note under its ``knowledge/`` folder.
+  - **What counts as reading one**: anything earlier in this session's transcript,
+    or a subagent's transcript beside it, that touched a note under that
+    ``knowledge/`` folder: a ``Read``, ``Write``, ``Edit`` or ``MultiEdit`` of it,
+    or a ``scoutctl kb read|search|entity|query|related`` whose command or result
+    names a path there. The transcript is the source because
+    ``.scout-logs/kb-reads.jsonl`` holds counts and an argument hash, never a path
+    (#453 §7.4), so it can't say which project a read was about. The scan streams
+    the transcript, stops at the first match, and gives up silently past
+    :data:`TRANSCRIPT_MAX_BYTES`.
+  - **What it names**: only notes the reader may see (``scoutctl kb``'s labels, so
+    a ``delegate:<id>`` reader never learns a hidden note exists, #550), newest
+    ``as_of`` first, each private one marked ``(private)``.
+  - **Warn only**: it never blocks, never changes the call, and any failure (no
+    transcript, an unreadable vault, labels it can't get) adds nothing.
 
-hooks.json starts Python only for a run's write whose payload names
-``knowledge-base``; owner sessions exit in the shell.
+hooks.json starts Python only for a run's write whose payload names a ``.md``
+file; owner sessions exit in the shell.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
@@ -38,7 +43,12 @@ MARK = f"[scout:{GATE}]"
 WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 FILE_TOOLS = frozenset({"Read", *WRITE_TOOLS})
 NOTES_NAMED = 5
-_KB_READ = re.compile(r"\bkb\s+(read|search)\b")
+TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024
+_KB_READ = re.compile(r"\bkb\s+(read|search|entity|query|related)\b")
+
+
+class _TooBig(Exception):
+    """The transcripts ran past TRANSCRIPT_MAX_BYTES: the scan can't tell, so it stays silent."""
 
 
 def front_page_project(rel: str, projects_dir: str) -> str | None:
@@ -49,8 +59,8 @@ def front_page_project(rel: str, projects_dir: str) -> str | None:
     return None
 
 
-def _result_text(response: Mapping[str, Any]) -> str:
-    content = response.get("content")
+def _result_text(block: Mapping[str, Any]) -> str:
+    content = block.get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -70,34 +80,80 @@ def _rel(vault: Path, raw: object, cwd: Path) -> str | None:
         return None
 
 
-def touched_knowledge(calls: Iterable[Any], knowledge_rel: str, vault: Path, cwd: Path) -> bool:
-    """Whether any of ``calls`` (``ToolCallRecord``-shaped) read or wrote a note under ``knowledge_rel``."""
+def transcript_lines(transcript: Path, max_bytes: int = TRANSCRIPT_MAX_BYTES) -> Iterator[str]:
+    """The session's JSONL lines, then each subagent transcript's (``<session>/subagents/*.jsonl``).
+
+    Raises :class:`_TooBig` once more than ``max_bytes`` have been read.
+    """
+    paths = [transcript]
+    sub = transcript.with_suffix("") / "subagents"
+    if sub.is_dir():
+        paths.extend(sorted(sub.glob("*.jsonl")))
+    seen = 0
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    seen += len(line)
+                    if seen > max_bytes:
+                        raise _TooBig
+                    yield line
+        except OSError:
+            continue
+
+
+def touched_knowledge(lines: Iterable[str], knowledge_rel: str, vault: Path, cwd: Path) -> bool:
+    """Whether any transcript line records a read or write of a note under ``knowledge_rel``.
+
+    Only lines that name the folder (``<name>/knowledge``) or a ``kb`` read command are parsed.
+    A ``kb`` call counts when its command names the folder, or when its result does.
+    """
     prefix = knowledge_rel.rstrip("/") + "/"
-    for call in calls:
-        tool_input = call.tool_input if isinstance(call.tool_input, Mapping) else {}
-        if call.tool_name in FILE_TOOLS:
-            rel = _rel(vault, tool_input.get("file_path"), cwd)
-            if rel is not None and rel.startswith(prefix):
-                return True
-        elif call.tool_name == "Bash":
-            command = str(tool_input.get("command") or "")
-            if _KB_READ.search(command) and (prefix in command or prefix in _result_text(call.tool_response)):
-                return True
+    needle = "/".join(PurePosixPath(knowledge_rel).parts[-2:]).lower()
+    kb_calls: set[str] = set()
+    for line in lines:
+        if needle not in line.lower() and not _KB_READ.search(line):
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = row.get("message") if isinstance(row, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                name, tool_input = block.get("name"), block.get("input")
+                tool_input = tool_input if isinstance(tool_input, dict) else {}
+                if name in FILE_TOOLS:
+                    rel = _rel(vault, tool_input.get("file_path"), cwd)
+                    if rel is not None and rel.startswith(prefix):
+                        return True
+                elif name == "Bash":
+                    command = str(tool_input.get("command") or "")
+                    if _KB_READ.search(command):
+                        if prefix in command:
+                            return True
+                        kb_calls.add(str(block.get("id")))
+            elif block.get("type") == "tool_result" and str(block.get("tool_use_id")) in kb_calls:
+                if prefix in _result_text(block):
+                    return True
     return False
 
 
-def knowledge_notes(vault: Path, knowledge_rel: str) -> list[str]:
-    """The notes under ``knowledge_rel``, newest file first."""
-    folder = vault / knowledge_rel
-    if not folder.is_dir():
-        return []
-    notes = [p for p in folder.rglob("*.md") if p.is_file()]
-    notes.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
-    return [p.relative_to(vault).as_posix() for p in notes]
+def visible_notes(vault: Path, knowledge_rel: str, labels: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The notes under ``knowledge_rel`` the reader may see (``labels``), newest ``as_of`` first."""
+    from scout.scripts.session_context_kb import knowledge_notes
+
+    return knowledge_notes(vault, knowledge_rel, labels, full=False)
 
 
-def warning(front: str, notes: list[str]) -> str:
-    shown = ", ".join(f"`{n}`" for n in notes[:NOTES_NAMED])
+def warning(front: str, notes: list[dict[str, Any]]) -> str:
+    def name(n: Mapping[str, Any]) -> str:
+        return f"`{n['path']}`" + (" (private)" if n.get("visibility") != "normal" else "")
+
+    shown = ", ".join(name(n) for n in notes[:NOTES_NAMED])
     more = f" and {len(notes) - NOTES_NAMED} more" if len(notes) > NOTES_NAMED else ""
     return (
         f"{MARK} You edited the front page {front}, but this session has read none of its project's "
@@ -108,13 +164,15 @@ def warning(front: str, notes: list[str]) -> str:
     )
 
 
-def check(payload: Mapping[str, Any]) -> str | None:
-    """The warning for one PostToolUse payload, or None."""
+def check(payload: Mapping[str, Any], *, reader: str) -> str | None:
+    """The warning for one PostToolUse payload as ``reader`` sees the vault, or None."""
     from scout.hooks.kb_read_label import session_vault
-    from scout.hooks.session_tool_log import _iter_rows, _resolve_transcript_path, extract_tool_calls
+    from scout.hooks.session_tool_log import _resolve_transcript_path
+    from scout.kb.privacy import reads_any
+    from scout.kb.read import visibility_map
     from scout.kb.structure import load_structure_config
 
-    if payload.get("tool_name") not in WRITE_TOOLS:
+    if payload.get("tool_name") not in WRITE_TOOLS or not reads_any(reader):
         return None
     tool_input = payload.get("tool_input")
     vault = session_vault(payload)
@@ -128,27 +186,33 @@ def check(payload: Mapping[str, Any]) -> str | None:
     if rel is None or name is None:
         return None
     knowledge_rel = f"{projects_dir}/{name}/knowledge"
-    notes = knowledge_notes(vault, knowledge_rel)
+    labels = visibility_map(vault, reader, [rel, f"{knowledge_rel}/**"], who=GATE)
+    if rel not in labels:
+        return None  # a page this reader may not see (or labels unavailable): say nothing about it
+    notes = visible_notes(vault, knowledge_rel, labels)
     if not notes:
         return None
     transcript = _resolve_transcript_path(dict(payload))
     if transcript is None:
         return None
-    if touched_knowledge(extract_tool_calls(_iter_rows(transcript)), knowledge_rel, vault, cwd):
+    try:
+        if touched_knowledge(transcript_lines(transcript), knowledge_rel, vault, cwd):
+            return None
+    except _TooBig:
         return None
     return warning(rel, notes)
 
 
 def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """Read one PostToolUse payload; return the hook output, or None for nothing to add. Never raises."""
-    from scout.kb.reader import is_scheduled
+    from scout.kb.reader import is_scheduled, resolve_reader
 
     env = os.environ if env is None else env
     try:
         if not is_scheduled(env):
             return None
         payload = json.load(stdin if stdin is not None else sys.stdin)
-        text = check(payload) if isinstance(payload, dict) else None
+        text = check(payload, reader=resolve_reader(None, env)) if isinstance(payload, dict) else None
     except Exception:  # noqa: BLE001 — warn only: a check that can't run adds nothing
         return None
     if text is None:
@@ -164,4 +228,14 @@ def main() -> int:
     return 0
 
 
-__all__ = ["check", "front_page_project", "knowledge_notes", "main", "run", "touched_knowledge", "warning"]
+__all__ = [
+    "TRANSCRIPT_MAX_BYTES",
+    "check",
+    "front_page_project",
+    "main",
+    "run",
+    "touched_knowledge",
+    "transcript_lines",
+    "visible_notes",
+    "warning",
+]

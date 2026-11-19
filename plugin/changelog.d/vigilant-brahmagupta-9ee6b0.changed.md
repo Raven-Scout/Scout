@@ -1,7 +1,11 @@
-- **Phase text uses the new session-context keys.** Research target selection starts from `research_queue` and reads
-  only the entries it will work on, instead of listing the queue and reading every entry
-  (`phases/research/research-targets.md`). The Leave-State Compose Gate checks `people_context` first and looks a
-  person up only when they aren't listed or have an active-status block (`phases/core/action-items.md`). The
-  leadership-ping rule names `people_context.owner_managers` (`phases/connectors/linear.md`). Project pages say to read
-  the knowledge notes an edit draws on before changing "Where it stands" (`phases/core/kb-management.md`). The next
-  release needs the KB-writing gate (`scripts/eval.sh kb-gate`).
+- **Phase text uses the new session-context keys, and only when the file is from today.**
+  - Research target selection (`phases/research/research-targets.md`) starts from `research_queue` and reads only
+    the entries it will work on, instead of listing the queue and reading every entry. An entry with no `status:`
+    now counts as work.
+  - The Leave-State Compose Gate (`phases/core/action-items.md`) skips the lookup for someone `people_context.on_leave`
+    lists. Everyone else still gets it, since not being listed proves nothing.
+  - The leadership-ping rule (`phases/connectors/linear.md`) names `people_context.owner_managers`.
+  - Project pages (`phases/core/kb-management.md`) say to read the knowledge notes an edit draws on before changing
+    "Where it stands".
+
+  The next release needs the KB-writing gate (`scripts/eval.sh kb-gate`).
