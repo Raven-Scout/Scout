@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; } || exit 0; p=$(cat); printf '%s' \"$p\" | grep -qE '\"file_path\": *\"[^\"]*/([^/\"]+)/\\1\\.md\"' || exit 0; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook front-page-reads; exit 0",
+            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; } || exit 0; p=$(cat); printf '%s' \"$p\" | grep -qE '\"file_path\": *\"[^\"]*/([^/\"]+)/\\1\\.md\"' || exit 0; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook front-page-reads; exit 0",
             "timeout": 15
           }
         ]

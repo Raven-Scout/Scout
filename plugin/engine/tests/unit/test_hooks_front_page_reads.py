@@ -352,6 +352,7 @@ def test_hooks_json_runs_it_after_a_runs_writes_and_never_fails_the_call() -> No
     ]
     assert len(entries) == 1
     command = entries[0]["command"]
-    assert command.startswith('[ -n "$SCOUT_MODE" ]') and command.endswith("; exit 0")
+    after_path_filter = command.split("export PATH; ", 1)[1]  # #731's prefix comes first on every hook
+    assert after_path_filter.startswith('[ -n "$SCOUT_MODE" ]') and command.endswith("; exit 0")
     assert "exit 2" not in command and "grep -qE" in command
     assert "front-page-reads" in config["description"]
