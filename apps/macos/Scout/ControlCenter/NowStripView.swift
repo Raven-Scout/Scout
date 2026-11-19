@@ -94,12 +94,15 @@ struct NowStripView: View {
                 sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
             } else if let r = resolved {
                 bigName(r.displayName)
+                // One status model (UI audit R10, #21): a routine skip is
+                // amber with a pause, not a red ✗.
                 HStack(spacing: 4) {
-                    Image(systemName: statusIcon(for: r.status)).imageScale(.small)
+                    Image(systemName: RunOutcomeDisplay.symbol(r.status)).imageScale(.small)
+                        .accessibilityHidden(true)
                     Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
                 .font(DS.mono(12))
-                .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)
+                .foregroundStyle(RunOutcomeDisplay.tone(r.status).color)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
                 // than pretending the latest is fine.
@@ -114,14 +117,24 @@ struct NowStripView: View {
 
     @ViewBuilder private var todayColumn: some View {
         let runs = todayRuns()
-        let failures = runs.filter { [.failure, .timeout, .rateLimited].contains($0.status) }.count
         VStack(alignment: .leading, spacing: 4) {
-            bigName("\(runs.count) runs · \(failures) failed")
+            bigName(Self.todayHeadline(runs))
             // Yesterday's figure (a refresh after midnight failed) is no figure for today.
             sub(Self.costLine(today: state.scoutUsageService.summary?.today.ifCurrent(at: Date()),
                               dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
                 color: DS.Ink.p3)
         }
+    }
+
+    /// The Next column's sub-line: when the run starts, in words ("Starts in
+    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI
+    /// audit R11). A run whose time has come reads "Due now", never "Starts
+    /// 5 minutes ago".
+    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
+        guard scheduledAt.timeIntervalSince(now) >= 60 else { return "Due now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
     }
 
     @ViewBuilder private var nextColumn: some View {
@@ -137,7 +150,7 @@ struct NowStripView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
                 bigName(u.displayName)
-                sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
+                sub(Self.nextRunLine(u.scheduledAt), color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
                 sub("check LaunchAgents", color: DS.Status.warn)
@@ -161,8 +174,10 @@ struct NowStripView: View {
             .foregroundStyle(color)
     }
 
-    private func statusIcon(for status: RunStatus) -> String {
-        status == .success ? "checkmark" : status == .running ? "circle.fill" : "xmark"
+    /// "5 runs · 1 failed", counted by `RunOutcomeDisplay.isFailure`, the
+    /// rule the heatmap and the Signals card count with.
+    nonisolated static func todayHeadline(_ runs: [Run]) -> String {
+        "\(runs.count) run\(runs.count == 1 ? "" : "s") · \(RunOutcomeDisplay.failedCount(runs)) failed"
     }
 
     private func todayRuns() -> [Run] {

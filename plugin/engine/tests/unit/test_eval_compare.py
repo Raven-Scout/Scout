@@ -143,7 +143,7 @@ def test_a_base_install_never_installs_launchd_jobs(tmp_path: Path, monkeypatch:
     build._install_from(other, tmp_path / "v", frozenset({"slack"}), dict.fromkeys(
         ("user_slack_id", "github_username", "github_repos", "claude_bin", "max_budget"), "x"))  # fmt: skip
     [cmd] = seen
-    assert "--no-jobs" in cmd and "--skip-claude" in cmd
+    assert "--no-jobs" in cmd
     assert Path(envs[0]["HOME"]).is_relative_to(tmp_path), "the install must run with a throwaway HOME"
     from tests.eval.harness.runner_env import STUB_BIN
 
@@ -154,9 +154,7 @@ def test_the_install_guard_refuses_a_command_without_no_jobs() -> None:
     import tests.eval.harness.build as build
 
     with pytest.raises(RuntimeError, match="--no-jobs"):
-        build._refuse_system_side_effects(
-            ["python", "-m", "scout", "bootstrap", "install", "--skip-claude"], {"HOME": "/tmp/x"}
-        )
+        build._refuse_system_side_effects(["python", "-m", "scout", "bootstrap", "install"], {"HOME": "/tmp/x"})
 
 
 def test_the_in_process_install_refuses_jobs() -> None:
@@ -165,7 +163,7 @@ def test_the_in_process_install_refuses_jobs() -> None:
     cfg = build.BootstrapConfig(
         vault=Path("/x"), plugin_root=Path("/p"), instance_name="S", instance_name_lower="s", user_name="A",
         user_email="a@example.com", timezone="UTC", platform="macos", plugin_version="0", enabled_connectors=set(),
-        connector_inputs={}, skip_jobs=False, skip_claude=True,
+        connector_inputs={}, skip_jobs=False,
     )  # fmt: skip
     with pytest.raises(RuntimeError, match="skip_jobs"):
         build._refuse_jobs(cfg)
@@ -293,9 +291,9 @@ def test_the_install_guards_raise_rather_than_assert() -> None:
     import tests.eval.harness.build as build
 
     with pytest.raises(RuntimeError, match="--no-jobs"):
-        build._refuse_system_side_effects(["install", "--skip-claude"], {"HOME": "/tmp/x"})
+        build._refuse_system_side_effects(["install"], {"HOME": "/tmp/x"})
     with pytest.raises(RuntimeError, match="HOME"):
-        build._refuse_system_side_effects(["install", "--no-jobs", "--skip-claude"], {"HOME": str(Path.home())})
+        build._refuse_system_side_effects(["install", "--no-jobs"], {"HOME": str(Path.home())})
 
 
 def test_runner_children_and_base_installs_get_refusing_launchctl_and_crontab(tmp_path: Path) -> None:

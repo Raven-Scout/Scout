@@ -13,6 +13,9 @@ struct CommentComposerView: View {
 
     @State private var state = CommentDraftState()
     @FocusState private var editorFocused: Bool
+    @Environment(\.openSettings) private var openSettings
+    /// Read so the "Set your name" link goes away as soon as one is set.
+    @AppStorage(CommentAuthor.defaultsKey) private var authorName: String = ""
 
     private var expanded: Bool { state.expanded }
 
@@ -31,11 +34,23 @@ struct CommentComposerView: View {
         VStack(alignment: .leading, spacing: 6) {
             CommentTextEditor(text: $state.text, focus: $editorFocused, minHeight: 32)
             HStack(spacing: 4) {
+                if !CommentAuthor.isNameSet(authorName: authorName) {
+                    // UI audit #85: say who the comment will be signed as, and
+                    // where to change it, while Scout doesn't know the name.
+                    Button("Signed \u{201C}\(CommentAuthor.fallback)\u{201D} · Set your name…") {
+                        HelpActions.showSettings(openSettings, at: SettingsAnchor.authorship)
+                    }
+                    .buttonStyle(.ds(.link, size: .small))
+                    .accessibilityHint("Opens Settings at Your name")
+                }
                 Spacer()
                 EditorialActionButton("Cancel") { cancel() }
+                // ⌘↵ sends only while this editor has focus: another card's
+                // composer, or Done on the keyboard-current card, owns it
+                // otherwise (`commentEditorFocused`).
                 EditorialActionButton(
-                    "Send", style: .primary, shortcut: "⌘↵",
-                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                    "Send", style: .primary,
+                    keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { submit() }
                     .disabled(!state.canSubmit)
             }
@@ -109,5 +124,16 @@ struct CommentTextEditor: View {
             .padding(.vertical, 4)
             .frame(minHeight: minHeight, maxHeight: 120)
             .neumorphicPressed(cornerRadius: 5)
+            .preference(key: CommentEditorFocusedKey.self, value: focus.wrappedValue)
+    }
+}
+
+/// True while any comment editor on the page has keyboard focus. Action Items
+/// reads it so ⌘↵ goes to that editor's Send or Save, not to Done on the
+/// keyboard-current card: two buttons bound to one key would fire either.
+struct CommentEditorFocusedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
     }
 }

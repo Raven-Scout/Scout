@@ -139,9 +139,10 @@ private struct CommentRow: View {
                     draft = ""
                     editing = false
                 }
+                // ⌘↵ saves only while this editor has focus (see the composer).
                 EditorialActionButton(
-                    "Save", style: .primary, shortcut: "⌘↵",
-                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                    "Save", style: .primary,
+                    keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { performSave() }
                     .disabled(
                         submitting ||
@@ -178,7 +179,7 @@ private struct CommentRow: View {
     private func markGlyph(for author: String) -> String {
         let a = author.lowercased()
         if a == "scout" || a.contains("briefing") || a.contains("dreaming") { return ">" }
-        let userName = UserDefaults.standard.string(forKey: "authorName") ?? CommentAuthor.fallback
+        let userName = CommentAuthor.configuredName()
         if CommentAuthor.isOwn(commentAuthor: author, userName: userName) { return "//" }
         return "·"
     }

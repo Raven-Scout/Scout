@@ -28,7 +28,6 @@ def _config(vault: Path, *, plugin_root: Path) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,  # don't touch ~/Library/LaunchAgents in tests
-        skip_claude=True,  # don't run a real Claude session
     )
 
 

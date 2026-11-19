@@ -349,7 +349,7 @@ struct ComponentSmokeTests {
     func editorialActionButtonRenders() {
         ViewHost.render(
             HStack {
-                EditorialActionButton("Send", style: .primary, shortcut: "⌘↵") {}
+                EditorialActionButton("Send", style: .primary, keyboardShortcut: AppShortcut.commit) {}
                 EditorialActionButton("Cancel") {}
                 EditorialActionButton("Add comment", systemImage: "text.bubble") {}
                 EditorialActionButton("Send", style: .primary) {}
@@ -394,7 +394,7 @@ struct ComponentSmokeTests {
             ViewHost.render(
                 SlotEditForm(
                     liveSlot: SmokeFixtures.slot(), isNewDraft: isNew,
-                    onSave: { _ in }, onDelete: {}, onFireNow: { _ in },
+                    onSave: { _, _ in }, onDelete: {}, onFireNow: { _ in },
                     onRevertNewDraft: isNew ? {} : nil),
                 size: CGSize(width: 520, height: 900))
         }
@@ -406,7 +406,7 @@ struct ComponentSmokeTests {
             ViewHost.render(
                 SlotEditForm(
                     liveSlot: SmokeFixtures.slot(type: type), isNewDraft: false,
-                    onSave: { _ in }, onDelete: {}, onFireNow: { _ in },
+                    onSave: { _, _ in }, onDelete: {}, onFireNow: { _ in },
                     onRevertNewDraft: nil),
                 size: CGSize(width: 520, height: 900))
         }

@@ -12,6 +12,58 @@ nonisolated struct SessionsFilter: Equatable, Sendable {
     var showRecentlyDone: Bool = false
 }
 
+/// Why the Sessions page has nothing to show (UI audit #37).
+nonisolated enum SessionsEmptyReason: Equatable, Sendable {
+    /// Claude Code hasn't recorded a session on this Mac yet.
+    case noSessionsYet
+    /// There are sessions, but the view options hide every one: Scout's own
+    /// runs unless shown, finished ones unless recently done are shown (and
+    /// then those older than `doneHours`).
+    case allHidden(count: Int, showingScoutRuns: Bool, showingRecentlyDone: Bool, doneHours: Int)
+    /// The search, project or state filters match nothing.
+    case noMatches
+
+    var title: String {
+        switch self {
+        case .noSessionsYet: return "No Claude Code sessions yet"
+        case .allHidden: return "Nothing to show right now"
+        case .noMatches: return "No sessions match these filters."
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .noSessionsYet:
+            return "Sessions you start in Claude Code show up here, by project, as soon as they begin."
+        case .allHidden(let count, let scoutRuns, let recentlyDone, let hours):
+            let one = count == 1
+            let subject = one ? "Your one session" : "All \(count) sessions"
+            let are = one ? "is" : "are"
+            let showScout = "\u{201C}Show Scout's own runs\u{201D}"
+            let showDone = "\u{201C}Show recently done\u{201D}"
+            let older = "finished more than \(hours) hour\(hours == 1 ? "" : "s") ago"
+            switch (scoutRuns, recentlyDone) {
+            case (false, false):
+                return "\(subject) \(are) Scout's own runs or finished, which are hidden. "
+                    + "Turn on \(showScout) or \(showDone) in View options to see them."
+            case (true, false):
+                return "\(subject) \(are) finished, which \(one ? "is" : "are") hidden. "
+                    + "Turn on \(showDone) in View options to see the ones from the last \(hours) hour\(hours == 1 ? "" : "s")."
+            case (false, true):
+                return "\(subject) \(are) Scout's own runs or \(older). "
+                    + "Turn on \(showScout) in View options to see Scout's runs."
+            case (true, true):
+                return "\(subject) \(older), so \(one ? "it's" : "they're") hidden."
+            }
+        case .noMatches:
+            return "Clear the search, project and state filters to see every session."
+        }
+    }
+
+    /// Only chosen filters can be cleared; the other two aren't filters.
+    var offersClearFilters: Bool { self == .noMatches }
+}
+
 /// One project swimlane on the board.
 nonisolated struct SessionRow: Identifiable, Equatable, Sendable {
     /// The project key.
@@ -90,6 +142,19 @@ nonisolated enum SessionsLayout {
 
     static func visibleSessions(index: SessionIndex, filter: SessionsFilter, now: Date) -> [AgentSession] {
         index.sessions.filter { isVisible($0, filter: filter, index: index, now: now) }
+    }
+
+    /// Why nothing is on the board or in the table, or nil when something
+    /// is (UI audit #37): a first run with no sessions at all reads
+    /// differently from filters that match nothing.
+    static func emptyReason(index: SessionIndex, filter: SessionsFilter, now: Date) -> SessionsEmptyReason? {
+        guard visibleSessions(index: index, filter: filter, now: now).isEmpty else { return nil }
+        if index.sessions.isEmpty { return .noSessionsYet }
+        let chosen = !filter.states.isEmpty || filter.projectKey != nil
+            || !filter.search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return chosen ? .noMatches : .allHidden(
+            count: index.sessions.count, showingScoutRuns: filter.showScoutRuns,
+            showingRecentlyDone: filter.showRecentlyDone, doneHours: index.display.doneVisibleHours)
     }
 
     // MARK: Ordering

@@ -39,6 +39,8 @@ struct TaskCardView: View {
     @Environment(\.revealTaggedTask) private var revealTaggedTask
     /// Off while the engine check fails: the page's banner says so.
     @Environment(\.actionItemsWritesEnabled) private var writesEnabled
+    /// The List's keyboard model: which card is current, and its ⌘↵ (#50).
+    @Environment(\.actionItemsKeyboard) private var keyboard
 
     init(
         task: ActionTask,
@@ -125,8 +127,22 @@ struct TaskCardView: View {
                 .padding(.vertical, 10)
                 .opacity(task.done ? 0.5 : 1)
         }
+        .overlay {
+            if isCursor {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(DS.Accent.fill, lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
+        // A click anywhere on the card makes it keyboard-current, alongside
+        // whatever the click hit (a button still does its own thing).
+        .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })
+        .contextMenu { contextMenuItems }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+        .onChange(of: keyboard.toggleRequest) { _, request in
+            if request?.id == task.id { toggle() }
+        }
         // Picking a density applies to the cards already on screen too, not
         // only to cards created after the change.
         .onChange(of: density) { _, newDensity in
@@ -158,6 +174,9 @@ struct TaskCardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture { toggle() }
+                    // On the title alone: on the card it reached every
+                    // button inside ("Mark done, selected").
+                    .accessibilityAddTraits(isCursor ? .isSelected : [])
                 if !expanded { quickActions }
                 trailingStatus
                 chevron
@@ -178,6 +197,9 @@ struct TaskCardView: View {
         }
         .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
+        // The header holds no text field, so a click here can take the
+        // list's keyboard focus without pulling it out of a comment editor.
+        .simultaneousGesture(TapGesture().onEnded { keyboard.focusCard?(task.id) })
     }
 
     private var chevron: some View {
@@ -331,7 +353,7 @@ struct TaskCardView: View {
                     Task { await runOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                 }
             } else {
-                iconButton("checkmark", help: "Mark done") {
+                iconButton("checkmark", help: "Mark done", shortcut: doneShortcut) {
                     Task { await runOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                 }
                 iconButton("moon.zzz", help: "Snooze") { showingQuickSnooze = true }
@@ -355,7 +377,8 @@ struct TaskCardView: View {
         .opacity(writesEnabled ? 1 : 0.45)
     }
 
-    private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ systemImage: String, help: String, shortcut: KeyboardShortcut? = nil,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(DS.sans(11))
@@ -366,7 +389,8 @@ struct TaskCardView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
-        .help(help)
+        .keyboardShortcut(shortcut)
+        .help(ShortcutLabel.help(help, shortcut))
         .accessibilityLabel(help)
     }
 
@@ -551,14 +575,15 @@ struct TaskCardView: View {
                 task: task,
                 kind: effectiveKind,
                 displayedDate: displayedDate,
-                scoutDirectory: scoutDirectory
+                scoutDirectory: scoutDirectory,
+                doneShortcut: doneShortcut
             ) { op in
                 await runOp(op)
             }
 
             if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
-                    let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+                    let author = CommentAuthor.configuredName()
                     return await runOp(.addComment(
                         subject: task.matchableSubject,
                         shortPrefix: task.shortPrefix,
@@ -607,6 +632,58 @@ struct TaskCardView: View {
         .padding(.vertical, 6)
         .padding(.leading, CGFloat(task.indentLevel) * 24 + 16)
         .padding(.trailing, 14)
+    }
+
+    // MARK: - Keyboard and context menu (#50)
+
+    private var isCursor: Bool { keyboard.cursorID == task.id }
+
+    /// ⌘↵ marks this card done while it is the keyboard-current one. Only one
+    /// card binds it, so the key always means one card.
+    private var doneShortcut: KeyboardShortcut? { keyboard.doneShortcut(for: task.id) }
+
+    /// The card's actions, for a right-click. Writes are off with the rest of
+    /// the card's while the engine check fails (R2).
+    @ViewBuilder
+    private var contextMenuItems: some View {
+        if task.done {
+            Button("Reopen") {
+                Task { await runOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+            }
+            .disabled(!writesEnabled)
+        } else {
+            Button("Mark Done") {
+                Task { await runOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+            }
+            .disabled(!writesEnabled)
+            Menu("Snooze") {
+                ForEach(SnoozePopoverView.presets, id: \.label) { preset in
+                    Button(preset.label) { snooze(days: preset.days) }
+                }
+            }
+            .disabled(!writesEnabled)
+        }
+        Divider()
+        Button(expanded ? "Collapse" : "Expand") { toggle() }
+        Divider()
+        Button("Copy") {
+            TaskActionsView.copy(task, format: .fullContext, scoutDirectory: scoutDirectory)
+        }
+        Menu("Copy As") {
+            ForEach(ClaudeLauncher.CopyFormat.allCases) { format in
+                Button(format.label) {
+                    TaskActionsView.copy(task, format: format, scoutDirectory: scoutDirectory)
+                }
+            }
+        }
+    }
+
+    private func snooze(days: Int) {
+        guard let target = SnoozePopoverView.presetTarget(days: days, from: displayedDate) else { return }
+        Task {
+            await runOp(.snooze(subject: task.matchableSubject, shortPrefix: task.shortPrefix,
+                                until: target, fromKind: kind.rawValue))
+        }
     }
 
     // MARK: - Helpers

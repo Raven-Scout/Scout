@@ -10,8 +10,14 @@ import Foundation
 struct StaleScheduleError: Error, LocalizedError {
     let loadedAt: Date?
     let modifiedAt: Date?
+    /// Set when the file is there but the one schedule being saved isn't
+    /// (removed outside the app): there is nothing to reload into.
+    var removedSlot: String? = nil
 
     var errorDescription: String? {
+        if let removedSlot {
+            return "\(DisplayName.slotKey(removedSlot)) was removed outside the app, so your edits to it weren't saved."
+        }
         guard let modifiedAt else {
             return "The schedule was removed outside the app. Reload to see the changes before saving."
         }

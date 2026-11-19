@@ -9,7 +9,7 @@ nonisolated enum InstallStep: String, CaseIterable, Sendable {
         case .unpackEngine: return "Unpack engine"
         case .buildVenv: return "Build Python environment"
         case .registerWithClaudeCode: return "Register with Claude Code"
-        case .bootstrapVault: return "Set up vault and schedule"
+        case .bootstrapVault: return "Set up Scout folder and schedule"
         case .verify: return "Verify"
         }
     }

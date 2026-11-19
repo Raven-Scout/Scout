@@ -80,6 +80,11 @@ struct WriteProblem: Equatable, Identifiable {
                 kind: .failed, title: title,
                 message: "Scout's check didn't accept the schedule, so nothing was saved. Check the fields and try again; the check's own words are under Details.",
                 details: e.details, retryable: false)
+        case let e as ScheduleDuplicateKeyError:
+            return WriteProblem(
+                kind: .failed, title: title,
+                message: "Two schedules would have the same name, and Scout would keep only one of them, so nothing was saved. Give the new schedule another name.",
+                details: e.errorDescription, retryable: false)
         case let e as ScheduleNotLoadedError:
             return WriteProblem(
                 kind: .stale, title: title,
@@ -89,7 +94,7 @@ struct WriteProblem: Equatable, Identifiable {
             switch e {
             case .read(let m):
                 return WriteProblem(kind: .failed, title: title,
-                                    message: "Scout couldn't read the file. Check that the vault folder is still there.",
+                                    message: "Scout couldn't read the file. Check that the Scout folder is still there.",
                                     details: m, retryable: true)
             case .write(let m):
                 return writeFailure(title: title, details: m)
@@ -196,7 +201,7 @@ struct WriteProblem: Equatable, Identifiable {
 
     private static func writeFailure(title: String, details: String) -> WriteProblem {
         WriteProblem(kind: .failed, title: title,
-                     message: "Scout couldn't write the file. Check that the disk isn't full and the vault folder is writable, then try again.",
+                     message: "Scout couldn't write the file. Check that the disk isn't full and the Scout folder is writable, then try again.",
                      details: details, retryable: true)
     }
 }

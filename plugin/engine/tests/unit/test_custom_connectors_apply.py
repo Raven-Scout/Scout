@@ -45,10 +45,9 @@ def _installed(tmp_path: Path) -> BootstrapConfig:
             enabled_connectors={"slack"},
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
-    return config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0", skip_jobs=True, skip_claude=True)
+    return config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0", skip_jobs=True)
 
 
 # Inbound + lookup: the change reaches both SKILL.md and RESEARCH.md.
