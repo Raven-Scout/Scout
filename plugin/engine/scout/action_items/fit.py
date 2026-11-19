@@ -3,26 +3,42 @@
 The daily action-items file is the user's board. Runs keep it honest item by
 item but nothing kept its *shape*: tasks arrive faster than they close, past
 due tasks park in place, Watching items and far-off 🟡 tasks sit beside today's
-work, and context piles up in extra sub-bullets. A one-off restructure got one
-vault's file from 300 KB to 57 KB; with nothing holding that shape it was back
-over 300 KB in a month.
+work, and context piles up in extra sub-bullets. A one-off restructure can bring
+a file back to its budget; with nothing holding that shape it grows back to
+several times its budget within weeks.
 
-``fit`` is that hold. No model is involved and nothing is deleted:
+``fit`` is that hold. No model is involved, and no open task is ever deleted:
 
-1. **Backlog.** 🅿️ Parked and 🟢 Watching tasks move to
-   ``action-items/backlog.md``, and so does a 🟡 task with no due date or one due
-   more than ``backlog_due_days`` (14) out. A backlog 🟡 task that has come due
-   within that window moves back into 🟡. 🔴 and every other section stay.
+1. **Backlog.** 🅿️ Parked tasks move to ``action-items/backlog.md``, and so do
+   🟢 Watching and 🟡 tasks with no due date or one due more than
+   ``backlog_due_days`` (14) out. A backlog 🟡 or 🟢 task that has come due
+   within that window moves back into its section. 🔴 and every other section
+   stay.
 2. **Cap.** If more than ``budget.target_open`` (80) tasks are still open, the
    bottom of 🟡 moves to the backlog until it fits. The phase orders 🟡 by
    priority, so the bottom is the least pressing.
 3. **Context.** A task keeps ``budget.prose_sub_bullets`` (1) prose
    sub-bullet; the rest move, verbatim, to the end of its context note
-   (``action-items/context/<TAG>.md``, created if missing). Board fields, plan
-   markers, ``Refs:``, snoozes, comments and nested tasks always stay.
-4. **Recently Completed** keeps ``recently_completed_days`` (3) days; older
-   entries are dropped from the daily file (git keeps them).
+   (``action-items/context/<TAG>.md``, created if missing). A sub-bullet group
+   holding any machine line (board field, plan marker, ``Refs:``, snooze,
+   comment, nested task) or markup (an inline directive, an HTML comment,
+   ``<details>``) always stays.
+4. **Recently Completed** keeps ``recently_completed_days`` (3) days. Older
+   completed (``- [x]`` or struck-through) entries are deleted from the daily
+   file: git keeps them.
 5. A ``🗂️ Backlog: [[backlog]] (N items)`` line under 🟡 says where the rest went.
+
+**Safe to re-run.** A tag already open in the backlog is never appended twice:
+a block moving there replaces the backlog's copy, merged so no line of either is
+lost. A backlog copy of a task still in the daily file is dropped only when the
+daily row already holds every one of its lines; otherwise both stay and the
+result names the conflict. Prose already in a note is not appended again.
+
+**Writes.** Everything is read and planned first; an unreadable backlog or
+context note aborts before anything is written. Then the backlog, the notes,
+the rewrite records and the daily file are written in that order, each
+atomically, so an interruption can leave a task in both files (which the next
+run reconciles) but never in neither.
 
 A moved block is the same text, so its stale-archive clock carries over
 (``scout.action_items.stale``). A block whose prose moved is recorded as a
@@ -37,7 +53,10 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,8 +65,11 @@ from scout import paths
 from scout.action_items import stale
 from scout.action_items.budget import ActionItemsSettings, count_open, sub_bullet_groups
 from scout.action_items.past_due import History, body_of, parse_due
+from scout.action_items.writer import atomic_write_lines
+from scout.errors import ActionItemError
 
 REPORT_NAME = "action-items-fit.json"
+SESSION_LOCK = Path(".scout-logs") / ".scout-session.lock"
 BACKLOG_LINE = "🗂️ Backlog: [[backlog]] ({n} {noun})"
 _BACKLOG_LINE_RE = re.compile(r"^🗂️ Backlog: \[\[backlog\]\]")
 _H2 = re.compile(r"^##\s")
@@ -55,6 +77,7 @@ _H3 = re.compile(r"^###\s")
 _ISO = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _CLOSED_ON = re.compile(r"(?:closed|done|completed|finished|✅)\D{0,12}(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 _TOP_BULLET = re.compile(r"^[-*]\s")
+_DONE_ENTRY = re.compile(r"^[-*]\s+\[[xX]\]|~~")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 YELLOW, GREEN, PARKED, DONE = "🟡", "🟢", "🅿️", "✅"
@@ -63,6 +86,13 @@ BACKLOG_SECTIONS = {
     YELLOW: "## 🟡 To Do (soon)",
     GREEN: "## 🟢 Watching (no action yet)",
     PARKED: "## 🅿️ Parked",
+}
+# A section created in the daily file for a task coming back from the backlog.
+DAILY_HEADINGS = {YELLOW: "## 🟡 To Do", GREEN: "## 🟢 Watching"}
+# Sections a new daily section goes before, in the phase's fixed order.
+_DAILY_AFTER = {
+    YELLOW: (GREEN, "📥", "🧹", PARKED, "🐾", "📅", DONE, "📋", "🪵"),
+    GREEN: ("📥", "🧹", PARKED, "🐾", "📅", DONE, "📋", "🪵"),
 }
 _BACKLOG_HEADER = [
     "# Backlog",
@@ -92,6 +122,10 @@ class FitResult:
     to_notes: dict[str, list[str]] = field(default_factory=dict)
     titles: dict[str, str] = field(default_factory=dict)
     completed_dropped: int = 0
+    # Backlog copies dropped because another row of the same tag holds all their lines.
+    deduped: list[str] = field(default_factory=list)
+    # Tags open twice with differing text: left alone for a person to merge.
+    conflicts: list[str] = field(default_factory=list)
     rewrites: list[stale.Rewrite] = field(default_factory=list)
     bytes_before: int = 0
     bytes_after: int = 0
@@ -100,7 +134,7 @@ class FitResult:
 
     @property
     def changed(self) -> bool:
-        return bool(self.moves or self.to_notes or self.completed_dropped)
+        return bool(self.moves or self.to_notes or self.completed_dropped or self.deduped)
 
     def summary(self) -> str:
         out = [f"{self.bytes_before / 1024:.1f} KB → {self.bytes_after / 1024:.1f} KB"]
@@ -115,7 +149,11 @@ class FitResult:
             n = sum(len(v) for v in self.to_notes.values())
             out.append(f"{n} context line{'s' if n != 1 else ''} from {len(self.to_notes)} tasks to their notes")
         if self.completed_dropped:
-            out.append(f"{self.completed_dropped} old Recently Completed entries dropped")
+            out.append(f"{self.completed_dropped} old Recently Completed entries deleted (git keeps them)")
+        if self.deduped:
+            out.append(f"{len(self.deduped)} duplicate backlog copies dropped")
+        if self.conflicts:
+            out.append(f"{len(self.conflicts)} tags open twice with different text, left alone")
         return ", ".join(out)
 
     def to_json(self) -> dict[str, Any]:
@@ -127,6 +165,8 @@ class FitResult:
             "moves": [m.to_json() for m in self.moves],
             "to_notes": {tag: len(lines) for tag, lines in sorted(self.to_notes.items())},
             "completed_dropped": self.completed_dropped,
+            "deduped": sorted(self.deduped),
+            "conflicts": sorted(self.conflicts),
         }
 
 
@@ -166,8 +206,8 @@ def _section_span(lines: list[str], emoji: str) -> tuple[int, int] | None:
 def _insert_into_section(
     lines: list[str], emoji: str, heading: str, block: list[str], *, before: tuple[str, ...]
 ) -> list[str]:
-    """``lines`` with ``block`` appended to the end of the ``emoji`` section,
-    creating it (before the first section in ``before``, else at the end) when missing."""
+    """``lines`` with ``block`` added to the ``emoji`` section's own rows (above any ``###``
+    subgroup), creating the section (before the first section in ``before``, else at the end)."""
     span = _section_span(lines, emoji)
     if span is None:
         at = next((i for i, ln in enumerate(lines) if _H2.match(ln) and _section_of(ln) in before), len(lines))
@@ -175,9 +215,9 @@ def _insert_into_section(
         if at > 0 and lines[at - 1].strip():
             new = ["", *new]
         return lines[:at] + new + lines[at:]
-    _, end = span
-    at = end
-    while at > span[0] + 1 and not lines[at - 1].strip():
+    start, end = span
+    at = next((i for i in range(start + 1, end) if _H3.match(lines[i])), end)
+    while at > start + 1 and not lines[at - 1].strip():
         at -= 1
     return lines[:at] + block + lines[at:]
 
@@ -211,19 +251,31 @@ def _trim(block: list[str], keep: int) -> tuple[list[str], list[str]]:
     return kept, moved
 
 
+def _merge(primary: list[str], other: list[str]) -> list[str]:
+    """``primary`` plus every line of ``other`` it lacks, in ``other``'s order: nothing is lost."""
+    have = {ln.rstrip() for ln in primary}
+    extra = [ln for ln in other[1:] if ln.strip() and ln.rstrip() not in have]
+    return [*primary, *extra]
+
+
+def _holds(container: list[str], block: list[str]) -> bool:
+    """Whether ``container`` already has every non-blank line of ``block``."""
+    have = {ln.rstrip() for ln in container}
+    return all(ln.rstrip() in have for ln in block if ln.strip())
+
+
 def _completed_day(entry: list[str], heading_day: _dt.date | None, history: History, today: _dt.date) -> _dt.date:
     m = _CLOSED_ON.search(entry[0])
-    if m:
-        try:
-            return _dt.date.fromisoformat(m.group(1))
-        except ValueError:
-            pass
+    if m and _valid(m.group(1)):
+        return _dt.date.fromisoformat(m.group(1))
     if heading_day is not None:
         return heading_day
     return history.first_seen(entry[0], upto=today)
 
 
 def _drop_old_completed(lines: list[str], *, today: _dt.date, days: int, history: History) -> tuple[list[str], int]:
+    """Delete completed entries older than ``days`` from ✅ Recently Completed. An open
+    task sitting there (or any entry that isn't ``- [x]`` or struck through) stays."""
     span = _section_span(lines, DONE)
     if span is None:
         return lines, 0
@@ -247,7 +299,7 @@ def _drop_old_completed(lines: list[str], *, today: _dt.date, days: int, history
         while j < end and lines[j][:1] in (" ", "\t") and lines[j].strip():
             j += 1
         entry = lines[i:j]
-        if _completed_day(entry, heading_day, history, today) < cutoff:
+        if _DONE_ENTRY.search(entry[0]) and _completed_day(entry, heading_day, history, today) < cutoff:
             remove.update(range(i, j))
             dropped += 1
         i = j
@@ -281,13 +333,40 @@ def _set_backlog_line(lines: list[str], n: int) -> list[str]:
         return lines
     span = _section_span(lines, YELLOW)
     if span is None:
-        return _insert_into_section(lines, YELLOW, "## 🟡 To Do", [text], before=_AFTER_YELLOW)
+        return _insert_into_section(lines, YELLOW, DAILY_HEADINGS[YELLOW], [text], before=_DAILY_AFTER[YELLOW])
     at = span[0] + 1
     return lines[:at] + ["", text] + lines[at:]
 
 
-# Sections a new 🟡 section goes before, in the phase's fixed order.
-_AFTER_YELLOW = (GREEN, "📥", "🧹", PARKED, "🐾", "📅", DONE, "📋", "🪵")
+def _dedupe_backlog(backlog: list[str], daily_blocks: dict[str, list[str]], result: FitResult) -> list[str]:
+    """The backlog without copies that add nothing.
+
+    A copy goes when the daily row of its tag, or the backlog's own first row of
+    it, already holds every line of it. A copy that differs is left alone and
+    named in ``result.conflicts``.
+    """
+    blocks = stale.task_blocks(backlog)
+    first: dict[str, stale.TaskBlock] = {}
+    drop: set[int] = set()
+    for block in blocks:
+        body = backlog[block.start : block.end]
+        if block.tag in daily_blocks:
+            if _holds(daily_blocks[block.tag], body):
+                drop.update(range(block.start, block.end))
+                result.deduped.append(block.tag)
+            elif block.tag not in result.conflicts:
+                result.conflicts.append(block.tag)
+            continue
+        if block.tag in first:
+            kept = first[block.tag]
+            if _holds(backlog[kept.start : kept.end], body):
+                drop.update(range(block.start, block.end))
+                result.deduped.append(block.tag)
+            elif block.tag not in result.conflicts:
+                result.conflicts.append(block.tag)
+            continue
+        first[block.tag] = block
+    return stale._drop_emptied_subheadings(backlog, drop) if drop else backlog
 
 
 def plan_fit(
@@ -309,35 +388,33 @@ def plan_fit(
     leaving: dict[int, tuple[str, str]] = {}  # block start → (section, reason)
     yellow_kept: list[stale.TaskBlock] = []
     for section, block in _blocks_by_section(daily):
-        body = daily[block.start : block.end]
+        due = _due(daily[block.start : block.end], today)
         if section == PARKED:
             leaving[block.start] = (PARKED, "parked")
-        elif section == GREEN:
-            leaving[block.start] = (GREEN, "watching")
-        elif section == YELLOW:
-            due = _due(body, today)
+        elif section in (YELLOW, GREEN):
             if due is None:
-                leaving[block.start] = (YELLOW, "no due date")
+                leaving[block.start] = (section, "no due date")
             elif due > horizon:
-                leaving[block.start] = (YELLOW, f"due {due.isoformat()}")
-            else:
+                leaving[block.start] = (section, f"due {due.isoformat()}")
+            elif section == YELLOW:
                 yellow_kept.append(block)
 
-    # 2. Backlog 🟡 tasks now due within the window come back, soonest first.
-    daily_tags = {b.tag for b in stale.task_blocks(daily)}
-    coming: list[tuple[_dt.date, stale.TaskBlock]] = []
+    # 2. Reconcile copies, then pick backlog tasks now due within the window, soonest first.
+    daily_blocks = {b.tag: daily[b.start : b.end] for b in stale.task_blocks(daily)}
+    backlog = _dedupe_backlog(list(backlog), daily_blocks, result)
+    coming: list[tuple[_dt.date, str, stale.TaskBlock]] = []
     for section, block in _blocks_by_section(backlog):
-        if section != YELLOW or block.tag in daily_tags:
+        if section not in (YELLOW, GREEN) or block.tag in daily_blocks:
             continue
         due = _due(backlog[block.start : block.end], today)
         if due is not None and due <= horizon:
-            coming.append((due, block))
-    coming.sort(key=lambda pair: pair[0])
+            coming.append((due, section, block))
+    coming.sort(key=lambda item: item[0])
 
     # 3. The cap: fewer promotions first, then the bottom of 🟡.
     open_now = result.open_before - len(leaving)
     room = budget.target_open - open_now
-    promoted = [b for _, b in coming[: max(room, 0)]]
+    promoted = coming[: max(room, 0)]
     over = open_now + len(promoted) - budget.target_open
     for block in reversed(yellow_kept):
         if over <= 0:
@@ -345,22 +422,19 @@ def plan_fit(
         leaving[block.start] = (YELLOW, "over the open-task cap")
         over -= 1
 
-    # 4. Build the new files.
+    # 4. Build the new daily file: take the leavers out, trim what stays.
     blocks = {b.start: b for b in stale.task_blocks(daily)}
     remove: set[int] = set()
-    to_backlog: list[tuple[str, list[str]]] = []
+    to_backlog: list[tuple[str, str, list[str]]] = []
     for start in sorted(leaving):
         section, reason = leaving[start]
         block = blocks[start]
-        body = daily[block.start : block.end]
-        body = _trim_and_record(result, body, block.tag, budget.prose_sub_bullets, today)
-        to_backlog.append((section, body))
+        body = _trim_and_record(result, daily[block.start : block.end], block.tag, budget.prose_sub_bullets, today)
+        to_backlog.append((section, block.tag, body))
         remove.update(range(block.start, block.end))
         result.moves.append(Move(block.tag, section, "backlog", reason))
     new_daily = stale._drop_emptied_subheadings(daily, remove)
     new_daily = _drop_empty_section(new_daily, PARKED)
-
-    # Trim what stays.
     out: list[str] = []
     starts = {b.start: b for b in stale.task_blocks(new_daily)}
     i = 0
@@ -374,24 +448,34 @@ def plan_fit(
         i = here.end
     new_daily = out
 
-    # Promotions leave the backlog and join the bottom of 🟡.
-    new_backlog = list(backlog)
+    # 5. Promotions leave the backlog and join their section's rows.
+    new_backlog = backlog
     if promoted:
         drop: set[int] = set()
-        for block in promoted:
+        for _, section, block in promoted:
             body = backlog[block.start : block.end]
             body = _trim_and_record(result, body, block.tag, budget.prose_sub_bullets, today)
-            new_daily = _insert_into_section(new_daily, YELLOW, "## 🟡 To Do", body, before=_AFTER_YELLOW)
-            drop.update(range(block.start, block.end))
-            result.moves.append(Move(block.tag, YELLOW, "daily", "due within the window"))
-        new_backlog = [ln for k, ln in enumerate(new_backlog) if k not in drop]
-    if to_backlog:
-        if not new_backlog:
-            new_backlog = list(_BACKLOG_HEADER)
-        for section, body in to_backlog:
-            new_backlog = _insert_into_section(
-                new_backlog, section, BACKLOG_SECTIONS[section], body, before=_backlog_after(section)
+            new_daily = _insert_into_section(
+                new_daily, section, DAILY_HEADINGS[section], body, before=_DAILY_AFTER[section]
             )
+            drop.update(range(block.start, block.end))
+            result.moves.append(Move(block.tag, section, "daily", "due within the window"))
+        new_backlog = stale._drop_emptied_subheadings(new_backlog, drop)
+
+    # 6. Leavers join the backlog; a tag already open there is merged in place, never appended twice.
+    if to_backlog and not new_backlog:
+        new_backlog = list(_BACKLOG_HEADER)
+    for section, tag, body in to_backlog:
+        existing = {b.tag: b for b in stale.task_blocks(new_backlog)}.get(tag)
+        if existing is not None:
+            merged = _merge(body, new_backlog[existing.start : existing.end])
+            new_backlog = new_backlog[: existing.start] + merged + new_backlog[existing.end :]
+            if tag in result.conflicts:
+                result.conflicts.remove(tag)  # merged: no line of either copy is lost
+            continue
+        new_backlog = _insert_into_section(
+            new_backlog, section, BACKLOG_SECTIONS[section], body, before=_backlog_after(section)
+        )
 
     new_daily, result.completed_dropped = _drop_old_completed(
         new_daily, today=today, days=settings.recently_completed_days, history=history
@@ -437,10 +521,19 @@ def _trim_and_record(result: FitResult, block: list[str], tag: str, keep: int, t
 _FRONT_UPDATED = re.compile(r"^updated:\s*.*$", re.MULTILINE)
 
 
-def note_with_moved(existing: str | None, *, tag: str, title: str, day: str, moved: list[str]) -> str:
-    """A context note with ``moved`` appended under a dated heading (a new note when ``existing`` is None)."""
+def _dedent(moved: list[str]) -> list[str]:
     indent = min((len(ln) - len(ln.lstrip(" \t")) for ln in moved if ln.strip()), default=0)
-    body = [ln[indent:] if ln.strip() else "" for ln in moved]
+    return [ln[indent:] if ln.strip() else "" for ln in moved]
+
+
+def note_with_moved(existing: str | None, *, tag: str, title: str, day: str, moved: list[str]) -> str | None:
+    """A context note with ``moved`` appended under a dated heading (a new note when
+    ``existing`` is None), or None when the note already holds every moved line."""
+    body = _dedent(moved)
+    if existing is not None:
+        have = {ln.rstrip() for ln in existing.splitlines()}
+        if all(ln.rstrip() in have for ln in body if ln.strip()):
+            return None
     section = [f"## Moved from the daily file ({day})", "", *body, ""]
     if existing is None:
         head = [
@@ -462,48 +555,101 @@ def note_with_moved(existing: str | None, *, tag: str, title: str, day: str, mov
     return text + "\n" + "\n".join(section)
 
 
+def _write_text(target: Path, text: str) -> None:
+    lines = text.split("\n")
+    trailing = text.endswith("\n")
+    if trailing:
+        lines = lines[:-1]
+    atomic_write_lines(target, lines, trailing_newline=trailing)
+
+
 def report_path(data_dir: Path) -> Path:
     return paths.data_dir(data_dir) / ".scout-logs" / REPORT_NAME
 
 
 def write_report(data_dir: Path, result: FitResult, *, day: _dt.date, mode: str, applied: bool) -> None:
     """The last fit, for the owner to review before turning ``apply`` on. Best-effort."""
-    target = report_path(data_dir)
     payload = {"day": day.isoformat(), "mode": mode, "applied": applied, **result.to_json()}
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        tmp.replace(target)
+        _write_text(report_path(data_dir), json.dumps(payload, indent=1, sort_keys=True) + "\n")
     except OSError:
         pass
 
 
-def apply_side_files(data_dir: Path, result: FitResult, *, day: _dt.date) -> None:
-    """Write the backlog, the context notes and the rewrite records ``result`` calls for."""
-    vault = paths.data_dir(data_dir)
-    raw_backlog = stale.read_backlog(vault)
+@dataclass
+class _Writes:
+    backlog: tuple[Path, str | None, list[str]] | None
+    notes: list[tuple[Path, str]]
+    rewrites: str
+
+
+def _prepare(vault: Path, result: FitResult, *, day: _dt.date, raw_backlog: str | None) -> _Writes:
+    """Read everything the writes depend on. Any read error but a missing note raises, before a write."""
+    backlog = None
     if result.backlog != (raw_backlog.splitlines() if raw_backlog is not None else []):
-        target = stale.backlog_path(vault)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        stale.write_lines_like(target, raw_backlog if raw_backlog is not None else "\n", result.backlog)
-    notes = paths.action_items_dir(vault) / "context"
+        backlog = (stale.backlog_path(vault), raw_backlog, result.backlog)
+    notes: list[tuple[Path, str]] = []
+    folder = paths.action_items_dir(vault) / "context"
     for tag, moved in result.to_notes.items():
-        path = notes / f"{tag}.md"
+        path = folder / f"{tag}.md"
         try:
             existing: str | None = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             existing = None
         text = note_with_moved(existing, tag=tag, title=result.titles.get(tag, tag), day=day.isoformat(), moved=moved)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
-    if result.rewrites:
-        target = stale.rewrites_path(vault)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write("".join(r.to_json() + "\n" for r in result.rewrites))
+        if text is not None:
+            notes.append((path, text))
+    records = "".join(r.to_json() + "\n" for r in result.rewrites)
+    if records:
+        try:
+            prior = stale.rewrites_path(vault).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            prior = ""
+        if prior and not prior.endswith("\n"):
+            records = "\n" + records
+        records = prior + records
+    return _Writes(backlog=backlog, notes=notes, rewrites=records)
+
+
+def _write(vault: Path, writes: _Writes) -> None:
+    """Backlog, notes, rewrite records: before the daily file, each atomic."""
+    if writes.backlog is not None:
+        target, raw, lines = writes.backlog
+        if raw is None:
+            atomic_write_lines(target, lines)
+        else:
+            stale.write_lines_like(target, raw, lines)
+    for path, text in writes.notes:
+        _write_text(path, text)
+    if writes.rewrites:
+        _write_text(stale.rewrites_path(vault), writes.rewrites)
+
+
+@contextmanager
+def apply_lock(vault: Path) -> Iterator[None]:
+    """Hold the vault's session lock for a manual apply, as ``retitle`` does.
+
+    A run holds that lock for its whole session, so a ``fit`` the run itself
+    starts (the lock holder is one of its ancestors) goes ahead; anyone else is
+    refused while a run is live, rather than racing its edits.
+    """
+    from scout.kb.live_run import _ancestry, lock_holder, process_table
+    from scout.scripts.bootstrap_lock import LockBusyError, acquire_lock_with_wait, release_lock
+
+    lock = vault / SESSION_LOCK
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        acquire_lock_with_wait(lock, timeout_s=0)
+    except LockBusyError as e:
+        holder = lock_holder(vault)
+        if holder is not None and holder in _ancestry(process_table(), os.getpid()):
+            yield
+            return
+        raise ActionItemError("refused: a Scout session holds the vault's lock (a run is live); try again later") from e
+    try:
+        yield
+    finally:
+        release_lock(lock)
 
 
 def fit(
@@ -515,7 +661,8 @@ def fit(
 ) -> FitResult | None:
     """Fit the existing daily file for ``date``. ``apply`` None follows ``action_items.fit``.
 
-    Returns None when there is no daily file for ``date``.
+    Returns None when there is no daily file for ``date``. An unreadable daily
+    file, backlog or context note raises before anything is written.
     """
     from scout.action_items.budget import load_settings
 
@@ -537,7 +684,8 @@ def fit(
     # The backlog line's count can change with nothing moved (the stale archive took backlog items).
     writes = result.changed or result.daily != raw.splitlines()
     if do_apply and writes:
-        apply_side_files(vault, result, day=date)
+        planned = _prepare(vault, result, day=date, raw_backlog=raw_backlog)
+        _write(vault, planned)
         stale.write_lines_like(target, raw, result.daily)
     write_report(vault, result, day=date, mode=settings.fit, applied=do_apply and writes)
     return result

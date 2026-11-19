@@ -2,8 +2,8 @@
 
 The daily file is the user's board, read top to bottom every morning. Left
 alone it grows: runs add tasks faster than they close them, park items in
-place and write context into extra sub-bullets, until one vault's file sat at
-300+ KB and 250 open tasks for weeks. ``scoutctl action-items fit`` keeps it
+place and write context into extra sub-bullets, until the file sits at several
+times its budget for weeks. ``scoutctl action-items fit`` keeps it
 to a shape (``scout.action_items.fit``); this module says what that shape is
 and measures how far a file is from it, for ``check-size`` and the doctor.
 
@@ -125,29 +125,41 @@ def is_machine_line(line: str) -> bool:
     return _COMMENT_SUB_BULLET_RE.match(line) is not None
 
 
+# Markup a group must keep with its task: an inline directive, an HTML comment, a fold.
+_MARKUP = ("//==<<", ">>==//", "<!--", "-->", "<details", "</details")
+
+
+def _keeps_group(line: str) -> bool:
+    return is_machine_line(line) or any(mark in line for mark in _MARKUP)
+
+
 def sub_bullet_groups(block: list[str]) -> list[tuple[bool, list[str]]]:
     """A task block's children as ``(is_prose, lines)`` groups.
 
     A group is one sub-bullet at the block's shallowest child indent plus the
     deeper lines under it; text that is not a bullet joins the group above it.
-    A group whose first line is a machine line (see ``is_machine_line``) is
-    not prose.
+    A group with any machine line in it (see ``is_machine_line``: a reply under
+    a note, a nested task) or any markup (an inline ``//==<< … >>==//``
+    directive, an HTML comment, a ``<details>`` fold) is not prose: moving it
+    would split a thread or break the markup.
     """
     children = list(block[1:])
     indents = [len(m.group("indent")) for ln in children if (m := _SUB_BULLET.match(ln))]
     if not indents:
         return [(False, children)] if children else []
     base = min(indents)
-    groups: list[tuple[bool, list[str]]] = []
+    groups: list[list[str]] = []
+    leading: list[str] = []
     for line in children:
         m = _SUB_BULLET.match(line)
         if m and len(m.group("indent")) == base:
-            groups.append((not is_machine_line(line), [line]))
+            groups.append([line])
         elif groups:
-            groups[-1][1].append(line)
+            groups[-1].append(line)
         else:
-            groups.append((False, [line]))
-    return groups
+            leading.append(line)
+    out = [(False, leading)] if leading else []
+    return out + [(not any(_keeps_group(ln) for ln in g), g) for g in groups]
 
 
 # ----- measuring a daily file ------------------------------------------------

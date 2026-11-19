@@ -57,6 +57,13 @@ def _day(n: int) -> _dt.date:
     return OLD + _dt.timedelta(days=n)
 
 
+def _seed_ledger(vault: Path, *, before: _dt.date) -> None:
+    """A cache built earlier, so the next catch-up is incremental, not a rebuild."""
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=before)
+    ledger.save()
+
+
 def test_an_item_less_day_does_not_restart_every_clock(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK)), archived=True)
@@ -82,6 +89,7 @@ def test_a_tag_gone_from_both_files_is_still_forgotten(tmp_path: Path) -> None:
 def test_moving_to_the_backlog_keeps_the_clock(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK + FRESH_BLOCK)), archived=True)
+    _seed_ledger(vault, before=_day(1))
     _daily(vault, _day(1), _doc(("## 🟡 To Do", FRESH_BLOCK)), archived=True)
     backlog = _backlog(vault, ["# Backlog", "", "## 🟡 To Do (soon)", "", *STALE_BLOCK])
     ledger = ActivityLedger.load(vault)
@@ -128,6 +136,7 @@ def test_a_recorded_rewrite_keeps_a_backlog_item_s_clock(tmp_path: Path) -> None
 def test_archive_stale_archives_from_the_backlog_too(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK)), archived=True)
+    _seed_ledger(vault, before=_day(1))
     daily = _daily(vault, TODAY, _doc(("## 🟡 To Do", FRESH_BLOCK)))
     backlog = _backlog(vault, ["# Backlog", "", "## 🟡 To Do (soon)", "", *STALE_BLOCK])
 
@@ -161,9 +170,56 @@ def test_archive_stale_without_a_backlog_is_unchanged(tmp_path: Path) -> None:
 def test_materialize_archives_stale_backlog_items(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK)))
+    _seed_ledger(vault, before=_day(1))
     _daily(vault, TODAY - _dt.timedelta(days=1), _doc(("## 🟡 To Do", FRESH_BLOCK)))
     backlog = _backlog(vault, ["# Backlog", "", "## 🟡 To Do (soon)", "", *STALE_BLOCK])
     created = materialize(data_dir=vault, date=TODAY)
     assert created is not None
     assert "ZQOLD" not in backlog.read_text()
     assert "1 item untouched" in created.read_text()
+
+
+def test_a_rebuild_restarts_backlog_only_clocks(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK + FRESH_BLOCK)), archived=True)
+    _daily(vault, _day(1), _doc(("## 🟡 To Do", FRESH_BLOCK)), archived=True)
+    _backlog(vault, ["## 🟡 To Do (soon)", *STALE_BLOCK])
+    ledger = ActivityLedger.load(vault)  # no cache: a full rebuild
+    ledger.catch_up(vault, before=TODAY)
+    assert ledger.last_changed("ZQOLD") == TODAY
+    assert ledger.last_changed("ZQNEW") == OLD
+    # So a lost cache can't archive the backlog the same morning.
+    _daily(vault, TODAY, _doc(("## 🟡 To Do", FRESH_BLOCK)))
+    assert [i.tag for i in archive_stale(data_dir=vault, date=TODAY, dry_run=True)] == ["ZQNEW"]
+
+
+def test_the_backlog_archives_at_most_the_daily_cap_oldest_first(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    cap = stale.BACKLOG_ARCHIVE_DAILY_CAP
+    rows = [[f"- [ ] [#Z{i:03d}] **Old task {i}** — filed long ago."] for i in range(cap + 3)]
+    _backlog(vault, ["## 🟡 To Do (soon)", *(ln for r in rows for ln in r)])
+    ledger = ActivityLedger.load(vault)
+    # The last three were first seen a day later, so they are the youngest.
+    ledger.observe_backlog([ln for r in rows[:cap] for ln in r], on=OLD - _dt.timedelta(days=1))
+    ledger.observe_backlog([ln for r in rows for ln in r], on=OLD)
+    split = stale.split_backlog(vault, ledger, today=TODAY, skip=frozenset())
+    assert split is not None
+    assert [i.tag for i in split[1].archived] == [f"Z{i:03d}" for i in range(cap)]
+
+
+def test_an_unreadable_backlog_raises_and_a_missing_one_is_none(tmp_path: Path) -> None:
+    import pytest
+
+    vault = _vault(tmp_path)
+    assert stale.read_backlog(vault) is None
+    stale.backlog_path(vault).write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(UnicodeDecodeError):
+        stale.read_backlog(vault)
+
+
+def test_a_day_with_only_completed_rows_is_skipped(tmp_path: Path) -> None:
+    ledger = ActivityLedger.load(_vault(tmp_path))
+    ledger.observe(STALE_BLOCK, on=OLD)
+    ledger.observe(["## ✅ Recently Completed", "- [x] [#ZQDNE] **Done**"], on=_day(1))
+    assert ledger.last_changed("ZQOLD") == OLD
+    assert ledger.seen_through == _day(1)

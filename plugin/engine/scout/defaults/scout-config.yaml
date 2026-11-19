@@ -115,12 +115,12 @@ agent_sessions:
   claude_home: null
 
 # The daily action-items file's shape. MUST equal ActionItemsSettings()'s
-# defaults in scout/action_items/budget.py (tests/unit/test_action_items_budget.py).
+# defaults in scout/action_items/budget.py (tests/unit/test_action_items_fit.py).
 # `fit` (scoutctl action-items fit, run by materialize once a day) moves
 # Parked, Watching and 🟡 tasks not due within `backlog_due_days` to
 # action-items/backlog.md, spills 🟡 past `budget.target_open`, moves extra
-# prose sub-bullets to context notes and keeps `recently_completed_days` of
-# ✅ entries. `report` only writes .scout-logs/action-items-fit.json; `apply`
+# prose sub-bullets to context notes and deletes completed ✅ entries older
+# than `recently_completed_days` (git keeps them). `report` only writes .scout-logs/action-items-fit.json; `apply`
 # writes. `check-size` and the doctor warn past the target and the hard limit;
 # neither ever fails a run.
 action_items:

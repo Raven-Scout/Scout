@@ -1043,9 +1043,10 @@ def _check_action_items_size(*, vault: Path) -> list[str]:
 
     Runs only warn about it (``check-size``, a Run notes line), and a file this
     size is hard to read, so the owner hears about it here too. Never an error."""
+    from scout import paths
     from scout.action_items.budget import load_settings, measure
 
-    folder = vault / "action-items"
+    folder = paths.action_items_dir(vault)
     try:
         newest = max(folder.glob("action-items-????-??-??.md"), default=None)
         if newest is None:

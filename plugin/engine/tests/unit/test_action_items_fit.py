@@ -188,7 +188,7 @@ def test_parked_watching_and_far_yellow_move_to_the_backlog() -> None:
     assert {m.tag: m.reason for m in result.moves} == {
         "NODU": "no due date",
         "FARR": "due 2026-12-31",
-        "WTCH": "watching",
+        "WTCH": "no due date",
         "PARK": "parked",
     }
     assert "## 🅿️ Parked" not in result.daily
@@ -386,6 +386,9 @@ def test_a_trim_does_not_restart_the_stale_clock(tmp_path: Path) -> None:
     yesterday = TODAY - _dt.timedelta(days=1)
     lines = _busy_daily()
     _write_daily(vault, lines, yesterday)
+    seeded = stale.ActivityLedger.load(vault)
+    seeded.catch_up(vault, before=TODAY)  # the cache a run left yesterday
+    seeded.save()
     _write_daily(vault, lines)
     fit(data_dir=vault, date=TODAY, apply=True)
     ledger = stale.ActivityLedger.load(vault)
@@ -524,7 +527,7 @@ def test_completed_dates_from_bad_stamps_and_history() -> None:
     assert all(f"[#{t}]" in "\n".join(result.daily) for t in ("BADD", "NOSD", "BADH"))
     assert "old Recently Completed" not in result.summary()
     dropped = _plan(_doc(("## ✅ Recently Completed", ["- [x] [#OLD1] ✅ ~~**x**~~ — closed 2026-11-01"])))
-    assert "1 old Recently Completed entries dropped" in dropped.summary()
+    assert "1 old Recently Completed entries deleted (git keeps them)" in dropped.summary()
 
 
 def test_a_parked_section_with_other_content_stays() -> None:
@@ -538,3 +541,200 @@ def test_an_unwritable_report_is_skipped(tmp_path: Path) -> None:
     _write_daily(vault, _busy_daily())
     (vault / ".scout-logs").write_text("not a folder", encoding="utf-8")
     assert fit(data_dir=vault, date=TODAY) is not None
+
+
+# --- review follow-ups: safety ----------------------------------------------------------------
+
+
+def test_watching_due_soon_stays_and_backlog_watching_coming_due_returns() -> None:
+    daily = _doc(("## 🟢 Watching", _task("WSOO", "Waiting on Sam", f"waiting on Sam since Nov 2; {SOON}")))
+    backlog = ["## 🟢 Watching (no action yet)", *_task("WBAK", "Waiting on Priya", "due 2026-11-21")]
+    result = _plan(daily, backlog)
+    assert _tags(result.daily) == ["WSOO", "WBAK"]
+    assert [(m.tag, m.section, m.to) for m in result.moves] == [("WBAK", "🟢", "daily")]
+
+
+def test_a_leaver_already_in_the_backlog_is_merged_not_appended() -> None:
+    daily = _doc(("## 🟡 To Do", _task("NODU", "No due", "", "alex: a new comment")))
+    backlog = ["## 🟡 To Do (soon)", *_task("NODU", "No due", "", "priya: an older comment")]
+    result = _plan(daily, backlog)
+    assert _tags(result.backlog) == ["NODU"]
+    assert "  - alex: a new comment" in result.backlog and "  - priya: an older comment" in result.backlog
+    assert result.conflicts == []
+
+
+def test_a_backlog_copy_the_daily_row_already_holds_is_dropped() -> None:
+    row = _task("KEEP", "Kept", SOON, "the blocker")
+    result = _plan(_doc(("## 🟡 To Do", row)), ["## 🟡 To Do (soon)", row[0]])
+    assert result.deduped == ["KEEP"] and _tags(result.backlog) == []
+    assert "1 duplicate backlog copies dropped" in result.summary()
+
+
+def test_a_differing_backlog_copy_of_a_daily_row_is_left_and_named() -> None:
+    daily = _doc(("## 🟡 To Do", _task("KEEP", "Kept", SOON)))
+    backlog = ["## 🟡 To Do (soon)", *_task("KEEP", "Kept", SOON, "alex: only here")]
+    result = _plan(daily, backlog)
+    assert result.conflicts == ["KEEP"] and "  - alex: only here" in result.backlog
+    assert "1 tags open twice" in result.summary()
+
+
+def test_duplicate_backlog_rows_dedupe_or_conflict() -> None:
+    row = _task("NODU", "No due", "", "the blocker")
+    same = _plan(_doc(("## 🟡 To Do", [])), ["## 🟡 To Do (soon)", *row, *row])
+    assert same.deduped == ["NODU"] and _tags(same.backlog) == ["NODU"]
+    other = _plan(_doc(("## 🟡 To Do", [])), ["## 🟡 To Do (soon)", *row, *_task("NODU", "No due", "", "alex: x")])
+    assert other.conflicts == ["NODU"] and _tags(other.backlog) == ["NODU", "NODU"]
+
+
+def test_re_running_after_a_failed_daily_write_does_not_duplicate(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    daily = _write_daily(vault, _busy_daily())
+    before = daily.read_text()
+    fit(data_dir=vault, date=TODAY, apply=True)
+    daily.write_text(before)  # as if the daily write never landed
+    fit(data_dir=vault, date=TODAY, apply=True)
+    backlog = stale.backlog_path(vault).read_text()
+    assert backlog.count("[#NODU]") == 1
+    note = (vault / "action-items" / "context" / "KEEP.md").read_text()
+    assert note.count("- two") == 1 and note.count("## Moved from the daily file") == 1
+
+
+def test_an_unreadable_backlog_aborts_before_any_write(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    daily = _write_daily(vault, _busy_daily())
+    before = daily.read_text()
+    stale.backlog_path(vault).write_bytes(b"\xff\xfe")
+    with pytest.raises(UnicodeDecodeError):
+        fit(data_dir=vault, date=TODAY, apply=True)
+    assert daily.read_text() == before and stale.backlog_path(vault).read_bytes() == b"\xff\xfe"
+
+
+def test_an_unreadable_note_aborts_before_any_write(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    daily = _write_daily(vault, _busy_daily())
+    before = daily.read_text()
+    note = vault / "action-items" / "context" / "KEEP.md"
+    note.parent.mkdir(parents=True)
+    note.write_bytes(b"\xff\xfe")
+    with pytest.raises(UnicodeDecodeError):
+        fit(data_dir=vault, date=TODAY, apply=True)
+    assert daily.read_text() == before and not stale.backlog_path(vault).exists()
+
+
+def test_note_with_moved_skips_lines_already_there() -> None:
+    existing = "---\ntag: ABCD\nupdated: 2026-11-01\n---\n\n- one\n"
+    assert note_with_moved(existing, tag="ABCD", title="x", day="2026-11-19", moved=["  - one"]) is None
+
+
+@pytest.mark.parametrize(
+    "child",
+    [
+        ["  - 📎 note", "    - [ ] [#SUBT] **a subtask**"],
+        ["  - 📎 note", "    - alex: a reply in the thread"],
+        ["  - 📎 note //==<< drop this >>==//"],
+        ["  - 📎 note", "    //==<< keep it short >>==//"],
+        ["  - <!-- deleted row kept for the audit -->"],
+        ["  - <details><summary>more</summary>", "    body", "  </details>"],
+    ],
+)
+def test_groups_with_threads_or_markup_never_move(child: list[str]) -> None:
+    block = ["- [ ] [#ABCD] **T** — due 2026-11-25", "  - first note", *child]
+    groups = sub_bullet_groups(block)
+    assert [is_prose for is_prose, _ in groups][0] is True
+    assert not any(is_prose for is_prose, _ in groups[1:])
+
+
+def test_recently_completed_keeps_open_tasks_and_unmarked_entries() -> None:
+    entries = [
+        "- [ ] [#OPEN] **Still open** — closed 2026-11-01 by mistake",
+        "- a plain note — closed 2026-11-01",
+        "- ~~**Struck**~~ — closed 2026-11-01",
+    ]
+    result = _plan(_doc(("## ✅ Recently Completed", entries)))
+    text = "\n".join(result.daily)
+    assert "[#OPEN]" in text and "a plain note" in text and "Struck" not in text
+    assert result.completed_dropped == 1
+
+
+def test_promotions_land_above_subgroups_and_empty_backlog_subgroups_go() -> None:
+    daily = _doc(("## 🟡 To Do", [*_task("KEEP", "Kept", SOON), "", "### From this run", *_task("RUNX", "x", SOON)]))
+    backlog = ["## 🟡 To Do (soon)", "", "### Old group", *_task("BACK", "Comes due", SOON)]
+    result = _plan(daily, backlog)
+    text = "\n".join(result.daily)
+    assert text.index("[#BACK]") < text.index("### From this run")
+    assert "### Old group" not in result.backlog
+
+
+def test_rewrite_records_append_after_a_missing_trailing_newline(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _write_daily(vault, _busy_daily())
+    records = stale.rewrites_path(vault)
+    records.parent.mkdir(parents=True)
+    prior = stale.Rewrite("ZZZZ", TODAY, "a", "b").to_json()
+    records.write_text(prior)  # no trailing newline
+    fit(data_dir=vault, date=TODAY, apply=True)
+    lines = records.read_text().splitlines()
+    assert lines[0] == prior and len(lines) == 2 and json.loads(lines[1])["tag"] == "KEEP"
+
+
+def test_apply_lock_refuses_a_live_run_unless_it_is_ours(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    import scout.kb.live_run as live_run
+    import scout.scripts.bootstrap_lock as bootstrap_lock
+    from scout.action_items.fit import apply_lock
+    from scout.errors import ActionItemError
+
+    vault = _vault(tmp_path)
+    with apply_lock(vault):
+        pass  # free: taken and released
+
+    def busy(lock: Path, **_: object) -> None:
+        raise bootstrap_lock.LockBusyError(lock, 4242)
+
+    monkeypatch.setattr(bootstrap_lock, "acquire_lock_with_wait", busy)
+    monkeypatch.setattr(live_run, "lock_holder", lambda _vault: 999_999)
+    with pytest.raises(ActionItemError, match="refused"), apply_lock(vault):
+        pass
+    monkeypatch.setattr(live_run, "lock_holder", lambda _vault: os.getpid())
+    with apply_lock(vault):
+        pass  # the run itself started this fit
+
+
+def test_cli_apply_takes_the_lock_and_prints_conflicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.action_items.fit as fit_module
+
+    vault = _vault(tmp_path)
+    _write_daily(vault, _doc(("## 🟡 To Do", _task("KEEP", "Kept", SOON) + _task("NODU", "None"))))
+    stale.backlog_path(vault).write_text(
+        "## 🟡 To Do (soon)\n" + "\n".join(_task("KEEP", "Kept", SOON, "alex: x")) + "\n"
+    )
+    taken: list[Path] = []
+    real = fit_module.apply_lock
+
+    def spy(v: Path):  # noqa: ANN202
+        taken.append(v)
+        return real(v)
+
+    monkeypatch.setattr(fit_module, "apply_lock", spy)
+    out = runner.invoke(app, ["fit", "--date", TODAY.isoformat(), "--data-dir", str(vault), "--apply"])
+    assert out.exit_code == 0, out.output
+    assert taken == [vault]
+    assert "left alone (merge by hand): [#KEEP]" in out.output and "re-read the daily file" in out.output
+
+
+def test_check_size_points_at_fit_only_in_apply_mode(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _write_daily(vault, _busy_daily())
+    args = ["check-size", "--date", TODAY.isoformat(), "--data-dir", str(vault)]
+    assert "report mode, so don't run it" in runner.invoke(app, args).output
+    (vault / "scout-config.yaml").write_text("action_items:\n  fit: apply\n", encoding="utf-8")
+    assert "Run `scoutctl action-items fit`" in runner.invoke(app, args).output
+
+
+def test_doctor_skips_an_unreadable_daily_file(tmp_path: Path) -> None:
+    from scout.scripts.bootstrap_doctor import _check_action_items_size
+
+    vault = _vault(tmp_path)
+    (vault / "action-items" / f"action-items-{TODAY.isoformat()}.md").mkdir()
+    assert _check_action_items_size(vault=vault) == []

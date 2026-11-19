@@ -518,14 +518,14 @@ def cli_fit(
     Moves 🅿️ Parked, 🟢 Watching and 🟡 tasks not due within 14 days to
     `action-items/backlog.md` (and backlog 🟡 tasks that came due back), spills
     the bottom of 🟡 past the open-task cap, moves extra prose sub-bullets to
-    each task's context note and drops Recently Completed entries past 3 days.
-    Nothing is deleted. `materialize` runs it once a day; with
+    each task's context note and deletes completed Recently Completed entries
+    past 3 days (git keeps them). No open task is deleted. `materialize` runs it once a day; with
     `action_items.fit: report` (the default) it only reports, to
     `.scout-logs/action-items-fit.json`.
     """
     from scout import paths
     from scout.action_items.budget import load_settings
-    from scout.action_items.fit import fit
+    from scout.action_items.fit import apply_lock, fit
     from scout.config import today
 
     vault = data_dir or paths.data_dir()
@@ -537,20 +537,34 @@ def cli_fit(
         except ValueError as e:
             raise ActionItemError(f"--date: invalid date {date!r}") from e
     settings = load_settings(vault)
-    result = fit(data_dir=vault, date=day, apply=apply, settings=settings)
+    writing = settings.fit == "apply" if apply is None else apply
+    if writing:
+        # Like retitle: never race a live run's edits (a fit the run starts itself goes ahead).
+        with apply_lock(vault):
+            result = fit(data_dir=vault, date=day, apply=True, settings=settings)
+    else:
+        result = fit(data_dir=vault, date=day, apply=False, settings=settings)
     if result is None:
         raise ActionItemError(f"no daily file for {day.isoformat()}")
-    applied = (settings.fit == "apply" if apply is None else apply) and result.changed
+    applied = writing and result.changed
     if json_out:
         sys.stdout.write(_json.dumps({"applied": applied, "mode": settings.fit, **result.to_json()}) + "\n")
         return
     if not result.changed:
         sys.stdout.write("fit: nothing to move — the daily file already fits\n")
-        return
-    verb = "fitted" if applied else "would fit (dry run; `--apply` or action_items.fit: apply writes)"
-    sys.stdout.write(f"fit: {verb}: {result.summary()}\n")
-    for move in result.moves:
-        sys.stdout.write(f"  [#{move.tag}] {move.section} → {move.to} ({move.reason})\n")
+    else:
+        verb = "fitted" if applied else "would fit (dry run; `--apply` or action_items.fit: apply writes)"
+        sys.stdout.write(f"fit: {verb}: {result.summary()}\n")
+        for move in result.moves:
+            sys.stdout.write(f"  [#{move.tag}] {move.section} → {move.to} ({move.reason})\n")
+    if result.conflicts:
+        sys.stdout.write(
+            "fit: open in both files with different text, left alone (merge by hand): "
+            + ", ".join(f"[#{t}]" for t in result.conflicts)
+            + "\n"
+        )
+    if applied:
+        sys.stdout.write("fit: re-read the daily file and backlog.md before editing either\n")
 
 
 @app.command("check-size")
@@ -565,8 +579,8 @@ def cli_check_size(
 
     Measures the file's size, its open tasks and the tasks carrying more prose
     sub-bullets than allowed. Exit codes: 0 = within the target, 1 = over the
-    target or the hard limit (a warning: run `fit`, then note it in this run's
-    🪵 Run notes), 2 = cannot check.
+    target or the hard limit (a warning: follow what it prints, then note it in
+    this run's 🪵 Run notes), 2 = cannot check.
     """
     from scout import paths
     from scout.action_items.budget import load_settings, measure
@@ -579,7 +593,8 @@ def cli_check_size(
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         raise _cannot_check(name, e, json_out) from e
-    budget = load_settings(vault).budget
+    settings = load_settings(vault)
+    budget = settings.budget
     report = measure(text, budget)
     level = report.level(budget)
     if json_out:
@@ -591,9 +606,14 @@ def cli_check_size(
         sys.stdout.write(f"{name}: {label}:\n")
         for problem in report.problems(budget):
             sys.stdout.write(f"  {problem}\n")
+        first = (
+            "Run `scoutctl action-items fit`, re-read the daily file and backlog.md, then shorten"
+            if settings.fit == "apply"
+            else "`fit` is in report mode, so don't run it; shorten"
+        )
         sys.stdout.write(
-            "Run `scoutctl action-items fit`, then add `action items over budget: <these numbers>` to this "
-            "run's 🪵 Run notes entry.\n"
+            f"{first} anything this run wrote past the item format, and add `action items over budget: "
+            "<these numbers>` to this run's 🪵 Run notes entry.\n"
         )
     if level != "ok":
         raise typer.Exit(code=1)
