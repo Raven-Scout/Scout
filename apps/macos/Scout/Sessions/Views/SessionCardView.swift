@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// One session on the board (spec §6.2), styled after `BoardCardView`: a 3 pt
-/// state edge, a two-line serif title, the deciding reason, then PR, age,
-/// branch and model.
+/// state edge and the state in words with its symbol and age, a two-line
+/// serif title, the deciding reason, then PR, branch and model.
 struct SessionCardView: View {
     let session: AgentSession
     let now: Date
@@ -30,6 +30,13 @@ struct SessionCardView: View {
                     .foregroundStyle(DS.Ink.p4)
                     .lineLimit(1)
             }
+            HStack(spacing: 8) {
+                SessionStateLabel(state: session.state, isOpen: session.isOpen)
+                Spacer(minLength: 0)
+                Text(SessionsFormat.ago(session.lastActivityAt, now: now))
+                    .font(DS.sans(10.5))
+                    .foregroundStyle(DS.Ink.p4)
+            }
             Text(session.displayTitle)
                 .font(DS.serif(13.5, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
@@ -42,17 +49,11 @@ struct SessionCardView: View {
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(1)
             }
-            HStack(spacing: 8) {
-                if let pr = session.pr {
-                    Text(SessionsFormat.prChip(pr))
-                        .font(DS.mono(10.5))
-                        .foregroundStyle(DS.Ink.p2)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Text(SessionsFormat.ago(session.lastActivityAt, now: now))
-                    .font(DS.sans(10.5))
-                    .foregroundStyle(DS.Ink.p4)
+            if let pr = session.pr {
+                Text(SessionsFormat.prChip(pr))
+                    .font(DS.mono(10.5))
+                    .foregroundStyle(DS.Ink.p2)
+                    .lineLimit(1)
             }
             HStack(spacing: 6) {
                 if let branch = session.worktree?.branch {
@@ -83,8 +84,8 @@ struct SessionCardView: View {
                 .frame(width: 3)
                 .padding(.vertical, 6)
         }
+        // The state is read from its label above, not repeated as a value.
         .accessibilityElement(children: .combine)
-        .accessibilityValue(session.state.label)
     }
 
     private var borderColor: Color {

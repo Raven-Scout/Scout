@@ -3,11 +3,11 @@ import SwiftUI
 @testable import Scout
 
 /// Window sizes the layout tests check (UI audit card C6): the main window's
-/// minimum (`ScoutApp`'s `minWidth: 1100, minHeight: 640`), a 13" laptop
-/// window, and a large display.
+/// minimum (`MainWindowSize`, which `ScoutApp` enforces), the old 1100 pt
+/// minimum, a 13" laptop window, and a large display.
 enum LayoutSize {
-    static let windowWidths: [CGFloat] = [1100, 1280, 1600]
-    static let minimumWindowHeight: CGFloat = 640
+    static let windowWidths: [CGFloat] = [MainWindowSize.minWidth, 1100, 1280, 1600]
+    static let minimumWindowHeight: CGFloat = MainWindowSize.minHeight
 
     /// Sidebar column (`navigationSplitViewColumnWidth` ideal 220) plus its
     /// divider: what a page gets of the window's width.
