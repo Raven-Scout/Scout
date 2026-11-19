@@ -2,9 +2,9 @@
 
 Every daily file starts as a verbatim copy of the previous one (materialize),
 and the session prompts forbid dropping an open item without an explicit
-directive. Nothing ever retired an item, so the open list only grew — one
-vault went from 154 open rows to 944 in two months, 59% of them older than a
-month and most byte-identical since they were written. A list that long is
+directive. Nothing ever retired an item, so the open list only grew — a
+vault's open rows grew several-fold in two months, most of them older than a
+month and byte-identical since they were written. A list that long is
 unreadable, and rendering it froze scout-app.
 
 This module is the one sanctioned exit. An item is *touched* when the text of
@@ -616,13 +616,12 @@ def split_backlog(
 
 
 def write_lines_like(target: Path, raw: str, lines: list[str]) -> None:
-    """Write ``lines`` to ``target`` with ``raw``'s newline style and trailing newline."""
-    atomic_write_lines(
-        target,
-        lines,
-        newline="\r\n" if "\r\n" in raw else "\n",
-        trailing_newline=raw.endswith("\n"),
-    )
+    """Write ``lines`` to ``target`` with ``raw``'s newline style and trailing newline, through
+    :mod:`scout.safe_write` (never following a link planted at the name)."""
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    text = newline.join(lines) + (newline if lines and raw.endswith("\n") else "")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    safe_write.atomic_write_text(target, text)
 
 
 def archive_stale(

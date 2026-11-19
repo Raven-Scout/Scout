@@ -37,7 +37,7 @@ result names the conflict. Prose already in a note is not appended again.
 **Writes.** Everything is read and planned first; an unreadable backlog or
 context note aborts before anything is written. Then the backlog, the notes,
 the rewrite records and the daily file are written in that order, each
-atomically, so an interruption can leave a task in both files (which the next
+atomically through ``scout.safe_write``, so an interruption can leave a task in both files (which the next
 run reconciles) but never in neither.
 
 A moved block is the same text, so its stale-archive clock carries over
@@ -61,11 +61,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items import stale
 from scout.action_items.budget import ActionItemsSettings, count_open, sub_bullet_groups
 from scout.action_items.past_due import History, body_of, parse_due
-from scout.action_items.writer import atomic_write_lines
 from scout.errors import ActionItemError
 
 REPORT_NAME = "action-items-fit.json"
@@ -556,11 +555,9 @@ def note_with_moved(existing: str | None, *, tag: str, title: str, day: str, mov
 
 
 def _write_text(target: Path, text: str) -> None:
-    lines = text.split("\n")
-    trailing = text.endswith("\n")
-    if trailing:
-        lines = lines[:-1]
-    atomic_write_lines(target, lines, trailing_newline=trailing)
+    """Replace ``target`` whole through :mod:`scout.safe_write`: never through a planted link."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    safe_write.atomic_write_text(target, text)
 
 
 def report_path(data_dir: Path) -> Path:
@@ -616,7 +613,7 @@ def _write(vault: Path, writes: _Writes) -> None:
     if writes.backlog is not None:
         target, raw, lines = writes.backlog
         if raw is None:
-            atomic_write_lines(target, lines)
+            _write_text(target, "\n".join(lines) + ("\n" if lines else ""))
         else:
             stale.write_lines_like(target, raw, lines)
     for path, text in writes.notes:
