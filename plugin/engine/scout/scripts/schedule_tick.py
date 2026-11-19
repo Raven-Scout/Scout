@@ -43,7 +43,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scout import config as scout_config
-from scout import paths, safe_write
+from scout import events, paths, safe_write
 from scout.errors import ConfigError
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
@@ -357,7 +357,7 @@ def _record_fire(tracker_path: Path, slot_key: str, slot: Slot, now: _dt.datetim
         "scout_mode": slot_key,
         "source": "schedule.tick",
     }
-    with safe_write.open_append(tracker_path) as f:
+    with safe_write.open_append(tracker_path, on_unsafe=_on_unsafe(tracker_path.parent)) as f:
         f.write(json.dumps(row) + "\n")
 
 
@@ -603,23 +603,31 @@ def _emit_event(
         "source": ev.source,
         "payload": ev.payload,
     }
-    with safe_write.open_append(log_path) as f:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_dir)) as f:
         f.write(json.dumps(row) + "\n")
     return ev
+
+
+def _on_unsafe(log_dir: Path) -> safe_write.OnUnsafe:
+    """A link, hard link or non-file a run put at the tick's lock or logs is removed and made again, never
+    followed, and recorded: a refusal there would stop every tick (and every scheduled run) until someone looked."""
+    return events.unsafe_file_recorder(log_dir, kind="schedule.tick.unsafe_file_replaced", source="cli:schedule_tick")
 
 
 # ----- concurrency lock ---------------------------------------------------
 
 
 @contextlib.contextmanager
-def _try_lock(lock_path: Path) -> Iterator[bool]:
+def _try_lock(lock_path: Path, *, log_dir: Path | None = None) -> Iterator[bool]:
     """Acquire an exclusive non-blocking flock on ``lock_path``.
 
     Yields ``True`` if the lock was acquired (and releases it on exit),
-    ``False`` if another process is holding it.
+    ``False`` if another process is holding it. Never through a link a run put
+    there; with ``log_dir``, such a link is replaced and recorded rather than refused.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with safe_write.open_lock(lock_path, mode=0o644) as fh:  # never through a symlink a run put there
+    on_unsafe = _on_unsafe(log_dir) if log_dir is not None else None
+    with safe_write.open_lock(lock_path, mode=0o644, on_unsafe=on_unsafe) as fh:
         fd = fh.fileno()
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -683,7 +691,7 @@ def run() -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,
@@ -713,7 +721,7 @@ def _spawn_delegate_sync(vault: Path, log_dir: Path) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     from scout._spawn import python_module_argv
 
-    with safe_write.open_append(log_dir / _DELEGATE_LOG) as log:
+    with safe_write.open_append(log_dir / _DELEGATE_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
         proc = subprocess.Popen(
             python_module_argv("scout", "delegate", "sync", "--all", "--if-moved"),
             cwd=str(Path.home()),  # never the vault, on top of -P: the vault reaches it as SCOUT_DATA_DIR
@@ -764,7 +772,7 @@ def _spawn_broker_drain(vault: Path, log_dir: Path) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     from scout._spawn import python_module_argv
 
-    with safe_write.open_append(log_dir / _BROKER_LOG) as log:
+    with safe_write.open_append(log_dir / _BROKER_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
         proc = subprocess.Popen(
             python_module_argv("scout", "broker", "drain", "--vault", str(vault)),
             cwd=str(Path.home()),
@@ -994,7 +1002,7 @@ def fire_now(slot_key: str) -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,

@@ -1634,7 +1634,7 @@ def replay_one(
         elif ours is not None and ch.old is not None and ch.new is not None:
             merged, clean = _merge3(vault, ch.old, ours, ch.new)
             if not clean:
-                (vault / f"{ch.path}.proposed-merge").write_bytes(merged)
+                safe_write.atomic_write_bytes(vault / f"{ch.path}.proposed-merge", merged)
                 raise RepoSyncError(
                     "replay_conflict",
                     f"refused: {ch.path} changed both here and on Agnes; the merge is in "

@@ -373,16 +373,23 @@ def test_a_fifo_where_the_audit_log_belongs_cant_hold_the_deny_back(vault: Path)
     assert json.loads(out.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_the_event_writer_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
-    from scout.events import append_event
+def test_the_event_writer_replaces_a_fifo_without_blocking(tmp_path: Path) -> None:
+    """Never blocks on a FIFO a run put there: the name is made again as a plain file, and that is recorded."""
+    import stat
+
+    from scout.events import UNSAFE_REPLACED, append_event
 
     log = tmp_path / "logs"
     log.mkdir()
     import datetime as dt
 
-    os.mkfifo(log / f"schedule-events-{dt.datetime.now(dt.UTC).date().isoformat()}.jsonl")
-    with pytest.raises(OSError):
-        append_event(log, kind="k", source="s", payload={})
+    path = log / f"schedule-events-{dt.datetime.now(dt.UTC).date().isoformat()}.jsonl"
+    os.mkfifo(path)
+    ev = append_event(log, kind="k", source="s", payload={})
+    written = log / f"schedule-events-{ev.ts[:10]}.jsonl"
+    assert stat.S_ISREG(written.lstat().st_mode)
+    kinds = [json.loads(line)["kind"] for line in written.read_text(encoding="utf-8").splitlines()]
+    assert kinds[-1] == "k" and (written != path or kinds[0] == UNSAFE_REPLACED)
 
 
 def test_the_engine_the_hooks_run_is_protected(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

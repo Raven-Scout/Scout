@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from scout import health, notify_desktop, safe_write
+from scout import events, health, notify_desktop, safe_write
 from scout.errors import ConfigError
 from scout.health import RunHealth
 from scout.scripts import notify_telegram
@@ -364,7 +364,10 @@ def _acquire_lock(vault: Path, *, timeout: float, sleep: Callable[[float], None]
     """Take the exclusive advisory lock, retrying up to ``timeout`` s; None if it stays held."""
     path = vault / LOCK_FILE
     path.parent.mkdir(exist_ok=True)  # the state dir only, never the vault itself
-    handle = safe_write.open_lock(path)
+    record = events.unsafe_file_recorder(
+        vault / ".scout-logs", kind="health_notify.unsafe_file_replaced", source="health_notify"
+    )
+    handle = safe_write.open_lock(path, on_unsafe=record)  # a planted link must not silence every alert
     deadline = time.monotonic() + timeout
     while True:
         try:

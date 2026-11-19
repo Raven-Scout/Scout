@@ -146,7 +146,7 @@ import yaml
 
 import scout
 from scout import delegate_containers as containers
-from scout import delegate_media, paths, safe_write
+from scout import delegate_media, events, paths, safe_write
 from scout.kb.lint_config import any_match, glob_match
 from scout.kb.outbound import (
     _AFTER,
@@ -449,8 +449,8 @@ def locked(vault: Path) -> Iterator[None]:
     path = vault / LOCK_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fh = safe_write.open_lock(path)
-    except safe_write.UnsafeFileError as e:
+        fh = safe_write.open_lock(path, on_unsafe=_on_unsafe(vault))
+    except safe_write.UnsafeFileError as e:  # replacing it failed: a folder there, or a link put straight back
         raise RepoSyncError("state_unsafe", f"refused: {LOCK_REL} isn't a plain file ({e.strerror})") from e
     with fh:
         try:
@@ -461,6 +461,14 @@ def locked(vault: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _on_unsafe(vault: Path) -> safe_write.OnUnsafe:
+    """A link a run put at the mirror lock or tick file is removed and made again, never followed, and recorded:
+    refusing would stop every mirror sync."""
+    return events.unsafe_file_recorder(
+        paths.logs_dir(vault), kind="delegate_mirror.unsafe_file_replaced", source="delegate_mirror"
+    )
 
 
 def ensure_ignored(vault: Path) -> bool:
@@ -2354,7 +2362,7 @@ def mark_started(vault: Path) -> None:
     """Note that the tick started a sync now (the tick file's mtime)."""
     tick = vault / TICK_REL
     tick.parent.mkdir(parents=True, exist_ok=True)
-    with safe_write.open_append(tick) as fh:  # never through a symlink a run put there
+    with safe_write.open_append(tick, on_unsafe=_on_unsafe(vault)) as fh:  # never through a link a run put there
         os.utime(fh.fileno())
 
 

@@ -49,7 +49,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items import stale
 from scout.action_items.context_notes import context_note_rel
 from scout.action_items.prefetched import daily_lines
@@ -531,7 +531,7 @@ class Worksheet:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"date": self.date.isoformat(), "rows": [asdict(r) for r in self.rows]}
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        safe_write.atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=1) + "\n")
 
 
 def worksheet_path(vault: Path, day: _dt.date) -> Path:
@@ -678,23 +678,37 @@ def git_safe_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
     raise RetitleError(f"{COMMIT_HELPER} exited {proc.returncode} and made no commit: {detail}")
 
 
+@dataclass(frozen=True)
+class _Link:
+    """A symlink found where a file was written: put back as a link, never read or written through."""
+
+    target: str
+
+
 class _Transaction:
-    """Files written so far, put back as they were if no commit lands."""
+    """Files written so far, put back as they were if no commit lands.
+
+    Every write is :func:`scout.safe_write.atomic_write_bytes` (a fresh temp name, renamed over the file), so a
+    symlink a run planted at a temp name or at the file itself is never written through, and a symlink at the
+    file is kept as a link to restore, not read.
+    """
 
     def __init__(self, vault: Path) -> None:
         self.vault = vault
-        self.saved: dict[Path, bytes | None] = {}
+        self.saved: dict[Path, bytes | _Link | None] = {}
 
     def _keep(self, path: Path) -> None:
-        if path not in self.saved:
+        if path in self.saved:
+            return
+        if path.is_symlink():
+            self.saved[path] = _Link(os.readlink(path))
+        else:
             self.saved[path] = path.read_bytes() if path.exists() else None
 
     def write(self, path: Path, text: str) -> None:
         self._keep(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.retitle-tmp")
-        tmp.write_bytes(text.encode("utf-8"))
-        tmp.replace(path)
+        safe_write.atomic_write_bytes(path, text.encode("utf-8"))
 
     def remove(self, path: Path) -> None:
         self._keep(path)
@@ -707,8 +721,11 @@ class _Transaction:
         for path, data in self.saved.items():
             if data is None:
                 path.unlink(missing_ok=True)
+            elif isinstance(data, _Link):
+                path.unlink(missing_ok=True)
+                os.symlink(data.target, path)
             else:
-                path.write_bytes(data)
+                safe_write.atomic_write_bytes(path, data)
 
 
 def _ours(vault: Path, sha: str, message: str, rel: list[str]) -> bool:

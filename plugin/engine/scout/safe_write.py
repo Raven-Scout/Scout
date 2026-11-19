@@ -15,10 +15,17 @@ are the one way the engine writes those files:
   ``O_NONBLOCK`` (a FIFO put there can't hang the open), then refuse anything but a regular file with one link.
 
 Each refusal is an :class:`UnsafeFileError`, an :class:`OSError`, so a best-effort writer that already swallows
-``OSError`` keeps doing so, and nothing is written.
+``OSError`` keeps doing so, and nothing is written. A writer that must not stop (the schedule tick, the heartbeat,
+self-update: a refusal there would stop every run) passes ``on_unsafe``: the name is then removed, the link only
+and never what it points at, made again with ``O_EXCL | O_NOFOLLOW``, and ``on_unsafe(path, why)`` records it.
 
 Only the file's own name is checked: its folder is used as found (a vault may legitimately sit behind a symlink).
 The temp file and the target are reached through one open handle on that folder, so both land in the same place.
+That is safe because the sandbox forbids renaming any folder above a protected path, and because of one rule for
+callers: **never write a name that means something elsewhere (``hooks.json``, ``settings.json``, a key, a git
+hook's name) under a folder a run may replace**, such as ``.scout-logs`` or ``.scout-cache``; a swapped folder
+then only ever receives Scout's own inert names. (Opening each folder from the vault down with ``O_NOFOLLOW``
+would lift the rule; that is a follow-up.)
 """
 
 from __future__ import annotations
@@ -28,10 +35,14 @@ import errno
 import os
 import secrets
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
 
-__all__ = ["UnsafeFileError", "atomic_write_bytes", "atomic_write_text", "open_append", "open_lock"]
+__all__ = ["OnUnsafe", "UnsafeFileError", "atomic_write_bytes", "atomic_write_text", "open_append", "open_lock"]
+
+OnUnsafe = Callable[[Path, str], None]
+"""Told ``(path, why)`` after an unsafe name was removed and made again; what it raises is ignored."""
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -46,6 +57,7 @@ class UnsafeFileError(OSError):
 
     def __init__(self, path: Path | str, why: str) -> None:
         super().__init__(errno.ELOOP, f"refused to write through {why}", str(path))
+        self.why = why
 
 
 def atomic_write_bytes(path: Path | str, data: bytes, *, mode: int | None = None, fsync: bool = True) -> None:
@@ -92,35 +104,83 @@ def atomic_write_text(
 
 
 def open_append(
-    path: Path | str, *, mode: int = NEW_FILE_MODE, binary: bool = False, encoding: str = "utf-8"
+    path: Path | str,
+    *,
+    mode: int = NEW_FILE_MODE,
+    binary: bool = False,
+    encoding: str = "utf-8",
+    on_unsafe: OnUnsafe | None = None,
 ) -> IO[Any]:
-    """Open ``path`` to append to, refusing a symlink, a hard link or a non-file.
+    """Open ``path`` to append to, refusing a symlink, a hard link or a non-file (or replacing it: ``on_unsafe``).
 
     A missing file is made with ``mode`` less the umask.
 
     Returns a file object (text in ``encoding`` unless ``binary``); the caller closes it, as with ``open``.
     """
-    fd = _open_checked(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
+    fd = _open_checked(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode, on_unsafe)
     if binary:
         return os.fdopen(fd, "ab")
     return os.fdopen(fd, "a", encoding=encoding)
 
 
-def open_lock(path: Path | str, *, mode: int = 0o600) -> IO[bytes]:
-    """Open (or make) the lock file ``path`` for ``fcntl.flock``, refusing a symlink, a hard link or a non-file.
+def open_lock(path: Path | str, *, mode: int = 0o600, on_unsafe: OnUnsafe | None = None) -> IO[bytes]:
+    """Open (or make) the lock file ``path`` for ``fcntl.flock``, refusing a symlink, a hard link or a non-file
+    (or replacing it: ``on_unsafe``).
 
     Nothing is ever written to it. Returns an unbuffered binary file object; the caller closes it.
     """
-    fd = _open_checked(path, os.O_RDWR | os.O_CREAT, mode)
+    fd = _open_checked(path, os.O_RDWR | os.O_CREAT, mode, on_unsafe)
     return os.fdopen(fd, "r+b", buffering=0)
 
 
-def _open_checked(path: Path | str, flags: int, mode: int) -> int:
+def _open_checked(path: Path | str, flags: int, mode: int, on_unsafe: OnUnsafe | None) -> int:
+    try:
+        return _open_once(path, flags, mode)
+    except UnsafeFileError as e:
+        if on_unsafe is None:
+            raise
+        why = e.why
+        fd = _make_again(path, flags, mode, e)
+    try:
+        on_unsafe(Path(path), why)
+    except Exception:  # noqa: BLE001 - recording is best effort; the file is safe to use either way
+        pass
+    return fd
+
+
+def _make_again(path: Path | str, flags: int, mode: int, err: UnsafeFileError) -> int:
+    """Remove the unsafe name (the name only: a link's target and a hard link's other names are untouched) and
+    make it again ``O_EXCL``; ``err`` when that can't be done safely (a folder there, or a link put back)."""
+    try:
+        st: os.stat_result | None = os.lstat(path)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISDIR(st.st_mode):
+            raise err
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            raise err from e
+    try:
+        return _open_once(path, flags | os.O_EXCL, mode)
+    except (FileExistsError, UnsafeFileError) as e:
+        raise err from e
+
+
+_NOT_A_FILE = (errno.ENXIO, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP))
+
+
+def _open_once(path: Path | str, flags: int, mode: int) -> int:
     try:
         fd = os.open(path, flags | _NOFOLLOW | _NONBLOCK | _CLOEXEC, mode)
     except OSError as e:
         if e.errno == errno.ELOOP:
             raise UnsafeFileError(path, "a symlink") from e
+        if e.errno in _NOT_A_FILE:  # a FIFO with no reader, a socket, a device
+            raise UnsafeFileError(path, "something that isn't a regular file") from e
         raise
     try:
         st = os.fstat(fd)
@@ -128,8 +188,7 @@ def _open_checked(path: Path | str, flags: int, mode: int) -> int:
             raise UnsafeFileError(path, "something that isn't a regular file")
         if st.st_nlink != 1:
             raise UnsafeFileError(path, "a hard link")
-        if _NONBLOCK:
-            os.set_blocking(fd, True)
+        os.set_blocking(fd, True)
     except BaseException:
         os.close(fd)
         raise
