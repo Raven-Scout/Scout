@@ -235,33 +235,47 @@ struct ControlCenterR10FollowUpTests {
         #expect(r.problem.impact?.contains("which wake time") == true)
     }
 
-    @Test("a slow operation gives up at the time limit; a quick one returns")
+    /// Stands in for a hung child: waits `seconds` and ignores cancellation,
+    /// as a stuck `pmset` would. Never blocks a thread or an actor.
+    nonisolated private static func hang(seconds: Double) async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { c.resume() }
+        }
+    }
+
+    // No wall-clock assertion: under a parallel run the main actor (and so
+    // the caller's resumption) can be held by other suites for seconds. The
+    // operations below hang for two minutes and ignore cancellation, so only
+    // the time limit can make these calls return; the one-minute trait is
+    // the generous bound that fails a regression instead of hanging the run.
+
+    @Test("a slow operation gives up at the time limit; a quick one returns", .timeLimit(.minutes(1)))
     func timeLimit() async {
-        let slow: Int? = await AppState.withinTimeLimit(.milliseconds(30)) {
-            try? await Task.sleep(for: .seconds(30))
+        let slow: Int? = await AppState.withinTimeLimit(.milliseconds(300)) {
+            await Self.hang(seconds: 120)
             return 1
         }
         #expect(slow == nil)
-        let quick: Int? = await AppState.withinTimeLimit(.seconds(5)) { 2 }
+        let quick: Int? = await AppState.withinTimeLimit(.seconds(30)) { 2 }
         #expect(quick == 2)
     }
 
-    @Test("a pmset -g sched that hangs doesn't hang the install")
+    @Test("a pmset -g sched that hangs doesn't hang the install", .timeLimit(.minutes(1)))
     func hungCheck() async throws {
         let rule = RuleBasedRunner()
         rule.on(tool: "false", prefix: ["schedule", "install-wake-schedule", "--dry-run"], stdout: dry)
         rule.on(tool: "false", prefix: ["schedule", "install-wake-schedule"], stdout: "installed")
         rule.on({ url, _ in url.lastPathComponent == "pmset" }) { _, _, _ in
-            try await Task.sleep(for: .seconds(30))
+            await Self.hang(seconds: 120)
+            // Reached only if nothing gave up first: an empty list reads
+            // "doesn't list it", never "couldn't check".
             return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
         }
         let state = AppState(configuration: .testing(scoutDirectory: Self.tempDir(), runner: rule))
-        state.wakeScheduleCheckLimit = .milliseconds(50)
-        let started = Date()
-        await state.installWakeSchedule()
-        #expect(Date().timeIntervalSince(started) < 10)
+        await state.installWakeSchedule(checkLimit: .milliseconds(300))
         #expect(state.wakeScheduleResult?.problem.impact?.contains("couldn't check") == true)
         #expect(rule.calls(to: "pmset") == [["-g", "sched"]])
+        #expect(!state.installingWakeSchedule)
     }
 
     // MARK: 5. a giant log line

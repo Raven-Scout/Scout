@@ -1065,7 +1065,10 @@ final class AppState: ObservableObject {
     /// it (it needs an administrator) the panel can say what to run instead;
     /// after a clean exit `pmset -g sched` (read-only) confirms the rule is
     /// there before the panel says "installed".
-    func installWakeSchedule() async {
+    ///
+    /// `checkLimit` is how long that check may take before the panel says
+    /// Scout couldn't check: `SystemProcessRunner` has no timeout of its own.
+    func installWakeSchedule(checkLimit: Duration = .seconds(5)) async {
         guard !installingWakeSchedule else { return }
         installingWakeSchedule = true
         defer { installingWakeSchedule = false }
@@ -1080,7 +1083,7 @@ final class AppState: ObservableObject {
             var check: ProcessResult?
             if result.exitCode == 0 {
                 let runner = self.runner
-                check = await Self.withinTimeLimit(wakeScheduleCheckLimit) {
+                check = await Self.withinTimeLimit(checkLimit) {
                     try? await runner.run(executable: URL(fileURLWithPath: "/usr/bin/pmset"),
                                           arguments: ["-g", "sched"], environment: [:], workingDirectory: nil)
                 }
@@ -1092,13 +1095,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// How long the `pmset -g sched` check may take before the panel says
-    /// Scout couldn't check. `SystemProcessRunner` has no timeout of its own.
-    var wakeScheduleCheckLimit: Duration = .seconds(5)
-
     /// `operation`'s result, or nil once `limit` passes first. The operation
     /// is cancelled then; a child process it started that ignores that is
     /// left to finish on its own, but nothing waits for it.
+    ///
+    /// Both tasks are detached: under approachable concurrency this function
+    /// runs on its caller's actor, and the timer must not need that actor
+    /// (the main one, for `installWakeSchedule`) free to fire. The caller
+    /// itself still resumes only once its actor is free.
     nonisolated static func withinTimeLimit<T: Sendable>(
         _ limit: Duration, _ operation: @escaping @Sendable () async -> T?
     ) async -> T? {
@@ -1110,11 +1114,11 @@ final class AppState: ObservableObject {
             }
         }
         return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
-            let work = Task {
+            let work = Task.detached {
                 let value = await operation()
                 if first() { cont.resume(returning: value) }
             }
-            Task {
+            Task.detached {
                 try? await Task.sleep(for: limit)
                 if first() {
                     work.cancel()
