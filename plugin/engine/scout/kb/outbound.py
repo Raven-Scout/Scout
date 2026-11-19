@@ -76,7 +76,7 @@ import html
 import os
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,8 +128,11 @@ _MARKER = ALLOW_MARKER
 # Markup that can sit inside a word without showing. _SPANNING may run over line breaks: an
 # HTML comment or tag, and the `](target)` of a markdown link. _MARKUP is inline: emphasis,
 # strike, highlight and code marks, and what decoding entities turned into a comment or tag.
-_SPANNING = re.compile(r"<!--.*?-->|<[^<>]*>|\]\([^()\n]*\)", re.DOTALL)
-_MARKUP = re.compile(r"<!--.*?-->|<[^<>\n]*>|\*\*|__|~~|==|`|\*")
+# A comment's end is found with str.find, not a lazy `.*?`: that scanned to the end of the text
+# for every unclosed `<!--`, quadratic on a note full of them.
+_SPANNING = re.compile(r"<!--|<[^<>]*>|\]\([^()\n]*\)")
+_SPANNING_NO_COMMENT = re.compile(r"<[^<>]*>|\]\([^()\n]*\)")
+_MARKUP = re.compile(r"\*\*|__|~~|==|`|\*")
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
 # Not a letter or digit on either side: `_` and punctuation are boundaries.
@@ -565,6 +568,25 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     return found
 
 
+def _spanning(text: str) -> Iterator[tuple[int, int]]:
+    """``(start, end)`` of each comment, tag and link target in ``text``, in order, in linear time.
+
+    A ``<!--`` runs to the next ``-->``. With no ``-->`` after it, no later comment can
+    close either, so the rest of the text is read for tags and link targets only."""
+    pattern, pos = _SPANNING, 0
+    while (m := pattern.search(text, pos)) is not None:
+        if m.group(0) != "<!--":
+            yield m.start(), m.end()
+            pos = m.end()
+            continue
+        close = text.find("-->", m.end())
+        if close < 0:
+            pattern, pos = _SPANNING_NO_COMMENT, m.start()
+            continue
+        yield m.start(), close + 3
+        pos = close + 3
+
+
 def _demarked(text: str) -> tuple[str, list[tuple[int, int]]]:
     """``text`` without its markup, and for each of its lines the span of ``text``'s lines it came from.
 
@@ -586,15 +608,26 @@ def _demarked(text: str) -> tuple[str, list[tuple[int, int]]]:
                 first = line
             current.append(part)
 
-    for m in _SPANNING.finditer(text):
-        take(text[pos : m.start()])
-        line += m.group(0).count("\n")  # swallowed: the line being built now reaches this far
-        pos = m.end()
+    for start, end in _spanning(text):
+        take(text[pos:start])
+        line += text.count("\n", start, end)  # swallowed: the line being built now reaches this far
+        pos = end
     take(text[pos:])
     lines.append("".join(current))
     spans.append((first, line))
-    cleaned = [_MARKUP.sub("", re.sub(r"[\r\n]", " ", html.unescape(ln))) for ln in lines]
+    cleaned = [_MARKUP.sub("", _without_spans(re.sub(r"[\r\n]", " ", html.unescape(ln)))) for ln in lines]
     return "\n".join(cleaned), spans
+
+
+def _without_spans(line: str) -> str:
+    """``line`` with what :func:`_spanning` finds in it dropped (a comment or tag decoding an entity made)."""
+    out: list[str] = []
+    pos = 0
+    for start, end in _spanning(line):
+        out.append(line[pos:start])
+        pos = end
+    out.append(line[pos:])
+    return "".join(out)
 
 
 def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> list[int]:
