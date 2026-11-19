@@ -417,31 +417,46 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
-def _scheduled_runtimes(*, vault: Path) -> tuple[dict[str, list[str]], list[str]]:
-    """The agent runtimes the schedule uses, each with its slot keys, plus notes (spec 2026-11-13 §8.9).
+def _scheduled_runtimes(*, vault: Path) -> tuple[dict[str, list[str]], list[str], list[str]]:
+    """The agent runtimes the schedule uses, each with its slot keys, plus warnings and notes (spec 2026-11-13 §8.9).
 
     A slot runs on its own ``agent_runtime:``, else ``agent_runtimes.default``, else ``claude-code``
     (``scout.agent_runtimes.resolve``). ``SCOUT_AGENT_RUNTIME`` in this shell is left out: scheduled runs
-    don't inherit it. Claude Code comes first. When the schedule or the config can't be read, the answer is
-    Claude Code alone, so the doctor checks what it checked before the loop; the schedule's own check
-    reports the error.
+    don't inherit it. Claude Code comes first. When the schedule or the config can't be resolved, the answer
+    is Claude Code alone, so the doctor checks what it checked before the loop. A ConfigError (an unknown
+    ``agent_runtime:`` or ``agent_runtimes.default``, or a schedule the engine rejects) is a warning: the
+    same load refuses the run. The schedule's YAML check only parses the file, so it doesn't catch an unknown
+    runtime. Any other failure is a note.
     """
     from scout.agent_runtimes import registry
     from scout.agent_runtimes.resolve import default_runtime, slot_runtimes
+    from scout.errors import ConfigError
 
     try:
         fallback = default_runtime(vault).runtime
         used: dict[str, list[str]] = {}
         for key, runtime in sorted(slot_runtimes(vault).items()):
             used.setdefault(runtime or fallback, []).append(key)
+    except ConfigError as e:
+        return (
+            {registry.BUILTIN_DEFAULT: []},
+            [
+                f"scheduled runs can't resolve their agent runtime ({e}); a run that loads this refuses to start. "
+                "Fix the schedule or scout-config.yaml, then re-check with `scoutctl agent-runtime show`. "
+                "Until then the doctor checked Claude Code only"
+            ],
+            [],
+        )
     except Exception as e:  # noqa: BLE001 - a doctor check never breaks the doctor
-        return {registry.BUILTIN_DEFAULT: []}, [
-            f"could not read which agent runtimes the schedule uses ({e}); checked Claude Code only"
-        ]
+        return (
+            {registry.BUILTIN_DEFAULT: []},
+            [],
+            [f"could not read which agent runtimes the schedule uses ({e}); checked Claude Code only"],
+        )
     if not used:
-        return {fallback: []}, []
+        return {fallback: []}, [], []
     order = sorted(used, key=lambda rid: (rid != registry.BUILTIN_DEFAULT, rid))
-    return {rid: used[rid] for rid in order}, []
+    return {rid: used[rid] for rid in order}, [], []
 
 
 def _slot_list(slots: list[str]) -> str:
@@ -1239,7 +1254,8 @@ def run_doctor(
         warnings.extend(pointer_warnings)
         # The agent CLIs the runners launch, one per runtime the schedule uses (spec 2026-11-13 §8.9).
         # Gated with the other host-runtime checks: they inspect this machine's binaries, not the vault's content.
-        runtimes, runtime_notes = _scheduled_runtimes(vault=vault)
+        runtimes, runtime_warnings, runtime_notes = _scheduled_runtimes(vault=vault)
+        warnings.extend(runtime_warnings)
         notes.extend(runtime_notes)
         for runtime_id, slots in runtimes.items():
             if runtime_id == "claude-code":

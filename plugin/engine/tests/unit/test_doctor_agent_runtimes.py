@@ -127,12 +127,28 @@ def test_the_config_default_runtime_counts(vault: Path, tmp_path: Path) -> None:
     assert [e for e in report.errors if "Dummy CLI" in e]
 
 
-def test_an_unreadable_schedule_falls_back_to_claude(vault: Path, tmp_path: Path) -> None:
-    """A schedule naming an unknown runtime is the schedule check's to report; Claude Code is still checked."""
+def test_an_unknown_scheduled_runtime_is_a_warning(vault: Path, tmp_path: Path) -> None:
+    """An unknown runtime parses as YAML, but the run refuses it: a warning. Claude Code is still checked."""
     _schedule(vault, ("other", "nonesuch"))
     report = _doctor(vault, tmp_path / "home")
     assert CLAUDE_BIN_ERROR in report.errors
-    assert any("checked Claude Code only" in n for n in report.notes)
+    [warning] = [w for w in report.warnings if "can't resolve their agent runtime" in w]
+    assert "'nonesuch'" in warning and "checked Claude Code only" in warning
+    assert not any("checked Claude Code only" in n for n in report.notes)
+
+
+def test_a_schedule_lookup_that_crashes_is_a_note(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anything but a ConfigError is the doctor's own trouble: a note, and Claude Code is still checked."""
+    from scout.agent_runtimes import resolve
+
+    def boom(_vault: Path | None = None) -> dict[str, str | None]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(resolve, "slot_runtimes", boom)
+    report = _doctor(vault, tmp_path / "home")
+    assert CLAUDE_BIN_ERROR in report.errors
+    assert any("boom" in n and "checked Claude Code only" in n for n in report.notes)
+    assert not any("can't resolve their agent runtime" in w for w in report.warnings)
 
 
 @pytest.fixture
