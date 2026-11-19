@@ -329,7 +329,7 @@ def test_apply_governance_patches_and_moves_the_file(repo, env):
     assert (repo / "SKILL.md").read_text() == "skill v1, governed\n"
     assert not (repo / "governance-pending/skip-red.md").exists()
     assert (repo / "governance-pending/applied/skip-red.md").read_text() == _PENDING
-    assert not (repo / ".scout-cache/skip-red.diff").exists()
+    assert list((repo / ".scout-cache").iterdir()) == []  # the temp diff is gone
     assert _git(repo, "diff", "--cached", "--name-only") == ""
     assert _due(repo, env)["apply"] == []
 
@@ -356,7 +356,7 @@ def test_failed_patch_leaves_the_pending_file(repo, env):
     assert exc.value.reason == "patch does not apply"
     assert (repo / "governance-pending/skip-red.md").exists()
     assert not (repo / "governance-pending/applied").exists()
-    assert not (repo / ".scout-cache/skip-red.diff").exists()
+    assert list((repo / ".scout-cache").iterdir()) == []  # the temp diff is gone
     assert (repo / "SKILL.md").read_text() == "something else\n"
 
 
@@ -374,6 +374,48 @@ def test_apply_refuses_a_path_through_a_symlinked_folder(repo, env, tmp_path):
         apply_governance(repo, env, "gov-escape")
     assert exc.value.reason == "path outside the vault"
     assert list(outside.iterdir()) == [] and (folder / "escape.md").exists()
+
+
+def test_apply_refuses_a_symlinked_scout_cache(repo, env, tmp_path):
+    """A run-planted `.scout-cache` link must not carry the diff (or its delete) out of the vault."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "skip-red.diff").write_text("owner's file\n")
+    (repo / ".scout-cache").symlink_to(outside)
+    gov = _pending(repo)
+    _decide(repo, env, "approve", gov)
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(repo, env, gov)
+    assert exc.value.reason == "path outside the vault"
+    assert [p.name for p in outside.iterdir()] == ["skip-red.diff"]
+    assert (outside / "skip-red.diff").read_text() == "owner's file\n"
+    assert (repo / "SKILL.md").read_text() == "skill v1\n" and (repo / "governance-pending/skip-red.md").exists()
+
+
+def test_apply_refuses_a_symlinked_applied_folder(repo, env, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    gov = _pending(repo)
+    (repo / "governance-pending/applied").symlink_to(outside)
+    _decide(repo, env, "approve", gov)
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(repo, env, gov)
+    assert exc.value.reason == "path outside the vault"
+    assert list(outside.iterdir()) == []
+    assert (repo / "governance-pending/skip-red.md").exists() and (repo / "SKILL.md").read_text() == "skill v1\n"
+    assert not (repo / ".scout-cache").exists()  # refused before anything was written
+
+
+def test_discard_refuses_a_symlinked_md(repo, env, tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text(_PENDING)
+    folder = repo / "governance-pending"
+    folder.mkdir()
+    (folder / "skip-red.md").symlink_to(outside)
+    _decide(repo, env, "reject", "gov-skip-red")
+    with pytest.raises(ActionRefused):
+        discard_governance(repo, env, "gov-skip-red")
+    assert (folder / "skip-red.md").is_symlink() and outside.read_text() == _PENDING
 
 
 def test_discard_needs_a_rejection(repo, env):

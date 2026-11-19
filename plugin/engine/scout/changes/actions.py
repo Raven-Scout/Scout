@@ -317,6 +317,18 @@ def _inside(vault: Path, rel: str) -> bool:
     return True
 
 
+def _real_dir_inside(vault: Path, rel: str) -> bool:
+    """``rel`` is absent or a real folder (not a symlink, not a file), and it resolves inside the vault."""
+    path = vault / rel
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        return False
+    try:
+        path.resolve().relative_to(vault.resolve())
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
 def _write_file(target: Path, data: bytes, mode: str) -> None:
     """Atomic: a temp file beside ``target``, then a rename over it (which replaces a symlink, never follows it)."""
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -381,7 +393,9 @@ def _pending_item(vault: Path, env: Mapping[str, str], gov_id: str, want: str, o
     item = next((p for p in read_pending(vault)[0] if p.id == gov_id), None)
     if item is None:
         raise ActionRefused(f"no pending governance change {gov_id!r}")
-    if not _inside(vault, item.path):  # governance-pending/ symlinked out of the vault: never move or delete there
+    md = vault / item.path
+    # governance-pending/ symlinked out of the vault, or the md a link: never move or delete through it.
+    if md.is_symlink() or not _inside(vault, item.path):
         raise ActionRefused("path outside the vault")
     signals, _ = read_signals(vault, env, owner_vault=owner_vault)
     state = decision(signals, gov_id)
@@ -422,16 +436,27 @@ def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_
     from scout.changes.governance import PENDING_DIR
 
     item = _pending_item(vault, env, gov_id, "approved", owner_vault)
-    applied_rel = f"{PENDING_DIR}/{APPLIED_DIR}/{item.slug}.md"
-    if (vault / applied_rel).exists():
+    applied_dir = f"{PENDING_DIR}/{APPLIED_DIR}"
+    applied_rel = f"{applied_dir}/{item.slug}.md"
+    # Both folders are run-writable: a planted symlink must not carry the temp diff or the md out of the vault.
+    if not (
+        _real_dir_inside(vault, CACHE_DIR) and _real_dir_inside(vault, applied_dir) and _inside(vault, applied_rel)
+    ):
+        raise ActionRefused("path outside the vault")
+    if os.path.lexists(vault / applied_rel):
         raise ActionRefused(f"{applied_rel} already exists")
     if not _at_top(vault):
         raise ActionRefused("git-unreadable")
     cache = vault / CACHE_DIR
-    diff_file = cache / f"{item.slug}.diff"
+    cache.mkdir(parents=True, exist_ok=True)
+    if not _real_dir_inside(vault, CACHE_DIR):
+        raise ActionRefused("path outside the vault")
+    # A fresh file (O_EXCL), never a pre-existing name a run could have linked elsewhere; this exact file is removed.
+    fd, tmp = tempfile.mkstemp(prefix=f"{item.slug}.", suffix=".diff", dir=cache)
+    diff_file = Path(tmp)
     try:
-        cache.mkdir(parents=True, exist_ok=True)
-        diff_file.write_text(item.diff, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(item.diff)
         paths = _patched_paths(vault, diff_file)
         if paths is None:
             raise ActionRefused("patch does not apply")
@@ -441,7 +466,7 @@ def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_
             raise ActionRefused("patch does not apply")
     finally:
         diff_file.unlink(missing_ok=True)
-    (vault / applied_rel).parent.mkdir(parents=True, exist_ok=True)
+    (vault / applied_dir).mkdir(parents=True, exist_ok=True)
     os.rename(vault / item.path, vault / applied_rel)
     return sorted({*paths, item.path, applied_rel})
 
