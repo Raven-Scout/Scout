@@ -47,15 +47,11 @@ struct TaskLinksView: View {
                 .font(DS.font(.caption2))
                 .foregroundStyle(iconColor(for: link))
             Text(label(for: link))
-                .font(DS.font(.caption, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
             Image(systemName: external ? "arrow.up.right" : "arrow.right")
                 .font(DS.font(.micro))
                 .foregroundStyle(DS.Ink.p4)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 22)
-        .background(EditorialChipBackground())
+        .dsTag()
     }
 
     private func iconName(for link: TaskDeepLink) -> String {

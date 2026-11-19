@@ -124,7 +124,7 @@ struct ControlCenterView: View {
             RunDetailView(run: run)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 12)  // ds-guard: not a card — the side detail panel, which floats with a shadow
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                 .shadow(color: DS.Neumorphic.shadow.opacity(0.4), radius: 8, x: -2, y: 4)

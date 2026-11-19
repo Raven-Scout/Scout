@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import events, paths, safe_write
 from scout.scripts.engine_pointer import EnginePointer
 from scout.scripts.self_update import ReleaseStatus, UpdateStatus, _semver_tuple, release_status
 from scout.update_outcomes import UpdateOutcome
@@ -471,6 +472,12 @@ def _finish(deps: Deps, row: UpdateOutcome, prior: list[UpdateOutcome], *, dry_r
 LOCK_NAME = ".scout-cache/self-update.lock"
 
 
+def _on_unsafe(log_dir: Path) -> safe_write.OnUnsafe:
+    """A link a run put at the self-update lock or log is removed and made again, never followed, and recorded:
+    refusing would stop every update."""
+    return events.unsafe_file_recorder(log_dir, kind="self_update.unsafe_file_replaced", source="self_update")
+
+
 @contextmanager
 def run_lock(vault: Path) -> Iterator[bool]:
     """Hold an exclusive, non-blocking lock for one attempt; yields False when another holds it.
@@ -481,7 +488,7 @@ def run_lock(vault: Path) -> Iterator[bool]:
     """
     path = vault / LOCK_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
+    with safe_write.open_lock(path, on_unsafe=_on_unsafe(paths.logs_dir(vault))) as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -505,7 +512,7 @@ def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any]
     an argv that runs Python must come from ``scout._spawn.python_module_argv``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_path.parent)) as log_fh:
         proc = popen(
             argv,
             env=os.environ.copy(),

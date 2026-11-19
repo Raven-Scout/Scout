@@ -245,8 +245,12 @@ def test_an_index_entry_with_a_bad_timestamp_is_a_miss(vault: Path) -> None:
 
 
 def test_an_unwritable_cache_dir_still_reports(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(*_args: Any, **_kwargs: Any) -> None:
-        raise OSError("read-only")
+    real_replace = os.replace
+
+    def fail(src: Any, dst: Any, **kwargs: Any) -> None:
+        if str(dst).endswith(_index(vault).name):  # only the index: the report itself still lands
+            raise OSError("read-only")
+        real_replace(src, dst, **kwargs)
 
     monkeypatch.setattr(chr_mod.os, "replace", fail)
     assert _outputs(vault) == _golden()

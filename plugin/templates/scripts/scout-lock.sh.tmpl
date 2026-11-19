@@ -34,6 +34,20 @@
 #                                   are different work).
 #   SCOUT_LEASE_RENEW_SECS=300      how often the keepalive renews the lease
 
+# Keep only absolute PATH entries. The runner already did, before sourcing this; it is repeated
+# here for anything else that sources the file. The functions below call python3, date, ps and
+# stat by name, and a manual run (the scout-briefing skill, the app's Run now) inherits the user's
+# PATH with the vault as cwd: a relative entry (`.`, `./bin`, an empty one) would let one planted
+# there run unsandboxed. A leading `~` becomes $HOME, as bash's own PATH search reads it.
+_scout_safe_path=""
+IFS=: read -r -a _scout_path_entries <<<"${PATH:-}" || true
+for _scout_path_entry in ${_scout_path_entries[@]+"${_scout_path_entries[@]}"}; do
+    case "$_scout_path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || _scout_path_entry="$HOME${_scout_path_entry#"~"}" ;; esac
+    case "$_scout_path_entry" in /*) _scout_safe_path="${_scout_safe_path:+$_scout_safe_path:}$_scout_path_entry" ;; esac
+done
+export PATH="${_scout_safe_path:-/usr/bin:/bin}"
+unset _scout_safe_path _scout_path_entries _scout_path_entry
+
 # scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
 # custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this file
 # follows its protocol (#331):

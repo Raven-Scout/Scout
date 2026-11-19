@@ -50,11 +50,7 @@ struct MeetingsTableView: View {
                 .foregroundStyle(DS.Ink.p1)
         } else if isTag {
             Text(raw)
-                .font(DS.font(.caption, .mono, weight: .medium))
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(EditorialChipBackground())
+                .dsTag(.mono)
         } else {
             InlineMarkdownText(raw)
                 .font(DS.font(.body))

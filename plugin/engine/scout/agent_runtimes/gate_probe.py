@@ -48,6 +48,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.agent_runtimes.fake_anthropic import FakeAnthropic, ScriptedTurn
 
 # The kb-read-gate's mark (scout.hooks.kb_read_gate.MARK); a test pins that the two agree.
@@ -575,9 +576,7 @@ def _write_cache(vault: Path, res: ProbeResult) -> None:
     path = vault / CACHE_REL
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(res.to_json(), indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        safe_write.atomic_write_text(path, json.dumps(res.to_json(), indent=2) + "\n")
     except OSError:
         pass  # a cache we can't write only costs a re-probe next time
 

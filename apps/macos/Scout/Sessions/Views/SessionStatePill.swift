@@ -67,14 +67,16 @@ struct SessionStatePill: View {
     var isOpen = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            SessionStateDot(state: state, isOpen: isOpen)
-            Text(state.label)
-                .font(DS.font(.caption, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
+        DSPill(state.label, tone: Self.tone(state), dot: SessionStateStyle.color(state, isOpen: isOpen))
+            .accessibilityLabel("State: \(state.label)")
+    }
+
+    nonisolated static func tone(_ state: AgentSessionState) -> DS.PillTone {
+        switch state {
+        case .needsYou: return .attention
+        case .running:  return .info
+        case .waiting:  return .accent
+        case .parked, .stale, .done: return .neutral
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(SessionStateStyle.color(state, isOpen: isOpen).opacity(0.14)))
     }
 }

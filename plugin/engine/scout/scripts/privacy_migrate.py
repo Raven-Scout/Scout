@@ -36,7 +36,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -47,7 +46,7 @@ from typing import Any, Literal
 
 import yaml
 
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.frontmatter import FENCE
 from scout.kb.lint_config import glob_match
 from scout.kb.outbound import PrivateTerms, find_mentions, private_terms
@@ -144,15 +143,8 @@ def odd_visibility_notes(vault: Path, *, persist: bool = True) -> list[str]:
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        shutil.copymode(path, tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    """Replace ``path`` whole, keeping a regular file's mode; a symlink there is replaced, never followed."""
+    safe_write.atomic_write_bytes(path, data)
 
 
 def set_private(vault: Path, path: str | Path) -> tuple[Outcome, str]:
@@ -406,10 +398,7 @@ def add_local_only(vault: Path, globs: Iterable[str]) -> list[str]:
         result = _dump_keeping_comments(text, want)
     if _load(result) != want:
         raise RuntimeError("could not write scout-config.yaml → privacy.local_only_add")
-    if config.exists():
-        _atomic_write_bytes(config, result.encode("utf-8"))
-    else:
-        config.write_text(result, encoding="utf-8")
+    _atomic_write_bytes(config, result.encode("utf-8"))  # a symlink there, dangling or not, is replaced
     return new
 
 

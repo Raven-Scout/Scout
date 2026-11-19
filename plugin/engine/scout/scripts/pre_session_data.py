@@ -27,6 +27,7 @@ takes out.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -38,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from scout import config as scout_config
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.privacy import FULL_READERS, reads_any
 from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
@@ -169,17 +170,9 @@ def _load_kb_dates_cache(cache_path: Path) -> dict[str, _KbEntry]:
 
 def _write_kb_dates_cache(cache_path: Path, entries: dict[str, _KbEntry]) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cache_path.with_suffix(".json.tmp")
     payload = {rel: asdict(entry) for rel, entry in entries.items()}
-    try:
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp, cache_path)
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(cache_path, json.dumps(payload))
 
 
 def gather_kb_file_dates(
@@ -524,16 +517,8 @@ def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
 def write_context(ctx: SessionContext, output_path: Path) -> None:
     """Atomically write the gathered context as JSON."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output_path.with_suffix(".json.tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(asdict(ctx), f, indent=2, default=str)
-        os.replace(tmp, output_path)
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(output_path, json.dumps(asdict(ctx), indent=2, default=str))
 
 
 def run(session_type: str = "unknown", *, data_dir: Path | None = None) -> Path:
