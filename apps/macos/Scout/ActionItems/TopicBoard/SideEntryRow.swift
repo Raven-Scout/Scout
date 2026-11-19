@@ -23,7 +23,7 @@ struct SideEntryRow: View {
                 }
                 if let url = entry.url {
                     Button(entry.text) { NSWorkspace.shared.open(url) }
-                        .buttonStyle(.plainHit)
+                        .buttonStyle(.plainHit) // ds-guard: hit area — the entry's own text opens its link
                         .help(url.absoluteString)
                 } else {
                     Text(entry.text)

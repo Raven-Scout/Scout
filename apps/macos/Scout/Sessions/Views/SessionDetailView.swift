@@ -87,7 +87,7 @@ struct SessionDetailView: View {
     private func header(_ session: AgentSession, index: SessionIndex) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.displayTitle)
-                .font(DS.font(.title, .serif, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .textSelection(.enabled)
             HStack(spacing: 8) {
@@ -132,7 +132,8 @@ struct SessionDetailView: View {
     }
 
     private func actionButtons(_ session: AgentSession, index: SessionIndex) -> some View {
-        HStack(spacing: 8) {
+        // Wraps rather than widening the detail pane at the narrow window.
+        FlowLayout(spacing: 8, lineSpacing: 6) {
             Button {
                 if session.isOpen { confirmingResume = true } else { resume(session) }
             } label: {
@@ -184,8 +185,7 @@ struct SessionDetailView: View {
             }
             .help("Copy a summary of this session to paste into another one")
         }
-        .controlSize(.small)
-        .font(DS.font(.label))
+        .buttonStyle(.ds(.secondary, size: .small))
     }
 
     private func prRow(_ pr: SessionPR) -> some View {
@@ -262,7 +262,7 @@ struct SessionDetailView: View {
                 .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text(index == nil ? "No session index yet" : "Pick a session")
-                .font(DS.font(.title, .serif, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             if let index {
                 let counts = SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now)

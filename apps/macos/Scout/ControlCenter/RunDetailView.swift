@@ -157,6 +157,7 @@ struct RunDetailView: View {
                 }
                 Spacer()
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             if let reason = rerunUnavailableReason {
                 Text(reason)
                     .font(DS.font(.caption))

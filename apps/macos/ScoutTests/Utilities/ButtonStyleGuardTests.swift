@@ -136,23 +136,119 @@ struct ButtonStyleGuardTests {
         "Utilities/LaunchFailureAlert.swift": "an alert",
         "Utilities/PlainLanguage/Glossary.swift": "the Help menu item",
         "PerFileItems/Views/ItemPriorityPill.swift": "the priority menu's items",
+        "Help/HelpCommands.swift": "Help menu commands",
     ]
 
     static let swiftUIButton = try! NSRegularExpression(pattern: #"\bButton\s*[\(\{]"#)
+    /// `Button("…")` or `Button(title)`: a button with a text title.
+    static let titledStart = try! NSRegularExpression(pattern: #"\bButton\s*\(\s*(?!action:|role:)[^)\{]"#)
+    /// Blocks whose buttons stay system buttons: menus, alert and dialog
+    /// actions, toolbars, and hidden shortcut carriers in a `.background`.
+    /// A helper that builds menu items says so with `// ds-guard: menu items`.
+    static let systemContext = try! NSRegularExpression(
+        pattern: #"\bMenu\b|\.alert\(|confirmationDialog\(|contextMenu|[mM]enuItems|CommandMenu|CommandGroup|ds-guard: menu|\.toolbar\b|ToolbarItem|\.background\s*\{"#)
 
-    @Test("sheets and windows don't fall back to system push buttons")
-    func noSystemPushButtons() throws {
-        var hits: [String] = []
-        for (file, lines) in try Self.sources() where Self.systemButtonFiles[file] == nil {
-            let code = lines.filter { !Self.isComment($0) }
-            guard code.contains(where: { Self.matches(Self.swiftUIButton, $0) }) else { continue }
-            if !code.contains(where: { $0.contains(".buttonStyle(") }) { hits.append(file) }
+    static func indent(_ s: String) -> Int { s.prefix(while: { $0 == " " }).count }
+
+    /// The blocks around line `i`, innermost first, as (opening line,
+    /// closing line).
+    static func enclosingBlocks(_ lines: [String], _ i: Int, levels: Int) -> [(Int, Int)] {
+        var openers: [Int] = []
+        var depth = 0
+        var j = i - 1
+        while j >= max(0, i - 80) && openers.count < levels {
+            for ch in lines[j].reversed() {
+                if ch == "}" { depth += 1 } else if ch == "{" { if depth == 0 { openers.append(j) } else { depth -= 1 } }
+            }
+            j -= 1
         }
-        #expect(hits.isEmpty, """
-            these files draw buttons with no style, so they render as system push buttons — give each a DS role \
-            (.dsPrimary for the sheet's default action, .dsSecondary beside it):
-            \(hits.joined(separator: "\n"))
+        return openers.compactMap { o in
+            var d = 0
+            let brace = lines[o].lastIndex(of: "{") ?? lines[o].startIndex
+            for k in o..<min(lines.count, o + 200) {
+                let text = k == o ? String(lines[o][brace...]) : lines[k]
+                for ch in text { if ch == "{" { d += 1 } else if ch == "}" { d -= 1 } }
+                if d <= 0 && k > o { return (o, k) }
+            }
+            return nil
+        }
+    }
+
+    /// The `.buttonStyle` line that styles the button starting at line `i`:
+    /// in its own modifier chain, or on one of the two containers around it.
+    /// "system" when the button sits in a menu, alert, dialog or toolbar.
+    static func governingStyle(_ lines: [String], _ i: Int) -> String? {
+        for (o, _) in enclosingBlocks(lines, i, levels: 3) {
+            let context = lines[max(0, o - 5)...o].joined(separator: "\n")
+            if matches(systemContext, context) { return "system" }
+        }
+        if lines[i].contains(".buttonStyle(") { return lines[i] }
+        let ind = indent(lines[i])
+        for j in (i + 1)..<min(lines.count, i + 40) {
+            let t = lines[j].trimmingCharacters(in: .whitespaces)
+            if t.isEmpty || t.hasPrefix("//") { continue }
+            let jind = indent(lines[j])
+            if jind <= ind && !(t.hasPrefix(".") || t.hasPrefix("}")) { break }
+            if lines[j].contains(".buttonStyle(")
+                && ((jind == ind && (t.hasPrefix(".") || t.hasPrefix("}"))) || (jind == ind + 4 && t.hasPrefix("."))) {
+                return lines[j]
+            }
+        }
+        for (_, close) in enclosingBlocks(lines, i, levels: 2) {
+            if let hit = lines[close..<min(lines.count, close + 4)].first(where: { $0.contains(".buttonStyle(") }) {
+                return hit
+            }
+        }
+        return nil
+    }
+
+    /// Every button gets a role: no system push buttons outside menus and
+    /// alerts, and no titled action on `.plainHit`/`.plain`, which reads as
+    /// plain text, unless it's marked as a hit area. Checked per button, so
+    /// one styled button doesn't excuse the rest of its file.
+    @Test("every button outside menus and alerts has a DS role")
+    func everyButtonHasARole() throws {
+        var unstyled: [String] = []
+        var plainTitled: [String] = []
+        for (file, lines) in try Self.sources() where Self.systemButtonFiles[file] == nil {
+            for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(Self.swiftUIButton, line) {
+                // Declarations, hidden shortcut carriers and role buttons (alert actions).
+                if line.range(of: #"\b(struct|func|class|enum)\b|ButtonStyle"#, options: .regularExpression) != nil
+                    || line.contains(#"Button("")"#) || line.contains("role:") { continue }
+                let where_ = "\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))"
+                switch Self.governingStyle(lines, i) {
+                case "system"?: continue
+                case nil: unstyled.append(where_)
+                case let style?:
+                    if Self.matches(Self.plainStyle, style) && !style.contains(Self.hitAreaMarker)
+                        && Self.matches(Self.titledStart, line) {
+                        plainTitled.append(where_)
+                    }
+                }
+            }
+        }
+        #expect(unstyled.isEmpty, """
+            these buttons have no style, so they render as system push buttons — give each a DS role \
+            (.dsPrimary for a sheet's default action, .dsSecondary beside it), on the button or its container:
+            \(unstyled.joined(separator: "\n"))
             """)
+        #expect(plainTitled.isEmpty, """
+            a titled action on .plainHit reads as plain text — give it a DS role, or mark a real hit area \
+            "// ds-guard: hit area":
+            \(plainTitled.joined(separator: "\n"))
+            """)
+    }
+
+    @Test("the per-button check sees a button's own style, its container's, and menus")
+    func perButtonCheckSamples() {
+        let own = ["Button(\"Save\") { save() }", "    .buttonStyle(.dsPrimary)"]
+        #expect(Self.governingStyle(own, 0)?.contains(".dsPrimary") == true)
+        let container = ["HStack {", "    Button(\"A\") { }", "    Button(\"B\") { }", "}", ".buttonStyle(.dsSecondary)"]
+        #expect(Self.governingStyle(container, 1)?.contains(".dsSecondary") == true)
+        let bare = ["VStack {", "    Button(\"A\") { }", "    Text(\"x\")", "}", ".padding()"]
+        #expect(Self.governingStyle(bare, 1) == nil)
+        let menu = ["Menu {", "    Button(\"A\") { }", "} label: {", "    Text(\"More\")", "}"]
+        #expect(Self.governingStyle(menu, 1) == "system")
     }
 
     @Test("the allowlist names only files that exist")

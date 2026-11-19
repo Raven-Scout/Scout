@@ -56,15 +56,14 @@ struct RunProtectionSection: View {
             SettingsRow(title: "Turn off write protection",
                         help: "For working around a problem only. You'll be asked to confirm.") {
                 Button("Turn off…") { confirmingTurnOff = true }
-                    .buttonStyle(.dsSecondary)
+                    .buttonStyle(.dsDestructive)
                     .disabled(service.work != nil)
                     .accessibilityHint("Asks for confirmation before turning write protection off for scheduled runs")
             }
         } else if model.offersTurnOn {
             SettingsRow(title: "Turn write protection back on", help: "Recommended. Takes effect from the next scheduled run.") {
                 Button(service.work == .turningOn ? "Working…" : "Turn on") { Task { await service.turnSandboxOn() } }
-                    .buttonStyle(.plainHit)
-                    .font(DS.font(.label))
+                    .buttonStyle(.dsPrimary)
                     .disabled(service.work != nil)
             }
         }
@@ -74,8 +73,7 @@ struct RunProtectionSection: View {
         Button([.checking, .checkingProtection].contains(service.work) ? "Checking…" : "Check now") {
             Task { await service.checkWriteProtection() }
         }
-            .buttonStyle(.plainHit)
-            .font(DS.font(.label))
+            .buttonStyle(.dsSecondary)
             .disabled(service.work != nil)
     }
 
@@ -105,8 +103,7 @@ struct RunProtectionSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let action = problem.action {
                     Button(action.buttonTitle) { perform(action) }
-                        .buttonStyle(.plainHit)
-                        .font(DS.font(.label))
+                        .buttonStyle(.dsSecondary)
                         .disabled(service.work != nil)
                 }
             }

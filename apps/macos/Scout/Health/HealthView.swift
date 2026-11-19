@@ -56,7 +56,7 @@ struct HealthView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text("Health")
-                    .font(DS.font(.display, .serif, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
@@ -317,8 +317,7 @@ struct EngineIssueRow: View {
                         busy = false
                     }
                 }
-                .buttonStyle(.plainHit)
-                .font(DS.font(.label))
+                .buttonStyle(.ds(.secondary, size: .small))
                 .disabled(busy)
                 .help(isReviewed
                       ? "Count this warning again."

@@ -331,7 +331,7 @@ struct KBEditorView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(DS.symbol(28)).foregroundStyle(DS.Status.warn)
             Text("Couldn't read \(node.name)")
-                .font(DS.font(.title, .serif, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .dsFont(.title, .serif, weight: .medium).foregroundStyle(DS.Ink.p2)
             Text("It may not be UTF-8 text, or it may be unavailable right now. Scout won't edit it until it can read it.")
                 .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
@@ -748,7 +748,7 @@ struct KBEditorView: View {
                 && KBLinkRewrite.newNameCollides($0, oldPath: node.relativePath, index: service.index)
         } == true
         return VStack(alignment: .leading, spacing: 14) {
-            Text("Rename note").font(DS.font(.headline, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text("Rename note").dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
             TextField("New name", text: $renameText)
                 .accessibilityLabel("New name")
                 .textFieldStyle(.roundedBorder).font(DS.font(.body))
@@ -796,8 +796,8 @@ struct KBEditorView: View {
             HStack {
                 if isRenaming { ProgressView().controlSize(.small).accessibilityLabel("Renaming") }
                 Spacer()
-                Button("Cancel") { showRename = false }.keyboardShortcut(.cancelAction)
-                Button("Rename") { performRename() }.keyboardShortcut(.defaultAction)
+                Button("Cancel") { showRename = false }.buttonStyle(.dsSecondary).keyboardShortcut(.cancelAction)
+                Button("Rename") { performRename() }.buttonStyle(.dsPrimary).keyboardShortcut(.defaultAction)
                     .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty || isRenaming
                               || nameProblem != nil)
             }

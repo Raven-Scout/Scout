@@ -89,7 +89,7 @@ struct EngineSettingsSection: View {
             if let action = model.upgradeAction, let onUpdate {
                 SettingsRow(title: action.rowTitle, help: upgradeHelp(action)) {
                     Button(isUpdating ? "Working…" : action.buttonTitle) { onUpdate() }
-                        .buttonStyle(.plainHit)
+                        .buttonStyle(.dsPrimary)
                         .disabled(isUpdating)
                 }
             }

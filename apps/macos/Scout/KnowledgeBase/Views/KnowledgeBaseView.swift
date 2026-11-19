@@ -190,7 +190,7 @@ struct KnowledgeBaseView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("Knowledge Base")
-                    .font(DS.font(.headline, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
                     .glossaryHelp(.knowledgeBase)
                 Spacer()
                 if selectedPath != nil {
@@ -347,7 +347,7 @@ struct KnowledgeBaseView: View {
     private func emptyState(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
             Image(systemName: icon).font(DS.symbol(30)).foregroundStyle(DS.Ink.p4)
-            Text(title).font(DS.font(.headline, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p2)
+            Text(title).dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p2)
             Text(detail).font(DS.font(.label)).foregroundStyle(DS.Ink.p4)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
         }
@@ -494,7 +494,7 @@ struct KBNewFileSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New note").font(DS.font(.headline, .serif, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text("New note").dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("FOLDER").font(DS.font(.caption2, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
@@ -524,8 +524,8 @@ struct KBNewFileSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Create") { create() }.keyboardShortcut(.defaultAction)
+                Button("Cancel") { dismiss() }.buttonStyle(.dsSecondary).keyboardShortcut(.cancelAction)
+                Button("Create") { create() }.buttonStyle(.dsPrimary).keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
                               || KnowledgeBaseFileWriter.noteNameProblem(name) != nil)
             }

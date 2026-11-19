@@ -57,8 +57,7 @@ struct AgentCopiesSection: View {
 
     private var refreshButton: some View {
         Button(service.work == .checking ? "Checking…" : "Refresh") { Task { await service.refresh() } }
-            .buttonStyle(.plainHit)
-            .font(DS.font(.label))
+            .buttonStyle(.dsSecondary)
             .disabled(service.work != nil)
     }
 
@@ -73,8 +72,7 @@ struct AgentCopiesSection: View {
                     Button(service.work == .previewing(row.id) ? "Previewing…" : "Preview") {
                         Task { await service.preview(row.id) }
                     }
-                    .buttonStyle(.plainHit)
-                    .font(DS.font(.label))
+                    .buttonStyle(.ds(.secondary, size: .small))
                     .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Shows what a sync would put in \(row.id)'s copy. Changes nothing.")
                 }
@@ -82,8 +80,7 @@ struct AgentCopiesSection: View {
                     Button(service.work == .syncing(row.id) ? "Syncing…" : "Sync now") {
                         Task { await service.sync(row.id) }
                     }
-                    .buttonStyle(.plainHit)
-                    .font(DS.font(.label))
+                    .buttonStyle(.ds(.secondary, size: .small))
                     .disabled(service.work != nil || service.stale)
                     .accessibilityHint("Pushes a new copy to \(row.id)'s mirror if the vault changed what it may see.")
                 }

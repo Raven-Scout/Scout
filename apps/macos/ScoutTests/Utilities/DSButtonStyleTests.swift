@@ -43,9 +43,10 @@ struct DSButtonStyleTests {
         #expect(DS.buttonColors(.quiet, enabled: false).label.name == DS.Palette.inkP4.name)
     }
 
-    @Test("disabled looks the same for every chromed role, and unlike any enabled role")
+    @Test("disabled reads one way for every role, and unlike any enabled role")
     func disabledIsOneLook() {
-        let disabled = DS.ButtonRole.allCases.filter { $0 != .link }.map { DS.buttonColors($0, enabled: false) }
+        // One label colour for every role; one well behind every role that has chrome.
+        let disabled = DS.ButtonRole.allCases.map { DS.buttonColors($0, enabled: false) }
         #expect(Set(disabled.map(\.label.name)).count == 1)
         #expect(Set(disabled.compactMap { $0.fill?.name }).count == 1)
         for role in DS.ButtonRole.allCases {

@@ -147,7 +147,7 @@ struct LaunchClaudeMenu: View {
     }
 
     @ViewBuilder
-    private func sessionItem(_ session: String) -> some View {
+    private func sessionItem(_ session: String) -> some View { // ds-guard: menu items
         switch SessionReference(session) {
         case .cloud(let url):
             Button {

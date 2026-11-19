@@ -127,11 +127,8 @@ struct SnoozePopoverView: View {
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.dsQuiet)
-                // Matches the unstyled "Send" button in
-                // CommentComposerView — Alex's UI pass (eb88094) targeted
-                // toggles/segmented controls, leaving primary-action buttons
-                // on the system style. Stay consistent with that.
                 Button("Snooze") { commitCustom() }
+                    .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(submitting || customDate < minimumCustomDate)
             }
