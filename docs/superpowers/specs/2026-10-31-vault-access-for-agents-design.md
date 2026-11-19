@@ -1099,6 +1099,35 @@ anything, becomes vault content.
 **For the owner to decide:** whether an accepted observation should ever reach
 the accepting agent's own mirror. The draft says no, for any delegate.
 
+**After the coordinator's review of this plan (2026-11-19).** These conditions
+were added, and V4b1 builds them in:
+
+- **The sync never makes a run skip.** It pulls without the session lock (the
+  inbox lock is enough), and holds the session lock only to commit and apply,
+  starting no new work after 60 seconds. A runner that fires meanwhile waits
+  (`SCOUT_LOCK_WAIT_SECS`, 30 minutes) and then runs. The tick doesn't start
+  a sync within 5 minutes before a slot's time.
+- **The Agnes lease is the Agnes sub-coordinator's to settle.** Until then, an
+  Agnes-linked vault pulls but commits and applies nothing.
+- **What accepting means (V4b2).** Accepting writes agent text into the vault:
+  a comment into the daily file, an observation into
+  `knowledge-base/from-agents/`. After that, runs **will** read it. That is
+  acceptable only because the owner reviewed it, and it is the one way agent
+  text reaches a run. So:
+  - accept re-runs the same text rules as `parse` (no directive marker,
+    comment markers, task checkboxes, links or markup, and no format,
+    surrogate, line-separator or invisible characters), since it writes the
+    exact stored text;
+  - the owner is shown the text with any such character made visible before
+    accepting.
+- **The copies are kept from runs at three layers:** the read hook, the write
+  hook, and, on macOS, the run's sandbox, which denies reads
+  (`file-read-data`) and writes under `.scout-inbox/agents/`. Elsewhere the
+  hooks are the only layer.
+- **What V4b1 doesn't build.** `delegate status --json` gains its inbox data
+  in V4b3, with the app card that reads it, in one commit with its contract
+  fixture and app copy.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
