@@ -96,7 +96,7 @@ struct DoctorView: View {
                         groupView(group)
                     }
                     if presentation.groups.isEmpty && !running {
-                        Text("Nothing to report.").font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
+                        Text("Nothing to report.").font(DS.font(.body)).foregroundStyle(DS.Ink.p3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -115,9 +115,9 @@ struct DoctorView: View {
             Circle().fill(color(presentation.tone)).frame(width: 10, height: 10).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(running ? "Running doctor…" : presentation.headline)
-                    .font(DS.sans(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .font(DS.font(.headline, weight: .semibold)).foregroundStyle(DS.Ink.p1)
                 Text(health.lastChecked.map { "Checked \($0.formatted(date: .omitted, time: .shortened))" } ?? "Not checked yet")
-                    .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
             }
             .accessibilityElement(children: .combine)
             Spacer()
@@ -141,13 +141,13 @@ struct DoctorView: View {
     private func groupView(_ group: DoctorPresentation.Group) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(group.title.uppercased())
-                .font(DS.sans(11, weight: .semibold)).foregroundStyle(color(group.tone))
+                .font(DS.font(.caption, weight: .semibold)).foregroundStyle(color(group.tone))
                 .accessibilityAddTraits(.isHeader)
             ForEach(Array(group.items.enumerated()), id: \.offset) { _, item in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.text).font(DS.sans(13)).foregroundStyle(DS.Ink.p1).textSelection(.enabled)
+                    Text(item.text).font(DS.font(.body)).foregroundStyle(DS.Ink.p1).textSelection(.enabled)
                     if let fix = item.fix {
-                        Text("How to fix: \(fix)").font(DS.sans(12)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
+                        Text("How to fix: \(fix)").font(DS.font(.label)).foregroundStyle(DS.Ink.p2).textSelection(.enabled)
                     }
                     if !item.files.isEmpty {
                         IssueFilesDisclosure(files: item.files)

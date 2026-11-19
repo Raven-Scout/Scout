@@ -60,7 +60,7 @@ struct ActionItemsDisplayMenu: View {
             }
         } label: {
             Label("View", systemImage: "slider.horizontal.3")
-                .font(DS.sans(11.5, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

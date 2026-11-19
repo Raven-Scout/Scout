@@ -156,7 +156,7 @@ struct TroubleshootingRow: View {
                 Button("Export Diagnostics…") { openWindow(id: HelpWindow.diagnostics) }
             }
             .buttonStyle(.plainHit)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
         }
     }
 }

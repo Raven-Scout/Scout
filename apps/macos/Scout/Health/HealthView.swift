@@ -56,26 +56,26 @@ struct HealthView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text("Health")
-                    .font(DS.serif(28, weight: .medium))
+                    .font(DS.font(.display, .serif, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
                 if let checked = ledgerService.lastChecked {
                     Text("Checked \(checked.formatted(date: .omitted, time: .shortened))")
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .foregroundStyle(DS.Ink.p3)
                 }
                 Button("Check now") { Task { await ledgerService.refresh() } }
                     .buttonStyle(.plainHit)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
             }
             if ledgerService.ledger != nil {
                 HStack(spacing: 8) {
                     Circle().fill(color(for: model.severity)).frame(width: 8, height: 8)
                         .accessibilityHidden(true)
-                    Text(model.headline).font(DS.sans(14, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                    Text(model.headline).font(DS.font(.headline, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 }
-                Text(model.summary).font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
+                Text(model.summary).font(DS.font(.body)).foregroundStyle(DS.Ink.p3)
             }
         }
         .padding(.bottom, 6)
@@ -88,7 +88,7 @@ struct HealthView: View {
     private func loaded(_ model: HealthPanelModel) -> some View {
         if model.groups.isEmpty && model.engineIssues.isEmpty {
             Text("Nothing needs fixing.")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
         }
         ForEach(model.groups) { group in
@@ -110,14 +110,14 @@ struct HealthView: View {
             DisclosureGroup(isExpanded: $reviewedExpanded) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("You looked at these and marked them reviewed. Each comes back on its own if what it's about changes.")
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                     ForEach(model.reviewedIssues) { EngineIssueRow(issue: $0, setReviewed: setReviewed) }
                 }
                 .padding(.top, 6)
             } label: {
                 Text("Reviewed (\(model.reviewedIssues.count))")
-                    .font(DS.sans(13, weight: .medium))
+                    .font(DS.font(.body, weight: .medium))
                     .foregroundStyle(DS.Ink.p2)
             }
         }
@@ -125,7 +125,7 @@ struct HealthView: View {
             DisclosureGroup(isExpanded: $everythingElseExpanded) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(model.everythingElse.enumerated()), id: \.offset) { _, note in
-                        Text(note).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                        Text(note).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
@@ -133,14 +133,14 @@ struct HealthView: View {
                 .padding(.top, 6)
             } label: {
                 Text("Everything else (\(model.everythingElse.count))")
-                    .font(DS.sans(13, weight: .medium))
+                    .font(DS.font(.body, weight: .medium))
                     .foregroundStyle(DS.Ink.p2)
             }
         }
         HStack(spacing: 10) {
             Text("Write protection and privacy checks are set in Settings ▸ Engine.")
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
-            Button("Open Settings", action: openSettings).buttonStyle(.plainHit).font(DS.sans(12))
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
+            Button("Open Settings", action: openSettings).buttonStyle(.plainHit).font(DS.font(.label))
         }
         runsSection(model)
     }
@@ -158,14 +158,14 @@ struct HealthView: View {
             }
             if model.runs.isEmpty {
                 Text(filter == .all ? "No scheduled runs in the last two weeks." : "No runs need attention.")
-                    .font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.body)).foregroundStyle(DS.Ink.p3)
             }
             ForEach(model.runs) { line in
                 RunLedgerRow(line: line, logsDirectory: logsDirectory)
                 Rectangle().fill(DS.Rule.soft).frame(height: 0.5)
             }
             if ledgerService.ledger?.truncated == true {
-                Text("Older runs aren't shown.").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+                Text("Older runs aren't shown.").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
             }
         }
     }
@@ -179,7 +179,7 @@ struct HealthView: View {
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(DS.sans(11, weight: .medium))
+            .font(DS.font(.caption, weight: .medium))
             .tracking(0.08 * 11)
             .foregroundStyle(DS.Ink.p3)
             .accessibilityAddTraits(.isHeader)
@@ -187,8 +187,8 @@ struct HealthView: View {
 
     private func notice(_ message: String, buttonTitle: String, action: @escaping () -> Void) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(message).font(DS.sans(13)).foregroundStyle(DS.Ink.p2)
-            Button(buttonTitle, action: action).buttonStyle(.plainHit).font(DS.sans(13))
+            Text(message).font(DS.font(.body)).foregroundStyle(DS.Ink.p2)
+            Button(buttonTitle, action: action).buttonStyle(.plainHit).font(DS.font(.body))
         }
     }
 
@@ -259,17 +259,17 @@ struct EngineIssueRow: View {
                 if let risk = issue.risk {
                     RiskChip(risk: risk)
                 }
-                Text(issue.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text(issue.title).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             if let reason = issue.riskReason {
-                Text("Why: \(reason).").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                Text("Why: \(reason).").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let fix = issue.fix {
                 (Text("What to do: ").fontWeight(.semibold) + Text(fix))
-                    .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                    .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !issue.items.isEmpty {
@@ -308,7 +308,7 @@ struct EngineIssueRow: View {
             HStack(spacing: 10) {
                 if let at = issue.reviewedAt {
                     Text("Reviewed \(at.formatted(date: .abbreviated, time: .shortened))")
-                        .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                        .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                 }
                 Button(busy ? "Saving…" : (isReviewed ? "Show again" : "Mark reviewed")) {
                     busy = true
@@ -319,7 +319,7 @@ struct EngineIssueRow: View {
                     }
                 }
                 .buttonStyle(.plainHit)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .disabled(busy)
                 .help(isReviewed
                       ? "Count this warning again."
@@ -327,7 +327,7 @@ struct EngineIssueRow: View {
             }
             if let failure {
                 Label(failure, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -341,7 +341,7 @@ struct RiskChip: View {
 
     var body: some View {
         Text(risk.title.uppercased())
-            .font(DS.sans(9.5, weight: .semibold))
+            .font(DS.font(.micro, weight: .semibold))
             .tracking(0.05 * 9.5)
             .foregroundStyle(color)
             .padding(.horizontal, 5)
@@ -374,28 +374,28 @@ struct RunLedgerRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(line.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                    Text(line.outcome).font(DS.sans(13)).foregroundStyle(color == DS.Status.ok ? DS.Ink.p2 : color)
+                    Text(line.title).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                    Text(line.outcome).font(DS.font(.body)).foregroundStyle(color == DS.Status.ok ? DS.Ink.p2 : color)
                     Spacer(minLength: 0)
                     Text(line.finished.formatted(date: .abbreviated, time: .shortened))
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 if let reason = line.reason {
-                    Text(reason).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                    Text(reason).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let fix = line.fix {
                     (Text("What to do: ").fontWeight(.semibold) + Text(fix))
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let resets = line.resetsAt {
                     Text("Usage limit resets \(resets.formatted(date: .abbreviated, time: .shortened))")
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 ForEach([line.protection, line.integrity].compactMap { $0 }, id: \.self) { concern in
                     Label(concern, systemImage: "shield.lefthalf.filled.slash")
-                        .font(DS.sans(12)).foregroundStyle(DS.Status.warn)
+                        .font(DS.font(.label)).foregroundStyle(DS.Status.warn)
                 }
                 HStack(spacing: 10) {
                     if let length = line.length { meta(length) }
@@ -403,7 +403,7 @@ struct RunLedgerRow: View {
                     if let url = logURL {
                         Button("Show log") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                             .buttonStyle(.plainHit)
-                            .font(DS.sans(11))
+                            .font(DS.font(.caption))
                     }
                 }
             }
@@ -419,7 +419,7 @@ struct RunLedgerRow: View {
     }
 
     private func meta(_ text: String) -> some View {
-        Text(text).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+        Text(text).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
     }
 
     private var icon: String {
