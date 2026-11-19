@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scout.changes.consent import set_out_of_vault
+from scout.changes.reliance import _rows as _real_rows
 from scout.changes.reliance import record_reliance, surfaces_used
 from scout.changes.report import engagement_report
 from scout.changes.store import owner_dir
@@ -375,3 +376,199 @@ def test_marker_write_failure_is_swallowed_and_leaves_no_temp_file(vault, home, 
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
     assert not list(owner_dir(env).glob("reliance-seen*"))
     assert not list(owner_dir(env).glob(".reliance-seen*"))
+
+
+# --- hook latency: the cheap checks go first (coordinator review item 4) ------------------------------------
+
+
+@pytest.fixture
+def probes(monkeypatch):
+    """Counts `git worktree list` (vault_roots) calls, and fails the test if the transcript is ever opened."""
+    from scout.changes import reliance
+
+    calls = {"roots": 0, "transcript": 0}
+    real_roots = reliance.vault_roots
+
+    def counting_roots(vault):
+        calls["roots"] += 1
+        return real_roots(vault)
+
+    def no_transcript(path):
+        calls["transcript"] += 1
+        raise AssertionError(f"transcript opened: {path}")
+
+    monkeypatch.setattr(reliance, "vault_roots", counting_roots)
+    monkeypatch.setattr(reliance, "_rows", no_transcript)
+    return calls
+
+
+@pytest.mark.parametrize("answer", [None, False])
+def test_unconsented_out_of_vault_session_never_opens_its_transcript(vault, home, other_repo, probes, answer):
+    """Not asked, or an explicit no: nothing recorded, the transcript never read, and git asked once per TTL."""
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    if answer is not None:
+        set_out_of_vault(answer, env)
+    t = transcript(cwd=other_repo, tool_uses=[("Read", {"file_path": str(vault / "knowledge-base/people.md")})])
+    for minutes in (0, 1, 5):
+        when = NOW + timedelta(minutes=minutes)
+        assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=when) == 0
+    assert probes == {"roots": 1, "transcript": 0}
+    assert not (owner_dir(env) / "engagement.jsonl").exists()
+    assert not (owner_dir(env) / "reliance-seen.json").exists()
+
+
+def test_explicit_no_records_nothing_even_for_scout_surfaces(vault, home, other_repo):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    set_out_of_vault(False, env)
+    t = transcript(
+        cwd=other_repo,
+        tool_uses=[("Skill", {"skill": "scout:scout-work"}), ("Bash", {"command": "scoutctl kb delta"})],
+        user_texts=["/scout-work"],
+    )
+    assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=NOW) == 0
+    assert _rows(home) == []
+
+
+def test_non_owner_and_runs_return_before_any_git_or_consent_read(vault, home, other_repo, probes, monkeypatch):
+    from scout.changes import reliance
+
+    def no_consent(env):
+        raise AssertionError("consent read")
+
+    monkeypatch.setattr(reliance, "out_of_vault_answer", no_consent)
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), {**env, "SCOUT_READER": "agent"}, now=NOW) == 0
+    assert record_reliance(payload(t, other_repo), t, RunContext(vault, "dreaming", "p"), env, now=NOW) == 0
+    assert probes == {"roots": 0, "transcript": 0}
+
+
+def test_in_vault_cwd_needs_no_consent_read(vault, home, monkeypatch):
+    from scout.changes import reliance
+
+    def no_consent(env):
+        raise AssertionError("consent read")
+
+    monkeypatch.setattr(reliance, "out_of_vault_answer", no_consent)
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
+
+
+@pytest.mark.parametrize("where", ["vault", "outside"])
+def test_a_session_counted_on_every_surface_skips_the_transcript(vault, home, other_repo, probes, where):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    set_out_of_vault(True, env)
+    cwd = vault if where == "vault" else other_repo
+    reachable = sorted({"kb", "action-items", "skill", "scoutctl"} | ({"vault-session"} if where == "vault" else set()))
+    session = hashlib.sha256(SESSION_ID.encode()).hexdigest()[:16]
+    marker = owner_dir(env) / "reliance-seen.json"
+    marker.write_text(json.dumps({"schema": 1, "sessions": {session: {"surfaces": reachable, "at": NOW.isoformat()}}}))
+    t = transcript(cwd=cwd, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, cwd), t, owner_ctx(vault), env, now=NOW) == 0
+    assert probes["transcript"] == 0
+    assert probes["roots"] == (0 if where == "vault" else 1)
+
+
+def test_vault_roots_cache_expires_after_ten_minutes(vault, home, other_repo, probes):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    for when in (NOW, NOW + timedelta(minutes=10), NOW + timedelta(minutes=11), NOW + timedelta(minutes=12)):
+        record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=when)
+    assert probes["roots"] == 2
+    cache = json.loads((owner_dir(env) / "vault-roots-cache.json").read_text())
+    assert [Path(r) for r in next(iter(cache["vaults"].values()))["roots"]] == [vault.resolve()]
+    assert str(other_repo) not in json.dumps(cache)  # the vault's folders only, never the session's project
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{not json",
+        "[]",
+        json.dumps({"schema": 2, "vaults": {}}),
+        json.dumps({"schema": 1, "vaults": ["x"]}),
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": [], "at": NOW.isoformat()}}}),
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": [7], "at": NOW.isoformat()}}}),
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": ["/x"], "at": "2026-11-17T12:00:00"}}}),  # zoneless
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": ["/x"], "at": "later"}}}),
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": ["/x"]}}}),
+        json.dumps({"schema": 1, "vaults": {"KEY": "x"}}),
+        json.dumps({"schema": 1, "vaults": {"KEY": {"roots": ["/x"], "at": (NOW + timedelta(hours=1)).isoformat()}}}),
+    ],
+)
+def test_unusable_roots_cache_is_recomputed(vault, home, other_repo, probes, text):
+    from scout.changes.store import vault_key
+
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    path = owner_dir(env) / "vault-roots-cache.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.replace("KEY", vault_key(vault)))
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=NOW) == 0
+    assert probes["roots"] == 1
+    assert json.loads(path.read_text())["schema"] == 1
+
+
+def test_other_vaults_fresh_cache_entries_are_kept_and_stale_ones_dropped(vault, home, other_repo, probes):
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    path = owner_dir(env) / "vault-roots-cache.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = {"roots": ["/other"], "at": NOW.isoformat()}
+    stale = {"roots": ["/old"], "at": (NOW - timedelta(hours=1)).isoformat()}
+    path.write_text(json.dumps({"schema": 1, "vaults": {"fresh": fresh, "stale": stale}}))
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    record_reliance(payload(t, other_repo), t, owner_ctx(vault), env, now=NOW)
+    vaults = json.loads(path.read_text())["vaults"]
+    assert "fresh" in vaults and "stale" not in vaults and len(vaults) == 2
+
+
+def test_a_worktree_made_after_the_cache_counts_at_once(git_vault, home, tmp_path, other_repo, probes, monkeypatch):
+    """A fresh cache can't know a worktree made a minute ago; its newer `.git` file sends the hook back to git."""
+    from scout.changes import reliance
+
+    monkeypatch.setattr(reliance, "_rows", _real_rows)  # this one parses: count git calls only
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(git_vault)}
+    _git(other_repo, "init", "-q")  # a repo of its own: its `.git` is a folder, so the cache answer stands
+    t = transcript(cwd=other_repo, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, other_repo), t, owner_ctx(git_vault), env, now=NOW) == 0
+    assert record_reliance(payload(t, other_repo), t, owner_ctx(git_vault), env, now=NOW) == 0
+    assert probes["roots"] == 1
+    wt = add_worktree(git_vault, tmp_path / "elsewhere" / "wt")
+    t = transcript(cwd=wt, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert record_reliance(payload(t, wt), t, owner_ctx(git_vault), env, now=NOW) == 2
+    assert probes["roots"] == 2
+    # Now cached with the worktree in it: no more git.
+    assert record_reliance(payload(t, wt), t, owner_ctx(git_vault), env, now=NOW) == 0
+    assert probes["roots"] == 2
+
+
+def test_newer_worktree_needs_a_git_file_somewhere_above():
+    from scout.changes.reliance import _newer_worktree
+
+    assert _newer_worktree("", NOW) is False
+    assert _newer_worktree("bad\0cwd", NOW) is False
+    assert _newer_worktree("/", NOW) is False
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="review item 5: session_tokens.run calls record_reliance before it writes the tracker row; "
+    "scout/hooks/ was unreadable to the fixer, so the order is pinned here, not fixed. Drop this mark with the fix.",
+)
+def test_stop_hook_writes_the_token_row_before_the_reliance_pass(vault, home, tmp_path, monkeypatch):
+    """Review item 5: a slow or failing reliance pass must not be able to lose the token-tracker row: the row must
+    already be in the tracker when the reliance pass starts."""
+    tracker = tmp_path / "tokens.jsonl"
+    monkeypatch.setenv("SESSION_TOKENS_TRACKER", str(tracker))
+    seen: list[int] = []
+
+    def probe(*a, **k):
+        seen.append(len(tracker.read_text().splitlines()) if tracker.exists() else 0)
+        raise RuntimeError("reliance failed")
+
+    monkeypatch.setattr("scout.changes.reliance.record_reliance", probe)
+    t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
+    assert session_tokens.run(stdin=io.StringIO(json.dumps(payload(t, vault)))) is not None
+    assert seen == [1]
+    assert len(tracker.read_text().splitlines()) == 1
