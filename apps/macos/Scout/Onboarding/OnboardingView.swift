@@ -31,7 +31,7 @@ struct OnboardingView: View {
             stepIndicator.padding(.bottom, 20)
             ScrollView { content.frame(maxWidth: 640, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading) }
             if let err = model.lastError {
-                Text(err).font(DS.sans(12)).foregroundStyle(DS.Status.err).textSelection(.enabled).padding(.top, 10)
+                Text(err).font(DS.font(.label)).foregroundStyle(DS.Status.err).textSelection(.enabled).padding(.top, 10)
             }
             footer
         }
@@ -43,9 +43,9 @@ struct OnboardingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(model.flowTitle).font(DS.serif(24, weight: .medium)).foregroundStyle(DS.Ink.p1)
+            Text(model.flowTitle).font(DS.font(.hero, .serif, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .accessibilityAddTraits(.isHeader)
-            Text(subtitle).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p3)
+            Text(subtitle).font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
         }.padding(.bottom, 14)
     }
 
@@ -98,8 +98,8 @@ struct OnboardingView: View {
     private var vault: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("Scout folder").font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
-                Text(model.vaultURL.path).font(DS.mono(11.5)).foregroundStyle(DS.Ink.p1).lineLimit(1).truncationMode(.middle)
+                Text("Scout folder").font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                Text(model.vaultURL.path).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p1).lineLimit(1).truncationMode(.middle)
                 if model.canChangeVault {
                     Button("Change…") { model.changeVault() }
                         .buttonStyle(.ds(.link, size: .small))
@@ -121,7 +121,7 @@ struct OnboardingView: View {
                 }
                 .padding(.top, 4)
             }
-            .font(DS.sans(13))
+            .font(DS.font(.body))
             HStack(alignment: .bottom, spacing: 8) {
                 field("Scout folder", text: $model.vaultPath, placeholder: "~/Scout")
                 Button("Choose…", action: chooseFolder)
@@ -130,7 +130,7 @@ struct OnboardingView: View {
             }
             .glossaryHelp(.scoutFolder)
             if !model.vaultPathIsValid {
-                Text("Use a full path that starts with / or ~, such as ~/Scout.").font(DS.sans(11.5)).foregroundStyle(DS.Status.warn)
+                Text("Use a full path that starts with / or ~, such as ~/Scout.").font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
             }
         }
     }
@@ -224,7 +224,7 @@ struct OnboardingView: View {
             if model.dailyBudgetIsValid {
                 helpText("What the scheduled runs may spend in a day. Leave it empty for Scout's default; change it later in Settings ▸ Budget.")
             } else {
-                Text("Enter a positive amount like 20 or 12.50, or leave it empty.").font(DS.sans(11.5)).foregroundStyle(DS.Status.warn)
+                Text("Enter a positive amount like 20 or 12.50, or leave it empty.").font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
             }
         }
     }
@@ -234,9 +234,9 @@ struct OnboardingView: View {
             ForEach(model.connectorKeys, id: \.self) { key in
                 Toggle(isOn: connectorBinding(key)) {
                     HStack(spacing: 8) {
-                        Text(ConnectorDetection.displayNames[key] ?? key).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                        Text(ConnectorDetection.displayNames[key] ?? key).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
                         let status = model.detections[key]?.status
-                        Text(statusLabel(status)).font(DS.sans(11.5)).foregroundStyle(status == .connected ? DS.Status.ok : DS.Ink.p3)
+                        Text(statusLabel(status)).font(DS.font(.caption)).foregroundStyle(status == .connected ? DS.Status.ok : DS.Ink.p3)
                     }
                 }
                 .toggleStyle(.checkbox)
@@ -260,14 +260,14 @@ struct OnboardingView: View {
     private var ready: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let note = model.restartNote {
-                Text(note).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Status.warn)
+                Text(note).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Status.warn)
             }
             if let d = model.doctor { readySummary(OnboardingViewModel.readySummary(d)) }
             Button("Run your first briefing now") { Task { await model.runFirstBriefing() } }
                 .buttonStyle(.dsSecondary).disabled(model.busy)
-            if let status = model.briefingStatus { Text(status).font(DS.sans(12)).foregroundStyle(DS.Status.ok) }
+            if let status = model.briefingStatus { Text(status).font(DS.font(.label)).foregroundStyle(DS.Status.ok) }
             if model.prerequisites?.auth != .signedIn {
-                Text("Sign in to Claude Code before the first scheduled run.").font(DS.sans(11.5)).foregroundStyle(DS.Status.warn)
+                Text("Sign in to Claude Code before the first scheduled run.").font(DS.font(.caption)).foregroundStyle(DS.Status.warn)
             }
         }
     }
@@ -282,21 +282,21 @@ struct OnboardingView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: symbol).foregroundStyle(color).accessibilityHidden(true)
-                Text(summary.title).font(DS.sans(13, weight: .semibold)).foregroundStyle(color)
+                Text(summary.title).font(DS.font(.body, weight: .semibold)).foregroundStyle(color)
             }
             helpText(summary.detail)
             if !summary.details.isEmpty {
                 DisclosureGroup("Details") {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(summary.details, id: \.self) { line in
-                            Text(line).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
+                            Text(line).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .textSelection(.enabled)
                     .padding(.top, 4)
                 }
-                .font(DS.sans(12))
+                .font(DS.font(.label))
             }
         }
         .accessibilityElement(children: .contain)
@@ -309,7 +309,7 @@ struct OnboardingView: View {
                 HStack(alignment: .top, spacing: 10) {
                     InstallStepStatusIcon(status: p?.status)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(s.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                        Text(s.title).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
                         if let log = p?.log, !log.isEmpty { InstallStepLog(log: log, failed: p?.status.isFailed == true) }
                     }
                 }
@@ -351,22 +351,22 @@ struct OnboardingView: View {
 
     // MARK: atoms
 
-    private func bullet(_ text: String) -> some View { Text("• " + text).font(DS.sans(13)).foregroundStyle(DS.Ink.p2) }
+    private func bullet(_ text: String) -> some View { Text("• " + text).font(DS.font(.body)).foregroundStyle(DS.Ink.p2) }
 
     private func fieldLabel(_ label: String) -> some View {
-        Text(label.uppercased()).font(DS.sans(11, weight: .medium)).tracking(0.66).foregroundStyle(DS.Ink.p4)
+        Text(label.uppercased()).font(DS.font(.caption, weight: .medium)).tracking(0.66).foregroundStyle(DS.Ink.p4)
             .accessibilityHidden(true)
     }
 
     private func helpText(_ text: String) -> some View {
-        Text(text).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3).fixedSize(horizontal: false, vertical: true)
+        Text(text).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3).fixedSize(horizontal: false, vertical: true)
     }
 
     private func field(_ label: String, text: Binding<String>, placeholder: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             fieldLabel(label)
             TextField(placeholder, text: text)
-                .accessibilityLabel(label).textFieldStyle(.plain).font(DS.sans(13, weight: .medium)).padding(.horizontal, 10).frame(height: 30)
+                .accessibilityLabel(label).textFieldStyle(.plain).font(DS.font(.body, weight: .medium)).padding(.horizontal, 10).frame(height: 30)
                 .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk)
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5)))
         }
@@ -376,8 +376,8 @@ struct OnboardingView: View {
         HStack(alignment: .top, spacing: 10) {
             InstallStepStatusIcon(status: ok ? .done : .pending)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                Text(detail).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
+                Text(title).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text(detail).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
             }
             Spacer()
             if let actionTitle {
@@ -434,7 +434,7 @@ struct InstallStepStatusIcon: View {
                 Image(systemName: "circle").foregroundStyle(DS.Ink.p4)
             }
         }
-        .font(DS.sans(13))
+        .font(DS.font(.body))
         .frame(width: 16, height: 16)
         .accessibilityElement()
         .accessibilityLabel((status ?? .pending).spokenStatus)
@@ -450,7 +450,7 @@ struct InstallStepLog: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(log).font(DS.mono(11)).foregroundStyle(failed ? DS.Status.err : DS.Ink.p3)
+            Text(log).font(DS.font(.caption, .mono)).foregroundStyle(failed ? DS.Status.err : DS.Ink.p3)
                 .lineLimit(failed ? nil : 3)
                 .fixedSize(horizontal: false, vertical: failed)
                 .textSelection(.enabled)
