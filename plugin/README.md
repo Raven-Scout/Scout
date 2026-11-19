@@ -149,7 +149,7 @@ Or run interactive sessions in the current conversation:
 /scout-meta-review    # System-level audit — are sessions running, is the mistake audit trending well, are proposals flowing?
 ```
 
-Ask about a project, person, meeting or decision in a session opened in your vault ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale.
+Ask about a project, person, meeting or decision in any Claude Code session on a machine with a Scout vault, in the vault or in another repository ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale. It finds the vault from Scout's configuration with `scoutctl kb vault` (never from the folder you are in), runs only read commands, which write nothing but Scout's own cache, and outside the vault treats what it reads as context: nothing from the knowledge base goes into that repository's commits, PRs, issues or files.
 
 ## How It Works
 

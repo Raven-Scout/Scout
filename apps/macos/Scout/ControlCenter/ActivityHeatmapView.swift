@@ -35,7 +35,7 @@ struct ActivityHeatmapView: View {
     private var header: some View {
         HStack(alignment: .center) {
             Text("Activity — last \(range.shortLabel)".uppercased())
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
@@ -73,7 +73,7 @@ struct ActivityHeatmapView: View {
                     rangeRaw = r.rawValue
                 } label: {
                     Text(r.segmentLabel)
-                        .font(DS.sans(10.5, weight: .medium))
+                        .font(DS.font(.caption2, weight: .medium))
                         .foregroundStyle(rangeRaw == r.rawValue ? DS.Ink.p1 : DS.Ink.p3)
                         .padding(.horizontal, 8)
                         .frame(height: 20)
@@ -170,7 +170,7 @@ struct ActivityHeatmapView: View {
             HStack(spacing: gap) {
                 ForEach(0..<7, id: \.self) { i in
                     Text(weekdayNames[i])
-                        .font(DS.mono(9.5, weight: .medium))
+                        .font(DS.font(.micro, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                         .frame(maxWidth: .infinity)
                 }
@@ -202,7 +202,7 @@ struct ActivityHeatmapView: View {
                 .frame(maxWidth: .infinity)
             // Day-of-month numeral, top-left
             Text("\(dayNum)")
-                .font(DS.mono(9, weight: .medium))
+                .font(DS.font(.micro, .mono, weight: .medium))
                 .foregroundStyle(total == 0 ? DS.Ink.p4 : (cell.successes >= 5 ? .white : DS.Ink.p1))
                 .padding(.top, 3)
                 .padding(.leading, 4)
@@ -299,17 +299,17 @@ struct ActivityHeatmapView: View {
     private func legend(totalShown: Int) -> some View {
         HStack(spacing: 6) {
             Text("Less")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             ForEach(legendSwatches, id: \.0) { _, c in
                 RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 10, height: 10)
             }
             Text("More")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
             Text("\(totalShown) session\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
     }

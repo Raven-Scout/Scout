@@ -54,7 +54,7 @@ struct KBStatsView: View {
                     }
                     .padding(.top, 4)
                 }
-                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
             }
         }
     }
@@ -71,7 +71,7 @@ struct KBStatsView: View {
             chips(["\(name) · \(group.targets.count)"], [group.source])
                 .fixedSize()
             Text(targets)
-                .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                 .lineLimit(1).truncationMode(.tail)
                 .help(group.targets.joined(separator: ", "))
         }
@@ -84,12 +84,12 @@ struct KBStatsView: View {
         if let summary = stats.setAsideSummary {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Image(systemName: "archivebox").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                    Image(systemName: "archivebox").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                         .accessibilityHidden(true)
-                    Text(summary).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                    Text(summary).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 }
                 Text("Notes in archive folders, and paperwork such as receipts, invoices and certificates, aren't checked for links.")
-                    .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
@@ -125,7 +125,7 @@ struct KBStatsView: View {
                     .padding(.top, 4)
                     moreLine(window.hidden)
                 }
-                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
             }
         }
     }
@@ -139,18 +139,18 @@ struct KBStatsView: View {
             insightLine(stats.componentsSummary, metric: .clusters)
 
             if !stats.topHubs.isEmpty {
-                Text("Top hubs").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+                Text("Top hubs").font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p3)
                 explanation(.hubs)
                 chipList(stats.topHubs.map { "\(KBNode.displayName(forPath: $0.path)) · \($0.degree)" },
                          stats.topHubs.map(\.path))
             }
 
-            Text("By type").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+            Text("By type").font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p3)
             FlowLayout(spacing: 10) {
                 ForEach(stats.byType.filter { $0.count > 0 }) { tc in
                     HStack(spacing: 4) {
                         Circle().fill(tc.group.color).frame(width: 7, height: 7)
-                        Text("\(tc.group.label) \(tc.count)").font(DS.sans(11)).foregroundStyle(DS.Ink.p2)
+                        Text("\(tc.group.label) \(tc.count)").font(DS.font(.caption)).foregroundStyle(DS.Ink.p2)
                     }
                 }
             }
@@ -160,17 +160,17 @@ struct KBStatsView: View {
     // MARK: - Building blocks
 
     private func sectionLabel(_ text: String) -> some View {
-        Text(text).font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+        Text(text).font(DS.font(.caption2, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
     }
 
     /// A row's icon and title, with the metric's one-line explanation under it.
     private func rowHeader(_ title: String, icon: String, clean: Bool, metric: KBHealthMetric) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(DS.sans(12))
+                Image(systemName: icon).font(DS.font(.label))
                     .foregroundStyle(clean ? DS.Status.ok : DS.Status.warn)
                     .accessibilityHidden(true)
-                Text(title).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                Text(title).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
             }
             explanation(metric).padding(.leading, 18)
         }
@@ -178,14 +178,14 @@ struct KBStatsView: View {
 
     private func insightLine(_ text: String, metric: KBHealthMetric) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(text).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+            Text(text).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
             explanation(metric)
         }
     }
 
     private func explanation(_ metric: KBHealthMetric) -> some View {
         Text(metric.explanation)
-            .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+            .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -201,14 +201,14 @@ struct KBStatsView: View {
                     .padding(.top, 4)
                 moreLine(window.hidden)
             }
-            .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+            .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
         }
     }
 
     @ViewBuilder
     private func moreLine(_ hidden: Int) -> some View {
         if hidden > 0 {
-            Text("…and \(hidden) more").font(DS.sans(11)).foregroundStyle(DS.Ink.p4).padding(.top, 2)
+            Text("…and \(hidden) more").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).padding(.top, 2)
         }
     }
 
@@ -216,12 +216,9 @@ struct KBStatsView: View {
         FlowLayout(spacing: 6) {
             ForEach(Array(zip(labels, paths).enumerated()), id: \.offset) { _, pair in
                 Button { onOpen(pair.1) } label: {
-                    Text(pair.0).font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
-                        .lineLimit(1).truncationMode(.middle)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Capsule().fill(DS.Paper.sunk))
+                    Text(pair.0).truncationMode(.middle).dsTag(link: true)
                 }
-                .buttonStyle(.plainHit)
+                .buttonStyle(.plainHit)  // ds-guard: hit area — a link tag, drawn by .dsTag
                 .help(pair.0)
             }
         }

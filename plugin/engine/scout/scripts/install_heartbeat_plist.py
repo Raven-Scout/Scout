@@ -13,6 +13,8 @@ import subprocess
 from html import escape
 from pathlib import Path
 
+from scout import safe_write
+
 PLIST_NAME = "com.scout.heartbeat.plist"
 TEMPLATE = Path(__file__).parent.parent / "defaults" / PLIST_NAME
 
@@ -49,7 +51,7 @@ def install_plist(
         plistlib.loads(rendered.encode("utf-8"))
     except Exception as exc:
         raise ValueError(f"rendered {PLIST_NAME} is not well-formed XML: {exc}") from exc
-    target.write_text(rendered, encoding="utf-8")
+    safe_write.atomic_write_text(target, rendered)
     if bootstrap:
         uid = os.getuid()
         # launchctl bootstrap EIOs (errno 5) when the label is already

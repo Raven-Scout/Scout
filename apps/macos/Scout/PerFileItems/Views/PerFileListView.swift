@@ -133,7 +133,7 @@ struct PerFileListView: View {
             historyView(item)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 12)  // ds-guard: not a card — the side detail panel, which floats with a shadow
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                 .shadow(color: DS.Neumorphic.shadow.opacity(0.4), radius: 8, x: -2, y: 4)
@@ -154,11 +154,11 @@ struct PerFileListView: View {
     private func detailHeader(_ item: PerFileItem, isExpanded: Bool) -> some View {
         HStack(alignment: .center, spacing: 10) {
             Button { closeDetail() } label: {
-                Image(systemName: "chevron.left").font(DS.sans(12, weight: .medium))
+                Image(systemName: "chevron.left").font(DS.font(.label, weight: .medium))
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close details")
-            Text(item.title).font(DS.serif(16, weight: .medium)).foregroundStyle(DS.Ink.p1)
+            Text(item.title).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
             Spacer()
             ItemStatusPill(status: item.status)
@@ -166,7 +166,7 @@ struct PerFileListView: View {
                 Image(systemName: isExpanded
                       ? "arrow.down.right.and.arrow.up.left"
                       : "arrow.up.left.and.arrow.down.right")
-                    .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                    .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
             .help(ShortcutLabel.help(isExpanded ? "Collapse" : "Expand to full screen", AppShortcut.expandDetail))
@@ -181,12 +181,12 @@ struct PerFileListView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text(config.title)
-                    .font(DS.serif(28, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                 Spacer(minLength: 0)
             }
             Text(subtitle)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.bottom, 6)
@@ -218,7 +218,7 @@ struct PerFileListView: View {
             )
         case .failed(let err):
             Text("Couldn't load \(config.title.lowercased()): \(err)")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Status.err)
                 .padding(.top, 24)
         case .loaded:
@@ -268,12 +268,12 @@ struct PerFileListView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
-                        .font(DS.sans(10, weight: .semibold))
+                        .font(DS.font(.caption2, weight: .semibold))
                     Text("Resolved")
-                        .font(DS.sans(11.5, weight: .semibold))
+                        .font(DS.font(.caption, weight: .semibold))
                         .tracking(0.06 * 11.5)
                     Text("\(resolved.count)")
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption, .mono))
                         .foregroundStyle(DS.Ink.p4)
                 }
                 .foregroundStyle(DS.Ink.p3)
@@ -300,10 +300,10 @@ struct PerFileListView: View {
     private func emptyState(icon: String, message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
-                .font(DS.sans(26))
+                .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
-                .font(DS.serif(14))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

@@ -88,7 +88,7 @@ struct StepRowView: View {
                 // It used to scroll sideways, which hid most of a long title
                 // with no sign there was more (UI audit C6).
                 Text(task.plainSubject)
-                    .font(DS.sans(13.5, weight: .medium))
+                    .font(DS.font(.body, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -114,7 +114,7 @@ struct StepRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             }
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(step.item.state == .blocked ? DS.Ink.p3 : step.item.state.color)
         }
     }

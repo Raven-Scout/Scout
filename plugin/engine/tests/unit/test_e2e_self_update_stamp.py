@@ -22,6 +22,9 @@ MANIFESTS = (
     "plugin/engine/scout/__init__.py",
     "plugin/engine/scout/scripts/versioning.py",
     "apps/macos/Scout.xcodeproj/project.pbxproj",
+    # The harness runs the tree's own `python -m scout.scripts.versioning`, which imports its changelog module.
+    "plugin/engine/scout/scripts/__init__.py",
+    "plugin/engine/scout/scripts/changelog.py",
 )
 
 

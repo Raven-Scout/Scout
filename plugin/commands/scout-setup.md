@@ -48,7 +48,7 @@ Use `"$SCOUTCTL"` (and `$PLUGIN_ROOT`) in every subsequent invocation.
 - If `VENV_MISSING`: tell the user "Engine venv missing. Installing now (this typically takes 30–60 seconds)..." then run, with explicit 5-minute timeout:
 
   ```bash
-  bash "$PLUGIN_ROOT/scripts/install-venv.sh"
+  /bin/bash "$PLUGIN_ROOT/scripts/install-venv.sh"
   ```
 
   (Use the Bash tool with `timeout: 300000`.) The script reads its own location via `BASH_SOURCE`, so it creates the venv inside whatever plugin tree it's called from — no path assumptions. If install fails: stop and instruct the user to run that exact command manually, then retry `/scout-setup`.
@@ -64,7 +64,7 @@ if [ "$INSTALLED" != "$EXPECTED" ]; then
 fi
 ```
 
-If `VENV_MISMATCH:<installed>|<expected>` is emitted, tell the user: "The venv at `$PLUGIN_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Re-installing now to pin it to this checkout..." then run `bash "$PLUGIN_ROOT/scripts/install-venv.sh"` and re-verify.
+If `VENV_MISMATCH:<installed>|<expected>` is emitted, tell the user: "The venv at `$PLUGIN_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Re-installing now to pin it to this checkout..." then run `/bin/bash "$PLUGIN_ROOT/scripts/install-venv.sh"` and re-verify.
 
 ---
 

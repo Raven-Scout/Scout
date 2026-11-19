@@ -66,14 +66,9 @@ struct RunDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(run.displayName).font(DS.sans(17)).fontWeight(.bold)
+                Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
-                    Text("Started by you")
-                        .font(DS.mono(10))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.secondary)
+                    DSPill("Started by you")
                 }
             }
             HStack(spacing: 14) {
@@ -90,7 +85,7 @@ struct RunDetailView: View {
                     Text("· \(n) commit\(n == 1 ? "" : "s")")
                 }
             }
-            .font(DS.sans(10))
+            .font(DS.font(.caption2))
             .foregroundStyle(.secondary)
             if let problem = Problem(run: run) {
                 ProblemView(problem: problem)
@@ -105,13 +100,13 @@ struct RunDetailView: View {
             if run.ranUnprotected {
                 Label(RunOutcomeDisplay.sandbox(run.protection?.sandbox, source: run.protection?.sandboxSource)
                       ?? "Write protection off", systemImage: "shield.slash")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .help("This run could change Scout's own files. Write protection is set in Settings ▸ Engine.")
             }
             if run.protectedFilesUnchecked {
                 Label("Scout couldn't check this run's protected files afterwards", systemImage: "questionmark.diamond")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .help("The run's log has the integrity check's line saying why.")
             }
@@ -119,20 +114,17 @@ struct RunDetailView: View {
     }
 
     private var statusPill: some View {
-        HStack(spacing: 5) {
-            Circle().fill(statusColor).frame(width: 6, height: 6)
-            Text(run.status.displayName)
-                .font(DS.sans(10))
-                .foregroundStyle(statusColor)
-        }
+        DSPill(run.status.displayName, tone: statusTone)
     }
 
-    private var statusColor: Color {
-        switch run.status {
-        case .success: return .green
-        case .failure, .timeout, .rateLimited: return .red
-        case .running: return .orange
-        default: return .secondary
+    /// The run's status tone (`RunOutcomeDisplay.tone`), as a pill tone.
+    private var statusTone: DS.PillTone {
+        switch RunOutcomeDisplay.tone(run.status) {
+        case .ok:      return .ok
+        case .warn:    return .warn
+        case .err:     return .err
+        case .active:  return .info
+        case .neutral: return .neutral
         }
     }
 
@@ -157,9 +149,10 @@ struct RunDetailView: View {
                 }
                 Spacer()
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             if let reason = rerunUnavailableReason {
                 Text(reason)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             } else if askedToRerun, let error = state.fireNowError {
@@ -168,7 +161,7 @@ struct RunDetailView: View {
                         .foregroundStyle(DS.Status.warn)
                         .accessibilityHidden(true)
                     Text(error)
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
@@ -226,32 +219,19 @@ struct ProtectedFileBlock: View {
     let openLog: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(DS.Status.err)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(DS.sans(13, weight: .semibold)).foregroundStyle(DS.Status.err)
-                Text(message).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                HStack(spacing: 12) {
-                    if restored && !commits.isEmpty {
-                        Button("Show the change", action: showChange)
-                    }
-                    Button("Open log", action: openLog)
+        DSBanner(tone: .error, symbol: "exclamationmark.shield.fill", accessibilityTitle: title) {
+            Text(title).font(DS.font(.label, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                if restored && !commits.isEmpty {
+                    Button("Show the change", action: showChange)
                 }
-                .buttonStyle(.plainHit)
-                .font(DS.sans(12))
+                Button("Open log", action: openLog)
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.ds(.link, size: .small))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Status.err.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Status.err.opacity(0.35), lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
     }
 
     var title: String {

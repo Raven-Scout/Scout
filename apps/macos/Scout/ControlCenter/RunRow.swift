@@ -14,13 +14,13 @@ struct RunRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             Image(systemName: iconName)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(iconColor)
                 .frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(run.displayName)
-                        .font(DS.sans(13, weight: .medium))
+                        .font(DS.font(.body, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
                     if run.wasManuallyTriggered && run.type != .manual {
                         manualBadge
@@ -28,22 +28,22 @@ struct RunRow: View {
                     ForEach(ProtectionBadge.kinds(for: run), id: \.title) { ProtectionBadge(kind: $0) }
                 }
                 Text(run.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(DS.mono(11.5))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             statusCell
                 .frame(width: 100, alignment: .leading)
             Text(commitsString)
-                .font(DS.mono(11.5, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 90, alignment: .trailing)
             Text(costString)
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 80, alignment: .trailing)
             Image(systemName: "chevron.right")
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .foregroundStyle(hovering || isSelected ? DS.Ink.p2 : DS.Ink.p4.opacity(0.5))
                 .frame(width: 16, alignment: .trailing)
         }
@@ -64,13 +64,7 @@ struct RunRow: View {
     }
 
     private var manualBadge: some View {
-        Text("manual")
-            .font(DS.mono(9.5, weight: .medium))
-            .tracking(0.06 * 9.5)
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(EditorialChipBackground())
+        Text("manual").dsTag(.mono)
     }
 
     private var statusCell: some View {
@@ -79,7 +73,7 @@ struct RunRow: View {
                 Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
             }
             Text(run.status.displayName)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(statusColor)
                 .help(run.status.reason ?? run.status.displayName)
         }
@@ -163,14 +157,7 @@ struct ProtectionBadge: View {
     }
 
     var body: some View {
-        Label(title, systemImage: symbol)
-            .labelStyle(.titleAndIcon)
-            .font(DS.sans(10, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.12)))
-            .fixedSize()
+        DSPill(title, tone: tone, symbol: symbol)
             .help(help)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(help)
@@ -199,10 +186,10 @@ struct ProtectionBadge: View {
         }
     }
 
-    private var color: Color {
+    private var tone: DS.PillTone {
         switch kind {
-        case .unprotected, .unchecked: return DS.Status.warn
-        case .fileChanged: return DS.Status.err
+        case .unprotected, .unchecked: return .warn
+        case .fileChanged: return .err
         }
     }
 }

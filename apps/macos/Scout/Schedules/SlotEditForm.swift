@@ -152,7 +152,7 @@ struct SlotEditForm: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
             Text(Self.conflictNoteText(conflictingFields))
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -195,7 +195,7 @@ struct SlotEditForm: View {
         if isNewDraft {
             VStack(alignment: .leading, spacing: 4) {
                 Text(SlotFieldLabel.name)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -206,18 +206,18 @@ struct SlotEditForm: View {
                 // `existingKeys` a moment before the form closes.
                 if !isSaving, let err = SlotDraft.validateSlotKey(draft.key)
                     ?? SlotDraft.validateNewSlotKey(draft.key, existingKeys: takenKeys) {
-                    Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
+                    Text(err).font(DS.font(.caption2)).foregroundStyle(DS.Status.err)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("Lowercase letters, digits and dashes, like evening-research. You can't rename a schedule after you save it.")
-                        .font(DS.sans(10)).foregroundStyle(.secondary)
+                        .font(DS.font(.caption2)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             HStack {
-                Text(DisplayName.slotKey(draft.key)).font(DS.sans(13, weight: .medium))
-                Text(draft.key).font(DS.mono(10)).foregroundStyle(.secondary)
+                Text(DisplayName.slotKey(draft.key)).font(DS.font(.body, weight: .medium))
+                Text(draft.key).font(DS.font(.caption2, .mono)).foregroundStyle(.secondary)
                     .help("This schedule's key. It can't be changed after the first save.")
                 Spacer()
             }
@@ -231,7 +231,7 @@ struct SlotEditForm: View {
     private var timeAndWeekdaysSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(SlotFieldLabel.time)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -243,12 +243,12 @@ struct SlotEditForm: View {
                 .accessibilityLabel(SlotFieldLabel.time)
                 .fixedSize()
             if let err = SlotDraft.validateFiresAtLocal(draft.firesAtLocal) {
-                Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
+                Text(err).font(DS.font(.caption2)).foregroundStyle(DS.Status.err)
             }
         }
         VStack(alignment: .leading, spacing: 4) {
             Text(SlotFieldLabel.weekdays)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -259,7 +259,7 @@ struct SlotEditForm: View {
                         if isOn { draft.weekdays.remove(day) } else { draft.weekdays.insert(day) }
                     } label: {
                         Text(day)
-                            .font(DS.sans(13, weight: .medium))
+                            .font(DS.font(.body, weight: .medium))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 12)
@@ -281,7 +281,7 @@ struct SlotEditForm: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Weekdays")
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
-                Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
+                Text(err).font(DS.font(.caption2)).foregroundStyle(DS.Status.err)
             }
         }
     }
@@ -290,7 +290,7 @@ struct SlotEditForm: View {
     private var onMissSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(SlotFieldLabel.ifAsleep)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -304,7 +304,7 @@ struct SlotEditForm: View {
                 minSegmentWidth: 70
             )
             Text(draft.onMiss.explanation)
-                .font(DS.sans(10)).foregroundStyle(.secondary)
+                .font(DS.font(.caption2)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -313,7 +313,7 @@ struct SlotEditForm: View {
     private var cooldownSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(SlotFieldLabel.waitBetweenRuns) (minutes)")
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -322,7 +322,7 @@ struct SlotEditForm: View {
             }
             .frame(width: 200)
             Text("After this schedule runs, it won't run again for at least this long.")
-                .font(DS.sans(10)).foregroundStyle(.secondary)
+                .font(DS.font(.caption2)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -331,7 +331,7 @@ struct SlotEditForm: View {
         let current = ModelChoice(model: draft.model)
         return VStack(alignment: .leading, spacing: 4) {
             Text(SlotFieldLabel.model)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(1)
                 .textCase(.uppercase)
                 .foregroundStyle(DS.Ink.p3)
@@ -342,7 +342,7 @@ struct SlotEditForm: View {
                 accessibilityTitle: SlotFieldLabel.model
             )
             Text("Cheaper models use less of your plan but can miss things Opus catches. Try one on a light schedule first.")
-                .font(DS.sans(10)).foregroundStyle(.secondary)
+                .font(DS.font(.caption2)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -352,13 +352,13 @@ struct SlotEditForm: View {
     private var agentSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(SlotFieldLabel.agent)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(1)
                 .textCase(.uppercase)
                 .foregroundStyle(DS.Ink.p3)
             Text(liveSlot.agentRuntimeDisplayName.map { "Runs on \($0)" }
                  ?? "Runs on Scout's default agent")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
         }
         .accessibilityElement(children: .combine)
@@ -369,7 +369,7 @@ struct SlotEditForm: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(SlotFieldLabel.script)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -378,12 +378,12 @@ struct SlotEditForm: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Text("The engine script this schedule starts. Leave it as it is unless you know you need another.")
-                    .font(DS.sans(10)).foregroundStyle(.secondary)
+                    .font(DS.font(.caption2)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(SlotFieldLabel.catchUpWindow) (hours)")
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -392,12 +392,12 @@ struct SlotEditForm: View {
                 }
                 .frame(width: 200)
                 Text("How late a missed run may still start after the Mac wakes.")
-                    .font(DS.sans(10)).foregroundStyle(.secondary)
+                    .font(DS.font(.caption2)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(SlotFieldLabel.kind)
-                    .font(DS.sans(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .tracking(1)
                     .textCase(.uppercase)
                     .foregroundStyle(DS.Ink.p3)
@@ -473,7 +473,7 @@ struct SlotEditForm: View {
                 // Some fields sit in the collapsed Advanced group, so say
                 // why Save is off rather than leave a dead button.
                 Label(reason, systemImage: "exclamationmark.circle")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Can't save yet: \(reason)")

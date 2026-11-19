@@ -59,18 +59,18 @@ private struct CommentRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text(markGlyph(for: comment.author))
-                .font(DS.mono(11, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.top, 2)
                 .frame(width: 14, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(comment.author)
-                        .font(DS.sans(12, weight: .medium))
+                        .font(DS.font(.label, weight: .medium))
                         .foregroundStyle(authorColor(comment.author))
                     if !comment.timestamp.isEmpty {
                         Text(comment.timestamp)
-                            .font(DS.mono(11))
+                            .font(DS.font(.caption, .mono))
                             .foregroundStyle(DS.Ink.p4)
                     }
                     Spacer(minLength: 8)
@@ -82,7 +82,7 @@ private struct CommentRow: View {
                     editor
                 } else {
                     InlineMarkdownText(comment.text)
-                        .font(DS.serif(13))
+                        .dsFont(.body, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -108,7 +108,7 @@ private struct CommentRow: View {
                     DispatchQueue.main.async { editorFocused = true }
                 } label: {
                     Image(systemName: "pencil")
-                        .font(DS.sans(10))
+                        .font(DS.font(.caption2))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
@@ -120,7 +120,7 @@ private struct CommentRow: View {
                     confirmingDelete = true
                 } label: {
                     Image(systemName: "trash")
-                        .font(DS.sans(10))
+                        .font(DS.font(.caption2))
                 }
                 .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)

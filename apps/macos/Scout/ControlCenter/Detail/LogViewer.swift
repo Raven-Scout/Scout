@@ -47,6 +47,7 @@ struct LogViewer: View {
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Open in default editor")
             Button {
                 NSPasteboard.general.clearContents()
@@ -54,6 +55,7 @@ struct LogViewer: View {
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Copy entire log")
         }
         .padding(.horizontal, 12)
@@ -92,15 +94,15 @@ struct LogViewer: View {
         HStack(spacing: 8) {
             Image(systemName: section.kind.icon)
                 .foregroundStyle(section.kind.color)
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .accessibilityHidden(true)
             Text(section.title)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .fontWeight(.semibold)
                 .foregroundStyle(section.kind.color)
             if let when = section.timestamp {
                 Text(when, format: .dateTime.hour().minute().second())
-                    .font(DS.mono(10))
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(.secondary)
             }
         }
@@ -114,7 +116,7 @@ struct LogViewer: View {
             text.append(highlight(line: line))
         }
         return Text(text)
-            .font(DS.mono(12))
+            .font(DS.font(.label, .mono))
             .lineSpacing(1)
             .textSelection(.enabled)
             .lineLimit(nil)
@@ -133,15 +135,15 @@ struct LogViewer: View {
         let lower = line.lowercased()
         if lower.contains("error") || lower.contains("rate limit")
             || lower.contains("timeout") || lower.contains("failed") {
-            attr.foregroundColor = .red
+            attr.foregroundColor = DS.Status.err
         } else if lower.contains("budget") {
-            attr.foregroundColor = .orange
+            attr.foregroundColor = DS.Status.warn
         } else if lower.contains("[schema-parity] ok")
             || lower.contains("budget ok")
             || lower.contains("success") {
-            attr.foregroundColor = .green
+            attr.foregroundColor = DS.Status.ok
         } else if line.hasPrefix("**") || line.hasPrefix("# ") {
-            attr.foregroundColor = .accentColor
+            attr.foregroundColor = DS.Accent.ink
         }
         return attr
     }
@@ -159,11 +161,11 @@ struct LogViewer: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if rawChunks.isEmpty {
-                    Text("(empty log)").font(DS.mono(12)).foregroundStyle(.secondary)
+                    Text("(empty log)").font(DS.font(.label, .mono)).foregroundStyle(.secondary)
                 }
                 ForEach(Array(rawChunks.enumerated()), id: \.offset) { _, chunk in
                     Text(chunk)
-                        .font(DS.mono(12))
+                        .font(DS.font(.label, .mono))
                         .textSelection(.enabled)
                         .lineLimit(nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -299,12 +301,12 @@ struct LogSection: Identifiable {
         }
         var color: Color {
             switch self {
-            case .start:   return .blue
-            case .finish:  return .green
-            case .summary: return .accentColor
-            case .budget:  return .orange
-            case .error:   return .red
-            case .info:    return .secondary
+            case .start:   return DS.Ink.p2
+            case .finish:  return DS.Status.ok
+            case .summary: return DS.Accent.ink
+            case .budget:  return DS.Status.warn
+            case .error:   return DS.Status.err
+            case .info:    return DS.Ink.p3
             }
         }
     }

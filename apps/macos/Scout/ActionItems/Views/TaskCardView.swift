@@ -112,28 +112,9 @@ struct TaskCardView: View {
                     .padding(.bottom, 10)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
-                )
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 10)
-                .opacity(task.done ? 0.5 : 1)
-        }
-        .overlay {
-            if isCursor {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(DS.Accent.fill, lineWidth: 1.5)
-                    .allowsHitTesting(false)
-            }
-        }
+        // Picked for copying is `marked`; keyboard-current is `selected`.
+        .editorialCard(padding: 0, cornerRadius: 10, selected: isCursor, marked: isSelected,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
         // A click anywhere on the card makes it keyboard-current, alongside
         // whatever the click hit (a button still does its own thing).
         .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })
@@ -166,7 +147,7 @@ struct TaskCardView: View {
                 }
                 // Not selectable: a click on the title opens or closes the card.
                 InlineMarkdownText(task.subject)
-                    .font(DS.serif(15.5, weight: .medium))
+                    .dsFont(.headline, .serif, weight: .medium)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                     .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
@@ -183,7 +164,7 @@ struct TaskCardView: View {
             }
             if !expanded && !summary.isEmpty && density == .comfortable {
                 InlineMarkdownText(summary)
-                    .font(DS.serif(13))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -205,7 +186,7 @@ struct TaskCardView: View {
     private var chevron: some View {
         Button { toggle() } label: {
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
@@ -320,15 +301,10 @@ struct TaskCardView: View {
     private func chipBody(for chip: TaskChip) -> some View {
         HStack(spacing: 4) {
             Image(systemName: chipGlyph(chip.glyph))
-                .font(DS.sans(9))
+                .font(DS.font(.micro))
             Text(chip.label)
-                .font(DS.mono(10.5))
-                .lineLimit(1)
         }
-        .foregroundStyle(DS.Ink.p3)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(EditorialChipBackground())
+        .dsTag(.mono)
     }
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
@@ -381,7 +357,7 @@ struct TaskCardView: View {
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.base))
@@ -398,27 +374,19 @@ struct TaskCardView: View {
     private var trailingStatus: some View {
         switch Self.trailingStatus(task, fields: fields) {
         case .done(let label):
-            statusPill(label, color: DS.Status.ok)
+            DSPill(label, tone: .ok)
         case .snoozed(let until):
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
             }
-            .font(DS.mono(10.5))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
         case .plan(let label):
             HStack(spacing: 3) {
                 Image(systemName: "clock").imageScale(.small)
                 Text(label)
             }
-            .font(DS.mono(10.5))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
             .help(Self.planChipHelp(task.plan))
         case .none:
             EmptyView()
@@ -506,15 +474,6 @@ struct TaskCardView: View {
         f.dateFormat = "EEE"
         return f
     }()
-
-    private func statusPill(_ label: String, color: Color) -> some View {
-        Text(label)
-            .font(DS.mono(10.5, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
-    }
 
     // MARK: - Expanded detail
 
@@ -614,14 +573,14 @@ struct TaskCardView: View {
                 .padding(.top, 7)
             VStack(alignment: .leading, spacing: 4) {
                 InlineMarkdownText(task.subject)
-                    .font(DS.serif(13.5))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
                     .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {
                     InlineMarkdownText(task.summary)
-                        .font(DS.serif(12.5))
+                        .dsFont(.label, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -702,7 +661,7 @@ struct TaskCardView: View {
             }
         } label: {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(DS.sans(15, weight: .medium))
+                .font(DS.font(.headline, weight: .medium))
                 .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 28, height: 28)
@@ -740,7 +699,7 @@ struct TaskCardView: View {
 
     private func inlineErrorLabel(_ err: String) -> some View {
         Text(err)
-            .font(DS.sans(11))
+            .font(DS.font(.caption))
             .foregroundStyle(DS.Status.err)
             .padding(.top, 2)
             .textSelection(.enabled)

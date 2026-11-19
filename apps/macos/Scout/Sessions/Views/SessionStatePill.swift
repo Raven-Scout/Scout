@@ -5,7 +5,7 @@ import SwiftUI
 enum SessionStateStyle {
     static func color(_ state: AgentSessionState, isOpen: Bool = false) -> Color {
         switch state {
-        case .needsYou: return DS.Priority.urgent
+        case .needsYou: return DS.Attention.you
         case .running:  return DS.Status.ok
         case .waiting:  return DS.Priority.todo
         case .parked:   return isOpen ? DS.Ink.p3 : DS.Ink.p4
@@ -38,11 +38,11 @@ struct SessionStateLabel: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: SessionStateStyle.symbol(state))
-                .font(DS.sans(10.5, weight: .semibold))
+                .font(DS.font(.caption2, weight: .semibold))
                 .foregroundStyle(SessionStateStyle.color(state, isOpen: isOpen))
                 .accessibilityHidden(true)
             Text(state.label)
-                .font(DS.sans(10.5, weight: .semibold))
+                .font(DS.font(.caption2, weight: .semibold))
                 .foregroundStyle(DS.Ink.p2)
         }
         .accessibilityElement(children: .combine)
@@ -67,14 +67,16 @@ struct SessionStatePill: View {
     var isOpen = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            SessionStateDot(state: state, isOpen: isOpen)
-            Text(state.label)
-                .font(DS.sans(11, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
+        DSPill(state.label, tone: Self.tone(state), dot: SessionStateStyle.color(state, isOpen: isOpen))
+            .accessibilityLabel("State: \(state.label)")
+    }
+
+    nonisolated static func tone(_ state: AgentSessionState) -> DS.PillTone {
+        switch state {
+        case .needsYou: return .attention
+        case .running:  return .info
+        case .waiting:  return .accent
+        case .parked, .stale, .done: return .neutral
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(SessionStateStyle.color(state, isOpen: isOpen).opacity(0.14)))
     }
 }

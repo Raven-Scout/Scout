@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One slot rendered as a card in `SchedulesMasterCards`. 4pt left border
-/// in slot type color; serif time at top; type pill, slot key, day strip,
+/// One slot rendered as a card in `SchedulesMasterCards`. A left edge in the
+/// slot type color; serif time at top; type pill, slot key, day strip,
 /// cooldown, and on-miss policy below.
 struct SlotCard: View {
     let slot: Slot
@@ -12,46 +12,37 @@ struct SlotCard: View {
     private var typeColor: Color { DS.SlotType.color(for: slot.type) }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(typeColor)
-                .frame(width: 4)
-            VStack(alignment: .leading, spacing: 12) {
-                topRow
-                HStack(spacing: 6) {
-                    Text(slot.displayName)
-                        .font(DS.sans(12))
-                        .foregroundStyle(DS.Ink.p2)
-                    if let model = slot.model {
-                        SlotModelTag(model: model)
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            topRow
+            HStack(spacing: 6) {
+                Text(slot.displayName)
+                    .font(DS.font(.label))
+                    .foregroundStyle(DS.Ink.p2)
+                if let model = slot.model {
+                    SlotModelTag(model: model)
                 }
-                DayCircleStrip(
-                    activeDays: Set(slot.weekdays),
-                    typeColor: typeColor,
-                    diameter: 12
-                )
-                cooldownRow
-                OnMissPill(policy: slot.onMiss)
-                SlotWarningLines(warnings: warnings)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            DayCircleStrip(
+                activeDays: Set(slot.weekdays),
+                typeColor: typeColor,
+                diameter: 12
+            )
+            cooldownRow
+            OnMissPill(policy: slot.onMiss)
+            SlotWarningLines(warnings: warnings)
         }
-        .background(DS.Paper.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isSelected ? DS.Accent.fill : Color.clear, lineWidth: 2)
-        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .editorialCard(padding: 0, cornerRadius: 10, selected: isSelected, accentBar: typeColor)
     }
 
     private var topRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(formattedTime)
-                .font(DS.serif(28, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text(amPm)
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             TypePill(type: slot.type)
@@ -61,11 +52,11 @@ struct SlotCard: View {
     private var cooldownRow: some View {
         HStack(spacing: 6) {
             Text("COOLDOWN")
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(1)
                 .foregroundStyle(DS.Ink.p4)
             Text("\(slot.cooldownMinutes)m")
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .foregroundStyle(DS.Ink.p2)
         }
     }

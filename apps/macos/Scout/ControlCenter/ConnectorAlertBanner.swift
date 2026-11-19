@@ -18,41 +18,33 @@ struct ConnectorAlertBanner: View {
         }
     }
 
-    /// Critical alerts make a red bar; warnings alone an amber wash with dark
-    /// text, so a connector that is only degraded doesn't read like one that
-    /// is down (UI audit R10, #28).
+    /// Critical alerts make an error banner; warnings alone a warning one, so
+    /// a connector that is only degraded doesn't read like one that is down
+    /// (UI audit R10, #28).
     private func bannerView(alerts: [ConnectorAlert]) -> some View {
-        let head = alerts[0]
+        let head = Problem(connectorAlert: alerts[0])
         let more = alerts.count - 1
-        let critical = Self.isCritical(alerts)
-        let ink = critical ? DS.Status.onFill : DS.Ink.p1
-        let text = summary(for: head, moreCount: more)
+        let title = more > 0 ? "\(head.title) (+\(more) more)" : head.title
+        // The whole banner is one click target that opens the details.
         return Button {
             showPopover = true
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").font(DS.mono(13))
-                    .foregroundStyle(critical ? DS.Status.onFill : DS.Status.warn)
-                    .accessibilityHidden(true)
-                Text(text)
-                    .font(DS.mono(12))
-                    .lineLimit(1)
-                    .foregroundStyle(ink)
-                Spacer()
-                Text("Details")
-                    .font(DS.mono(11))
-                    .foregroundStyle(ink)
+            DSBanner(tone: Self.isCritical(alerts) ? .error : .warning, accessibilityTitle: title) {
+                DSBannerText(title: title, message: head.impact)
+                Label("Show details", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+                    .font(DS.font(.label, weight: .medium))
+                    .foregroundStyle(DS.Accent.ink)
+                    .padding(.top, 2)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(critical ? DS.Status.err : DS.Status.warn.opacity(DS.Status.washOpacity))
+            .contentShape(RoundedRectangle(cornerRadius: DS.bannerCornerRadius))
         }
         .buttonStyle(.plainHit) // ds-guard: hit area — the whole banner opens the details
-        .accessibilityLabel(text)
         .accessibilityHint("Shows every connector problem")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             popoverContent(alerts: alerts)
         }
+        .padding(.bottom, 16)
     }
 
     private func popoverContent(alerts: [ConnectorAlert]) -> some View {
@@ -60,7 +52,7 @@ struct ConnectorAlertBanner: View {
             if alerts.count > 1 {
                 HStack {
                     Text("\(alerts.count) connector problems")
-                        .font(DS.sans(12, weight: .semibold))
+                        .font(DS.font(.label, weight: .semibold))
                         .foregroundStyle(DS.Ink.p1)
                     Spacer()
                     Button("Acknowledge all") {
@@ -112,11 +104,5 @@ struct ConnectorAlertBanner: View {
             let rb = b.element.level == .critical ? 0 : 1
             return (ra, a.offset) < (rb, b.offset)
         }.map(\.element)
-    }
-
-    private func summary(for alert: ConnectorAlert, moreCount: Int) -> String {
-        let p = Problem(connectorAlert: alert)
-        let base = "\(p.title): \(p.impact ?? "")"
-        return moreCount > 0 ? "\(base)  (+\(moreCount) more)" : base
     }
 }

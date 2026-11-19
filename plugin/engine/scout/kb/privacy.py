@@ -112,7 +112,7 @@ import yaml
 from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
-from scout.kb.reader import delegate_id, is_delegate_id
+from scout.kb.reader import ELSEWHERE_READER, delegate_id, is_delegate_id
 from scout.yaml_safe import _KEY_TAGS, load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
@@ -1170,13 +1170,13 @@ def normalize_rel(vault: Path, path: str | Path) -> str:
 
 
 def reads_any(reader: str) -> bool:
-    """Whether ``reader`` may see any file: ``owner``, ``autonomous`` or a ``delegate:<id>``.
+    """Whether ``reader`` may see any file: ``owner``, ``autonomous``, ``elsewhere`` or a ``delegate:<id>``.
 
     For the early exits that touch nothing for a reader that sees nothing. A
     delegate the policy doesn't list still passes here and is then shown
     nothing by :func:`visible_to`.
     """
-    return reader in FULL_READERS or delegate_id(reader) is not None
+    return reader in FULL_READERS or reader == ELSEWHERE_READER or delegate_id(reader) is not None
 
 
 def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
@@ -1194,9 +1194,16 @@ def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
     through Agnes's shared reader, which applies the effective
     ``federation_scope`` from the synced labels (Agnes #6090 §5.2); the laptop
     engine never serves another person.
+
+    ``elsewhere`` (the owner outside the vault) sees what a listed delegate
+    without ``include_private`` sees, with no policy needed.
     """
     if reader in FULL_READERS:
         return True
+    if reader == ELSEWHERE_READER:
+        return not (label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path)) and (
+            label.visibility == "normal"
+        )
     rule = policy.delegate(reader) if policy is not None else None
     if rule is None or label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path):
         return False

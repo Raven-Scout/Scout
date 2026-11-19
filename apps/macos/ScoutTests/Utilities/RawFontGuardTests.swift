@@ -7,10 +7,10 @@ import Testing
 /// text-style font (`.font(.caption)`, `.body.weight(…)`) silently stays at
 /// its fixed size. This scans the app's sources and names any that slipped in.
 ///
-/// To fix a hit, use the `DS` call at the same size; the C7 font-sweep commit
-/// message has the mapping (macOS: body 13, callout 12, subheadline 11,
-/// caption/footnote 10, headline 13 bold, title3 15, title2 17, title 22,
-/// largeTitle 26).
+/// To fix a hit, use the `DS.font` role at the nearest size (macOS: body 13,
+/// callout 12, subheadline 11, caption/footnote 10, headline 13 bold, title3
+/// 15, title2 17, title 22, largeTitle 26); `TypeRoleGuardTests` lists which
+/// role covers which size.
 @Suite("No raw fonts outside the design system")
 struct RawFontGuardTests {
 

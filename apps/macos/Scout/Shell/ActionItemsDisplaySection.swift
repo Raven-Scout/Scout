@@ -55,11 +55,11 @@ struct ActionItemsDisplaySection: View {
                 }
             }
             Text("Saved in \(path)")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             if let warning {
                 Text(warning)
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }

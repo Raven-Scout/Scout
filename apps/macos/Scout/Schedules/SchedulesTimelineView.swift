@@ -122,10 +122,10 @@ struct SchedulesTimelineView: View {
         return VStack(spacing: 8) {
             Spacer()
             Text(title)
-                .font(DS.serif(17, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("Pick another day, or Every day to see all schedules.")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }
@@ -178,7 +178,7 @@ struct SchedulesTimelineView: View {
         GeometryReader { geo in
             let center = geo.size.width / 2
             ZStack {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 14)  // ds-guard: not a card — the timeline's axis track
                     .fill(DS.Paper.raised)
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                     .frame(width: axisWidth)
@@ -202,7 +202,7 @@ struct SchedulesTimelineView: View {
                     .position(x: center, y: t.y)
                 if t.major {
                     Text(formatHour(t.h))
-                        .font(DS.mono(10.5, weight: .medium))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p3)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -222,15 +222,7 @@ struct SchedulesTimelineView: View {
         return GeometryReader { geo in
             let center = geo.size.width / 2
             VStack(spacing: 0) {
-                Text("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
-                    .font(DS.mono(10, weight: .medium))
-                    .foregroundStyle(DS.Ink.p4)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(DS.Paper.sunk)
-                            .overlay(Capsule().strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                    )
+                DSPill("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
             }
             .position(x: center, y: seg.y0 + gapPx / 2)
         }
@@ -254,7 +246,7 @@ struct SchedulesTimelineView: View {
                     .frame(width: 10, height: 10)
                     .position(x: center, y: y)
                 Text("NOW")
-                    .font(DS.mono(9, weight: .semibold))
+                    .font(DS.font(.micro, .mono, weight: .semibold))
                     .tracking(1.5)
                     .foregroundStyle(DS.Status.err)
                     .padding(.horizontal, 6)
@@ -304,26 +296,11 @@ struct SchedulesTimelineView: View {
                     selectedSlotKey = slot.key
                 } label: {
                     cardContents(slot: slot, ring: ring)
+                        .editorialCard(padding: 0, selected: isSelected, accentBar: ring)
                         .frame(width: cardW)
                 }
-                .buttonStyle(.plainHit)
-                .accessibilitySelected(selectedSlotKey == slot.key)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(ring.opacity(0.85))
-                        .frame(width: 3)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(isSelected ? DS.Paper.raised : DS.Paper.base)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9)
-                                .strokeBorder(isSelected ? ring.opacity(0.7) : DS.Rule.soft, lineWidth: isSelected ? 1.5 : 0.5)
-                        )
-                        .shadow(color: DS.Neumorphic.shadow.opacity(0.6), radius: 4, x: 2, y: 2)
-                        .shadow(color: DS.Neumorphic.highlight, radius: 3, x: -1, y: -1)
-                )
+                .buttonStyle(.dsCard())
+                .accessibilitySelected(isSelected)
                 .position(x: xCenter, y: p.y)
             }
         }
@@ -336,22 +313,16 @@ struct SchedulesTimelineView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(t.hh + ":" + t.mm)
-                    .font(DS.mono(13, weight: .medium))
+                    .font(DS.font(.body, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(t.suffix.uppercased())
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
-                Text(slot.type.displayName)
-                    .font(DS.sans(9, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(DS.Ink.onTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(ring))
+                DSPill(slot.type.displayName, tone: .slot(slot.type))
             }
             Text(slot.displayName)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -359,7 +330,7 @@ struct SchedulesTimelineView: View {
                 weekdayStrip(weekdays: slot.weekdays, ring: ring)
                 Spacer(minLength: 0)
                 Text("\(slot.cooldownMinutes)m cool")
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -375,7 +346,7 @@ struct SchedulesTimelineView: View {
             ForEach(names, id: \.self) { name in
                 let isOn = on.contains(name)
                 Text(String(name.prefix(1)))
-                    .font(DS.sans(8.5, weight: .medium))
+                    .font(DS.font(.micro, weight: .medium))
                     .foregroundStyle(isOn ? DS.Ink.onTint : DS.Ink.p4)
                     .frame(width: DS.scaled(12), height: DS.scaled(12))   // grows with Text size
                     .background(

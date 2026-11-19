@@ -25,7 +25,7 @@ struct MenuBarExtraContent: View {
                 .padding(.top, 16)
             if let error = state.fireNowError {
                 Text(error)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 10)
@@ -76,31 +76,22 @@ struct MenuBarExtraContent: View {
     private func headerRow(compact: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "binoculars.fill")
-                .font(DS.sans(15, weight: .semibold))
+                .font(DS.font(.headline, weight: .semibold))
                 .foregroundStyle(DS.Accent.ink)
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(DS.Accent.wash))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Scout")
-                    .font(DS.serif(18, weight: .semibold))
+                    .dsFont(.title, .serif, weight: .semibold)
                     .foregroundStyle(DS.Ink.p1)
                 Text("Quick control")
-                    .font(DS.sans(10.5, weight: .medium))
+                    .font(DS.font(.caption2, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
             }
             .fixedSize()
             Spacer()
             if state.urgentActionCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                    Text("\(state.urgentActionCount) urgent")
-                }
-                .font(DS.sans(10.5, weight: .semibold))
-                .foregroundStyle(DS.Priority.urgent)
-                .padding(.horizontal, 7)
-                .frame(height: 24)
-                .background(Capsule().fill(DS.Priority.urgent.opacity(0.1)))
-                .fixedSize()
+                DSPill("\(state.urgentActionCount) urgent", tone: .urgent, symbol: "exclamationmark.circle.fill")
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
                 .help("Urgent action items waiting for attention")
                 .accessibilityElement(children: .ignore)
@@ -133,11 +124,11 @@ struct MenuBarExtraContent: View {
             // text has to ask for its second line (UI audit R10).
             VStack(alignment: .leading, spacing: 2) {
                 Text(status.title)
-                    .font(DS.sans(12.5, weight: .semibold))
+                    .font(DS.font(.label, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(status.detail)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -151,12 +142,7 @@ struct MenuBarExtraContent: View {
                     .fixedSize()
             }
         }
-        .padding(11)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 11)
     }
 
     /// Setup happens in the main window (it shows the setup flow while the
@@ -171,14 +157,14 @@ struct MenuBarExtraContent: View {
     private var upcomingSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("UPCOMING")
-                .font(DS.sans(9.5, weight: .semibold))
+                .font(DS.font(.micro, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(DS.Ink.p4)
 
             let upcoming = Array(state.scheduleService.upcoming.prefix(5))
             if upcoming.isEmpty {
                 Text("No upcoming runs scheduled")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
@@ -192,11 +178,7 @@ struct MenuBarExtraContent: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(DS.Paper.raised)
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                )
+                .editorialCard(padding: 0)
             }
         }
     }
@@ -206,10 +188,10 @@ struct MenuBarExtraContent: View {
         return HStack(spacing: 9) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.displayName)
-                    .font(DS.sans(11.5, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(run.scheduledAt.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
-                    .font(DS.mono(10.5))
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(DS.Ink.p3)
             }
             Spacer()
@@ -226,7 +208,7 @@ struct MenuBarExtraContent: View {
                 }
             }
             .buttonStyle(.borderless)
-            .font(DS.sans(10.5, weight: .medium))
+            .font(DS.font(.caption2, weight: .medium))
             .foregroundStyle(DS.Accent.ink)
             .disabled(isFiring)
             .help(isFiring ? "This run is being started" : "Start \(run.displayName) now")
@@ -293,7 +275,7 @@ struct MenuBarExtraContent: View {
     private func footerButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .frame(width: 26, height: 24)
         }
         .buttonStyle(.borderless)
@@ -328,10 +310,10 @@ struct MenuBarExtraContent: View {
     private var wakeConfirmation: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Wake this Mac for scheduled runs?")
-                .font(DS.sans(12, weight: .semibold))
+                .font(DS.font(.label, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
             Text("Scout asks macOS to wake the Mac at the time of the earliest weekday run, on that run's days. It only works while the Mac is plugged in, and it replaces any repeating wake or power-on time already set on this Mac.")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
@@ -346,12 +328,7 @@ struct MenuBarExtraContent: View {
                 .buttonStyle(.ds(.primary, size: .small))
             }
         }
-        .padding(11)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 11)
     }
 
     private func wakeResult(_ result: AppState.WakeScheduleResult) -> some View {
@@ -362,7 +339,7 @@ struct MenuBarExtraContent: View {
                     // The command on its own line, selectable and copyable:
                     // Copy details would bring the whole engine output along.
                     Text(command)
-                        .font(DS.mono(10.5))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(DS.Ink.p1)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -381,7 +358,7 @@ struct MenuBarExtraContent: View {
                 state.wakeScheduleResult = nil
             } label: {
                 Image(systemName: "xmark")
-                    .font(DS.sans(10, weight: .semibold))
+                    .font(DS.font(.caption2, weight: .semibold))
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(.borderless)

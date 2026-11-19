@@ -60,13 +60,13 @@ struct ProposalsView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text("Proposals")
-                    .font(DS.serif(28, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .glossaryHelp(.proposal)
                 Spacer(minLength: 0)
             }
             Text(subtitle)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.bottom, 6)
@@ -98,7 +98,7 @@ struct ProposalsView: View {
             )
         case .failed(let err):
             Text("Couldn't load proposals: \(err)")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Status.err)
                 .padding(.top, 24)
         case .loaded:
@@ -141,12 +141,12 @@ struct ProposalsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: resolvedExpanded ? "chevron.down" : "chevron.right")
-                        .font(DS.sans(10, weight: .semibold))
+                        .font(DS.font(.caption2, weight: .semibold))
                     Text("Resolved")
-                        .font(DS.sans(11.5, weight: .semibold))
+                        .font(DS.font(.caption, weight: .semibold))
                         .tracking(0.06 * 11.5)
                     Text("\(resolved.count)")
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption, .mono))
                         .foregroundStyle(DS.Ink.p4)
                 }
                 .foregroundStyle(DS.Ink.p3)
@@ -166,10 +166,10 @@ struct ProposalsView: View {
     private func emptyState(icon: String, message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
-                .font(DS.sans(26))
+                .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(message)
-                .font(DS.serif(14))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

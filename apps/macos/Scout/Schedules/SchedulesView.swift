@@ -216,7 +216,7 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(DS.sans(36))
+                .font(DS.symbol(36))
                 .foregroundStyle(DS.Status.err)
             // scoutctl's own output goes behind Details (UI audit #56).
             ProblemView(problem: Self.loadFailedProblem(message),
@@ -233,13 +233,13 @@ struct SchedulesView: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "calendar.badge.plus")
-                .font(DS.sans(36))
+                .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text("No schedules yet")
-                .font(DS.serif(20, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             Text("A schedule tells Scout when to run by itself, such as a briefing every weekday morning. Add one to get started.")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -252,45 +252,20 @@ struct SchedulesView: View {
 
     // MARK: - Banners
 
-    @ViewBuilder
     private var staleBanner: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("The schedule changed outside the app")
-                    .font(DS.sans(13, weight: .medium))
-                    .foregroundStyle(DS.Ink.p1)
-                if let detail = stalenessDetail {
-                    Text(detail).font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
-                }
-            }
-            Spacer()
-            Button("Reload now") {
-                Task { await reload(); staleBannerVisible = false }
-            }
-            .buttonStyle(.dsPrimary)
-            Button("Dismiss") { staleBannerVisible = false }
-                .buttonStyle(.dsSecondary)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .background(DS.Status.warn.opacity(0.15))
+        DSBanner(tone: .warning, title: "The schedule changed outside the app",
+                 message: stalenessDetail,
+                 actions: [ProblemAction("Reload now") { Task { await reload(); staleBannerVisible = false } }],
+                 onDismiss: { staleBannerVisible = false })
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 
     private var droppedEditsBanner: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            Text(Self.droppedEditsText(drafts.droppedSlotNames))
-                .font(DS.sans(13))
-                .foregroundStyle(DS.Ink.p1)
-            Spacer()
-            Button("Dismiss") { drafts.clearDropped() }
-                .buttonStyle(.plainHit)
-                .foregroundStyle(DS.Ink.p3)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .background(DS.Status.warn.opacity(0.15))
+        DSBanner(tone: .warning, title: Self.droppedEditsText(drafts.droppedSlotNames),
+                 onDismiss: { drafts.clearDropped() })
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 
     /// A failed write: the plain title and what to do, with the engine's own

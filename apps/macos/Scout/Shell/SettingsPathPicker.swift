@@ -108,7 +108,7 @@ struct SettingsPathPicker: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(isDefault ? defaultLabel : path)
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .foregroundStyle(isDefault ? DS.Ink.p4 : DS.Ink.p1)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -134,13 +134,13 @@ struct SettingsPathPicker: View {
             }
             if let problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(notes, id: \.self) { note in
                     Label(note, systemImage: "info.circle")
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }

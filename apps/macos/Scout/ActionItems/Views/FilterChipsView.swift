@@ -94,7 +94,7 @@ struct FilterChipsView: View {
             }
         } label: {
             Text(Self.kindMenuTitle(for: filter.kinds))
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -112,7 +112,7 @@ struct FilterChipsView: View {
             .pickerStyle(.inline)
         } label: {
             Text("Show: \(Self.statusTitle(filter.status))")
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -144,7 +144,7 @@ struct FilterChipsView: View {
             filter.status = s
         } label: {
             Text(Self.statusTitle(s))
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .lineLimit(1)
                 .fixedSize()
                 .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p2)
@@ -206,29 +206,13 @@ struct FilterChipsView: View {
                         .accessibilityHidden(true)
                 }
                 Text(label)
-                    .font(DS.sans(12, weight: .medium))
-                    .lineLimit(1)
                     .fixedSize()
                 if let count {
-                    Text("\(count)")
-                        .font(DS.mono(10.5, weight: .medium))
-                        .foregroundStyle(DS.Ink.p4)
-                }
-            }
-            .foregroundStyle(selected ? DS.Ink.p1 : DS.Ink.p3)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background {
-                if selected {
-                    // Selected chip uses a recessed paper fill — visually maps to the
-                    // neumorphic-pressed state from the design tokens.
-                    RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk)
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                    DSChipCount(count)
                 }
             }
         }
-        .buttonStyle(.plainHit)
-        .accessibilitySelected(selected)
+        .buttonStyle(.dsChip(selected: selected))
     }
 
     // MARK: - Toggle logic

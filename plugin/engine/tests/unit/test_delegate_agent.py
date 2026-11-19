@@ -497,3 +497,24 @@ def test_root_github_files_are_counted_and_named_apart(vault: Path, tmp_path: Pa
     assert alone.startswith("left out as agent config: 1 file(s): 1 under the root's .github/")
     many = dm.Plan(delegate="d", agent_files=[f"tools/{i}/claude.md" for i in range(dm.LEFT_OUT_LISTED + 2)])
     assert "and 2 more" in dm._agent_files_note("d", many)[0]
+
+
+# ----- V4: init learns the inbox clone -----------------------------------------------------------
+
+
+def test_init_learns_the_inbox_clone_and_remembers_it(vault: Path, tmp_path: Path) -> None:  # noqa: F811
+    clone = _clone(vault, tmp_path)
+    inbox_bare = _bare(tmp_path, "grok-inbox")
+    inbox = tmp_path / "grok-inbox-clone"
+    subprocess.run(["git", "clone", "-q", str(inbox_bare), str(inbox)], check=True, capture_output=True)
+    result = da.init(clone, inbox=inbox, env={})
+    assert result.env["SCOUT_INBOX_DIR"] == str(inbox.resolve())
+    assert "SCOUT_INBOX_DIR=" in Path(str(result.env_file)).read_text(encoding="utf-8")
+    again = da.init(clone, env={})  # the next task: no --inbox, the env file remembers it
+    assert again.env["SCOUT_INBOX_DIR"] == str(inbox.resolve()) and again.notes == []
+    with pytest.raises(rs.RepoSyncError) as e:
+        da.init(clone, inbox=clone, env={})  # the mirror clone isn't an inbox
+    assert e.value.code == "not_an_inbox"
+    shutil.rmtree(inbox)
+    gone = da.init(clone, env={})
+    assert "SCOUT_INBOX_DIR" not in gone.env and any("pass --inbox again" in n for n in gone.notes)

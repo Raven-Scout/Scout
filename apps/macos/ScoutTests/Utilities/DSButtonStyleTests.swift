@@ -31,9 +31,22 @@ struct DSButtonStyleTests {
         #expect(paperText.contains(DS.buttonColors(.destructive, enabled: true).label.name))
     }
 
-    @Test("disabled looks the same for every chromed role, and unlike any enabled role")
+    @Test("a quiet action is grey paper text, darker on hover, never accent")
+    func quietIsGreyPaperText() {
+        let paperText = Set(DS.ContrastPairs.paperText.map(\.name))
+        let quiet = DS.buttonColors(.quiet, enabled: true)
+        #expect(quiet.fill == nil && quiet.stroke == nil)
+        #expect(paperText.contains(quiet.label.name))
+        #expect(paperText.contains(DS.quietHoverLabel.name))
+        #expect(DS.quietHoverLabel.name != quiet.label.name)
+        #expect(quiet.label.name != DS.Palette.accentInk.name, "a quiet action must not read as a link")
+        #expect(DS.buttonColors(.quiet, enabled: false).label.name == DS.Palette.inkP4.name)
+    }
+
+    @Test("disabled reads one way for every role, and unlike any enabled role")
     func disabledIsOneLook() {
-        let disabled = DS.ButtonRole.allCases.filter { $0 != .link }.map { DS.buttonColors($0, enabled: false) }
+        // One label colour for every role; one well behind every role that has chrome.
+        let disabled = DS.ButtonRole.allCases.map { DS.buttonColors($0, enabled: false) }
         #expect(Set(disabled.map(\.label.name)).count == 1)
         #expect(Set(disabled.compactMap { $0.fill?.name }).count == 1)
         for role in DS.ButtonRole.allCases {
@@ -42,7 +55,7 @@ struct DSButtonStyleTests {
         }
     }
 
-    @Test("the four roles are visibly different")
+    @Test("the five roles are visibly different")
     func rolesDiffer() {
         let looks = DS.ButtonRole.allCases.map { role -> String in
             let c = DS.buttonColors(role, enabled: true)

@@ -53,7 +53,7 @@ struct SessionsHeader: View {
     private func titleBlock(freshnessLines: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Sessions")
-                .font(DS.serif(28, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .fixedSize()
@@ -99,14 +99,14 @@ struct SessionsHeader: View {
                         })
                 }
             }
-            .font(DS.sans(12))
+            .font(DS.font(.label))
         } else {
             Text(SessionsFormat.freshness(
                 lastRefreshAt: service.lastRefreshAt,
                 prFinishedAt: service.prStatus?.finishedAt,
                 prErrors: [],
                 now: now))
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .lineLimit(lines)
                 .truncationMode(.tail)
@@ -140,7 +140,7 @@ struct SessionsHeader: View {
             }
         } label: {
             Text(Self.menuTitle(projects.first { $0.key == filter.projectKey }?.name ?? "All projects"))
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -193,17 +193,10 @@ struct SessionsHeader: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let state { SessionStateDot(state: state) }
-                Text(label).font(DS.sans(12, weight: .medium))
-                Text("\(count)")
-                    .font(DS.mono(11))
-                    .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
+                Text(label)
+                DSChipCount(count)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(isSelected ? DS.Ink.p1 : DS.Paper.raised))
-            .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
         }
-        .buttonStyle(.plainHit)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .buttonStyle(.dsChip(selected: isSelected))
     }
 }

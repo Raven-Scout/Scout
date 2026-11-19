@@ -1,42 +1,34 @@
 import SwiftUI
 
-/// Small color-coded capsule for a per-file item's lifecycle status. Follows
-/// the same editorial chip family as `ProposalStatusPill`.
+/// A per-file item's lifecycle status as a design-system pill, toned like
+/// `ProposalStatusPill`.
 struct ItemStatusPill: View {
     let status: ItemStatus
 
     /// Longest label the pill shows. An unrecognized `status:` is free text —
-    /// one was a 250-character comment — and this pill is `fixedSize`, so an
+    /// one was a 250-character comment — and a pill is `fixedSize`, so an
     /// unbounded label widened its card past the window.
     static let maxLabelLength = 24
 
     nonisolated static func label(for status: ItemStatus) -> String {
-        let name = status.displayName.uppercased()
+        let name = status.displayName
         guard name.count > maxLabelLength else { return name }
         return name.prefix(maxLabelLength - 1).trimmingCharacters(in: .whitespaces) + "…"
     }
 
     var body: some View {
-        Text(Self.label(for: status))
+        DSPill(Self.label(for: status), tone: Self.tone(status))
             .help(status.displayName)
             .accessibilityLabel(status.displayName)
-            .font(DS.sans(10, weight: .semibold))
-            .tracking(0.06 * 10)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(tint.opacity(0.14)))
-            .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.5))
-            .fixedSize()
     }
 
-    private var tint: Color {
+    nonisolated static func tone(_ status: ItemStatus) -> DS.PillTone {
         switch status {
-        case .open:         return DS.Priority.todo
-        case .inProgress:   return DS.SlotType.consolidation
-        case .done:         return DS.Status.ok
-        case .dropped:      return DS.Status.err  // terminal "decided against" — red like Proposals' rejected
-        case .unknown:      return DS.Ink.p3
+        case .open:       return .accent
+        case .inProgress: return .info
+        case .done:       return .ok
+        case .dropped:    return .err  // terminal "decided against", like Proposals' rejected
+        case .unknown:    return .neutral
         }
     }
 }

@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.changes.models import OWNER_KINDS, Change, Signal
 from scout.kb import hook_paths
 
@@ -92,11 +93,8 @@ def _logs(vault: Path) -> Path:
 def _append(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, line)
-    finally:
-        os.close(fd)
+    with safe_write.open_append(path, mode=0o600, binary=True) as fh:
+        fh.write(line)
 
 
 def _read(path: Path) -> tuple[list[dict[str, Any]], int]:

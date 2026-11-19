@@ -16,7 +16,7 @@ struct TopicCountsView: View {
                 }
             }
         }
-        .font(DS.sans(12.5))
+        .font(DS.font(.label))
         .foregroundStyle(DS.Ink.p2)
         .fixedSize()
     }

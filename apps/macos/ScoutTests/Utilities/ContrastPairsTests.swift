@@ -53,6 +53,27 @@ struct ContrastPairsTests {
         #expect(Self.deltaE(warn, err) >= 15, "warn vs error in \(appearance)")
     }
 
+    @Test("\"waiting on you\" stays apart from the board's other state colours",
+          arguments: [DS.Appearance.light, .dark])
+    func attentionIsDistinct(_ appearance: DS.Appearance) {
+        let you = DS.Palette.attentionYou.resolved(appearance)
+        let others: [DS.Swatch] = [DS.Palette.slotConsolidation, DS.Palette.statusOk, DS.Palette.inkP3,
+                                   DS.Palette.statusErr, DS.Palette.slotDreaming]
+        for other in others {
+            #expect(Self.deltaE(you, other.resolved(appearance)) >= 15, "AttentionYou vs \(other.name) in \(appearance)")
+        }
+    }
+
+    @Test("each KB note type's colour stands apart from the Issues colour",
+          arguments: [DS.Appearance.light, .dark])
+    func kbIssuesIsDistinct(_ appearance: DS.Appearance) {
+        let issues = KBEntityGroup.issues.swatch.resolved(appearance)
+        for group in KBEntityGroup.allCases where group != .issues {
+            #expect(Self.deltaE(issues, group.swatch.resolved(appearance)) >= 15, "Issues vs \(group) in \(appearance)")
+        }
+        #expect(Self.deltaE(issues, DS.Palette.statusErr.resolved(appearance)) >= 15, "Issues vs the error red")
+    }
+
     /// CIE76 colour difference between two sRGB colours (D65).
     static func deltaE(_ a: DS.RGB, _ b: DS.RGB) -> Double {
         func lab(_ c: DS.RGB) -> (Double, Double, Double) {

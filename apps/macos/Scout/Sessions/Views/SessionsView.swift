@@ -97,7 +97,7 @@ struct SessionsView: View {
                 if service.availability == .ok && service.lastError == nil {
                     ProgressView()
                     Text("Reading your Claude Code sessions…")
-                        .font(DS.sans(13))
+                        .font(DS.font(.body))
                         .foregroundStyle(DS.Ink.p3)
                 }
                 Spacer()

@@ -24,7 +24,7 @@ struct BoardCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             InlineMarkdownText(task.subject)
-                .font(DS.serif(13.5, weight: .medium))
+                .dsFont(.body, .serif, weight: .medium)
                 .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                 .strikethrough(task.done, color: DS.Ink.decorative)
                 .lineLimit(density == .compact ? 2 : 3)
@@ -35,32 +35,21 @@ struct BoardCardView: View {
                 .textSelection(.enabled)
             if let launchError {
                 Text(launchError)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
         }
-        .padding(density == .compact ? 8 : 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 6)
-                .opacity(task.done ? 0.5 : 1)
-        }
+        .editorialCard(padding: density == .compact ? 8 : 12,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
     }
 
     private var header: some View {
         HStack(spacing: 6) {
             if let prefix = task.shortPrefix {
                 Text("#\(prefix)")
-                    .font(DS.mono(10.5, weight: .medium))
+                    .font(DS.font(.caption2, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
                     .textSelection(.enabled)
             }
@@ -98,7 +87,7 @@ struct BoardCardView: View {
                     .accessibilityLabel("\(commentCount) comments")
                 }
             }
-            .font(DS.mono(10))
+            .font(DS.font(.caption2, .mono))
             .foregroundStyle(DS.Ink.p3)
         }
     }

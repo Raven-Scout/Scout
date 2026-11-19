@@ -16,9 +16,9 @@ struct FilesTab: View {
                 if !didLoad {
                     Text("Loading…").foregroundStyle(.secondary).padding()
                 } else if let a = activity {
-                    section("Edited", paths: a.filesEdited, color: .yellow)
-                    section("Created", paths: a.filesWritten, color: .green)
-                    section("Read", paths: a.filesRead, color: .blue)
+                    section("Edited", paths: a.filesEdited, color: DS.Accent.ink)
+                    section("Created", paths: a.filesWritten, color: DS.Status.ok)
+                    section("Read", paths: a.filesRead, color: DS.Ink.p2)
                     if a.filesEdited.isEmpty && a.filesWritten.isEmpty && a.filesRead.isEmpty {
                         Text("No file activity recorded for this run.")
                             .foregroundStyle(.secondary)
@@ -29,7 +29,7 @@ struct FilesTab: View {
                         .foregroundStyle(.secondary)
                         .italic()
                     Text("Scout writes session files to ~/.claude/projects/-Users-…-Scout — they appear once a run starts.")
-                        .font(DS.sans(10))
+                        .font(DS.font(.caption2))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -49,11 +49,11 @@ struct FilesTab: View {
                 HStack(spacing: 6) {
                     Circle().fill(color).frame(width: 8, height: 8)
                     Text(title.uppercased())
-                        .font(DS.mono(10))
+                        .font(DS.font(.caption2, .mono))
                         .fontWeight(.medium)
                         .foregroundStyle(.secondary)
                     Text("\(paths.count)")
-                        .font(DS.mono(10))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(paths, id: \.self) { path in
@@ -67,9 +67,9 @@ struct FilesTab: View {
         HStack(spacing: 8) {
             Image(systemName: "doc.text")
                 .foregroundStyle(.secondary)
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
             Text(displayPath(path))
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(path)

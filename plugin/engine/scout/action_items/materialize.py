@@ -32,7 +32,7 @@ import os
 import re
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items.parser import parse_lines
 from scout.config import pinned_eval_day, resolve_timezone
 from scout.errors import ConfigError
@@ -343,9 +343,7 @@ def materialize(
         if _signature(compacted) == _signature(body):
             body = "\n" + compacted
         content = f"# Action Items — {_human_date(target_date)}\n{banner}{archived_note}\n{body}"
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(target)
+        safe_write.atomic_write_text(target, content)
         _record_red_carried(data_dir, target_date, content, now)
         return target
 

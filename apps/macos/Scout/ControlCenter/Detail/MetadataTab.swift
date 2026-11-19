@@ -6,7 +6,7 @@ struct MetadataTab: View {
     var body: some View {
         ScrollView {
             Text(prettyJSON)
-                .font(DS.mono(10))
+                .font(DS.font(.caption2, .mono))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()

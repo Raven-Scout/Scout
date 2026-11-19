@@ -37,7 +37,7 @@ struct AddItemSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add \(config.title) item")
-                .font(DS.serif(18))
+                .dsFont(.title, .serif)
                 .foregroundStyle(DS.Ink.p1)
 
             field("Title") {
@@ -66,7 +66,7 @@ struct AddItemSheet: View {
 
             field("Notes") {
                 TextEditor(text: $bodyText)
-                    .font(DS.serif(13.5))
+                    .dsFont(.body, .serif)
                     .frame(minHeight: 120)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
@@ -76,15 +76,17 @@ struct AddItemSheet: View {
 
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
             }
 
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
+                    .buttonStyle(.dsSecondary)
                     .keyboardShortcut(.cancelAction)
                 Button("Add") { submit() }
+                    .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSubmit)
             }
@@ -101,7 +103,7 @@ struct AddItemSheet: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label.uppercased())
-                .font(DS.mono(10))
+                .font(DS.font(.caption2, .mono))
                 .tracking(0.6)
                 .foregroundStyle(DS.Ink.p3)
                 .accessibilityHidden(true)   // the control below carries it

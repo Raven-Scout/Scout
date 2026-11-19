@@ -64,7 +64,7 @@ struct TopicBoardView: View {
                     .padding(.bottom, 4)
                 if let writeError {
                     Text(writeError)
-                        .font(DS.sans(12))
+                        .font(DS.font(.label))
                         .foregroundStyle(DS.Status.err)
                 }
                 if let board {
@@ -110,12 +110,12 @@ struct TopicBoardView: View {
     private func topicRows(_ board: TopicBoard) -> some View {
         if board.topics.isEmpty && board.onHold.isEmpty {
             Text("Nothing on the board")
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(14)
         } else if !board.hasTopicGroups {
             Text(Self.noTopicsHint)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
         }
         ForEach(board.topics.prefix(topicWindow.visibleCount(of: board.topics.count))) { topic in
@@ -138,7 +138,7 @@ struct TopicBoardView: View {
                 }
                 .buttonStyle(.ds(.link, size: .small))
                 Text("\(summary) · \(ShortcutLabel.text(AppShortcut.find)) searches all of them")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
             }

@@ -10,12 +10,12 @@ struct SessionsEmptyStateView: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: reason == .noSessionsYet ? "rectangle.stack" : "line.3.horizontal.decrease.circle")
-                .font(DS.sans(24)).foregroundStyle(DS.Ink.p4)
+                .font(DS.symbol(24)).foregroundStyle(DS.Ink.p4)
                 .accessibilityHidden(true)
             Text(reason.title)
-                .font(DS.serif(15, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p2)
             Text(reason.detail)
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
                 .fixedSize(horizontal: false, vertical: true)
@@ -86,7 +86,7 @@ struct SessionsBoardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text(title)
-                    .font(DS.serif(17, weight: .medium))
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -110,15 +110,7 @@ struct SessionsBoardView: View {
     private func countPills(_ counts: [AgentSessionState: Int]) -> some View {
         HStack(spacing: 4) {
             ForEach(AgentSessionState.allCases.filter { counts[$0] != nil }, id: \.self) { state in
-                HStack(spacing: 3) {
-                    SessionStateDot(state: state)
-                    Text("\(counts[state] ?? 0)")
-                        .font(DS.mono(10.5))
-                        .foregroundStyle(DS.Ink.p3)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(DS.Paper.sunk))
+                DSPill("\(counts[state] ?? 0)", dot: SessionStateStyle.color(state))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(counts[state] ?? 0) \(state.label.lowercased())")
             }
@@ -138,7 +130,7 @@ struct SessionsBoardView: View {
                 isHighlighted: hoveredParentID == session.id
             )
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsCard())
         .onHover { inside in
             if inside { hoveredParentID = session.parentSessionID } else if hoveredParentID == session.parentSessionID { hoveredParentID = nil }
         }
@@ -159,13 +151,8 @@ struct SessionsBoardView: View {
                         .imageScale(.small)
                     Text("\(label) (\(sessions.count))")
                 }
-                .font(DS.sans(11.5, weight: .medium))
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(DS.Paper.sunk))
             }
-            .buttonStyle(.plainHit)
+            .buttonStyle(.dsChip(selected: isOpen))
             .accessibilityLabel(isOpen ? "Hide \(label.lowercased()) sessions" : "Show \(sessions.count) \(label.lowercased()) sessions")
             if isOpen {
                 ForEach(sessions) { card($0, titles: titles) }

@@ -146,7 +146,7 @@ import yaml
 
 import scout
 from scout import delegate_containers as containers
-from scout import delegate_media, paths
+from scout import delegate_media, events, paths, safe_write
 from scout.kb.lint_config import any_match, glob_match
 from scout.kb.outbound import (
     _AFTER,
@@ -439,9 +439,8 @@ def save_links(vault: Path, links: Mapping[str, DelegateLink]) -> None:
         "links": {k: v.to_json() for k, v in sorted(links.items())},
     }
     doc["mac"] = _sign(key, "links", doc)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    # Never a fixed temp name: a run could have put a symlink there, and a plain write would follow it.
+    safe_write.atomic_write_text(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 @contextlib.contextmanager
@@ -449,7 +448,11 @@ def locked(vault: Path) -> Iterator[None]:
     """Hold the delegate-mirror lock, or refuse (``busy``) while another link, sync or unlink holds it."""
     path = vault / LOCK_REL
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
+    try:
+        fh = safe_write.open_lock(path, on_unsafe=_on_unsafe(vault))
+    except safe_write.UnsafeFileError as e:  # replacing it failed: a folder there, or a link put straight back
+        raise RepoSyncError("state_unsafe", f"refused: {LOCK_REL} isn't a plain file ({e.strerror})") from e
+    with fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as e:
@@ -458,6 +461,14 @@ def locked(vault: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _on_unsafe(vault: Path) -> safe_write.OnUnsafe:
+    """A link a run put at the mirror lock or tick file is removed and made again, never followed, and recorded:
+    refusing would stop every mirror sync."""
+    return events.unsafe_file_recorder(
+        paths.logs_dir(vault), kind="delegate_mirror.unsafe_file_replaced", source="delegate_mirror"
+    )
 
 
 def ensure_ignored(vault: Path) -> bool:
@@ -470,7 +481,7 @@ def ensure_ignored(vault: Path) -> bool:
     text = gi.read_text(encoding="utf-8") if gi.exists() else ""
     head = text if not text or text.endswith("\n") else text + "\n"
     lines = "".join(f"{rel}\n" for rel in missing)
-    gi.write_text(f"{head}# Delegate mirrors (scoutctl delegate): this computer's state\n{lines}", "utf-8")
+    safe_write.atomic_write_text(gi, f"{head}# Delegate mirrors (scoutctl delegate): this computer's state\n{lines}")
     return True
 
 
@@ -628,10 +639,7 @@ def save_push_token(vault: Path, token: str) -> None:
         raise RepoSyncError("token_missing", "refused: no token given")
     _private_dir()
     p = push_token_path(vault)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token.strip() + "\n")
-    os.chmod(p, 0o600)
+    safe_write.atomic_write_text(p, token.strip() + "\n", mode=0o600)
 
 
 def _push_token(vault: Path) -> str | None:
@@ -1485,9 +1493,7 @@ class ScanMemo:
         doc["mac"] = _sign(key, f"memo:{self.delegate}", doc)
         with contextlib.suppress(OSError):  # a memo that can't be written only costs a full scan next time
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
-            tmp.replace(self.path)
+            safe_write.atomic_write_text(self.path, json.dumps(doc, separators=(",", ":")))
 
 
 def plan(
@@ -2356,8 +2362,8 @@ def mark_started(vault: Path) -> None:
     """Note that the tick started a sync now (the tick file's mtime)."""
     tick = vault / TICK_REL
     tick.parent.mkdir(parents=True, exist_ok=True)
-    tick.touch()
-    os.utime(tick)
+    with safe_write.open_append(tick, on_unsafe=_on_unsafe(vault)) as fh:  # never through a link a run put there
+        os.utime(fh.fileno())
 
 
 def sync_all(
@@ -2665,7 +2671,7 @@ def _deploy_key(vault: Path, delegate: str, *, rotate: bool, revoke: bool, gh: G
         shutil.move(str(new.with_name("key.pub")), key.with_name(key.name + ".pub"))
         os.chmod(key, 0o600)
         known = key.with_name(key.name + ".known_hosts")
-        known.write_text(GITHUB_KNOWN_HOSTS + "\n", encoding="utf-8")
+        safe_write.atomic_write_text(known, GITHUB_KNOWN_HOSTS + "\n")
         added = dataclasses.replace(added, key_file=str(key))
     links[delegate] = added
     save_links(vault, links)

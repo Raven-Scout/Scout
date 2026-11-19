@@ -155,8 +155,7 @@ struct TroubleshootingRow: View {
                 Button("Show Logs Folder") { HelpActions.showLogsFolder(vault: vault) }
                 Button("Export Diagnostics…") { openWindow(id: HelpWindow.diagnostics) }
             }
-            .buttonStyle(.plainHit)
-            .font(DS.sans(12))
+            .buttonStyle(.dsSecondary)
         }
     }
 }

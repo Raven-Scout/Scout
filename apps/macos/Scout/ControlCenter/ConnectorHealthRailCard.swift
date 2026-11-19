@@ -32,7 +32,7 @@ struct ConnectorHealthRailCard: View {
             RailCardHeader(title: "Connector health")
             if matrix.sessionsNewestFirst.isEmpty {
                 Text("No scheduled runs have produced connector data yet.")
-                    .font(DS.mono(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.vertical, 12)
             } else {
@@ -64,14 +64,14 @@ struct ConnectorHealthRailCard: View {
         let now = Date()
         return VStack(alignment: .leading, spacing: 4) {
             Text("Last \(visibleSessions.count) run\(visibleSessions.count == 1 ? "" : "s"), newest first")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.bottom, 2)
             HStack(spacing: 4) {
                 Text("").frame(width: 80, alignment: .leading)
                 ForEach(Array(visibleSessions.enumerated()), id: \.offset) { idx, session in
                     Text(Self.columnLabel(session.startedAt, now: now))
-                        .font(DS.mono(9.5))
+                        .font(DS.font(.micro, .mono))
                         .foregroundStyle(DS.Ink.p4)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -80,7 +80,7 @@ struct ConnectorHealthRailCard: View {
                         .accessibilityLabel(sessionHeaderTooltip(session: session, index: idx))
                 }
                 Text("Worked")
-                    .font(DS.mono(9.5))
+                    .font(DS.font(.micro))
                     .foregroundStyle(DS.Ink.p4)
                     .frame(width: 44, alignment: .trailing)
                     .help("How often this connector worked in these runs, counting only the runs that used it.")
@@ -90,12 +90,12 @@ struct ConnectorHealthRailCard: View {
             }
             if used.isEmpty {
                 Text("These runs didn't use any connectors.")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.top, 4)
             } else if unused > 0 {
                 Text("\(unused) more connector\(unused == 1 ? "" : "s") weren't used in these runs.")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.top, 4)
             }
@@ -132,7 +132,7 @@ struct ConnectorHealthRailCard: View {
     ) -> some View {
         HStack(spacing: 4) {
             Text(label(for: key))
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
                 // A long connector name stays on one line instead of making
                 // the row many lines tall; the full key is in the tooltip.
@@ -148,7 +148,7 @@ struct ConnectorHealthRailCard: View {
                     .accessibilityLabel(cellTooltip(label: label(for: key), session: session, cell: cell))
             }
             Text(rateText(matrix.visibleHealthRate(connector: key, in: visibleSessions)))
-                .font(DS.mono(10.5))
+                .font(DS.font(.caption2, .mono))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 44, alignment: .trailing)
         }

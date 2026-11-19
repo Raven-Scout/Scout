@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from scout import safe_write
 from scout.scripts import pre_session_data as psd
 
 
@@ -223,14 +224,11 @@ def test_kb_dates_cache_load_is_empty_when_missing(tmp_path: Path) -> None:
 def test_kb_dates_cache_write_cleans_up_after_a_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed atomic write must not leave a .tmp turd next to the cache."""
     cache = tmp_path / "kb-dates.cache.json"
-    real_open = Path.open
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.name.endswith(".json.tmp"):
-            raise OSError("disk full")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write.os, "replace", boom)  # fails once the temp file is written
     psd._write_kb_dates_cache(cache, {"a.md": psd._KbEntry(mtime_ns=1, last_updated="x")})
     assert not cache.exists()
     assert list(tmp_path.glob("*.tmp")) == []
@@ -297,14 +295,11 @@ def test_gather_kb_file_dates_skips_a_file_it_cannot_stat(tmp_path: Path, monkey
 def test_write_context_cleans_up_after_a_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = tmp_path / "session-context.json"
     ctx = psd.SessionContext(generated_at="2026-04-15T08:00:00", session_type="briefing")
-    real_open = Path.open
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.name.endswith(".json.tmp"):
-            raise OSError("disk full")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write.os, "replace", boom)  # fails once the temp file is written
     psd.write_context(ctx, out)
     assert not out.exists()
     assert list(tmp_path.glob("*.tmp")) == []

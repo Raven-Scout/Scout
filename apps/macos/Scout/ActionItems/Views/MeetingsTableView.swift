@@ -20,7 +20,7 @@ struct MeetingsTableView: View {
             HStack(alignment: .center, spacing: 0) {
                 ForEach(Array(table.headers.enumerated()), id: \.offset) { idx, h in
                     Text(h.uppercased())
-                        .font(DS.sans(11, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                         .tracking(0.05 * 11)
                         .foregroundStyle(DS.Ink.p4)
                         .frame(maxWidth: .infinity, alignment: idx == table.headers.count - 1 ? .trailing : .leading)
@@ -46,18 +46,14 @@ struct MeetingsTableView: View {
     private func cellView(_ raw: String, isTime: Bool, isTag: Bool) -> some View {
         if isTime {
             Text(raw)
-                .font(DS.mono(12.5, weight: .medium))
+                .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
         } else if isTag {
             Text(raw)
-                .font(DS.mono(11, weight: .medium))
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(EditorialChipBackground())
+                .dsTag(.mono)
         } else {
             InlineMarkdownText(raw)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p1)
         }
     }
