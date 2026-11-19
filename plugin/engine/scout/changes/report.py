@@ -7,11 +7,13 @@ are counted in ``skipped_rows``."""
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change
+from scout.changes.scan import derive
 from scout.changes.store import read_changes, read_signals
 
 FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit"})
@@ -31,6 +33,19 @@ def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = 
     unique: dict[str, Change] = {}
     for c in changes:
         unique.setdefault(c.id, c)
+    # changes.jsonl is run-writable, so a row is only a pointer to a commit: what the report shows is what git says
+    # that commit is now. A row whose id isn't its commit's, or whose commit isn't a self-change, is dropped.
+    derived = derive(vault, [c.commit for c in unique.values()])
+    verified = derived is not None
+    if derived is not None:
+        kept: dict[str, Change] = {}
+        for cid, c in unique.items():
+            row = derived.get(c.commit)
+            if cid != f"chg-{c.commit[:12]}" or row is None:
+                skipped += 1
+                continue
+            kept[cid] = replace(row, backfilled=c.backfilled)
+        unique = kept
     inside = sorted((c for c in unique.values() if since <= c.ts <= now), key=lambda c: c.ts, reverse=True)
     limit = max(1, limit)
     counts = {kind: 0 for kind in sorted(CHANGE_KINDS)}
@@ -42,6 +57,7 @@ def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = 
         "since": since.isoformat(),
         "truncated": len(inside) > limit,
         "skipped_rows": skipped,
+        "verified": verified,
         "changes": [c.to_row() for c in inside[:limit]],
         "counts": counts,
     }

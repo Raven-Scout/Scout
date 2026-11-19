@@ -5,13 +5,14 @@ content. A non-repo or any git failure (a timeout included) means "no new change
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from scout.changes.models import SUMMARY_MAX, WHY_TYPES, Change, Why
+from scout.changes.models import CHANGE_ID_RE, SUMMARY_MAX, WHY_TYPES, Change, Why
 from scout.changes.store import append_change, read_changes, read_scan_mark, write_scan_mark
 
 # One git call may take this long; past it the scan records nothing and the watermark stays put.
@@ -26,6 +27,8 @@ _PREFIX_RE = re.compile(r"^(?:(?:briefing|consolidation|dreaming|research|work|t
 _PATTERN_RE = re.compile(r"Pattern\s+#(\d+)", re.IGNORECASE)
 _WISHLIST_PATH_RE = re.compile(r"docs/wishlist/([A-Za-z0-9._-]+?)(?:\.md)?(?=\s|$|[,;:)\]])")
 _STATUS_DONE_RE = re.compile(r"^\+\s*status:\s*done\b", re.MULTILINE)
+_REVERTS_BODY_RE = re.compile(r"^This reverts commit ([0-9a-f]{40})", re.MULTILINE)
+_FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _RS, _US = "\x1e", "\x1f"
 
 
@@ -33,7 +36,7 @@ def parse_trailers(message: str) -> dict[str, str]:
     """Reads the ``Scout-Change-*`` trailers (keys without the prefix, lowercased) from a commit message."""
     out: dict[str, str] = {}
     for line in message.splitlines():
-        m = re.match(r"^Scout-Change-(Why|Summary|Targets|Governance):\s*(.*?)\s*$", line)
+        m = re.match(r"^Scout-Change-(Why|Summary|Targets|Governance|Reverts):\s*(.*?)\s*$", line)
         if m:
             out[m.group(1).lower()] = m.group(2)
     return out
@@ -50,10 +53,15 @@ def lane_of(subject: str) -> str | None:
     return "interactive"
 
 
-def classify(paths: list[tuple[str, str]], subject: str, diff_of: Callable[[str], str]) -> str | None:
+def classify(
+    paths: list[tuple[str, str]],
+    subject: str,
+    diff_of: Callable[[str], str],
+    trailers: dict[str, str] | None = None,
+) -> str | None:
     if lane_of(subject) == "update":
         return "upgrade"
-    if subject.startswith("Revert "):
+    if subject.startswith("Revert ") or "reverts" in (trailers or {}):
         return "rollback"
     if any(p in BRAIN_FILES and s[:1] in ("A", "M") for s, p in paths):
         return "brain-edit"
@@ -92,6 +100,8 @@ def _summary(subject: str, trailers: dict[str, str]) -> str:
 
 
 def _git(vault: Path, *args: str) -> str | None:
+    # Never take the index lock: a read must not make a concurrent run's `git add` fail.
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
@@ -101,6 +111,7 @@ def _git(vault: Path, *args: str) -> str | None:
             errors="replace",
             check=False,
             timeout=GIT_TIMEOUT_S,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):  # SubprocessError: the timeout
         return None
@@ -156,47 +167,104 @@ def scan_new(vault: Path, *, now: datetime) -> list[Change]:
     return new
 
 
+def _reverts_of(trailers: dict[str, str], body: str) -> str | None:
+    value = trailers.get("reverts", "")
+    if CHANGE_ID_RE.match(value):
+        return value
+    m = _REVERTS_BODY_RE.search(body)
+    return f"chg-{m.group(1)[:12]}" if m else None
+
+
+def _change_from_commit(
+    vault: Path,
+    sha: str,
+    ts: datetime,
+    subject: str,
+    body: str,
+    paths: list[tuple[str, str]],
+    *,
+    backfilled: bool,
+) -> Change | None:
+    """The row the scanner writes for one commit, or None when it is not a self-change."""
+    lane = lane_of(subject)
+    if lane is None:
+        return None
+
+    def diff_of(path: str) -> str:
+        return _git(vault, "show", "--format=", sha, "--", path) or ""
+
+    trailers = parse_trailers(body)
+    kind = classify(paths, subject, diff_of, trailers)
+    if kind is None:
+        return None
+    files = tuple(p for _, p in paths)
+    why = _why_from_trailer(trailers["why"]) if "why" in trailers else infer_why(subject, body, files)
+    if "targets" in trailers:
+        targets = tuple(t.strip() for t in trailers["targets"].split(",") if t.strip())
+    else:
+        targets = (why.ref,) if why.type == "pattern" else ()
+    return Change(
+        id=f"chg-{sha[:12]}",
+        ts=ts,
+        kind=kind,
+        summary=_summary(subject, trailers),
+        why=why,
+        commit=sha,
+        files=files,
+        targets=targets,
+        governance=trailers.get("governance", "").lower() == "yes",
+        author_lane=lane,
+        backfilled=backfilled,
+        reverts=_reverts_of(trailers, body),
+    )
+
+
+_LOG_FORMAT = f"--format={_RS}%H{_US}%aI{_US}%s{_US}%b{_US}"
+
+
+def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
+    """What the scanner would write now for each commit: a row, or None when the commit is not a self-change or is
+    missing. None for the whole call when git can't be read. Anything that is not a full hex sha maps to None
+    without reaching git, so a forged ledger value is never an option or a revision expression."""
+    out: dict[str, Change | None] = {}
+    valid = [s for s in dict.fromkeys(shas) if isinstance(s, str) and _FULL_SHA_RE.match(s)]
+    out.update({s: None for s in dict.fromkeys(shas) if isinstance(s, str)})
+    if not valid:
+        return out
+    raw = _git(
+        vault,
+        "log",
+        "--no-walk=unsorted",
+        "--ignore-missing",
+        "--no-merges",
+        "-M",
+        "--name-status",
+        _LOG_FORMAT,
+        *valid,
+        "--",
+    )
+    if raw is None:
+        return None
+    for sha, ts, subject, body, paths in _parse_log(raw):
+        if sha in out:
+            out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=False)
+    return out
+
+
 def _record(vault: Path, revs: list[str], *, backfilled: bool) -> list[Change] | None:
     """Append a row per new change in ``git log <revs>``. None when git couldn't read the log."""
-    fmt = f"--format={_RS}%H{_US}%aI{_US}%s{_US}%b{_US}"
-    raw = _git(vault, "log", "--no-merges", "-M", "--name-status", fmt, *revs, "--")
+    raw = _git(vault, "log", "--no-merges", "-M", "--name-status", _LOG_FORMAT, *revs, "--")
     if raw is None:
         return None
     known = {c.id for c in read_changes(vault)[0]}
     new: list[Change] = []
     for sha, ts, subject, body, paths in reversed(_parse_log(raw)):
-        change_id = f"chg-{sha[:12]}"
-        lane = lane_of(subject)
-        if lane is None or change_id in known:
+        if f"chg-{sha[:12]}" in known:
             continue
-
-        def diff_of(path: str, _sha: str = sha) -> str:
-            return _git(vault, "show", "--format=", _sha, "--", path) or ""
-
-        kind = classify(paths, subject, diff_of)
-        if kind is None:
+        change = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=backfilled)
+        if change is None:
             continue
-        trailers = parse_trailers(body)
-        files = tuple(p for _, p in paths)
-        why = _why_from_trailer(trailers["why"]) if "why" in trailers else infer_why(subject, body, files)
-        if "targets" in trailers:
-            targets = tuple(t.strip() for t in trailers["targets"].split(",") if t.strip())
-        else:
-            targets = (why.ref,) if why.type == "pattern" else ()
-        change = Change(
-            id=change_id,
-            ts=ts,
-            kind=kind,
-            summary=_summary(subject, trailers),
-            why=why,
-            commit=sha,
-            files=files,
-            targets=targets,
-            governance=trailers.get("governance", "").lower() == "yes",
-            author_lane=lane,
-            backfilled=backfilled,
-        )
         append_change(vault, change)
-        known.add(change_id)
+        known.add(change.id)
         new.append(change)
     return new

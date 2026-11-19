@@ -1,7 +1,7 @@
 {
   "changes": [
     {
-      "author_lane": "interactive",
+      "author_lane": "dreaming",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000000",
       "files": [
@@ -14,14 +14,14 @@
       "schema_version": 1,
       "summary": "A brain-edit change",
       "targets": [
-        "briefing"
+        "pattern-288"
       ],
       "ts": "2026-11-15T12:00:00+00:00",
       "why": {
-        "gloss": null,
-        "inferred": true,
-        "ref": "",
-        "type": "unknown"
+        "gloss": "A mistake that kept recurring",
+        "inferred": false,
+        "ref": "pattern-288",
+        "type": "pattern"
       }
     },
     {
@@ -29,10 +29,9 @@
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000001",
       "files": [
-        "knowledge-base/a.md",
-        "DREAMING.md"
+        "scripts/check-clock.py"
       ],
-      "governance": true,
+      "governance": false,
       "id": "chg-000000000001",
       "kind": "driver",
       "reverts": null,
@@ -43,10 +42,10 @@
       ],
       "ts": "2026-11-14T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
-        "inferred": false,
-        "ref": "Pattern #249",
-        "type": "pattern"
+        "gloss": null,
+        "inferred": true,
+        "ref": "",
+        "type": "unknown"
       }
     },
     {
@@ -54,7 +53,7 @@
       "backfilled": true,
       "commit": "0000000000000000000000000000000000000002",
       "files": [
-        "SKILL.md"
+        "knowledge-base/topics/a.md"
       ],
       "governance": false,
       "id": "chg-000000000002",
@@ -69,7 +68,7 @@
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     },
@@ -78,10 +77,9 @@
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000003",
       "files": [
-        "knowledge-base/a.md",
         "DREAMING.md"
       ],
-      "governance": false,
+      "governance": true,
       "id": "chg-000000000003",
       "kind": "phase",
       "reverts": null,
@@ -94,12 +92,12 @@
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     },
     {
-      "author_lane": "interactive",
+      "author_lane": "dreaming",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000004",
       "files": [
@@ -108,7 +106,7 @@
       "governance": false,
       "id": "chg-000000000004",
       "kind": "rollback",
-      "reverts": null,
+      "reverts": "chg-000000000000",
       "schema_version": 1,
       "summary": "A rollback change",
       "targets": [
@@ -116,19 +114,18 @@
       ],
       "ts": "2026-11-11T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "The test found it hurt",
         "inferred": false,
-        "ref": "Pattern #249",
-        "type": "pattern"
+        "ref": "verdict:chg-000000000000",
+        "type": "verdict"
       }
     },
     {
-      "author_lane": "dreaming",
+      "author_lane": "update",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000005",
       "files": [
-        "knowledge-base/a.md",
-        "DREAMING.md"
+        "scripts/upgrade.sh"
       ],
       "governance": false,
       "id": "chg-000000000005",
@@ -143,16 +140,16 @@
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     },
     {
-      "author_lane": "interactive",
+      "author_lane": "work",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000006",
       "files": [
-        "SKILL.md"
+        "docs/wishlist/red-carry.md"
       ],
       "governance": false,
       "id": "chg-000000000006",
@@ -167,7 +164,7 @@
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     }
@@ -185,5 +182,6 @@
   "schema_version": 1,
   "since": "2026-10-17T12:00:00+00:00",
   "skipped_rows": 1,
-  "truncated": false
+  "truncated": false,
+  "verified": false
 }

@@ -38,33 +38,57 @@ def _ts(days_ago: float) -> datetime:
     return NOW - timedelta(days=days_ago)
 
 
+def _changes() -> list[Change]:
+    """One coherent row per kind, in ``sorted(CHANGE_KINDS)`` order. Extend by adding to ``specs``: a row is what a
+    scan of a real commit would write (a brain edit's ``why`` is its target; a rollback names the change it undoes)."""
+    kinds = sorted(CHANGE_KINDS)
+    ids = {kind: f"chg-{i:012x}" for i, kind in enumerate(kinds)}
+    specs: dict[str, dict] = {
+        "brain-edit": {
+            "why": Why("pattern", "pattern-288", "A mistake that kept recurring", inferred=False),
+            "files": ("SKILL.md",),
+            "targets": ("pattern-288",),
+            "author_lane": "dreaming",
+        },
+        "driver": {
+            "why": Why("unknown", "", inferred=True),
+            "files": ("scripts/check-clock.py",),
+            "author_lane": "dreaming",
+        },
+        "kb-structure": {"files": ("knowledge-base/topics/a.md",), "backfilled": True},
+        "phase": {"files": ("DREAMING.md",), "governance": True, "author_lane": "dreaming"},
+        "rollback": {
+            "why": Why("verdict", f"verdict:{ids['brain-edit']}", "The test found it hurt", inferred=False),
+            "files": ("SKILL.md",),
+            "reverts": ids["brain-edit"],
+            "author_lane": "dreaming",
+        },
+        "upgrade": {"files": ("scripts/upgrade.sh",), "author_lane": "update"},
+        "wishlist-done": {"files": ("docs/wishlist/red-carry.md",), "author_lane": "work"},
+    }
+    out = []
+    for i, kind in enumerate(kinds):
+        base: dict = {
+            "id": ids[kind],
+            "ts": _ts(1 + i),
+            "kind": kind,
+            "summary": f"A {kind} change",
+            "why": Why("pattern", "pattern-249", "Why it happened", inferred=False),
+            "commit": f"{i:040x}",
+            "files": ("SKILL.md",),
+            "targets": ("briefing",),
+        }
+        out.append(Change(**{**base, **specs[kind]}))
+    return out
+
+
 def _build(root: Path) -> tuple[Path, Path, dict]:
     vault, home = root / "Scout", root / "home"
     vault.mkdir()
     home.mkdir()
     env = {"HOME": str(home)}
-    for i, kind in enumerate(sorted(CHANGE_KINDS)):
-        append_change(
-            vault,
-            Change(
-                id=f"chg-{i:012x}",
-                ts=_ts(1 + i),
-                kind=kind,
-                summary=f"A {kind} change",
-                why=Why(
-                    type="unknown" if i == 0 else "pattern",
-                    ref="" if i == 0 else "Pattern #249",
-                    gloss=None if i == 0 else "Why it happened",
-                    inferred=i == 0,
-                ),
-                commit=f"{i:040x}",
-                files=("SKILL.md",) if i % 2 == 0 else ("knowledge-base/a.md", "DREAMING.md"),
-                targets=("briefing",),
-                governance=i == 1,
-                author_lane="dreaming" if i % 2 else "interactive",
-                backfilled=i == 2,
-            ),
-        )
+    for change in _changes():
+        append_change(vault, change)
     # Local days in Prague: the 23:30Z reliance row falls on the 11th, not the 10th.
     rows = [
         ("session-reliance", "kb", datetime(2026, 11, 10, 9, 0, tzinfo=UTC), "a" * 16),
