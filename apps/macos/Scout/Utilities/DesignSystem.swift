@@ -127,7 +127,7 @@ enum DS {
         .system(size: scaled(size), weight: weight, design: .default)
     }
 
-    /// An SF Symbol drawn as a picture at a fixed design size: an empty-state
+    /// A glyph drawn as a picture at a fixed design size: an empty-state
     /// glyph, or a symbol sized to the shape around it (the day-circle
     /// strip). Text never uses this; it takes a role through `DS.font`.
     /// It still follows the Text size setting.

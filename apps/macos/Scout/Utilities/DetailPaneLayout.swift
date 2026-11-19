@@ -30,7 +30,7 @@ struct DetailPaneCloseButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(DS.sans(11, weight: .semibold))
+                .font(DS.font(.caption, weight: .semibold))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 24)
         }

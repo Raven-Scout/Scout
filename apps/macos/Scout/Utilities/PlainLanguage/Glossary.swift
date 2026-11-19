@@ -126,10 +126,10 @@ struct GlossaryView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Scout Glossary")
-                    .font(DS.serif(22, weight: .semibold))
+                    .font(DS.font(.hero, .serif, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
                 Text("The words Scout uses, in plain language.")
-                    .font(DS.sans(12.5))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p2)
                 TextField("Search", text: $query)
                     .textFieldStyle(.roundedBorder)
@@ -143,21 +143,21 @@ struct GlossaryView: View {
                     let terms = GlossaryTerm.matching(query)
                     if terms.isEmpty {
                         Text("No term matches “\(query)”.")
-                            .font(DS.sans(12.5))
+                            .font(DS.font(.label))
                             .foregroundStyle(DS.Ink.p2)
                     }
                     ForEach(terms) { t in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(t.term)
-                                .font(DS.sans(13.5, weight: .semibold))
+                                .font(DS.font(.body, weight: .semibold))
                                 .foregroundStyle(DS.Ink.p1)
                             Text(t.definition)
-                                .font(DS.sans(12.5))
+                                .font(DS.font(.label))
                                 .foregroundStyle(DS.Ink.p1)
                                 .fixedSize(horizontal: false, vertical: true)
                             if !t.alsoCalled.isEmpty {
                                 Text("Also called: \(t.alsoCalled.joined(separator: ", "))")
-                                    .font(DS.sans(11.5))
+                                    .font(DS.font(.caption))
                                     .foregroundStyle(DS.Ink.p2)
                             }
                         }
