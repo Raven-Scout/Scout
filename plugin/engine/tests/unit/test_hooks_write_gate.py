@@ -863,6 +863,23 @@ def test_the_protected_names_are_distinctive() -> None:
         assert protected_token(f"'{name}'") == name
 
 
+def test_a_vault_change_map_folder_is_not_the_change_ledger_owner_store(vault: Path, home: Path) -> None:
+    """The owner store's name is a protected token matched per path component; a generic name (the old
+    `change-map`) denied a run's own `knowledge-base/change-map/` notes. The owner store itself stays denied."""
+    from scout.kb.hook_paths import CHANGES_OWNER_NAME, protected_token
+
+    assert CHANGES_OWNER_NAME == "scout-change-ledger-owner"
+    assert protected_token("knowledge-base/change-map/x.md") is None
+    assert protected_token(f".local/state/scout/{CHANGES_OWNER_NAME}/engagement.jsonl") == CHANGES_OWNER_NAME
+    (vault / "knowledge-base" / "change-map").mkdir()
+    note = "knowledge-base/change-map/x.md"
+    assert _decision(vault, "Write", _input("Write", note)) is None
+    assert _bash(vault, f"python3 -c \"open('{note}', 'w').write('x')\"") is None
+    owner = home / ".local" / "state" / "scout" / CHANGES_OWNER_NAME / "engagement.jsonl"
+    _denied(_decision(vault, "Write", _input("Write", str(owner))))
+    _denied(_bash(vault, f"python3 -c \"open('{owner}', 'a').write('x')\""))
+
+
 # The coordinator's addition (from #636's review): Scout's secrets and the vault's delegate state.
 
 

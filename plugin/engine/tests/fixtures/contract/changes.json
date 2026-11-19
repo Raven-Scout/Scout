@@ -1,0 +1,182 @@
+{
+  "changes": [
+    {
+      "author_lane": "interactive",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000000",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000000",
+      "kind": "brain-edit",
+      "schema_version": 1,
+      "summary": "A brain-edit change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-15T12:00:00+00:00",
+      "why": {
+        "gloss": null,
+        "inferred": true,
+        "ref": "",
+        "type": "unknown"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000001",
+      "files": [
+        "knowledge-base/a.md",
+        "DREAMING.md"
+      ],
+      "governance": true,
+      "id": "chg-000000000001",
+      "kind": "driver",
+      "schema_version": 1,
+      "summary": "A driver change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-14T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "interactive",
+      "backfilled": true,
+      "commit": "0000000000000000000000000000000000000002",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000002",
+      "kind": "kb-structure",
+      "schema_version": 1,
+      "summary": "A kb-structure change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-13T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000003",
+      "files": [
+        "knowledge-base/a.md",
+        "DREAMING.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000003",
+      "kind": "phase",
+      "schema_version": 1,
+      "summary": "A phase change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-12T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "interactive",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000004",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000004",
+      "kind": "rollback",
+      "schema_version": 1,
+      "summary": "A rollback change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-11T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000005",
+      "files": [
+        "knowledge-base/a.md",
+        "DREAMING.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000005",
+      "kind": "upgrade",
+      "schema_version": 1,
+      "summary": "A upgrade change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-10T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "interactive",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000006",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000006",
+      "kind": "wishlist-done",
+      "schema_version": 1,
+      "summary": "A wishlist-done change",
+      "targets": [
+        "briefing"
+      ],
+      "ts": "2026-11-09T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "Pattern #249",
+        "type": "pattern"
+      }
+    }
+  ],
+  "counts": {
+    "brain-edit": 1,
+    "driver": 1,
+    "kb-structure": 1,
+    "phase": 1,
+    "rollback": 1,
+    "upgrade": 1,
+    "wishlist-done": 1
+  },
+  "generated_at": "2026-11-16T12:00:00+00:00",
+  "schema_version": 1,
+  "since": "2026-10-17T12:00:00+00:00",
+  "skipped_rows": 1,
+  "truncated": false
+}
