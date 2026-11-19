@@ -659,6 +659,14 @@ struct KBEditorView: View {
                 + "has that name, so \(ambiguous == 1 ? "it isn't" : "they aren't") changed."
         }
 
+        /// The renamed note's own links to itself stay as written while it
+        /// has unsaved edits (its draft moves with it untouched).
+        static func selfUnsavedNote(selfLinks: Int, hasUnsavedEdits: Bool) -> String? {
+            guard hasUnsavedEdits, selfLinks > 0 else { return nil }
+            return "This note has unsaved edits, so its \(count(selfLinks, "link")) to itself won't be updated. "
+                + "Save it first to include \(selfLinks == 1 ? "it" : "them")."
+        }
+
         /// Another note already has the new name.
         static func collisionNote(newName: String) -> String {
             "Another note is already called \u{201C}\(newName)\u{201D}. Links that say [[\(newName)]] may start pointing to this note."
@@ -672,7 +680,9 @@ struct KBEditorView: View {
             if let commitProblem {
                 let links = report.linksUpdated > 0
                     ? " and \(count(report.linksUpdated, "link")) in \(count(report.notesUpdated, "note")) updated" : ""
-                parts.append("The note was renamed\(links), but the git commit failed: \(commitProblem) "
+                let problem = commitProblem.trimmingCharacters(in: .whitespacesAndNewlines)
+                let stop = problem.last.map { ".!?".contains($0) } == true ? "" : "."
+                parts.append("The note was renamed\(links), but the git commit failed: \(problem)\(stop) "
                              + "Edit ▸ Undo puts it all back.")
             }
             if !report.skipped.isEmpty {
@@ -721,9 +731,8 @@ struct KBEditorView: View {
 
     /// A typed name a note can't take, said before Rename is pressed.
     static func renameNameProblem(_ typed: String, for url: URL) -> String? {
-        guard url.pathExtension.lowercased() == "md",
-              typed.contains(where: KnowledgeBaseFileWriter.linkBreakingCharacters.contains) else { return nil }
-        return KnowledgeBaseFileWriter.linkBreakingNameMessage
+        guard url.pathExtension.lowercased() == "md" else { return nil }
+        return KnowledgeBaseFileWriter.noteNameProblem(typed)
     }
 
     private var renameSheet: some View {
@@ -764,6 +773,11 @@ struct KBEditorView: View {
                             .font(DS.sans(11)).foregroundStyle(renameUpdatesLinks ? DS.Ink.p3 : DS.Status.warn)
                             .fixedSize(horizontal: false, vertical: true)
                         if renameUpdatesLinks, let note = links.unsavedNote {
+                            Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if renameUpdatesLinks,
+                           let note = RenameLinks.selfUnsavedNote(selfLinks: renameSelfLinks, hasUnsavedEdits: isDirty) {
                             Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
                                 .fixedSize(horizontal: false, vertical: true)
                         }

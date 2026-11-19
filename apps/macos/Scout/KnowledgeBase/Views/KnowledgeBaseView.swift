@@ -406,7 +406,8 @@ struct KnowledgeBaseView: View {
     private func createFile(name: String, directory: URL) {
         Task {
             do {
-                let slug = (name as NSString).deletingPathExtension
+                // "acme.com" titles "acme.com", not "acme".
+                let slug = name.lowercased().hasSuffix(".md") ? String(name.dropLast(3)) : name
                 let title = slug.replacingOccurrences(of: "-", with: " ")
                 let initial = "# \(title)\n\n"
                 let dest = try await writerBox.writer.createFile(
@@ -513,14 +514,20 @@ struct KBNewFileSheet: View {
                     .accessibilityLabel("Name")
                     .textFieldStyle(.roundedBorder).font(DS.sans(13))
                     .onSubmit(create)
-                Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)
+                if let problem = KnowledgeBaseFileWriter.noteNameProblem(name) {
+                    Text(problem).font(DS.sans(10.5)).foregroundStyle(DS.Status.err)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)
+                }
             }
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Create") { create() }.keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
+                              || KnowledgeBaseFileWriter.noteNameProblem(name) != nil)
             }
         }
         .padding(20).frame(width: 380)
@@ -529,7 +536,7 @@ struct KBNewFileSheet: View {
 
     private func create() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, KnowledgeBaseFileWriter.noteNameProblem(trimmed) == nil else { return }
         onCreate(trimmed, selectedURL)
     }
 }

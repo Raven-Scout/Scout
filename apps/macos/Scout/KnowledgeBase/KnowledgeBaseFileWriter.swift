@@ -226,7 +226,8 @@ actor KnowledgeBaseFileWriter {
         directory: URL, name: String, initialContents: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
     ) async throws -> URL {
-        let fileName = try normalizedFileName(name)
+        // The same name rules as a rename: a note stays a note, linkable and visible.
+        let fileName = try noteFileName(name)
         let dest = directory.appendingPathComponent(fileName)
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) {
@@ -418,19 +419,39 @@ actor KnowledgeBaseFileWriter {
     /// characters wikilinks use (`linkBreakingCharacters`).
     static func renameDestination(for fileURL: URL, to newName: String) throws -> URL {
         let originalExt = fileURL.pathExtension
-        var fileName = try normalizedFileName(newName, defaultExtension: originalExt)
+        let fileName: String
         if originalExt.lowercased() == "md" {
-            if fileName.contains(where: linkBreakingCharacters.contains) {
-                throw KBWriterError.writeFailed(linkBreakingNameMessage)
-            }
-            if (fileName as NSString).pathExtension.lowercased() != "md" { fileName += ".md" }
-        } else if (fileName as NSString).pathExtension.isEmpty && !originalExt.isEmpty {
-            fileName += ".\(originalExt)"
+            fileName = try noteFileName(newName)
+        } else {
+            var name = try normalizedFileName(newName, defaultExtension: originalExt)
+            if (name as NSString).pathExtension.isEmpty && !originalExt.isEmpty { name += ".\(originalExt)" }
+            fileName = name
         }
         return fileURL.deletingLastPathComponent().appendingPathComponent(fileName)
     }
 
+    /// A markdown note's file name from a typed name, for create and rename
+    /// alike: `.md` added unless the name already ends in it (`acme.com` →
+    /// `acme.com.md`), and refused when the name would break links to the
+    /// note (`linkBreakingCharacters`) or hide it (a leading dot: the tree,
+    /// the index and Obsidian skip hidden files).
+    nonisolated static func noteFileName(_ raw: String) throws -> String {
+        var fileName = try normalizedFileName(raw, defaultExtension: "md")
+        if let problem = noteNameProblem(fileName) { throw KBWriterError.writeFailed(problem) }
+        if (fileName as NSString).pathExtension.lowercased() != "md" { fileName += ".md" }
+        return fileName
+    }
+
+    /// Why a typed name can't be a note's name, or nil.
+    nonisolated static func noteNameProblem(_ typed: String) -> String? {
+        let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasPrefix(".") { return hiddenNameMessage }
+        if name.contains(where: linkBreakingCharacters.contains) { return linkBreakingNameMessage }
+        return nil
+    }
+
     nonisolated static let linkBreakingNameMessage = "A note's name can't contain # | [ ] or ^: links to it would break."
+    nonisolated static let hiddenNameMessage = "A note's name can't start with a dot: the note would be hidden."
 
     /// Commit the given paths, converting a git failure into `.commitFailed`
     /// instead of discarding it — the file op already succeeded, so callers
