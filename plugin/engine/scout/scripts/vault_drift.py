@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.scripts.three_way_merge import MergeResult, MergeUnavailable, three_way_merge
 
 SNAPSHOT_DIR = Path(".scout-state") / "last-rendered"
@@ -301,9 +302,7 @@ def _read(path: Path) -> str | None:
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8", errors=_ERRORS)
-    tmp.replace(path)
+    safe_write.atomic_write_bytes(path, content.encode("utf-8", errors=_ERRORS))
 
 
 def printable(text: str) -> str:

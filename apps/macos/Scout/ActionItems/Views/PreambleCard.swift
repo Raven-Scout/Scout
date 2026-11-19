@@ -76,11 +76,9 @@ struct PreambleCard: View {
                     .padding(.leading, 12)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(hovering ? DS.Paper.raised : DS.Paper.raised.opacity(0.5))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        // The headline row is the clickable part; its hover shows on the card.
+        .editorialCard(padding: 0)
+        .dsCardHovered(hovering)
     }
 
     /// Strip markdown ornament from the body and clamp to a single-pass

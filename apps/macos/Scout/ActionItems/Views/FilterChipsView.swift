@@ -206,29 +206,13 @@ struct FilterChipsView: View {
                         .accessibilityHidden(true)
                 }
                 Text(label)
-                    .font(DS.font(.label, weight: .medium))
-                    .lineLimit(1)
                     .fixedSize()
                 if let count {
-                    Text("\(count)")
-                        .font(DS.font(.caption2, .mono, weight: .medium))
-                        .foregroundStyle(DS.Ink.p4)
-                }
-            }
-            .foregroundStyle(selected ? DS.Ink.p1 : DS.Ink.p3)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background {
-                if selected {
-                    // Selected chip uses a recessed paper fill — visually maps to the
-                    // neumorphic-pressed state from the design tokens.
-                    RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk)
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                    DSChipCount(count)
                 }
             }
         }
-        .buttonStyle(.plainHit)
-        .accessibilitySelected(selected)
+        .buttonStyle(.dsChip(selected: selected))
     }
 
     // MARK: - Toggle logic

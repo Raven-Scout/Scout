@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scout import paths
+from scout import paths, safe_write
 from scout.planning.settings import PlanningSettings
 
 LOG_NAME = "planning-log.jsonl"
@@ -34,7 +34,7 @@ def log_path(data_dir: Path | None = None) -> Path:
 def append_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None:
     path = log_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
+    with safe_write.open_append(path) as fh:
         fh.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
 
 
@@ -74,9 +74,7 @@ def record_entry(entry: dict[str, Any], *, data_dir: Path | None = None, replace
             continue
         kept.append(line)
     kept.append(json.dumps(entry, sort_keys=True, ensure_ascii=False))
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    safe_write.atomic_write_text(path, "\n".join(kept) + "\n")
 
 
 def load_entries(data_dir: Path | None = None) -> list[dict[str, Any]]:

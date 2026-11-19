@@ -78,10 +78,6 @@ struct TaskBodyView: View {
     private func contextPill(_ target: String) -> some View {
         let display = target.split(separator: "/").last.map(String.init) ?? target
         return InlineMarkdownText("[[\(target)|\(display)]]")
-            .font(DS.font(.caption2, .mono))
-            .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
     }
 }

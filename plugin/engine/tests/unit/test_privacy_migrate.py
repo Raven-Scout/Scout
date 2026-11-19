@@ -434,7 +434,7 @@ def test_set_private_rewrites_a_quoted_value_without_keeping_its_text(vault: Pat
 
 
 def test_a_failed_write_leaves_the_note_and_no_temp_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(src: str, dst: object) -> None:
+    def boom(src: str, dst: object, **_kw: object) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(pm.os, "replace", boom)

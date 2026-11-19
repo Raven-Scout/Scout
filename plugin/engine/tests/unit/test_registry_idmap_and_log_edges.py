@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from scout import connector_calls
+from scout import connector_calls, safe_write
 from scout import connectors as conn
 from scout import id_map as idm
 from scout.connectors import Capability, Connector, ConnectorRegistry, Remediation, Tier, load_registry
@@ -490,14 +490,11 @@ def test_a_write_failure_is_reported_to_stderr_and_still_returns_an_event(
 ) -> None:
     """A dropped row is an unsignalled gap in the audit log, so it warns — but
     the hook still must not fail the session."""
-    real_open = Path.open
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.suffix == ".jsonl":
-            raise OSError("read-only filesystem")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write, "open_append", boom)
     event = connector_log.run(stdin=io.StringIO(json.dumps({"tool_name": "Read", "session_id": "s1"})))
 
     assert event is not None

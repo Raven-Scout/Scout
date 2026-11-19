@@ -34,6 +34,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from scout import safe_write
 from scout.kb.git_io import git
 
 MARKER = "# scout-managed: kb-lint pre-commit hook"
@@ -154,6 +155,5 @@ def install_hook(repo: Path, *, scoutctl: str | None = None) -> Path:
     target = d / "pre-commit"
     if target.exists() and MARKER not in target.read_text(encoding="utf-8", errors="replace"):
         raise HookConflict(f"{target} exists and is not Scout-managed — add `scoutctl kb lint --staged` to it by hand")
-    target.write_text(render_hook(scoutctl or default_scoutctl()), encoding="utf-8")
-    target.chmod(0o755)
+    safe_write.atomic_write_text(target, render_hook(scoutctl or default_scoutctl()), mode=0o755)
     return target

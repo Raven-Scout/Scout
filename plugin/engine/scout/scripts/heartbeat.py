@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from scout import paths
+from scout import events, paths, safe_write
 from scout.kb.privacy import Policy, label_file, load_policy, normalize_rel
 from scout.scripts._config_scan import scan_overrides
 
@@ -512,6 +512,12 @@ def decide(
 # ----- launch -------------------------------------------------------------
 
 
+def _on_unsafe(log_path: Path) -> safe_write.OnUnsafe:
+    """A link a run put at the heartbeat log is removed and made again, never followed, and recorded beside it:
+    refusing would stop every heartbeat launch."""
+    return events.unsafe_file_recorder(log_path.parent, kind="heartbeat.unsafe_file_replaced", source="heartbeat")
+
+
 def launch_runner(runner: Path, *, vault: Path, log_path: Path) -> int:
     """Spawn *runner* fully detached, appending stdout/stderr to *log_path*.
 
@@ -523,7 +529,7 @@ def launch_runner(runner: Path, *, vault: Path, log_path: Path) -> int:
     §6.2), whatever runner it is. Returns the child's PID.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_path)) as log_fh:
         proc = subprocess.Popen(
             [str(runner)],
             cwd=str(vault),
@@ -556,7 +562,7 @@ def _log_line(log_path: Path, reason: str, tz_name: str | None = None) -> None:
         stamp = datetime.now().isoformat(timespec="minutes")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with log_path.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_path)) as f:
             f.write(f"[{stamp}] {reason}\n")
     except OSError:
         pass

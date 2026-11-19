@@ -10,14 +10,13 @@ nothing is written when that check fails.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from scout import paths
+from scout import paths, safe_write
 from scout.errors import ConfigError
 from scout.models import validate_model
 from scout.scripts.auto_update_config import _edit_children, _entry_starts, _is_filler, _loads_as, _mtime_ns
@@ -135,12 +134,9 @@ def write_models_default(model: str, *, data_dir: Path | None = None, max_attemp
         if _mtime_ns(config_path) != mtime_at_read:
             continue
 
-        tmp = config_path.with_name(f"{config_path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(updated, encoding="utf-8")
-            os.replace(tmp, config_path)
+            safe_write.atomic_write_text(config_path, updated)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
             raise ModelsWriteError(f"cannot write {config_path}: {e}") from e
         return {"config_path": str(config_path), "default": value, "changed": True}
 

@@ -24,6 +24,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from scout import safe_write
+
 LOG_NAME = "kb-reads.jsonl"
 LOG_FIELDS = (
     "ts",
@@ -83,10 +85,7 @@ def log_event(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # One write per line, O_APPEND: concurrent runs don't interleave a line.
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        try:
-            os.write(fd, (json.dumps(row, sort_keys=True) + "\n").encode("utf-8"))
-        finally:
-            os.close(fd)
+        with safe_write.open_append(path, mode=0o600, binary=True) as fh:
+            fh.write((json.dumps(row, sort_keys=True) + "\n").encode("utf-8"))
     except OSError as e:
         print(f"warning: couldn't write the kb audit log {path}: {e.strerror or e}", file=sys.stderr)
