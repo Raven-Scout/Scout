@@ -135,6 +135,7 @@ struct ButtonStyleGuardTests {
         "Shell/CheckForUpdatesView.swift": "a menu item",
         "Utilities/LaunchFailureAlert.swift": "an alert",
         "Utilities/PlainLanguage/Glossary.swift": "the Help menu item",
+        "PerFileItems/Views/ItemPriorityPill.swift": "the priority menu's items",
     ]
 
     static let swiftUIButton = try! NSRegularExpression(pattern: #"\bButton\s*[\(\{]"#)

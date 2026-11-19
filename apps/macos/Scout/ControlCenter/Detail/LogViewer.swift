@@ -47,6 +47,7 @@ struct LogViewer: View {
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Open in default editor")
             Button {
                 NSPasteboard.general.clearContents()
@@ -54,6 +55,7 @@ struct LogViewer: View {
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Copy entire log")
         }
         .padding(.horizontal, 12)
