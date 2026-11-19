@@ -402,7 +402,8 @@ final class SessionLogService: ObservableObject {
         ledgerTriggers = entries.compactMapValues(\.trigger)
         ledgerProtection = entries.compactMapValues { e in
             guard e.sandbox != nil || e.integrity != nil else { return nil }
-            return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity)
+            return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity,
+                                  mode: e.mode)
         }
         let updated = Self.resolveStaleRunning(overlaid(runs))
         if updated != runs { runs = updated }
@@ -588,15 +589,22 @@ final class SessionLogService: ObservableObject {
     /// The commits in which the post-run integrity check put back the protected files this run
     /// changed (`scout.sandbox.integrity`: "Scout: restore protected files a <mode> run changed in
     /// git"). Only asked for a run whose ledger row says `restored`, so nothing is guessed from
-    /// the log. They don't name a run family, so `commits(for:)` never claims them.
+    /// the log. They don't name a run family, so `commits(for:)` never claims them. The subject
+    /// must name this run's own mode, so a run that started just after another run's restore
+    /// never shows that one's commit; without a mode there is nothing to match, and none is shown.
     func restoreCommits(for run: Run) async -> [Commit] {
-        guard let git = gitService, run.protection?.integrity == "restored" else { return [] }
+        guard let git = gitService, run.protection?.integrity == "restored",
+              let prefix = Self.restoreCommitPrefix(mode: run.protection?.mode) else { return [] }
         let window = run.commitWindow(now: clock.now())
         return (try? await git.commits(between: window.lowerBound, and: window.upperBound,
-                                       matchingPrefix: Self.restoreCommitPrefix)) ?? []
+                                       matchingPrefix: prefix)) ?? []
     }
 
-    nonisolated static let restoreCommitPrefix = "Scout: restore protected files"
+    /// `scout.sandbox.integrity`'s subject for a run of `mode`, up to the mode; nil without one.
+    nonisolated static func restoreCommitPrefix(mode: String?) -> String? {
+        guard let mode, !mode.isEmpty else { return nil }
+        return "Scout: restore protected files a \(mode) run changed in git"
+    }
 
     private func startWatching() {
         watchTask?.cancel()

@@ -733,7 +733,7 @@ _PRIVACY_GROUP_TEXT = {
     # The same rule's low-risk scripts (UI audit R13): nothing in them sends what they read anywhere.
     "script-raw-kb-read.internal": (
         "vault scripts read the knowledge base directly, not through `scoutctl kb`, but mention no way to send "
-        "what they read (chat, mail, web requests, notifiers), so their output likely stays in the vault",
+        "what they read and no other vault script runs them, so their output likely stays in the vault",
         "check they only feed checks inside the vault, then mark this warning reviewed; or make them read through "
         "`scoutctl kb files`",
     ),
@@ -749,18 +749,19 @@ def _privacy_drift_warnings(vault: Path) -> tuple[list[str], list[WarningGroup],
     from scout import doctor_triage
     from scout.scripts import vault_drift
 
+    findings = vault_drift.privacy_drift(vault)
+    ranks = doctor_triage.rank_vault_scripts(vault, [f.path for f in findings if f.rule == "script-raw-kb-read"])
     by_rule: dict[str, list[tuple[vault_drift.PrivacyDrift, str, str, dict[str, str]]]] = {}
-    for finding in vault_drift.privacy_drift(vault):
+    for finding in findings:
         rule = finding.rule
-        path = vault / finding.path
         if rule == "script-raw-kb-read":
-            risk, why = doctor_triage.script_risk(doctor_triage.read_script(path))
+            risk, why = ranks[finding.path]
             if risk == "low":
                 rule += doctor_triage.INTERNAL_SUFFIX
         else:
             risk, why = _RUNNER_RISK
-        # A high-risk file's edits bring a review back; a low-risk one is re-ranked if it starts sending.
-        digests = {finding.path: doctor_triage.file_digest(path)} if risk == "high" else {}
+        # Any edit to a file brings its review back (vault scripts are run-writable).
+        digests = {finding.path: doctor_triage.file_digest(vault / finding.path)}
         by_rule.setdefault(rule, []).append((finding, risk, why, digests))
     warnings: list[str] = []
     groups: list[WarningGroup] = []
@@ -783,7 +784,7 @@ def _privacy_drift_warnings(vault: Path) -> tuple[list[str], list[WarningGroup],
         groups.append(WarningGroup(kind=kind, summary=summary, items=tuple(paths)))
         risk, why = rows[0][1], rows[0][2]
         if rule == "script-raw-kb-read":
-            why = "they mention a way to send what they read (chat, mail, web requests, notifiers)"
+            why = "what they read can leave the vault: each sends it, uses a script that does, or is run by one"
         elif rule.endswith(doctor_triage.INTERNAL_SUFFIX):
             why = "they mention no way to send anything, so their output likely stays in the vault"
         merged = {k: v for *_, d in rows for k, v in d.items()}
@@ -1153,21 +1154,30 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
-    warnings.extend(_check_privacy_audit(vault=vault, now=now))
+    meta: dict[str, WarningMeta] = {}
+
+    def protection(found: list[str]) -> list[str]:
+        """Warnings about run protection itself (scout.doctor_triage.PROTECTION): never reviewable."""
+        from scout.doctor_triage import PROTECTION
+
+        meta.update(dict.fromkeys(found, PROTECTION))
+        return found
+
+    warnings.extend(protection(_check_privacy_audit(vault=vault, now=now)))
     warnings.extend(_check_kb_lint_config(vault=vault))
-    warnings.extend(_check_repo_sync_host_cache(vault=vault, now=now))
+    warnings.extend(protection(_check_repo_sync_host_cache(vault=vault, now=now)))
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)
     timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
     warnings.extend(timeout_warnings)
     notes.extend(timeout_notes)
-    warnings.extend(_check_run_limits(vault=vault, now=now))
+    warnings.extend(protection(_check_run_limits(vault=vault, now=now)))
 
     groups: list[WarningGroup] = []
-    meta: dict[str, WarningMeta] = {}
     try:
-        drift_warnings, drift_notes, groups, meta = _check_vault_drift(vault=vault)
+        drift_warnings, drift_notes, groups, drift_meta = _check_vault_drift(vault=vault)
+        meta.update(drift_meta)
     except OSError as e:
         drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
     warnings.extend(drift_warnings)
@@ -1200,11 +1210,11 @@ def run_doctor(
         warnings.extend(claude_warnings)
         # Whether that claude loads Scout's privacy hooks, from the runners' last gate probe.
         probe_warnings, probe_notes = _check_gate_probe(vault=vault)
-        warnings.extend(probe_warnings)
+        warnings.extend(protection(probe_warnings))
         notes.extend(probe_notes)
         # Whether those runs are kept from writing what decides which gates run (OS write sandbox, Phase 1c).
         sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
-        warnings.extend(sandbox_warnings)
+        warnings.extend(protection(sandbox_warnings))
         notes.extend(sandbox_notes)
         # How those runs sign in: the interactive login or a stored long-lived token.
         try:

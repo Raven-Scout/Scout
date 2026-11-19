@@ -66,15 +66,19 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
         let fingerprint: String
         /// When the owner marked it reviewed; nil while it is open.
         let reviewedAt: Date?
+        /// False for a warning about run protection itself (a privacy-check count, write protection):
+        /// the engine never lets a review hide it. A missing key reads as false.
+        let reviewable: Bool
 
         private enum CodingKeys: String, CodingKey {
-            case id, kind, risk, reason, summary, items, fingerprint, reviewedAt = "reviewed_at"
+            case id, kind, risk, reason, summary, items, fingerprint, reviewable, reviewedAt = "reviewed_at"
         }
 
         init(id: String, kind: String, risk: Risk, reason: String? = nil, summary: String, items: [String] = [],
-             fingerprint: String, reviewedAt: Date? = nil) {
+             fingerprint: String, reviewedAt: Date? = nil, reviewable: Bool = true) {
             self.id = id; self.kind = kind; self.risk = risk; self.reason = reason; self.summary = summary
             self.items = items; self.fingerprint = fingerprint; self.reviewedAt = reviewedAt
+            self.reviewable = reviewable
         }
 
         init(from decoder: Decoder) throws {
@@ -87,6 +91,7 @@ nonisolated struct DoctorReport: Equatable, Sendable, Decodable {
             items = (try? c.decodeIfPresent([String].self, forKey: .items)) ?? []
             fingerprint = try c.decode(String.self, forKey: .fingerprint)
             reviewedAt = RunLedgerTime.parse(try? c.decodeIfPresent(String.self, forKey: .reviewedAt))
+            reviewable = (try? c.decodeIfPresent(Bool.self, forKey: .reviewable)) ?? false
         }
     }
 

@@ -4047,6 +4047,13 @@ def _register_bootstrap() -> None:
         from scout.scripts.privacy_migrate import headless_reason
 
         why = headless_reason(os.environ)
+        if not why:
+            # Whatever its environment says (a run can `env -u SCOUT_MODE`): is a scheduled run the caller?
+            from scout.kb import live_run
+
+            src = live_run.commit_source_now(_paths.data_dir())
+            if src is not None and src.runs:
+                why = f"this command runs inside a scheduled run ({src.mode}, by {src.by})"
         if why:
             typer.echo(f"refused: {why}. Only the owner may mark a warning reviewed; nothing was changed.", err=True)
             raise typer.Exit(2)

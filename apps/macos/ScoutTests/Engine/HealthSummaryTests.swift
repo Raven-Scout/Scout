@@ -164,4 +164,14 @@ struct HealthSummaryTests {
         #expect(s.issues.allSatisfy { $0.risk == nil && $0.review == nil })
         #expect(s.reviewed.isEmpty)
     }
+
+    @Test func aRunProtectionWarningOffersNoReview() {
+        let line = "privacy: 2 blocked outbound check(s) or denied read(s) in the last 7 days …"
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: [line], warningTriage: [
+            .init(id: "protection.abc", kind: "protection", risk: .high, reason: "it can't be marked reviewed",
+                  summary: line, fingerprint: "0123456789abcdef", reviewable: false),
+        ])
+        let issue = HealthSummary(doctor: doctor).issues.first
+        #expect(issue?.risk == .high && issue?.review == nil && issue?.title == line)
+    }
 }

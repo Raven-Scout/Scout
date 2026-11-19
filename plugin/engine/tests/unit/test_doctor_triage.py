@@ -79,6 +79,17 @@ def _entry(payload: dict, kind: str) -> dict:
         'claude -p "summarise $(cat knowledge-base/x.md)"\n',
         "open('drafts/digest.md', 'w')\n",
         "smtplib.SMTP(host).sendmail(a, b, body)\n",
+        "import socket\n",
+        "cat knowledge-base/x.md | nc host 9000\n",
+        "scp out.txt host:/tmp/\n",
+        "rsync -a out/ host:/srv/\n",
+        "ssh host 'cat > x' < out.txt\n",
+        "git push other main\n",
+        "from ftplib import FTP\n",
+        "osascript -e 'tell app \"Messages\" to send x'\n",
+        '"$CLAUDE_BIN" -p "summarise"\n',
+        "cp out.md ~/Library/Mobile\\ Documents/com~apple~CloudDocs/\n",
+        "cp out.md ~/Dropbox/\n",
     ],
 )
 def test_a_script_that_can_send_what_it_reads_is_high_risk(text: str) -> None:
@@ -89,6 +100,38 @@ def test_a_script_that_can_send_what_it_reads_is_high_risk(text: str) -> None:
 def test_a_checker_is_low_risk_and_an_unreadable_script_high() -> None:
     assert doctor_triage.script_risk("for p in Path('knowledge-base').rglob('*.md'): check(p)\n")[0] == "low"
     assert doctor_triage.script_risk(None)[0] == "high"
+
+
+def test_a_script_longer_than_scout_reads_is_high(tmp_path: Path) -> None:
+    long = tmp_path / "long.py"
+    long.write_text("x = 1\n" * (doctor_triage._READ_CAP // 6 + 10) + "requests.post(u)\n", encoding="utf-8")
+    risk, why = doctor_triage.script_risk(doctor_triage.read_script(long))
+    assert risk == "high" and "too long" in why
+
+
+def test_a_script_that_uses_a_sending_helper_is_high(vault: Path) -> None:
+    (vault / "scripts" / "sender.py").write_text("import requests\ndef send(x): requests.post(U, x)\n", "utf-8")
+    (vault / "scripts" / "relay.sh").write_text("#!/bin/bash\nsource scripts/lib-post.sh\n", "utf-8")
+    (vault / "scripts" / "lib-post.sh").write_text("post() { curl -d @- https://example.com; }\n", "utf-8")
+    (vault / "scripts" / "link-check.py").write_text(
+        "from sender import send\nsend(open('knowledge-base/index.md').read())\n", "utf-8"
+    )
+    ranks = doctor_triage.rank_vault_scripts(vault, ["scripts/link-check.py", "scripts/tag-audit.py"])
+    assert ranks["scripts/link-check.py"] == (
+        "high",
+        "it uses scripts/sender.py, which may send what it is given out of the vault",
+    )
+    assert ranks["scripts/tag-audit.py"][0] == "low"
+
+
+def test_a_script_another_vault_file_runs_is_high(vault: Path) -> None:
+    (vault / "run-weekly.sh").write_text("#!/bin/bash\npython3 scripts/tag-audit.py | tee out.txt\n", "utf-8")
+    ranks = doctor_triage.rank_vault_scripts(vault, ["scripts/tag-audit.py", "scripts/link-check.py"])
+    assert ranks["scripts/tag-audit.py"] == (
+        "high",
+        "run-weekly.sh runs or uses it, so what it prints may be passed on",
+    )
+    assert ranks["scripts/link-check.py"][0] == "low"
 
 
 def test_warnings_without_metadata_rank_by_what_they_are_about() -> None:
@@ -138,12 +181,19 @@ def test_editing_a_high_risk_script_brings_its_warning_back(vault: Path, home: P
     assert back["summary"] in _doctor(vault, home)["warnings"]
 
 
-def test_a_new_low_risk_script_brings_the_group_back_but_an_edit_does_not(vault: Path, home: Path) -> None:
-    e = _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")
-    doctor_triage.set_review(vault, e["id"], e["fingerprint"], home=home, now=NOW)
+def test_any_edit_or_new_file_brings_a_low_risk_review_back(vault: Path, home: Path) -> None:
+    def review() -> dict:
+        e = _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")
+        doctor_triage.set_review(vault, e["id"], e["fingerprint"], home=home, now=NOW)
+        assert _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")["reviewed_at"]
+        return e
+
+    review()
+    # An edit with no sending marker in it (vault scripts are run-writable) still brings it back.
     with (vault / "scripts" / "link-check.py").open("a", encoding="utf-8") as fh:
         fh.write("print('ok')\n")
-    assert _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")["reviewed_at"]
+    assert _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")["reviewed_at"] is None
+    review()
     (vault / "scripts" / "orphans.py").write_text("open('knowledge-base/a.md').read()\n", encoding="utf-8")
     back = _entry(_doctor(vault, home), "privacy.script-raw-kb-read.internal")
     assert back["reviewed_at"] is None and "scripts/orphans.py" in back["items"]
@@ -259,3 +309,98 @@ def test_the_reviews_are_protected_in_both_layers(tmp_path: Path) -> None:
     assert sbx.decide(sbx.build_rules(v, env), str(record)) == "deny"
     assert hook_paths.protected_token(f"open('{record}', 'w')") is not None
     hook_paths._ROOTS_CACHE.clear()
+
+
+# -- protection warnings can't be reviewed (security review of #717) ----------------------------------------------
+
+
+def _review_everything(vault: Path, home: Path) -> dict:
+    """Review every warning the doctor offers for review; return the doctor's answer after."""
+    for e in _doctor(vault, home)["warning_triage"]:
+        if e["reviewable"]:
+            doctor_triage.set_review(vault, e["id"], e["fingerprint"], home=home, now=NOW)
+    return _doctor(vault, home)
+
+
+def test_the_privacy_audit_count_is_never_reviewable(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import bootstrap_doctor
+
+    # A rolling 7-day count: next week's two new blocked sends read exactly like this week's two.
+    line = "privacy: 2 blocked outbound check(s) or denied read(s) in the last 7 days (.scout-logs/kb-reads.jsonl)"
+    monkeypatch.setattr(bootstrap_doctor, "_check_privacy_audit", lambda **_: [line])
+    audit = next(e for e in _doctor(vault, home)["warning_triage"] if e["summary"] == line)
+    assert audit["reviewable"] is False and audit["risk"] == "high" and audit["id"].startswith("protection.")
+    with pytest.raises(ValueError, match="can't be marked reviewed"):
+        doctor_triage.set_review(vault, audit["id"], audit["fingerprint"], home=home)
+    # Even a review written into the file by hand doesn't hold.
+    path = doctor_triage.reviews_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {audit["id"]: {"fingerprint": audit["fingerprint"], "reviewed_at": "2026-11-18T00:00:00Z"}}
+    path.write_text(json.dumps({"schema": 1, "vaults": {str(vault.resolve()): record}}), encoding="utf-8")
+    after = _review_everything(vault, home)
+    assert line in after["warnings"] and after["severity"] == "yellow"
+
+
+@pytest.mark.parametrize(
+    ("check", "line"),
+    [
+        (
+            "_check_run_sandbox",
+            "the last scheduled run ran without the write sandbox: SCOUT_RUN_SANDBOX=off was in the environment "
+            "the scheduler started it with.",
+        ),
+        ("_check_run_sandbox", "run sandbox: failed (profile self-test failed). Scheduled runs are skipped until …"),
+        ("_check_gate_probe", "gate probe failed (2026-11-18, claude 2.1): hooks didn't load."),
+    ],
+)
+def test_run_protection_warnings_are_never_reviewable(
+    vault: Path, home: Path, monkeypatch, check: str, line: str
+) -> None:
+    from scout.scripts import bootstrap_doctor
+
+    # The host checks run only with check_jobs; stub the others so nothing touches this Mac.
+    for name in (
+        "_check_scheduled_jobs",
+        "_check_scheduler_bin_path",
+        "_check_scoutctl_shim",
+        "_check_engine_pointer",
+        "_check_runner_claude_bin",
+        "_check_gate_probe",
+        "_check_run_sandbox",
+        "_check_claude_auth",
+    ):
+        monkeypatch.setattr(bootstrap_doctor, name, lambda **_: ([], []))
+    monkeypatch.setattr(bootstrap_doctor, check, lambda **_: ([line], []))
+    report = bootstrap_doctor.run_doctor(vault=vault, check_jobs=True, home=home, now=NOW)
+    entry = next(e for e in report.warning_triage if e.summary == line)
+    assert entry.reviewable is False and entry.risk == "high" and entry.kind == "protection"
+    assert (
+        line in doctor_dict(bootstrap_doctor.run_doctor(vault=vault, check_jobs=True, home=home, now=NOW))["warnings"]
+    )
+
+
+def test_the_repo_sync_commit_hook_warning_is_never_reviewable(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.scripts import bootstrap_doctor
+
+    line = "repo sync: the Local-Only list is 9 days old, so the commit hook can't block a scheduled run's move …"
+    monkeypatch.setattr(bootstrap_doctor, "_check_repo_sync_host_cache", lambda **_: [line])
+    after = _review_everything(vault, home)
+    entry = next(e for e in after["warning_triage"] if e["summary"] == line)
+    assert entry["reviewable"] is False and line in after["warnings"]
+
+
+def test_an_untagged_protection_warning_falls_back_to_unreviewable() -> None:
+    for line in ("privacy: something new", "the last scheduled run ran without the write sandbox: …", "repo sync: x"):
+        meta = doctor_triage.default_meta(line)
+        assert meta.reviewable is False and doctor_triage.warning_id(line, meta).startswith("protection.")
+    assert doctor_triage.default_meta("runner backup present: x").reviewable is True
+
+
+def test_a_run_hiding_its_environment_still_cant_review(vault: Path, home: Path, monkeypatch) -> None:
+    from scout.kb import live_run
+
+    e = _entry(_doctor(vault, home), "privacy.script-raw-kb-read")
+    monkeypatch.setattr(live_run, "commit_source_now", lambda _v: live_run.CommitSource(True, "dreaming", "ancestry"))
+    code, out = _cli("bootstrap", "review-warning", e["id"], "--fingerprint", e["fingerprint"])
+    assert code == 2 and "inside a scheduled run (dreaming, by ancestry)" in out
+    assert not doctor_triage.reviews_path(home).exists()

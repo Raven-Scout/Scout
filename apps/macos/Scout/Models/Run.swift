@@ -146,6 +146,9 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         var sandboxSource: String? = nil
         /// clean | restored | unrestored | error | unchecked; nil from an older runner.
         var integrity: String? = nil
+        /// The runner's mode (`$MODE`), which the integrity check writes into its restoring
+        /// commit's subject ("… a <mode> run changed in git").
+        var mode: String? = nil
     }
 
     /// The run went ahead without write protection (it was off, unavailable,
@@ -160,6 +163,13 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// in git: `restored` (Scout put it back) or `unrestored` (it couldn't).
     var changedProtectedFile: Bool {
         ["restored", "unrestored"].contains(protection?.integrity ?? "")
+    }
+
+    /// The integrity check didn't run after this run (`error`, or `unchecked`: no start snapshot), so
+    /// nobody knows whether it changed a protected file.
+    var protectedFilesUnchecked: Bool {
+        guard !status.isSkip else { return false }
+        return ["error", "unchecked"].contains(protection?.integrity ?? "")
     }
 
     /// The slot "Run again" fires: this run's own, or nil when there isn't one

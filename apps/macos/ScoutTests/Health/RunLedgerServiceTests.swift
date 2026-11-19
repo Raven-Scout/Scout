@@ -205,6 +205,7 @@ struct RunProtectionOnRunsTests {
         let b = Run.make(startedAt: t, endedAt: t.addingTimeInterval(60), logPath: URL(fileURLWithPath: "/l/scout-b.log"))
         let off = Run.Protection(sandbox: "off", sandboxSource: "switch", integrity: "clean")
         let out = SessionLogService.overlayLedger([a, b], statuses: [:], protection: ["scout-a.log": off])
+        #expect(SessionLogService.restoreCommitPrefix(mode: nil) == nil)
         #expect(out[0].protection == off && out[0].ranUnprotected && !out[0].changedProtectedFile)
         #expect(out[1].protection == nil && !out[1].ranUnprotected)
     }
@@ -232,7 +233,10 @@ struct RunProtectionOnRunsTests {
         #expect(notFound.message.contains("The run's log names the file and the commit."))
         let stuck = ProtectedFileBlock(restored: false, commits: [], showChange: {}, openLog: {})
         #expect(stuck.title.contains("couldn't put it back") && stuck.message.contains("by hand"))
-        #expect(SessionLogService.restoreCommitPrefix == "Scout: restore protected files")
+        // Only this run's own mode: a run that started right after another's restore never shows that commit.
+        #expect(SessionLogService.restoreCommitPrefix(mode: "evening-consolidation")
+                == "Scout: restore protected files a evening-consolidation run changed in git")
+        #expect(SessionLogService.restoreCommitPrefix(mode: "") == nil)
     }
 
     @Test func theRunBadgeSaysWhatHappened() {
@@ -241,5 +245,17 @@ struct RunProtectionOnRunsTests {
                 .hasPrefix("Write protection turned off in Settings."))
         #expect(ProtectionBadge(kind: .fileChanged(restored: true)).title == "File put back")
         #expect(ProtectionBadge(kind: .fileChanged(restored: false)).title == "Protected file changed")
+        #expect(ProtectionBadge(kind: .unchecked).title == "Files not checked")
+    }
+
+    @Test func aRunGetsEveryBadgeItEarns() {
+        let both = Run.make(status: .success, protection: .init(sandbox: "off", sandboxSource: "switch", integrity: "restored"))
+        #expect(ProtectionBadge.kinds(for: both).map(\.title) == ["File put back", "Unprotected"])
+        let unchecked = Run.make(status: .success, protection: .init(sandbox: "enforced", integrity: "error"))
+        #expect(ProtectionBadge.kinds(for: unchecked).map(\.title) == ["Files not checked"])
+        #expect(unchecked.protectedFilesUnchecked)
+        #expect(ProtectionBadge.kinds(for: Run.make(status: .success, protection: .init(sandbox: "enforced", integrity: "clean"))).isEmpty)
+        #expect(!Run.make(status: .skippedSandbox, protection: .init(sandbox: "failed", integrity: "unchecked")).protectedFilesUnchecked)
+        #expect(SessionsListView.matches(both, "put back") && SessionsListView.matches(both, "unprotected"))
     }
 }

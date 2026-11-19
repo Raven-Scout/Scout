@@ -25,12 +25,7 @@ struct RunRow: View {
                     if run.wasManuallyTriggered && run.type != .manual {
                         manualBadge
                     }
-                    if run.changedProtectedFile {
-                        ProtectionBadge(kind: .fileChanged(restored: run.protection?.integrity == "restored"))
-                    } else if run.ranUnprotected {
-                        ProtectionBadge(kind: .unprotected(RunOutcomeDisplay.sandbox(run.protection?.sandbox,
-                                                                                     source: run.protection?.sandboxSource)))
-                    }
+                    ForEach(ProtectionBadge.kinds(for: run), id: \.title) { ProtectionBadge(kind: $0) }
                 }
                 Text(run.startedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(DS.mono(11.5))
@@ -137,13 +132,35 @@ struct RunRow: View {
 /// changed": it ran without write protection, or the check after it found a
 /// protected file it had changed (card C9, from the run ledger).
 struct ProtectionBadge: View {
-    enum Kind: Equatable {
+    nonisolated enum Kind: Equatable, Sendable {
         /// What the ledger says about write protection, in the owner's words.
         case unprotected(String?)
         /// Scout put the file back (`restored`), or couldn't.
         case fileChanged(restored: Bool)
+        /// The check after the run didn't run (`error` / `unchecked`).
+        case unchecked
+
+        var title: String {
+            switch self {
+            case .unprotected: return "Unprotected"
+            case .fileChanged(let restored): return restored ? "File put back" : "Protected file changed"
+            case .unchecked: return "Files not checked"
+            }
+        }
     }
     let kind: Kind
+
+    /// Every badge a run earns, worst first: a run can both run unprotected and have a file put back.
+    static func kinds(for run: Run) -> [Kind] {
+        var out: [Kind] = []
+        if run.changedProtectedFile { out.append(.fileChanged(restored: run.protection?.integrity == "restored")) }
+        if run.protectedFilesUnchecked { out.append(.unchecked) }
+        if run.ranUnprotected {
+            out.append(.unprotected(RunOutcomeDisplay.sandbox(run.protection?.sandbox,
+                                                             source: run.protection?.sandboxSource)))
+        }
+        return out
+    }
 
     var body: some View {
         Label(title, systemImage: symbol)
@@ -159,12 +176,7 @@ struct ProtectionBadge: View {
             .accessibilityLabel(help)
     }
 
-    var title: String {
-        switch kind {
-        case .unprotected: return "Unprotected"
-        case .fileChanged(let restored): return restored ? "File put back" : "Protected file changed"
-        }
-    }
+    var title: String { kind.title }
 
     var help: String {
         switch kind {
@@ -174,6 +186,8 @@ struct ProtectionBadge: View {
             return "This run changed a protected file, and Scout put it back. Open the run to see the change."
         case .fileChanged(false):
             return "This run changed a protected file, and Scout couldn't put it back. Open the run to see what to do."
+        case .unchecked:
+            return "Scout couldn't check this run's protected files afterwards, so it doesn't know whether it changed one."
         }
     }
 
@@ -181,12 +195,13 @@ struct ProtectionBadge: View {
         switch kind {
         case .unprotected: return "shield.slash"
         case .fileChanged: return "exclamationmark.shield.fill"
+        case .unchecked: return "questionmark.diamond"
         }
     }
 
     private var color: Color {
         switch kind {
-        case .unprotected: return DS.Status.warn
+        case .unprotected, .unchecked: return DS.Status.warn
         case .fileChanged: return DS.Status.err
         }
     }

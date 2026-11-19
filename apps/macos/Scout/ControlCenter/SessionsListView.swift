@@ -112,8 +112,7 @@ struct SessionsListView: View {
         let hay = [
             run.displayName, run.type.rawValue, run.status.displayName,
             run.startedAt.formatted(date: .abbreviated, time: .omitted),
-            run.ranUnprotected ? "unprotected" : "", run.changedProtectedFile ? "protected file put back changed" : "",
-        ] + run.commits.map(\.subject)
+        ] + ProtectionBadge.kinds(for: run).map(\.title) + run.commits.map(\.subject)
         return hay.joined(separator: " ").localizedCaseInsensitiveContains(search)
     }
 

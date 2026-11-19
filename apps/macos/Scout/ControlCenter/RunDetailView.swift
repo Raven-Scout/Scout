@@ -109,6 +109,12 @@ struct RunDetailView: View {
                     .foregroundStyle(DS.Status.warn)
                     .help("This run could change Scout's own files. Write protection is set in Settings ▸ Engine.")
             }
+            if run.protectedFilesUnchecked {
+                Label("Scout couldn't check this run's protected files afterwards", systemImage: "questionmark.diamond")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.warn)
+                    .help("The run's log has the integrity check's line saying why.")
+            }
         }
     }
 

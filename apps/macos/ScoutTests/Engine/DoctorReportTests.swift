@@ -60,7 +60,7 @@ struct DoctorReportTests {
         #expect(r?.runHealth?.firstActionable?.until == nil)
         #expect(r?.runHealth?.findings.last?.detail == nil)
         // Two KB-reading vault scripts that send nothing are ONE warning with both files (#505, UI audit R1).
-        #expect(r?.warnings.count == 2)
+        #expect(r?.warnings.count == 3)
         let group = try #require(r?.warningGroups.first)
         #expect(r?.warningGroups.count == 1)
         #expect(group.kind == "privacy.script-raw-kb-read.internal")
@@ -68,27 +68,31 @@ struct DoctorReportTests {
         #expect(r?.warnings.contains(group.summary) == true)
         // Every warning ranked by risk, the owner's reviewed one included (UI audit R13).
         let triage = try #require(r?.warningTriage)
-        #expect(triage.map(\.risk) == [.high, .medium, .low])
-        #expect(triage[0].id == "privacy.script-raw-kb-read:scripts/weekly-digest.py")
-        #expect(triage[0].items == ["scripts/weekly-digest.py"] && triage[0].reviewedAt == nil)
-        #expect(triage[0].reason == "it mentions a web request, so what it reads may leave the vault")
-        #expect(triage[1].reviewedAt == RunLedgerTime.parse("2026-10-10T12:00:00Z"))
-        #expect(r?.warnings.contains(triage[1].summary) == false)
-        #expect(triage[2].id == group.kind && triage[2].summary == group.summary)
+        #expect(triage.map(\.risk) == [.high, .high, .medium, .low])
+        // The privacy check's blocked-send count is about run protection: never reviewable (#717 review).
+        #expect(triage[0].kind == "protection" && !triage[0].reviewable && triage[0].id.hasPrefix("protection."))
+        #expect(triage[1].id == "privacy.script-raw-kb-read:scripts/weekly-digest.py" && triage[1].reviewable)
+        #expect(triage[1].items == ["scripts/weekly-digest.py"] && triage[1].reviewedAt == nil)
+        #expect(triage[1].reason == "it mentions a web or network call, so what it reads may leave the vault")
+        #expect(triage[2].reviewedAt == RunLedgerTime.parse("2026-10-10T12:00:00Z"))
+        #expect(r?.warnings.contains(triage[2].summary) == false)
+        #expect(triage[3].id == group.kind && triage[3].summary == group.summary)
         #expect(triage.allSatisfy { $0.fingerprint.count == 16 })
         let summary = HealthSummary(doctor: r)
-        #expect(summary.issues(.warning, from: .install).map(\.title) == [
+        let install = summary.issues(.warning, from: .install)
+        #expect(install.map(\.title) == [
+            triage[0].summary,
             "1 vault script reads the knowledge base directly, without Scout's privacy labels",
             "2 vault scripts read the knowledge base directly, but mention no way to send what they read",
         ])
-        #expect(summary.issues(.warning, from: .install).map(\.risk) == [.high, .low])
-        #expect(summary.issues(.warning, from: .install).first?.review
-                == HealthSummary.Review(id: triage[0].id, fingerprint: triage[0].fingerprint))
+        #expect(install.map(\.risk) == [.high, .high, .low])
+        #expect(install[0].review == nil)   // no "Mark reviewed" on a run-protection warning
+        #expect(install[1].review == HealthSummary.Review(id: triage[1].id, fingerprint: triage[1].fingerprint))
         #expect(summary.reviewed.map(\.title) == [
             "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)",
         ])
-        // The reviewed one counts for nothing: without it there'd be three install warnings.
-        #expect(summary.issues(.warning, from: .install).count == 2)
+        // The reviewed one counts for nothing: without it there'd be four install warnings.
+        #expect(summary.issues(.warning, from: .install).count == 3)
         #expect(summary.attentionCount == summary.issues.filter { $0.severity != .note }.count)
     }
 
@@ -106,6 +110,7 @@ struct DoctorReportTests {
         #expect(r.warnings == ["a", "b"])
         #expect(r.warningTriage.map(\.id) == ["warning.1"])
         #expect(r.warningTriage.first?.risk == .medium)   // a risk this build doesn't know is shown, not buried
+        #expect(r.warningTriage.first?.reviewable == false)   // a missing `reviewable` never offers a review
     }
 
     @Test func warningGroupsAreOptionalAndNeverCostTheReport() throws {

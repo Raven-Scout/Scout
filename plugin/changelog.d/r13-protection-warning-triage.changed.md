@@ -1,6 +1,8 @@
 - **Vault scripts that read the knowledge base around `scoutctl kb` are split by risk** (#505). A script
-  that mentions a way to send what it reads (chat, mail, a web request, a notifier, `gh`, a `claude -p`
-  session, `drafts/`) stays a `privacy.script-raw-kb-read` warning, ranked high. One that mentions none,
-  a checker whose output stays in the vault, is now a separate low-risk warning,
+  stays a `privacy.script-raw-kb-read` warning, ranked high, when what it reads can leave the vault: it
+  mentions a way to send (chat, mail, a web or network call, `ssh`/`rsync`/`git push`, a notifier or the
+  broker, `gh`, a Claude session, a synced folder, `drafts/`), it uses a vault script that does, another
+  vault script or runner runs it (so what it prints may be piped on), or it is too long to read whole. Any
+  other, a checker whose output stays in the vault, is now a separate low-risk warning,
   `privacy.script-raw-kb-read.internal`, grouped the same way, so a mature vault's checkers become one
   low-risk line the owner can review once.

@@ -78,6 +78,11 @@ def _build_vault(root: Path) -> Path:
     (v / "run-scout.sh.bak.1").write_text("x\n", encoding="utf-8")
     for name in ("link-check.py", "tag-audit.py"):
         (v / "scripts" / name).write_text("open('knowledge-base/index.md').read()\n", encoding="utf-8")
+    # One send the privacy check held back this week: a run-protection warning the owner can't review (R13).
+    (logs / "kb-reads.jsonl").write_text(
+        json.dumps({"blocked": True, "paths_denied": 0, "ts": _ts(NOW - timedelta(days=1))}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (v / "scripts" / "weekly-digest.py").write_text(
         "import requests\nrequests.post(URL, data=open('knowledge-base/index.md').read())\n", encoding="utf-8"
     )
@@ -162,7 +167,7 @@ def test_doctor_run_health_matches_the_shared_fixture(tmp_path, monkeypatch):
 
 def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     d = json.loads(_render(tmp_path, monkeypatch))
-    assert d["severity"] == "yellow" and len(d["warnings"]) == 2 and d["errors"] == []
+    assert d["severity"] == "yellow" and len(d["warnings"]) == 3 and d["errors"] == []
     # The two KB-reading scripts that send nothing are one warning, and its group lists both (#505).
     (group,) = d["warning_groups"]
     assert group["kind"] == "privacy.script-raw-kb-read.internal" and group["count"] == 2
@@ -170,12 +175,15 @@ def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     assert group["summary"] in d["warnings"]
     # Every warning, highest risk first; the reviewed backup is listed but not in "warnings" (R13).
     triage = d["warning_triage"]
-    assert [e["risk"] for e in triage] == ["high", "medium", "low"]
-    assert triage[0]["id"] == "privacy.script-raw-kb-read:scripts/weekly-digest.py"
-    assert triage[0]["summary"] in d["warnings"] and triage[0]["reviewed_at"] is None
-    assert triage[1]["summary"] == REVIEWED and triage[1]["reviewed_at"] == "2026-10-10T12:00:00Z"
+    assert [e["risk"] for e in triage] == ["high", "high", "medium", "low"]
+    # The privacy audit's blocked-send count is about run protection: never reviewable.
+    assert triage[0]["kind"] == "protection" and triage[0]["reviewable"] is False
+    assert triage[0]["id"].startswith("protection.") and triage[0]["summary"].startswith("privacy: 1 blocked")
+    assert triage[1]["id"] == "privacy.script-raw-kb-read:scripts/weekly-digest.py"
+    assert triage[1]["summary"] in d["warnings"] and triage[1]["reviewed_at"] is None and triage[1]["reviewable"]
+    assert triage[2]["summary"] == REVIEWED and triage[2]["reviewed_at"] == "2026-10-10T12:00:00Z"
     assert REVIEWED not in d["warnings"]
-    assert triage[2]["kind"] == group["kind"] and triage[2]["id"] == group["kind"]
+    assert triage[3]["kind"] == group["kind"] and triage[3]["id"] == group["kind"]
     assert all(sorted(e) == sorted(TRIAGE_KEYS) for e in triage)
     rh = d["run_health"]
     assert rh["severity"] == "red"
@@ -193,7 +201,7 @@ def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     assert "pytest" not in json.dumps(d)
 
 
-TRIAGE_KEYS = ("id", "kind", "risk", "reason", "summary", "items", "fingerprint", "reviewed_at")
+TRIAGE_KEYS = ("id", "kind", "risk", "reason", "summary", "items", "fingerprint", "reviewed_at", "reviewable")
 
 
 def test_the_fixture_models_a_state_the_engine_can_reach(tmp_path, monkeypatch):

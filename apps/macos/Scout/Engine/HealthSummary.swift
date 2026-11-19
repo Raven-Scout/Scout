@@ -80,7 +80,8 @@ nonisolated struct HealthSummary: Equatable, Sendable {
                 issue = Self.issue(kind: entry.kind, summary: text, items: entry.items, id: "warning.\(i)")
                 issue.risk = entry.risk
                 issue.riskReason = entry.reason
-                issue.review = Review(id: entry.id, fingerprint: entry.fingerprint)
+                // A run-protection warning can't be reviewed: no button for it.
+                issue.review = entry.reviewable ? Review(id: entry.id, fingerprint: entry.fingerprint) : nil
             } else if let group = groups[text] {
                 issue = Self.issue(for: group, id: "warning.\(i)")
             } else {
