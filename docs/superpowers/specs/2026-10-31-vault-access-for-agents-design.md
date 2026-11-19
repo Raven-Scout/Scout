@@ -1096,8 +1096,24 @@ anything, becomes vault content.
   `delegate_source` classifier fact, and the `from-agents/` notes.
 - **V4b3 (app):** the review list in plain text, for the app session.
 
-**For the owner to decide:** whether an accepted observation should ever reach
-the accepting agent's own mirror. The draft says no, for any delegate.
+**Decided by the owner** (relayed 2026-11-19 from a side session): an
+accepted observation keeps the default, a private note with
+`source: delegate:<id>`, hidden from every delegate mirror, the author's
+included. So that agents' shared memory isn't cut off for good, V4b2 also
+adds a separate, deliberate **promote**:
+
+- **The command** is `scoutctl inbox review promote <ULID>`, with an app
+  button later. It is the owner's decision, per item (`headless_gate`).
+- **Before promoting,** the full text rules run again, and the text is shown
+  with every hidden character made visible.
+- **Promoting** drops the `delegate_source` mark (the provenance is
+  rewritten), so the note follows the normal visibility rules and can reach
+  mirrors, the author's included. An optional scope limits a promoted note to
+  its author or to named delegates.
+- **The signed state** records the promotion by ULID.
+
+Unreviewed text still never spreads. Reviewed text spreads only by a
+deliberate decision of the owner's, item by item.
 
 **After the coordinator's review of this plan (2026-11-19).** These conditions
 were added, and V4b1 builds them in:
