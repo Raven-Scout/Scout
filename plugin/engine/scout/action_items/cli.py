@@ -1110,7 +1110,8 @@ def _retitle_undo(vault: Path, day: str, commit_sha: str, yes: bool) -> None:
     else:
         undo_plan, sha = retitle.undo(vault=vault, today=day, commit_sha=commit_sha, commit=retitle.git_safe_commit)
     for tag, (_cur, former) in undo_plan.restore.items():
-        sys.stdout.write(f"  [#{tag}] back to the original ({len(former)} characters)\n")
+        note = "its note goes (the cleanup made it)" if tag in undo_plan.delete_notes else "its note's title goes back"
+        sys.stdout.write(f"  [#{tag}] back to the original ({len(former)} characters); {note}\n")
     for tag in undo_plan.changed:
         sys.stdout.write(f"  [#{tag}] left alone: changed since the cleanup\n")
     n = len(undo_plan.restore)

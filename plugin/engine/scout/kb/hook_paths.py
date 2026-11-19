@@ -88,6 +88,7 @@ SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
 SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
+TITLE_REWRITES = "Scout's title-rewrite records"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
 INLINE_WRITE = "an inline program that writes next to a protected name"
@@ -355,6 +356,8 @@ def protected_specs(
         # delegate's view of the vault.
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
+        # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
+        add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)

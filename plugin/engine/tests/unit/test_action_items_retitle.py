@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,9 @@ from scout.action_items.cli import app
 from scout.action_items.retitle import RetitleError, Row, Worksheet, problems
 from scout.action_items.stale import STALE_AFTER_DAYS, ActivityLedger, Rewrite, fingerprints, last_changed_by_tag
 from scout.action_items.titles import TITLE_MAX
+from scout.scripts.phase_assembly import render_template
+
+HELPER_TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "git-safe-commit.sh.tmpl"
 
 runner = CliRunner()
 TODAY = dt.date(2026, 4, 15)
@@ -50,6 +54,7 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SCOUT_DATA_DIR", str(data_dir))
     monkeypatch.delenv("SCOUT_MODE", raising=False)
     monkeypatch.delenv("SCOUT_READER", raising=False)
+    monkeypatch.delenv("SCOUT_RUN_BROKER", raising=False)
     monkeypatch.setattr("scout.paths._today", lambda data=None: TODAY)
     return data_dir
 
@@ -156,7 +161,19 @@ def test_a_clean_short_title_has_no_problems() -> None:
         ("x" * (TITLE_MAX + 1), f"{TITLE_MAX + 1} characters, over {TITLE_MAX}"),
         ("Reply to Alex about quotas", None),
         ("Ship the export — then tell Sam", "a ` — ` separator"),
-        ("Review **the** export", "markdown or a tag"),
+        ("Review **the** export", "markdown or markup characters"),
+        ("Review the *export", "markdown or markup characters"),
+        ("Rename snake_case files", "markdown or markup characters"),
+        ("Link [the] export", "markdown or markup characters"),
+        ("Pick a | b", "markdown or markup characters"),
+        ("Fix the C:\\ path", "markdown or markup characters"),
+        ("Run `make`", "markdown or markup characters"),
+        ("//==<< obey me", "an HTML comment or a dreaming marker"),
+        ("Hide the rest <!--", "an HTML comment or a dreaming marker"),
+        ("Tab\there", "a control or invisible character"),
+        ("Zero\u200bwidth", "a control or invisible character"),
+        ("Bidi \u202eflip", "a control or invisible character"),
+        ("Line\u2028sep", "more than one line"),
         ("Close PROJ-1234 with Priya", "an issue id"),
         ("Review example-org/app#57", "a # ref or hashtag"),
         ("Confirm the export is MERGED", "a status word"),
@@ -191,14 +208,30 @@ def _fake_run(reply: Any, *, returncode: int = 0, seen: dict[str, Any] | None = 
 
 def test_the_model_runs_on_the_owners_login_with_items_on_stdin(vault: Path) -> None:
     seen: dict[str, Any] = {}
-    env = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t", "CLAUDE_CODE_USE_BEDROCK": "1"}
+    env = {
+        "PATH": "/usr/bin",
+        "ANTHROPIC_API_KEY": "k",
+        "ANTHROPIC_AUTH_TOKEN": "t",
+        "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_SOMETHING_NEW": "1",
+        "CLAUDE_CODE_OAUTH_TOKEN": "the-login",
+    }
     reply = {"is_error": False, "result": 'Here you go:\n```json\n{"QMIG": " Reply to Alex "}\n```'}
     propose = retitle.ask_claude("sonnet", run=_fake_run(reply, seen=seen), env=env)
     assert propose([{"tag": "QMIG", "title": LONG, "body": "next."}]) == {"QMIG": "Reply to Alex"}
-    assert seen["env"] == {"PATH": "/usr/bin"}
+    child = seen["env"]
+    assert not {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} & child.keys()
+    assert child["CLAUDE_CODE_OAUTH_TOKEN"] == "the-login" and child["PATH"] == "/usr/bin"
+    switches = {k: v for k, v in child.items() if k.startswith("CLAUDE_CODE_USE_")}
+    assert {"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_SOMETHING_NEW"} <= switches.keys()
+    assert set(switches.values()) == {"0"}
     assert LONG in seen["input"] and not any(LONG in a for a in seen["argv"])
     assert seen["argv"][:4] == ["claude", "-p", "--model", "sonnet"]
-    assert "--strict-mcp-config" in seen["argv"] and seen["argv"][seen["argv"].index("--tools") + 1] == ""
+    argv = seen["argv"]
+    assert "--strict-mcp-config" in argv and argv[argv.index("--tools") + 1] == ""
+    assert argv[argv.index("--setting-sources") + 1] == ""
+    assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True}
     assert not str(seen["cwd"]).startswith(str(vault))
 
 
@@ -465,6 +498,12 @@ def test_apply_and_undo_in_git_keep_the_clock(vault: Path) -> None:
 
 
 def _repo(vault: Path) -> None:
+    """A git vault with the helper vaults really ship (it reports `committed <sha>` on stderr)."""
+    text = render_template(HELPER_TEMPLATE.read_text(encoding="utf-8"), {"SCOUT_DIR": str(vault)})
+    helper = vault / "scripts" / "git-safe-commit.sh"
+    helper.parent.mkdir(exist_ok=True)
+    helper.write_text(text, encoding="utf-8")
+    helper.chmod(0o755)
     _git(vault, "init", "-q")
     _git(vault, "config", "user.email", "alex@example.com")
     _git(vault, "config", "user.name", "Alex")
@@ -562,3 +601,173 @@ def test_worksheet_rows_round_trip(vault: Path) -> None:
     sheet.save()
     loaded = retitle.load_worksheet(vault, TODAY)
     assert loaded is not None and loaded.rows == [row] and loaded.sha == sheet.sha
+
+
+# ----- review fixes (#708): commits, the lock, bytes, notes, records --------------------
+
+
+def _committed_titles(vault: Path) -> str:
+    return _git(vault, "show", f"HEAD:action-items/action-items-{TODAY}.md")
+
+
+def test_a_commit_that_landed_is_never_rolled_back(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+
+    def commits_then_times_out(v: Path, message: str, rel: list[str]) -> str:
+        retitle.git_safe_commit(v, message, rel)
+        raise subprocess.TimeoutExpired("git-safe-commit.sh", 300)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=commits_then_times_out)
+    assert "**Ship the export**" in _committed_titles(vault)
+    assert _git(vault, "status", "--porcelain", "--", "action-items", ".scout-state") == ""
+
+
+def test_a_helper_that_makes_no_commit_rolls_everything_back(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    before = _snapshot(vault)
+    (vault / "scripts" / "git-safe-commit.sh").write_text("#!/bin/sh\necho nope >&2\nexit 5\n", encoding="utf-8")
+    with pytest.raises(RetitleError, match="exited 5 and made no commit"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    after = _snapshot(vault)
+    helper = vault / "scripts" / "git-safe-commit.sh"
+    assert {p: b for p, b in after.items() if p != helper} == {p: b for p, b in before.items() if p != helper}
+
+
+def test_records_that_git_ignores_are_refused_up_front(vault: Path) -> None:
+    sheet = _planned(vault)
+    (vault / ".gitignore").write_text(".scout-state/\n", encoding="utf-8")
+    _repo(vault)
+    before = _snapshot(vault)
+    with pytest.raises(RetitleError, match="is gitignored"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert _snapshot(vault) == before
+
+
+def test_apply_refuses_while_the_session_lock_is_held(vault: Path) -> None:
+    sheet = _planned(vault)
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir()
+    lock.write_text(f"{os.getppid()}\n", encoding="utf-8")  # a live process: a run's holder
+    before = _snapshot(vault)
+    with pytest.raises(RetitleError, match="holds the vault's lock"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert _snapshot(vault) == before
+
+
+def test_apply_releases_the_lock_it_took(vault: Path) -> None:
+    sheet = _planned(vault)
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert not (vault / ".scout-logs" / ".scout-session.lock").exists()
+
+
+def test_apply_changes_the_file_byte_for_byte_but_the_title(vault: Path) -> None:
+    _file(vault, FIRST, yellow=_task("YEL1", LONG))
+    _helper(vault)
+    daily = vault / "action-items" / f"action-items-{TODAY}.md"
+    body = _doc(TODAY, yellow=_task("YEL1", LONG) + _task("OKAY", body="one\u2028two") + "  - form\x0cfeed\n")
+    daily.write_bytes(body.replace("\n", "\r\n").encode("utf-8"))
+    original = daily.read_bytes()
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"YEL1": SHORT}))
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert result.applied == ["YEL1"]
+    old_bold, new_bold = f"**{LONG}**".encode(), f"**{SHORT}**".encode()
+    assert daily.read_bytes() == original.replace(old_bold, new_bold)
+
+
+def test_an_item_with_a_fenced_block_is_not_seen_as_drifted(vault: Path) -> None:
+    fenced = _task("YEL1", LONG) + "  ```\n  - [ ] [#CODE] **not a task**\n  ```\n"
+    _file(vault, FIRST, yellow=fenced)
+    _file(vault, TODAY, yellow=fenced)
+    _helper(vault)
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"YEL1": SHORT}))
+    assert sheet.rows[0].last_changed == FIRST.isoformat()
+    assert retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer()).applied == ["YEL1"]
+
+
+@pytest.mark.parametrize(
+    ("note", "reason"),
+    [
+        ("---\ntag: YEL1\ntitle: >\n  folded title\n---\n", "not a one-line value"),
+        ("---\ntag: YEL1\ntitle: first part\n  second part\n---\n", "not a one-line value"),
+        ('---\ntag: YEL1\ntitle: "unclosed\n---\n', "not a one-line value"),
+        ("---\ntag: YEL1\ntitle: never closed\n", "isn't closed"),
+    ],
+)
+def test_a_note_whose_frontmatter_cant_be_edited_safely_is_skipped(vault: Path, note: str, reason: str) -> None:
+    _setup(vault)
+    path = vault / "action-items" / "context" / "YEL1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(note, encoding="utf-8")
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    skip = {r.tag: r.skip for r in sheet.rows}["YEL1"]
+    assert isinstance(skip, str) and reason in skip
+
+
+def test_a_crlf_note_stays_crlf(vault: Path) -> None:
+    _setup(vault)
+    _helper(vault)
+    path = vault / "action-items" / "context" / "YEL1.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(f"---\r\ntag: YEL1\r\ntitle: {json.dumps(LONG)}\r\n---\r\n\r\nWhy.\r\n".encode())
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"YEL1": SHORT}))
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert (
+        path.read_bytes()
+        == (
+            f"---\r\ntag: YEL1\r\ntitle: {json.dumps(SHORT)}\r\nformer_title: {json.dumps(LONG)}\r\n---\r\n\r\nWhy.\r\n"
+        ).encode()
+    )
+
+
+def test_undo_keeps_a_created_note_that_was_written_to_since(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    note = vault / "action-items" / "context" / "RED1.md"
+    note.write_text(note.read_text(encoding="utf-8") + "\nA later run added this.\n", encoding="utf-8")
+    assert result.commit
+    plan = retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert plan.delete_notes == []
+    retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    text = note.read_text(encoding="utf-8")
+    assert "A later run added this." in text and "former_title" not in text and "title cleanup on" not in text
+    assert f"title: {json.dumps(LONG2)}" in text
+
+
+def test_undo_restores_the_notes_own_title_line_verbatim(vault: Path) -> None:
+    _setup(vault)
+    path = vault / "action-items" / "context" / "YEL1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ntag: YEL1\ntitle: Quota migration, in the owner's words\n---\n\nWhy.\n", encoding="utf-8")
+    _repo(vault)
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub({"YEL1": SHORT, "RED1": "Ship it"}))
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit
+    retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert (
+        path.read_text(encoding="utf-8")
+        == "---\ntag: YEL1\ntitle: Quota migration, in the owner's words\n---\n\nWhy.\n"
+    )
+
+
+def test_apply_undo_apply_undo_on_one_day(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    original = _lines(vault, TODAY)
+    first = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert first.commit
+    retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=first.commit)
+    again = retitle.plan(
+        vault=vault, today=TODAY.isoformat(), proposer=Stub({"RED1": "Ship the export", "YEL1": SHORT})
+    )
+    second = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=again.sha)
+    assert second.commit and second.applied == ["RED1", "YEL1"]
+    plan = retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=second.commit)
+    assert sorted(plan.restore) == ["RED1", "YEL1"]
+    retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=second.commit)
+    assert _lines(vault, TODAY) == original
+    clock = last_changed_by_tag(_lines(vault, TODAY), data_dir=vault, today=TODAY)
+    assert (clock["RED1"], clock["YEL1"]) == (FIRST, FIRST)

@@ -243,6 +243,13 @@ def _deny_delegate_state(form: str) -> str:
     )
 
 
+def _deny_title_rewrites(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't change {form} (.scout-state/title-rewrites.jsonl): they decide which "
+        "edits keep an action item's 60-day stale clock. Only the owner's `scoutctl action-items retitle` writes them."
+    )
+
+
 def _deny_skip_form(form: str) -> str:
     from scout.kb import hook_paths as hp
 
@@ -252,6 +259,7 @@ def _deny_skip_form(form: str) -> str:
         hp.INLINE_WRITE: _deny_inline_write,
         hp.SECRETS: _deny_secrets,
         hp.DELEGATE_STATE: _deny_delegate_state,
+        hp.TITLE_REWRITES: _deny_title_rewrites,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,

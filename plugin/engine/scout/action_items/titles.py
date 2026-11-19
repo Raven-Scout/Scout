@@ -267,7 +267,9 @@ def list_long_titles(*, data_dir: Path | None = None, today: str) -> TitleListin
     day = _dt.date.fromisoformat(today)
     root = paths.data_dir(data_dir)
     before = {tag: title for tag, (_section, title) in _titles(_earlier_lines(root, day)).items()}
-    clock = last_changed_by_tag(list(lines), data_dir=root, today=day)
+    # The clock fingerprints the file as the ledger reads it, fenced lines and all; titles come from `lines`.
+    raw = paths.action_items_daily_path(root, date=day).read_text(encoding="utf-8").splitlines()
+    clock = last_changed_by_tag(raw, data_dir=root, today=day)
     current = _titles(lines)
     long: list[LongTitle] = []
     for tag, (section, title) in current.items():
