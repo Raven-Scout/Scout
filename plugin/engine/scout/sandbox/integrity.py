@@ -17,7 +17,8 @@ branch during a run moves a ref too. Such a branch is left alone (a log line, no
 can't forge: a linked worktree that existed at the snapshot still has it checked out, and that worktree's own index
 holds exactly the tip's entry for every changed path. A sandboxed run can move any ref, but can't write another
 worktree's HEAD or index (the profile carves out only the vault's own git dirs), so a change it plants on a
-session's branch is still put back.
+session's branch is still put back. Without an enforced sandbox (``SCOUT_SANDBOX_STATUS`` from the runner isn't
+``enforced``: off, unavailable, Linux) the run could write that evidence too, so no branch is left alone.
 
 The protected tracked paths are ``hook_paths.protected_specs()`` entries inside the vault's work tree, outside its
 git dir: the runner scripts, ``.gitattributes``, ``.gitmodules``, ``.mcp.json``, ``.claude/``, the other agent dirs,
@@ -340,6 +341,9 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
         old_commit = _commit_of(vault, old, genv) if old else None
         return trees.get(old_commit, {}) if old_commit else head_entries
 
+    # A worktree's HEAD and index vouch for its branch only if the run couldn't write them: under an enforced
+    # sandbox. The runner exports the status it started claude with; the run can't change the runner's env.
+    trust_worktrees = env.get("SCOUT_SANDBOX_STATUS") == "enforced"
     result = Result("clean")
     head, branch = _head(vault, genv)
     now_refs = _refs(vault, genv)
@@ -353,7 +357,7 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
         paths = _diff(want, have)
         if not paths:
             continue
-        if ref.startswith("refs/heads/"):
+        if trust_worktrees and ref.startswith("refs/heads/"):
             worktree = _vouching_worktree(vault, start, ref, have, paths, scope_list, genv)
             if worktree is not None:
                 result.left_alone[ref] = paths

@@ -491,7 +491,10 @@ All of Q1–Q8 were answered with the recommendation.
     any branch (`commit-tree` + `update-ref`) but can't write another worktree's HEAD or
     index, or create a worktree; a planted change on a session's branch fails the index test
     and is restored. The worktree is read through its admin dir, never its folder's `.git`
-    file. Not trusted, so still restored: a worktree made after the snapshot (with the
+    file. Only under an enforced sandbox (`SCOUT_SANDBOX_STATUS=enforced`, which the runner
+    exports before claude starts and the run can't change): off, unavailable or conflict
+    (Linux included), the run could write that worktree's HEAD and index itself, so no branch
+    is left alone. Not trusted, so still restored: a worktree made after the snapshot (with the
     sandbox off a run could make one, and `verify` can't tell), a worktree now on another
     branch, and a session whose index no longer matches its tip for a changed path.
   - Tests: `tests/unit/test_run_integrity.py` (a committed, staged, new-branch, detached,

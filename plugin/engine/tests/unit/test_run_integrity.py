@@ -220,6 +220,11 @@ AGENT_SETTINGS = ".claude/settings.local.json"
 SESSION_BRANCH = "claude/session-a"
 
 
+def _enforced(vault: Vault) -> None:
+    """The runner exports the sandbox status it started claude with; only `enforced` lets a worktree vouch."""
+    vault.env["SCOUT_SANDBOX_STATUS"] = "enforced"
+
+
 def _session_worktree(vault: Vault) -> Path:
     """An interactive session's linked worktree under the vault's ``.claude/worktrees/``, on its own branch."""
     wt = vault.path / ".claude" / "worktrees" / "session-a"
@@ -234,6 +239,7 @@ def _wt_git(vault: Vault, wt: Path, *args: str) -> str:
 
 
 def test_a_worktree_sessions_own_commit_during_the_run_is_left_alone(vault: Vault) -> None:
+    _enforced(vault)
     wt = _session_worktree(vault)
     snap = vault.snapshot()
     # While the run goes, the session commits a protected file on its own branch, from its own work tree.
@@ -255,6 +261,26 @@ def test_a_worktree_sessions_own_commit_during_the_run_is_left_alone(vault: Vaul
     )
 
 
+@pytest.mark.parametrize("status", [None, "off", "unavailable", "conflict", "ENFORCED"])
+def test_without_an_enforced_sandbox_no_worktree_vouches(vault: Vault, status: str | None) -> None:
+    # With the sandbox off the run could have written the worktree's HEAD and index itself, so the session's
+    # commit is put back as before (the pre-fix behaviour, a false positive the owner can read in the log).
+    if status is not None:
+        vault.env["SCOUT_SANDBOX_STATUS"] = status
+    wt = _session_worktree(vault)
+    snap = vault.snapshot()
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+    _wt_git(vault, wt, "commit", "-qm", "session: settings")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+    assert result.left_alone == {}
+
+
 def _plant_on_branch(vault: Vault, branch: str, rel: str, text: str) -> str:
     """What a sandboxed run can do to any branch: write objects and move the ref, touching no worktree's index."""
     blob = vault.git("hash-object", "-w", "--stdin", input_text=text).strip()
@@ -271,6 +297,7 @@ def _plant_on_branch(vault: Vault, branch: str, rel: str, text: str) -> str:
 
 
 def test_a_run_moving_a_worktree_sessions_branch_is_still_put_back(vault: Vault) -> None:
+    _enforced(vault)
     wt = _session_worktree(vault)
     start_blob = vault.blob(SESSION_BRANCH, RUNNER_SCRIPT)
     snap = vault.snapshot()
@@ -287,6 +314,7 @@ def test_a_run_moving_a_worktree_sessions_branch_is_still_put_back(vault: Vault)
 
 
 def test_a_worktree_session_doesnt_cover_the_runs_change_on_main(vault: Vault) -> None:
+    _enforced(vault)
     wt = _session_worktree(vault)
     start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
     snap = vault.snapshot()
@@ -308,6 +336,7 @@ def test_a_worktree_session_doesnt_cover_the_runs_change_on_main(vault: Vault) -
 def test_a_session_whose_index_differs_from_its_branch_tip_isnt_trusted(vault: Vault) -> None:
     # The session committed the file, then staged another version of it before the run ended: the index no
     # longer vouches for the tip, so the branch is held to its start content like any other.
+    _enforced(vault)
     wt = _session_worktree(vault)
     snap = vault.snapshot()
     (wt / ".claude").mkdir(exist_ok=True)
@@ -327,6 +356,7 @@ def test_a_worktree_made_after_the_snapshot_isnt_trusted(vault: Vault) -> None:
     # Jordan, 2026-11-19: only worktrees that existed when the run started vouch for a branch. With the
     # sandbox off a run could create one, and verify can't tell whether the sandbox was on.
     snap = vault.snapshot()
+    _enforced(vault)
     wt = _session_worktree(vault)
     (wt / ".claude").mkdir(exist_ok=True)
     (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
@@ -340,6 +370,7 @@ def test_a_worktree_made_after_the_snapshot_isnt_trusted(vault: Vault) -> None:
 
 
 def test_a_worktree_that_moved_to_another_branch_doesnt_vouch_for_the_old_one(vault: Vault) -> None:
+    _enforced(vault)
     wt = _session_worktree(vault)
     vault.git("branch", "-q", "other")
     snap = vault.snapshot()

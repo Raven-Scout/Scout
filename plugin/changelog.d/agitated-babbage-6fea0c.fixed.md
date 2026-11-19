@@ -6,4 +6,6 @@
   worktree that existed at the snapshot still has it checked out and that worktree's own index holds exactly the
   branch tip's version of every changed protected file. A sandboxed run can move any branch but can't write another
   worktree's HEAD or index, so a run that plants a change on a session's branch is still put back, and so is a
-  session started after the run began.
+  session started after the run began. The exemption applies only when the run's write sandbox was enforced;
+  with it off or unavailable (Linux included) the run could have written that evidence itself, so the branch is
+  put back as before.
