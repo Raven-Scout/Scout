@@ -142,11 +142,12 @@ struct ButtonStyleGuardTests {
     static let swiftUIButton = try! NSRegularExpression(pattern: #"\bButton\s*[\(\{]"#)
     /// `Button("…")` or `Button(title)`: a button with a text title.
     static let titledStart = try! NSRegularExpression(pattern: #"\bButton\s*\(\s*(?!action:|role:)[^)\{]"#)
-    /// Blocks whose buttons stay system buttons: menus, alert and dialog
-    /// actions, toolbars, and hidden shortcut carriers in a `.background`.
-    /// A helper that builds menu items says so with `// ds-guard: menu items`.
+    /// Blocks whose buttons stay system buttons: an actual `Menu {`/`Menu(`
+    /// or `.contextMenu` call, alert and dialog actions, toolbars, and hidden
+    /// shortcut carriers in a `.background`. A helper that builds menu items
+    /// says so with `// ds-guard: menu items`. Comments don't count.
     static let systemContext = try! NSRegularExpression(
-        pattern: #"\bMenu\b|\.alert\(|confirmationDialog\(|contextMenu|[mM]enuItems|CommandMenu|CommandGroup|ds-guard: menu|\.toolbar\b|ToolbarItem|\.background\s*\{"#)
+        pattern: #"\bMenu\s*[\(\{]|\.contextMenu\b|[mM]enuItems\b|\.alert\(|confirmationDialog\(|CommandMenu|CommandGroup|ds-guard: menu|\.toolbar\b|ToolbarItem|\.background\s*\{"#)
 
     static func indent(_ s: String) -> Int { s.prefix(while: { $0 == " " }).count }
 
@@ -179,7 +180,9 @@ struct ButtonStyleGuardTests {
     /// "system" when the button sits in a menu, alert, dialog or toolbar.
     static func governingStyle(_ lines: [String], _ i: Int) -> String? {
         for (o, _) in enclosingBlocks(lines, i, levels: 3) {
-            let context = lines[max(0, o - 5)...o].joined(separator: "\n")
+            let context = lines[max(0, o - 5)...o]
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") || $0.contains("ds-guard: menu") }
+                .joined(separator: "\n")
             if matches(systemContext, context) { return "system" }
         }
         if lines[i].contains(".buttonStyle(") { return lines[i] }
@@ -212,9 +215,10 @@ struct ButtonStyleGuardTests {
         var plainTitled: [String] = []
         for (file, lines) in try Self.sources() where Self.systemButtonFiles[file] == nil {
             for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(Self.swiftUIButton, line) {
-                // Declarations, hidden shortcut carriers and role buttons (alert actions).
+                // Declarations and hidden shortcut carriers. A `role:` button
+                // is exempt only inside an alert or dialog (systemContext).
                 if line.range(of: #"\b(struct|func|class|enum)\b|ButtonStyle"#, options: .regularExpression) != nil
-                    || line.contains(#"Button("")"#) || line.contains("role:") { continue }
+                    || line.contains(#"Button("")"#) { continue }
                 let where_ = "\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))"
                 switch Self.governingStyle(lines, i) {
                 case "system"?: continue
@@ -249,6 +253,11 @@ struct ButtonStyleGuardTests {
         #expect(Self.governingStyle(bare, 1) == nil)
         let menu = ["Menu {", "    Button(\"A\") { }", "} label: {", "    Text(\"More\")", "}"]
         #expect(Self.governingStyle(menu, 1) == "system")
+        // The word in a comment isn't a menu.
+        let commented = ["// Menu items used to live here", "VStack {", "    Button(\"A\") { }", "}"]
+        #expect(Self.governingStyle(commented, 2) == nil)
+        let dialog = [".confirmationDialog(\"Delete?\", isPresented: $x) {", "    Button(\"Delete\", role: .destructive) { }", "}"]
+        #expect(Self.governingStyle(dialog, 1) == "system")
     }
 
     @Test("the allowlist names only files that exist")
