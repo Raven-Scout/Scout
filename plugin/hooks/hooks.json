@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; f=\"$d/connectors.custom.yaml\"; [ -s \"$f\" ] || exit 0; LC_ALL=C grep -qsE 'restrict_tools|\\\\' \"$f\" || ! LC_ALL=C tr -d '\\000' 2>/dev/null <\"$f\" | cmp -s - \"$f\" || exit 0; exec \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook mcp-tool-gate",
+            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; case \"$d\" in /*) ;; *) d=/ ;; esac; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; f=\"$d/connectors.custom.yaml\"; [ -s \"$f\" ] || exit 0; LC_ALL=C grep -qsE 'restrict_tools|\\\\' \"$f\" || ! LC_ALL=C tr -d '\\000' 2>/dev/null <\"$f\" | cmp -s - \"$f\" || exit 0; exec \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook mcp-tool-gate",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook outbound-gate && exit 0; if [ -n \"$run\" ]; then echo \"[scout:outbound-gate] Scout's outbound privacy check could not run, so this call is blocked in a scheduled run. Put the content in the daily file or the owner's Telegram chat instead, and say so in the run notes.\" >&2; exit 2; fi; echo \"[scout:outbound-gate] Warning: Scout's outbound privacy check could not run; this call was not checked for private content.\" >&2; exit 1",
+            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; case \"$d\" in /*) ;; *) d=/ ;; esac; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook outbound-gate && exit 0; if [ -n \"$run\" ]; then echo \"[scout:outbound-gate] Scout's outbound privacy check could not run, so this call is blocked in a scheduled run. Put the content in the daily file or the owner's Telegram chat instead, and say so in the run notes.\" >&2; exit 2; fi; echo \"[scout:outbound-gate] Warning: Scout's outbound privacy check could not run; this call was not checked for private content.\" >&2; exit 1",
             "timeout": 15
           }
         ]
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; p=$(cat); case \"$p\" in *knowledge-base*|*knowledge_base*|*action-items/context*) ;; *) exit 0 ;; esac; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook kb-read-label && exit 0; printf '%s\\n' '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"[scout:kb-label] Scout could not label the file just read, so treat it as [private]: its content must not reach any shared surface (Slack, a connector write or query, a web query, drafts/, a back-port).\"}}'",
+            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; p=$(cat); case \"$p\" in *knowledge-base*|*knowledge_base*|*action-items/context*) ;; *) exit 0 ;; esac; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; case \"$d\" in /*) ;; *) d=/ ;; esac; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook kb-read-label && exit 0; printf '%s\\n' '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"[scout:kb-label] Scout could not label the file just read, so treat it as [private]: its content must not reach any shared surface (Slack, a connector write or query, a web query, drafts/, a back-port).\"}}'",
             "timeout": 15
           }
         ]
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook shared-read-record && exit 0; printf '%s\\n' '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"[scout:shared-read] Scout could not record this answer, so check-outbound will not recognise it. Notes shared with you are private to you: keep their path, title and text off every shared surface (Slack, a connector write or query, a web query, drafts/).\"}}'",
+            "command": "sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case \"$pe\" in \"~\"|\"~/\"*) [ -z \"$HOME\" ] || pe=\"$HOME${pe#\"~\"}\" ;; esac; case \"$pe\" in /*) sp=\"${sp:+$sp:}$pe\" ;; esac; done; set +f; IFS=$oi; PATH=\"${sp:-/usr/bin:/bin}\"; export PATH; run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; case \"$d\" in /*) ;; *) d=/ ;; esac; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=\"${d%/*}\"; d=\"${d:-/}\"; done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook shared-read-record && exit 0; printf '%s\\n' '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"[scout:shared-read] Scout could not record this answer, so check-outbound will not recognise it. Notes shared with you are private to you: keep their path, title and text off every shared surface (Slack, a connector write or query, a web query, drafts/).\"}}'",
             "timeout": 15
           }
         ]
@@ -80,12 +80,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl hook session-tokens",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook session-tokens",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl hook session-tool-log",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook session-tool-log",
             "timeout": 15
           }
         ]

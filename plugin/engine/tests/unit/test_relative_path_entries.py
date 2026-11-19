@@ -139,6 +139,22 @@ def test_launcher_hands_the_engine_a_path_without_relative_entries(tmp_path: Pat
     assert out.stdout.strip() == f"{sysbin}:/usr/bin:/bin"
 
 
+def test_launcher_keeps_glob_characters_in_path_entries_literal(tmp_path: Path) -> None:
+    """`g*` must not be expanded to the folders it matches while the filter splits PATH."""
+    root = _plugin_tree(tmp_path)
+    (tmp_path / "g1").mkdir()
+    (tmp_path / "g2").mkdir()
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    (sysbin / "python3").write_text('#!/bin/sh\nprintf "%s\\n" "$PATH"\n')
+    (sysbin / "python3").chmod(0o755)
+    path = f"{tmp_path}/g*:{tmp_path}/g?:{sysbin}:/usr/bin:/bin"
+
+    out = _launch(root, tmp_path, tmp_path / "home", path)
+
+    assert out.stdout.strip() == path, out
+
+
 def test_launcher_venv_still_wins_under_a_hostile_path(tmp_path: Path) -> None:
     """The cleaning changes nothing for a normal install: the venv runs, with its args intact."""
     root = _plugin_tree(tmp_path)
@@ -427,6 +443,7 @@ def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
         ("~/x:/usr/bin", "", "/usr/bin"),
         (".:./bin:", "/h", "/usr/bin:/bin"),
         ("~other/bin:/usr/bin", "/h", "/usr/bin"),
+        ("/u*/bin:/usr/b?n:/usr/bin", "/h", "/u*/bin:/usr/b?n:/usr/bin"),  # glob characters stay literal
     ],
 )
 def test_hook_path_filter(shell: str, path: str, home: str, expected: str) -> None:

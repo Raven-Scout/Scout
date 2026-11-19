@@ -32,7 +32,7 @@ export PATH="${HOME:-/nonexistent}/.local/bin:$PATH"
 safe_path=""
 IFS=: read -r -a path_entries <<<"$PATH" || true
 for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
-    case "$path_entry" in "~" | "~/"*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
+    case "$path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
     case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
 done
 export PATH="${safe_path:-/usr/bin:/bin}"
