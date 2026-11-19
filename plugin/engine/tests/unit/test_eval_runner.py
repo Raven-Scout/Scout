@@ -19,6 +19,8 @@ from tests.eval.harness.runner import run_sample
 from tests.eval.harness.scenario import SCENARIOS_DIR, load_scenario
 from tests.eval.harness.verdicts import hit_limit
 
+# The runner uses this machine's git, not /usr/bin's xcrun shim, on macOS (tests/conftest.py).
+pytestmark = pytest.mark.usefixtures("eval_runner_git_off_xcrun")
 MONDAY = date(2026, 10, 12)
 
 

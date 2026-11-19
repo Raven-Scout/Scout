@@ -14,7 +14,7 @@ cross-checks them, and leaves you a short, sourced list of what needs you, plus 
 [![Platform](https://img.shields.io/badge/app-macOS%2015.7%2B-555?logo=apple)](#requirements)
 [![License: MIT](https://img.shields.io/github/license/Raven-Scout/Scout?color=blue)](LICENSE)
 
-[**Download for Mac**](https://github.com/Raven-Scout/Scout/releases/latest) ·
+[**Download for Mac**](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg) ·
 [Website](https://raven-scout.github.io/Scout/) ·
 [Quick start](#quick-start) ·
 [How it works](#how-it-works) ·
@@ -45,7 +45,7 @@ every item says how sure it is, and a knowledge base of linked Markdown that ope
 
 **The Mac app (recommended).** Onboarding sets everything up.
 
-1. Download the latest `Scout-x.y.z.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest).
+1. [Download `Scout.dmg`](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg), the latest release. Older versions are on [Releases](https://github.com/Raven-Scout/Scout/releases).
 2. Drag **Scout.app** into Applications and open it. It's signed and notarized.
 3. Onboarding does the rest: it checks for Claude Code (and opens Anthropic's installer if it's missing), installs the
    engine and registers it with Claude Code, asks for your name, email, tools and daily budget, creates your vault

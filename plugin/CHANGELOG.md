@@ -4,7 +4,13 @@ All notable changes to the Scout plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+Don't edit this file in a PR: add a fragment under [`changelog.d/`](changelog.d/README.md).
+`scripts/release.sh prepare` writes the fragments into each release's section. `## [Unreleased]` only holds
+entries from PRs opened before fragments existed; prepare moves them too.
+
 ## [Unreleased]
+
+## [0.18.17] - 2026-11-18
 
 ### Added
 - **The changes map, part 1: ledgers and capture.** Nothing reads them yet; the app tab and the digest come later.

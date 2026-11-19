@@ -2,9 +2,13 @@
 
 Scout's app and plugin share one version and one release (`vX.Y.Z`), cut with `scripts/release.sh`. Each
 release's notes combine this file's section with [`plugin/CHANGELOG.md`](../../plugin/CHANGELOG.md).
-Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promotes it.
+Don't edit this file in a PR: add a fragment under [`changelog.d/`](changelog.d/README.md).
+`scripts/release.sh prepare` writes the fragments into each release's section. `## [Unreleased]` only holds
+entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
+
+## [0.18.17] - 2026-11-18
 
 ### Added
 - **One set of button styles: the start of design-system v2** (UI audit card R6, #105; `Scout/Utilities/DSButtonStyle.swift`, `Scout/Utilities/DSPalette.swift`, `Scout/Utilities/PlainHitButtonStyle.swift`). `.dsPrimary` (filled accent), `.dsSecondary` (raised paper with a hairline), `.dsLink` (accent text) and `.dsDestructive` (red label), each at a regular or small size. The style draws the font, colours, padding and the disabled, pressed and keyboard-focus states, so a disabled button looks disabled the same way everywhere. Every label-on-fill pair is in `DS.ContrastPairs`, so `ContrastPairsTests` checks it in light, dark and Increase Contrast. `ButtonStyleGuardTests` flags new system bordered/link buttons and accent buttons hand-built from `.plainHit`; an icon button or chip marks its line `// ds-guard: hit area`. `.plainHit` stays for hit areas (chips, segments, rows, icon buttons).

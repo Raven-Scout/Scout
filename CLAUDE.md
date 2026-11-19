@@ -41,6 +41,24 @@ first.** The two have different languages, test runners, and release flows.
   `plugin/v0.15.x` patch via `plugin/scripts/release-plugin.sh`); the existing ones (`app/v0.1.0`–`app/v0.14.0`,
   `plugin/v0.14.0`, `plugin/v0.15.0`) are history. The app was never released as 0.15.0. Bare `v0.4.0`–`v0.13.0` are the plugin's pre-monorepo releases. Agents never
   run `finalize`/`rc` for real.
+- **A changelog entry is a fragment file, never an edit to a CHANGELOG.** Add
+  `plugin/changelog.d/<branch-slug>.<section>.md` (plugin and engine) and/or
+  `apps/macos/changelog.d/<branch-slug>.<section>.md` (app): `<branch-slug>` is
+  your branch name after its last `/`, `<section>` one of `added`, `changed`,
+  `fixed`, `removed`, `security`, `deprecated`, `performance`, `documentation`,
+  `upgrade-notes`, and the content the entry's `- ` bullets, no headings
+  (format: `plugin/changelog.d/README.md`). `scripts/release.sh prepare`
+  assembles them into `## [X.Y.Z]` and deletes them. If the slug is generic or
+  reused, add a short random suffix, and never edit a fragment main already
+  has. Never add to `## [Unreleased]` (it is kept only for PRs opened before
+  fragments, and goes once they merge) and never touch a `## [X.Y.Z]` section
+  main already has: `contract` runs `python -m scout.scripts.changelog check`
+  and fails on a bad fragment and, on PRs and in the merge queue (not on the
+  push to main), on a changed existing fragment or a changed versioned
+  section. Two exceptions: a PR into `release/vX.Y.Z` edits
+  `[X.Y.Z]` directly and adds no fragment (one there would never reach X.Y.Z),
+  and a deliberate fix to a published entry ends a commit message with the
+  trailer `Changelog-Edit-Released: X.Y.Z <why>`.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is
