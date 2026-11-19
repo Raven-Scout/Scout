@@ -37,7 +37,8 @@ Protected (each with the form name a deny and the audit row use):
   and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS` when the run has no send-only
   broker);
 - ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json``, ``.scout-state/delegate-scan/`` and
-  ``.scout-state/delegate-inbox.json`` (what each inbox pull took, and what ``inbox revert`` restores).
+  the folder ``.scout-state/delegate-inbox/`` (what each inbox pull took and what ``inbox revert`` restores, its
+  temporary files, its lock and each pull's throwaway repository).
 
 :func:`protected_specs` is the list as built (before resolving and case-folding), for the OS write sandbox
 (Phase 1c); :func:`protected_roots` is it normalised for matching.
@@ -356,7 +357,7 @@ def protected_specs(
         # delegate's view of the vault.
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
-        add(vault / ".scout-state" / "delegate-inbox.json", DELEGATE_STATE, tree=False)
+        add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
@@ -613,7 +614,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     ".scout-secrets",
     "delegate-mirrors.json",
     "delegate-scan",
-    "delegate-inbox.json",
+    "delegate-inbox",
     "LaunchAgents",
     *AGENT_DIRS,
     *SHELL_STARTUP,

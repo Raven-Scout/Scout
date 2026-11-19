@@ -104,20 +104,11 @@ def _commit_entries(bare: Path, entries: dict[str, tuple[str, bytes]], *, parent
     Path(index["GIT_INDEX_FILE"]).unlink(missing_ok=True)
     if base:
         _run("git", "-C", str(bare), "read-tree", base, env=index)
-    lines = []
+    records = b""
     for path, (mode, data) in entries.items():
         sha = "1" * 40 if mode == "160000" else _run("git", "-C", str(bare), "hash-object", "-w", "--stdin", input=data)
-        lines.append(f"{mode} {sha}\t{path}\n")
-    _run(
-        "git",
-        "-C",
-        str(bare),
-        "update-index",
-        "--add",
-        "--index-info",
-        input="".join(lines).encode("utf-8", "surrogateescape"),
-        env=index,
-    )
+        records += f"{mode} {sha}\t".encode() + path.encode("utf-8", "surrogateescape") + b"\0"
+    _run("git", "-C", str(bare), "update-index", "--add", "-z", "--index-info", input=records, env=index)
     tree = _run("git", "-C", str(bare), "write-tree", "--missing-ok", env=index)
     commit = _run("git", "-C", str(bare), "commit-tree", tree, *(["-p", base] if base else []), "-m", "agent")
     _run("git", "-C", str(bare), "update-ref", "refs/heads/main", commit)
@@ -172,7 +163,7 @@ def test_no_main_is_reported_apart_from_an_empty_inbox(vault: Path, inbox: Path)
     assert r.no_main and r.taken == []
     _commit_entries(inbox, {"README.md": ("100644", b"the agent's notes\n")})
     r = di.pull(vault, D)
-    assert not r.no_main and r.taken == [] and r.ignored == 1 and r.removal is None
+    assert not r.no_main and r.taken == [] and r.removal is None
     assert _main_files(inbox) == {"README.md"}
 
 
@@ -205,7 +196,6 @@ def test_every_kind_of_bad_entry_is_refused_removed_and_never_copied(vault: Path
     r = di.pull(vault, D)
     assert r.taken == [good.id]
     assert r.refused == {"too_big": 1, "not_json": 1, "bad_mode": 3, "bad_id": 1, "bad_path": 1, "future_id": 1}
-    assert r.ignored == len(left_alone)
     assert _main_files(inbox) == set(left_alone)
     copies = {p.name for p in vault.joinpath(*di.INBOX_DIR, D).iterdir()}
     assert copies == {f"{good.id}.json", di.LEDGER}
@@ -374,7 +364,7 @@ def test_link_refuses_what_isnt_an_inbox_of_its_own(vault: Path, tmp_path: Path)
     refused("inbox_exists", remote=str(shared))
     refused("inbox_taken", "duet", str(shared))
     refused("headless_refused", "duet", str(_bare(tmp_path, "y")), env={"SCOUT_MODE": "briefing"})
-    assert "delegate-inbox.json" in (vault / ".gitignore").read_text(encoding="utf-8")
+    assert ".scout-state/delegate-inbox/" in (vault / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_an_inbox_replaced_at_the_same_path_is_refused(vault: Path, inbox: Path, tmp_path: Path) -> None:
@@ -429,6 +419,7 @@ class FakeGh:
         self.read_only = "false"
         self.keys: dict[int, str] = {}
         self.apps: list[str] = []
+        self.key_read_only: dict[int, str] = {}
 
     def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
         a = [str(x) for x in args]  # type: ignore[attr-defined]
@@ -454,6 +445,8 @@ class FakeGh:
         if a[:3] == ["api", "-X", "DELETE"]:
             self.keys.pop(int(a[3].rsplit("/", 1)[1]), None)
             return ok()
+        if a[:3] == ["api", "--paginate", f"repos/{REPO}/keys"]:
+            return ok("".join(f"{k}\t{self.key_read_only.get(k, 'false')}\n" for k in self.keys))
         if a[0] == "api" and "/keys/" in a[1]:
             key_id = int(a[1].rsplit("/", 1)[1])
             if key_id not in self.keys:
@@ -720,6 +713,7 @@ def test_key_refusals_and_old_keys(vault: Path) -> None:
     assert 900 not in gh.keys and 901 in gh.keys  # an old key of ours deleted; one titled otherwise left alone
     assert di.load_state(vault).inboxes[D].stale_key_ids == []
     assert any("someone-elses-key" in n for n in r.notes)
+    del gh.keys[901]  # a key that isn't this inbox's refuses every later use (inbox_other_key), so it goes
 
     class NoAdd(FakeGh):
         answer = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 422")
@@ -751,3 +745,229 @@ def test_a_proposal_that_cant_be_pushed_stays_committed(vault: Path, clone: Path
     out = _propose(clone)
     assert not out.pushed and "couldn't push" in out.notes[-1]
     assert (clone / out.path).is_file()
+
+
+# ----- the #718 security review: each attack, refused ------------------------------------------
+
+
+def test_h1_no_entry_can_wedge_a_pull(vault: Path, inbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    good = _valid()
+    big_ulid = "8" + good.id[1:]  # past 2^128: ulid_time would raise if anything reached it
+    nested = b'{"a": ' + b"[" * 8000 + b"]" * 8000 + b"}"  # under 16 KiB, far past Python's recursion limit
+    odd_op = json.loads(dp.make(D, "action_item_op", {"op": "mark-done", "tag": "AB12", "date": "2026-11-19",
+                                                       "args": {}}).to_bytes())  # fmt: skip
+    odd_op["op"] = []
+    odd_id = dp.make(D, "observation", {"text": "x"}).id
+    odd_op["id"] = odd_id
+    nested_id = dp.make(D, "observation", {"text": "x"}).id
+    _commit_entries(
+        inbox,
+        {
+            f"inbox/{D}/{big_ulid}.json": ("100644", b"{}"),
+            f"inbox/{D}/{nested_id}.json": ("100644", nested),
+            f"inbox/{D}/{odd_id}.json": ("100644", json.dumps(odd_op).encode()),
+            good.path: ("100644", good.to_bytes()),
+        },
+    )
+    r = di.pull(vault, D)
+    assert r.taken == [good.id] and r.refused == {"bad_path": 1, "bad_entry": 1, "bad_op": 1}
+    assert _main_files(inbox) == set()
+
+    late = _valid()
+    _commit_entries(inbox, {late.path: ("100644", late.to_bytes())})
+
+    def explodes(*a: object, **k: object) -> object:
+        raise MemoryError("anything at all")
+
+    monkeypatch.setattr(dp, "parse", explodes)
+    r = di.pull(vault, D)
+    assert r.refused == {"bad_entry": 1} and r.taken == [] and _main_files(inbox) == set()
+
+
+def test_h1_one_failing_inbox_never_stops_the_others(
+    vault: Path, inbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    di.link(vault, "duet", str(_bare(tmp_path, "duet-inbox")))
+    real = di.pull
+
+    def flaky(v: Path, delegate: str, **kw: object) -> di.Result:
+        if delegate == "duet":
+            raise ValueError("boom")
+        return real(v, delegate, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(di, "pull", flaky)
+    results = di.pull_all(vault)
+    assert [type(r).__name__ for r in results] == ["RepoSyncError", "Result"]
+    assert results[0].code == "pull_failed" and results[0].detail["delegate"] == "duet"  # type: ignore[union-attr]
+
+
+def test_h2_a_symlink_in_the_state_folder_is_replaced_never_followed(vault: Path, inbox: Path, tmp_path: Path) -> None:
+    victim = tmp_path / "hooks.json"
+    victim.write_text("keep\n", encoding="utf-8")
+    folder = vault.joinpath(*di.STATE_DIR)
+    (folder / f".{di.STATE_NAME}.{os.getpid()}.tmp").symlink_to(victim)
+    (folder / "spare").symlink_to(victim)
+    di.save_state(vault, di.load_state(vault))
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+    assert not (folder / di.STATE_NAME).is_symlink() and di.load_state(vault).inboxes[D]
+    (folder / di.STATE_NAME).unlink()
+    (folder / di.STATE_NAME).symlink_to(victim)
+    with pytest.raises(RepoSyncError) as e:
+        di.load_state(vault)  # read without following it
+    assert e.value.code == "inbox_state_unreadable"
+    (folder / di.STATE_NAME).unlink()
+    (folder / di.LOCK_NAME).unlink()
+    (folder / di.LOCK_NAME).symlink_to(victim)
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D)
+    assert e.value.code == "inbox_state_unsafe" and victim.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_h2_the_state_folder_must_be_a_private_folder_of_ours(vault: Path, inbox: Path, tmp_path: Path) -> None:
+    folder = vault.joinpath(*di.STATE_DIR)
+    os.chmod(folder, 0o755)
+    with pytest.raises(RepoSyncError) as e:
+        di.load_state(vault)
+    assert e.value.code == "inbox_state_unsafe"
+    os.chmod(folder, 0o700)
+    elsewhere = tmp_path / "elsewhere"
+    folder.rename(elsewhere)
+    folder.symlink_to(elsewhere)
+    with pytest.raises(RepoSyncError) as e:
+        di.load_state(vault)
+    assert e.value.code == "inbox_folder_unsafe"
+
+
+def test_h2_a_symlinked_gitignore_is_refused(vault: Path, tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n", encoding="utf-8")
+    (vault / ".gitignore").unlink(missing_ok=True)
+    (vault / ".gitignore").symlink_to(victim)
+    with pytest.raises(RepoSyncError) as e:
+        di.ensure_ignored(vault)
+    assert e.value.code == "inbox_gitignore_unsafe" and victim.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_m1_each_pull_fetches_inside_the_protected_folder(vault: Path, inbox: Path) -> None:
+    link = di.load_state(vault).inboxes[D]
+    with di._Sandbox(vault, link.remote) as box:
+        assert box.root.parent == vault.joinpath(*di.STATE_DIR)
+        assert box.root.stat().st_mode & 0o777 == 0o700
+        assert not box.name == "inbox" and box.name.startswith("scout")
+    assert not box.root.exists()
+    from scout.kb import hook_paths
+
+    protected = {str(s.path) for s in hook_paths.protected_specs(vault, os.environ) if s.tree}
+    assert str(vault.joinpath(*di.STATE_DIR)) in protected
+
+
+def test_m2_any_other_deploy_key_refuses(vault: Path) -> None:
+    gh = FakeGh()
+    gh.keys[42] = "someone's key"
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, D, URL, gh=gh)
+    assert e.value.code == "inbox_other_key"
+    del gh.keys[42]
+    di.link(vault, D, URL, gh=gh)
+    di.deploy_key(vault, D, gh=gh, keygen=_fake_keygen)  # ours: allowed from now on
+    gh.keys[43] = "read-only, but not ours"
+    gh.key_read_only[43] = "true"
+    with pytest.raises(RepoSyncError) as e:
+        di.deploy_key(vault, D, rotate=True, gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "inbox_other_key"
+
+
+def test_m3_a_trailing_newline_never_aliases_a_proposal(vault: Path, inbox: Path) -> None:
+    p = _valid()
+    _commit_entries(inbox, {p.path: ("100644", p.to_bytes()), p.path + "\n": ("100644", p.to_bytes())})
+    r = di.pull(vault, D)
+    assert r.taken == [p.id] and r.refused == {"bad_path": 1}
+    ledger = vault.joinpath(*di.INBOX_DIR, D, di.LEDGER).read_text(encoding="utf-8")
+    assert ledger.count(p.id) == 1
+
+
+def test_case_collisions_are_refused_or_never_listed(vault: Path, inbox: Path) -> None:
+    p = _valid()
+    _commit_entries(
+        inbox,
+        {
+            p.path: ("100644", p.to_bytes()),
+            f"inbox/{D}/{p.id.lower()}.json": ("100644", p.to_bytes()),
+            f"inbox/{D}/{p.id}.JSON": ("100644", p.to_bytes()),
+            f"Inbox/{D}/{p.id}.json": ("100644", p.to_bytes()),
+        },
+    )
+    r = di.pull(vault, D)
+    assert r.taken == [p.id] and r.refused == {"bad_path": 2}
+    assert _main_files(inbox) == {f"Inbox/{D}/{p.id}.json"}
+
+
+def test_low_main_is_matched_exactly(vault: Path, inbox: Path) -> None:
+    p = _valid()
+    commit = _commit_entries(inbox, {p.path: ("100644", p.to_bytes())})
+    _run("git", "-C", str(inbox), "update-ref", "refs/heads/a/refs/heads/main", commit)
+    _run("git", "-C", str(inbox), "update-ref", "-d", "refs/heads/main")
+    assert di.pull(vault, D).no_main
+
+
+def test_low_a_users_remote_config_cant_redirect_the_fetch(
+    vault: Path, inbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoy = _bare(tmp_path, "decoy")
+    planted = _valid()
+    _commit_entries(decoy, {planted.path: ("100644", planted.to_bytes())})
+    real = _valid()
+    _commit_entries(inbox, {real.path: ("100644", real.to_bytes())})
+    config = tmp_path / "gitconfig"
+    config.write_text(f'[remote "inbox"]\n\turl = {decoy}\n\tpushurl = {decoy}\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    assert di.pull(vault, D).taken == [real.id]
+
+
+def test_low_a_run_never_pulls_and_a_flood_is_listed_in_parts(
+    vault: Path, inbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D, env={"SCOUT_MODE": "briefing"})
+    assert e.value.code == "headless_refused"
+    monkeypatch.setattr(di, "MAX_ENTRIES", 5)
+    many = [_valid(text=str(i)) for i in range(8)]
+    _commit_entries(inbox, {p.path: ("100644", p.to_bytes()) for p in many})
+    r = di.pull(vault, D)
+    assert len(r.taken) == 5 and "wait for a later pull" in " ".join(r.notes)
+    assert len(di.pull(vault, D).taken) == 3
+
+
+def test_low_reset_clears_a_poisoned_high_water_mark(vault: Path, inbox: Path) -> None:
+    state = di.load_state(vault)
+    state.inboxes[D].high_water = _ulid_at(dt.datetime.now(dt.UTC) + dt.timedelta(days=400))
+    di.save_state(vault, state)
+    di.reset(vault, D, confirm=lambda d, m: True)
+    assert di.load_state(vault).inboxes[D].high_water is None
+
+
+def test_low_old_taken_entries_are_pruned(vault: Path, inbox: Path) -> None:
+    old = _ulid_at(dt.datetime.now(dt.UTC) - dt.timedelta(days=100))
+    state = di.load_state(vault)
+    state.taken[D] = {old: {"mac": "0" * 64, "at": "x"}}
+    di.save_state(vault, state)
+    p = _valid()
+    _commit_entries(inbox, {p.path: ("100644", p.to_bytes())})
+    di.pull(vault, D)
+    assert set(di.load_state(vault).taken[D]) == {p.id}
+
+
+def test_low_the_credential_helper_is_scouts_choice(vault: Path, tmp_path: Path) -> None:
+    env = di.sandbox_env(vault, "https://github.com/someone/inbox.git", tmp_path / "x.git")
+    helpers = [
+        env[f"GIT_CONFIG_VALUE_{i}"]
+        for i in range(int(env["GIT_CONFIG_COUNT"]))
+        if env[f"GIT_CONFIG_KEY_{i}"] == "credential.helper"
+    ]
+    assert helpers == ["", di.GH_CREDENTIAL]  # the user's helpers cleared, then gh's only
+    local = di.sandbox_env(vault, str(tmp_path / "inbox.git"), tmp_path / "x.git")
+    assert [
+        local[f"GIT_CONFIG_VALUE_{i}"]
+        for i in range(int(local["GIT_CONFIG_COUNT"]))
+        if local[f"GIT_CONFIG_KEY_{i}"] == "credential.helper"
+    ] == [""]

@@ -891,7 +891,13 @@ def test_a_run_cant_change_scouts_secrets_from_the_shell(vault: Path, home: Path
 
 @pytest.mark.parametrize(
     "rel",
-    [".scout-state/delegate-mirrors.json", ".scout-state/delegate-scan/abc.json", ".scout-state/delegate-inbox.json"],
+    [
+        ".scout-state/delegate-mirrors.json",
+        ".scout-state/delegate-scan/abc.json",
+        ".scout-state/delegate-inbox/state.json",
+        ".scout-state/delegate-inbox/.state.json.123.tmp",
+        ".scout-state/delegate-inbox/fetch-x/inbox.git/HEAD",
+    ],
 )
 def test_a_run_cant_write_the_delegate_state(vault: Path, rel: str) -> None:
     assert "delegate state" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))

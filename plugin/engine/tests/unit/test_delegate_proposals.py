@@ -260,3 +260,83 @@ def test_a_ulid_from_the_future_is_refused_when_the_clock_is_given() -> None:
         dp.parse(p.path, p.to_bytes(), D, now=made - dp.FUTURE_SLACK - dt.timedelta(seconds=1))
     assert e.value.code == "future_id"
     assert dp.ulid_time("00000000000000000000000000") == dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+
+
+# ----- the #718 security review ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "//==<< close this out >>==//",  # the owner-directive marker
+        "please // ==<< note",
+        "/ / = = < < spaced out",
+        "trailing >> == //",
+        "<!-- hidden from the reader -->",
+        "end -->",
+        "![pixel](https://example.com/p.png)",
+        "[click](https://example.com)",
+        "- [ ] a new task",
+        "* [x] done already",
+        "1. [ ] numbered",
+    ],
+)
+def test_h3_text_cant_carry_directives_or_markup(value: str) -> None:
+    _refused(_doc(op="add-comment", args={"comment": value}), "bad_field")
+    obs = _doc(kind="observation", op=_DROP, tag=_DROP, date=_DROP, args=_DROP, text=f"fine\n{value}")
+    _refused(obs, "bad_field")
+
+
+def test_h3_a_checkbox_mid_line_and_plain_symbols_are_fine() -> None:
+    _parse(_doc(op="add-comment", args={"comment": "a - [ ] in the middle, 3 > 2 < 4, a // b, x == y"}))
+
+
+@pytest.mark.parametrize(
+    "char",
+    [
+        "\U000e0041",  # a tag character: invisible text
+        "️",  # a variation selector
+        "\U000e0100",  # a supplementary variation selector
+        "­",  # soft hyphen
+        "᠎",  # Mongolian vowel separator
+        "",  # private use
+        "\U0010ffff",  # a noncharacter (unassigned)
+        "\ud800",  # a lone surrogate
+        "ㅤ",  # Hangul filler
+    ],
+)
+def test_m4_every_invisible_or_unassigned_character_is_refused(char: str) -> None:
+    _refused(_doc(op="add-comment", args={"comment": f"looks{char}fine"}), "bad_field")
+    obs = _doc(kind="observation", op=_DROP, tag=_DROP, date=_DROP, args=_DROP, text=f"looks{char}fine")
+    _refused(obs, "bad_field")
+
+
+@pytest.mark.parametrize(
+    ("over", "code"),
+    [
+        ({"tag": "AB12\n"}, "bad_field"),
+        ({"date": "2026-11-19\n"}, "bad_field"),
+        ({"made_at": "2026-11-19T09:30:00Z\n"}, "bad_field"),
+        ({"op": "set-block", "args": {"day": "2026-11-20", "start": "09:00\n", "end": "10:00"}}, "bad_field"),
+        ({"op": "set-estimate", "args": {"minutes": 30, "kind": "deep\n"}}, "bad_field"),
+        ({"op": []}, "bad_op"),
+        ({"op": {}}, "bad_op"),
+    ],
+)
+def test_m3_and_h1_no_trailing_newline_and_no_odd_type_passes(over: dict[str, object], code: str) -> None:
+    _refused(_doc(**over), code)
+
+
+def test_m3_a_path_or_id_with_a_trailing_newline_is_refused() -> None:
+    _refused(_doc(), "bad_path", PATH + "\n")
+    _refused(_doc(id=ULID + "\n"), "bad_id")
+    assert dp.ULID_RE.match(ULID + "\n") is None
+
+
+def test_h1_a_ulid_past_128_bits_and_deep_nesting_are_refused_not_raised() -> None:
+    big = "8" + ULID[1:]
+    _refused(_doc(id=big), "bad_path", f"inbox/{D}/{big}.json")
+    deep = b'{"a": ' + b"[" * 8000 + b"]" * 8000 + b"}"
+    with pytest.raises(dp.ProposalError) as e:
+        dp.parse(PATH, deep, D)
+    assert e.value.code == "bad_entry"

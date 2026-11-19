@@ -5510,7 +5510,7 @@ def _register_delegate() -> None:
         """Link a delegate to its inbox: a private repository its agent pushes proposals to (#550 V4).
 
         The repository is bound by GitHub's own ids and checked before every pull:
-        private, yours alone, not a fork, GitHub Actions and Pages off.
+        private, no collaborators, no deploy key but the agent's, not a fork, GitHub Actions and Pages off.
         """
         import sys as _sys
 
@@ -5579,7 +5579,6 @@ def _say_inbox(result: object, as_json: bool) -> None:
             f", refused {refused} ({', '.join(f'{k} {v}' for k, v in sorted(r.refused.items()))})" if refused else ""
         )
         line += f", {r.already} taken before" if r.already else ""
-        line += f", {r.ignored} other path(s) left alone" if r.ignored else ""
         typer.echo(line)
     for note in r.notes:
         typer.echo(note)

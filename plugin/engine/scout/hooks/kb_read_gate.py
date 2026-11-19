@@ -238,7 +238,7 @@ def _deny_secrets(form: str) -> str:
 def _deny_delegate_state(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't change {form} (.scout-state/delegate-mirrors.json, "
-        ".scout-state/delegate-scan/, .scout-state/delegate-inbox.json): they decide what each delegate's mirror "
+        ".scout-state/delegate-scan/, .scout-state/delegate-inbox/): they decide what each delegate's mirror "
         "holds and which of its proposals were taken. Use `scoutctl delegate` or `scoutctl inbox`, outside a run."
     )
 

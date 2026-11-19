@@ -26,12 +26,18 @@ shape below; anything else is refused with a reason code, never repaired.
   The engine's own command checks what the shape can't (an estimate on the
   owner's grid, a block window); its refusal becomes the proposal's outcome.
 
-Text that can reach the vault can't forge a line there: no field holds a
-control, bidi or zero-width character (``text`` alone may keep a newline and
-a tab), nor ``[[`` or ``[#``, so a proposal can neither link a note nor name
-a task. No key may repeat, and no float may be NaN or infinite. ``made_at``
-is the agent's claim, shown and never used for order; the ULID's own time
-may not be ahead of the laptop's clock (``parse(now=...)``).
+Text that can reach the vault can't forge a line there, hide one, or speak
+for the owner. No text field holds a control, format, surrogate, private-use,
+unassigned or invisible character (``text`` alone may keep a newline and a
+tab). None holds markup: ``[[`` or ``[#`` (a proposal can neither link a note
+nor name a task), ``<!--``, ``-->``, ``![``, ``](``, or a task checkbox at a
+line's start. And none holds the owner-directive marker ``//==<<`` or
+``>>==//``, even with whitespace inside it. No key may repeat, and no float
+may be NaN or infinite. Every pattern is anchored with ``\\Z``, so a trailing
+newline never passes. ``made_at`` is the agent's claim, shown and never used
+for order. The ULID's own time may not be ahead of the laptop's clock
+(``parse(now=...)``). Any other failure is ``bad_entry``: parse never raises
+anything but :class:`ProposalError`.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,18 +63,30 @@ OPS: dict[str, dict[str, bool]] = {  # op -> {arg: required}
     "set-block": {"day": True, "start": True, "end": True},
     "clear-block": {},
 }
-ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")  # Crockford base32, as ids.new_ulid makes them
-PATH_RE = re.compile(r"^inbox/([a-z0-9][a-z0-9-]{0,39})/([0-9A-HJKMNP-TV-Z]{26})\.json$")
-TAG_RE = re.compile(r"^(?=[A-Z0-9]{2,8}$)[A-Z0-9]*[A-Z][A-Z0-9]*$")  # ids._TAG_BODY, anchored
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_MADE_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-_KIND_WORD_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
-# Control, line/paragraph separators, bidi controls and zero-width characters; ``text`` alone keeps \n and \t.
-_HIDDEN = "\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff"
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f" + _HIDDEN + "]")
-_LINE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f" + _HIDDEN + "]")
-_MARKUP_RE = re.compile(r"\[\[|\[#")  # a wikilink or a task tag: never in text that reaches the vault
+# Every pattern ends at \Z, never $: $ also matches before a final newline, so "<ULID>.json\n" would alias the
+# real file. A ULID's first character is 0-7: 26 Crockford characters hold 130 bits, a ULID 128.
+ULID_RE = re.compile(r"^[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")  # Crockford base32, as ids.new_ulid makes them
+PATH_RE = re.compile(r"^inbox/([a-z0-9][a-z0-9-]{0,39})/([0-7][0-9A-HJKMNP-TV-Z]{25})\.json\Z")
+TAG_RE = re.compile(r"^(?=[A-Z0-9]{2,8}\Z)[A-Z0-9]*[A-Z][A-Z0-9]*\Z")  # ids._TAG_BODY, anchored
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
+_MADE_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+_KIND_WORD_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}\Z")
+# Characters that can hide or forge text: every control (Cc; ``text`` alone keeps \n and \t), format (Cf: bidi,
+# zero-width, soft hyphen, the tag characters U+E0000-E007F), surrogate (Cs), private-use (Co) and unassigned (Cn)
+# character, the line and paragraph separators (Zl, Zp), and invisible marks that aren't in those categories.
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+_INVISIBLE = frozenset(
+    [chr(c) for c in range(0xFE00, 0xFE10)]  # variation selectors
+    + [chr(c) for c in range(0xE0100, 0xE01F0)]  # variation selectors supplement
+    + ["\u034f", "\u115f", "\u1160", "\u3164", "\uffa0", "\u180e", "\u00ad"]
+)
+# Markup that means something to Scout or to a renderer: a wikilink, a task tag, an HTML comment, an image or a
+# link. A task checkbox at a line's start, and the owner-directive marker (//==<< … >>==//, matched with all
+# whitespace removed, as the phases sweep for it), are refused too.
+_MARKUP_RE = re.compile(r"\[\[|\[#|<!--|-->|!\[|\]\(")
+_CHECKBOX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[[ xX]\]", re.MULTILINE)
+_DIRECTIVES = ("//==<<", ">>==//")
 FUTURE_SLACK = dt.timedelta(minutes=10)  # a ULID's time may run this far ahead of the laptop's clock
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -132,11 +151,19 @@ def _text(value: Any, field: str, limit: int, *, one_line: bool, minimum: int = 
         raise ProposalError("bad_field", f"{field} isn't a string")
     if not minimum <= len(value) <= limit or not value.strip():
         raise ProposalError("bad_field", f"{field} must be {minimum}-{limit} characters, not blank")
-    if (_LINE_CONTROL_RE if one_line else _CONTROL_RE).search(value):
-        raise ProposalError("bad_field", f"{field} holds a control, bidi or zero-width character")
-    if _MARKUP_RE.search(value):
-        raise ProposalError("bad_field", f"{field} holds [[ or [#")
+    if _hidden(value, keep="" if one_line else "\n\t"):
+        raise ProposalError("bad_field", f"{field} holds a control, format, invisible or unassigned character")
+    if _MARKUP_RE.search(value) or _CHECKBOX_RE.search(value):
+        raise ProposalError("bad_field", f"{field} holds markup: [[, [#, <!--, -->, ![, ]( or a task checkbox")
+    squeezed = re.sub(r"\s+", "", value)
+    if any(d in squeezed for d in _DIRECTIVES):
+        raise ProposalError("bad_field", f"{field} holds the owner-directive marker")
     return value
+
+
+def _hidden(value: str, *, keep: str) -> bool:
+    """Whether ``value`` holds a character that can hide or forge text (``keep`` excepted)."""
+    return any(ch not in keep and (unicodedata.category(ch) in _BAD_CATEGORIES or ch in _INVISIBLE) for ch in value)
 
 
 def ulid_time(ulid: str) -> dt.datetime:
@@ -193,8 +220,18 @@ def _args(op: str, args: Any) -> dict[str, Any]:
 def parse(path: str, data: bytes, delegate: str, *, now: dt.datetime | None = None) -> Proposal:
     """The proposal at inbox ``path`` holding ``data``, from ``delegate``'s inbox, or :class:`ProposalError`.
 
-    With ``now``, a ULID made more than :data:`FUTURE_SLACK` after it is refused (``future_id``).
+    With ``now``, a ULID made more than :data:`FUTURE_SLACK` after it is refused (``future_id``). Any other
+    failure (deep nesting, an odd type) is refused as ``bad_entry``: nothing an agent writes can raise past here.
     """
+    try:
+        return _parse(path, data, delegate, now=now)
+    except ProposalError:
+        raise
+    except Exception as e:  # noqa: BLE001 - the input is hostile; every failure is a refusal
+        raise ProposalError("bad_entry", type(e).__name__) from None
+
+
+def _parse(path: str, data: bytes, delegate: str, *, now: dt.datetime | None) -> Proposal:
     match = PATH_RE.match(path)
     if match is None:
         raise ProposalError("bad_path")
@@ -242,7 +279,7 @@ def parse(path: str, data: bytes, delegate: str, *, now: dt.datetime | None = No
             body["source"] = _text(doc["source"], "source", 500, one_line=True)
     else:
         op = doc["op"]
-        if op not in OPS:
+        if not isinstance(op, str) or op not in OPS:
             raise ProposalError("bad_op")
         if not isinstance(doc["tag"], str) or not TAG_RE.match(doc["tag"]):
             raise ProposalError("bad_field", "tag isn't an item's [#TAG]")
