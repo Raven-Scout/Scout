@@ -1,18 +1,23 @@
 """Git scanner: turns self-change commits in a Scout vault repo into ``Change`` rows, idempotently by commit SHA.
 
 Only the commit subject-derived summary, vault-relative paths, the sha and the why are recorded; never diff
-content. A non-repo or any git failure means "no new changes", never an exception."""
+content. A non-repo or any git failure (a timeout included) means "no new changes", never an exception."""
 
 from __future__ import annotations
 
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from scout.changes.models import SUMMARY_MAX, WHY_TYPES, Change, Why
-from scout.changes.store import append_change, read_changes
+from scout.changes.store import append_change, read_changes, read_scan_mark, write_scan_mark
+
+# One git call may take this long; past it the scan records nothing and the watermark stays put.
+GIT_TIMEOUT_S = 30.0
+# How far back the first watermark scan reads (no mark yet, or its commit is gone from the repository).
+FALLBACK_WINDOW = timedelta(days=14)
 
 BRAIN_FILES = frozenset({"SKILL.md", "DREAMING.md", "RESEARCH.md"})
 _PHASE_LANES = ("briefing", "consolidation", "dreaming", "research", "work")
@@ -95,8 +100,9 @@ def _git(vault: Path, *args: str) -> str | None:
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=GIT_TIMEOUT_S,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):  # SubprocessError: the timeout
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -124,12 +130,38 @@ def _parse_log(raw: str) -> list[tuple[str, datetime, str, str, list[tuple[str, 
 
 
 def scan(vault: Path, *, since: datetime | None, backfilled: bool = False) -> list[Change]:
-    args = ["log", "--no-merges", "-M", "--name-status", f"--format={_RS}%H{_US}%aI{_US}%s{_US}%b{_US}"]
-    if since is not None:
-        args.append(f"--since={since.isoformat()}")
-    raw = _git(vault, *args)
-    if not raw:
+    """Record the changes in commits since ``since`` (all history when None). Leaves the watermark alone: a
+    narrow explicit window must not mark the commits before it as read."""
+    revs = [f"--since={since.isoformat()}"] if since is not None else []
+    return _record(vault, revs, backfilled=backfilled) or []
+
+
+def scan_new(vault: Path, *, now: datetime) -> list[Change]:
+    """Record the changes in commits made since the last ``scan_new``: those reachable from HEAD but not from the
+    watermark commit, or the last :data:`FALLBACK_WINDOW` when there is no usable mark. The mark moves to the HEAD
+    read only once the log was read, so a long gap between runs (gates, budget, a lock) loses nothing and a failed
+    read retries the same range. Idempotent by sha either way."""
+    head = (_git(vault, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip()
+    if not head:
         return []
+    mark = read_scan_mark(vault)
+    if mark is not None and _git(vault, "cat-file", "-e", f"{mark}^{{commit}}") is not None:
+        revs = [f"{mark}..{head}"]
+    else:
+        revs = [f"--since={(now - FALLBACK_WINDOW).isoformat()}", head]
+    new = _record(vault, revs, backfilled=False)
+    if new is None:
+        return []
+    write_scan_mark(vault, head, now)
+    return new
+
+
+def _record(vault: Path, revs: list[str], *, backfilled: bool) -> list[Change] | None:
+    """Append a row per new change in ``git log <revs>``. None when git couldn't read the log."""
+    fmt = f"--format={_RS}%H{_US}%aI{_US}%s{_US}%b{_US}"
+    raw = _git(vault, "log", "--no-merges", "-M", "--name-status", fmt, *revs, "--")
+    if raw is None:
+        return None
     known = {c.id for c in read_changes(vault)[0]}
     new: list[Change] = []
     for sha, ts, subject, body, paths in reversed(_parse_log(raw)):

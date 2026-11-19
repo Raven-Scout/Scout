@@ -148,7 +148,7 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
         f"{vault} model resolve --slot {slot}",
         f"{vault} sandbox snapshot --vault {vault}",
         f"{vault} sandbox verify --vault {vault} --label {slot}",
-        f"{vault} changes scan --since 2d",
+        f"{vault} changes scan",
         f"{vault} connector-health-report",
     ]
     run_type = {"dreaming-nightly": "dreaming", "research": "research"}.get(slot, slot)

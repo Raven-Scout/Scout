@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from scout.changes.scan import classify, infer_why, lane_of, parse_trailers, scan
-from scout.changes.store import read_changes
+from scout.changes.scan import classify, infer_why, lane_of, parse_trailers, scan, scan_new
+from scout.changes.store import SCAN_MARK_NAME, read_changes, read_scan_mark, write_scan_mark
 
 _clock = itertools.count(1)
 
@@ -218,3 +218,117 @@ def test_parse_log_skips_blank_short_and_undated_records():
     assert (sha, subject, body) == ("c" * 40, "subject", "body")
     assert ts.year == 2026
     assert paths == [("M", "SKILL.md"), ("R090", "new.md")]
+
+
+# --- the watermark: a plain `changes scan` reads from where the last one stopped (coordinator review item 2) ---
+
+NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+
+
+def test_first_watermark_scan_reads_the_last_14_days_and_sets_the_mark(repo):
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — old", date="2026-10-01T01:00:00Z")
+    head = commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — recent", date="2026-11-10T01:00:00Z")
+    assert [c.summary for c in scan_new(repo, now=NOW)] == ["SKILL.md self-edit — recent"]
+    assert read_scan_mark(repo) == head
+    assert scan_new(repo, now=NOW) == []
+
+
+def test_a_gap_longer_than_any_window_loses_nothing(repo):
+    """Runs skipped for three weeks (gates, budget, a lock): the next scan still reads every commit since the mark,
+    including one dated long before a fixed window would reach."""
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — seen", date="2026-10-20T01:00:00Z")
+    assert len(scan_new(repo, now=datetime(2026, 10, 20, 2, 0, tzinfo=UTC))) == 1
+    commit(repo, "scripts/gap.py", "scout: interactive driver during the gap", date="2026-10-21T09:00:00Z")
+    head = commit(repo, "DREAMING.md", "dreaming [18:30]: DREAMING.md self-edit", date="2026-11-16T18:30:00Z")
+    got = scan_new(repo, now=NOW)
+    assert sorted((c.kind, c.author_lane) for c in got) == [("brain-edit", "dreaming"), ("driver", "interactive")]
+    assert read_scan_mark(repo) == head
+    assert len(read_changes(repo)[0]) == 3
+
+
+def test_explicit_since_does_not_move_the_mark(repo):
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — a", date="2026-11-10T01:00:00Z")
+    assert len(scan_new(repo, now=NOW)) == 1
+    mark = read_scan_mark(repo)
+    commit(repo, "scripts/old.py", "scout: driver", date="2026-11-11T01:00:00Z")
+    commit(repo, "scripts/new.py", "scout: driver", date="2026-11-16T01:00:00Z")
+    assert len(scan(repo, since=datetime(2026, 11, 15, tzinfo=UTC))) == 1
+    assert read_scan_mark(repo) == mark
+    # The plain scan still reads the commit the narrow window skipped, and not the one it already took.
+    assert [c.files for c in scan_new(repo, now=NOW)] == [("scripts/old.py",)]
+
+
+def test_a_mark_whose_commit_is_gone_falls_back_to_the_window(repo):
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — old", date="2026-10-01T01:00:00Z")
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — recent", date="2026-11-10T01:00:00Z")
+    write_scan_mark(repo, "f" * 40, NOW)
+    assert [c.summary for c in scan_new(repo, now=NOW)] == ["SKILL.md self-edit — recent"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{not json",
+        "[1]",
+        '{"schema": 2, "head": "' + "a" * 40 + '"}',
+        '{"schema": 1, "head": "--output=/tmp/x"}',  # a run can write .scout-logs/: never an option to git
+        '{"schema": 1, "head": 7}',
+        '{"schema": 1, "head": "' + "A" * 40 + '"}',
+    ],
+)
+def test_unusable_mark_records_are_no_mark(repo, text):
+    (repo / ".scout-logs").mkdir()
+    (repo / ".scout-logs" / SCAN_MARK_NAME).write_text(text)
+    assert read_scan_mark(repo) is None
+
+
+def test_a_sha256_mark_is_accepted(repo):
+    write_scan_mark(repo, "b" * 64, NOW)
+    assert read_scan_mark(repo) == "b" * 64
+
+
+def test_a_failed_log_read_leaves_the_mark_and_records_nothing(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — a", date="2026-11-10T01:00:00Z")
+    real = scan_mod._git
+    monkeypatch.setattr(scan_mod, "_git", lambda vault, *args: None if args[0] == "log" else real(vault, *args))
+    assert scan_new(repo, now=NOW) == []
+    assert read_scan_mark(repo) is None
+    assert scan(repo, since=None) == []
+
+
+def test_a_git_timeout_is_no_new_changes(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — a", date="2026-11-10T01:00:00Z")
+    seen = {}
+
+    def hang(cmd, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(scan_mod.subprocess, "run", hang)
+    assert scan_new(repo, now=NOW) == []
+    assert scan(repo, since=None) == []
+    assert seen["timeout"] == scan_mod.GIT_TIMEOUT_S == 30.0
+    assert read_scan_mark(repo) is None
+
+
+def test_a_repo_without_commits_scans_nothing_and_sets_no_mark(repo, tmp_path):
+    assert scan_new(repo, now=NOW) == []
+    assert scan_new(tmp_path / "not-a-repo", now=NOW) == []
+    assert not (repo / ".scout-logs" / SCAN_MARK_NAME).exists()
+
+
+@pytest.mark.parametrize("failing", ["replace", "mkstemp"])
+def test_a_mark_that_fails_to_save_is_swallowed_and_leaves_no_temp_file(repo, monkeypatch, failing):
+    from scout.changes import store
+
+    def boom(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(store.os if failing == "replace" else store.tempfile, failing, boom)
+    commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — a", date="2026-11-10T01:00:00Z")
+    assert len(scan_new(repo, now=NOW)) == 1
+    assert sorted(p.name for p in (repo / ".scout-logs").iterdir()) == ["changes.jsonl"]

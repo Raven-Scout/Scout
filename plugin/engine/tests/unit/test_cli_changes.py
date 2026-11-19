@@ -110,8 +110,23 @@ def test_consent_rejects_bad_answer(cli, vault):
 
 
 def test_changes_scan_cli(cli, git_vault):
+    from scout.changes.store import read_scan_mark
+
     assert cli(["changes", "scan"]).output.strip() == "1 new change(s)"
+    head = subprocess.run(
+        ["git", "-C", str(git_vault), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert read_scan_mark(git_vault) == head  # a plain scan moves the watermark
     assert cli(["changes", "scan"]).output.strip() == "0 new change(s)"
+
+
+def test_changes_scan_cli_explicit_window_leaves_the_mark(cli, git_vault):
+    from scout.changes.store import read_scan_mark
+
+    assert cli(["changes", "scan", "--since", "2d"]).output.strip() == "1 new change(s)"
+    assert read_scan_mark(git_vault) is None
+    assert cli(["changes", "scan", "--backfill"]).output.strip() == "0 new change(s)"
+    assert read_scan_mark(git_vault) is None
 
 
 def test_changes_scan_bad_since(cli, git_vault):

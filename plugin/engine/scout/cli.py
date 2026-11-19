@@ -489,19 +489,30 @@ def cli_engagement(
 
 @changes_app.command("scan")
 def cli_changes_scan(
-    since: str | None = typer.Option(None, "--since", help="How far back: 2d, 48h, 90m, or an ISO time."),
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="How far back: 2d, 48h, 90m, or an ISO time. Default: every commit since the last plain scan.",
+    ),
     backfill: bool = typer.Option(False, "--backfill", help="Mark rows as backfilled; --since defaults to 2026-06-01."),
 ) -> None:
-    """Read the vault's git log and record any new changes (idempotent)."""
+    """Read the vault's git log and record any new changes (idempotent).
+
+    With no --since, it reads from where the last plain scan stopped (its first time: the last 14 days), so a
+    gap between runs loses nothing. An explicit --since or --backfill reads that window and leaves the mark."""
     from datetime import UTC
     from datetime import datetime as _dt
 
     from scout import paths
-    from scout.changes.scan import scan
+    from scout.changes.scan import scan, scan_new
     from scout.run_ledger import parse_since
 
+    now = _dt.now(UTC)
+    if not (since or backfill):
+        typer.echo(f"{len(scan_new(paths.require_data_dir(), now=now))} new change(s)")
+        return
     try:
-        cutoff = parse_since(since or "2026-06-01", now=_dt.now(UTC)) if (since or backfill) else None
+        cutoff = parse_since(since or "2026-06-01", now=now)
     except ValueError as e:
         typer.echo(f"scoutctl changes scan: {e}", err=True)
         raise typer.Exit(2) from None

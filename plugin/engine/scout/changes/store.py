@@ -6,7 +6,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import tempfile
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,11 @@ from scout.kb import hook_paths
 
 CHANGES_NAME = "changes.jsonl"
 ENGAGEMENT_NAME = "engagement.jsonl"
+# The HEAD the last ``scoutctl changes scan`` read up to (scout.changes.scan.scan_new), beside the ledger it feeds.
+SCAN_MARK_NAME = "changes-scan.json"
+_SCAN_MARK_SCHEMA = 1
+# A run can write .scout-logs/, so the mark is handed to git only when it is a bare object id: never an option.
+_SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def owner_dir(env: Mapping[str, str]) -> Path:
@@ -103,6 +111,33 @@ def read_changes(vault: Path) -> tuple[list[Change], int]:
         except ValueError:
             skipped += 1
     return out, skipped
+
+
+def read_scan_mark(vault: Path) -> str | None:
+    """The commit the last watermark scan reached; None when never scanned or the record isn't a bare sha."""
+    try:
+        data = json.loads((_logs(vault) / SCAN_MARK_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != _SCAN_MARK_SCHEMA:
+        return None
+    head = data.get("head")
+    return head if isinstance(head, str) and _SHA_RE.fullmatch(head) else None
+
+
+def write_scan_mark(vault: Path, head: str, now: datetime) -> None:
+    """Atomic 0600 write. Best-effort: a mark that didn't save means the next scan re-reads the same range."""
+    path = _logs(vault) / SCAN_MARK_NAME
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"schema": _SCAN_MARK_SCHEMA, "head": head, "at": now.isoformat()}) + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
 
 
 def append_signal(signal: Signal, *, vault: Path, env: Mapping[str, str]) -> None:
