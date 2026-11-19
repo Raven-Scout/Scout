@@ -13,7 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scout.changes.models import CHANGE_KINDS, Change, Signal, Why
-from scout.changes.report import changes_report, engagement_report
+from scout.changes.report import changes_report, daily_counts, engagement_report
 from scout.changes.store import (
     CHANGES_NAME,
     ENGAGEMENT_NAME,
@@ -90,20 +90,31 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
     for change in _changes():
         append_change(vault, change)
     # Local days in Prague: the 23:30Z reliance row falls on the 11th, not the 10th.
-    rows = [
-        ("session-reliance", "kb", datetime(2026, 11, 10, 9, 0, tzinfo=UTC), "a" * 16),
-        ("session-reliance", "skill", datetime(2026, 11, 10, 10, 0, tzinfo=UTC), "a" * 16),
-        ("session-reliance", "skill", datetime(2026, 11, 10, 23, 30, tzinfo=UTC), "b" * 16),
-        ("app-edit", "app", datetime(2026, 11, 12, 9, 0, tzinfo=UTC), None),
-        ("inline-comment", "action-items", datetime(2026, 11, 12, 10, 0, tzinfo=UTC), None),
-        ("approval", "kb", datetime(2026, 11, 13, 9, 0, tzinfo=UTC), None),
-        ("dm-reply", "slack-dm", datetime(2026, 11, 14, 9, 0, tzinfo=UTC), None),
-        ("dm-reaction", "slack-dm", datetime(2026, 11, 14, 9, 5, tzinfo=UTC), None),
-        ("dm-sent", "slack-dm", datetime(2026, 11, 15, 8, 0, tzinfo=UTC), None),
-        ("red-carried", "action-items", datetime(2026, 11, 15, 9, 0, tzinfo=UTC), None),
+    # (kind, surface, ts, session, ref). Extend by appending a row. Three DMs, as of NOW (11-16 12:00Z):
+    # answered (reply 2 h after the send), unanswered (sent 76 h ago, so noise on the 13th) and pending (28 h old).
+    rows: list[tuple[str, str, datetime, str | None, str | None]] = [
+        ("session-reliance", "kb", datetime(2026, 11, 10, 9, 0, tzinfo=UTC), "a" * 16, None),
+        ("session-reliance", "skill", datetime(2026, 11, 10, 10, 0, tzinfo=UTC), "a" * 16, None),
+        ("session-reliance", "skill", datetime(2026, 11, 10, 23, 30, tzinfo=UTC), "b" * 16, None),
+        ("dm-sent", "slack-dm", datetime(2026, 11, 11, 8, 0, tzinfo=UTC), None, "1762848000.000100"),
+        (
+            "dm-reply",
+            "slack-dm",
+            datetime(2026, 11, 11, 10, 0, tzinfo=UTC),
+            None,
+            "1762848000.000100/1762855200.000200",
+        ),
+        ("app-edit", "app", datetime(2026, 11, 12, 9, 0, tzinfo=UTC), None, None),
+        ("inline-comment", "action-items", datetime(2026, 11, 12, 10, 0, tzinfo=UTC), None, None),
+        ("approval", "kb", datetime(2026, 11, 13, 9, 0, tzinfo=UTC), None, None),
+        ("dm-sent", "slack-dm", datetime(2026, 11, 13, 8, 0, tzinfo=UTC), None, "1763020800.000300"),
+        ("dm-reply", "slack-dm", datetime(2026, 11, 14, 9, 0, tzinfo=UTC), None, None),
+        ("dm-reaction", "slack-dm", datetime(2026, 11, 14, 9, 5, tzinfo=UTC), None, None),
+        ("dm-sent", "slack-dm", datetime(2026, 11, 15, 8, 0, tzinfo=UTC), None, "1763193600.000400"),
+        ("red-carried", "action-items", datetime(2026, 11, 15, 9, 0, tzinfo=UTC), None, None),
     ]
-    for kind, surface, ts, session in rows:
-        append_signal(Signal(ts=ts, kind=kind, surface=surface, session=session), vault=vault, env=env)
+    for kind, surface, ts, session, ref in rows:
+        append_signal(Signal(ts=ts, kind=kind, surface=surface, session=session, ref=ref), vault=vault, env=env)
     # One torn line in each file.
     for path in (vault / ".scout-logs" / CHANGES_NAME, vault / ".scout-logs" / ENGAGEMENT_NAME):
         with path.open("a", encoding="utf-8") as f:
@@ -141,13 +152,17 @@ def test_engagement_contract_has_every_day(tmp_path):
     empty = {"feedback": {}, "noise": {}, "reliance": {}}
     assert doc["days"][3] == {"date": "2026-11-05", "feedback": 0, "reliance": 0, "noise": 0, "by_surface": empty}
     assert doc["skipped_rows"] == 2
-    # approval and dm-sent are not engagement; a session counts once per surface per local day.
-    assert doc["totals"] == {"feedback": 4, "reliance": 3, "noise": 1}
+    # approval and an answered or pending dm-sent are not engagement; a session counts once per surface per local day.
+    # The unanswered DM (sent on the 13th) is noise; the one sent on the 15th is still pending.
+    assert doc["totals"] == {"feedback": 5, "reliance": 3, "noise": 2}
+    assert doc["pending"] == {"dm_sent": 1}
     by_date = {d["date"]: d for d in doc["days"]}
     assert by_date["2026-11-11"]["reliance"] == 1  # 23:30Z is already the 11th in Prague
     # by_surface is split per field: an ignored red (noise) never reads as engagement on its surface.
     assert by_date["2026-11-15"]["by_surface"] == {**empty, "noise": {"action-items": 1}}
     assert by_date["2026-11-12"]["by_surface"] == {**empty, "feedback": {"action-items": 1, "app": 1}}
+    assert by_date["2026-11-13"]["by_surface"] == {**empty, "noise": {"slack-dm": 1}}  # the unanswered DM's day
+    assert by_date["2026-11-11"]["by_surface"]["feedback"] == {"slack-dm": 1}
     assert by_date["2026-11-10"]["by_surface"] == {**empty, "reliance": {"kb": 1, "skill": 1}}
     for d in doc["days"]:
         for field in ("feedback", "reliance", "noise"):
@@ -274,3 +289,72 @@ def test_signals_outside_the_window_and_sessionless_reliance(tmp_path):
         append_signal(Signal(ts=when, kind="session-reliance", surface="kb"), vault=vault, env=env)
     doc = engagement_report(vault, env, now=NOW, since=NOW - timedelta(days=14), tz=PRAGUE)
     assert doc["totals"]["reliance"] == 2
+
+
+def _dm_day(signals: list[Signal], *, now: datetime = NOW) -> dict:
+    return daily_counts(signals, since=now - timedelta(days=14), now=now, tz=PRAGUE)
+
+
+def _sent(hours_ago: float, ref: str = "100.1") -> Signal:
+    return Signal(ts=NOW - timedelta(hours=hours_ago), kind="dm-sent", surface="slack-dm", ref=ref)
+
+
+def _answer(sent: Signal, hours_after: float, tail: str = "200.2", kind: str = "dm-reply") -> Signal:
+    return Signal(ts=sent.ts + timedelta(hours=hours_after), kind=kind, surface="slack-dm", ref=f"{sent.ref}/{tail}")
+
+
+def test_an_unanswered_dm_is_noise_after_48h():
+    sent = _sent(50)
+    days = _dm_day([sent])
+    day = days[sent.ts.astimezone(PRAGUE).date().isoformat()]
+    assert day["noise"] == 1 and day["by_surface"]["noise"] == {"slack-dm": 1}
+    assert sum(d["noise"] for d in days.values()) == 1
+
+
+def test_a_reply_at_49h_leaves_it_noise():
+    sent = _sent(60)
+    reply = _answer(sent, 49)
+    days = _dm_day([sent, reply])
+    assert days[sent.ts.astimezone(PRAGUE).date().isoformat()]["noise"] == 1
+    assert days[reply.ts.astimezone(PRAGUE).date().isoformat()]["feedback"] == 1
+
+
+def test_a_reaction_within_48h_answers_it():
+    sent = _sent(60)
+    days = _dm_day([sent, _answer(sent, 2, "r:+1", "dm-reaction")])
+    assert sum(d["noise"] for d in days.values()) == 0
+
+
+def test_a_young_dm_is_pending_not_noise(tmp_path):
+    sent = _sent(30)
+    assert sum(d["noise"] for d in _dm_day([sent]).values()) == 0
+    vault, home = tmp_path / "Scout", tmp_path / "home"
+    vault.mkdir()
+    env = {"HOME": str(home)}
+    append_signal(sent, vault=vault, env=env)
+    doc = engagement_report(vault, env, now=NOW, since=NOW - timedelta(days=14), tz=PRAGUE)
+    assert doc["pending"] == {"dm_sent": 1} and doc["totals"]["noise"] == 0
+
+
+def test_a_reply_to_another_dm_does_not_answer_it():
+    sent = _sent(50, "100.1")
+    other = _answer(_sent(50, "999.9"), 1)
+    days = _dm_day([sent, other])
+    assert sum(d["noise"] for d in days.values()) == 1
+
+
+def test_a_dm_without_a_ref_or_on_another_surface_is_ignored():
+    bare = Signal(ts=_ts(3), kind="dm-sent", surface="slack-dm")
+    telegram = Signal(ts=_ts(3), kind="dm-sent", surface="telegram", ref="100.1")
+    assert sum(d["noise"] for d in _dm_day([bare, telegram]).values()) == 0
+
+
+def test_a_duplicated_dm_sent_row_counts_once():
+    sent = _sent(50)
+    assert sum(d["noise"] for d in _dm_day([sent, sent]).values()) == 1
+
+
+def test_verdict_wrong_counts_as_feedback():
+    row = Signal(ts=_ts(1), kind="verdict-wrong", surface="app", ref="chg-0123456789ab")
+    days = _dm_day([row])
+    assert sum(d["feedback"] for d in days.values()) == 1

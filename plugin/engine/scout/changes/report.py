@@ -6,19 +6,23 @@ are counted in ``skipped_rows``."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change
+from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change, Signal
 from scout.changes.scan import derive
 from scout.changes.store import read_changes, read_signals
 
-FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit"})
+FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit", "verdict-wrong"})
 RELIANCE_KIND = "session-reliance"
-# Plan 2 adds unanswered dm-sent here.
+ANSWER_KINDS = frozenset({"dm-reply", "dm-reaction"})
+# A DM is noise once it has gone this long with no reply or reaction (the owner may still answer later; the answer
+# still counts as feedback on its own day, but the DM stays noise).
+DM_ANSWER_WINDOW = timedelta(hours=48)
+# An unanswered dm-sent is noise too, but that rule needs the other rows, so daily_counts applies it separately.
 NOISE_KINDS = frozenset({"red-carried"})
 FIELDS = ("feedback", "reliance", "noise")
 DEFAULT_LIMIT = 500
@@ -63,13 +67,44 @@ def changes_report(vault: Path, *, now: datetime, since: datetime, limit: int = 
     }
 
 
-def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, since: datetime, tz: ZoneInfo) -> dict:
-    """Per-calendar-day engagement in ``tz``, every day in the range present (zeros included).
+def _sent_dms(signals: Sequence[Signal]) -> list[Signal]:
+    """Each ``slack-dm`` ``dm-sent`` row with a ref, once per ref (a duplicated row never counts twice)."""
+    seen: set[str] = set()
+    out = []
+    for s in signals:
+        if s.kind == "dm-sent" and s.surface == "slack-dm" and s.ref and s.ref not in seen:
+            seen.add(s.ref)
+            out.append(s)
+    return out
 
-    ``by_surface`` splits each of feedback, reliance and noise by surface (``{"feedback": {surface: n}, ...}``), so
-    an ignored 🔴 on ``action-items`` never reads as engagement there; each field's surfaces sum to its count. A
-    session's reliance on one surface counts once per local day, so a duplicated row never inflates the rate."""
-    signals, skipped = read_signals(vault, env)
+
+def _is_answered(sent: Signal, signals: Sequence[Signal]) -> bool:
+    prefix = f"{sent.ref}/"
+    return any(
+        r.kind in ANSWER_KINDS
+        and r.ref is not None
+        and r.ref.startswith(prefix)
+        and sent.ts <= r.ts <= sent.ts + DM_ANSWER_WINDOW
+        for r in signals
+    )
+
+
+def _unanswered_dms(signals: Sequence[Signal], since: datetime, now: datetime) -> list[Signal]:
+    """DMs sent inside [since, now] with no reply or reaction within 48 h of the send."""
+    return [s for s in _sent_dms(signals) if since <= s.ts <= now and not _is_answered(s, signals)]
+
+
+def pending_dm_count(signals: Sequence[Signal], *, since: datetime, now: datetime) -> int:
+    """Unanswered DMs still younger than 48 h: not noise yet, because the owner may yet answer."""
+    return sum(1 for s in _unanswered_dms(signals, since, now) if now - s.ts < DM_ANSWER_WINDOW)
+
+
+def daily_counts(signals: Sequence[Signal], *, since: datetime, now: datetime, tz: ZoneInfo) -> dict[str, dict]:
+    """Per-local-day buckets (keyed by ISO date, every day in the range present, zeros included).
+
+    Each bucket is ``{"date", "feedback", "reliance", "noise", "by_surface"}``. An unanswered DM is noise on the local
+    day it was sent, once 48 h have passed. The verdict engine counts through this function, so it sees what the
+    report shows."""
     first, last = since.astimezone(tz).date(), now.astimezone(tz).date()
     days: dict[str, dict] = {}
     day = first
@@ -80,6 +115,12 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
             "by_surface": {f: {} for f in FIELDS},
         }
         day += timedelta(days=1)
+
+    def add(bucket: dict, field: str, surface: str) -> None:
+        bucket[field] += 1
+        tally = bucket["by_surface"][field]
+        tally[surface] = tally.get(surface, 0) + 1
+
     seen: set[tuple[str, str, str]] = set()
     for s in signals:
         if not since <= s.ts <= now:
@@ -99,12 +140,24 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
             field = "noise"
         else:
             continue
-        bucket[field] += 1
-        tally = bucket["by_surface"][field]
-        tally[s.surface] = tally.get(s.surface, 0) + 1
-    rows = list(days.values())
-    for r in rows:
+        add(bucket, field, s.surface)
+    for sent in _unanswered_dms(signals, since, now):
+        if now - sent.ts >= DM_ANSWER_WINDOW:
+            add(days[sent.ts.astimezone(tz).date().isoformat()], "noise", sent.surface)
+    for r in days.values():
         r["by_surface"] = {f: dict(sorted(r["by_surface"][f].items())) for f in FIELDS}
+    return days
+
+
+def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, since: datetime, tz: ZoneInfo) -> dict:
+    """Per-calendar-day engagement in ``tz``, every day in the range present (zeros included).
+
+    ``by_surface`` splits each of feedback, reliance and noise by surface (``{"feedback": {surface: n}, ...}``), so
+    an ignored 🔴 on ``action-items`` never reads as engagement there; each field's surfaces sum to its count. A
+    session's reliance on one surface counts once per local day, so a duplicated row never inflates the rate.
+    ``pending.dm_sent`` counts DMs under 48 h old with no answer yet; they are not noise until the window closes."""
+    signals, skipped = read_signals(vault, env)
+    rows = list(daily_counts(signals, since=since, now=now, tz=tz).values())
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(),
@@ -112,4 +165,5 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
         "skipped_rows": skipped,
         "days": rows,
         "totals": {f: sum(r[f] for r in rows) for f in FIELDS},
+        "pending": {"dm_sent": pending_dm_count(signals, since=since, now=now)},
     }
