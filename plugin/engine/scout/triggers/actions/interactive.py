@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.triggers.actions._summary import summarize
 from scout.triggers.actions.notify import _default_send_telegram
 from scout.triggers.config import Trigger
@@ -47,9 +48,9 @@ def run(
         block_lines.append(f"- preload: `{preload}`")
     block_lines += ["- next: open an interactive session and run `/scout-work`", ""]
 
-    if not artifact.exists():
-        artifact.write_text(_HEADER + "\n", encoding="utf-8")
-    with artifact.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(artifact) as f:
+        if f.tell() == 0:
+            f.write(_HEADER + "\n")
         f.write("\n".join(block_lines) + "\n")
 
     # The push is best-effort — the artifact is the durable surface.

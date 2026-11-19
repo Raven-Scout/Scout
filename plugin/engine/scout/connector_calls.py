@@ -37,6 +37,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
+from scout import safe_write
+
 try:
     import fcntl
 except ImportError:  # non-POSIX (Windows) — advisory locks unavailable.
@@ -136,7 +138,7 @@ def append_rows(path: Path, lines: Sequence[str], *, max_bytes: int = MAX_DAY_BY
     if not lines:
         return 0
     new_day = not path.exists()
-    with path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(path) as f:
         # Hooks fire concurrently for parallel tool calls. O_APPEND only
         # guarantees atomicity up to PIPE_BUF (~512B on some macOS FS), so
         # large rows can interleave. An exclusive advisory lock serializes

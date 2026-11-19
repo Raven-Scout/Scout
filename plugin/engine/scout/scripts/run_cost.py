@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.config import resolve_timezone
 from scout.hooks.session_tokens import _compute_cost_usd
 from scout.scripts import budget_check
@@ -372,7 +372,7 @@ def _utc(when: datetime) -> str:
 
 def _append(tracker: Path, rows: list[dict]) -> None:
     tracker.parent.mkdir(parents=True, exist_ok=True)
-    with tracker.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(tracker) as f:
         for row in rows:
             f.write(json.dumps(row, separators=(",", ":")) + "\n")
 
