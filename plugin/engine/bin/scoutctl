@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # scoutctl launcher — resolves the venv Python deterministically so
 # hooks invoked from LaunchAgents (which don't inherit user PATH)
 # still find the right interpreter.
@@ -17,7 +17,18 @@
 #                                     Raven-Scout/Scout monorepo clone, whose
 #                                     root venv is skipped as stale)
 #   4. system python3               — last resort; expects scout-engine on
-#                                     the global site-packages
+#                                     the global site-packages. Only ever an
+#                                     absolute path: the first python3 in an
+#                                     absolute PATH entry, else /usr/bin,
+#                                     /opt/homebrew/bin, /usr/local/bin.
+#
+# Nothing here is looked up in the working directory. Skills and hooks run this
+# from any cwd (a cloned repo, the vault), and a relative PATH entry (`.`,
+# `./bin`, `node_modules/.bin`, or an empty one, which also means the cwd) would
+# let a planted python3, sed or dirname run as the user. So the shebang is
+# /bin/bash, not `/usr/bin/env bash` (env would search PATH for bash), and PATH
+# loses its relative and empty entries before any command runs. The engine
+# inherits that PATH, so its own children (git, claude) get the same protection.
 #
 # Executable is not enough: a venv outlives its editable source, so once the
 # checkout moves (engine/ -> plugin/engine/) its python still passes `[ -x ]`
@@ -42,6 +53,14 @@
 # changes nothing: it could not run the engine anyway. scout/_spawn.py does the
 # same for the engine's own `python -m` children.
 set -e
+
+# Keep only absolute PATH entries (see above). An empty result falls back to the system dirs.
+SAFE_PATH=""
+IFS=: read -r -a PATH_ENTRIES <<<"${PATH:-}" || true
+for PATH_ENTRY in ${PATH_ENTRIES[@]+"${PATH_ENTRIES[@]}"}; do
+    case "$PATH_ENTRY" in /*) SAFE_PATH="${SAFE_PATH:+$SAFE_PATH:}$PATH_ENTRY" ;; esac
+done
+export PATH="${SAFE_PATH:-/usr/bin:/bin}"
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ENGINE_DIR="${DIR%/bin}"
@@ -167,4 +186,15 @@ for VENV_PY in "${candidates[@]}"; do
     fi
 done
 
-exec python3 -P -m "$MODULE" "$@"
+# Last resort: a system python3, by absolute path only. PATH holds only absolute entries by now;
+# the case re-checks that, so this loop stays safe on its own.
+IFS=: read -r -a PATH_ENTRIES <<<"$PATH" || true
+for PY_DIR in ${PATH_ENTRIES[@]+"${PATH_ENTRIES[@]}"} /usr/bin /opt/homebrew/bin /usr/local/bin; do
+    case "$PY_DIR" in /*) ;; *) continue ;; esac
+    if [ -f "$PY_DIR/python3" ] && [ -x "$PY_DIR/python3" ]; then
+        exec "$PY_DIR/python3" -P -m "$MODULE" "$@"
+    fi
+done
+echo "scoutctl: no Scout engine found (no working venv, and no python3 in an absolute PATH entry," \
+    "/usr/bin, /opt/homebrew/bin or /usr/local/bin). Run scripts/install-venv.sh in the plugin." >&2
+exit 127

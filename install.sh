@@ -20,6 +20,16 @@ if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
 # The native Claude Code and uv installers both put binaries in ~/.local/bin,
 # which a fresh login shell may not have on PATH yet.
 export PATH="$HOME/.local/bin:$PATH"
+# Then keep only absolute entries. A relative one (`.`, `./bin`, `node_modules/.bin`, or an empty
+# one, which also means the working directory) would let a claude, git, uv or python3 planted in
+# whatever folder this runs from stand in for the real one, here and in everything it starts.
+safe_path=""
+IFS=: read -r -a path_entries <<<"$PATH" || true
+for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+  case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
+done
+export PATH="${safe_path:-/usr/bin:/bin}"
+unset safe_path path_entries path_entry
 
 have() { command -v "$1" >/dev/null 2>&1; }
 fail() { echo "error: $*" >&2; exit 1; }

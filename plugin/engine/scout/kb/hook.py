@@ -29,6 +29,7 @@ brings every vault the current script.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import sys
@@ -48,6 +49,22 @@ _TEMPLATE = """#!/bin/sh
 # If the check can't run (no scoutctl, an engine crash, any exit but 0 or a
 # 'kb-lint:' verdict with 1): a scheduled run's commit is refused; the owner's
 # commit goes on with a warning and an audit row (#453, spec 8.3).
+
+# Keep only absolute PATH entries: git runs this with the vault as cwd, and a
+# relative entry ('.', './bin', an empty one) would let a scoutctl, git or grep
+# planted in the vault run in place of the real one.
+safe_path=
+old_ifs=$IFS
+IFS=:
+set -f
+for path_entry in $PATH; do
+  case "$path_entry" in /*) safe_path="${{safe_path:+$safe_path:}}$path_entry" ;; esac
+done
+set +f
+IFS=$old_ifs
+PATH="${{safe_path:-/usr/bin:/bin}}"
+export PATH
+
 SCOUTCTL={scoutctl}
 
 vault_root() {{
@@ -136,7 +153,11 @@ def default_scoutctl() -> str:
     beside = Path(sys.executable).parent / "scoutctl"
     if beside.exists():
         return str(beside)
-    return shutil.which("scoutctl") or "scoutctl"
+    # Absolute PATH entries only: a relative one ('.', './bin') would bake a path that resolves
+    # against whatever the cwd is at commit time. The bare fallback is looked up by the hook
+    # itself, which also keeps only absolute entries.
+    absolute = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if os.path.isabs(p))
+    return shutil.which("scoutctl", path=absolute) or "scoutctl"
 
 
 def hooks_dir(repo: Path) -> Path:
