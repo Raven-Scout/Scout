@@ -216,12 +216,9 @@ struct KBStatsView: View {
         FlowLayout(spacing: 6) {
             ForEach(Array(zip(labels, paths).enumerated()), id: \.offset) { _, pair in
                 Button { onOpen(pair.1) } label: {
-                    Text(pair.0).font(DS.font(.caption)).foregroundStyle(DS.Ink.p1)
-                        .lineLimit(1).truncationMode(.middle)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Capsule().fill(DS.Paper.sunk))
+                    Text(pair.0).truncationMode(.middle).dsTag(link: true)
                 }
-                .buttonStyle(.plainHit)
+                .buttonStyle(.plainHit)  // ds-guard: hit area — a link tag, drawn by .dsTag
                 .help(pair.0)
             }
         }

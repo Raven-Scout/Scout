@@ -20,26 +20,3 @@ enum CardStyle {
         DS.priorityColor(kind)
     }
 }
-
-/// Retained for backward-compat with existing call sites (e.g. `TaskLinksView`,
-/// `TaskActionsView`). Now renders the editorial chip chrome.
-struct PillBackground: View {
-    var body: some View { EditorialChipBackground() }
-}
-
-/// Retained for backward-compat. The new design uses hairline rules between
-/// entries rather than wrapping every task in a card — callers that still
-/// reach for this modifier get the editorial raised-paper surface.
-struct NeumorphicCard: ViewModifier {
-    let kind: ActionSection.Kind
-
-    func body(content: Content) -> some View {
-        content.editorialCard()
-    }
-}
-
-extension View {
-    func neumorphicCard(kind: ActionSection.Kind) -> some View {
-        modifier(NeumorphicCard(kind: kind))
-    }
-}

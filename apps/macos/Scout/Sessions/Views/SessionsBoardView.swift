@@ -110,15 +110,7 @@ struct SessionsBoardView: View {
     private func countPills(_ counts: [AgentSessionState: Int]) -> some View {
         HStack(spacing: 4) {
             ForEach(AgentSessionState.allCases.filter { counts[$0] != nil }, id: \.self) { state in
-                HStack(spacing: 3) {
-                    SessionStateDot(state: state)
-                    Text("\(counts[state] ?? 0)")
-                        .font(DS.font(.caption2, .mono))
-                        .foregroundStyle(DS.Ink.p3)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(DS.Paper.sunk))
+                DSPill("\(counts[state] ?? 0)", dot: SessionStateStyle.color(state))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(counts[state] ?? 0) \(state.label.lowercased())")
             }
@@ -159,13 +151,8 @@ struct SessionsBoardView: View {
                         .imageScale(.small)
                     Text("\(label) (\(sessions.count))")
                 }
-                .font(DS.font(.caption, weight: .medium))
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(DS.Paper.sunk))
             }
-            .buttonStyle(.plainHit)
+            .buttonStyle(.dsChip(selected: isOpen))
             .accessibilityLabel(isOpen ? "Hide \(label.lowercased()) sessions" : "Show \(sessions.count) \(label.lowercased()) sessions")
             if isOpen {
                 ForEach(sessions) { card($0, titles: titles) }

@@ -91,16 +91,7 @@ struct MenuBarExtraContent: View {
             .fixedSize()
             Spacer()
             if state.urgentActionCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                    Text("\(state.urgentActionCount) urgent")
-                }
-                .font(DS.font(.caption2, weight: .semibold))
-                .foregroundStyle(DS.Priority.urgent)
-                .padding(.horizontal, 7)
-                .frame(height: 24)
-                .background(Capsule().fill(DS.Priority.urgent.opacity(0.1)))
-                .fixedSize()
+                DSPill("\(state.urgentActionCount) urgent", tone: .urgent, symbol: "exclamationmark.circle.fill")
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
                 .help("Urgent action items waiting for attention")
                 .accessibilityElement(children: .ignore)

@@ -58,7 +58,7 @@ enum DS {
     /// Priority hues sit in the same chroma family on purpose — they read as a
     /// set, not a stoplight.
     enum Priority {
-        static let urgent   = Color(fallbackLight: .sRGB(0.750, 0.310, 0.200, 1), fallbackDark: .sRGB(0.880, 0.450, 0.340, 1))
+        static let urgent   = Palette.priorityUrgent.color
         static let todo     = Color(fallbackLight: .sRGB(0.840, 0.640, 0.170, 1), fallbackDark: .sRGB(0.910, 0.760, 0.340, 1))
         static let watch    = Color(fallbackLight: .sRGB(0.390, 0.600, 0.390, 1), fallbackDark: .sRGB(0.500, 0.740, 0.520, 1))
         static let personal = Color(fallbackLight: .sRGB(0.540, 0.440, 0.740, 1), fallbackDark: .sRGB(0.700, 0.620, 0.880, 1))
@@ -483,16 +483,6 @@ struct EditorialCard: ViewModifier {
 extension View {
     func editorialCard(padding: CGFloat = 16, cornerRadius: CGFloat = 8, neumorphic: Bool = false) -> some View {
         modifier(EditorialCard(padding: padding, cornerRadius: cornerRadius, neumorphic: neumorphic))
-    }
-}
-
-/// The small boxed chip/pill used for deep-links, tags, and action buttons.
-struct EditorialChipBackground: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 5).fill(DS.Paper.raised)
-            RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.hard, lineWidth: 0.5)
-        }
     }
 }
 

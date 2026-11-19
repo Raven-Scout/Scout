@@ -64,13 +64,7 @@ struct RunRow: View {
     }
 
     private var manualBadge: some View {
-        Text("manual")
-            .font(DS.font(.micro, .mono, weight: .medium))
-            .tracking(0.06 * 9.5)
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(EditorialChipBackground())
+        Text("manual").dsTag(.mono)
     }
 
     private var statusCell: some View {
@@ -163,14 +157,7 @@ struct ProtectionBadge: View {
     }
 
     var body: some View {
-        Label(title, systemImage: symbol)
-            .labelStyle(.titleAndIcon)
-            .font(DS.font(.caption2, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.12)))
-            .fixedSize()
+        DSPill(title, tone: tone, symbol: symbol)
             .help(help)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(help)
@@ -199,10 +186,10 @@ struct ProtectionBadge: View {
         }
     }
 
-    private var color: Color {
+    private var tone: DS.PillTone {
         switch kind {
-        case .unprotected, .unchecked: return DS.Status.warn
-        case .fileChanged: return DS.Status.err
+        case .unprotected, .unchecked: return .warn
+        case .fileChanged: return .err
         }
     }
 }

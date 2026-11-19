@@ -260,12 +260,8 @@ struct KBEditorView: View {
 
             Button(action: save) {
                 Label("Save", systemImage: "checkmark")
-                    .font(DS.font(.label, weight: .semibold))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(isDirty && !isSaving ? DS.Accent.onFill : DS.Ink.p4)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(isDirty && !isSaving ? DS.Accent.fill : DS.Paper.sunk))
+            .buttonStyle(.dsPrimary)
             .disabled(!isDirty || isSaving || isUnreadable)
             .keyboardShortcut("s", modifiers: .command)
 

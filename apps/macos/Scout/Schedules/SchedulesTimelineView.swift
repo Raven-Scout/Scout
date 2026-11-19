@@ -222,15 +222,7 @@ struct SchedulesTimelineView: View {
         return GeometryReader { geo in
             let center = geo.size.width / 2
             VStack(spacing: 0) {
-                Text("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
-                    .font(DS.font(.caption2, .mono, weight: .medium))
-                    .foregroundStyle(DS.Ink.p4)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(DS.Paper.sunk)
-                            .overlay(Capsule().strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                    )
+                DSPill("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
             }
             .position(x: center, y: seg.y0 + gapPx / 2)
         }
@@ -342,13 +334,7 @@ struct SchedulesTimelineView: View {
                     .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
-                Text(slot.type.displayName)
-                    .font(DS.font(.micro, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(DS.Ink.onTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(ring))
+                DSPill(slot.type.displayName, tone: .slot(slot.type))
             }
             Text(slot.displayName)
                 .font(DS.font(.caption, weight: .medium))

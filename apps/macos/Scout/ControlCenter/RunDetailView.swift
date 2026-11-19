@@ -68,12 +68,7 @@ struct RunDetailView: View {
             HStack(spacing: 8) {
                 Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
-                    Text("Started by you")
-                        .font(DS.font(.caption2))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.secondary)
+                    DSPill("Started by you")
                 }
             }
             HStack(spacing: 14) {
@@ -119,15 +114,19 @@ struct RunDetailView: View {
     }
 
     private var statusPill: some View {
-        HStack(spacing: 5) {
-            Circle().fill(statusColor).frame(width: 6, height: 6)
-            Text(run.status.displayName)
-                .font(DS.font(.caption2))
-                .foregroundStyle(statusColor)
-        }
+        DSPill(run.status.displayName, tone: statusTone)
     }
 
-    private var statusColor: Color { RunOutcomeDisplay.tone(run.status).color }
+    /// The run's status tone (`RunOutcomeDisplay.tone`), as a pill tone.
+    private var statusTone: DS.PillTone {
+        switch RunOutcomeDisplay.tone(run.status) {
+        case .ok:      return .ok
+        case .warn:    return .warn
+        case .err:     return .err
+        case .active:  return .accent
+        case .neutral: return .neutral
+        }
+    }
 
     /// "Run again" fires this run's own schedule (`Run.rerunSlotKey`, from the
     /// run ledger), never one guessed from the run type: several schedules

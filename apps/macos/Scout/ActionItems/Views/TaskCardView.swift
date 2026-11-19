@@ -322,13 +322,8 @@ struct TaskCardView: View {
             Image(systemName: chipGlyph(chip.glyph))
                 .font(DS.font(.micro))
             Text(chip.label)
-                .font(DS.font(.caption2, .mono))
-                .lineLimit(1)
         }
-        .foregroundStyle(DS.Ink.p3)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(EditorialChipBackground())
+        .dsTag(.mono)
     }
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
@@ -398,27 +393,19 @@ struct TaskCardView: View {
     private var trailingStatus: some View {
         switch Self.trailingStatus(task, fields: fields) {
         case .done(let label):
-            statusPill(label, color: DS.Status.ok)
+            DSPill(label, tone: .ok)
         case .snoozed(let until):
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
             }
-            .font(DS.font(.caption2, .mono))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
         case .plan(let label):
             HStack(spacing: 3) {
                 Image(systemName: "clock").imageScale(.small)
                 Text(label)
             }
-            .font(DS.font(.caption2, .mono))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
             .help(Self.planChipHelp(task.plan))
         case .none:
             EmptyView()
@@ -506,15 +493,6 @@ struct TaskCardView: View {
         f.dateFormat = "EEE"
         return f
     }()
-
-    private func statusPill(_ label: String, color: Color) -> some View {
-        Text(label)
-            .font(DS.font(.caption2, .mono, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
-    }
 
     // MARK: - Expanded detail
 
