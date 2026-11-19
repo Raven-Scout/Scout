@@ -178,8 +178,8 @@ def evaluate(
 
     ``state`` is ``testing`` until the change's local date + ``review_days`` (``review_on``), then ``done``. A
     rollback change whose ``reverts`` names a change makes that change's verdict ``rolled back`` and clears
-    ``suspect``. ``overlap`` lists the other tested changes whose local dates are under ``review_days`` apart from
-    this one: their windows share days, so the effect is shared. ``would_have_done`` is what each auto-rollback mode
+    ``suspect``. ``overlap`` lists the other tested changes whose local dates are at most ``review_days`` apart
+    from this one, either side (inclusive): the effect is shared. ``would_have_done`` is what each auto-rollback mode
     would undo, shown during calibration so the owner can judge the rules before trusting them."""
     review = settings.review_days
     today = now.astimezone(tz).date()
@@ -233,7 +233,7 @@ def evaluate(
             "verdict": verdict,
             "reasons": list(reasons),
             "suspect": verdict == "hurt",
-            "overlap": sorted(o.id for o in tested if o.id != c.id and abs((local[o.id] - day).days) < review),
+            "overlap": sorted(o.id for o in tested if o.id != c.id and abs((local[o.id] - day).days) <= review),
         }
 
     for c in tested:

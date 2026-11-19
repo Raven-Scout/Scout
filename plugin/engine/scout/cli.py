@@ -19,6 +19,8 @@ from scout import __version__
 from scout.errors import ConfigError, ScoutError
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from scout.agent_runtimes.base import AgentRuntime
     from scout.repo_sync import AgnesHost
     from scout.scripts.bootstrap import BootstrapConfig
@@ -470,15 +472,22 @@ def cli_changes(
     import os
 
     from scout.changes.report import changes_report
+    from scout.changes.vault import installed_vault
     from scout.config import resolve_timezone
 
-    _changes_document(
-        "changes",
-        since,
-        lambda vault, now, cutoff: changes_report(
-            vault, now=now, since=cutoff, env=os.environ, tz=resolve_timezone(vault), limit=limit
-        ),
-    )
+    def build(vault: Path, now: datetime, cutoff: datetime) -> dict:
+        # Git and .scout-logs/ come from the vault resolved here (it may be the cwd's); owner rows are keyed to the
+        # installed vault, as `engagement --json` reads them, so a worktree cwd doesn't undercount the owner.
+        try:
+            owner = installed_vault(os.environ)
+        except ValueError as e:  # no home directory to find the installed vault from
+            typer.echo(f"scoutctl changes: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        return changes_report(
+            vault, now=now, since=cutoff, env=os.environ, tz=resolve_timezone(vault), limit=limit, owner_vault=owner
+        )
+
+    _changes_document("changes", since, build)
 
 
 @engagement_app.callback()

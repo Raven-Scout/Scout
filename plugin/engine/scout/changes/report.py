@@ -36,6 +36,7 @@ def changes_report(
     env: Mapping[str, str],
     tz: ZoneInfo,
     limit: int = DEFAULT_LIMIT,
+    owner_vault: Path | None = None,
 ) -> dict:
     """Changes since ``since``, newest first, at most ``limit``; ``counts`` covers every in-range change.
 
@@ -44,7 +45,10 @@ def changes_report(
 
     Each change carries its ``test`` (scout.changes.verdicts), computed now from both engagement stores, the same
     rows ``engagement_report`` reads; days are local dates in ``tz``. ``calibrating`` and ``auto_rollback`` come from
-    the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only."""
+    the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only.
+
+    Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
+    which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
     from scout.changes.settings import read_settings
     from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
 
@@ -71,10 +75,11 @@ def changes_report(
     for c in inside:
         counts[c.kind] += 1
     settings = read_settings(env)
-    signals, _ = read_signals(vault, env)
-    # A shown change's overlap partners are under review_days from it, and what rolls it back comes after it, so
-    # older rows can't change what is shown. Leaving them out bounds the work a stale or forged row can cause.
-    floor = since - timedelta(days=settings.review_days + 1)
+    signals, _ = read_signals(vault, env, owner_vault=owner_vault)
+    # A shown change's overlap partners are at most review_days local dates from it (under review_days + 1 days of
+    # clock, plus a DST hour), and what rolls it back comes after it, so older rows can't change what is shown.
+    # Leaving them out bounds the work a stale or forged row can cause.
+    floor = since - timedelta(days=settings.review_days + 2)
     tests = evaluate([c for c in unique.values() if floor <= c.ts <= now], signals, now=now, tz=tz, settings=settings)
     return {
         "schema_version": SCHEMA_VERSION,

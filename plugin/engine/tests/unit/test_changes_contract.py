@@ -66,6 +66,7 @@ def _changes() -> list[Change]:
             "files": ("SKILL.md",),
             "reverts": ids["brain-edit"],
             "author_lane": "dreaming",
+            "ts": _ts(0.5),  # after the brain-edit it reverts (_ts(1))
         },
         "upgrade": {"files": ("scripts/upgrade.sh",), "author_lane": "update"},
         # Old enough that its review is done: a recurrence of its target in the review window makes it hurt.

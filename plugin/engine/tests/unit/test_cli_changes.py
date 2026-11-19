@@ -284,3 +284,60 @@ def test_record_with_no_home_exits_2(cli, vault, home, monkeypatch):
     assert "no home directory" in r.output
     assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
     assert cli(["engagement", "--json"]).exit_code == 2
+
+
+def _cwd_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A vault found from the cwd (a worktree, say) that isn't the installed one, with SCOUT_DATA_DIR unset."""
+    wt = tmp_path / "worktree-vault"
+    wt.mkdir()
+    (wt / "scout-config.yaml").write_text("")
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    monkeypatch.chdir(wt)
+    return wt
+
+
+def test_changes_json_keys_owner_rows_to_the_installed_vault(cli, tmp_path, home, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.changes.models import Change, Signal, Why
+    from scout.changes.store import append_change, append_signal
+
+    installed = home / "Scout"  # no SCOUT_DATA_DIR and no engine pointer: the installed vault is ~/Scout
+    installed.mkdir()
+    wt = _cwd_vault(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    env = {"HOME": str(home)}
+    ids = ("chg-0123456789ab", "chg-0123456789ac")
+    for cid in ids:
+        change = Change(
+            id=cid,
+            ts=now - timedelta(days=20),
+            kind="brain-edit",
+            summary="a change",
+            why=Why("unknown", "", inferred=True),
+            commit=cid[4:] + "0" * 28,
+            files=("SKILL.md",),
+            author_lane="dreaming",
+        )
+        append_change(wt, change)  # git and .scout-logs/ are read from the cwd's vault
+    # The owner marked the first verdict wrong, keyed to the installed vault as owner rows are. A row keyed to the
+    # cwd's vault, for the second, isn't the installed vault's and never counts.
+    wrong = Signal(ts=now - timedelta(days=1), kind="verdict-wrong", surface="app", ref=ids[0])
+    append_signal(wrong, vault=installed, env=env)
+    append_signal(Signal(ts=wrong.ts, kind="verdict-wrong", surface="app", ref=ids[1]), vault=wt, env=env)
+    r = cli(["changes", "--json"])
+    assert r.exit_code == 0, r.output
+    marked = {c["id"]: c["test"]["marked_wrong"] for c in json.loads(r.stdout)["changes"]}
+    assert marked == {ids[0]: True, ids[1]: False}
+
+
+def test_changes_json_with_no_home_exits_2(cli, tmp_path, home, monkeypatch):
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    _cwd_vault(tmp_path, monkeypatch)
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    r = cli(["changes", "--json"])
+    assert r.exit_code == 2 and not isinstance(r.exception, RuntimeError)
+    assert "no home directory" in r.output

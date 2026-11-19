@@ -5,6 +5,48 @@
     {
       "author_lane": "dreaming",
       "backfilled": false,
+      "commit": "0000000000000000000000000000000000000004",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000004",
+      "kind": "rollback",
+      "reverts": "chg-000000000000",
+      "schema_version": 1,
+      "summary": "A rollback change",
+      "targets": [
+        "briefing"
+      ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-16T00:00:00+00:00",
+      "why": {
+        "gloss": "The test found it hurt",
+        "inferred": false,
+        "ref": "verdict:chg-000000000000",
+        "type": "verdict"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
       "commit": "0000000000000000000000000000000000000000",
       "files": [
         "SKILL.md"
@@ -197,48 +239,6 @@
         "inferred": false,
         "ref": "pattern-249",
         "type": "pattern"
-      }
-    },
-    {
-      "author_lane": "dreaming",
-      "backfilled": false,
-      "commit": "0000000000000000000000000000000000000004",
-      "files": [
-        "SKILL.md"
-      ],
-      "governance": false,
-      "id": "chg-000000000004",
-      "kind": "rollback",
-      "reverts": "chg-000000000000",
-      "schema_version": 1,
-      "summary": "A rollback change",
-      "targets": [
-        "briefing"
-      ],
-      "test": {
-        "after": null,
-        "baseline": null,
-        "calibrating": true,
-        "engagement_targeted": false,
-        "marked_wrong": false,
-        "overlap": [],
-        "reasons": [],
-        "review_on": null,
-        "rolled_back_by": null,
-        "state": "not-tested",
-        "suspect": false,
-        "verdict": null,
-        "would_have_done": {
-          "one_at_a_time": false,
-          "targeted": false
-        }
-      },
-      "ts": "2026-11-11T12:00:00+00:00",
-      "why": {
-        "gloss": "The test found it hurt",
-        "inferred": false,
-        "ref": "verdict:chg-000000000000",
-        "type": "verdict"
       }
     },
     {

@@ -193,8 +193,12 @@ def append_signal_once(signal: Signal, *, vault: Path, env: Mapping[str, str]) -
     return True
 
 
-def read_signals(vault: Path, env: Mapping[str, str]) -> tuple[list[Signal], int]:
-    key = vault_key(vault)
+def read_signals(vault: Path, env: Mapping[str, str], *, owner_vault: Path | None = None) -> tuple[list[Signal], int]:
+    """Run rows from ``vault``'s ``.scout-logs/``, plus owner rows keyed to ``owner_vault`` (default ``vault``).
+
+    Owner rows are keyed to the installed vault (scout.changes.vault), so a reader whose ``vault`` came from the cwd
+    (a worktree, say) passes the installed vault here."""
+    key = vault_key(owner_vault if owner_vault is not None else vault)
     out: list[Signal] = []
     skipped = 0
     for path, owned in ((owner_dir(env) / ENGAGEMENT_NAME, True), (_logs(vault) / ENGAGEMENT_NAME, False)):

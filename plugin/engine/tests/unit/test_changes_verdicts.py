@@ -248,11 +248,14 @@ def test_testing_until_review_day():
 def test_overlap_and_one_at_a_time_picks_the_newest():
     first = _change(targets=("pattern-288",))
     second = _change("chg-00000000000b", DAY + timedelta(days=3), targets=("pattern-288",))
-    far = _change("chg-00000000000c", DAY + timedelta(days=14))  # exactly review_days later: outside
+    edge = _change("chg-00000000000c", DAY + timedelta(days=14))  # exactly review_days later: inside (inclusive)
+    far = _change("chg-00000000000d", DAY + timedelta(days=15))  # one day more: outside
     signals = [_recurrence(DAY + timedelta(days=5)), _recurrence(DAY + timedelta(days=8))]
-    tests = _test([first, second, far], signals)
-    assert tests[CID]["overlap"] == ["chg-00000000000b"]
-    assert tests["chg-00000000000b"]["overlap"] == [CID, "chg-00000000000c"]
+    tests = _test([first, second, edge, far], signals)
+    assert tests[CID]["overlap"] == ["chg-00000000000b", "chg-00000000000c"]
+    assert tests["chg-00000000000b"]["overlap"] == [CID, "chg-00000000000c", "chg-00000000000d"]
+    assert tests["chg-00000000000d"]["overlap"] == ["chg-00000000000b", "chg-00000000000c"]
+    # The edge change is newer than the first but still testing, so not suspect: the second is the newest suspect.
     assert tests[CID]["verdict"] == tests["chg-00000000000b"]["verdict"] == "hurt"
     assert tests[CID]["would_have_done"] == {"targeted": True, "one_at_a_time": False}
     assert tests["chg-00000000000b"]["would_have_done"] == {"targeted": True, "one_at_a_time": True}
