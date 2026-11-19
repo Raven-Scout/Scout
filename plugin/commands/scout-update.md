@@ -139,7 +139,7 @@ fi
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 echo "Upgrading vault against plugin root: $NEW_ROOT"
-[ -x "$NEW_ROOT/.venv/bin/scoutctl" ] || bash "$NEW_ROOT/scripts/install-venv.sh"
+[ -x "$NEW_ROOT/.venv/bin/scoutctl" ] || /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 ```
 
@@ -196,12 +196,12 @@ EOF
 - `PENDING_SIDECAR:<file>` (zero or more lines): informational, not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then act on the line that follows, `READY` or one of the refusals below.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:
   ```
-  bash "$NEW_ROOT/scripts/install-venv.sh"
+  /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
   ```
   Then re-run `/scout-update`.
 - `VENV_MISMATCH:<installed>|<expected>`: "The venv at `$NEW_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Running the upgrade now would apply the OTHER tree's templates, not the ones in this checkout. Re-install the venv pinned to this plugin source:" then show:
   ```
-  bash "$NEW_ROOT/scripts/install-venv.sh"
+  /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
   ```
   Then re-run `/scout-update`.
 - `READY`: continue.
