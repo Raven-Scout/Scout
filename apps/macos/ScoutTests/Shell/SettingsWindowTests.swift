@@ -60,6 +60,7 @@ struct SettingsWindowTests {
         let home = try tempHome(); defer { try? FileManager.default.removeItem(at: home) }
         #expect(SettingsPathCheck.url(for: "Scout", home: home) == nil)
         #expect(SettingsPathCheck.problem(for: "Vaults/Work", kind: .folder, home: home)?.contains("isn't a full path") == true)
+        #expect(SettingsPathCheck.problem(for: "bin/claude", kind: .executable, home: home)?.contains("isn't a full path") == true)
     }
 
     @Test("folders must exist and be folders; ~ expands against home")
@@ -87,15 +88,52 @@ struct SettingsWindowTests {
         #expect(SettingsPathCheck.problem(for: "~/nope", kind: .executable, home: home) == "No file is at this path.")
     }
 
-    @Test("a chosen path under home is stored as ~/…, others as given")
+    @Test("a chosen folder under home is stored as ~/…, others as given")
     func storedText() throws {
         let home = URL(fileURLWithPath: "/Users/alex", isDirectory: true)
-        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alex/Scout"), home: home) == "~/Scout")
-        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alex"), home: home) == "~")
-        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alexandra/Scout"), home: home) == "/Users/alexandra/Scout")
-        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Volumes/Work/Scout"), home: home) == "/Volumes/Work/Scout")
+        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alex/Scout"), kind: .folder, home: home) == "~/Scout")
+        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alex"), kind: .folder, home: home) == "~")
+        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Users/alexandra/Scout"), kind: .folder, home: home) == "/Users/alexandra/Scout")
+        #expect(SettingsPathCheck.storedText(for: URL(fileURLWithPath: "/Volumes/Work/Scout"), kind: .folder, home: home) == "/Volumes/Work/Scout")
         // What it stores, AppState resolves to the same folder.
         #expect(SettingsPathCheck.url(for: "~/Scout", home: home)?.path == "/Users/alex/Scout")
+    }
+
+    /// #715 review (HIGH): a program is stored absolute, because
+    /// `ClaudeLauncher.resolveClaudePath` takes the override as is — a saved
+    /// `~/.local/bin/claude` made every Launch Claude say Claude is missing.
+    @Test("a chosen claude program is stored absolute and resolves")
+    func chosenProgramResolves() throws {
+        let home = try tempHome(); defer { try? FileManager.default.removeItem(at: home) }
+        let bin = home.appendingPathComponent(".local/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let tool = bin.appendingPathComponent("claude")
+        try Data("#!/bin/sh\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let stored = SettingsPathCheck.storedText(for: tool, kind: .executable, home: home)
+        #expect(!stored.hasPrefix("~"))
+        #expect(ClaudeLauncher.resolveClaudePath(override: stored, home: home) == tool.standardizedFileURL.path)
+        // A `~/…` value saved before this fix still resolves.
+        #expect(ClaudeLauncher.resolveClaudePath(override: "~/.local/bin/claude", home: home) == tool.path)
+        #expect(ClaudeLauncher.resolveClaudePath(override: "~/.local/bin/missing", home: home) == nil)
+    }
+
+    @Test("a chosen Scout folder says when it isn't set up, or isn't where scheduled runs go")
+    func scoutFolderNotes() throws {
+        let home = try tempHome(); defer { try? FileManager.default.removeItem(at: home) }
+        let folder = home.appendingPathComponent("Scout", isDirectory: true)
+        let other = home.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        #expect(SettingsPathCheck.scoutFolderNotes(for: "", engineVault: folder, home: home).isEmpty, "blank: the default")
+        let empty = SettingsPathCheck.scoutFolderNotes(for: "~/Other", engineVault: folder, home: home)
+        #expect(empty.count == 2)
+        #expect(empty.first?.contains("no scout-config.yaml") == true)
+        #expect(empty.last == "Scheduled runs still use ~/Scout.")
+        try Data("version: 1\n".utf8).write(to: folder.appendingPathComponent("scout-config.yaml"))
+        #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Scout", engineVault: folder, home: home).isEmpty)
+        #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Missing", engineVault: folder, home: home).isEmpty,
+                "a missing folder gets the problem line instead")
     }
 
     // MARK: - Authorship (#85)
@@ -138,6 +176,8 @@ struct SettingsWindowTests {
         let line = NowStripView.nextRunLine(now.addingTimeInterval(3 * 3600), now: now)
         #expect(line.hasPrefix("Starts "))
         #expect(!line.contains("dispatcher"))
+        #expect(NowStripView.nextRunLine(now.addingTimeInterval(-300), now: now) == "Due now")
+        #expect(NowStripView.nextRunLine(now.addingTimeInterval(20), now: now) == "Due now")
     }
 
     @Test("Settings calls the vault the Scout folder, as the glossary does")

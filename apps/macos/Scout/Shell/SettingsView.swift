@@ -230,7 +230,8 @@ struct SettingsView: View {
                     SettingsPathPicker(path: $claudeCLIPath,
                                        defaultLabel: detectedClaudePath ?? "Found automatically",
                                        kind: .executable,
-                                       panelMessage: "Choose the claude program")
+                                       panelMessage: "Choose the claude program",
+                                       defaultURL: detectedClaudePath.map { URL(fileURLWithPath: $0) })
                 }
                 SettingsRow(
                     title: "Open Claude Code in",
@@ -268,11 +269,11 @@ struct SettingsView: View {
         section(label: "Folders") {
             SettingsCard {
                 folderField("Dreaming proposals folder", path: $dreamingProposalsPath,
-                            defaultPath: "~/Scout/dreaming-proposals", reads: "Proposals")
+                            defaultRelative: "dreaming-proposals", reads: "Proposals")
                 folderField("Wishlist folder", path: $wishlistPath,
-                            defaultPath: "~/Scout/docs/wishlist", reads: "Wishlist")
+                            defaultRelative: PerFileTabConfig.wishlist.directoryDefaultRelative, reads: "Wishlist")
                 folderField("Research queue folder", path: $researchQueuePath,
-                            defaultPath: "~/Scout/knowledge-base/research-queue", reads: "Research")
+                            defaultRelative: PerFileTabConfig.research.directoryDefaultRelative, reads: "Research")
             }
         }
     }
@@ -291,13 +292,17 @@ struct SettingsView: View {
         }
     }
 
-    private func folderField(_ label: String, path: Binding<String>, defaultPath: String, reads page: String) -> some View {
-        SettingsField(
+    /// A folder that defaults to `defaultRelative` inside the Scout folder,
+    /// shown as `<Scout folder>/…` since the Scout folder itself can move.
+    private func folderField(_ label: String, path: Binding<String>, defaultRelative: String, reads page: String) -> some View {
+        let defaultLabel = "<Scout folder>/\(defaultRelative)"
+        return SettingsField(
             label: label,
-            help: "The folder the \(page) page reads. Use Default reads `\(defaultPath)`. Takes effect after restarting Scout."
+            help: "The folder the \(page) page reads. Use Default reads `\(defaultLabel)`. Takes effect after restarting Scout."
         ) {
-            SettingsPathPicker(path: path, defaultLabel: defaultPath, kind: .folder,
-                               panelMessage: "Choose the \(label.lowercased())")
+            SettingsPathPicker(path: path, defaultLabel: defaultLabel, kind: .folder,
+                               panelMessage: "Choose the \(label.lowercased())",
+                               defaultURL: appState.scoutDirectory.appendingPathComponent(defaultRelative))
         }
     }
 
@@ -357,7 +362,11 @@ struct SettingsView: View {
         guard let request, SettingsTab(anchor: request.anchor) == item else { return }
         // After the tab's first layout, so the section has a frame. No
         // scroll animation under Reduce Motion.
-        DispatchQueue.main.async { withMotion { proxy.scrollTo(request.anchor, anchor: .top) } }
+        // Then forget it, so a later visit to the tab doesn't scroll again.
+        DispatchQueue.main.async {
+            withMotion { proxy.scrollTo(request.anchor, anchor: .top) }
+            if scrollRequest == request { scrollRequest = nil }
+        }
     }
 
     private func section<Content: View>(label: String, @ViewBuilder _ content: () -> Content) -> some View {

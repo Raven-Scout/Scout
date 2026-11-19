@@ -45,14 +45,6 @@ struct NowStripView: View {
     /// cost no run measured reads "unknown" or "≥", never $0 (UI audit R1). "—" until it loads.
     /// The budget comes from the vault's own budget settings (`scoutctl budget show`), and is
     /// left off until they have loaded — never a made-up figure (card C3).
-    /// The Next column's sub-line: when the run starts, in words ("Starts in
-    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI audit).
-    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.dateTimeStyle = .named
-        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
-    }
-
     nonisolated static func costLine(today: UsagePeriod?, dailyBudgetUSD: Double?) -> String {
         let cost: String
         if let today {
@@ -130,6 +122,17 @@ struct NowStripView: View {
                               dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
                 color: DS.Ink.p3)
         }
+    }
+
+    /// The Next column's sub-line: when the run starts, in words ("Starts in
+    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI
+    /// audit R11). A run whose time has come reads "Due now", never "Starts
+    /// 5 minutes ago".
+    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
+        guard scheduledAt.timeIntervalSince(now) >= 60 else { return "Due now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
     }
 
     @ViewBuilder private var nextColumn: some View {

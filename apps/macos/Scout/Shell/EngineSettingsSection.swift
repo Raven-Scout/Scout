@@ -21,6 +21,9 @@ struct EngineSettingsSection: View {
     @State private var isChecking = false
     /// "Copy /scout-update" just copied: the button says "Copied" for a moment.
     @State private var copied = false
+    /// Turns "Copied" back into "Copy"; replaced on each copy, so a double
+    /// click doesn't revert early.
+    @State private var copiedReset: Task<Void, Never>?
 
     private var model: EngineSettingsModel {
         EngineSettingsModel(state: health.state, doctor: health.doctor, lastError: health.lastError, bundledVersion: bundledVersion,
@@ -41,7 +44,12 @@ struct EngineSettingsSection: View {
                 SettingsPathPicker(path: $scoutDataDir,
                                    defaultLabel: health.state.install?.vault?.path ?? "~/Scout",
                                    kind: .folder,
-                                   panelMessage: "Choose your Scout folder")
+                                   panelMessage: "Choose your Scout folder",
+                                   defaultURL: health.state.install?.vault ?? vault,
+                                   allowsNewFolder: false,
+                                   notes: SettingsPathCheck.scoutFolderNotes(
+                                       for: scoutDataDir, engineVault: health.state.install?.vault,
+                                       home: FileManager.default.homeDirectoryForCurrentUser))
             }
             SettingsRow(title: "Health", help: healthHelp) {
                 HStack(spacing: 10) {
@@ -145,8 +153,10 @@ struct EngineSettingsSection: View {
         Self.copyToPasteboard("/scout-update")
         copied = true
         AccessibilityNotification.Announcement("Copied /scout-update").post()
-        Task {
+        copiedReset?.cancel()
+        copiedReset = Task {
             try? await Task.sleep(for: .seconds(Self.copiedFor))
+            guard !Task.isCancelled else { return }
             copied = false
         }
     }

@@ -141,7 +141,7 @@ nonisolated struct DiagnosticsCollector: Sendable {
         let source: String = {
             switch engineState {
             case .notInstalled: return "not installed"
-            case .managed(_, let bootstrapped): return "managed by Scout.app" + (bootstrapped ? "" : " (vault not set up)")
+            case .managed(_, let bootstrapped): return "managed by Scout.app" + (bootstrapped ? "" : " (Scout folder not set up)")
             case .external(_, let src): return "external (\(Self.describe(src)))"
             case .broken(_, let reason): return "broken: \(reason)"
             }

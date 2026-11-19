@@ -102,14 +102,15 @@ struct SidebarView: View {
         item == .health && healthAttention
     }
 
-    /// Opens the Settings window: at Updates when an update is waiting, at
-    /// Engine when the engine needs the user, else where it was.
+    /// Opens the Settings window: at Engine when the engine needs the user
+    /// (that comes first), at Updates when an update is waiting, else where
+    /// it was.
     private var settingsRow: some View {
         Button {
-            if settingsBadge > 0 {
-                HelpActions.showSettings(openSettings, at: SettingsAnchor.updates)
-            } else if settingsAttention {
+            if settingsAttention {
                 HelpActions.showEngineSettings(openSettings)
+            } else if settingsBadge > 0 {
+                HelpActions.showSettings(openSettings, at: SettingsAnchor.updates)
             } else {
                 openSettings()
             }

@@ -23,7 +23,7 @@ nonisolated enum SettingsPathCheck {
         let raw = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         guard let url = url(for: raw, home: home) else {
-            return "Scout ignores this path because it isn't a full path. Choose the \(kind == .folder ? "folder" : "file") again."
+            return "This isn't a full path, so it may not point where you expect. Choose the \(kind == .folder ? "folder" : "file") again."
         }
         var isDir: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir) else {
@@ -38,10 +38,31 @@ nonisolated enum SettingsPathCheck {
         }
     }
 
-    /// How a chosen URL is stored: under the home folder as `~/…`, so the
-    /// setting reads the way the defaults beside it do.
-    static func storedText(for url: URL, home: URL) -> String {
+    /// Notes on a chosen Scout folder (#715 review). Never blocking, and the
+    /// app never re-points scheduled runs or sets a folder up by itself:
+    /// - a folder without `scout-config.yaml` isn't a Scout folder yet;
+    /// - scheduled runs keep the folder the engine was set up for.
+    static func scoutFolderNotes(for path: String, engineVault: URL?, home: URL,
+                                 fileManager: FileManager = .default) -> [String] {
+        guard problem(for: path, kind: .folder, home: home, fileManager: fileManager) == nil,
+              let url = url(for: path, home: home) else { return [] }
+        var notes: [String] = []
+        if !fileManager.fileExists(atPath: url.appendingPathComponent("scout-config.yaml").path) {
+            notes.append("This folder has no scout-config.yaml, so it isn't a Scout folder yet. Scout won't set it up by itself.")
+        }
+        if let engineVault, engineVault.standardizedFileURL.path != url.standardizedFileURL.path {
+            notes.append("Scheduled runs still use \(storedText(for: engineVault, kind: .folder, home: home)).")
+        }
+        return notes
+    }
+
+    /// How a chosen URL is stored. A folder under the home folder reads
+    /// `~/…`, as the defaults beside it do (`AppState.resolveScoutDirectory`
+    /// and the per-file services expand it). A program is stored absolute:
+    /// its readers (`ClaudeLauncher.resolveClaudePath`) take the path as is.
+    static func storedText(for url: URL, kind: Kind, home: URL) -> String {
         let path = url.standardizedFileURL.path
+        guard kind == .folder else { return path }
         let homePath = home.standardizedFileURL.path
         if path == homePath { return "~" }
         if path.hasPrefix(homePath + "/") { return "~" + path.dropFirst(homePath.count) }
@@ -61,6 +82,13 @@ struct SettingsPathPicker: View {
     let kind: SettingsPathCheck.Kind
     /// The open panel's prompt, e.g. "Choose the Wishlist folder".
     let panelMessage: String
+    /// Where the open panel starts while the setting is blank.
+    var defaultURL: URL? = nil
+    /// Whether the panel offers New Folder. Off for the Scout folder: a new
+    /// empty folder is never a Scout folder.
+    var allowsNewFolder: Bool = true
+    /// Non-blocking notes shown under the path (`scoutFolderNotes`).
+    var notes: [String] = []
     var home: URL = FileManager.default.homeDirectoryForCurrentUser
     @Environment(\.settingsControlLabel) private var rowLabel
 
@@ -100,6 +128,13 @@ struct SettingsPathPicker: View {
                     .font(DS.sans(11.5))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(notes, id: \.self) { note in
+                    Label(note, systemImage: "info.circle")
+                        .font(DS.sans(11.5))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -110,13 +145,16 @@ struct SettingsPathPicker: View {
         panel.prompt = "Choose"
         panel.canChooseDirectories = kind == .folder
         panel.canChooseFiles = kind == .executable
-        panel.canCreateDirectories = kind == .folder
+        panel.canCreateDirectories = kind == .folder && allowsNewFolder
         panel.allowsMultipleSelection = false
-        // `claude` usually lives in ~/.local/bin, a hidden folder.
+        // `claude` usually lives in ~/.local/bin, a hidden folder, as a
+        // symlink to a versioned install: keep the link, or the setting
+        // breaks on the next Claude update.
         panel.showsHiddenFiles = kind == .executable
-        let current = SettingsPathCheck.url(for: isDefault ? defaultLabel : path, home: home)
+        panel.resolvesAliases = kind != .executable
+        let current = isDefault ? defaultURL : SettingsPathCheck.url(for: path, home: home)
         panel.directoryURL = kind == .folder ? current : current?.deletingLastPathComponent()
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        path = SettingsPathCheck.storedText(for: url, home: home)
+        path = SettingsPathCheck.storedText(for: url, kind: kind, home: home)
     }
 }
