@@ -886,6 +886,12 @@ def cli_check_titles(
     ),
     data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
     json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    list_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Read-only inventory instead of the check: every open title over 80 characters, carried or not, "
+        "by tag and length with its stale clock. Never prints a title. Exit 0 (2 = cannot read).",
+    ),
 ) -> None:
     """Check task titles and Today's Focus in today's file against *Clean Title, Prose Body, Refs Block*.
 
@@ -906,6 +912,9 @@ def cli_check_titles(
 
     name = "check-titles"
     day = _check_day(name, date, data_dir)
+    if list_all:
+        _list_long_titles(name, day, data_dir, json_out)
+        return
     try:
         result = check_titles(data_dir=data_dir, today=day)
     except PrefetchCheckError as e:
@@ -942,6 +951,174 @@ def cli_check_titles(
         sys.stdout.write(f"{name}: {result.checked} task title(s) and Today's Focus within the limits{carried}\n")
     if not result.passed:
         raise typer.Exit(code=1)
+
+
+def _list_long_titles(name: str, day: str, data_dir: Path | None, json_out: bool) -> None:
+    """`check-titles --all`: tags, lengths and stale clocks only, never a title."""
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.titles import TITLE_MAX, list_long_titles
+
+    try:
+        listing = list_long_titles(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+    buckets = listing.buckets()
+    longest = max((t.chars for t in listing.long), default=0)
+    if json_out:
+        payload = {
+            "date": listing.date.isoformat(),
+            "limit": TITLE_MAX,
+            "checked": listing.checked,
+            "over": len(listing.long),
+            "longest": longest,
+            "buckets": buckets,
+            "items": [
+                {
+                    "tag": t.tag,
+                    "chars": t.chars,
+                    "section": t.section,
+                    "carried": t.carried,
+                    "last_changed": t.last_changed.isoformat(),
+                    "archive_due": t.archive_due.isoformat(),
+                }
+                for t in listing.long
+            ],
+        }
+        sys.stdout.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+        return
+    bands = ", ".join(f"{label}: {n}" for label, n in buckets.items())
+    sys.stdout.write(
+        f"{name} --all: {len(listing.long)} of {listing.checked} open titles over {TITLE_MAX} characters"
+        f" (longest {longest}; {bands})\n"
+    )
+    for t in listing.long:
+        sys.stdout.write(
+            f"  [#{t.tag}] {t.chars} chars · {t.section or '-'} · {'carried' if t.carried else 'new'}"
+            f" · unchanged since {t.last_changed} · archives {t.archive_due} if untouched\n"
+        )
+
+
+@app.command("retitle")
+def cli_retitle(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to use, YYYY-MM-DD (default: today; --apply and --undo need today)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    model: str = typer.Option("sonnet", "--model", help="Model the claude CLI proposes titles with."),
+    section: list[str] | None = typer.Option(
+        None, "--section", help="Only items in this section, by its emoji (e.g. 🔴). Repeatable."
+    ),
+    skip_within: int = typer.Option(
+        7, "--skip-archiving-within", min=0, help="Leave out items the stale archive takes within this many days."
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Ask the model again for every row, not just new ones."),
+    apply_sha: str | None = typer.Option(
+        None, "--apply", metavar="WORKSHEET_SHA", help="Apply the worksheet the dry run printed this sha for."
+    ),
+    undo_commit: str | None = typer.Option(
+        None, "--undo", metavar="COMMIT", help="Put back the titles a cleanup commit shortened (with --yes)."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="With --undo: do it. Without, --undo only shows what it would do."),
+) -> None:
+    """The owner's one-off title cleanup: shorten every open title over 80 characters, keeping each stale clock.
+
+    Run it yourself, in a terminal: it refuses in a scheduled run, without a TTY
+    and while a run of the vault is live. The dry run (the default) asks your
+    own `claude` login for proposals (API-key variables are removed from its
+    environment), checks each against *Clean Title, Prose Body, Refs Block*,
+    saves them to `.scout-cache/retitle/<date>.json` (edit any proposal there,
+    or set "skip": true, and run the dry run again) and prints a worksheet sha.
+    Nothing else is written. `--apply <sha>` then changes only the bold titles
+    in today's file, keeps each original word for word in the item's context
+    note (`former_title`), records each rewrite in
+    `.scout-state/title-rewrites.jsonl` so the 60-day clock is kept, and makes
+    one commit with `scripts/git-safe-commit.sh`. Undo it with
+    `--undo <commit> --yes`, never `git revert` on a later day: that drops the
+    records and restarts every clock from the cleanup day.
+    Exit codes: 0 = done, 1 = nothing to apply, 2 = refused or cannot run.
+    """
+    from scout import paths
+    from scout.action_items import retitle
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.errors import DataDirError
+
+    name = "retitle"
+    day = _check_day(name, date, data_dir)
+    try:
+        vault = paths.require_data_dir(data_dir)
+        retitle.owner_gate(vault)
+        if undo_commit is not None:
+            _retitle_undo(vault, day, undo_commit, yes)
+            return
+        if apply_sha is not None:
+            result = retitle.apply(vault=vault, today=day, sha=apply_sha, commit=retitle.git_safe_commit)
+            for tag in result.drifted:
+                sys.stdout.write(f"  [#{tag}] skipped: changed since the dry run\n")
+            if not result.applied:
+                sys.stdout.write(f"{name}: nothing applied\n")
+                raise typer.Exit(code=1)
+            n = len(result.applied)
+            sys.stdout.write(
+                f"{name}: shortened {n} title{'s' if n != 1 else ''}, clocks kept; committed {result.commit}\n"
+                f"Undo with: scoutctl action-items retitle --undo {result.commit} --yes (not git revert)\n"
+            )
+            return
+        sheet = retitle.plan(
+            vault=vault,
+            today=day,
+            proposer=retitle.ask_claude(model),
+            sections=tuple(section or ()),
+            skip_within=skip_within,
+            refresh=refresh,
+        )
+    except (retitle.RetitleError, PrefetchCheckError, DataDirError) as e:
+        sys.stdout.write(f"{name}: {e}\n")
+        raise typer.Exit(code=2) from e
+
+    ready = [r for r in sheet.rows if r.ready]
+    for r in sheet.rows:
+        clock = (
+            "touched today, its clock restarts regardless"
+            if r.touched_today
+            else f"unchanged since {r.last_changed}, archive due {r.archive_due}: kept"
+        )
+        new = len(r.proposed) if r.proposed is not None else "?"
+        sys.stdout.write(f"[#{r.tag}] {r.chars} → {new}  {r.section or '-'}  {clock}\n")
+        if r.skip:
+            sys.stdout.write(f"    skip: {'yours' if r.skip is True else r.skip}\n")
+            continue
+        if r.proposed is not None:
+            sys.stdout.write(f"    new: {r.proposed}\n")
+        for problem in r.problems:
+            sys.stdout.write(f"    problem: {problem}\n")
+    skipped = sum(1 for r in sheet.rows if r.skip)
+    with_problems = len(sheet.rows) - skipped - len(ready)
+    sys.stdout.write(
+        f"{name}: {len(ready)} to apply, {with_problems} with problems, {skipped} skipped — dry run, nothing changed\n"
+        f'Worksheet: {sheet.path} (edit a proposal or set "skip": true, then run this again)\n'
+        f"worksheet sha: {sheet.sha}\n"
+    )
+    if ready:
+        sys.stdout.write(f"Apply with: scoutctl action-items retitle --apply {sheet.sha}\n")
+
+
+def _retitle_undo(vault: Path, day: str, commit_sha: str, yes: bool) -> None:
+    from scout.action_items import retitle
+
+    if not yes:
+        undo_plan = retitle.plan_undo(vault=vault, today=day, commit_sha=commit_sha)
+    else:
+        undo_plan, sha = retitle.undo(vault=vault, today=day, commit_sha=commit_sha, commit=retitle.git_safe_commit)
+    for tag, (_cur, former) in undo_plan.restore.items():
+        note = "its note goes (the cleanup made it)" if tag in undo_plan.delete_notes else "its note's title goes back"
+        sys.stdout.write(f"  [#{tag}] back to the original ({len(former)} characters); {note}\n")
+    for tag in undo_plan.changed:
+        sys.stdout.write(f"  [#{tag}] left alone: changed since the cleanup\n")
+    n = len(undo_plan.restore)
+    if not yes:
+        sys.stdout.write(f"retitle --undo: would restore {n} title(s); run again with --yes to do it\n")
+    else:
+        sys.stdout.write(f"retitle --undo: restored {n} title(s), clocks kept; committed {sha}\n")
 
 
 @app.command("backfill-prefixes")

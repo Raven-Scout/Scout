@@ -913,6 +913,12 @@ def test_a_run_cant_write_the_delegate_state(vault: Path, rel: str) -> None:
     assert "delegate state" in _denied(_bash(vault, "rm -rf .scout-state"))
 
 
+def test_a_run_cant_write_the_title_rewrite_records(vault: Path) -> None:
+    rel = ".scout-state/title-rewrites.jsonl"
+    assert "title-rewrite records" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
+    assert "title-rewrite records" in _denied(_bash(vault, f"echo x >> {rel}"))
+
+
 def test_a_run_cant_read_scouts_secrets_but_the_telegram_two(vault: Path, home: Path) -> None:
     d = _secrets(home)
     assert "Scout's secrets" in _denied(_decision(vault, "Read", {"file_path": str(d / "linear-api-key")}))
