@@ -101,7 +101,7 @@ struct NowStripView: View {
                         .accessibilityHidden(true)
                     Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
-                .font(DS.font(.label, .mono))
+                .font(DS.font(.label))
                 .foregroundStyle(RunOutcomeDisplay.tone(r.status).color)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
@@ -170,7 +170,7 @@ struct NowStripView: View {
 
     private func sub(_ s: String, color: Color) -> some View {
         Text(s)
-            .font(DS.font(.label, .mono))
+            .font(DS.font(.label))
             .foregroundStyle(color)
     }
 

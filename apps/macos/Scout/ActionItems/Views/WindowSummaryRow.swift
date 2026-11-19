@@ -17,7 +17,7 @@ struct WindowSummaryRow: View {
         if let summary = window.summary(in: tasks) {
             HStack(spacing: 8) {
                 Text(summary)
-                    .font(DS.font(.caption, .mono, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
                 Text("·")
                     .font(DS.font(.caption))

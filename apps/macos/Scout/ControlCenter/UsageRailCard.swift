@@ -47,7 +47,7 @@ struct UsageRailCard: View {
                     .font(DS.font(.hero, .serif, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text("tokens in + out")
-                    .font(DS.font(.body, .mono))
+                    .font(DS.font(.body))
                     .foregroundStyle(DS.Ink.p4)
             }
             .accessibilityElement(children: .combine)
@@ -71,7 +71,7 @@ struct UsageRailCard: View {
 
             let week = summary.week
             Text("This week: \(UsageFormat.tokens(week.tokens.inputOutput)) in + out · cache \(UsageFormat.tokens(week.tokens.cache))")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("cost " + UsageFormat.cost(week))
@@ -87,7 +87,7 @@ struct UsageRailCard: View {
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             Text("Loading usage…")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -110,7 +110,7 @@ struct UsageRailCard: View {
                 }
                 if !s.topTools.isEmpty {
                     Text("Top: " + s.topTools.map { "\($0.name) \($0.count)" }.joined(separator: " · "))
-                        .font(DS.font(.caption2, .mono))
+                        .font(DS.font(.caption2))
                         .foregroundStyle(DS.Ink.p4)
                         .padding(.top, 4)
                         .lineLimit(2)
@@ -119,11 +119,11 @@ struct UsageRailCard: View {
             }
         } else if loadingStats {
             Text("Loading session activity…")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
         } else {
             Text("No tool activity recorded today.")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -131,7 +131,7 @@ struct UsageRailCard: View {
     private func statRow(label: String, value: String) -> some View {
         HStack {
             Text(label)
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             Text(value)

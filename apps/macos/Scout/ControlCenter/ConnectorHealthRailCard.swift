@@ -32,7 +32,7 @@ struct ConnectorHealthRailCard: View {
             RailCardHeader(title: "Connector health")
             if matrix.sessionsNewestFirst.isEmpty {
                 Text("No scheduled runs have produced connector data yet.")
-                    .font(DS.font(.caption, .mono))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.vertical, 12)
             } else {
@@ -80,7 +80,7 @@ struct ConnectorHealthRailCard: View {
                         .accessibilityLabel(sessionHeaderTooltip(session: session, index: idx))
                 }
                 Text("Worked")
-                    .font(DS.font(.micro, .mono))
+                    .font(DS.font(.micro))
                     .foregroundStyle(DS.Ink.p4)
                     .frame(width: 44, alignment: .trailing)
                     .help("How often this connector worked in these runs, counting only the runs that used it.")

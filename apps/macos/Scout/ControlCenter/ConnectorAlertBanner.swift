@@ -31,16 +31,16 @@ struct ConnectorAlertBanner: View {
             showPopover = true
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").font(DS.font(.body, .mono))
+                Image(systemName: "exclamationmark.triangle").font(DS.font(.body))
                     .foregroundStyle(critical ? DS.Status.onFill : DS.Status.warn)
                     .accessibilityHidden(true)
                 Text(text)
-                    .font(DS.font(.label, .mono))
+                    .font(DS.font(.label))
                     .lineLimit(1)
                     .foregroundStyle(ink)
                 Spacer()
                 Text("Details")
-                    .font(DS.font(.caption, .mono))
+                    .font(DS.font(.caption))
                     .foregroundStyle(ink)
             }
             .padding(.horizontal, 14)

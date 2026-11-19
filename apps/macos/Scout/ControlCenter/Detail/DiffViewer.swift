@@ -53,7 +53,7 @@ struct DiffViewer: View {
                                 }
                             } else {
                                 Text("Loading…")
-                                    .font(DS.font(.caption2, .mono))
+                                    .font(DS.font(.caption2))
                                     .foregroundStyle(.secondary)
                                     .padding(.vertical, 4)
                             }

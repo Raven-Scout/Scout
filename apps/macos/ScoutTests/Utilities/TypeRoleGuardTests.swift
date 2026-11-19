@@ -77,6 +77,29 @@ struct TypeRoleGuardTests {
         #expect(hits.isEmpty, "DS.symbol on something that isn't an SF Symbol — text takes DS.font(role):\n\(hits.joined(separator: "\n"))")
     }
 
+    /// A `Text` whose literal reads as words: three or more words of letters
+    /// ("No tool activity recorded today.").
+    static let sentenceLiteral = try! NSRegularExpression(pattern: #"Text\("(?:[A-Za-z][a-z'’]*[ ,.…]+){2,}[A-Za-z]"#)
+    static let monoVoice = try! NSRegularExpression(pattern: #"DS\.font\([^)]*\.mono"#)
+
+    /// Audit #108: monospace is for data and identifiers (paths, commands,
+    /// times, counts, logs), never for sentences. A literal sentence set in
+    /// mono reads as debug output.
+    @Test("sentences aren't set in monospace")
+    func noMonoSentences() throws {
+        var hits: [String] = []
+        for (file, lines) in try Self.sources() {
+            for (i, line) in lines.enumerated() where !Self.isComment(line) && Self.matches(Self.sentenceLiteral, line) {
+                // The Text's own font: on its line or the next two.
+                let own = lines[i...min(lines.count - 1, i + 2)]
+                if own.contains(where: { Self.matches(Self.monoVoice, $0) }) {
+                    hits.append("\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        #expect(hits.isEmpty, "set sentences in the sans or serif voice; mono is for data:\n\(hits.joined(separator: "\n"))")
+    }
+
     @Test("the guard catches each sized form and passes the roles")
     func patternsMatch() {
         for sample in [".font(DS.sans(12))", ".font(DS.serif(28, weight: .medium))", "DS.mono(10.5)"] {

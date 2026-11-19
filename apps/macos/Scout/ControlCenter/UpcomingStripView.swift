@@ -36,7 +36,7 @@ struct UpcomingStripView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(DS.Status.warn)
                     Text(fireErr)
-                        .font(DS.font(.caption, .mono))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -63,7 +63,7 @@ struct UpcomingStripView: View {
                     .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(subtitle(for: up.type))
-                    .font(DS.font(.caption, .mono))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -91,7 +91,7 @@ struct UpcomingStripView: View {
                 .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
             Text(relativeDay(up.scheduledAt))
-                .font(DS.font(.caption2, .mono))
+                .font(DS.font(.caption2))
                 .foregroundStyle(DS.Ink.p4)
         }
     }

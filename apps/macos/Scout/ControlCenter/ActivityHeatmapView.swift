@@ -299,17 +299,17 @@ struct ActivityHeatmapView: View {
     private func legend(totalShown: Int) -> some View {
         HStack(spacing: 6) {
             Text("Less")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             ForEach(legendSwatches, id: \.0) { _, c in
                 RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 10, height: 10)
             }
             Text("More")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
             Text("\(totalShown) session\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
     }

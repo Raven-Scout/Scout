@@ -69,7 +69,7 @@ struct RunDetailView: View {
                 Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
                 if run.wasManuallyTriggered && run.type != .manual {
                     Text("Started by you")
-                        .font(DS.font(.caption2, .mono))
+                        .font(DS.font(.caption2))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))

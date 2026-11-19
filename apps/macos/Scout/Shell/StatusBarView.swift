@@ -108,7 +108,7 @@ struct StatusBarView: View {
                 .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(viewLabel)
-                .font(DS.font(.caption, .mono))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
