@@ -25,8 +25,8 @@ a row the watcher withdraws its line until ``ps`` works again, and waiters
 sample the holder themselves.
 
 The watcher writes what it found to ``.scout-logs/.scout-session.lock.alive``
-after every sample (a fresh ``mkstemp`` file renamed over it, so a link planted
-in ``.scout-logs`` is never written through), one line::
+after every sample (through :mod:`scout.safe_write`, so a link planted in
+``.scout-logs`` is never written through), one line::
 
     1 <runner pid> <last progress, epoch s> <stalled awake s> <fresh for s> <run log path>
 
@@ -58,13 +58,13 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from scout import safe_write
 from scout.agent_runtimes import awake
 
 FORMAT_VERSION = 1
@@ -184,20 +184,15 @@ def read_fresh(path: Path, *, now: float | None = None) -> Heartbeat | None:
 
 
 def write(path: Path, beat: Heartbeat) -> None:
-    """Replace the line at *path* with *beat*: a new ``mkstemp`` file (O_EXCL, unguessable) renamed over it."""
-    try:
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
-    except OSError:
-        return  # best effort: a missed write only makes the line go stale, and readers fall back
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(beat.render())
-        os.replace(tmp, path)  # mkstemp's 0600 stays: every reader runs as this user
-    except OSError:
-        pass
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+    """Replace the line at *path* with *beat* through :func:`scout.safe_write.atomic_write_text`.
+
+    A temp file with a random name, made ``O_CREAT | O_EXCL | O_NOFOLLOW``, renamed over the line: nothing a run
+    planted in ``.scout-logs`` is ever written through. Mode 0600 (every reader runs as this user), and no fsync:
+    the line is rewritten every sample and means nothing after a crash. Best effort: a missed write only makes the
+    line go stale, and readers fall back.
+    """
+    with contextlib.suppress(OSError):  # UnsafeFileError is an OSError too
+        safe_write.atomic_write_text(path, beat.render(), mode=0o600, fsync=False)
 
 
 def remove_if_ours(path: Path, runner_pid: int) -> None:

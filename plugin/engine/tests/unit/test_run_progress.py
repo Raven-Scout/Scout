@@ -393,8 +393,8 @@ def test_a_file_too_big_or_not_utf8_is_unreadable(tmp_path: Path) -> None:
 
 def test_a_link_planted_where_the_watcher_writes_is_never_written_through(tmp_path: Path) -> None:
     """The first version wrote ``<line>.<pid>``, a name a run could guess from ``ps`` and plant as a link to a
-    runner script or a secret. ``mkstemp`` names are unguessable and opened O_EXCL, and the rename replaces a
-    link at the line itself rather than writing through it."""
+    runner script or a secret. ``safe_write`` temp names are random and opened O_EXCL | O_NOFOLLOW, and the
+    rename replaces a link at the line itself rather than writing through it."""
     path = tmp_path / ".scout-session.lock.alive"
     secret = tmp_path / "secret"
     secret.write_text("keep me\n", encoding="utf-8")
