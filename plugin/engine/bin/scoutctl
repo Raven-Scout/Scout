@@ -55,7 +55,7 @@ CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 MODULE=scout.cli
 if [ "${1:-}" = hook ]; then
     case "${2:-}" in
-        kb-read-gate | kb-write-gate | kb-read-label | outbound-gate | shared-read-record)
+        kb-read-gate | kb-write-gate | kb-read-label | front-page-reads | outbound-gate | shared-read-record)
             MODULE=scout.hooks
             shift
             ;;
