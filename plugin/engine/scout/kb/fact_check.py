@@ -12,8 +12,11 @@ most consequential first, and ``scoutctl pre-session data`` writes them into
 ``.scout-cache/session-context.json`` (``fact_check_targets``). Before a deep-work
 run commits, :func:`check_fact_check` (``scoutctl kb check-fact-check``) holds it to
 them: at least :data:`REQUIRED` of them (all, when fewer) carry ``last_verified:``
-of today and a ``verified_against:``. A run that could not reach a live source says
-so on its session-log row (``fact-check skipped: <reason>``), which the check accepts.
+of today and a ``verified_against:``. A shared note is never a target: the shared-note
+check (#569) refuses a run's added line there, so it couldn't be stamped. A target moved
+or archived since, or shared since, counts as done. A run that could not reach a live
+source says so on the call itself (``--skipped "<reason>"``), which the check accepts and
+echoes for the run's session-log row.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ WINDOW_DAYS = 3
 MAX_TARGETS = 10
 REQUIRED = 2
 SKIP_MARK = "fact-check skipped:"
+# A reason shorter than this says nothing (`--skipped x`).
+MIN_REASON = 8
 KB = "knowledge-base"
 # Records and tooling, not claims: the session log, archive copies, ontology tooling, the review queue.
 _NOT_CLAIMS = re.compile(
@@ -89,11 +94,16 @@ def _read(vault: Path, rel: str) -> str | None:
         return None
 
 
+def _shared(label: Any) -> bool:
+    """A note someone else reads: shared by path, or with an effective ``federation_scope``."""
+    return bool(label.shared_file) or label.federation_scope != "none"
+
+
 def fact_check_targets(vault: Path, day: dt.date, reader: str) -> list[Target]:
     """The KB notes changed in the last :data:`WINDOW_DAYS` days and not re-verified since, as the
-    reader sees them: most consequential first, then newest change first, at most :data:`MAX_TARGETS`."""
-    from scout.kb.privacy import FULL_READERS, reads_any
-    from scout.kb.read import visibility_map
+    reader sees them and not shared: most consequential first, then newest change first, at most
+    :data:`MAX_TARGETS`. Only the candidates are labelled."""
+    from scout.kb.privacy import label_file, load_policy, reads_any, visible_to
     from scout.kb.structure import newest_changes
 
     if not reads_any(reader):
@@ -112,11 +122,12 @@ def fact_check_targets(vault: Path, day: dt.date, reader: str) -> list[Target]:
         candidates.append((rel, when))
     if not candidates:
         return []
-    labels = visibility_map(vault, reader, [f"{KB}/**"], who="fact-check")
-    full = reader in FULL_READERS  # a label that couldn't be read is private (visibility_map fails closed)
-    rows = [
-        Target(rel, when.isoformat(), labels.get(rel, "private")) for rel, when in candidates if full or rel in labels
-    ]
+    policy = load_policy(vault)
+    rows = []
+    for rel, when in candidates:
+        label = label_file(vault, rel, policy)
+        if visible_to(label, reader, policy) and not _shared(label):
+            rows.append(Target(rel, when.isoformat(), label.visibility))
     rows.sort(key=lambda t: (_rank(t.path), -dt.date.fromisoformat(t.changed).toordinal(), t.path))
     return rows[:MAX_TARGETS]
 
@@ -129,7 +140,8 @@ class FactCheck:
     targets: list[Target]
     verified: list[str] = field(default_factory=list)
     required: int = 0
-    skipped: str | None = None  # the reason on today's session-log row, if the run gave one
+    skipped: str | None = None  # the reason the run gave (`--skipped`), when it could reach no live source
+    settled: list[str] = field(default_factory=list)  # moved, archived or shared since: nothing to stamp
 
     @property
     def passed(self) -> bool:
@@ -151,40 +163,39 @@ def _rows(raw: object) -> list[Target]:
     return out
 
 
-def skip_reason(vault: Path, today: str) -> str | None:
-    """The reason on today's session-log row, when it says ``fact-check skipped: <reason>``."""
-    shard = vault / KB / "session-log" / f"{today[:7]}.md"
-    text = _read(vault, shard.relative_to(vault).as_posix())
-    if not text:
-        return None
-    for line in text.splitlines():
-        if today in line and SKIP_MARK in line.casefold():
-            reason = line.casefold().split(SKIP_MARK, 1)[1].split("|", 1)[0].strip()
-            return reason or "no reason given"
-    return None
-
-
-def judge(targets: Sequence[Target], notes: Mapping[str, str | None], today: dt.date) -> FactCheck:
-    """Which targets now carry today's ``last_verified`` and a ``verified_against``."""
+def judge(
+    targets: Sequence[Target], notes: Mapping[str, str | None], today: dt.date, settled: Sequence[str] = ()
+) -> FactCheck:
+    """Which targets now carry today's ``last_verified`` and a ``verified_against``. A target
+    whose note is gone (moved or archived) or in ``settled`` (shared since) can't be stamped and
+    counts as done; the rest must reach ``min(REQUIRED, len(rest))``."""
+    gone = {t.path for t in targets if notes.get(t.path) is None} | set(settled)
+    live = [t for t in targets if t.path not in gone]
     verified = []
-    for t in targets:
-        text = notes.get(t.path)
-        if text is None:
-            continue
-        last, against = verified_on(text)
+    for t in live:
+        last, against = verified_on(notes[t.path] or "")
         if last is not None and last >= today and against:
             verified.append(t.path)
-    return FactCheck(list(targets), verified, min(REQUIRED, len(targets)))
+    return FactCheck(list(targets), verified, min(REQUIRED, len(live)), settled=sorted(gone))
 
 
-def check_fact_check(*, data_dir: Path | None = None, today: str, context: Path | None = None) -> FactCheck:
-    """Compare the vault's notes with the pre-fetched ``fact_check_targets``."""
-    from scout.action_items.prefetched import context_path, load_context
+def check_fact_check(
+    *, data_dir: Path | None = None, today: str, context: Path | None = None, skipped: str | None = None
+) -> FactCheck:
+    """Compare the vault's notes with the pre-fetched ``fact_check_targets``. ``skipped`` is the
+    run's reason for checking nothing; it must say something (``MIN_REASON`` characters)."""
+    from scout.action_items.prefetched import PrefetchCheckError, context_path, load_context
+    from scout.kb.privacy import label_file, load_policy
 
+    if skipped is not None and len(skipped.strip()) < MIN_REASON:
+        raise PrefetchCheckError(f"--skipped needs the reason no live source could be reached, not {skipped!r}")
     data: dict[str, Any] = load_context(context_path(data_dir, context), today=today)
     targets = _rows(data.get("fact_check_targets"))
     vault = paths.data_dir(data_dir)
-    result = judge(targets, {t.path: _read(vault, t.path) for t in targets}, dt.date.fromisoformat(today))
-    if not result.passed:
-        result.skipped = skip_reason(vault, today)
+    notes = {t.path: _read(vault, t.path) for t in targets}
+    policy = load_policy(vault)
+    shared = [t.path for t in targets if notes[t.path] is not None and _shared(label_file(vault, t.path, policy))]
+    result = judge(targets, notes, dt.date.fromisoformat(today), shared)
+    if not result.passed and skipped is not None:
+        result.skipped = skipped.strip()
     return result

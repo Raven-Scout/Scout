@@ -479,7 +479,7 @@ def gather(
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
-    fact_check = get_fact_check_targets(target, now_dt.date(), reader)
+    fact_check = fact_check_for(session_type, target, now_dt.date(), reader)
 
     return SessionContext(
         generated_at=generated_at,
@@ -513,6 +513,11 @@ def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, 
     except Exception:
         return "", None
     return source or "", [t.to_json() for t in tasks]
+
+
+def fact_check_for(session_type: str, scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """Only the dreaming run fact-checks: every other mode skips the history walk and the labels."""
+    return get_fact_check_targets(scout_dir, day, reader) if "dreaming" in session_type else []
 
 
 def get_fact_check_targets(scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
@@ -569,6 +574,7 @@ __all__ = [
     "gather",
     "gather_kb_file_dates",
     "get_daily_before",
+    "fact_check_for",
     "get_fact_check_targets",
     "get_git_recent",
     "get_linear_own_activity",

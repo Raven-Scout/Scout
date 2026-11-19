@@ -92,6 +92,8 @@ PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
 # An archive copy older than this is a finished rebuild, or one that stopped making
 # progress: either way the page goes back in line. A big page's rebuild runs for weeks.
 RESUME_DAYS = 45
+# How far back staleness looks for changes to linked notes: one `git log` walks no further.
+LINKED_WINDOW_DAYS = 90
 # The biggest front page the nightly pass rebuilds (`kb_structure.nightly_max_bytes`'s default).
 NIGHTLY_MAX_BYTES = 12288
 # Where the nightly pass writes, whatever `allowed_dirs` says: the phase names these folders.
@@ -711,7 +713,8 @@ def check_folder(
     if bullets.long:
         problems.append(f"{bullets.long} bullet(s) over {cfg.max_bullet_chars} chars")
     if as_of is None:
-        problems.append("no as_of")
+        # A date the check can't read is its own problem: the night must rewrite it as YYYY-MM-DD.
+        problems.append("unreadable as_of" if fm.get("as_of") not in (None, "") else "no as_of")
     if stale:
         if private:
             problems.append("stale")
@@ -733,10 +736,21 @@ def check_folder(
     # every page that only needs shrinking: a trim may find nothing it can cut, and must not hold
     # the pick night after night.
     trim_only = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration) or bool(too_many))
-    # A page this big took a week of nights and still wasn't done (KB audit 2026-11): it goes to
-    # an interactive session, where the owner can rebuild it in one sitting. A trim only cuts lines.
+    # A full rebuild of a page this big took a week of nights and still wasn't done (KB audit
+    # 2026-11): it goes to an interactive session, where the owner can rebuild it in one sitting.
+    # A page that only needs a refresh keeps its nightly refresh, a rebuild already under way
+    # finishes, and a trim only cuts lines.
     pinned = _pinned(label)
-    interactive = actionable and not pinned and not trim_only and size > cfg.nightly_max_bytes
+    needs_rebuild = bool(missing) or size > cfg.page_budget_bytes
+    interactive = (
+        actionable
+        and not pinned
+        and not trim_only
+        and not half_rebuilt
+        and needs_rebuild
+        and size > cfg.nightly_max_bytes
+    )
+    front_change = history.get(front)
     return {
         "project": folder.name,
         "path": front,
@@ -753,6 +767,8 @@ def check_folder(
         "narration_count": len(narration),
         "as_of": None if private or as_of is None else as_of.isoformat(),
         "folder_last_change": None if private or newest is None else newest.isoformat(),
+        # The front page's newest commit: how long a page left for an interactive session has waited.
+        "front_last_change": None if private or front_change is None else front_change.isoformat(),
         "linked_last_change": None if private or linked is None or linked.shown is None else linked.shown.isoformat(),
         "bullets": None if private else bullets.counts,
         "bullets_over": sum(too_many.values()),
@@ -761,7 +777,7 @@ def check_folder(
         "conforms": not problems,
         "problems": problems,
         "rebuild_target": (actionable and not pinned and not interactive) or trim_only,
-        "resume": half_rebuilt and actionable and not pinned and not interactive,
+        "resume": half_rebuilt and actionable and not pinned,
         "trim_only": trim_only,
         "interactive": interactive,
         "share_blocked": False,
@@ -860,7 +876,9 @@ def _oldest_as_of(vault: Path, folders: Sequence[_Folder]) -> dt.date | None:
         as_of = page_as_of(split_page(text or "")[0])
         if as_of is not None:
             dates.append(as_of)
-    return min(dates, default=None)
+    oldest = min(dates, default=None)
+    # A page this far behind is stale on any linked change in the window, so the walk stops there.
+    return None if oldest is None else max(oldest, today(vault) - dt.timedelta(days=LINKED_WINDOW_DAYS))
 
 
 def structure_rows(vault: Path) -> list[dict[str, Any]]:
@@ -946,6 +964,21 @@ def trim_destinations(vault: Path, front: str) -> list[Label]:
     return out
 
 
+def interactive_waits(rows: Sequence[dict[str, Any]], day: dt.date) -> list[tuple[str, int | None]]:
+    """Each page left for an interactive session, with the days since its front page last
+    changed (None when git has no history for it), longest wait first."""
+    out: list[tuple[str, int | None]] = []
+    for r in rows:
+        if r["interactive"]:
+            since = r.get("front_last_change")
+            out.append((r["path"], (day - dt.date.fromisoformat(since)).days if since else None))
+    return sorted(out, key=lambda w: (-(w[1] if w[1] is not None else -1), w[0]))
+
+
+def _waited(days: int | None) -> str:
+    return "no history" if days is None else f"waiting {days} day{'s' if days != 1 else ''}"
+
+
 def next_target(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
     """The nightly pass's page: a half-done rebuild first, else the first row it can act on."""
     targets = [r for r in rows if r["rebuild_target"]]
@@ -971,13 +1004,15 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
                 "(`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass stopped.",
                 file=sys.stderr,
             )
-        big = [r for r in rows if r["interactive"]]
-        if big:
+        waiting = interactive_waits(rows, today(vault))
+        if waiting:
             cfg = load_structure_config(vault)
-            listed = ", ".join(r["path"] for r in big)  # never private: a private page is never picked at all
+            # Never private: a private page is never picked, so it is never left for a session either.
+            listed = ", ".join(f"{path} ({_waited(days)})" for path, days in waiting)
             print(
-                f"Left for an interactive session: {len(big)} failing page(s) over {cfg.nightly_max_bytes // 1024} KB, "
-                f"too big to rebuild in a night: {listed}. List them in this run's report for the owner.",
+                f"Left for an interactive session: {len(waiting)} page(s) over {cfg.nightly_max_bytes // 1024} KB "
+                f"that need a full rebuild, too big for a night: {listed}. "
+                "List them in this run's report for the owner.",
                 file=sys.stderr,
             )
         if target is None:

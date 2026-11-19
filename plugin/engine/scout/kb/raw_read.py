@@ -80,37 +80,54 @@ WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
 
 
 def _words(segment: str) -> list[str]:
-    return _strip(segment.split())[0]
+    return _strip(segment.split()).words
 
 
-def _strip(words: list[str]) -> tuple[list[str], bool]:
+class _Stripped:
+    """A segment's command words after its prefixes, and what the prefixes said."""
+
+    def __init__(self, words: list[str], fed: bool, chdir: str | None) -> None:
+        self.words = words
+        self.fed = fed  # `xargs`/`parallel` gives the command its arguments from stdin
+        self.chdir = chdir  # `env -C <dir>` runs it in another folder
+
+
+def _strip(words: list[str]) -> _Stripped:
     """``words`` without what runs before the command: prefix programs (``xargs``, ``sudo``,
-    ``env X=1``, ``timeout 10``) with their flags and values, assignments and shell keywords
-    (``do``, ``then``, ``!``). Also whether a prefix that feeds the command its arguments from
-    stdin (``xargs``, ``parallel``) was among them."""
+    ``env X=1``, ``timeout -s KILL 10``) with their flags and values, assignments and shell
+    keywords (``do``, ``then``, ``!``). ``command -v x`` runs nothing."""
     fed = False
+    chdir: str | None = None
     words = list(words)
     prefix: str | None = None
+    pending = 0  # positionals the prefix still takes before the command (`timeout 10 …`)
     while words:
         word = words[0]
         if word in _PREFIX_WORDS:
+            if word == "command" and len(words) > 1 and words[1] in ("-v", "-V"):
+                return _Stripped([], fed, chdir)  # a lookup: nothing runs
             prefix = word
             fed = fed or word in ("xargs", "parallel")
+            pending = _PREFIX_POSITIONAL.get(word, 0)
             words.pop(0)
-            for _ in range(_PREFIX_POSITIONAL.get(word, 0)):
-                if words and not words[0].startswith("-"):
-                    words.pop(0)
         elif word.startswith("-") and prefix is not None:
             words.pop(0)
-            if word in _PREFIX_VALUE_FLAGS.get(prefix, ()) and words:
-                words.pop(0)
+            if prefix == "env" and word.startswith("--chdir="):
+                chdir = word.split("=", 1)[1]
+            elif word in _PREFIX_VALUE_FLAGS.get(prefix, ()) and words:
+                value = words.pop(0)
+                if prefix == "env" and word in ("-C", "--chdir"):
+                    chdir = value
         elif word.startswith("-"):
             words.pop(0)  # a stray flag with no prefix before it
+        elif pending and prefix is not None:
+            pending -= 1
+            words.pop(0)
         elif _ASSIGNMENT.match(word) or word in _KEYWORDS:
             words.pop(0)
         else:
             break
-    return words, fed
+    return _Stripped(words, fed, chdir)
 
 
 def _unquoted(text: str) -> str:
@@ -120,6 +137,49 @@ def _unquoted(text: str) -> str:
 
 def _names_kb(text: str) -> bool:
     return bool(KB_PATH.search(" " + text) or KB_PATH.search(" " + _unquoted(text)))
+
+
+# What a `$(…)` or backtick that runs a path-printing `scoutctl kb` command stands for: KB paths.
+_KB_PATHS = "knowledge-base/__scoutctl_kb_paths__"
+
+
+def _substitutions(command: str) -> list[tuple[int, int]]:
+    """The ``(start, end)`` spans of each outermost ``$(…)`` and backtick substitution."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if command.startswith("$(", j):
+                    depth, j = depth + 1, j + 2
+                    continue
+                depth += {"(": 1, ")": -1}.get(command[j], 0)
+                j += 1
+            spans.append((i, j))
+            i = j
+        elif command[i] == "`":
+            j = command.find("`", i + 1)
+            j = n if j < 0 else j + 1
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def _with_kb_paths(command: str) -> str:
+    """``command`` with each substitution that runs a path-printing ``scoutctl kb`` replaced by
+    :data:`_KB_PATHS`, so ``cat $(scoutctl kb files)`` reads as ``cat <KB paths>``."""
+    out, last = [], 0
+    for start, end in _substitutions(command):
+        if _KB_SOURCE.search(command[start:end]) and _SCOUTCTL_KB.search(command[start:end]):
+            out += [command[last:start], " ", _KB_PATHS, " "]
+            last = end
+    return "".join(out) + command[last:] if out else command
+
+
+_SCOUTCTL_KB = re.compile(r"\bscoutctl\s+kb\b")
 
 
 def _kb_variables(command: str) -> set[str]:
@@ -144,6 +204,16 @@ def _kb_variables(command: str) -> set[str]:
         tainted |= grown
 
 
+def _local_values(command: str) -> dict[str, str]:
+    """Plain values the command itself assigns (``d=scripts; rg x $d``), for resolving a root."""
+    out: dict[str, str] = {}
+    for m in _SETS.finditer(command):
+        value = m.group(2).split()[0] if m.group(2).split() else ""
+        if value and not any(c in value for c in "$`();&|<>"):
+            out[m.group(1)] = value.strip("\"'")
+    return out
+
+
 def _read_names(builtin: str, words: list[str]) -> set[str]:
     """The variables ``read -r f`` / ``mapfile -t lines`` fill: words that aren't flags or a flag's value."""
     names: set[str] = set()
@@ -162,52 +232,165 @@ def _uses(text: str, names: set[str]) -> bool:
     return any(re.search(rf"\$\{{?{re.escape(n)}\b", text) for n in names)
 
 
-def _recursive_roots(name: str, args: list[str]) -> list[str] | None:
-    """Where a recursive read starts: ``rg x``, ``grep -r x .``, ``find . -name …``, ``ls -R``,
-    ``tree``, ``du -a``. ``[]`` is the shell's folder; None is not a recursive read, or one whose
-    file filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for
-    the Grep tool."""
-    flags, plain = _split_args(args)
+# Reader flags that take a separate value: `head -n $n file` reads `file`, not `$n`.
+_GREP_VALUES = {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--max-count", "--after-context",
+                "--before-context", "--context", "--include", "--exclude", "--exclude-dir", "--exclude-from",
+                "--label", "--binary-files", "--devices", "--directories", "--regexp", "--file"}  # fmt: skip
+_RG_VALUES = {"-A", "-B", "-C", "-e", "-f", "-g", "-j", "-m", "-M", "-t", "-T", "-E", "-d", "-r",
+              "--after-context", "--before-context", "--context", "--regexp", "--file", "--glob", "--iglob",
+              "--threads", "--max-count", "--max-columns", "--type", "--type-not", "--encoding", "--max-depth",
+              "--maxdepth", "--max-filesize", "--path-separator", "--replace", "--sort", "--sortr", "--colors",
+              "--context-separator", "--field-context-separator", "--field-match-separator", "--ignore-file",
+              "--pre", "--pre-glob", "--type-add", "--type-clear", "--dfa-size-limit", "--regex-size-limit",
+              "--engine", "--hostname-bin", "--hyperlink-format", "--generate"}  # fmt: skip
+_FIND_VALUES = {"-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex", "-type", "-size",
+                "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-perm",
+                "-maxdepth", "-mindepth", "-printf", "-fprint", "-links", "-inum", "-samefile"}  # fmt: skip
+_VALUE_FLAGS: dict[str, set[str]] = {
+    "head": {"-n", "-c", "--lines", "--bytes"},
+    "tail": {"-n", "-c", "--lines", "--bytes"},
+    "grep": _GREP_VALUES, "egrep": _GREP_VALUES, "fgrep": _GREP_VALUES,
+    "rg": _RG_VALUES,
+    "sed": {"-e", "-f", "-l"},
+    "awk": {"-v", "-f", "-F"}, "gawk": {"-v", "-f", "-F"}, "mawk": {"-v", "-f", "-F"},
+    "cut": {"-d", "-f", "-c", "-b"},
+    "sort": {"-k", "-t", "-o", "-S", "-T"},
+    "uniq": {"-f", "-s", "-w"},
+    "find": _FIND_VALUES,
+    "tree": {"-L", "-P", "-I", "-o"},
+    "du": {"-d", "--max-depth", "-B", "--block-size"},
+    "jq": {"--arg", "--argjson", "-f", "--from-file"},
+}  # fmt: skip
+
+
+def _operands(name: str, args: list[str]) -> list[str]:
+    """``args`` without the values of the reader's value-taking flags."""
+    takes = _VALUE_FLAGS.get(name, set())
+    out, skip, ended = [], False, False
+    for a in args:
+        if skip:
+            skip = False
+        elif not ended and a == "--":
+            ended = True
+            out.append(a)  # kept, so _split_args still reads what follows as positionals
+        elif not ended and a in takes:
+            skip = True
+        else:
+            out.append(a)
+    return out
+
+
+def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
+    return bool(names) and _uses(" ".join(_operands(name, args)), names)
+
+
+_NOT_A_READ = {"--version", "--help", "-version", "-help", "--type-list"}
+
+
+class _Recursive:
+    """A recursive read: where it starts (``roots``; empty for the shell's folder), whether it
+    reads file contents (``grep -r``, ``rg``, ``git grep``, ``find -exec``) or only names
+    (``find``, ``ls -R``, ``tree``, ``du``), how deep it goes, and the folder names it excludes."""
+
+    def __init__(self, roots: list[str], content: bool, depth: int | None = None, excluded: tuple[str, ...] = ()):
+        self.roots, self.content, self.depth, self.excluded = roots, content, depth, excluded
+
+
+def _int(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _flag_value(args: list[str], names: set[str]) -> str | None:
+    """The value of the last of ``names`` given, separate (``-L 2``) or attached (``--max-depth=2``)."""
+    found = None
+    for i, a in enumerate(args):
+        if a in names and i + 1 < len(args):
+            found = args[i + 1]
+        elif "=" in a and a.split("=", 1)[0] in names:
+            found = a.split("=", 1)[1]
+    return found
+
+
+def _exclusions(args: list[str]) -> tuple[str, ...]:
+    """What ``--exclude-dir=X`` / ``-g '!X/**'`` keep out, as the text of each exclusion."""
+    out = []
+    for i, a in enumerate(args):
+        value = None
+        if a in ("--exclude-dir", "-g", "--glob", "--iglob") and i + 1 < len(args):
+            value = args[i + 1]
+        elif a.startswith(("--exclude-dir=", "--glob=", "--iglob=")):
+            value = a.split("=", 1)[1]
+        if value is None:
+            continue
+        value = value.strip("\"'")
+        if a.startswith("--exclude-dir"):
+            out.append(value)
+        elif value.startswith("!"):
+            out.append(value[1:])
+    return tuple(out)
+
+
+def _recursive(name: str, args: list[str]) -> _Recursive | None:
+    """Where a recursive read starts, or None for a command that isn't one, or one whose file
+    filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
+    Grep tool."""
+    if any(a in _NOT_A_READ for a in args) or (name in ("rg", "grep", "egrep", "fgrep") and "-V" in args):
+        return None
+    flags, plain = _split_args(_operands(name, args) if name != "find" else args)
     filters: list[str] = []
     if name in ("grep", "egrep", "fgrep"):
-        if not any(_RECURSIVE_FLAG.match(f) for f in flags):
-            return None
-        has_pattern_flag = any(f in ("-e", "-f") or f.startswith(("--regexp", "--file")) for f in flags)
-        values = _flag_values(args, {"-e", "-f", "-A", "-B", "-C", "-m", "--include", "--exclude"})
-        plain = [a for a in plain if a not in values]
-        roots = plain if has_pattern_flag else plain[1:]
-        filters = [f.split("=", 1)[1] for f in flags if f.startswith("--include=")]
-        filters += _flag_values(args, {"--include"})
-    elif name == "rg":
-        has_pattern_flag = any(f in ("-e", "-f") or f.startswith(("--regexp", "--file")) for f in flags)
-        values = _flag_values(
-            args, {"-g", "--glob", "--iglob", "-t", "--type", "-T", "-e", "--regexp", "-f", "--file", "-A", "-B", "-C"}
+        recursive = any(_RECURSIVE_FLAG.match(f) for f in flags) or any(
+            a in ("-d", "--directories") and i + 1 < len(args) and args[i + 1] == "recurse" for i, a in enumerate(args)
         )
-        plain = [a for a in plain if a not in values]
-        roots = plain if has_pattern_flag else plain[1:]
-        filters = _flag_values(args, {"-g", "--glob", "--iglob"})
-        filters += [f.split("=", 1)[1] for f in flags if f.startswith(("--glob=", "--iglob="))]
-    elif name == "find":
+        if not recursive:
+            return None
+        pattern_given = _pattern_flag(args)
+        roots = plain if pattern_given else plain[1:]
+        filters = [a.split("=", 1)[1] for a in args if a.startswith("--include=")] + _flag_values(args, {"--include"})
+        return _filtered(_Recursive(roots, True, None, _exclusions(args)), filters)
+    if name == "rg":
+        if "--files" in args:  # lists the files it would search: names, no pattern
+            return _Recursive(plain, False, _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"})))
+        pattern_given = _pattern_flag(args)
+        roots = plain if pattern_given else plain[1:]
+        globs = _flag_values(args, {"-g", "--glob", "--iglob"})
+        globs += [a.split("=", 1)[1] for a in args if a.startswith(("--glob=", "--iglob="))]
+        filters = [g for g in globs if not g.strip("\"'").startswith("!")]
+        depth = _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"}))
+        return _filtered(_Recursive(roots, True, depth, _exclusions(args)), filters)
+    if name == "find":
         roots = []
         for a in args:
             if a.startswith(("-", "(", "!")):
                 break
             roots.append(a)
-    elif name == "ls":
+        content = any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in args)
+        return _Recursive(roots, content, _int(_flag_value(args, {"-maxdepth"})))
+    if name == "ls":
         if not any(re.match(r"^-[A-Za-z]*R", f) or f == "--recursive" for f in flags):
             return None
-        roots = plain
-    elif name == "du":
+        return _Recursive(plain, False)
+    if name == "du":
         if any(re.match(r"^-[A-Za-z]*s", f) or f == "--summarize" for f in flags):
             return None
-        roots = plain
-    elif name == "tree":
-        roots = plain
-    else:
+        return _Recursive(plain, False, _int(_flag_value(args, {"-d", "--max-depth"})))
+    if name == "tree":
+        return _Recursive(plain, False, _int(_flag_value(args, {"-L"})))
+    return None
+
+
+def _pattern_flag(args: list[str]) -> bool:
+    """The pattern comes from ``-e``/``-f``, so every positional is a path."""
+    return any(a in ("-e", "-f", "--regexp", "--file") or a.startswith(("--regexp=", "--file=")) for a in args)
+
+
+def _filtered(rec: _Recursive, filters: list[str]) -> _Recursive | None:
+    if not rec.roots and filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS for f in filters):
         return None
-    if not roots and filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS for f in filters):
-        return None
-    return roots
+    return rec
 
 
 def _split_args(args: list[str]) -> tuple[list[str], list[str]]:
@@ -225,11 +408,33 @@ def _split_args(args: list[str]) -> tuple[list[str], list[str]]:
     return flags, plain
 
 
+def _flag_values(args: list[str], takes_value: set[str]) -> list[str]:
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a in takes_value]
+
+
+_UNKNOWN = "\0unknown"
+
+
+def _expand(word: str, env: Mapping[str, str], local: Mapping[str, str]) -> str:
+    """``word`` with quotes gone and ``~``, ``$HOME``, ``$VAR`` put in from the command's own
+    assignments or the run's environment; :data:`_UNKNOWN` when part of it can't be known."""
+    word = word.strip("\"'")
+    if word == "~" or word.startswith("~/"):
+        home = env.get("HOME")
+        if not home:
+            return _UNKNOWN
+        word = home + word[1:]
+
+    def put(m: re.Match[str]) -> str:
+        name = m.group(1) or m.group(2)
+        return local.get(name) or env.get(name) or _UNKNOWN
+
+    word = re.sub(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)", put, word)
+    return _UNKNOWN if _UNKNOWN in word or "$" in word or "`" in word else word
+
+
 def _root_folder(word: str) -> str:
     """A root argument as a folder: a glob stands for the folder it expands in (``*`` → ``.``)."""
-    word = word.strip("\"'")
-    if word in ("$PWD", "${PWD}"):
-        return "."
     parts = word.split("/")
     for i, part in enumerate(parts):
         if any(c in part for c in "*?["):
@@ -237,81 +442,173 @@ def _root_folder(word: str) -> str:
     return word
 
 
-def _flag_values(args: list[str], takes_value: set[str]) -> list[str]:
-    return [args[i + 1] for i, a in enumerate(args[:-1]) if a in takes_value]
-
-
-def _cd(cwd: str | None, target: str) -> str | None:
+def _cd(
+    cwd: str | None, target: str, env: Mapping[str, str] | None = None, local: Mapping[str, str] | None = None
+) -> str | None:
     """The shell's folder after ``cd target`` from ``cwd``; None when the gate can't tell."""
-    target = target.strip("\"'")
-    if not target or target.startswith(("~", "$", "-")):
+    target = _expand(target, env or {}, local or {})
+    if target == _UNKNOWN or not target or target == "-":
         return None
     if target.startswith("/"):
         return posixpath.normpath(target)
     return None if cwd is None else posixpath.normpath(posixpath.join(cwd, target))
 
 
-def _reaches_vault(here: str | None, root: str, vault: str | None) -> bool:
-    """Whether a recursive read rooted at ``root`` (from the shell's folder ``here``) takes in the vault.
-    Home (``~``, ``$HOME``) holds the vault, as far as the gate can tell."""
-    folder = _root_folder(root)
-    if folder.startswith(("~", "$HOME", "${HOME}")):
-        return vault is not None and folder.rstrip("/") in ("~", "$HOME", "${HOME}")
-    return _above_or_at(_cd(here, folder), vault)
+def _reaches_kb(folder: str, vault: str, rec: _Recursive) -> bool:
+    """Whether a recursive read rooted at ``folder`` (absolute) gets to a KB note, as the Grep
+    tool's rule has it (``_covers_kb``): rooted at the vault or above, at a KB folder's parent
+    (``action-items`` holds ``context/``), or inside the KB. A read of names only counts from
+    the vault or above, or inside the KB."""
+    folder = posixpath.normpath(folder)
+    for kb_dir in KB_DIRS:
+        target = posixpath.join(vault, kb_dir)
+        if any(ex and (ex.rstrip("/*") in (kb_dir, posixpath.basename(kb_dir))) for ex in rec.excluded):
+            continue
+        if folder == target or folder.startswith(target + "/"):
+            return rec.depth is None or rec.depth >= 1
+        if not (target.startswith(folder.rstrip("/") + "/")):
+            continue
+        at_or_above_vault = vault == folder or vault.startswith(folder.rstrip("/") + "/")
+        if not rec.content and not at_or_above_vault:
+            continue  # a name listing from a KB folder's parent (`find action-items`)
+        # The note files sit one level below the KB folder.
+        below = len(posixpath.relpath(target, folder).split("/")) + 1
+        if rec.depth is None or rec.depth >= below:
+            return True
+    return False
 
 
-def _above_or_at(folder: str | None, vault: str | None) -> bool:
-    """Whether a recursive read rooted at ``folder`` takes in the vault's KB."""
-    if folder is None or vault is None:
-        return False
-    folder = folder.rstrip("/") or "/"
-    return vault == folder or vault.startswith(folder.rstrip("/") + "/")
+_STATEMENTS = re.compile(r"&&|\|\||;|\n|(?<![<>&|])&(?![>&])")
+_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+_GIT_GLOBAL_VALUES = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+_GIT_READS = {"show", "diff", "grep", "blame", "annotate", "cat-file", "whatchanged", "difftool"}
 
 
-def raw_kb_read(command: str, *, in_kb: bool = False, cwd: str | None = None, vault: str | None = None) -> bool:
+def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
+    """``(subcommand, its args, -C folders)`` of a ``git`` call, past git's own options
+    (``--no-pager``, ``-P``, ``-c k=v``, ``-C dir``, ``--git-dir=…``)."""
+    chdirs: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _GIT_GLOBAL_VALUES and i + 1 < len(args):
+            if a == "-C":
+                chdirs.append(args[i + 1])
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            return a, args[i + 1 :], chdirs
+    return None, [], chdirs
+
+
+def _git_reads(sub: str | None, args: list[str]) -> bool:
+    if sub in _GIT_READS:
+        return True
+    return sub == "log" and any(a in ("-p", "-u", "--patch") or a.startswith("--patch") for a in args)
+
+
+def raw_kb_read(
+    command: str,
+    *,
+    in_kb: bool = False,
+    cwd: str | None = None,
+    vault: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
     """Does this shell command read ``knowledge-base/`` or ``action-items/context/`` around ``scoutctl kb``?
 
     Each shell segment is judged by its command word, after prefixes (``xargs``, ``sudo``,
-    ``timeout 10``), assignments and shell keywords (``do``, ``then``): a reading command
-    (``/bin/cat`` too) with a KB path among its arguments, quoted or not, or run after ``cd``
-    or ``pushd`` into the KB (``in_kb``: the shell starts there); one that reads a variable the
-    command filled with a KB path or with ``scoutctl kb``'s output (``f=knowledge-base/x; wc -c
-    $f``, ``for f in $(scoutctl kb files); do wc -c "$f"``); one ``xargs`` feeds in a command
-    that prints KB paths; ``git show|diff|grep|blame|log -p`` with a KB path; an input
+    ``timeout -s KILL 10``), assignments and shell keywords (``do``, ``then``): a reading command
+    (``/bin/cat`` too) with a KB path among its operands, quoted or not, or run after ``cd``,
+    ``pushd`` or ``env -C`` into the KB (``in_kb``: the shell starts there); one that reads a
+    variable the command filled with a KB path or with ``scoutctl kb``'s output (``f=knowledge-base/x;
+    wc -c $f``, ``for f in $(scoutctl kb files); do wc -c "$f"``), or a command substitution that
+    runs it (``cat $(scoutctl kb files)``); one ``xargs`` feeds from a pipe that carries KB paths;
+    ``git show|diff|grep|blame|log -p`` with a KB path, past git's own options; an input
     redirection from a KB path (``wc -c <knowledge-base/x``); ``sh -c``/``eval`` of a program
     that does any of this. With ``cwd`` and ``vault`` (absolute, as the gate knows them), a
-    recursive read rooted at the vault or above (``rg x``, ``grep -r x .``, ``find .``) counts
-    too. ``scoutctl …`` segments and quoted commit messages never count.
+    recursive read that gets to a KB note (``rg x``, ``grep -r x action-items``, ``git grep x``,
+    ``find .``) counts too; ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and
+    quoted commit messages never count.
     """
     command = _MESSAGE_ARG.sub(r"\1 ''", command)
+    judged = _judge(command, in_kb, cwd, vault, env or {})
+    expanded = _with_kb_paths(command)
+    return judged or (expanded != command and _judge(expanded, in_kb, cwd, vault, env or {}))
+
+
+def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str]) -> bool:
     tainted = _kb_variables(command)
-    feeds_kb = bool(_KB_SOURCE.search(command))
+    local = _local_values(command)
     here = posixpath.normpath(cwd) if cwd else None
-    for segment in _SEGMENTS.split(command):
-        raw = segment.split()
-        if raw and raw[0].rsplit("/", 1)[-1] == "scoutctl":
-            continue
-        if _KB_REDIRECT.search(segment):
-            return True
-        words, fed = _strip(raw)
-        if not words:
-            continue
-        # A quoted program (`bash -c 'cat …'`, `eval "cat …"`) starts with a quote the shell removes.
-        name, args = words[0].strip("\"'").rsplit("/", 1)[-1], words[1:]
-        rest = " ".join(args)
-        if name == "scoutctl":
-            continue
-        if name in ("cd", "pushd"):
-            in_kb = _names_kb(rest)
-            here = _cd(here, args[0]) if args else None
-        elif name in _READ_COMMANDS:
-            if in_kb or _names_kb(rest) or _uses(rest, tainted) or (fed and feeds_kb):
+
+    def reaches(rec: _Recursive, where: str | None) -> bool:
+        if vault is None:
+            return False
+        for root in rec.roots or ["."]:
+            word = _expand(root, env, local)
+            folder = None if word == _UNKNOWN else _root_folder(word)
+            if folder is not None and not folder.startswith("/"):
+                folder = None if where is None else posixpath.join(where, folder)
+            if folder is None:
+                if rec.content:
+                    return True  # a content search the gate can't place: it may well be the vault
+                continue
+            if _reaches_kb(folder, vault, rec):
                 return True
-            roots = _recursive_roots(name, args) if vault is not None else None
-            if roots is not None and any(_reaches_vault(here, r, vault) for r in roots or ["."]):
-                return True
-        elif name == "git" and _GIT_READ.search(_unquoted(rest)) and (_names_kb(rest) or _uses(rest, tainted)):
-            return True
+        return False
+
+    for statement in _STATEMENTS.split(command):
+        upstream_kb = False
+        for piece in _PIPE.split(statement):
+            for segment in _SEGMENTS.split(piece):
+                raw = segment.split()
+                if raw and raw[0].rsplit("/", 1)[-1] == "scoutctl":
+                    continue
+                if _KB_REDIRECT.search(segment):
+                    return True
+                stripped = _strip(raw)
+                words = stripped.words
+                if not words:
+                    continue
+                # A quoted program (`bash -c 'cat …'`, `eval "cat …"`) starts with a quote the shell removes.
+                name, args = words[0].strip("\"'").rsplit("/", 1)[-1], words[1:]
+                rest = " ".join(args)
+                if name == "scoutctl":
+                    continue
+                seg_in_kb, where = in_kb, here
+                if stripped.chdir is not None:
+                    seg_in_kb = _names_kb(stripped.chdir)
+                    where = _cd(here, stripped.chdir, env, local)
+                if name in ("cd", "pushd"):
+                    in_kb = _names_kb(rest)
+                    here = _cd(here, args[0], env, local) if args else None
+                elif name in _READ_COMMANDS:
+                    if seg_in_kb or _names_kb(rest) or _uses_operand(name, args, tainted):
+                        return True
+                    if stripped.fed and upstream_kb:
+                        return True
+                    rec = _recursive(name, args)
+                    if rec is not None and reaches(rec, where):
+                        return True
+                elif name == "git":
+                    sub, sub_args, chdirs = _git(args)
+                    names_kb = _names_kb(rest) or _uses(rest, tainted)
+                    if names_kb and (_GIT_READ.search(rest) or _GIT_READ.search(_unquoted(rest))):
+                        return True
+                    if names_kb and _git_reads(sub, sub_args):
+                        return True
+                    if sub == "grep":
+                        git_where = where
+                        for c in chdirs:
+                            git_where = _cd(git_where, c, env, local)
+                        _flags, plain = _split_args(_operands("grep", sub_args))
+                        pattern_given = any(a in ("-e", "-f") for a in sub_args)
+                        paths = plain if pattern_given else plain[1:]
+                        if reaches(_Recursive(paths, True), git_where):
+                            return True
+            upstream_kb = upstream_kb or bool(_KB_SOURCE.search(piece))
     return False
 
 

@@ -1645,6 +1645,9 @@ def kb_check_fact_check(
     context: Path | None = typer.Option(
         None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
     ),
+    skipped: str | None = typer.Option(
+        None, "--skipped", help="Why no live source could be reached this run; accepts the run as it stands."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
 ) -> None:
     """Check a deep-work run re-verified the KB notes the runner pre-fetched for its fact-check pass.
@@ -1652,10 +1655,12 @@ def kb_check_fact_check(
     The runner lists the KB notes changed in the last 3 days that no run has
     re-verified since (`fact_check_targets`, most consequential first). At least
     2 of them (all, if fewer) must now carry `last_verified:` of today and a
-    `verified_against:`. A `fact-check skipped: <reason>` on today's session-log
-    row accepts a run that could not reach a live source. Run it before
-    committing a dreaming deep-work run. Exit codes: 0 = done, 1 = not done,
-    2 = cannot check. Prints paths only, private ones marked `[private]`.
+    `verified_against:`. A target moved, archived or shared since counts as done;
+    a shared note is never a target. `--skipped "<reason>"` accepts a run that
+    could not reach a live source, and prints the line for its session-log row.
+    Run it before committing a dreaming deep-work run. Exit codes: 0 = done,
+    1 = not done, 2 = cannot check (or no reason given). Prints paths only,
+    private ones marked `[private]`.
     """
     import datetime as dt
     import json as _json
@@ -1673,7 +1678,7 @@ def kb_check_fact_check(
             raise typer.Exit(2) from None
     day = date or _today(data_dir).isoformat()
     try:
-        result = check_fact_check(data_dir=data_dir, today=day, context=context)
+        result = check_fact_check(data_dir=data_dir, today=day, context=context, skipped=skipped)
     except PrefetchCheckError as e:
         typer.echo(_json.dumps({"error": str(e)}) if as_json else f"{name}: cannot check — {e}")
         raise typer.Exit(2) from e
@@ -1689,6 +1694,7 @@ def kb_check_fact_check(
                     "verified": result.verified,
                     "required": result.required,
                     "skipped": result.skipped is not None,
+                    "settled": result.settled,
                     "passed": result.passed,
                 }
             )
@@ -1698,7 +1704,9 @@ def kb_check_fact_check(
     elif result.passed and result.skipped is None:
         typer.echo(f"{name}: {len(result.verified)} of {len(result.targets)} recent note(s) re-verified today")
     elif result.passed:
-        typer.echo(f"{name}: skipped on today's session-log row; say why in the run's report")
+        typer.echo(
+            f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
+        )
     else:
         typer.echo(
             f"{name}: {len(result.verified)} of the {result.required} required recent note(s) re-verified today. "
@@ -1709,8 +1717,8 @@ def kb_check_fact_check(
         for t in result.targets:
             typer.echo(f"  {'✓' if t.path in done else '·'} {mark(t.visibility)}{t.path} (changed {t.changed})")
         typer.echo(
-            f"If no live source could be reached this run, add `{SKIP_MARK} <reason>` to today's session-log row "
-            "and run this again."
+            'If no live source could be reached this run, run this again with `--skipped "<why>"`, '
+            "and put the line it prints in this run's session-log row."
         )
     if not result.passed:
         raise typer.Exit(1)

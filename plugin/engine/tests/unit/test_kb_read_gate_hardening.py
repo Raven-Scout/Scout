@@ -197,3 +197,119 @@ def test_a_variable_read_is_denied_through_the_real_cli(vault) -> None:  # noqa:
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0, res.stderr
     assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ----- #734 review: what the first round missed ------------------------------------------------
+
+ENV = {"HOME": "/home/alex", "SCOUT_DATA_DIR": VAULT}
+
+
+def judged(command: str, cwd: str = VAULT) -> bool:
+    return raw_kb_read(command, cwd=cwd, vault=VAULT, env=ENV)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # git's own options before the subcommand (main denied the `-C ''` forms; keep it so)
+        "git -C '' show HEAD:knowledge-base/people.md",
+        'git -C "" log -p -- knowledge-base',
+        "git --no-pager show HEAD:knowledge-base/people.md",
+        "git -P diff HEAD~1 -- knowledge-base",
+        "git -c core.pager=cat show HEAD:knowledge-base/people.md",
+        "git grep salary",
+        "git -C . grep -n salary",
+        # command substitution that runs a path-printing scoutctl kb
+        "cat $(scripts/scoutctl kb files)",
+        "wc -c $(scripts/scoutctl kb files --glob 'projects/**')",
+        "head `scripts/scoutctl kb files`",
+        "files=$(scripts/scoutctl kb files); wc -c $files",
+        # recursive reads that reach a KB note, as the Grep tool's rule has it
+        "rg salary action-items",
+        "grep -r x action-items",
+        "grep --recursive salary .",
+        "rg x ~/Scout",
+        'rg x "$SCOUT_DATA_DIR"',
+        "cd ~/Scout && rg x",
+        "rg -m 5 x",
+        "rg --max-depth 9 x",
+        "grep -r --max-count 5 x",
+        "find action-items -name '*.md' -exec cat {} +",
+        "rg x -g '!knowledge-base/**'",  # action-items/context is still in reach
+        # prefixes
+        "timeout -s KILL 10 cat knowledge-base/people.md",
+        "env -C knowledge-base cat people.md",
+        "env --chdir=knowledge-base cat people.md",
+    ],
+)
+def test_the_review_forms_are_flagged(command: str) -> None:
+    assert judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --version",
+        "command -v rg",
+        "find --version",
+        "rg --files scripts/",
+        "find . -maxdepth 1 -name x",
+        "n=$(scripts/scoutctl kb files | wc -l); head -n $n scripts/list.txt",
+        "git add knowledge-base/people.md; ls scripts | xargs wc -l",
+        "git grep salary -- scripts/",
+        "git log --oneline -5",
+        "ls -R action-items",  # names only, from a KB folder's parent
+        "find action-items -name x",
+        "tree -L 1",
+        "d=scripts; rg x $d",
+        "x=$(scripts/scoutctl kb search foo | head -1); echo $x",
+    ],
+)
+def test_the_review_false_denies_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+def test_an_exclusion_main_already_denied_stays_denied() -> None:
+    # main matches `=knowledge-base` as a KB path: the gate only widens, so this keeps its deny.
+    assert raw_kb_read("grep -r --exclude-dir=knowledge-base x docs")
+
+
+def test_a_content_search_the_gate_cant_place_is_denied() -> None:
+    assert judged('rg x "$(git rev-parse --show-toplevel)"')
+    assert not judged('ls -R "$UNSET_DIR"')  # a name listing it can't place stays allowed
+
+
+def test_the_eval_counts_a_recursive_read_from_the_vault() -> None:
+    from tests.eval.harness.checks.privacy_canary import leading_indicators
+    from tests.eval.harness.metrics import ToolCall
+
+    call = ToolCall(seq=0, name="Bash", input={"command": "rg salary"}, is_error=False, position=0.0)
+    assert leading_indicators([call], vaults=[VAULT])["raw_kb_read"] == 1
+    assert leading_indicators([call])["raw_kb_read"] == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat know'ledge-base'/people.md",
+        "cat know\\ledge-base/people.md",
+        "files=$(scripts/scoutctl kb files); wc -c $files",
+        "cat $(scripts/scoutctl kb files)",
+        "head `scripts/scoutctl kb files`",
+        "grep --recursive salary .",
+        "git grep salary",
+        "git -C '' show HEAD:knowledge-base/people.md",
+    ],
+)
+def test_the_shell_and_python_deny_them_together(vault, command: str) -> None:  # noqa: F811
+    import json
+
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", command
+
+
+def test_the_deny_message_says_how_to_search_elsewhere(vault) -> None:  # noqa: F811
+    reason = _denied(_decision(vault, "Bash", {"command": "rg salary"}))
+    assert "name one outside the KB" in reason and "rg x scripts/" in reason

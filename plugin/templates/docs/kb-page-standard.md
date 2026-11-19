@@ -174,10 +174,11 @@ local-only (`kb classify`), because a new copy could widen it or hit a hard priv
 where a rebuild could write into a share; restructure those by hand. The pass only trims a
 shared page that is over budget or carries narration: it cuts whole lines (never a heading), and
 moves a line only into an existing note in the folder that isn't shared. On a local-only project nothing leaves the folder: keep source notes and moved files
-inside it. The pass leaves a page over 12 KB (`nightly_max_bytes`) for an interactive session, where
-it gets rebuilt in one sitting; it orders the rest by priority × days since `as_of`. A page too big for
-one session takes several sittings: archive it once, on the first, move one area into `knowledge/` each
-time (the page only has to shrink), and rewrite it once the rest fits.
+inside it. The pass doesn't start a full rebuild of a page over `kb_structure.nightly_max_bytes`
+(12 KB by default): that waits for an interactive session, where it gets rebuilt in one sitting. It
+orders the rest by priority × days since `as_of`. A page too big for one session takes several nights:
+archive it once, on the first night, move one area into `knowledge/` a night (the page only has to
+shrink), and rewrite it once the rest fits.
 
 1. Copy the page verbatim to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md`. Lint
    skips `archive/`, so the copy's size and old headings are fine.

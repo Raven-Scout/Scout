@@ -127,7 +127,8 @@ def _deny_bash() -> str:
         f"{MARK} Scheduled runs don't read knowledge-base/ or action-items/context/ with shell commands "
         f"(cat, grep, ls, find, head, tail, sed, awk, wc, git show …), directly or through a variable, a loop, "
         f"xargs or a recursive search from the vault: that skips the privacy labels. {_REPLACEMENT} "
-        "To change a note, Read it and Edit it."
+        "To change a note, Read it and Edit it. To search other folders, name one outside the KB "
+        "(e.g. `rg x scripts/`)."
     )
 
 
@@ -376,7 +377,7 @@ def decide(
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
-        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault))
+        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
         return _deny_bash() if flagged else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")

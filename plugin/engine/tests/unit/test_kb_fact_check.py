@@ -18,7 +18,6 @@ from scout.kb.fact_check import (
     check_fact_check,
     fact_check_targets,
     judge,
-    skip_reason,
 )
 from scout.scripts import pre_session_data
 
@@ -166,7 +165,7 @@ def test_cli_exit_1_lists_the_targets_and_marks_private_ones(kb_repo) -> None:
     assert result.exit_code == 1
     assert f"· {FRONT} (changed 2026-10-09)" in result.stdout
     assert f"· [private] {TOPIC}" in result.stdout
-    assert "fact-check skipped:" in result.stdout
+    assert '--skipped "<why>"' in result.stdout
 
 
 def test_cli_passes_once_the_run_reverified_them(kb_repo) -> None:
@@ -179,18 +178,63 @@ def test_cli_passes_once_the_run_reverified_them(kb_repo) -> None:
     assert data["passed"] and data["required"] == 2 and sorted(data["verified"]) == sorted([FRONT, TOPIC])
 
 
-def test_cli_accepts_a_skip_on_todays_session_log_row(kb_repo) -> None:
+def test_cli_accepts_a_run_that_says_why_it_skipped(kb_repo) -> None:
+    kb_repo.write(FRONT, note())
+    kb_repo.write(TOPIC, note())
+    _context(kb_repo, ROWS)
+    result = _cli(kb_repo, "--skipped", "the tracker was unreachable all run")
+    assert result.exit_code == 0
+    assert "`fact-check skipped: the tracker was unreachable all run`" in result.stdout
+
+
+@pytest.mark.parametrize("reason", ["", "  ", "x", "n/a"])
+def test_cli_refuses_a_skip_without_a_reason(kb_repo, reason: str) -> None:
+    _context(kb_repo, ROWS)
+    assert _cli(kb_repo, "--skipped", reason).exit_code == 2
+
+
+def test_an_earlier_runs_session_log_row_no_longer_counts(kb_repo) -> None:
     kb_repo.write(FRONT, note())
     kb_repo.write(TOPIC, note())
     kb_repo.write(
         "knowledge-base/session-log/2026-10.md",
-        "| 2026-10-10 | dreaming 02:10 | fact-check skipped: tracker unreachable | pending |\n",
+        "| 2026-10-10 | consolidation 14:00 | fact-check skipped: tracker unreachable | abc123 |\n",
     )
     _context(kb_repo, ROWS)
+    assert _cli(kb_repo).exit_code == 1
+
+
+def test_a_target_moved_or_archived_since_counts_as_done(kb_repo) -> None:
+    kb_repo.write(FRONT, note(verified="2026-10-10"))  # TOPIC was moved: no file at its path
+    _context(kb_repo, ROWS)
     result = _cli(kb_repo)
-    assert result.exit_code == 0 and "skipped" in result.stdout
-    assert skip_reason(kb_repo.root, "2026-10-10") == "tracker unreachable"
-    assert skip_reason(kb_repo.root, "2026-10-11") is None
+    assert result.exit_code == 0
+    data = json.loads(_cli(kb_repo, "--json").stdout)
+    assert data["required"] == 1 and data["settled"] == [TOPIC]
+
+
+def test_a_target_shared_since_counts_as_done(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{TOPIC}']\n")
+    kb_repo.write(FRONT, note(verified="2026-10-10"))
+    kb_repo.write(TOPIC, note())
+    _context(kb_repo, ROWS)
+    assert _cli(kb_repo).exit_code == 0
+
+
+def test_a_shared_note_is_never_a_target(kb_repo, monkeypatch) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{TOPIC}']\n")
+    kb_repo.write(TOPIC, note())
+    kb_repo.write(FRONT, note())
+    commit_at(kb_repo, "2026-10-09", monkeypatch)
+    assert paths(fact_check_targets(kb_repo.root, DAY, "owner")) == [FRONT]
+
+
+def test_only_a_dreaming_run_computes_targets(kb_repo, monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(pre_session_data, "get_fact_check_targets", lambda *a: calls.append("x") or [])
+    assert pre_session_data.fact_check_for("morning-briefing", kb_repo.root, DAY, "owner") == []
+    assert pre_session_data.fact_check_for("dreaming-nightly", kb_repo.root, DAY, "owner") == []
+    assert calls == ["x"]
 
 
 def test_cli_with_nothing_to_check_passes(kb_repo) -> None:

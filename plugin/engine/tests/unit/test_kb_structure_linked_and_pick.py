@@ -188,8 +188,13 @@ def test_a_page_with_no_priority_waits_behind_a_green_one(kb_repo) -> None:
 # ----- pages too big for a night -----------------------------------------------------------
 
 
-def test_a_page_over_the_nightly_cap_is_left_for_an_interactive_session(kb_repo) -> None:
-    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None, extra="x" * 13000))
+def rebuild_page(name: str, **kwargs) -> str:
+    """A 13 KB page missing a required section: it needs a full rebuild, not a refresh."""
+    return page(name, extra="x" * 13000, **kwargs).replace("## History", "### History")
+
+
+def test_a_full_rebuild_over_the_nightly_cap_is_left_for_an_interactive_session(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", rebuild_page("widgets", priority="🔴", as_of=None))
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🟢", as_of=None))
     r = rows(kb_repo)
     assert r["widgets"]["interactive"] and not r["widgets"]["rebuild_target"] and not r["widgets"]["resume"]
@@ -197,20 +202,43 @@ def test_a_page_over_the_nightly_cap_is_left_for_an_interactive_session(kb_repo)
     assert picked(kb_repo) == "gadgets"
 
 
+def test_a_page_over_budget_needs_a_full_rebuild_too(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", extra="x" * 17000))
+    assert rows(kb_repo)["widgets"]["interactive"]
+
+
+@pytest.mark.parametrize("problem", ["no as_of", "stale", "narration", "a loose file"])
+def test_a_big_page_that_only_needs_a_refresh_keeps_its_nightly_refresh(kb_repo, monkeypatch, problem: str) -> None:
+    extra = "x" * 13000 + ("\nFinding 3 holds.\n" if problem == "narration" else "")
+    kb_repo.write(
+        f"{P}/widgets/widgets.md", page("widgets", as_of=None if problem == "no as_of" else "2026-10-01", extra=extra)
+    )
+    if problem == "a loose file":
+        kb_repo.write(f"{P}/widgets/notes.md", "a note\n")
+    if problem == "stale":
+        commit_at(kb_repo, "2026-10-01", monkeypatch)
+        kb_repo.write("knowledge-base/sources/2026-10/2026-10-09-sync.md", "[[widgets]]\n")
+        commit_at(kb_repo, "2026-10-09", monkeypatch)
+    r = rows(kb_repo)["widgets"]
+    assert not r["conforms"] and not r["interactive"] and r["rebuild_target"]
+    assert picked(kb_repo) == "widgets"
+
+
 def test_the_nightly_cap_is_a_setting(kb_repo) -> None:
     kb_repo.write("scout-config.yaml", "kb_structure:\n  nightly_max_bytes: 40000\n")
-    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None, extra="x" * 13000))
+    kb_repo.write(f"{P}/widgets/widgets.md", rebuild_page("widgets", as_of=None))
     r = rows(kb_repo)["widgets"]
     assert not r["interactive"] and r["rebuild_target"]
 
 
-def test_a_half_rebuilt_page_over_the_cap_does_not_resume(kb_repo) -> None:
+def test_a_half_rebuilt_page_over_the_cap_finishes(kb_repo) -> None:
     day = today(kb_repo.root)
-    big = page("widgets", as_of=None, extra="x" * 13000).replace("## History", "### History")
-    kb_repo.write(f"{P}/widgets/widgets.md", big)
+    kb_repo.write(f"{P}/widgets/widgets.md", rebuild_page("widgets", as_of=None))
     kb_repo.write(f"{P}/widgets/archive/widgets-{day - dt.timedelta(days=3)}-pre-restructure.md", "old\n")
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
-    assert picked(kb_repo) == "gadgets"
+    r = rows(kb_repo)["widgets"]
+    assert r["resume"] and not r["interactive"]
+    assert picked(kb_repo) == "widgets"
 
 
 def test_a_shared_page_over_the_cap_may_still_be_trimmed(kb_repo) -> None:
@@ -225,13 +253,14 @@ def test_a_shared_page_over_the_cap_may_still_be_trimmed(kb_repo) -> None:
     assert picked(kb_repo) == "widgets"
 
 
-def test_next_names_the_pages_left_for_an_interactive_session(kb_repo, capsys) -> None:
-    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None, extra="x" * 13000))
+def test_next_names_the_pages_left_for_an_interactive_session(kb_repo, monkeypatch, capsys) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", rebuild_page("widgets", as_of=None))
+    commit_at(kb_repo, str(today(kb_repo.root) - dt.timedelta(days=9)), monkeypatch)
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
-    kb_repo.write(f"{P}/secret/secret.md", page("secret", as_of=None, extra="x" * 13000, fm="visibility: private\n"))
+    kb_repo.write(f"{P}/secret/secret.md", rebuild_page("secret", as_of=None, fm="visibility: private\n"))
     assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
     err = capsys.readouterr().err
-    assert f"{P}/widgets/widgets.md" in err and "interactive session" in err and "over 12 KB" in err
+    assert f"{P}/widgets/widgets.md (waiting 9 days)" in err and "interactive session" in err and "over 12 KB" in err
     assert "secret" not in err  # a private page is never picked, so it isn't named either
     table = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)]).stdout
     assert any("widgets" in line and "[interactive]" in line for line in table.splitlines())
@@ -241,3 +270,45 @@ def test_next_is_silent_when_no_page_is_too_big(kb_repo, capsys) -> None:
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
     assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
     assert capsys.readouterr().err == ""
+
+
+def test_doctor_notes_the_pages_waiting_for_an_interactive_rebuild(kb_repo, monkeypatch) -> None:
+    from scout.scripts.bootstrap_doctor import _check_kb_interactive
+
+    assert _check_kb_interactive(vault=kb_repo.root) == []
+    kb_repo.write(f"{P}/widgets/widgets.md", rebuild_page("widgets", as_of=None))
+    commit_at(kb_repo, str(today(kb_repo.root) - dt.timedelta(days=4)), monkeypatch)
+    [note] = _check_kb_interactive(vault=kb_repo.root)
+    assert (
+        note.startswith("kb: 1 project page(s) wait for an interactive rebuild")
+        and f"{P}/widgets/widgets.md (4 d)" in note
+    )
+
+
+def test_an_as_of_that_cant_be_read_is_reported_as_such(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-11"))
+    assert "unreadable as_of" in rows(kb_repo)["widgets"]["problems"]
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert "no as_of" in rows(kb_repo)["widgets"]["problems"]
+
+
+def test_the_linked_walk_stops_at_the_window(kb_repo, monkeypatch) -> None:
+    import subprocess
+
+    from scout.kb.structure import LINKED_WINDOW_DAYS
+
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2020-01-01"))
+    kb_repo.write("knowledge-base/sources/2026-10/2026-10-09-sync.md", "[[widgets]]\n")
+    commit_at(kb_repo, "2026-10-09", monkeypatch)
+    calls: list[list[str]] = []
+    real = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        if cmd[:2] == ["git", "log"]:
+            calls.append(list(cmd))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    structure_rows(kb_repo.root)
+    [linked] = [c for c in calls if "knowledge-base/sources" in c]
+    assert f"--since={today(kb_repo.root) - dt.timedelta(days=LINKED_WINDOW_DAYS)}" in linked

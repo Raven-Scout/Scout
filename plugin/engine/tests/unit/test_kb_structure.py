@@ -134,7 +134,9 @@ def test_missing_sections_narration_and_as_of(kb_repo) -> None:
 
 def test_a_bad_as_of_counts_as_missing(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="soon"))
-    assert rows_by_name(kb_repo.root)["widgets"]["problems"] == ["no as_of"]
+    row = rows_by_name(kb_repo.root)["widgets"]
+    # Reported apart from a missing one (#734 review), so the night knows to rewrite it as a date.
+    assert row["problems"] == ["unreadable as_of"] and row["as_of"] is None
 
 
 def test_an_impossible_yaml_date_reads_as_no_as_of(kb_repo) -> None:

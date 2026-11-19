@@ -152,9 +152,10 @@ def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "It resumes a half-rebuilt page" in step
     # A partial night is a finished night, and the archive copy is made once.
-    # A page too big for a night is left for an interactive session (KB audit 2026-11), not spread over a week.
-    assert "It never picks a page over 12 KB for a rebuild" in step and "needs an interactive rebuild" in step
-    assert "takes several nights" not in step
+    assert "**A page too big for one session** takes several nights" in step
+    # A full rebuild too big for a night waits for an interactive session (KB audit 2026-11); the size is config.
+    assert "`kb_structure.nightly_max_bytes`" in step and "needs an interactive rebuild" in step
+    assert "12 KB" not in step
     assert "once, on its first night" in step
     assert "a partial night only has to shrink it" in step
 
