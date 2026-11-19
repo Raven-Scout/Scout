@@ -308,11 +308,14 @@ final class SessionLogService: ObservableObject {
     /// pass through unchanged.
     ///
     /// Quiet time counts from the run's last sign of life — the later of its
-    /// start and `lastActivityAt` (the log's modification time). A live run
-    /// keeps writing its log: the runner's lease keepalive appends a line
-    /// about every five minutes. Counting from the start alone marked a
-    /// healthy 23-minute consolidation "Didn't finish" while it was still
-    /// working, because consolidation's cutoff is 20 minutes.
+    /// start and `lastActivityAt` (the log's modification time). On a vault
+    /// linked to Agnes, a live run keeps writing its log: the runner's lease
+    /// keepalive appends a line about every five minutes. Counting from the
+    /// start alone marked a healthy 23-minute consolidation "Didn't finish"
+    /// while it was still working, because consolidation's cutoff is 20
+    /// minutes. On an unlinked vault nothing writes the log while Claude works
+    /// (`claude -p` prints only when it exits), so a long run there can still
+    /// orphan, though never sooner than under the start-only rule.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
@@ -703,17 +706,19 @@ extension RunType {
     /// were way too loose and produced multi-hour false "running" badges in
     /// the Now strip and Sessions list. CC-1/CC-5.
     ///
-    /// The runner's lease keepalive writes a log line about every five
-    /// minutes, so a live run never comes near these. A runner without that
-    /// keepalive can be quiet for its whole agent phase; there the cutoff
-    /// still bounds silence since the last line, which is never longer than
-    /// the time since the start.
+    /// On a vault linked to Agnes, the runner's lease keepalive writes a log
+    /// line about every five minutes, so a live run never comes near these.
+    /// The keepalive watches the runner shell, not `claude`, so a hung agent
+    /// behind a live shell stays "running" until the runner's own timeout
+    /// ends it. On an unlinked vault there is no keepalive and the log is
+    /// quiet for the whole agent phase; the cutoff then bounds silence since
+    /// the last line, which is never longer than the time since the start.
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
             return 30 * 60           // 30 min — briefing runs short
         case .consolidation:
-            return 20 * 60           // 20 min of silence — four missed keepalives
+            return 20 * 60           // 20 min of silence — four missed keepalives on a linked vault
         case .dreaming:
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:

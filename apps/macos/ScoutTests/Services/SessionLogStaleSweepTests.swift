@@ -180,7 +180,7 @@ struct SessionLogStaleSweepTests {
             .write(to: dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                    atomically: true, encoding: .utf8)
 
-        try Self.setLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
+        try pinLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                                 to: Self.et(day: 20, hour: 22, minute: 5))
 
         // 90 minutes later — well past consolidation's 20-minute cutoff.
@@ -218,7 +218,7 @@ struct SessionLogStaleSweepTests {
         === SCOUT run finished at Mon Apr 20 22:09:00 EDT 2026 (exit 0) ===
         """.write(to: dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                   atomically: true, encoding: .utf8)
-        try Self.setLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
+        try pinLogModified(dir.appendingPathComponent("scout-2026-04-20_22-05.log"),
                                 to: Self.et(day: 20, hour: 22, minute: 9))
 
         let service = SessionLogService(
@@ -280,7 +280,7 @@ struct SessionLogStaleSweepTests {
         lease keepalive: renewed run scout-morning-consolidation-1's lease until 2026-04-20T15:30:37Z
 
         """.write(to: log, atomically: true, encoding: .utf8)
-        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
 
         // 23 minutes after the start, 3 minutes after the last keepalive.
         let service = SessionLogService(
@@ -297,7 +297,7 @@ struct SessionLogStaleSweepTests {
         let log = dir.appendingPathComponent("scout-2026-04-20_11-00.log")
         try "=== Scout run starting at Mon Apr 20 11:00:29 EDT 2026 ===\n"
             .write(to: log, atomically: true, encoding: .utf8)
-        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 10))
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 10))
 
         let clock = SteppableClock(date: Self.et(day: 20, hour: 11, minute: 12))
         let service = SessionLogService(
@@ -308,7 +308,7 @@ struct SessionLogStaleSweepTests {
         #expect(service.runs.first?.status == .running)
 
         // 25 min after the start, but a heartbeat landed at 11:20 → still running.
-        try Self.setLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 20))
         clock.date = Self.et(day: 20, hour: 11, minute: 25)
         service.sweepStaleStatuses()
         #expect(service.runs.first?.status == .running)
@@ -319,10 +319,75 @@ struct SessionLogStaleSweepTests {
         #expect(service.runs.first?.status == .orphaned)
     }
 
-    /// Pin a fixture log's modification time — the liveness signal the orphan
-    /// rule reads — so tests don't depend on when they happen to run.
-    nonisolated static func setLogModified(_ url: URL, to date: Date) throws {
-        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    // MARK: - File-watcher reconcile reads the log's modification time
+
+    /// Wait for the debounced file watcher to publish `status` for the only run.
+    private func awaitStatus(_ status: RunStatus, in service: SessionLogService) async throws -> Bool {
+        for _ in 0..<40 {
+            if service.runs.first?.status == status { return true }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return service.runs.first?.status == status
+    }
+
+    @Test("a log write past the start-based cutoff keeps the run running via the file watcher")
+    func reconcile_recentWriteKeepsLongRunRunning() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("scout-2026-04-20_11-00.log")
+        try "=== Scout run starting at Mon Apr 20 11:00:29 EDT 2026 ===\n"
+            .write(to: log, atomically: true, encoding: .utf8)
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 0))
+
+        let clock = SteppableClock(date: Self.et(day: 20, hour: 11, minute: 5))
+        let fs = InjectableFS()
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: try await makeTracker(in: dir),
+            fileEvents: fs, clock: clock, timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+        _ = try await service.loadInitial()
+        #expect(service.runs.first?.status == .running)
+
+        // 41 minutes after the start, a keepalive is appended at 11:40.
+        try "lease keepalive: renewed\n".appendLine(to: log)
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 40))
+        clock.date = Self.et(day: 20, hour: 11, minute: 41)
+        fs.emit(FileSystemEvent(url: log, kind: .modified))
+
+        // Wait until the reconcile has re-read the grown log, then check it
+        // kept the run running (counting from the start would orphan it).
+        let grownSize = Int64(try FileManager.default.attributesOfItem(atPath: log.path)[.size] as! Int)
+        for _ in 0..<40 where service.runs.first?.logSizeBytes != grownSize {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(service.runs.first?.logSizeBytes == grownSize, "the file event was never reconciled")
+        #expect(service.runs.first?.status == .running)
+    }
+
+    @Test("an orphaned run that writes its log again is running again")
+    func reconcile_newWriteRevivesOrphanedRun() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("scout-2026-04-20_11-00.log")
+        try "=== Scout run starting at Mon Apr 20 11:00:29 EDT 2026 ===\n"
+            .write(to: log, atomically: true, encoding: .utf8)
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 10))
+
+        // Loaded at 11:41: 31 minutes of silence → orphaned.
+        let clock = SteppableClock(date: Self.et(day: 20, hour: 11, minute: 41))
+        let fs = InjectableFS()
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: try await makeTracker(in: dir),
+            fileEvents: fs, clock: clock, timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+        _ = try await service.loadInitial()
+        #expect(service.runs.first?.status == .orphaned)
+
+        // The run writes again at 11:42.
+        try "lease keepalive: renewed\n".appendLine(to: log)
+        try pinLogModified(log, to: Self.et(day: 20, hour: 11, minute: 42))
+        clock.date = Self.et(day: 20, hour: 11, minute: 43)
+        fs.emit(FileSystemEvent(url: log, kind: .modified))
+
+        #expect(try await awaitStatus(.running, in: service))
     }
 
     /// April 2026 in America/New_York (EDT).

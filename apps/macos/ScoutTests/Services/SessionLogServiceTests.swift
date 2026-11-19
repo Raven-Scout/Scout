@@ -450,7 +450,7 @@ struct SessionLogServiceTests {
         try "=== SCOUT Dreaming run starting at Mon Apr 20 22:15:05 EDT 2026 ===\n"
             .write(to: logURL, atomically: true, encoding: .utf8)
         // The log was last written at its start — silent ever since.
-        try SessionLogStaleSweepTests.setLogModified(
+        try pinLogModified(
             logURL, to: SessionLogService.parseFilename(logURL, timeZone: Self.ny)!.startedAt)
 
         // Clock: 13h after that start (22:15 ET + 13h = 11:15 ET next day)
@@ -531,7 +531,7 @@ struct SessionLogServiceTests {
         try "=== SCOUT Research run starting at Tue Apr 21 08:00:05 EDT 2026 ===\n"
             .write(to: logURL, atomically: true, encoding: .utf8)
         // The log was last written at its start — silent ever since.
-        try SessionLogStaleSweepTests.setLogModified(
+        try pinLogModified(
             logURL, to: SessionLogService.parseFilename(logURL, timeZone: Self.ny)!.startedAt)
 
         // Clock: 3h after start (08:00 + 3h = 11:00 ET). Research cutoff is 2h.
@@ -847,12 +847,5 @@ struct SessionLogServiceTests {
 
 struct FixedClock: ClockSource {
     let date: Date
-    func now() -> Date { date }
-}
-
-/// A clock a test can move forward between sweeps.
-final class SteppableClock: ClockSource, @unchecked Sendable {
-    var date: Date
-    init(date: Date) { self.date = date }
     func now() -> Date { date }
 }
