@@ -49,12 +49,14 @@ import dataclasses
 import datetime as dt
 import errno
 import fcntl
+import functools
 import hashlib
 import hmac
 import json
 import os
 import re
 import resource
+import shlex
 import shutil
 import signal
 import stat
@@ -98,6 +100,21 @@ SCOUT_IDENTITY = {
 
 GhRunner = dm.GhRunner
 Keygen = dm.Keygen
+ALLOW_LOCAL_ENV = "SCOUT_INBOX_ALLOW_LOCAL"  # "1" lets an inbox be a local path: tests and development only
+
+
+@functools.cache
+def _tool(name: str) -> str:
+    """``git`` or ``gh`` as an absolute path, found once: never re-resolved through PATH between calls."""
+    return shutil.which(name) or name
+
+
+def _gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if k != "GH_REPO"}
+    env["GH_HOST"] = "github.com"
+    return subprocess.run(
+        [_tool("gh"), *args], capture_output=True, text=True, check=False, env=env, timeout=dm.GH_TIMEOUT
+    )
 
 
 # ----- state -----------------------------------------------------------------------------------
@@ -322,6 +339,9 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+_STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+
+
 def _stamp(when: dt.datetime) -> str:
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -398,6 +418,20 @@ def _check_github(repo: str, facts: Mapping[str, str], gh: GhRunner, keys: Colle
         )
 
 
+def _local_allowed() -> None:
+    """Refuse a local-path inbox unless :data:`ALLOW_LOCAL_ENV` is ``1`` (tests and development only).
+
+    A local bare repository on this computer can be written by a run, which could commit a proposal straight
+    into it; and git's upload-pack would read that repository's config as the owner. A real inbox is on GitHub.
+    """
+    if os.environ.get(ALLOW_LOCAL_ENV) != "1":
+        raise RepoSyncError(
+            "inbox_local_refused",
+            "refused: an inbox must be a private GitHub repository; a local path is for tests only "
+            f"({ALLOW_LOCAL_ENV}=1), since a run on this computer could write it",
+        )
+
+
 BINDING_FILE = "scout-inbox-binding"  # in a local bare inbox: a random token written at link
 
 
@@ -449,9 +483,9 @@ def _bind(vault: Path, remote: str, gh: GhRunner) -> str:
     local = dm._local_remote(remote)
     if local is None:
         raise RepoSyncError(
-            "remote_unsupported",
-            "refused: an inbox is a private GitHub repository (https://github.com/<owner>/<repo>) or a local path",
+            "remote_unsupported", "refused: an inbox is a private GitHub repository (https://github.com/<owner>/<repo>)"
         )
+    _local_allowed()
     if dm._overlaps(local.resolve(), vault.resolve()):
         raise RepoSyncError("remote_in_vault", "refused: a local inbox must live outside the vault and its folders")
     return _local_identity(local, mint=True)
@@ -468,6 +502,7 @@ def verify(vault: Path, link: InboxLink, state: InboxState, gh: GhRunner) -> Non
     dm._check_rewrites(vault, link.remote)
     repo = dm.github_repo(link.remote)
     if repo is None:
+        _local_allowed()
         local = dm._local_remote(link.remote)
         if local is None or _local_identity(local) != link.bound_to:
             raise RepoSyncError(
@@ -543,7 +578,7 @@ def link(
     *,
     create_repo: str | None = None,
     env: Mapping[str, str] | None = None,
-    gh: GhRunner = dm._gh,
+    gh: GhRunner = _gh,
 ) -> Result:
     """Link ``delegate`` to its inbox repository, bound by GitHub's ids (or a local path's identity)."""
     env = os.environ if env is None else env
@@ -569,6 +604,12 @@ def link(
         dm._check_rewrites(vault, remote)
         draft.bound_to = _bind(vault, remote, gh)
         _not_shared(vault, draft, state)  # again, by GitHub's ids now that they are known
+        if draft.bound_to.startswith("github:"):  # and no mirror is that same repository under another name
+            inbox_id = draft.bound_to.split(":")[1]
+            for mirror in dm.load_links(vault).values():
+                mrepo = dm.github_repo(mirror.remote)
+                if mrepo is not None and _facts(gh, f"repos/{mrepo}", mrepo)["id"] == inbox_id:
+                    raise RepoSyncError("inbox_taken", f"refused: {remote} is {mirror.id}'s mirror repository")
         state.inboxes[delegate] = draft
         ensure_ignored(vault)
         save_state(vault, state)
@@ -592,7 +633,7 @@ def reset(
     *,
     confirm: Callable[[str, str], bool],
     env: Mapping[str, str] | None = None,
-    gh: GhRunner = dm._gh,
+    gh: GhRunner = _gh,
 ) -> Result:
     """Take the inbox's current ``main`` as the new base after ``inbox_rewritten``. The owner only; pushes nothing.
 
@@ -617,7 +658,7 @@ def reset(
     )
 
 
-def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, gh: GhRunner = dm._gh) -> Result:
+def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, gh: GhRunner = _gh) -> Result:
     """Forget ``delegate``'s inbox, revoking its key first. The repository, the copies and the ledger stay."""
     env = os.environ if env is None else env
     vault = vault.resolve()
@@ -678,7 +719,7 @@ def deploy_key(
     rotate: bool = False,
     revoke: bool = False,
     env: Mapping[str, str] | None = None,
-    gh: GhRunner = dm._gh,
+    gh: GhRunner = _gh,
     keygen: Keygen = dm._keygen,
 ) -> Result:
     """Give ``delegate``'s agent a deploy key that can push to its inbox (and only there), or rotate or revoke it.
@@ -776,7 +817,11 @@ def deploy_key(
 
 _KEEP_ENV = frozenset({"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"})
 MAX_ENTRIES = 2000  # entries under inbox/<id>/ read in one pull; the rest wait
-GH_CREDENTIAL = "!gh auth git-credential"
+
+
+def gh_credential() -> str:
+    """The one credential helper a pull's git may use: gh's own, by its absolute path."""
+    return f"!{shlex.quote(_tool('gh'))} auth git-credential"
 
 
 def _limit_files() -> None:  # pragma: no cover - runs in the child, between fork and exec
@@ -814,7 +859,7 @@ def sandbox_env(vault: Path, remote: str, git_dir: Path) -> dict[str, str]:
         ("credential.helper", ""),  # an empty value clears the helpers the user's config lists
     ]
     if dm.github_repo(remote) is not None:
-        pairs.append(("credential.helper", GH_CREDENTIAL))
+        pairs.append(("credential.helper", gh_credential()))
     env = {k: v for k, v in base.items() if not k.startswith("GIT_") or k in _KEEP_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_DIR"] = str(git_dir)
@@ -847,10 +892,17 @@ class _Sandbox:
         self.remote = remote
         dir_fd = _state_dir(vault, create=True)
         assert dir_fd is not None
-        os.close(dir_fd)
-        self.root = Path(tempfile.mkdtemp(prefix="fetch-", dir=vault.joinpath(*STATE_DIR)))
-        st = self.root.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:  # pragma: no cover
+        try:
+            name = "fetch-" + os.urandom(8).hex()
+            os.mkdir(name, 0o700, dir_fd=dir_fd)  # in the verified folder, by descriptor: no path to swap
+            fd = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=dir_fd)
+            st = os.fstat(fd)
+            os.close(fd)
+        finally:
+            os.close(dir_fd)
+        self.root = vault.joinpath(*STATE_DIR, name)
+        self._place = (st.st_dev, st.st_ino)
+        if st.st_uid != os.getuid() or st.st_mode & 0o077:  # pragma: no cover - made 0700 just now
             raise RepoSyncError("inbox_state_unsafe", f"refused: {self.root} isn't this user's private folder")
         self.git_dir = self.root / "inbox.git"
         self.name = "scout" + os.urandom(8).hex()  # no remote.<name>.* in the user's config can match it
@@ -872,11 +924,20 @@ class _Sandbox:
     def __exit__(self, *exc: object) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def _still_here(self) -> None:
+        """Refuse unless the repository's folder is still the one made for it (git is given it by path)."""
+        try:
+            st = os.lstat(self.root)
+        except OSError as e:
+            raise RepoSyncError("inbox_state_unsafe", f"refused: {self.root} went away during the pull") from e
+        if not stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) != self._place:
+            raise RepoSyncError("inbox_state_unsafe", f"refused: {self.root} was replaced during the pull")
+
     def _run(
         self, args: Sequence[str], *, env: Mapping[str, str] | None = None, input: bytes | None = None
     ) -> subprocess.CompletedProcess[bytes]:
         proc = subprocess.Popen(
-            ["git", *args],
+            [_tool("git"), *args],
             cwd=self.root,
             env=dict(self.env if env is None else env),
             stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
@@ -911,6 +972,7 @@ class _Sandbox:
         return None
 
     def fetch(self, *depth: str) -> None:
+        self._still_here()
         self.git(
             "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
             f"--filter=blob:limit={dp.MAX_BYTES}", *depth, self.name, f"+{REMOTE_MAIN}:{FETCHED}",
@@ -941,7 +1003,7 @@ class _Sandbox:
         """``(mode, type, sha, path)`` under ``inbox/<delegate>/`` in commit ``main`` (by sha, never by a ref),
         read as a stream and cut at :data:`MAX_ENTRIES`; and whether there were more."""
         proc = subprocess.Popen(
-            ["git", "ls-tree", "-r", "-z", "--full-tree", main, "--", f"inbox/{delegate}/"],
+            [_tool("git"), "ls-tree", "-r", "-z", "--full-tree", main, "--", f"inbox/{delegate}/"],
             cwd=self.root,
             env=self.env,
             stdout=subprocess.PIPE,
@@ -969,6 +1031,8 @@ class _Sandbox:
                     break
                 if len(buf) > 1 << 20:  # one record longer than any path git allows
                     raise RepoSyncError("inbox_fetch_failed", "refused: the inbox's tree didn't list sensibly")
+            if not more and proc.wait(timeout=GIT_TIMEOUT) != 0:  # a failure must never look like an empty inbox
+                raise RepoSyncError("inbox_fetch_failed", "refused: git ls-tree failed on the inbox")
         finally:
             _kill(proc)
         return out, more
@@ -1004,16 +1068,23 @@ class _Sandbox:
         return self.git("mktree", "-z", "--missing", input=b"\0".join(kept) + b"\0").decode().strip()
 
     def remove(self, main: str, paths: Sequence[bytes], when: dt.datetime) -> str:
-        """A commit on ``main`` with ``paths`` removed, by Scout's fixed identity; its sha. Only the root, ``inbox``
-        and the trees holding a removed path are read: never the whole tree, never an index."""
+        """A commit on ``main`` with ``paths`` removed, by Scout's fixed identity; its sha.
+
+        Each path goes by its first component under ``inbox/<id>/``: a file there, or the whole folder a deeper
+        (refused) path is in. So the rebuild reads three trees at most (the root, ``inbox``, ``inbox/<id>``),
+        however deep a path is: never the whole tree, never an index.
+        """
+        self._still_here()
+        tops = {b"/".join(p.split(b"/")[:3]) for p in paths}
         root = self.git("rev-parse", f"{main}^{{tree}}").decode().strip()
-        tree = self._rebuild(root, b"", set(paths)) or self.git("mktree", input=b"").decode().strip()
+        tree = self._rebuild(root, b"", tops) or self.git("mktree", input=b"").decode().strip()
         stamp = f"{int(when.timestamp())} +0000"
         ident = {**SCOUT_IDENTITY, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
         return self.git("commit-tree", tree, "-p", main, "-m", REMOVAL_MESSAGE, extra=ident).decode().strip()
 
     def push(self, commit: str, expect: str) -> bool:
         """Move the inbox's main from ``expect`` to ``commit``; False when the agent pushed in between."""
+        self._still_here()
         proc = self._run(
             ["push", "--quiet", "--porcelain", "--no-verify", f"--force-with-lease={REMOTE_MAIN}:{expect}",
              self.name, f"{commit}:{REMOTE_MAIN}"]
@@ -1175,7 +1246,7 @@ def pull(
     vault: Path,
     delegate: str,
     *,
-    gh: GhRunner = dm._gh,
+    gh: GhRunner = _gh,
     now: dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Result:
@@ -1184,13 +1255,11 @@ def pull(
     Never inside a scheduled run (``SCOUT_MODE`` set): the runner pulls, as a step of its own, outside the run.
     """
     env = os.environ if env is None else env
-    if env.get("SCOUT_MODE"):
-        raise RepoSyncError(
-            "headless_refused", "refused: SCOUT_MODE is set; a run doesn't pull inboxes, the runner does, outside it"
-        )
+    headless_gate(env, "Pulling a delegate's inbox (the runner does it outside a run)")
     vault = vault.resolve()
     when = now or _now()
     with locked(vault):
+        _sweep(vault)
         state = load_state(vault)
         current = _inbox(state, delegate)
         try:
@@ -1198,12 +1267,36 @@ def pull(
             result = _pull_once(vault, state, delegate, when)
             if result.raced:
                 result = _pull_once(vault, load_state(vault), delegate, when)  # the agent pushed in between: once more
-        except RepoSyncError as e:
+        except Exception as e:
+            failure = (
+                e
+                if isinstance(e, RepoSyncError)
+                else RepoSyncError("pull_failed", f"refused: {delegate}'s pull failed ({type(e).__name__})")
+            )
             state = load_state(vault)
-            state.inboxes[delegate].last_error = {"code": e.code, "at": _stamp(when)}
+            state.inboxes[delegate].last_error = {"code": failure.code, "at": _stamp(when)}
             save_state(vault, state)
-            raise
+            if failure is e:
+                raise
+            raise failure from e
     return result
+
+
+def _sweep(vault: Path) -> None:
+    """Remove the fetch folders a killed pull left behind (plain folders only; never through a symlink)."""
+    dir_fd = _state_dir(vault, create=True)
+    assert dir_fd is not None
+    try:
+        for name in os.listdir(dir_fd):
+            if not name.startswith("fetch-"):
+                continue
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                shutil.rmtree(name, dir_fd=dir_fd, ignore_errors=True)
+            else:
+                os.unlink(name, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _pull_once(vault: Path, state: InboxState, delegate: str, when: dt.datetime) -> Result:
@@ -1276,8 +1369,8 @@ def _pull_once(vault: Path, state: InboxState, delegate: str, when: dt.datetime)
             if fd is not None:
                 _check_ledger(fd)
             # 1. the signed record (taken entries older than TAKEN_KEPT go: stale_id and the ledger cover them)
-            horizon = when - TAKEN_KEPT
-            for old in [u for u in taken if dp.ULID_RE.match(u) and dp.ulid_time(u) < horizon]:
+            horizon = _stamp(when - TAKEN_KEPT)  # by when this computer took it, never by the agent's ULID time
+            for old in [u for u, e in taken.items() if _STAMP_RE.match(str(e.get("at", ""))) and e["at"] < horizon]:
                 del taken[old]
             for ulid, data in new:
                 taken[ulid] = {"mac": proposal_mac(delegate, ulid, data), "at": at}
@@ -1315,9 +1408,7 @@ def _pull_once(vault: Path, state: InboxState, delegate: str, when: dt.datetime)
     return result
 
 
-def pull_all(
-    vault: Path, *, gh: GhRunner = dm._gh, env: Mapping[str, str] | None = None
-) -> list[Result | RepoSyncError]:
+def pull_all(vault: Path, *, gh: GhRunner = _gh, env: Mapping[str, str] | None = None) -> list[Result | RepoSyncError]:
     """Pull every linked inbox; one failing, however it fails, doesn't stop the rest."""
     out: list[Result | RepoSyncError] = []
     for delegate in sorted(load_state(vault.resolve()).inboxes):

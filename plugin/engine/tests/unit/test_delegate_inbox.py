@@ -47,6 +47,7 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             monkeypatch.setenv(key, value)
     for key in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_INBOX_DIR", "SCOUT_DATA_DIR"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(di.ALLOW_LOCAL_ENV, "1")  # local bare inboxes: tests only
     v = (tmp_path / "vault").resolve()
     v.mkdir()
     _run("git", "init", "-q", "-b", "main", str(v))
@@ -949,7 +950,9 @@ def test_low_reset_clears_a_poisoned_high_water_mark(vault: Path, inbox: Path) -
 def test_low_old_taken_entries_are_pruned(vault: Path, inbox: Path) -> None:
     old = _ulid_at(dt.datetime.now(dt.UTC) - dt.timedelta(days=100))
     state = di.load_state(vault)
-    state.taken[D] = {old: {"mac": "0" * 64, "at": "x"}}
+    stamp = (dt.datetime.now(dt.UTC) - dt.timedelta(days=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    young_ulid_old_take = _ulid_at(dt.datetime.now(dt.UTC))  # the agent's ULID time says nothing: the stamp does
+    state.taken[D] = {old: {"mac": "0" * 64, "at": stamp}, young_ulid_old_take: {"mac": "0" * 64, "at": stamp}}
     di.save_state(vault, state)
     p = _valid()
     _commit_entries(inbox, {p.path: ("100644", p.to_bytes())})
@@ -964,10 +967,75 @@ def test_low_the_credential_helper_is_scouts_choice(vault: Path, tmp_path: Path)
         for i in range(int(env["GIT_CONFIG_COUNT"]))
         if env[f"GIT_CONFIG_KEY_{i}"] == "credential.helper"
     ]
-    assert helpers == ["", di.GH_CREDENTIAL]  # the user's helpers cleared, then gh's only
+    assert helpers == ["", di.gh_credential()]  # the user's helpers cleared, then gh's only (an absolute path)
     local = di.sandbox_env(vault, str(tmp_path / "inbox.git"), tmp_path / "x.git")
     assert [
         local[f"GIT_CONFIG_VALUE_{i}"]
         for i in range(int(local["GIT_CONFIG_COUNT"]))
         if local[f"GIT_CONFIG_KEY_{i}"] == "credential.helper"
     ] == [""]
+
+
+# ----- the delta re-review ---------------------------------------------------------------------
+
+
+def test_n1_a_deep_path_is_removed_by_its_top_folder(vault: Path, inbox: Path) -> None:
+    good = _valid()
+    deep = f"inbox/{D}/" + "a/" * 990 + "x.json"
+    _commit_entries(inbox, {deep: ("100644", b"{}"), f"inbox/{D}/a/b.json": ("100644", b"{}"),
+                            good.path: ("100644", good.to_bytes())})  # fmt: skip
+    r = di.pull(vault, D)
+    assert r.taken == [good.id] and r.refused == {"bad_path": 2} and r.removal is not None
+    assert _main_files(inbox) == set()
+    assert di.load_state(vault).inboxes[D].base == r.removal
+
+
+def test_n1_an_unexpected_failure_is_recorded_and_reported(
+    vault: Path, inbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _valid()
+    _commit_entries(inbox, {p.path: ("100644", p.to_bytes())})
+
+    def boom(*a: object, **k: object) -> str:
+        raise RecursionError("deep")
+
+    monkeypatch.setattr(di._Sandbox, "remove", boom)
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D)
+    assert e.value.code == "pull_failed" and di.load_state(vault).inboxes[D].last_error["code"] == "pull_failed"
+
+
+def test_n2_a_local_inbox_is_for_tests_only(
+    vault: Path, inbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(di.ALLOW_LOCAL_ENV)
+    with pytest.raises(RepoSyncError) as e:
+        di.link(vault, "duet", str(_bare(tmp_path, "duet-local")))
+    assert e.value.code == "inbox_local_refused"
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D)  # linked while the flag was on: still refused without it
+    assert e.value.code == "inbox_local_refused"
+
+
+def test_a_pull_sweeps_what_a_killed_pull_left(vault: Path, inbox: Path) -> None:
+    folder = vault.joinpath(*di.STATE_DIR)
+    (folder / "fetch-leftover" / "inbox.git").mkdir(parents=True)
+    di.pull(vault, D)
+    assert not (folder / "fetch-leftover").exists()
+    assert [n for n in os.listdir(folder) if n.startswith("fetch-")] == []
+
+
+def test_a_reader_other_than_the_owner_never_pulls(vault: Path, inbox: Path) -> None:
+    with pytest.raises(RepoSyncError) as e:
+        di.pull(vault, D, env={"SCOUT_READER": "autonomous"})
+    assert e.value.code == "headless_refused"
+
+
+def test_a_replaced_fetch_folder_refuses(vault: Path, inbox: Path, tmp_path: Path) -> None:
+    link = di.load_state(vault).inboxes[D]
+    with di._Sandbox(vault, link.remote) as box:
+        box.root.rename(tmp_path / "moved")
+        box.root.mkdir()
+        with pytest.raises(RepoSyncError) as e:
+            box.fetch("--depth=1")
+        assert e.value.code == "inbox_state_unsafe"
