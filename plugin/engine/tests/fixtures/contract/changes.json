@@ -354,6 +354,19 @@
     "wishlist-done": 1
   },
   "generated_at": "2026-11-16T12:00:00+00:00",
+  "needs_ok": [
+    {
+      "id": "gov-skip-carried-red",
+      "path": "governance-pending/skip-carried-red.md",
+      "state": "awaiting-ok",
+      "summary": "Let the briefing drop a red item nobody answered for six days",
+      "targets": [
+        "briefing"
+      ],
+      "why": "The same red item was carried for six days with no reply."
+    }
+  ],
+  "needs_ok_skipped": 1,
   "schema_version": 1,
   "since": "2026-10-17T12:00:00+00:00",
   "skipped_rows": 1,

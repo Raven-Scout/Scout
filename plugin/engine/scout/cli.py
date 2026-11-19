@@ -548,6 +548,199 @@ def cli_changes_scan(
     typer.echo(f"{len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill))} new change(s)")
 
 
+def _owner_changes(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for an owner-only ``scoutctl changes`` command; exit 2 (nothing written) for anyone else.
+
+    ``vault`` is where git, ``.scout-logs/`` and ``governance-pending/`` live (the CLI's own vault); owner rows and
+    settings are keyed to ``installed``, as ``changes --json`` reads them."""
+    import os
+
+    from scout import paths as _paths
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        installed = installed_vault(os.environ)
+        if not is_owner_caller(os.environ, installed):
+            raise PermissionError("this is the owner's decision; a scheduled run may not make it")
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            raise ValueError("vault directory missing")
+    except (ValueError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return vault, installed
+
+
+def _decision_surface(command: str, surface: str) -> str:
+    if surface not in ("scoutctl", "app"):
+        typer.echo(f"scoutctl changes {command}: --surface is scoutctl or app", err=True)
+        raise typer.Exit(2)
+    return surface
+
+
+_SURFACE_HELP = "Where the owner decided: scoutctl (default) or app."
+
+
+def _record_decision(command: str, kind: str, ref: str, surface: str, installed: Path, *, once: bool) -> None:
+    """Append an owner ``approval`` / ``verdict-wrong`` row, keyed to the installed vault. ``once``: dedupe on ref."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.models import Signal
+    from scout.changes.store import append_signal, append_signal_once
+
+    signal = Signal(ts=_dt.now(UTC), kind=kind, surface=surface, ref=ref)
+    try:
+        if once:
+            if not append_signal_once(signal, vault=installed, env=os.environ):
+                typer.echo("already recorded")
+        else:
+            append_signal(signal, vault=installed, env=os.environ)
+    except (OSError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+def _decide_gov(command: str, verb: str, gov_id: str, surface: str) -> None:
+    import os
+
+    from scout.changes.governance import decision, read_pending
+    from scout.changes.store import read_signals
+
+    surface = _decision_surface(command, surface)
+    vault, installed = _owner_changes(command)
+    if gov_id not in {p.id for p in read_pending(vault)[0]}:
+        typer.echo(f"scoutctl changes {command}: no pending governance change {gov_id!r}", err=True)
+        raise typer.Exit(2)
+    state = {"approve": "approved", "reject": "rejected"}[verb]
+    signals, _ = read_signals(vault, os.environ, owner_vault=installed)
+    if decision(signals, gov_id) == state:
+        typer.echo(f"already {state}")
+        return
+    # Not deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
+    _record_decision(command, "approval", f"{verb}:{gov_id}", surface, installed, once=False)
+
+
+@changes_app.command("approve")
+def cli_changes_approve(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Approve a pending governance change (owner only). The newest decision stands."""
+    _decide_gov("approve", "approve", gov_id, surface)
+
+
+@changes_app.command("reject")
+def cli_changes_reject(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Reject a pending governance change (owner only). The newest decision stands."""
+    _decide_gov("reject", "reject", gov_id, surface)
+
+
+@changes_app.command("undo")
+def cli_changes_undo(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose test has started."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Ask for a tested change to be rolled back (owner only). Governance changes can't be undone this way."""
+    import os
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from scout.changes.models import CHANGE_ID_RE
+    from scout.changes.report import changes_report
+    from scout.config import resolve_timezone
+
+    surface = _decision_surface("undo", surface)
+    vault, installed = _owner_changes("undo")
+    now = _dt.now(UTC)
+    doc = changes_report(
+        vault,
+        now=now,
+        since=now - timedelta(days=3650),
+        env=os.environ,
+        tz=resolve_timezone(vault),
+        limit=5000,
+        owner_vault=installed,
+    )
+    change = next((c for c in doc["changes"] if c["id"] == change_id), None) if CHANGE_ID_RE.match(change_id) else None
+    if change is None:
+        typer.echo(f"scoutctl changes undo: no such change {change_id!r}", err=True)
+        raise typer.Exit(2)
+    if change["governance"]:
+        typer.echo("scoutctl changes undo: a governance change is never undone automatically", err=True)
+        raise typer.Exit(2)
+    if change["test"]["state"] == "not-tested":
+        typer.echo(
+            "scoutctl changes undo: this change isn't under test (interactive, backfilled or not a brain edit)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _record_decision("undo", "approval", f"undo:{change_id}", surface, installed, once=True)
+
+
+@changes_app.command("wrong")
+def cli_changes_wrong(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose verdict you disagree with."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Mark a change's verdict wrong (owner only); it counts as feedback."""
+    from scout.changes.models import CHANGE_ID_RE
+
+    surface = _decision_surface("wrong", surface)
+    _, installed = _owner_changes("wrong")
+    if not CHANGE_ID_RE.match(change_id):
+        typer.echo(f"scoutctl changes wrong: not a change id: {change_id!r}", err=True)
+        raise typer.Exit(2)
+    _record_decision("wrong", "verdict-wrong", change_id, surface, installed, once=True)
+
+
+@changes_app.command("auto-rollback")
+def cli_changes_auto_rollback(
+    mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
+) -> None:
+    """Set the auto-rollback mode (owner only). It acts only once calibration has ended."""
+    import os
+    from dataclasses import replace
+
+    from scout.changes.settings import AUTO_MODES, read_settings, write_settings
+
+    if mode not in AUTO_MODES:
+        typer.echo(f"scoutctl changes auto-rollback: mode is one of {', '.join(AUTO_MODES)}", err=True)
+        raise typer.Exit(2)
+    _owner_changes("auto-rollback")
+    try:
+        write_settings(replace(read_settings(os.environ), auto_rollback=mode), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes auto-rollback: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@changes_app.command("calibrated")
+def cli_changes_calibrated(
+    reset: bool = typer.Option(False, "--reset", help="Go back to calibrating (clears the date)."),
+) -> None:
+    """End calibration as of today in the host timezone (owner only), or `--reset` to start it again."""
+    import os
+    from dataclasses import replace
+    from datetime import datetime as _dt
+
+    from scout.changes.settings import read_settings, write_settings
+    from scout.config import resolve_timezone
+
+    vault, _ = _owner_changes("calibrated")
+    today = None if reset else _dt.now(resolve_timezone(vault)).date()
+    try:
+        write_settings(replace(read_settings(os.environ), calibrated_on=today), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes calibrated: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
 @engagement_app.command("record")
 def cli_engagement_record(
     kind: str = typer.Argument(

@@ -341,3 +341,183 @@ def test_changes_json_with_no_home_exits_2(cli, tmp_path, home, monkeypatch):
     r = cli(["changes", "--json"])
     assert r.exit_code == 2 and not isinstance(r.exception, RuntimeError)
     assert "no home directory" in r.output
+
+
+# --- owner decisions: approve / reject / undo / wrong / auto-rollback / calibrated ---------------------------------
+
+_PENDING = """---
+summary: Let the briefing skip a carried red item
+why: The same red item was carried for six days with no reply.
+---
+
+```diff
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -1 +1 @@
+-old
++new
+```
+"""
+
+
+def _pending(vault: Path, slug: str = "skip-red") -> str:
+    folder = vault / "governance-pending"
+    folder.mkdir(exist_ok=True)
+    (folder / f"{slug}.md").write_text(_PENDING, encoding="utf-8")
+    return f"gov-{slug}"
+
+
+def _owner_rows(home: Path) -> list[dict]:
+    return [json.loads(x) for p in home.rglob("engagement.jsonl") for x in p.read_text().splitlines()]
+
+
+def _needs_ok(cli) -> dict[str, str]:
+    r = cli(["changes", "--json", "--since", "1d"])
+    assert r.exit_code == 0, r.output
+    return {n["id"]: n["state"] for n in json.loads(r.stdout)["needs_ok"]}
+
+
+def test_approve_reject_undo_wrong_are_owner_only(cli, git_vault, home, monkeypatch):
+    gov = _pending(git_vault)
+    assert cli(["changes", "scan"]).exit_code == 0
+    change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    for args in (
+        ["approve", gov],
+        ["reject", gov],
+        ["undo", change],
+        ["wrong", change],
+        ["auto-rollback", "targeted"],
+        ["calibrated"],
+        ["calibrated", "--reset"],
+    ):
+        assert cli(["changes", *args]).exit_code == 2, args
+    assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("settings.json"))
+    assert not (git_vault / ".scout-logs/engagement.jsonl").exists()
+
+
+def test_a_live_run_with_its_env_hidden_is_refused_too(cli, vault, home, monkeypatch):
+    gov = _pending(vault)
+    _a_live_run(monkeypatch, runs=True)
+    assert cli(["changes", "approve", gov]).exit_code == 2
+    assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("settings.json"))
+
+
+def test_approve_unknown_id_exits_2(cli, vault, home):
+    _pending(vault)
+    for verb in ("approve", "reject"):
+        r = cli(["changes", verb, "gov-nope"])
+        assert r.exit_code == 2 and "no pending governance change" in r.output
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def test_approve_then_changes_json_shows_the_state(cli, vault, home):
+    gov = _pending(vault)
+    assert _needs_ok(cli) == {gov: "awaiting-ok"}
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    [row] = _owner_rows(home)
+    assert (row["kind"], row["ref"], row["surface"]) == ("approval", f"approve:{gov}", "scoutctl")
+    assert cli(["changes", "reject", gov, "--surface", "app"]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "rejected"}
+
+
+def test_approve_reject_approve_ends_approved(cli, vault, home):
+    gov = _pending(vault)
+    for verb in ("approve", "reject", "approve"):
+        assert cli(["changes", verb, gov]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    assert [r["ref"] for r in _owner_rows(home)] == [f"approve:{gov}", f"reject:{gov}", f"approve:{gov}"]
+
+
+def test_repeating_the_standing_decision_is_a_no_op(cli, vault, home):
+    gov = _pending(vault)
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    again = cli(["changes", "approve", gov])
+    assert again.exit_code == 0 and again.output.strip() == "already approved"
+    assert len(_owner_rows(home)) == 1
+    assert cli(["changes", "reject", gov]).exit_code == 0
+    assert cli(["changes", "reject", gov]).output.strip() == "already rejected"
+
+
+def test_bad_surface_exits_2(cli, vault, home):
+    gov = _pending(vault)
+    assert cli(["changes", "approve", gov, "--surface", "kb"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def _commit_file(repo: Path, path: str, message: str) -> None:
+    (repo / path).write_text(message + "\n")
+    _git(repo, "add", path)
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def test_undo_records_once_for_a_tested_change(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]
+    assert change["test"]["state"] == "testing"
+    first = cli(["changes", "undo", change["id"]])
+    assert first.exit_code == 0 and first.output.strip() == ""
+    assert cli(["changes", "undo", change["id"]]).output.strip() == "already recorded"
+    [row] = _owner_rows(home)
+    assert (row["kind"], row["ref"]) == ("approval", f"undo:{change['id']}")
+
+
+def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
+    _commit_file(git_vault, "DREAMING.md", "interactive: tweak DREAMING.md")
+    _commit_file(
+        git_vault,
+        "RESEARCH.md",
+        "dreaming [22:12]: RESEARCH.md self-edit — y\n\nScout-Change-Governance: yes",
+    )
+    assert cli(["changes", "scan", "--since", "2d"]).exit_code == 0
+    changes = json.loads(cli(["changes", "--json"]).stdout)["changes"]
+    governance = next(c for c in changes if c["governance"])
+    r = cli(["changes", "undo", governance["id"]])
+    assert r.exit_code == 2 and "governance" in r.output
+    untested = [c for c in changes if c["test"]["state"] == "not-tested"]
+    assert untested, "the interactive change is listed and not under test"
+    r = cli(["changes", "undo", untested[0]["id"]])
+    assert r.exit_code == 2 and "isn't under test" in r.output
+    assert cli(["changes", "undo", "chg-ffffffffffff"]).exit_code == 2
+    assert cli(["changes", "undo", "nonsense"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    assert cli(["changes", "wrong", cid, "--surface", "app"]).exit_code == 0
+    assert cli(["changes", "wrong", cid]).output.strip() == "already recorded"
+    [row] = _owner_rows(home)
+    assert (row["kind"], row["ref"], row["surface"]) == ("verdict-wrong", cid, "app")
+    assert json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["test"]["marked_wrong"] is True
+    assert cli(["changes", "wrong", "not-an-id"]).exit_code == 2
+
+
+def test_auto_rollback_writes_settings(cli, vault, home):
+    from scout.changes.settings import read_settings
+
+    assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 0
+    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
+    assert json.loads(cli(["changes", "--json"]).stdout)["auto_rollback"] == "targeted"
+    assert cli(["changes", "auto-rollback", "sometimes"]).exit_code == 2
+    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
+    assert not (vault / ".scout-logs/settings.json").exists()
+
+
+def test_calibrated_sets_today_in_the_host_zone_and_resets(cli, vault, home):
+    from datetime import datetime
+
+    from scout.changes.settings import read_settings
+    from scout.config import resolve_timezone
+
+    assert cli(["changes", "auto-rollback", "one-at-a-time"]).exit_code == 0
+    assert cli(["changes", "calibrated"]).exit_code == 0
+    settings = read_settings({"HOME": str(home)})
+    assert settings.calibrated_on == datetime.now(resolve_timezone(vault)).date()
+    assert settings.auto_rollback == "one-at-a-time"  # the other settings are kept
+    assert json.loads(cli(["changes", "--json"]).stdout)["calibrating"] is False
+    assert cli(["changes", "calibrated", "--reset"]).exit_code == 0
+    assert read_settings({"HOME": str(home)}).calibrated_on is None

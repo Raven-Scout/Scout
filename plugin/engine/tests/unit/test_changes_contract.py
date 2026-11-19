@@ -131,6 +131,16 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
     ]
     for kind, surface, ts, session, ref in rows:
         append_signal(Signal(ts=ts, kind=kind, surface=surface, session=session, ref=ref), vault=vault, env=env)
+    # One governance change waiting for the owner's OK (one file that doesn't fit is counted, not listed).
+    pending = vault / "governance-pending"
+    pending.mkdir()
+    (pending / "skip-carried-red.md").write_text(
+        "---\nsummary: Let the briefing drop a red item nobody answered for six days\n"
+        "why: The same red item was carried for six days with no reply.\ntargets:\n  - briefing\n---\n\n"
+        "```diff\n--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1 +1 @@\n-old\n+new\n```\n",
+        encoding="utf-8",
+    )
+    (pending / "not-a-proposal.md").write_text("no frontmatter\n", encoding="utf-8")
     # One torn line in each file.
     for path in (vault / ".scout-logs" / CHANGES_NAME, vault / ".scout-logs" / ENGAGEMENT_NAME):
         with path.open("a", encoding="utf-8") as f:
@@ -168,6 +178,17 @@ def test_changes_contract_matches_canonical(tmp_path):
     assert {tests[k]["state"] for k in ("kb-structure", "rollback", "upgrade")} == {"not-tested"}
     rolled = tests["brain-edit"]
     assert rolled["verdict"] == "rolled back" and rolled["rolled_back_by"] == "chg-000000000004"
+    assert doc["needs_ok"] == [
+        {
+            "id": "gov-skip-carried-red",
+            "summary": "Let the briefing drop a red item nobody answered for six days",
+            "why": "The same red item was carried for six days with no reply.",
+            "targets": ["briefing"],
+            "path": "governance-pending/skip-carried-red.md",
+            "state": "awaiting-ok",
+        }
+    ]
+    assert doc["needs_ok_skipped"] == 1
     # The rollback (untested) and the 16-days-older wishlist-done change are not in the phase change's overlap.
     assert tests["phase"]["overlap"] == ["chg-000000000000", "chg-000000000001"]
     _check_or_regen(CANONICAL_CHANGES, _text(doc))

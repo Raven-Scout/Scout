@@ -45,10 +45,13 @@ def changes_report(
 
     Each change carries its ``test`` (scout.changes.verdicts), computed now from both engagement stores, the same
     rows ``engagement_report`` reads; days are local dates in ``tz``. ``calibrating`` and ``auto_rollback`` come from
-    the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only.
+    the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only. ``needs_ok`` lists
+    every readable ``governance-pending/`` file with the owner's decision on it (``awaiting-ok``, ``approved`` or
+    ``rejected``); ``needs_ok_skipped`` counts files that didn't fit.
 
     Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
     which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
+    from scout.changes.governance import decision, read_pending
     from scout.changes.settings import read_settings
     from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
 
@@ -81,6 +84,18 @@ def changes_report(
     # Leaving them out bounds the work a stale or forged row can cause.
     floor = since - timedelta(days=settings.review_days + 2)
     tests = evaluate([c for c in unique.values() if floor <= c.ts <= now], signals, now=now, tz=tz, settings=settings)
+    pending, pending_skipped = read_pending(vault)
+    needs_ok = [
+        {
+            "id": p.id,
+            "summary": p.summary,
+            "why": p.why,
+            "targets": list(p.targets),
+            "path": p.path,
+            "state": decision(signals, p.id),
+        }
+        for p in pending
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(),
@@ -92,6 +107,8 @@ def changes_report(
         "auto_rollback": settings.auto_rollback,
         "changes": [{**c.to_row(), "test": tests[c.id]} for c in inside[:limit]],
         "counts": counts,
+        "needs_ok": needs_ok,
+        "needs_ok_skipped": pending_skipped,
     }
 
 
