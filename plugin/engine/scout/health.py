@@ -1377,6 +1377,70 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
+def delegate_inbox_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+    """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, or whose copies
+    folder holds files no pull took (#550 V4b1). Nothing for a vault with no inbox."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists():
+        return []
+    from scout.delegate_inbox_sync import summary
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        inboxes = summary(vault, now=now)
+    except RepoSyncError as e:
+        return [
+            Finding(
+                id="delegate.inbox_state",
+                severity="yellow",
+                since=None,
+                summary=f"The delegate inbox state can't be trusted ({e.code}), so no agent's proposals are taken",
+                fix="Move .scout-state/delegate-inbox/ aside and link each inbox again: scoutctl delegate inbox <id>",
+                source="state",
+            )
+        ]
+    now = now or datetime.now(UTC)
+    found = []
+    for key, box in inboxes.items():
+        if box["last_error"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_failed",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: the last pull failed ({box['last_error']}); its agent's "
+                    "proposals wait",
+                    fix=f"See why with: scoutctl inbox pull {key}",
+                    source="state",
+                )
+            )
+            continue
+        pulled = _parse_ts(box["last_pull"]) or _parse_ts(box["linked_at"])
+        if pulled is not None and now - pulled > timedelta(days=1):
+            found.append(
+                Finding(
+                    id="delegate.inbox_stalled",
+                    severity="yellow",
+                    since=pulled,
+                    summary=f"Delegate inbox {key} hasn't been pulled for over a day; is the schedule tick running?",
+                    fix="Pull now with: scoutctl inbox sync (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+        if box["untaken"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_untaken",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: {box['untaken']} file(s) in .scout-inbox/agents/{key}/ were "
+                    "never taken by a pull (something else put them there); they are ignored",
+                    fix=f"Look at them, then delete them: .scout-inbox/agents/{key}/",
+                    source="state",
+                )
+            )
+    return found
+
+
 def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
     """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
     (#550 V2c): its agent reads an older copy until one works.
@@ -2130,7 +2194,7 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
     config = config_findings(vault)
-    delegates = delegate_findings(vault)
+    delegates = delegate_findings(vault) + delegate_inbox_findings(vault)
     return build_report(
         found + sched + lanes + updates + engine + config + delegates,
         now=now,

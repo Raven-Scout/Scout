@@ -1131,3 +1131,9 @@ def test_git_hooks_dir_without_git_is_none(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(hook_paths.subprocess, "run", no_git)
     assert hook_paths.git_hooks_dir(tmp_path) is None
+
+
+def test_a_run_cant_write_the_agents_inbox_copies(vault: Path) -> None:
+    rel = ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"
+    assert "agents' inbox copies" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
+    assert "agents' inbox copies" in _denied(_bash(vault, f"echo x > {rel}"))

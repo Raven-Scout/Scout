@@ -226,6 +226,11 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
             readable += [Rule("allow", "file-read-data", "literal", f"{form}/{name}") for name in SECRETS_READABLE]
             # Listing the folder shows names, not secrets: runs check `ls ~/.scout-secrets/ | grep telegram`.
             readable.append(Rule("allow", "file-read-data", "literal", form))
+    if vault is not None:
+        # What the owner's agents proposed (#550 V4b): untrusted text a run never reads (spec §7.1b). Writes are
+        # already denied above (hook_paths.AGENT_TEXT is a protected tree); this adds the kernel's read deny.
+        for form in _forms(str(vault.joinpath(*hook_paths.AGENT_TEXT_DIR)), env):
+            secrets.append(Rule("deny", "file-read-data", "subpath", form))
     rules += protected + secrets
     # 2. the carve-outs
     allows: list[Rule] = []

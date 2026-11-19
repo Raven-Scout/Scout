@@ -1387,6 +1387,11 @@ def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
         ("python3 -IPm scout delegate key duet --revoke", True),
         ("python3 -mscout delegate link duet --remote x", True),
         ("python3 -W ignore -m scout delegate trust-state", True),
+        ("scoutctl inbox pull --all", True),  # #550 V4b: the inbox is the owner's, or the tick's own step
+        ("scoutctl inbox apply grok-personal", True),
+        ("python3 -Pm scout inbox revert 01JD5Z0000000000000000ABCD", True),
+        ("scoutctl inbox sync", True),
+        ("scoutctl inbox propose observation --text x", False),  # the agent's side: not on the owner's runs
         ("python3 -Im scout delegate sync", False),
         ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
         ("scoutctl delegate sync duet", False),

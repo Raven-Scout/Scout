@@ -109,6 +109,10 @@ class SessionContext:
     # scout.action_items.past_due. None when it couldn't be computed; `action-items check-demotion`.
     past_due_tasks: list[dict[str, Any]] | None = field(default_factory=list)
     past_due_source: str = ""  # the date of the daily file they were read from
+    # What the owner's agents changed in today's file (#550 V4b, spec §7.1b), read from the signed inbox state,
+    # never from git messages a run could forge: {"delegate", "op", "tag", "date", "commit", "ulid", "at"}.
+    # Ids only: agent text never reaches a run. `phases/core/action-items.md` credits these, never the owner.
+    delegate_changes: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -482,6 +486,7 @@ def gather(
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
+    delegate_changes = get_delegate_changes(target, now_dt.date()) if full else []
 
     return SessionContext(
         generated_at=generated_at,
@@ -501,7 +506,36 @@ def gather(
         linear_report_before=linear_report_before,
         past_due_tasks=past_due,
         past_due_source=past_due_source,
+        delegate_changes=delegate_changes,
     )
+
+
+def get_delegate_changes(scout_dir: Path, day: date) -> list[dict[str, Any]]:
+    """Each change an agent's proposal made to ``day``'s daily file that still stands (applied, not reverted),
+    from the signed inbox state. Empty with no inbox, or a state that doesn't verify: never a guess."""
+    from scout import delegate_inbox
+
+    try:
+        state = delegate_inbox.load_state(scout_dir)
+    except Exception:  # noqa: BLE001 - no trusted state, no rows
+        return []
+    rows: list[dict[str, Any]] = []
+    for delegate, applied in sorted(state.applied.items()):
+        for ulid, entry in sorted(applied.items()):
+            if entry.get("outcome") != "applied" or entry.get("date") != day.isoformat():
+                continue
+            rows.append(
+                {
+                    "delegate": delegate,
+                    "op": entry.get("op"),
+                    "tag": entry.get("tag"),
+                    "date": entry.get("date"),
+                    "commit": entry.get("commit"),
+                    "ulid": ulid,
+                    "at": entry.get("at"),
+                }
+            )
+    return rows
 
 
 def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, Any]] | None]:

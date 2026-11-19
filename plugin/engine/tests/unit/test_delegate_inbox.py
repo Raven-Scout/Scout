@@ -1311,3 +1311,24 @@ def test_cli_every_inbox_command_and_output(
     monkeypatch.setattr(di, "deploy_key", refusing_key)
     r = runner.invoke(app, ["delegate", "key", "duet", "--inbox", "--json"])
     assert r.exit_code == 2 and json.loads(r.output)["code"] == "inbox_not_linked"
+
+
+def test_pull_keeps_the_copies_out_of_commits(vault: Path, inbox: Path, clone: Path) -> None:
+    """#550 V4b1: a .gitignore in .scout-inbox/agents/ keeps every copy uncommitted; each ledger is committed."""
+    gi = vault.joinpath(*di.INBOX_DIR, di.COPIES_IGNORE)
+    gi.parent.mkdir(parents=True)
+    gi.symlink_to(vault / "elsewhere")  # a planted link is replaced, never written through
+    p = _propose(clone)
+    di.pull(vault, D)
+    assert not gi.is_symlink() and gi.read_text(encoding="utf-8") == di.COPIES_IGNORE_TEXT
+    assert not (vault / "elsewhere").exists()
+    ignored = subprocess.run(
+        ["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/{p.id}.json"], check=False
+    )
+    kept = subprocess.run(
+        ["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/{di.LEDGER}"], check=False
+    )
+    assert ignored.returncode == 0 and kept.returncode == 1
+    q = _propose(clone)
+    di.pull(vault, D)  # the file is right already: left as it is
+    assert gi.read_text(encoding="utf-8") == di.COPIES_IGNORE_TEXT and di.copy_path(vault, D, q.id).exists()
