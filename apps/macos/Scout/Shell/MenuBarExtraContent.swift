@@ -13,6 +13,8 @@ struct MenuBarExtraContent: View {
     @Environment(\.dismiss) private var dismiss
     @State private var appeared = false
     @State private var hoveredSlotKey: String?
+    /// "Install wake schedule" asks first: it changes the Mac's power settings.
+    @State private var confirmingWake = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -26,6 +28,13 @@ struct MenuBarExtraContent: View {
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+            }
+            if confirmingWake {
+                wakeConfirmation
+                    .padding(.top, 10)
+            } else if let result = state.wakeScheduleResult {
+                wakeResult(result)
                     .padding(.top, 10)
             }
             footer
@@ -54,7 +63,17 @@ struct MenuBarExtraContent: View {
         .onDisappear { appeared = false }
     }
 
+    /// The full header when it fits; otherwise the Open button drops its
+    /// word, so the urgent count never truncates to "23 urg…" (UI audit R10).
     private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            headerRow(compact: false)
+            headerRow(compact: true)
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
+    }
+
+    private func headerRow(compact: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "binoculars.fill")
                 .font(DS.sans(15, weight: .semibold))
@@ -69,6 +88,7 @@ struct MenuBarExtraContent: View {
                     .font(DS.sans(10.5, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
             }
+            .fixedSize()
             Spacer()
             if state.urgentActionCount > 0 {
                 HStack(spacing: 4) {
@@ -80,19 +100,26 @@ struct MenuBarExtraContent: View {
                 .padding(.horizontal, 7)
                 .frame(height: 24)
                 .background(Capsule().fill(DS.Priority.urgent.opacity(0.1)))
+                .fixedSize()
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
                 .help("Urgent action items waiting for attention")
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(state.urgentActionCount) urgent action items")
             }
             Button {
                 openMainWindow()
             } label: {
-                Label("Open", systemImage: "macwindow")
+                if compact {
+                    Image(systemName: "macwindow")
+                } else {
+                    Label("Open", systemImage: "macwindow")
+                }
             }
             .buttonStyle(.ds(.secondary, size: .small))
+            .fixedSize()
             .help("Open the full Scout window")
+            .accessibilityLabel("Open the full Scout window")
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
     }
 
     private var statusCard: some View {
@@ -101,21 +128,27 @@ struct MenuBarExtraContent: View {
             Circle()
                 .fill(status.tone.color)
                 .frame(width: 8, height: 8)
+            // Wraps instead of truncating ("Last: Consolidation · 1 ho…"):
+            // the panel's window sizes to what its content asks for, so the
+            // text has to ask for its second line (UI audit R10).
             VStack(alignment: .leading, spacing: 2) {
                 Text(status.title)
                     .font(DS.sans(12.5, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(status.detail)
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Ink.p3)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(status.title). \(status.detail)")
-            Spacer()
             if let fix = status.fix {
                 Button(fix.title) { perform(fix) }
                     .buttonStyle(.ds(.secondary, size: .small))
+                    .fixedSize()
             }
         }
         .padding(11)
@@ -245,9 +278,10 @@ struct MenuBarExtraContent: View {
                     }
                 }
                 footerButton("Install wake schedule", systemImage: "alarm") {
-                    dismiss()
-                    installWakeSchedule()
+                    state.wakeScheduleResult = nil
+                    confirmingWake = true
                 }
+                .disabled(state.installingWakeSchedule)
                 Spacer()
                 footerButton("Quit Scout", systemImage: "power") {
                     NSApp.terminate(nil)
@@ -289,14 +323,71 @@ struct MenuBarExtraContent: View {
         }
     }
 
-    private func installWakeSchedule() {
-        Task {
-            _ = try? await state.runner.run(
-                executable: state.scoutctlExecutable,
-                arguments: state.scoutctlArgumentsPrefix + ["schedule", "install-wake-schedule"],
-                environment: [:],
-                workingDirectory: state.scoutDirectory
-            )
+    // MARK: - Wake schedule
+
+    private var wakeConfirmation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wake this Mac for scheduled runs?")
+                .font(DS.sans(12, weight: .semibold))
+                .foregroundStyle(DS.Ink.p1)
+            Text("Scout asks macOS to wake the Mac at the time of the earliest weekday run, on that run's days. It only works while the Mac is plugged in, and it replaces any repeating wake or power-on time already set on this Mac.")
+                .font(DS.sans(11))
+                .foregroundStyle(DS.Ink.p3)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { confirmingWake = false }
+                    .buttonStyle(.ds(.secondary, size: .small))
+                    .keyboardShortcut(.cancelAction)
+                Button("Install") {
+                    confirmingWake = false
+                    Task { await state.installWakeSchedule() }
+                }
+                .buttonStyle(.ds(.primary, size: .small))
+            }
+        }
+        .padding(11)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(DS.Paper.raised)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+        )
+    }
+
+    private func wakeResult(_ result: AppState.WakeScheduleResult) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 6) {
+                ProblemView(problem: result.problem, style: .inline)
+                if let command = result.sudoCommand {
+                    // The command on its own line, selectable and copyable:
+                    // Copy details would bring the whole engine output along.
+                    Text(command)
+                        .font(DS.mono(10.5))
+                        .foregroundStyle(DS.Ink.p1)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.sunk))
+                    Button("Copy command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                    }
+                    .buttonStyle(.ds(.secondary, size: .small))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                state.wakeScheduleResult = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(DS.sans(10, weight: .semibold))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(DS.Ink.p3)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
         }
     }
 }

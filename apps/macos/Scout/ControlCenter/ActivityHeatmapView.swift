@@ -39,9 +39,31 @@ struct ActivityHeatmapView: View {
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
+            if let day = dayFilter {
+                dayFilterChip(day)
+            }
             rangeSegment
         }
         .padding(.bottom, 14)
+    }
+
+    /// The day the run list is filtered to, as a removable token: clicking a
+    /// day only outlined its cell, so a filtered list looked like a short one
+    /// (UI audit R10, #22).
+    private func dayFilterChip(_ day: Date) -> some View {
+        Button {
+            dayFilter = nil
+        } label: {
+            Label(Self.dayFilterLabel(day), systemImage: "xmark.circle.fill")
+        }
+        .buttonStyle(.ds(.secondary, size: .small))
+        .help("Show runs from every day")
+        .accessibilityLabel("Showing only \(day.formatted(.dateTime.weekday(.wide).month(.wide).day())). Show every day")
+    }
+
+    /// "Runs on Nov 12". Pure.
+    nonisolated static func dayFilterLabel(_ day: Date) -> String {
+        "Runs on \(day.formatted(.dateTime.month(.abbreviated).day()))"
     }
 
     private var rangeSegment: some View {
@@ -331,7 +353,6 @@ struct ActivityHeatmapView: View {
         runs: [Run], dayCount: Int, calendar: Calendar, today: Date
     ) -> [HeatmapCell] {
         let start = calendar.date(byAdding: .day, value: -(dayCount - 1), to: today)!
-        let failStatuses: Set<RunStatus> = [.failure, .timeout, .rateLimited]
         // Single O(runs) pass: tally each run into its start-of-day bucket.
         var byDay: [Date: (succ: Int, fail: Int, cost: Decimal)] = [:]
         for run in runs {
@@ -339,7 +360,7 @@ struct ActivityHeatmapView: View {
             var bucket = byDay[key] ?? (0, 0, Decimal(0))
             if run.status == .success {
                 bucket.succ += 1
-            } else if failStatuses.contains(run.status) {
+            } else if RunOutcomeDisplay.isFailure(run.status) {
                 bucket.fail += 1
             }
             if let c = run.cost { bucket.cost += c }

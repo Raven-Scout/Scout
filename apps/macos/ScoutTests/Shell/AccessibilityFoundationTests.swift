@@ -32,9 +32,19 @@ struct AccessibilityFoundationTests {
     func settingsInputIsLabelled() async {
         var text = ""
         let binding = Binding(get: { text }, set: { text = $0 })
-        let nodes = await AccessibilityTree.nodes(of: SettingsField(label: "Linear workspace", help: "Your workspace.") {
-            SettingsInput(text: binding, placeholder: "e.g. acme-co")
-        })
+        // A loaded CI runner can settle the tree before the field takes its
+        // label from the environment (it flaked at 7.5–10 s), so read again
+        // until the label shows or a generous deadline passes. Each read is a
+        // fresh host, so a slow first one doesn't poison the next.
+        let deadline = Date().addingTimeInterval(30)
+        var nodes: [AccessibilityTree.Node] = []
+        repeat {
+            nodes = await AccessibilityTree.nodes(of: SettingsField(label: "Linear workspace", help: "Your workspace.") {
+                SettingsInput(text: binding, placeholder: "e.g. acme-co")
+            })
+            if nodes.contains(where: { $0.label == "Linear workspace" }) { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        } while Date() < deadline
         #expect(nodes.contains { $0.label == "Linear workspace" },
                 "\(nodes.map(\.description).joined(separator: "\n"))")
     }
@@ -57,7 +67,7 @@ struct AccessibilityFoundationTests {
         var selection = SidebarItem.schedules
         let binding = Binding(get: { selection }, set: { selection = $0 })
         let nodes = await AccessibilityTree.nodes(
-            of: SidebarView(selection: binding, proposalsBadge: 2, settingsAttention: true),
+            of: SidebarView(selection: binding, proposalsBadge: 2, settingsBadge: 1, settingsAttention: true),
             size: CGSize(width: 240, height: 700))
         let ids = Set(nodes.map(\.identifier))
         for item in SidebarItem.allCases {
@@ -67,8 +77,11 @@ struct AccessibilityFoundationTests {
         let proposals = nodes.first { $0.identifier == SidebarItem.proposals.accessibilityIdentifier }
         #expect(proposals?.label == "Proposals")
         #expect(proposals?.value == "2 awaiting a decision")
-        let settings = nodes.first { $0.identifier == SidebarItem.settings.accessibilityIdentifier }
-        #expect(settings?.value == "needs attention")
+        // Settings isn't a page (UI audit #10): its row opens the ⌘, window,
+        // and still says why it needs a look.
+        let settings = nodes.first { $0.identifier == SidebarView.settingsRowIdentifier }
+        #expect(settings?.label == "Settings")
+        #expect(settings?.value == "1 update available, needs attention")
         // The system badge must not be a second element saying "2" on top of
         // the row's own "2 awaiting a decision".
         let strayBadges = nodes.filter { $0.label == "2" || $0.value == "2" }
@@ -82,12 +95,11 @@ struct AccessibilityFoundationTests {
         let keys = SidebarItem.allCases.compactMap(\.goShortcutKey)
         #expect(Set(keys).count == keys.count, "two pages share a Go shortcut")
         // The sidebar's Scout section, in the order it draws them.
-        let scoutRows = SidebarItem.allCases.filter { $0 != .settings }
-        for (index, item) in scoutRows.enumerated() {
+        for (index, item) in SidebarItem.allCases.enumerated() {
             #expect(item.goShortcutKey == Character(String(index + 1)), "\(item.title) is row \(index + 1)")
         }
-        // Settings is in the App section and has ⌘, from the app menu.
-        #expect(SidebarItem.settings.goShortcutKey == nil)
+        // Settings isn't a page: it is the ⌘, window only (UI audit #10).
+        #expect(!SidebarItem.allCases.map(\.title).contains("Settings"))
     }
 
     @Test("page titles and identifiers are unique and non-empty")
@@ -104,8 +116,10 @@ struct AccessibilityFoundationTests {
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 0, attention: false, tabsGated: false) == "")
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 1, attention: false, tabsGated: false) == "1 needs you")
         #expect(SidebarView.accessibilityValue(for: .sessions, badge: 3, attention: false, tabsGated: false) == "3 need you")
-        #expect(SidebarView.accessibilityValue(for: .settings, badge: 2, attention: true, tabsGated: true)
-                == "2 updates available, needs attention")
+        #expect(SidebarView.accessibilityValue(for: .health, badge: 0, attention: true, tabsGated: true)
+                == "needs attention, unavailable until Scout is set up")
+        #expect(SidebarView.settingsAccessibilityValue(updates: 2, attention: true) == "2 updates available, needs attention")
+        #expect(SidebarView.settingsAccessibilityValue(updates: 0, attention: false) == "")
         #expect(SidebarView.accessibilityValue(for: .wishlist, badge: 0, attention: false, tabsGated: true)
                 == "unavailable until Scout is set up")
     }

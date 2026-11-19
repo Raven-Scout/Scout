@@ -60,10 +60,18 @@ nonisolated struct Problem: Equatable, Hashable, Sendable, Identifiable {
 
 extension Problem {
     /// A run that failed with a run-ledger `failure_class`.
+    /// Failure classes that clear by themselves (a usage limit, a busy
+    /// login, the network, a busy folder): a warning, not an error. Keys are
+    /// `DisplayName.normalized`.
+    static let softFailureClasses: Set<String> = ["ratelimited", "authrace", "network", "gitlock", "leaseheld"]
+
+    static func isSoftFailureClass(_ raw: String) -> Bool {
+        softFailureClasses.contains(DisplayName.normalized(raw))
+    }
+
     init(failureClass: String, details: String? = nil) {
         let e = DisplayName.failureClass(failureClass)
-        let soft = ["ratelimited", "authrace", "network", "gitlock", "leaseheld"]
-            .contains(DisplayName.normalized(failureClass))
+        let soft = Self.isSoftFailureClass(failureClass)
         let combined = [details, e.details].compactMap { $0 }.joined(separator: "\n")
         self.init(severity: soft ? .warning : .error, title: e.title,
                   impact: e.why, fix: e.fix, details: combined)

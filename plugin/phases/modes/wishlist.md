@@ -68,7 +68,7 @@ Select actionable items and push as far as possible. Don't artificially limit yo
 
 After executing (or deciding to skip), update each item file's frontmatter `status:` in place — never move or delete the file (git is the archive; Scout.app and this phase filter by `status:`).
 
-**The item file is a card, not a log.** Scout.app shows its whole body, so it holds only the request (a few lines) and a `## Status` section: one or two sentences on where it stands now, then the open sub-tasks. Dated entries — what each run did or delivered, verification, ticked sub-tasks — go in the item's progress note, `docs/wishlist/progress/<item file name>`, newest first, and the card links it once: `[[docs/wishlist/progress/<item stem>|Progress log]]`. Never delete a log: when you touch an item whose body holds one, move it verbatim to the note in the same commit.
+**The item file is a card, not a log.** Scout.app shows its whole body, so it holds only the request (a few lines) and a `## Status` section: one or two sentences on where it stands now, then the open sub-tasks. Dated entries — what each run did or delivered, verification, ticked sub-tasks — go in the item's progress note, `docs/wishlist/progress/<item file name>`, newest first (a moved log keeps its own order, even oldest-first; this run's entry goes above it), and the card links it once: `[[docs/wishlist/progress/<item stem>|Progress log]]`. Never delete a log: when you touch an item whose body holds one, move it verbatim to the note in the same commit.
 
 ```markdown
 ## Status
@@ -90,6 +90,8 @@ Two of four sub-tasks done; the template exists, the index link is next.
 ***
 
 ### Step 3e: Commit
+
+Before committing, run `scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>` until it exits 0, at most 3 tries. Exit 1 names an item and the first log line its card lost that its progress note lacks, quoted so trailing spaces, `\r` and `\xa0` show: copy the removed lines into the note exactly, in order (this run's entry may go above them), or put them back, and commit the note with the card. Still exit 1 after the third try: restore that card with `git show HEAD:<card> > <card>`, redo only this run's frontmatter `status:` and `## Status` edits (leave the log on the card), note `log move deferred: <item>` in the session log, and commit. Exit 2 (it couldn't check): note `log-move check could not run: <its message>` in the session log and go on.
 
 Explicit paths, never `-A` (see Step 1f):
 

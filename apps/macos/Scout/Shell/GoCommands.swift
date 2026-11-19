@@ -16,7 +16,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "Wishlist"
         case .research:      return "Research"
         case .knowledgeBase: return "Knowledge Base"
-        case .settings:      return "Settings"
         }
     }
 
@@ -31,14 +30,14 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "star"
         case .research:      return "magnifyingglass"
         case .knowledgeBase: return "books.vertical"
-        case .settings:      return "gearshape"
         }
     }
 
     /// The Go menu's ⌘-number: the page's place in the sidebar's Scout
-    /// section, so ⌘3 is the third row. Settings, in the App section, has ⌘,
-    /// from the app menu instead. Spelled out per page, not derived from the
-    /// case order: there are only nine digits, so a new page has to be given
+    /// section, so ⌘3 is the third row. Settings isn't a page: the App
+    /// section's Settings row opens the ⌘, window (UI audit #10). Spelled
+    /// out per page, not derived from the case order: there are only nine
+    /// digits, so a new page has to be given
     /// one (or `nil`, no shortcut) on purpose — this switch won't compile
     /// until it is. `AccessibilityFoundationTests` checks the keys stay unique
     /// and in sidebar order.
@@ -53,7 +52,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "7"
         case .research:      return "8"
         case .knowledgeBase: return "9"
-        case .settings:      return nil   // ⌘, (app menu ▸ Settings…)
         }
     }
 
@@ -69,7 +67,6 @@ nonisolated extension SidebarItem {
         case .wishlist:      return "sidebar-wishlist"
         case .research:      return "sidebar-research"
         case .knowledgeBase: return "sidebar-knowledge-base"
-        case .settings:      return "sidebar-settings"
         }
     }
 
@@ -79,7 +76,6 @@ nonisolated extension SidebarItem {
         case .sessions:  return "\(count) need\(count == 1 ? "s" : "") you"
         case .proposals: return "\(count) awaiting a decision"
         case .wishlist, .research: return "\(count) active"
-        case .settings:  return "\(count) update\(count == 1 ? "" : "s") available"
         default:         return "\(count)"
         }
     }
@@ -88,7 +84,7 @@ nonisolated extension SidebarItem {
 // MARK: - Go menu
 
 /// The Go menu: one item per page, ⌘1–⌘9 down the sidebar, like Finder's
-/// Go menu. It
+/// Go menu (Settings isn't a page: it is the app menu's ⌘, window). It
 /// fronts the main window (reopening it if it was closed) and switches the
 /// sidebar through `AppState.requestedSidebar`, the same path the menu-bar
 /// panel already uses.
@@ -114,7 +110,6 @@ private struct GoMenuItems: View {
                 NSApp.activate(ignoringOtherApps: true)   // as the menu-bar panel does
             }
             .keyboardShortcut(item.goShortcutKey.map { KeyboardShortcut(KeyEquivalent($0), modifiers: .command) })
-            if item == .knowledgeBase { Divider() }
         }
     }
 }

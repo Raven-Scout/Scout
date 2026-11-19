@@ -179,7 +179,7 @@ private struct CommentRow: View {
     private func markGlyph(for author: String) -> String {
         let a = author.lowercased()
         if a == "scout" || a.contains("briefing") || a.contains("dreaming") { return ">" }
-        let userName = UserDefaults.standard.string(forKey: "authorName") ?? CommentAuthor.fallback
+        let userName = CommentAuthor.configuredName()
         if CommentAuthor.isOwn(commentAuthor: author, userName: userName) { return "//" }
         return "·"
     }

@@ -76,7 +76,7 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
                                detail: "No engine found on this Mac", tone: .warn, fix: .setUp)
         case .managed(_, vaultBootstrapped: false):
             return ScoutStatus(kind: .needsSetup, title: "Finish setting up Scout",
-                               detail: "The engine is installed; the vault isn't set up yet", tone: .warn, fix: .setUp)
+                               detail: "The engine is installed; the Scout folder isn't set up yet", tone: .warn, fix: .setUp)
         case .broken:
             return ScoutStatus(kind: .needsAttention, title: "Scout's engine is broken",
                                detail: "Its files are missing or moved", tone: .err,
