@@ -193,17 +193,10 @@ struct SessionsHeader: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let state { SessionStateDot(state: state) }
-                Text(label).font(DS.font(.label, weight: .medium))
-                Text("\(count)")
-                    .font(DS.font(.caption, .mono))
-                    .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
+                Text(label)
+                DSChipCount(count)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(isSelected ? DS.Ink.p1 : DS.Paper.raised))
-            .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
         }
-        .buttonStyle(.plainHit)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .buttonStyle(.dsChip(selected: isSelected))
     }
 }

@@ -45,8 +45,8 @@ struct ItemStatusPriorityTests {
         #expect([ItemPriority.low, .urgent, .medium, .high].sorted() == [.urgent, .high, .medium, .low])
     }
     @Test func statusPillLabelIsBounded() {
-        #expect(ItemStatusPill.label(for: .inProgress) == "IN PROGRESS")
-        #expect(ItemStatusPill.label(for: .unknown("filed")) == "FILED")
+        #expect(ItemStatusPill.label(for: .inProgress) == "In Progress")
+        #expect(ItemStatusPill.label(for: .unknown("filed")) == "filed")
         let long = ItemStatusPill.label(for: .unknown(String(repeating: "retired because ", count: 15)))
         #expect(long.count == ItemStatusPill.maxLabelLength)
         #expect(long.hasSuffix("…"))

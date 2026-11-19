@@ -13,6 +13,8 @@ struct SessionCardView: View {
     var isSelected = false
     /// This card is the parent of the card under the pointer.
     var isHighlighted = false
+    /// Hover from the `.dsCard` button around this card.
+    @Environment(\.dsCardHovered) private var hovered
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -71,26 +73,14 @@ struct SessionCardView: View {
                 }
             }
         }
-        .padding(12)
+        // The parent of the hovered card is highlighted the way a hovered
+        // card is; the selected one is outlined.
+        .editorialCard(padding: 12, selected: isSelected,
+                       accentBar: SessionStateStyle.color(session.state, isOpen: session.isOpen))
+        .dsCardHovered(hovered || isHighlighted)
         .frame(width: 240, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor, lineWidth: isSelected || isHighlighted ? 1 : 0.5))
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(SessionStateStyle.color(session.state, isOpen: session.isOpen))
-                .frame(width: 3)
-                .padding(.vertical, 6)
-        }
         // The state is read from its label above, not repeated as a value.
         .accessibilityElement(children: .combine)
     }
 
-    private var borderColor: Color {
-        if isSelected { return DS.Ink.p2 }
-        if isHighlighted { return DS.Accent.fill }
-        return DS.Rule.soft
-    }
 }

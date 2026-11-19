@@ -72,11 +72,8 @@ struct UpcomingStripView: View {
                     await state.fireNow(slotKey: up.slotKey)
                 }
             }
-            .buttonStyle(.ds(.quiet, size: .small))
+            .buttonStyle(.ds(.secondary, size: .small))
             .accessibilityLabel("Run \(up.displayName) now")
-            .padding(.horizontal, 8)
-            .frame(height: 20)
-            .background(EditorialChipBackground())
         }
         .padding(.vertical, 6)
         .overlay(alignment: .bottom) { EditorialRule() }
