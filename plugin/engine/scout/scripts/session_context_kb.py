@@ -62,7 +62,9 @@ _LEAVE_WORDS = re.compile(
 _BACK = re.compile(r"^\W*(back|returned|active)\b", re.IGNORECASE)
 _RETURNED = re.compile(r"^\W*(back|returned)\b", re.IGNORECASE)
 # Leading only: "Active (formerly the platform lead)" is not departed.
-_DEPARTED = re.compile(r"^\W*(departed|left|offboarded)\b", re.IGNORECASE)
+_DEPARTED = re.compile(r"^\W*(departed|offboarded)\b", re.IGNORECASE)
+# "Left …" may mean left the company or left a team: read the note.
+_LEFT = re.compile(r"^\W*left\b", re.IGNORECASE)
 _ENDED = re.compile(r"\b(ended|closed|cancell?ed|over|done)\b", re.IGNORECASE)
 # The gate's body signal: a heading with 🚨 or the words ACTIVE STATUS, anywhere in the note.
 _ACTIVE_STATUS_HEADER = re.compile(r"^#{1,4}\s.*(?:🚨|\bACTIVE STATUS\b)", re.IGNORECASE)
@@ -222,21 +224,26 @@ def project_knowledge(
 
 
 def _leave_block(fm: Mapping[str, Any], day: dt.date) -> dict[str, Any] | None:
-    """An ``oof:``/``leave:``/``ooo:``/``out_of_office:``/``on_leave:`` frontmatter entry in force on ``day``.
+    """An ``oof:``/``leave:``/``ooo:``/``out_of_office:``/``on_leave:`` entry that may be in force on ``day``.
 
-    A mapping counts unless its ``status`` says it ended or its dates exclude ``day``; one with
-    no dates at all counts (a declared leave with no end). ``on_leave: true`` counts too.
+    A dated mapping whose window covers ``day`` (and whose ``status`` doesn't say it ended) is
+    a ``leave``, as is ``on_leave: true``. A mapping with no usable date (a template block, or
+    ``leave: {type: parental}``) can't be trusted either way, so it is an ``active_status_block``:
+    read the note.
     """
     for key in _LEAVE_KEYS:
         block = fm.get(key)
         if block is True:
-            return {"since": None, "until": None, "source": key}
+            return {"state": "leave", "since": None, "until": None, "source": key}
         if not isinstance(block, Mapping) or _ENDED.search(_text(block.get("status"))):
             continue
         start = _date(block.get("from") or block.get("start") or block.get("from_approx"))
         end = _date(block.get("until") or block.get("end") or block.get("to"))
+        if start is None and end is None:
+            return {"state": "active_status_block", "since": None, "until": None, "source": key}
         if (start is None or start <= day) and (end is None or day <= end):
             return {
+                "state": "leave",
                 "since": start.isoformat() if start else None,
                 "until": end.isoformat() if end else None,
                 "source": key,
@@ -248,19 +255,22 @@ def leave_state(fm: Mapping[str, Any], text: str, day: dt.date) -> dict[str, Any
     """The person's current leave state, by the Leave-State Compose Gate's own signals, or None.
 
     ``{"state": "leave" | "departed" | "active_status_block", "since", "until", "source"}``.
-    ``text`` is the note (frontmatter and body). ``active_status_block`` means a heading in the
-    body carries 🚨 or the words ACTIVE STATUS (unless ``status:`` says they are back): read the
-    note before naming them as an owner. None is not proof of availability: only a positive
-    result is precomputed, and the gate still reads the note of anyone not listed.
+    ``text`` is the note (frontmatter and body). ``active_status_block`` means the signal is real
+    but can't be trusted on its own (a heading in the body with 🚨 or the words ACTIVE STATUS, an
+    undated leave entry, a ``status:`` starting "left"): read the note before naming them as an
+    owner. None is not proof of availability: only a positive result is precomputed, and the gate
+    still reads the note of anyone not listed.
     """
     block = _leave_block(fm, day)
     if block:
-        return {"state": "leave", **block}
+        return block
     status = _text(fm.get("status"))
     if status and _LEAVE_WORDS.search(status) and not _BACK.match(status):
         return {"state": "leave", "since": None, "until": None, "source": "status"}
     if status and _DEPARTED.match(status):
         return {"state": "departed", "since": None, "until": None, "source": "status"}
+    if status and _LEFT.match(status):
+        return {"state": "active_status_block", "since": None, "until": None, "source": "status"}
     from scout.kb.structure import split_page
 
     _, body = split_page(text)

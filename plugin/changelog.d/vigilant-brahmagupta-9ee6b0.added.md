@@ -4,11 +4,12 @@
     map and every `knowledge/` note with its `as_of`, newest first. A project counts as inactive only when its
     `status:` or `priority:` starts with done, paused, archived or ⚪.
   - `people_context`: `on_leave` lists everyone whose note shows a current leave state:
-    - a leave word in `status:` (but not one starting "back" or "active");
-    - an `oof:`, `leave:`, `ooo:`, `out_of_office:` or `on_leave:` frontmatter entry in force today (dated or not,
-      and not ended);
-    - a `status:` that starts with departed, left or offboarded;
-    - a heading with 🚨 or ACTIVE STATUS anywhere in the note.
+    - `leave`: a leave word in `status:` (but not one starting "back" or "active"), `on_leave: true`, or a dated
+      `oof:`, `leave:`, `ooo:`, `out_of_office:` or `on_leave:` entry whose window covers today and hasn't ended;
+    - `departed`: a `status:` that starts with departed or offboarded;
+    - `active_status_block`: a heading with 🚨 or ACTIVE STATUS anywhere in the note, an undated or empty leave
+      entry, or a `status:` that starts with "left". This state still means reading the note before naming them as
+      an owner.
 
     It also holds `role`, `team`, `managers` and `reports` (each `{name, path, visibility}`) for every person
     today's items name, and the vault owner's managers. Only a listed leave state is meant to be trusted. A person
@@ -25,5 +26,6 @@
   read of a note in that project's `knowledge/` folder, the run gets a `[scout:front-page-reads]` note.
   - It names the newest notes by `as_of`, marks private ones, and names only notes the run's reader may see. It
     says nothing at all about a page that reader can't see.
-  - It never blocks, stops reading at the first match or 64 MB of transcript, and adds nothing on any failure.
+  - It never blocks, reads only regular files, stops at the first match or 64 MB of transcript, and adds nothing on
+    any failure. The shell starts Python only for a write whose `file_path` is shaped `<dir>/<x>/<x>.md`.
   - It reads the transcript because `.scout-logs/kb-reads.jsonl` records counts and a hash, never paths.

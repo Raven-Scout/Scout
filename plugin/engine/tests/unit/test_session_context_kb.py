@@ -144,12 +144,15 @@ def test_long_maps_are_capped(vault: Path) -> None:
         ({}, "---\nname: x\n---\n# Alex\nNothing special.\n", None),
         ({"status": "back from leave"}, "---\nname: x\n---\n### 🚨 ACTIVE STATUS\nOld block.\n", None),
         ({"status": "Active (formerly the platform lead)"}, "", None),  # "former" is no longer departed
-        ({"status": "left in March"}, "", "departed"),
+        ({"status": "left in March"}, "", "active_status_block"),  # left what? read the note
+        ({"status": "offboarded"}, "", "departed"),
         ({"ooo": {"until": "2026-04-30"}}, "", "leave"),
-        ({"out_of_office": {"note": "parental leave, no dates yet"}}, "", "leave"),  # undated and not ended
+        ({"out_of_office": {"note": "parental leave, no dates yet"}}, "", "active_status_block"),  # undated
+        ({"leave": {"type": "parental"}}, "", "active_status_block"),
+        ({"leave": {}}, "", "active_status_block"),
         ({"on_leave": True}, "", "leave"),
         ({"oof": "see body"}, "", None),  # not a mapping
-        ({"oof": {"from": "not a date"}}, "", "leave"),  # undated in effect
+        ({"oof": {"from": "not a date"}}, "", "active_status_block"),  # undated in effect
         ({}, "---\nname: x\n---\n## 🚨 Out sick this week\n", "active_status_block"),  # 🚨 alone
         ({}, "---\nname: x\n---\n" + "filler\n" * 200 + "### ACTIVE STATUS\n", "active_status_block"),  # deep
     ],

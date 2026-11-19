@@ -24,8 +24,9 @@ detail. This hook makes the gap visible at the moment it happens.
   - **Warn only**: it never blocks, never changes the call, and any failure (no
     transcript, an unreadable vault, labels it can't get) adds nothing.
 
-hooks.json starts Python only for a run's write whose payload names a ``.md``
-file; owner sessions exit in the shell.
+hooks.json starts Python only for a run's write whose ``file_path`` is shaped
+``<dir>/<x>/<x>.md``; owner sessions exit in the shell. :func:`check` then runs
+its cheap tests before importing the labels or the transcript code.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
@@ -44,6 +46,7 @@ WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 FILE_TOOLS = frozenset({"Read", *WRITE_TOOLS})
 NOTES_NAMED = 5
 TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024
+READ_CHUNK = 1 << 20
 _KB_READ = re.compile(r"\bkb\s+(read|search|entity|query|related)\b")
 
 
@@ -80,26 +83,50 @@ def _rel(vault: Path, raw: object, cwd: Path) -> str | None:
         return None
 
 
+def _regular_file(path: Path) -> int | None:
+    """``path``'s size when it is a regular file itself (not a symlink, FIFO or device), else None."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return None
+    return st.st_size if stat.S_ISREG(st.st_mode) else None
+
+
 def transcript_lines(transcript: Path, max_bytes: int = TRANSCRIPT_MAX_BYTES) -> Iterator[str]:
     """The session's JSONL lines, then each subagent transcript's (``<session>/subagents/*.jsonl``).
 
-    Raises :class:`_TooBig` once more than ``max_bytes`` have been read.
+    Only regular files are read: a symlink, FIFO or device file is skipped, so nothing in a
+    run-writable folder can make the hook hang or stream without end. Raises :class:`_TooBig`
+    before reading when the files' sizes add up past ``max_bytes``, and while reading once
+    more than that has come back. A line longer than :data:`READ_CHUNK` comes back in pieces.
     """
     paths = [transcript]
     sub = transcript.with_suffix("") / "subagents"
-    if sub.is_dir():
+    if sub.is_dir() and not sub.is_symlink():
         paths.extend(sorted(sub.glob("*.jsonl")))
+    sized = [(path, size) for path in paths if (size := _regular_file(path)) is not None]
+    if sum(size for _, size in sized) > max_bytes:
+        raise _TooBig
     seen = 0
-    for path in paths:
+    for path, _ in sized:
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    seen += len(line)
-                    if seen > max_bytes:
-                        raise _TooBig
-                    yield line
+            # No symlink, and no blocking open: a file swapped for a FIFO since lstat fails fstat below.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except OSError:
             continue
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("not a regular file")
+            f = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        except OSError:
+            os.close(fd)
+            continue
+        with f:
+            while line := f.readline(READ_CHUNK):
+                seen += len(line)
+                if seen > max_bytes:
+                    raise _TooBig
+                yield line
 
 
 def touched_knowledge(lines: Iterable[str], knowledge_rel: str, vault: Path, cwd: Path) -> bool:
@@ -164,26 +191,46 @@ def warning(front: str, notes: list[dict[str, Any]]) -> str:
     )
 
 
-def check(payload: Mapping[str, Any], *, reader: str) -> str | None:
-    """The warning for one PostToolUse payload as ``reader`` sees the vault, or None."""
-    from scout.hooks.kb_read_label import session_vault
-    from scout.hooks.session_tool_log import _resolve_transcript_path
-    from scout.kb.privacy import reads_any
-    from scout.kb.read import visibility_map
-    from scout.kb.structure import load_structure_config
+def _looks_like_a_front_page(raw: object) -> bool:
+    """The cheap string test: a ``.md`` file named after its own folder (``…/<x>/<x>.md``)."""
+    if not isinstance(raw, str) or not raw.endswith(".md"):
+        return False
+    path = PurePosixPath(raw)
+    return path.parent.name == path.stem
 
-    if payload.get("tool_name") not in WRITE_TOOLS or not reads_any(reader):
-        return None
+
+def check(payload: Mapping[str, Any], *, reader: str) -> str | None:
+    """The warning for one PostToolUse payload as ``reader`` sees the vault, or None.
+
+    The cheap tests come first (tool, path shape, vault, projects_dir), so a write that isn't a
+    front page returns before the labels, the KB reader or the transcript code is imported.
+    """
+    from scout.hooks.kb_read_label import session_vault
+
     tool_input = payload.get("tool_input")
+    if payload.get("tool_name") not in WRITE_TOOLS or not isinstance(tool_input, Mapping):
+        return None
+    if not _looks_like_a_front_page(tool_input.get("file_path")):
+        return None
     vault = session_vault(payload)
-    if vault is None or not isinstance(tool_input, Mapping):
+    if vault is None:
         return None
     raw_cwd = payload.get("cwd")
     cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and raw_cwd else vault
     rel = _rel(vault, tool_input.get("file_path"), cwd)
+    if rel is None:
+        return None
+    from scout.kb.structure import load_structure_config
+
     projects_dir = load_structure_config(vault).projects_dir
-    name = front_page_project(rel, projects_dir) if rel else None
-    if rel is None or name is None:
+    name = front_page_project(rel, projects_dir)
+    if name is None:
+        return None
+    from scout.hooks.session_tool_log import _resolve_transcript_path
+    from scout.kb.privacy import reads_any
+    from scout.kb.read import visibility_map
+
+    if not reads_any(reader):
         return None
     knowledge_rel = f"{projects_dir}/{name}/knowledge"
     labels = visibility_map(vault, reader, [rel, f"{knowledge_rel}/**"], who=GATE)

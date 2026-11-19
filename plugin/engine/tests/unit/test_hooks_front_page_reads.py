@@ -183,6 +183,91 @@ def test_a_transcript_past_the_cap_says_nothing(vault: Path, tmp_path: Path, mon
     assert _run(_payload(vault, path)) is None
 
 
+def test_special_files_and_symlinks_are_skipped(vault: Path, tmp_path: Path) -> None:
+    import os
+
+    transcript = _transcript(tmp_path, [])
+    sub = tmp_path / "session" / "subagents"
+    sub.mkdir(parents=True)
+    os.mkfifo(sub / "agent-fifo.jsonl")  # would hang a plain open()
+    real = _transcript(tmp_path, [("Read", {"file_path": str(vault / NOTE)}, "x")], name="elsewhere.jsonl")
+    (sub / "agent-link.jsonl").symlink_to(real)  # its read doesn't count: symlinks are skipped
+    assert _run(_payload(vault, transcript)) is not None
+
+
+def test_the_cap_holds_while_reading_and_long_lines_come_in_pieces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "t.jsonl"
+    path.write_text("a" * 25 + "\nb\n", encoding="utf-8")
+    monkeypatch.setattr(hook, "READ_CHUNK", 10)
+    assert list(hook.transcript_lines(path)) == ["a" * 10, "a" * 10, "a" * 5 + "\n", "b\n"]
+    monkeypatch.setattr(hook, "_regular_file", lambda _: 0)  # sizes that lie: the running count still stops it
+    with pytest.raises(hook._TooBig):
+        list(hook.transcript_lines(path, max_bytes=15))
+
+
+def test_a_file_swapped_after_the_size_check_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    fifo = tmp_path / "t.jsonl"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(hook, "_regular_file", lambda _: 0)  # as if it was a file at lstat time
+    assert list(hook.transcript_lines(fifo)) == []
+    assert list(hook.transcript_lines(tmp_path / "gone.jsonl")) == []
+
+
+def test_no_vault_or_no_file_adds_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert hook._regular_file(tmp_path / "missing.jsonl") is None
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "not-a-vault"))
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": f"/x/{FRONT}"}, "cwd": str(tmp_path)}
+    assert _run(payload) is None
+
+
+def test_a_write_that_is_not_a_front_page_does_no_heavy_work(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scout.kb.read
+    import scout.kb.structure
+
+    calls: list[str] = []
+    monkeypatch.setattr(scout.kb.read, "visibility_map", lambda *a, **k: calls.append("labels") or {})
+    real = scout.kb.structure.load_structure_config
+    monkeypatch.setattr(scout.kb.structure, "load_structure_config", lambda v: calls.append("config") or real(v))
+    transcript = _transcript(tmp_path, [])
+    assert _run(_payload(vault, transcript, rel=NOTE)) is None  # not shaped <x>/<x>.md
+    assert _run({**_payload(vault, transcript), "tool_input": {"file_path": 7}}) is None
+    assert _run({**_payload(vault, transcript), "tool_input": {"file_path": "/elsewhere/x/x.md"}}) is None
+    assert calls == []
+    assert _run(_payload(vault, transcript, rel="knowledge-base/topics/misc/misc.md")) is None
+    assert calls == ["config"]  # shaped like one, so the config is read, but it isn't a project page
+
+
+@pytest.mark.parametrize(
+    ("file_path", "starts"),
+    [
+        ("/v/knowledge-base/projects/widgets/widgets.md", True),
+        ("work/projects/gateway/gateway.md", True),  # a custom projects_dir
+        ("/v/knowledge-base/projects/widgets/knowledge/widgets-release.md", False),
+        ("/v/action-items/action-items-2026-04-15.md", False),
+        ("widgets/widgets.txt", False),
+    ],
+)
+def test_the_shell_prefilter_matches_only_front_page_shaped_paths(file_path: str, starts: bool) -> None:
+    import re
+    import subprocess
+
+    config = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    command = next(
+        h["command"] for g in config["hooks"]["PostToolUse"] for h in g["hooks"] if "front-page-reads" in h["command"]
+    )
+    pattern = re.search(r"grep -qE '([^']+)'", command)
+    assert pattern is not None
+    payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x.md y/y.md"}})
+    found = subprocess.run(["grep", "-qE", pattern.group(1)], input=payload, text=True, check=False)
+    assert (found.returncode == 0) is starts
+
+
 def test_only_front_pages_with_knowledge_notes_are_checked(vault: Path, tmp_path: Path) -> None:
     transcript = _transcript(tmp_path, [])
     assert _run(_payload(vault, transcript, rel=NOTE)) is None
@@ -268,5 +353,5 @@ def test_hooks_json_runs_it_after_a_runs_writes_and_never_fails_the_call() -> No
     assert len(entries) == 1
     command = entries[0]["command"]
     assert command.startswith('[ -n "$SCOUT_MODE" ]') and command.endswith("; exit 0")
-    assert "exit 2" not in command and "*.md*" in command
+    assert "exit 2" not in command and "grep -qE" in command
     assert "front-page-reads" in config["description"]
