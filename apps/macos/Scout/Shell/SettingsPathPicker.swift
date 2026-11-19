@@ -50,10 +50,19 @@ nonisolated enum SettingsPathCheck {
         if !fileManager.fileExists(atPath: url.appendingPathComponent("scout-config.yaml").path) {
             notes.append("This folder has no scout-config.yaml, so it isn't a Scout folder yet. Scout won't set it up by itself.")
         }
-        if let engineVault, engineVault.standardizedFileURL.path != url.standardizedFileURL.path {
+        // Symlinks resolved and case folded, so a ~/Scout that links into a
+        // synced folder (or differs only in case on APFS) isn't flagged.
+        if let engineVault, !sameFolder(engineVault, url) {
             notes.append("Scheduled runs still use \(storedText(for: engineVault, kind: .folder, home: home)).")
         }
         return notes
+    }
+
+    /// Whether two folder URLs name the same folder: symlinks resolved,
+    /// compared ignoring case (macOS volumes are case-insensitive by default).
+    static func sameFolder(_ a: URL, _ b: URL) -> Bool {
+        a.resolvingSymlinksInPath().standardizedFileURL.path
+            .caseInsensitiveCompare(b.resolvingSymlinksInPath().standardizedFileURL.path) == .orderedSame
     }
 
     /// How a chosen URL is stored. A folder under the home folder reads

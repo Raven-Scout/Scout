@@ -75,13 +75,21 @@ struct SessionsView: View {
         if let index = service.index {
             switch viewMode {
             case .board:
-                SessionsBoardView(index: index, filter: filter, now: now, selectedID: $selectedID)
+                SessionsBoardView(index: index, filter: filter, now: now, selectedID: $selectedID,
+                                  onClearFilters: clearFilters)
             case .table:
-                SessionsTableView(
-                    rows: SessionsLayout.tableRows(index: index, filter: filter, now: now),
-                    now: now,
-                    selectedID: $selectedID
-                )
+                if let reason = SessionsLayout.emptyReason(index: index, filter: filter, now: now) {
+                    // An empty Table is a blank grid; say why instead (#37).
+                    SessionsEmptyStateView(reason: reason, onClearFilters: clearFilters)
+                        .padding(.top, 56)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                } else {
+                    SessionsTableView(
+                        rows: SessionsLayout.tableRows(index: index, filter: filter, now: now),
+                        now: now,
+                        selectedID: $selectedID
+                    )
+                }
             }
         } else {
             VStack(spacing: 10) {
@@ -96,6 +104,14 @@ struct SessionsView: View {
             }
             .frame(maxWidth: .infinity)
         }
+    }
+
+    /// The empty state's "Clear filters": the search, project and state
+    /// chips. The two view options stay as they are; they aren't filters.
+    private func clearFilters() {
+        filter.states = []
+        filter.projectKey = nil
+        filter.search = ""
     }
 
     // MARK: Banners

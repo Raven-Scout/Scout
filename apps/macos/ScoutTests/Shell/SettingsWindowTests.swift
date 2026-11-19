@@ -134,6 +134,13 @@ struct SettingsWindowTests {
         #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Scout", engineVault: folder, home: home).isEmpty)
         #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Missing", engineVault: folder, home: home).isEmpty,
                 "a missing folder gets the problem line instead")
+        // A symlinked Scout folder (say, into a synced folder) or one that
+        // differs only in case is the same folder: no "scheduled runs" note.
+        let link = home.appendingPathComponent("ScoutLink")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+        #expect(SettingsPathCheck.scoutFolderNotes(for: "~/ScoutLink", engineVault: folder, home: home).isEmpty)
+        #expect(SettingsPathCheck.scoutFolderNotes(for: "~/Scout", engineVault: link, home: home).isEmpty)
+        #expect(SettingsPathCheck.sameFolder(folder, home.appendingPathComponent("scout")))
     }
 
     // MARK: - Authorship (#85)

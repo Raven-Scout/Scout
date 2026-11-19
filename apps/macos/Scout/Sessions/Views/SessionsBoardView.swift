@@ -1,5 +1,35 @@
 import SwiftUI
 
+/// What the board and the table show when there's nothing to list: no
+/// sessions yet, sessions the default view hides, or filters that match
+/// nothing (UI audit #37).
+struct SessionsEmptyStateView: View {
+    let reason: SessionsEmptyReason
+    var onClearFilters: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: reason == .noSessionsYet ? "rectangle.stack" : "line.3.horizontal.decrease.circle")
+                .font(DS.sans(24)).foregroundStyle(DS.Ink.p4)
+                .accessibilityHidden(true)
+            Text(reason.title)
+                .font(DS.serif(15, weight: .medium)).foregroundStyle(DS.Ink.p2)
+            Text(reason.detail)
+                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+                .fixedSize(horizontal: false, vertical: true)
+            if reason.offersClearFilters, let onClearFilters {
+                Button("Clear filters", action: onClearFilters)
+                    .buttonStyle(.ds(.secondary, size: .small))
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+    }
+}
+
 /// The board (spec §6.2): a Now strip of needs-you and running cards, then one
 /// swimlane per project with cards in severity order. Stale and done cards sit
 /// behind collapsed "Stale (n)" / "Done (n)" pills at the end of each lane.
@@ -8,6 +38,8 @@ struct SessionsBoardView: View {
     let filter: SessionsFilter
     let now: Date
     @Binding var selectedID: String?
+    /// Clears the search, project and state filters (the empty state's button).
+    var onClearFilters: (() -> Void)? = nil
 
     @State private var expandedStale: Set<String> = []
     @State private var expandedDone: Set<String> = []
@@ -37,12 +69,10 @@ struct SessionsBoardView: View {
                         collapsible("Done", sessions: row.done, rowID: row.id, expanded: $expandedDone, titles: titles)
                     }
                 }
-                if rows.isEmpty && strip.isEmpty {
-                    Text("No sessions match these filters.")
-                        .font(DS.sans(13))
-                        .foregroundStyle(DS.Ink.p3)
+                if rows.isEmpty && strip.isEmpty,
+                   let reason = SessionsLayout.emptyReason(index: index, filter: filter, now: now) {
+                    SessionsEmptyStateView(reason: reason, onClearFilters: onClearFilters)
                         .padding(.top, 40)
-                        .frame(maxWidth: .infinity)
                 }
             }
             .padding(.horizontal, 24)

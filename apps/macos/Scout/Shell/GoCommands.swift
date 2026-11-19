@@ -35,8 +35,9 @@ nonisolated extension SidebarItem {
 
     /// The Go menu's ⌘-number: the page's place in the sidebar's Scout
     /// section, so ⌘3 is the third row. Settings isn't a page: the App
-    /// section's Settings row opens the ⌘, window (UI audit #10). Spelled out per page, not derived from the
-    /// case order: there are only nine digits, so a new page has to be given
+    /// section's Settings row opens the ⌘, window (UI audit #10). Spelled
+    /// out per page, not derived from the case order: there are only nine
+    /// digits, so a new page has to be given
     /// one (or `nil`, no shortcut) on purpose — this switch won't compile
     /// until it is. `AccessibilityFoundationTests` checks the keys stay unique
     /// and in sidebar order.
