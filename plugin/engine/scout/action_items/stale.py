@@ -22,6 +22,15 @@ restarts its clock.
 When a block last changed comes from an activity ledger that replays the
 daily files in date order. The ledger is a cache — rebuilt from the archived
 daily files whenever it is missing — so it lives under ``.scout-cache/``.
+
+One edit is not a touch: the owner's one-off title cleanup (``action-items
+retitle``, #708) shortens titles without restarting their clocks. It records
+each rewrite in ``.scout-state/title-rewrites.jsonl`` (committed with the
+vault): the tag, the day, and the block's fingerprint before and after. When
+the replay sees a block change on that day from exactly ``before`` to exactly
+``after``, the item keeps its date. Any other edit that day leaves a different
+final fingerprint, so a real touch still restarts the clock, and because the
+record is durable a rebuilt cache gives the same answer.
 """
 
 from __future__ import annotations
@@ -83,6 +92,59 @@ _DATE_PATTERNS = (
 )
 # "Mon 2026-10-12 08:05" is one date, however many tokens it took.
 _DATE_RUN_RE = re.compile(rf"{_DATE_TOKEN}(?:[\s,]*{_DATE_TOKEN})+")
+
+
+REWRITES_NAME = "title-rewrites.jsonl"
+
+# (tag, day) → the (before, after) fingerprint pairs recorded for it.
+Rewrites = dict[tuple[str, _dt.date], set[tuple[str, str]]]
+
+
+@dataclass(frozen=True)
+class Rewrite:
+    """One block change that is not a touch: see the module doc."""
+
+    tag: str
+    on: _dt.date
+    before: str
+    after: str
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {"tag": self.tag, "on": self.on.isoformat(), "before": self.before, "after": self.after}, sort_keys=True
+        )
+
+
+def rewrites_path(data_dir: Path) -> Path:
+    return paths.state_dir(data_dir) / REWRITES_NAME
+
+
+def load_rewrites(data_dir: Path) -> Rewrites:
+    """Every recorded rewrite; a missing file is none, and a malformed row is skipped."""
+    out: Rewrites = {}
+    try:
+        text = rewrites_path(data_dir).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return out
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+            key = (str(row["tag"]), _dt.date.fromisoformat(row["on"]))
+            pair = (str(row["before"]), str(row["after"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+        out.setdefault(key, set()).add(pair)
+    return out
+
+
+def contains_date(text: str) -> bool:
+    """Whether ``text`` holds a date, time or age, as the clock folds them out."""
+    return _fold_dates(text) != text
+
+
+def fingerprints(lines: list[str]) -> dict[str, str]:
+    """Tag → the digest the clock compares (see ``_fingerprints``)."""
+    return _fingerprints(lines)
 
 
 @dataclass(frozen=True)
@@ -227,10 +289,17 @@ def daily_files(data_dir: Path) -> list[tuple[_dt.date, Path]]:
 class ActivityLedger:
     """When each open item's block last changed, by tag."""
 
-    def __init__(self, path: Path, items: dict[str, dict[str, str]], seen_through: _dt.date | None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        items: dict[str, dict[str, str]],
+        seen_through: _dt.date | None,
+        rewrites: Rewrites | None = None,
+    ) -> None:
         self.path = path
         self._items = items
         self.seen_through = seen_through
+        self.rewrites: Rewrites = rewrites or {}
 
     @staticmethod
     def path_for(data_dir: Path) -> Path:
@@ -264,10 +333,15 @@ class ActivityLedger:
         entry = self._items.get(tag)
         return _dt.date.fromisoformat(entry["since"]) if entry else None
 
-    def unchanged(self, tag: str, digest: str | None) -> bool:
-        """Whether `digest` is the text the ledger last saw for `tag`."""
+    def unchanged(self, tag: str, digest: str | None, on: _dt.date | None = None) -> bool:
+        """Whether `digest` is the text the ledger last saw for `tag`, or a recorded rewrite of it `on` that day."""
         entry = self._items.get(tag)
-        return entry is not None and entry["hash"] == digest
+        if entry is None or digest is None:
+            return False
+        return entry["hash"] == digest or (on is not None and self._rewritten(tag, on, entry["hash"], digest))
+
+    def _rewritten(self, tag: str, on: _dt.date, before: str, after: str) -> bool:
+        return (before, after) in self.rewrites.get((tag, on), set())
 
     def observe(self, lines: list[str], on: _dt.date) -> None:
         """Fold one day's final file in. A tag absent that day is forgotten, so
@@ -278,6 +352,8 @@ class ActivityLedger:
             prior = self._items.get(tag)
             if prior is not None and prior["hash"] == digest:
                 updated[tag] = prior
+            elif prior is not None and self._rewritten(tag, on, prior["hash"], digest):
+                updated[tag] = {"hash": digest, "since": prior["since"]}
             else:
                 updated[tag] = {"hash": digest, "since": on.isoformat()}
         self._items = updated
@@ -285,6 +361,7 @@ class ActivityLedger:
 
     def catch_up(self, data_dir: Path, before: _dt.date) -> None:
         """Replay every daily file dated after `seen_through` and before `before`."""
+        self.rewrites = load_rewrites(data_dir)
         for day, path in daily_files(data_dir):
             if day >= before or (self.seen_through is not None and day <= self.seen_through):
                 continue
@@ -304,7 +381,7 @@ def last_changed_by_tag(lines: list[str], *, data_dir: Path, today: _dt.date) ->
     out: dict[str, _dt.date] = {}
     for tag, digest in _fingerprints(lines).items():
         since = ledger.last_changed(tag)
-        out[tag] = since if since is not None and ledger.unchanged(tag, digest) else today
+        out[tag] = since if since is not None and ledger.unchanged(tag, digest, today) else today
     return out
 
 
@@ -339,7 +416,7 @@ def split_stale(
     archived: list[ArchivedItem] = []
     for block in task_blocks(lines):
         since = ledger.last_changed(block.tag)
-        if since is None or since > cutoff or not ledger.unchanged(block.tag, known.get(block.tag)):
+        if since is None or since > cutoff or not ledger.unchanged(block.tag, known.get(block.tag), today):
             continue
         body = lines[block.start : block.end]
         if _snoozed_past(body, today):

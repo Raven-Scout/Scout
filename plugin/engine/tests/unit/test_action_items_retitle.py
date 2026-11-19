@@ -1,0 +1,564 @@
+"""The owner's one-off title cleanup: `action-items retitle` (#708), and the ledger's rewrite records.
+
+Synthetic vaults only: no real titles, no model. The model is a stub; the
+commit helper is either a stub or a small git script in a temp repo.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+
+from scout.action_items import retitle, stale
+from scout.action_items.cli import app
+from scout.action_items.retitle import RetitleError, Row, Worksheet, problems
+from scout.action_items.stale import STALE_AFTER_DAYS, ActivityLedger, Rewrite, fingerprints, last_changed_by_tag
+from scout.action_items.titles import TITLE_MAX
+
+runner = CliRunner()
+TODAY = dt.date(2026, 4, 15)
+LONG = (
+    "Reply to Alex about the quota migration and loop in Priya on the onboarding plan "
+    "before the review with Sam next sprint"
+)
+LONG2 = LONG + " and the follow-up notes"
+SHORT = "Reply to Alex about the quota migration"
+assert len(SHORT) <= TITLE_MAX < len(LONG) < len(LONG2)
+
+
+def _task(tag: str, title: str = SHORT, body: str = "next step is yours.") -> str:
+    return f"- [ ] [#{tag}] **{title}** — {body}\n"
+
+
+def _doc(day: dt.date, red: str = "", yellow: str = "") -> str:
+    return (
+        f"# Action Items — {day}\n\n## 💡 Today's Focus\n\n## 🔴 Urgent\n\n{red}\n## 🟡 To Do\n\n{yellow}\n"
+        "## 🟢 Watching\n\n## ✅ Recently Completed\n\n## 🪵 Run notes\n"
+    )
+
+
+@pytest.fixture
+def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    data_dir = tmp_path / "Scout"
+    (data_dir / "action-items").mkdir(parents=True)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_READER", raising=False)
+    monkeypatch.setattr("scout.paths._today", lambda data=None: TODAY)
+    return data_dir
+
+
+def _file(vault: Path, day: dt.date, **sections: str) -> Path:
+    path = vault / "action-items" / f"action-items-{day}.md"
+    path.write_text(_doc(day, **sections), encoding="utf-8")
+    return path
+
+
+def _lines(vault: Path, day: dt.date) -> list[str]:
+    return (vault / "action-items" / f"action-items-{day}.md").read_text(encoding="utf-8").splitlines()
+
+
+def _record(vault: Path, tag: str, on: dt.date, before: list[str], after: list[str]) -> None:
+    target = stale.rewrites_path(vault)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    row = Rewrite(tag=tag, on=on, before=fingerprints(before)[tag], after=fingerprints(after)[tag])
+    with target.open("a", encoding="utf-8") as f:
+        f.write(row.to_json() + "\n")
+
+
+def _replayed(vault: Path, before: dt.date) -> ActivityLedger:
+    ledger = ActivityLedger(ActivityLedger.path_for(vault), {}, None)
+    ledger.catch_up(vault, before=before)
+    return ledger
+
+
+# ----- the ledger keeps a recorded rewrite's clock --------------------------------------
+
+FIRST = TODAY - dt.timedelta(days=40)
+
+
+def _history(vault: Path, *, today_body: str = "next step is yours.") -> None:
+    _file(vault, FIRST, yellow=_task("QMIG", LONG))
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("QMIG", LONG))
+    _file(vault, TODAY, yellow=_task("QMIG", SHORT, body=today_body))
+
+
+def test_a_recorded_rewrite_keeps_the_items_date(vault: Path) -> None:
+    _history(vault)
+    _record(vault, "QMIG", TODAY, _lines(vault, FIRST), _lines(vault, TODAY))
+    assert _replayed(vault, TODAY + dt.timedelta(days=1)).last_changed("QMIG") == FIRST
+
+
+def test_without_a_record_the_rewrite_restarts_the_clock(vault: Path) -> None:
+    _history(vault)
+    assert _replayed(vault, TODAY + dt.timedelta(days=1)).last_changed("QMIG") == TODAY
+
+
+def test_another_edit_the_same_day_still_restarts_the_clock(vault: Path) -> None:
+    _history(vault, today_body="a reply came in.")
+    shortened_only = _doc(TODAY, yellow=_task("QMIG", SHORT)).splitlines()
+    _record(vault, "QMIG", TODAY, _lines(vault, FIRST), shortened_only)
+    assert _replayed(vault, TODAY + dt.timedelta(days=1)).last_changed("QMIG") == TODAY
+
+
+def test_a_record_for_another_day_or_another_before_is_ignored(vault: Path) -> None:
+    _history(vault)
+    _record(vault, "QMIG", TODAY - dt.timedelta(days=1), _lines(vault, FIRST), _lines(vault, TODAY))
+    other = _doc(FIRST, yellow=_task("QMIG", LONG, body="something else.")).splitlines()
+    _record(vault, "QMIG", TODAY, other, _lines(vault, TODAY))
+    assert _replayed(vault, TODAY + dt.timedelta(days=1)).last_changed("QMIG") == TODAY
+
+
+def test_malformed_record_rows_are_skipped(vault: Path) -> None:
+    _history(vault)
+    stale.rewrites_path(vault).parent.mkdir(parents=True)
+    stale.rewrites_path(vault).write_text("not json\n{}\n", encoding="utf-8")
+    _record(vault, "QMIG", TODAY, _lines(vault, FIRST), _lines(vault, TODAY))
+    assert _replayed(vault, TODAY + dt.timedelta(days=1)).last_changed("QMIG") == FIRST
+
+
+def test_todays_listing_sees_the_kept_clock(vault: Path) -> None:
+    _history(vault)
+    _record(vault, "QMIG", TODAY, _lines(vault, FIRST), _lines(vault, TODAY))
+    assert last_changed_by_tag(_lines(vault, TODAY), data_dir=vault, today=TODAY)["QMIG"] == FIRST
+
+
+def test_the_archive_takes_a_rewritten_item_on_its_old_schedule(vault: Path) -> None:
+    first = TODAY - dt.timedelta(days=STALE_AFTER_DAYS - 1)
+    _file(vault, first, yellow=_task("QMIG", LONG))
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("QMIG", LONG))
+    _file(vault, TODAY, yellow=_task("QMIG", SHORT))
+    nxt = TODAY + dt.timedelta(days=1)
+    tomorrow = _doc(nxt, yellow=_task("QMIG", SHORT)).splitlines()
+    assert stale.split_stale(tomorrow, _replayed(vault, nxt), today=nxt).archived == []  # restarted
+    _record(vault, "QMIG", TODAY, _lines(vault, first), _lines(vault, TODAY))
+    assert [a.tag for a in stale.split_stale(tomorrow, _replayed(vault, nxt), today=nxt).archived] == ["QMIG"]
+
+
+# ----- what a title may be --------------------------------------------------------------
+
+
+def test_a_clean_short_title_has_no_problems() -> None:
+    assert problems(SHORT, LONG) == []
+
+
+@pytest.mark.parametrize(
+    ("new", "problem"),
+    [
+        (None, "no proposal"),
+        ("   ", "empty"),
+        ("x" * (TITLE_MAX + 1), f"{TITLE_MAX + 1} characters, over {TITLE_MAX}"),
+        ("Reply to Alex about quotas", None),
+        ("Ship the export — then tell Sam", "a ` — ` separator"),
+        ("Review **the** export", "markdown or a tag"),
+        ("Close PROJ-1234 with Priya", "an issue id"),
+        ("Review example-org/app#57", "a # ref or hashtag"),
+        ("Confirm the export is MERGED", "a status word"),
+        ("Send the plan by 2026-05-01", "a date, time or age"),
+        ("Call Sam at 3pm", "a date, time or age"),
+        ('Answer "the quota question"', "a quote"),
+        ("Fix the export 🔴", "an emoji or symbol"),
+        ("Two\nlines", "more than one line"),
+    ],
+)
+def test_each_banned_pattern_is_a_problem(new: str | None, problem: str | None) -> None:
+    found = problems(new, LONG)
+    assert (problem in found) if problem else found == []
+
+
+def test_an_unchanged_title_is_a_problem() -> None:
+    assert "unchanged" in problems(SHORT, SHORT)
+
+
+# ----- the model call -------------------------------------------------------------------
+
+
+def _fake_run(reply: Any, *, returncode: int = 0, seen: dict[str, Any] | None = None) -> Any:
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if seen is not None:
+            seen.update(kwargs, argv=argv)
+        out = reply if isinstance(reply, str) else json.dumps(reply)
+        return subprocess.CompletedProcess(argv, returncode, stdout=out, stderr="boom" if returncode else "")
+
+    return run
+
+
+def test_the_model_runs_on_the_owners_login_with_items_on_stdin(vault: Path) -> None:
+    seen: dict[str, Any] = {}
+    env = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t", "CLAUDE_CODE_USE_BEDROCK": "1"}
+    reply = {"is_error": False, "result": 'Here you go:\n```json\n{"QMIG": " Reply to Alex "}\n```'}
+    propose = retitle.ask_claude("sonnet", run=_fake_run(reply, seen=seen), env=env)
+    assert propose([{"tag": "QMIG", "title": LONG, "body": "next."}]) == {"QMIG": "Reply to Alex"}
+    assert seen["env"] == {"PATH": "/usr/bin"}
+    assert LONG in seen["input"] and not any(LONG in a for a in seen["argv"])
+    assert seen["argv"][:4] == ["claude", "-p", "--model", "sonnet"]
+    assert "--strict-mcp-config" in seen["argv"] and seen["argv"][seen["argv"].index("--tools") + 1] == ""
+    assert not str(seen["cwd"]).startswith(str(vault))
+
+
+@pytest.mark.parametrize(
+    ("reply", "code"),
+    [({"is_error": True, "result": "limit"}, 0), ("", 1), ({"is_error": False, "result": "no json here"}, 0)],
+)
+def test_a_failed_model_call_raises(reply: Any, code: int) -> None:
+    with pytest.raises(Exception):  # noqa: B017 - any failure becomes a row problem in plan()
+        retitle.ask_claude(run=_fake_run(reply, returncode=code), env={})([{"tag": "A1", "title": LONG, "body": ""}])
+
+
+# ----- the dry run ----------------------------------------------------------------------
+
+
+class Stub:
+    def __init__(self, titles: dict[str, str] | None = None, fail: bool = False) -> None:
+        self.titles = titles or {}
+        self.fail = fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, items: list[dict[str, str]]) -> dict[str, str]:
+        self.calls.append([i["tag"] for i in items])
+        if self.fail:
+            raise RuntimeError("claude exited 1")
+        return {i["tag"]: self.titles.get(i["tag"], SHORT) for i in items}
+
+
+def _snapshot(vault: Path) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in vault.rglob("*") if p.is_file() and ".scout-cache" not in p.parts}
+
+
+def _setup(vault: Path) -> None:
+    _file(vault, FIRST, red=_task("RED1", LONG2), yellow=_task("YEL1", LONG))
+    _file(vault, TODAY - dt.timedelta(days=1), red=_task("RED1", LONG2), yellow=_task("YEL1", LONG))
+    _file(vault, TODAY, red=_task("RED1", LONG2), yellow=_task("YEL1", LONG) + _task("OKAY"))
+
+
+def test_the_dry_run_writes_only_the_worksheet(vault: Path) -> None:
+    _setup(vault)
+    before = _snapshot(vault)
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    assert _snapshot(vault) == before
+    assert sheet.path == vault / ".scout-cache" / "retitle" / f"{TODAY}.json" and sheet.path.exists()
+    assert [(r.tag, r.ready, r.last_changed) for r in sheet.rows] == [
+        ("RED1", True, FIRST.isoformat()),
+        ("YEL1", True, FIRST.isoformat()),
+    ]
+
+
+def test_re_running_asks_the_model_only_for_rows_it_has_not_answered(vault: Path) -> None:
+    _setup(vault)
+    stub = Stub()
+    retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=stub)
+    retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=stub)
+    assert stub.calls == [["RED1", "YEL1"]]
+    retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=stub, refresh=True)
+    assert len(stub.calls) == 2
+
+
+def test_owner_edits_to_the_worksheet_are_checked_and_change_the_sha(vault: Path) -> None:
+    _setup(vault)
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    raw = json.loads(sheet.path.read_text(encoding="utf-8"))
+    raw["rows"][0]["proposed"] = "Ship it — today"
+    raw["rows"][1]["skip"] = True
+    sheet.path.write_text(json.dumps(raw), encoding="utf-8")
+    again = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    assert again.sha != sheet.sha
+    assert "a ` — ` separator" in again.rows[0].problems and again.rows[1].skip is True
+
+
+def test_rows_are_skipped_near_archive_ambiguous_or_filtered(vault: Path) -> None:
+    old = TODAY - dt.timedelta(days=STALE_AFTER_DAYS - 3)
+    _file(vault, old, yellow=_task("SOON", LONG))
+    _file(
+        vault,
+        TODAY,
+        red=_task("RED1", LONG2),
+        yellow=_task("SOON", LONG) + _task("TWIN", LONG) + _task("TWIN", LONG2),
+    )
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    assert {r.tag: r.skip for r in sheet.rows} == {
+        "RED1": False,
+        "SOON": "archives within 7 days",
+        "TWIN": "tag used on more than one row",
+    }
+    only_red = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub(), sections=["🔴"])
+    assert [r.tag for r in only_red.rows] == ["RED1"]
+    assert [
+        r.tag
+        for r in retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub(), skip_within=0).rows
+        if not r.skip
+    ] == ["RED1", "SOON"]
+
+
+def test_a_failed_batch_becomes_a_row_problem(vault: Path) -> None:
+    _setup(vault)
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub(fail=True))
+    assert all(not r.ready and r.problems == ["no proposal: claude exited 1"] for r in sheet.rows)
+
+
+# ----- applying it ----------------------------------------------------------------------
+
+
+class Committer:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def __call__(self, vault: Path, message: str, rel: list[str]) -> str:
+        self.calls.append((message, rel))
+        if self.fail:
+            raise RetitleError("scripts/git-safe-commit.sh exited 1 without a commit")
+        return "abc1234"
+
+
+def _helper(vault: Path) -> None:
+    helper = vault / "scripts" / "git-safe-commit.sh"
+    helper.parent.mkdir(exist_ok=True)
+    helper.write_text(
+        '#!/bin/sh\nmsg="$1"; shift\ngit add -A -- "$@" && git commit -q -m "$msg" -- "$@" '
+        '&& echo "committed $(git rev-parse --short HEAD)"\n',
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+
+
+def _planned(vault: Path, titles: dict[str, str] | None = None) -> Worksheet:
+    _setup(vault)
+    _helper(vault)
+    note = vault / "action-items" / "context" / "YEL1.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        f"---\ntag: YEL1\ntitle: {json.dumps(LONG)}\ncreated: {FIRST}\nupdated: {FIRST}\n---\n\nWhy it matters.\n",
+        encoding="utf-8",
+    )
+    return retitle.plan(
+        vault=vault, today=TODAY.isoformat(), proposer=Stub(titles or {"RED1": "Ship the export", "YEL1": SHORT})
+    )
+
+
+def test_apply_needs_the_dry_runs_sha(vault: Path) -> None:
+    _planned(vault)
+    with pytest.raises(RetitleError, match="changed since that dry run"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha="deadbeef", commit=Committer())
+
+
+def test_apply_needs_a_dry_run(vault: Path) -> None:
+    _setup(vault)
+    with pytest.raises(RetitleError, match="run the dry run first"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha="deadbeef", commit=Committer())
+
+
+def test_apply_changes_only_the_bold_titles_and_keeps_every_fact(vault: Path) -> None:
+    sheet = _planned(vault)
+    before = _lines(vault, TODAY)
+    committer = Committer()
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=committer)
+    assert result.applied == ["RED1", "YEL1"] and result.commit == "abc1234"
+    after = _lines(vault, TODAY)
+    changed = [(a, b) for a, b in zip(before, after, strict=True) if a != b]
+    assert changed == [
+        (_task("RED1", LONG2).rstrip("\n"), _task("RED1", "Ship the export").rstrip("\n")),
+        (_task("YEL1", LONG).rstrip("\n"), _task("YEL1", SHORT).rstrip("\n")),
+    ]
+    kept = (vault / "action-items" / "context" / "YEL1.md").read_text(encoding="utf-8")
+    assert f"title: {json.dumps(SHORT)}\nformer_title: {json.dumps(LONG)}\n" in kept
+    assert f"created: {FIRST}\nupdated: {FIRST}\n" in kept and kept.endswith("Why it matters.\n")
+    created = (vault / "action-items" / "context" / "RED1.md").read_text(encoding="utf-8")
+    assert f"former_title: {json.dumps(LONG2)}\ncreated: {FIRST}\nupdated: {TODAY}\n" in created
+    message, rel = committer.calls[0]
+    assert message == "action items: shorten 2 titles (title cleanup)"
+    assert rel == sorted(
+        [
+            ".scout-state/title-rewrites.jsonl",
+            "action-items/context/RED1.md",
+            "action-items/context/YEL1.md",
+            f"action-items/action-items-{TODAY}.md",
+        ]
+    )
+
+
+def test_apply_keeps_every_clock(vault: Path) -> None:
+    sheet = _planned(vault)
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    clock = last_changed_by_tag(_lines(vault, TODAY), data_dir=vault, today=TODAY)
+    assert clock == {"RED1": FIRST, "YEL1": FIRST, "OKAY": TODAY}
+    replay = _replayed(vault, TODAY + dt.timedelta(days=1))
+    assert (replay.last_changed("RED1"), replay.last_changed("YEL1")) == (FIRST, FIRST)
+
+
+def test_apply_skips_rows_that_drifted_since_the_dry_run(vault: Path) -> None:
+    sheet = _planned(vault)
+    _file(vault, TODAY, red=_task("RED1", LONG2, body="a reply came in."), yellow=_task("YEL1", LONG) + _task("OKAY"))
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert result.drifted == ["RED1"] and result.applied == ["YEL1"]
+
+
+def test_a_failed_commit_puts_every_file_back(vault: Path) -> None:
+    sheet = _planned(vault)
+    before = _snapshot(vault)
+    with pytest.raises(RetitleError, match="without a commit"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer(fail=True))
+    assert _snapshot(vault) == before
+
+
+def test_apply_only_touches_todays_newest_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sheet = _planned(vault)
+    monkeypatch.setattr("scout.paths._today", lambda data=None: TODAY + dt.timedelta(days=1))
+    with pytest.raises(RetitleError, match="only today's file"):
+        retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+
+
+def test_apply_drops_a_cache_that_already_saw_today(vault: Path) -> None:
+    sheet = _planned(vault)
+    ledger = _replayed(vault, TODAY + dt.timedelta(days=1))
+    ledger.save()
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert not ActivityLedger.path_for(vault).exists()
+
+
+def test_after_a_pass_nothing_is_left_to_shorten(vault: Path) -> None:
+    sheet = _planned(vault)
+    retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha, commit=Committer())
+    assert retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub()).rows == []
+
+
+def test_an_item_whose_note_already_has_a_former_title_is_skipped(vault: Path) -> None:
+    _setup(vault)
+    note = vault / "action-items" / "context" / "YEL1.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(f'---\ntag: YEL1\ntitle: "x"\nformer_title: {json.dumps(LONG2)}\n---\n', encoding="utf-8")
+    sheet = retitle.plan(vault=vault, today=TODAY.isoformat(), proposer=Stub())
+    assert {r.tag: r.skip for r in sheet.rows}["YEL1"] == "already shortened once (its note has former_title)"
+
+
+# ----- the real commit and the undo, in git ---------------------------------------------
+
+
+def _git(vault: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(vault), *args], check=True, capture_output=True, text=True).stdout
+
+
+def test_apply_and_undo_in_git_keep_the_clock(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    original = _lines(vault, TODAY)
+
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit and _git(vault, "status", "--porcelain", "--", "action-items", ".scout-state") == ""
+    assert "action items: shorten 2 titles" in _git(vault, "log", "-1", "--format=%s")
+
+    plan = retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert plan.restore == {"RED1": ("Ship the export", LONG2), "YEL1": (SHORT, LONG)}
+    assert plan.delete_notes == ["RED1"]
+    undone, sha = retitle.undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert sha and _lines(vault, TODAY) == original
+    assert not (vault / "action-items" / "context" / "RED1.md").exists()
+    note = (vault / "action-items" / "context" / "YEL1.md").read_text(encoding="utf-8")
+    assert "former_title" not in note and f"title: {json.dumps(LONG)}" in note
+    clock = last_changed_by_tag(_lines(vault, TODAY), data_dir=vault, today=TODAY)
+    assert (clock["RED1"], clock["YEL1"]) == (FIRST, FIRST)
+
+
+def _repo(vault: Path) -> None:
+    _git(vault, "init", "-q")
+    _git(vault, "config", "user.email", "alex@example.com")
+    _git(vault, "config", "user.name", "Alex")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-q", "-m", "before")
+
+
+def test_undo_leaves_items_changed_since_the_pass(vault: Path) -> None:
+    sheet = _planned(vault)
+    _repo(vault)
+    result = retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
+    assert result.commit
+    _file(vault, TODAY, red=_task("RED1", "Ship the export soon"), yellow=_task("YEL1", SHORT) + _task("OKAY"))
+    plan = retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha=result.commit)
+    assert plan.changed == ["RED1"] and list(plan.restore) == ["YEL1"]
+
+
+def test_undo_refuses_a_commit_that_is_not_a_cleanup(vault: Path) -> None:
+    _setup(vault)
+    _repo(vault)
+    with pytest.raises(RetitleError, match="not a title-cleanup commit"):
+        retitle.plan_undo(vault=vault, today=TODAY.isoformat(), commit_sha="HEAD")
+
+
+# ----- who may run it -------------------------------------------------------------------
+
+
+def test_the_gate_refuses_a_scheduled_run(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(retitle, "_interactive", lambda: True)
+    monkeypatch.setattr(retitle, "_live_run", lambda v: False)
+    for env in ({"SCOUT_MODE": "briefing"}, {"SCOUT_READER": "agent:dreaming"}, {"SCOUT_READER": ""}):
+        with pytest.raises(RetitleError, match="scheduled run"):
+            retitle.owner_gate(vault, env)
+    retitle.owner_gate(vault, {})
+
+
+def test_the_gate_refuses_without_a_terminal_or_during_a_run(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(retitle, "_live_run", lambda v: False)
+    monkeypatch.setattr(retitle, "_interactive", lambda: False)
+    with pytest.raises(RetitleError, match="TTY"):
+        retitle.owner_gate(vault, {})
+    monkeypatch.setattr(retitle, "_interactive", lambda: True)
+    monkeypatch.setattr(retitle, "_live_run", lambda v: True)
+    with pytest.raises(RetitleError, match="run of this vault is live"):
+        retitle.owner_gate(vault, {})
+
+
+# ----- the CLI --------------------------------------------------------------------------
+
+
+def _cli(*args: str) -> Any:
+    return runner.invoke(app, ["retitle", "--date", TODAY.isoformat(), *args])
+
+
+def test_cli_refuses_without_a_terminal(vault: Path) -> None:
+    _setup(vault)
+    result = _cli()
+    assert result.exit_code == 2 and "refused: run it yourself in a terminal" in result.stdout
+
+
+@pytest.fixture
+def owner(monkeypatch: pytest.MonkeyPatch) -> Stub:
+    stub = Stub({"RED1": "Ship the export", "YEL1": SHORT})
+    monkeypatch.setattr(retitle, "_interactive", lambda: True)
+    monkeypatch.setattr(retitle, "_live_run", lambda v: False)
+    monkeypatch.setattr(retitle, "ask_claude", lambda model="sonnet": stub)
+    monkeypatch.setattr(retitle, "git_safe_commit", Committer())
+    return stub
+
+
+def test_cli_dry_run_then_apply(vault: Path, owner: Stub) -> None:
+    _planned(vault)
+    dry = _cli()
+    assert dry.exit_code == 0, dry.stdout
+    sha = retitle.load_worksheet(vault, TODAY)
+    assert sha is not None
+    assert f"[#RED1] {len(LONG2)} → 15  🔴  unchanged since {FIRST}" in dry.stdout
+    assert "retitle: 2 to apply, 0 with problems, 0 skipped — dry run, nothing changed" in dry.stdout
+    assert f"worksheet sha: {sha.sha}" in dry.stdout and f"--apply {sha.sha}" in dry.stdout
+    done = _cli("--apply", sha.sha)
+    assert done.exit_code == 0, done.stdout
+    assert "shortened 2 titles, clocks kept; committed abc1234" in done.stdout
+    assert "--undo abc1234 --yes (not git revert)" in done.stdout
+
+
+def test_cli_apply_with_a_stale_sha_is_refused(vault: Path, owner: Stub) -> None:
+    _planned(vault)
+    result = _cli("--apply", "00000000")
+    assert result.exit_code == 2 and "run the dry run again" in result.stdout
+
+
+def test_worksheet_rows_round_trip(vault: Path) -> None:
+    row = Row("A1", "🔴", 90, LONG, "", "h", str(FIRST), str(TODAY), False, SHORT, [], False)
+    sheet = Worksheet(date=TODAY, rows=[row], path=retitle.worksheet_path(vault, TODAY))
+    sheet.save()
+    loaded = retitle.load_worksheet(vault, TODAY)
+    assert loaded is not None and loaded.rows == [row] and loaded.sha == sheet.sha
