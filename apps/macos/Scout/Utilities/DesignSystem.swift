@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreText
 
 /// Editorial + native-macOS design system.
 ///
@@ -103,8 +104,8 @@ enum DS {
     /// Views call `DS.font(_:.serif)`; this is the scale's building block.
     static func serif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
-        if FontAvailability.newsreader {
-            return .custom("Newsreader", size: size).weight(weight)
+        if BrandFont.available {
+            return .custom(BrandFont.newsreader(weight), size: size)
         }
         if FontAvailability.newYork {
             return .custom("New York", size: size).weight(weight)
@@ -115,8 +116,8 @@ enum DS {
     /// IDs, timestamps, key counts. Views call `DS.font(_:.mono)`.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
-        if FontAvailability.jetBrainsMono {
-            return .custom("JetBrains Mono", size: size).weight(weight)
+        if BrandFont.available {
+            return .custom(BrandFont.jetBrainsMono(weight), size: size)
         }
         return .system(size: size, weight: weight, design: .monospaced)
     }
@@ -211,12 +212,56 @@ enum DS {
         }
     }
 
-    /// Brand fonts are optional installs; look each one up once, not on every
+    /// The brand fonts ship inside the app (audit #106): Newsreader's 16 pt
+    /// optical cut for the reading voice and JetBrains Mono for data, each in
+    /// the three weights the app draws (Regular, Medium, SemiBold), with
+    /// their SIL Open Font License texts beside them in Resources/Fonts.
+    /// Nothing is fetched at run time; they are registered for this process
+    /// only, the first time a serif or mono font is built.
+    ///
+    /// Faces are picked by PostScript name rather than `.weight(_:)`, so a
+    /// weight the app doesn't bundle maps to the nearest real face instead of
+    /// a synthesised one.
+    enum BrandFont {
+        static let newsreaderFaces = ["Newsreader16pt-Regular", "Newsreader16pt-Medium", "Newsreader16pt-SemiBold"]
+        static let jetBrainsMonoFaces = ["JetBrainsMono-Regular", "JetBrainsMono-Medium", "JetBrainsMono-SemiBold"]
+
+        /// Registers the bundled files once, then checks every face loaded.
+        /// False only if the bundle lost them; the voices then fall back to
+        /// New York and SF Mono.
+        static let available: Bool = {
+            registerBundledFonts()
+            return (newsreaderFaces + jetBrainsMonoFaces).allSatisfy { NSFont(name: $0, size: 13) != nil }
+        }()
+
+        static func newsreader(_ weight: Font.Weight) -> String { newsreaderFaces[index(weight)] }
+        static func jetBrainsMono(_ weight: Font.Weight) -> String { jetBrainsMonoFaces[index(weight)] }
+
+        /// Regular for regular and lighter, Medium for medium, SemiBold for
+        /// semibold and heavier.
+        static func index(_ weight: Font.Weight) -> Int {
+            switch weight {
+            case .medium: return 1
+            case .semibold, .bold, .heavy, .black: return 2
+            default: return 0
+            }
+        }
+
+        private static func registerBundledFonts() {
+            guard let resources = Bundle.main.resourceURL,
+                  let files = FileManager.default.enumerator(at: resources, includingPropertiesForKeys: nil)
+            else { return }
+            for case let url as URL in files where url.pathExtension == "ttf" {
+                // Already registered (a second app instance in tests) is fine.
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+            }
+        }
+    }
+
+    /// The fallback serif is a system install; look it up once, not on every
     /// font call (the old per-call `NSFont(name:)` probe ran on every render).
     private enum FontAvailability {
-        static let newsreader    = NSFont(name: "Newsreader", size: 13) != nil
         static let newYork       = NSFont(name: "New York", size: 13) != nil
-        static let jetBrainsMono = NSFont(name: "JetBrains Mono", size: 13) != nil
     }
 
     // MARK: - Kind → priority mapping
