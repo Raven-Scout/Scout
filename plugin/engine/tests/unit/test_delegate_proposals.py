@@ -221,3 +221,42 @@ def test_a_refusal_names_the_reason_and_never_the_content() -> None:
     with pytest.raises(dp.ProposalError) as e:
         _parse(_doc(op="add-comment", args={"comment": secret + "\n"}))
     assert secret not in str(e.value)
+
+
+# ----- after the design review: nothing that can forge a line, and no ULID from the future ---------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a\u202eb",  # right-to-left override
+        "zw\u200bx",  # zero-width space
+        "joiner\u2060x",
+        "bom\ufeffx",
+        "isolate\u2066x",
+        "see [[a note]]",
+        "task [#AB12] done",
+        "sep\u2028x",
+    ],
+)
+def test_text_that_could_forge_a_line_or_hide_one_is_refused(value: str) -> None:
+    _refused(_doc(op="add-comment", args={"comment": value}), "bad_field")
+    obs = _doc(kind="observation", op=_DROP, tag=_DROP, date=_DROP, args=_DROP, text="ok", about=value)
+    _refused(obs, "bad_field")
+    _refused({**obs, "about": "ok", "text": value}, "bad_field")
+
+
+def test_ordinary_brackets_and_hashes_are_fine() -> None:
+    _parse(_doc(op="add-comment", args={"comment": "see [the doc] and issue #42 (a [single] bracket)"}))
+
+
+def test_a_ulid_from_the_future_is_refused_when_the_clock_is_given() -> None:
+    p = dp.make(D, "observation", {"text": "ok"}, now=NOW)
+    made = dp.ulid_time(p.id)
+    assert abs((made - dt.datetime.now(dt.UTC)).total_seconds()) < 60
+    dp.parse(p.path, p.to_bytes(), D, now=made)  # its own moment
+    dp.parse(p.path, p.to_bytes(), D, now=made - dp.FUTURE_SLACK)  # within the slack
+    with pytest.raises(dp.ProposalError) as e:
+        dp.parse(p.path, p.to_bytes(), D, now=made - dp.FUTURE_SLACK - dt.timedelta(seconds=1))
+    assert e.value.code == "future_id"
+    assert dp.ulid_time("00000000000000000000000000") == dt.datetime(1970, 1, 1, tzinfo=dt.UTC)

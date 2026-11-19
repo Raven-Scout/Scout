@@ -26,9 +26,12 @@ shape below; anything else is refused with a reason code, never repaired.
   The engine's own command checks what the shape can't (an estimate on the
   owner's grid, a block window); its refusal becomes the proposal's outcome.
 
-Text fields hold no control characters but a newline and a tab in
-``text``; the one-line fields hold neither. No key may repeat, and no float
-may be NaN or infinite.
+Text that can reach the vault can't forge a line there: no field holds a
+control, bidi or zero-width character (``text`` alone may keep a newline and
+a tab), nor ``[[`` or ``[#``, so a proposal can neither link a note nor name
+a task. No key may repeat, and no float may be NaN or infinite. ``made_at``
+is the agent's claim, shown and never used for order; the ULID's own time
+may not be ahead of the laptop's clock (``parse(now=...)``).
 """
 
 from __future__ import annotations
@@ -60,8 +63,13 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _MADE_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _KIND_WORD_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f  ]")  # text keeps \n and \t
-_LINE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+# Control, line/paragraph separators, bidi controls and zero-width characters; ``text`` alone keeps \n and \t.
+_HIDDEN = "\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff"
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f" + _HIDDEN + "]")
+_LINE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f" + _HIDDEN + "]")
+_MARKUP_RE = re.compile(r"\[\[|\[#")  # a wikilink or a task tag: never in text that reaches the vault
+FUTURE_SLACK = dt.timedelta(minutes=10)  # a ULID's time may run this far ahead of the laptop's clock
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
 class ProposalError(ValueError):
@@ -125,8 +133,18 @@ def _text(value: Any, field: str, limit: int, *, one_line: bool, minimum: int = 
     if not minimum <= len(value) <= limit or not value.strip():
         raise ProposalError("bad_field", f"{field} must be {minimum}-{limit} characters, not blank")
     if (_LINE_CONTROL_RE if one_line else _CONTROL_RE).search(value):
-        raise ProposalError("bad_field", f"{field} holds a control character")
+        raise ProposalError("bad_field", f"{field} holds a control, bidi or zero-width character")
+    if _MARKUP_RE.search(value):
+        raise ProposalError("bad_field", f"{field} holds [[ or [#")
     return value
+
+
+def ulid_time(ulid: str) -> dt.datetime:
+    """The time a canonical ULID was made (its first 10 characters, milliseconds since the epoch)."""
+    ms = 0
+    for ch in ulid[:10]:
+        ms = ms * 32 + _CROCKFORD.index(ch)
+    return dt.datetime.fromtimestamp(ms / 1000, dt.UTC)
 
 
 def _date(value: Any, field: str) -> str:
@@ -172,8 +190,11 @@ def _args(op: str, args: Any) -> dict[str, Any]:
     return out
 
 
-def parse(path: str, data: bytes, delegate: str) -> Proposal:
-    """The proposal at inbox ``path`` holding ``data``, from ``delegate``'s inbox, or :class:`ProposalError`."""
+def parse(path: str, data: bytes, delegate: str, *, now: dt.datetime | None = None) -> Proposal:
+    """The proposal at inbox ``path`` holding ``data``, from ``delegate``'s inbox, or :class:`ProposalError`.
+
+    With ``now``, a ULID made more than :data:`FUTURE_SLACK` after it is refused (``future_id``).
+    """
     match = PATH_RE.match(path)
     if match is None:
         raise ProposalError("bad_path")
@@ -202,6 +223,8 @@ def parse(path: str, data: bytes, delegate: str) -> Proposal:
         _exact_keys(doc, common | {"op", "tag", "date", "args"}, set(), "proposal")
     if doc["id"] != match[2] or not isinstance(doc["id"], str) or not ULID_RE.match(doc["id"]):
         raise ProposalError("bad_id", "id isn't the ULID in the file name")
+    if now is not None and ulid_time(doc["id"]) > now + FUTURE_SLACK:
+        raise ProposalError("future_id", "the ULID's time is ahead of this computer's clock")
     if doc["delegate"] != delegate:
         raise ProposalError("wrong_delegate", "the proposal names another delegate")
     if not isinstance(doc["made_at"], str) or not _MADE_AT_RE.match(doc["made_at"]):
