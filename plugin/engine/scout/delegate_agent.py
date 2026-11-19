@@ -15,6 +15,10 @@ file it made:
   and that this engine is at least the one that built the mirror.
 - **Reads as the delegate** once (what ``kb files`` lists, without writing the
   privacy index), to show the engine works here.
+- **Learns the inbox clone** (V4, ``--inbox``, else ``SCOUT_INBOX_DIR``, else the
+  one the env file already names): the agent's clone of its inbox repository,
+  where ``scoutctl inbox propose`` writes. It goes in the environment as
+  ``SCOUT_INBOX_DIR``.
 - **Writes the environment** Scout needs here to ``<clone>/.git/scout-delegate.env``
   (never tracked), shell-quoted, and with ``--print-env`` prints it as
   ``export`` lines for ``eval``. Only into the clone's own ``.git`` folder: not
@@ -121,7 +125,24 @@ def _write_env(git_dir: Path, text: str) -> Path:
     return git_dir / ENV_FILE
 
 
-def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> InitResult:
+def _remembered_inbox(git_dir: Path | None) -> str | None:
+    """The ``SCOUT_INBOX_DIR`` an earlier ``init --inbox`` wrote to the env file, if any."""
+    if git_dir is None:
+        return None
+    try:
+        text = (git_dir / ENV_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key == "SCOUT_INBOX_DIR":
+            with contextlib.suppress(ValueError):
+                words = shlex.split(value)
+                return words[0] if len(words) == 1 else None
+    return None
+
+
+def init(clone: Path | None = None, *, inbox: Path | None = None, env: Mapping[str, str] | None = None) -> InitResult:
     """Check a delegate mirror clone and the engine in it, and write the environment Scout needs there."""
     env = os.environ if env is None else env
     start = clone or (Path(env["SCOUT_DATA_DIR"]) if env.get("SCOUT_DATA_DIR") else Path.cwd())
@@ -190,6 +211,18 @@ def init(clone: Path | None = None, *, env: Mapping[str, str] | None = None) -> 
         delegate=delegate, clone=str(root), env={"SCOUT_DATA_DIR": str(root), "SCOUT_READER": reader}, files=files
     )
     git_dir = _own_git_dir(root)
+    from scout.delegate_inbox import inbox_clone
+
+    named = inbox or (Path(env["SCOUT_INBOX_DIR"]) if env.get("SCOUT_INBOX_DIR") else None)
+    remembered = None if named is not None else _remembered_inbox(git_dir)
+    if named is not None or remembered is not None:
+        where = {**env, "SCOUT_DATA_DIR": str(root)}
+        try:
+            result.env["SCOUT_INBOX_DIR"] = str(inbox_clone(named or Path(str(remembered)), where))
+        except RepoSyncError as e:
+            if named is not None:
+                raise
+            notes.append(f"the inbox clone named before can't be used any more ({e.message}); pass --inbox again")
     if git_dir is not None:
         try:
             path = _write_env(git_dir, "".join(f"{k}={shlex.quote(v)}\n" for k, v in result.env.items()))

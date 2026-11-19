@@ -889,7 +889,10 @@ def test_a_run_cant_change_scouts_secrets_from_the_shell(vault: Path, home: Path
     assert "Scout's secrets" in _denied(_bash(vault, command))
 
 
-@pytest.mark.parametrize("rel", [".scout-state/delegate-mirrors.json", ".scout-state/delegate-scan/abc.json"])
+@pytest.mark.parametrize(
+    "rel",
+    [".scout-state/delegate-mirrors.json", ".scout-state/delegate-scan/abc.json", ".scout-state/delegate-inbox.json"],
+)
 def test_a_run_cant_write_the_delegate_state(vault: Path, rel: str) -> None:
     assert "delegate state" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
     assert "delegate state" in _denied(_bash(vault, f"echo x > {rel}"))

@@ -5319,6 +5319,9 @@ def _register_delegate() -> None:
         clone: Path | None = typer.Option(  # noqa: B008
             None, "--clone", help="The mirror clone (default: $SCOUT_DATA_DIR, else this folder or one above it)."
         ),
+        inbox: Path | None = typer.Option(  # noqa: B008
+            None, "--inbox", help="The agent's clone of its inbox repository, where scoutctl inbox propose writes."
+        ),
         print_env: bool = typer.Option(
             False,
             "--print-env",
@@ -5338,7 +5341,7 @@ def _register_delegate() -> None:
         from scout.repo_sync import RepoSyncError
 
         try:
-            result = init(clone)
+            result = init(clone, inbox=inbox)
         except Exception as e:  # every failure exits 2, so `e=$(... --print-env) && eval "$e"` loads nothing
             failure = e if isinstance(e, RepoSyncError) else RepoSyncError("init_failed", f"refused: {e}")
             if print_env:
@@ -5391,9 +5394,14 @@ def _register_delegate() -> None:
         delegate: str = typer.Argument(..., help="The delegate id."),
         rotate: bool = typer.Option(False, "--rotate", help="Replace the agent's deploy key with a new one."),
         revoke: bool = typer.Option(False, "--revoke", help="Delete the agent's deploy key: it can't fetch any more."),
+        inbox: bool = typer.Option(
+            False, "--inbox", help="The key the agent pushes proposals to its inbox with (writable, the inbox only)."
+        ),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
         """Give the agent a read-only deploy key on its mirror repository (or rotate or revoke it).
+
+        With --inbox, the key is for its inbox repository instead, and can push there.
 
         The private key is kept in ~/.scout-secrets/delegate-mirrors/ for you to
         put in the agent's secret store; the command prints where, and how the
@@ -5406,6 +5414,15 @@ def _register_delegate() -> None:
         if rotate and revoke:
             typer.echo("scoutctl delegate key: pass --rotate or --revoke, not both", err=True)
             raise typer.Exit(2)
+        if inbox:
+            from scout import delegate_inbox
+
+            try:
+                inbox_result = delegate_inbox.deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say_inbox(inbox_result, as_json)
+            return
         try:
             result = deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
         except RepoSyncError as e:
@@ -5474,6 +5491,57 @@ def _register_delegate() -> None:
             _fail(e, as_json)
         _say(result, as_json)
 
+    @delegate_app.command("inbox")
+    def cli_delegate_inbox(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        remote: str = typer.Option(
+            "", "--remote", help="Its private inbox repository (https://github.com/<owner>/<repo>) or a local path."
+        ),
+        create_repo: str | None = typer.Option(
+            None, "--create-repo", help="Create this private GitHub repository (owner/name), Actions off, and use it."
+        ),
+        reset: bool = typer.Option(
+            False, "--reset", help="After inbox_rewritten: take the inbox's main as it is now. Pushes nothing."
+        ),
+        unlink: bool = typer.Option(False, "--unlink", help="Forget the inbox and revoke its key. The repo stays."),
+        confirm: bool = typer.Option(False, "--confirm", help="With --reset: don't ask."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link a delegate to its inbox: a private repository its agent pushes proposals to (#550 V4).
+
+        The repository is bound by GitHub's own ids and checked before every pull:
+        private, yours alone, not a fork, GitHub Actions and Pages off.
+        """
+        import sys as _sys
+
+        from scout import delegate_inbox
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if sum(map(bool, (remote or create_repo, reset, unlink))) != 1:
+            typer.echo("scoutctl delegate inbox: pass --remote or --create-repo, or --reset, or --unlink", err=True)
+            raise typer.Exit(2)
+
+        def ask(name: str, main: str) -> bool:
+            if confirm:
+                return True
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{name}'s inbox main is now {main}")
+            return typer.prompt(f"Type {name} to build on it", default="", show_default=False) == name
+
+        vault = _paths.data_dir()
+        try:
+            if reset:
+                result = delegate_inbox.reset(vault, delegate, confirm=ask)
+            elif unlink:
+                result = delegate_inbox.unlink(vault, delegate)
+            else:
+                result = delegate_inbox.link(vault, delegate, remote, create_repo=create_repo)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say_inbox(result, as_json)
+
     @delegate_app.command("unlink")
     def cli_delegate_unlink(
         delegate: str = typer.Argument(..., help="The delegate id."),
@@ -5492,6 +5560,180 @@ def _register_delegate() -> None:
 
 
 _register_delegate()
+
+
+def _say_inbox(result: object, as_json: bool) -> None:
+    import json as _json
+
+    from scout.delegate_inbox import Result
+
+    assert isinstance(result, Result)
+    if as_json:
+        typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+        return
+    r = result
+    if r.action == "inbox-pull":
+        refused = sum(r.refused.values())
+        line = f"{r.delegate}: took {len(r.taken)}"
+        line += (
+            f", refused {refused} ({', '.join(f'{k} {v}' for k, v in sorted(r.refused.items()))})" if refused else ""
+        )
+        line += f", {r.already} taken before" if r.already else ""
+        line += f", {r.ignored} other path(s) left alone" if r.ignored else ""
+        typer.echo(line)
+    for note in r.notes:
+        typer.echo(note)
+
+
+def _register_inbox() -> None:
+    inbox_app = typer.Typer(
+        help="Delegates' inboxes (#550 V4): an agent proposes a change, the laptop pulls it. The agent's side is "
+        "inbox propose; the owner's is inbox pull."
+    )
+    app.add_typer(inbox_app, name="inbox")
+    propose_app = typer.Typer(help="Propose a change from a delegate's agent, in its inbox clone.")
+    inbox_app.add_typer(propose_app, name="propose")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _propose(kind: str, body: dict[str, object], inbox: Path | None, push: bool, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_inbox import propose
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            out = propose(kind, body, inbox=inbox, push=push)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **out.to_json()}, indent=2, sort_keys=True))
+            return
+        typer.echo(f"proposed {out.id} ({out.path}){', pushed' if out.pushed else ''}")
+        for note in out.notes:
+            typer.echo(note)
+
+    inbox_opt = typer.Option(None, "--inbox", help="The inbox clone (default: $SCOUT_INBOX_DIR, from delegate init).")
+    push_opt = typer.Option(False, "--push", help="Push it to the inbox now.")
+    json_opt = typer.Option(False, "--json", help="Print JSON.")
+
+    @propose_app.command("observation")
+    def cli_inbox_propose_observation(
+        text: str = typer.Option(..., "--text", help="What the agent noticed (up to 4000 characters)."),
+        about: str | None = typer.Option(None, "--about", help="What it is about: a name or slug (one line)."),
+        source: str | None = typer.Option(None, "--source", help="Where it came from: a URL or a note (one line)."),
+        inbox: Path | None = inbox_opt,
+        push: bool = push_opt,
+        as_json: bool = json_opt,
+    ) -> None:
+        """Propose an observation. The owner's Scout reviews it; nothing is applied from it automatically."""
+        body: dict[str, object] = {"text": text}
+        if about is not None:
+            body["about"] = about
+        if source is not None:
+            body["source"] = source
+        _propose("observation", body, inbox, push, as_json)
+
+    @propose_app.command("action")
+    def cli_inbox_propose_action(
+        op: str = typer.Argument(..., help="mark-done | snooze | add-comment | set-estimate | set-block | clear-block"),
+        tag: str = typer.Option(..., "--tag", help="The item's [#TAG], without the brackets."),
+        date: str = typer.Option(..., "--date", help="The daily file's date, YYYY-MM-DD."),
+        undo: bool = typer.Option(False, "--undo", help="mark-done: mark it not done."),
+        until: str | None = typer.Option(None, "--until", help="snooze: until YYYY-MM-DD."),
+        comment: str | None = typer.Option(None, "--comment", help="add-comment: one line."),
+        minutes: int | None = typer.Option(None, "--minutes", help="set-estimate: 1-1440."),
+        kind: str | None = typer.Option(None, "--kind", help="set-estimate: the kind of work (one word)."),
+        day: str | None = typer.Option(None, "--day", help="set-block: YYYY-MM-DD."),
+        start: str | None = typer.Option(None, "--start", help="set-block: HH:MM."),
+        end: str | None = typer.Option(None, "--end", help="set-block: HH:MM."),
+        inbox: Path | None = inbox_opt,
+        push: bool = push_opt,
+        as_json: bool = json_opt,
+    ) -> None:
+        """Propose a change to one action item, addressed by its [#TAG] in one day's file."""
+        given = {
+            "undo": undo or None,
+            "until": until,
+            "comment": comment,
+            "minutes": minutes,
+            "kind": kind,
+            "day": day,
+            "start": start,
+            "end": end,
+        }
+        args = {k: v for k, v in given.items() if v is not None}
+        _propose("action_item_op", {"op": op, "tag": tag, "date": date, "args": args}, inbox, push, as_json)
+
+    @inbox_app.command("pull")
+    def cli_inbox_pull(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every linked inbox; one failing doesn't stop the rest."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Take new proposals from the delegates' inboxes into .scout-inbox/agents/ (the owner's computer).
+
+        Each is checked, recorded under this computer's signature, copied, then
+        removed from the inbox. Nothing is applied and nothing is committed here.
+        """
+        import json as _json
+
+        from scout import delegate_inbox
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_):
+            typer.echo("scoutctl inbox pull: name one delegate, or pass --all", err=True)
+            raise typer.Exit(2)
+        vault = _paths.data_dir()
+        if delegate is not None:
+            try:
+                result = delegate_inbox.pull(vault, delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say_inbox(result, as_json)
+            return
+        try:
+            results = delegate_inbox.pull_all(vault)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        failed = [r for r in results if isinstance(r, RepoSyncError)]
+        if as_json:
+            typer.echo(
+                _json.dumps(
+                    [
+                        {"ok": False, "delegate": r.detail.get("delegate"), "code": r.code, "message": r.message}
+                        if isinstance(r, RepoSyncError)
+                        else {"ok": True, **r.to_json()}
+                        for r in results
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for r in results:
+                if isinstance(r, RepoSyncError):
+                    typer.echo(f"{r.detail.get('delegate')}: {r.message}", err=True)
+                else:
+                    _say_inbox(r, False)
+            if not results:
+                typer.echo("no delegate inboxes on this computer")
+        if failed:
+            raise typer.Exit(2)
+
+
+_register_inbox()
 
 
 # What a delegate checkout (SCOUT_READER=delegate:<id>, #550 §6.5) may run: reads only. A
@@ -5527,6 +5769,7 @@ _DELEGATE_COMMANDS = frozenset(
         ("bootstrap", "doctor"),
         ("manifest", "show"),
         ("delegate", "init"),  # writes only the clone's .git/scout-delegate.env, never the tree
+        ("inbox", "propose"),  # writes only the agent's inbox clone, never the vault or the mirror
     }
 )
 _DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them
