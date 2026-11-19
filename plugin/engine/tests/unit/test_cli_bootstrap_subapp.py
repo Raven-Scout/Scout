@@ -105,7 +105,7 @@ def test_doctor_json_shape(tmp_path, monkeypatch):
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     result = runner.invoke(app, ["bootstrap", "doctor", "--no-jobs", "--json"])
     payload = json.loads(result.stdout)
-    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health", "warning_groups"}
 
 
 def test_doctor_text_has_a_run_health_section_and_no_auth_error(tmp_path, monkeypatch):

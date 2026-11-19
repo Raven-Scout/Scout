@@ -46,11 +46,21 @@ struct SessionsFormatTests {
         #expect(SessionsFormat.shortModel("gpt-x") == "gpt-x")
     }
 
-    @Test func resumeRunsInTheWorktreeThenTheProjectThenHome() throws {
-        let a = try #require(SessionsFixture.session("local_A", in: SessionsFixture.index()))
-        #expect(SessionsFormat.resumeDirectory(for: a, exists: { _ in true }).path == a.cwd)
-        #expect(SessionsFormat.resumeDirectory(for: a, exists: { $0 == a.originCwd }).path == a.originCwd)
-        #expect(SessionsFormat.resumeDirectory(for: a, exists: { _ in false })
-                == FileManager.default.homeDirectoryForCurrentUser)
+    @Test func theFreshnessLineSplitsIntoItsUpdatedAndPRHalves() {
+        let refreshed = now.addingTimeInterval(-10)
+        let checked = now.addingTimeInterval(-120)
+        #expect(SessionsFormat.updatedPart(lastRefreshAt: refreshed, now: now) == "updated 10s ago")
+        #expect(SessionsFormat.updatedPart(lastRefreshAt: nil, now: now) == nil)
+        #expect(SessionsFormat.prCheckPart(prFinishedAt: checked, prErrors: ["a", "b"], now: now) == "PR check: 2 problems")
+        #expect(SessionsFormat.prCheckPart(prFinishedAt: nil, prErrors: ["a"], now: now) == nil)
+        #expect(SessionsFormat.prProblemsSummary(count: 1).contains("a pull request"))
+        #expect(SessionsFormat.prProblemsSummary(count: 2).contains("2 pull requests"))
+    }
+
+    @Test func prProblemDetailsAreOneLinePerProblem() {
+        let errors = [SessionSourceError(source: "gh", message: "pr view failed: example-org/example-repo#98"),
+                      SessionSourceError(source: "gh", message: "pr view failed: example-org/example-repo#102")]
+        #expect(PRCheckProblemsView.details(errors)
+                == "gh: pr view failed: example-org/example-repo#98\ngh: pr view failed: example-org/example-repo#102")
     }
 }

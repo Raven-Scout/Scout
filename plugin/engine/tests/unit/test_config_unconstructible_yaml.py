@@ -51,7 +51,7 @@ from scout.triggers.sources import slack
 from scout.yaml_safe import YAMLValueError, error_line, load_yaml, load_yaml_key, yaml_problem
 
 from .privacy_vault_helpers import build_privacy_vault, git
-from .test_kb_privacy_unconstructible_yaml import UNCONSTRUCTIBLE
+from .test_kb_privacy_unconstructible_yaml import DEEP_NESTING, UNCONSTRUCTIBLE
 
 RUN = {"SCOUT_MODE": "morning-briefing"}
 SECRET_NOTE = "knowledge-base/topics/misc/canary-plan.md"
@@ -170,7 +170,7 @@ def test_error_line_names_a_syntax_error() -> None:
 def test_error_line_is_none_when_it_cannot_tell() -> None:
     assert error_line("a: 1\n") is None
     assert error_line("- a\n") is None
-    assert error_line("n: " + "[" * 5000 + "]" * 5000) is None
+    assert error_line(DEEP_NESTING) is None
 
 
 def test_yaml_problem_never_quotes_the_text() -> None:

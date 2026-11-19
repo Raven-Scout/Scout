@@ -88,10 +88,8 @@ struct MenuBarExtraContent: View {
                 openMainWindow()
             } label: {
                 Label("Open", systemImage: "macwindow")
-                    .font(DS.sans(11.5, weight: .medium))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.ds(.secondary, size: .small))
             .help("Open the full Scout window")
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
@@ -117,9 +115,7 @@ struct MenuBarExtraContent: View {
             Spacer()
             if let fix = status.fix {
                 Button(fix.title) { perform(fix) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .font(DS.sans(11, weight: .medium))
+                    .buttonStyle(.ds(.secondary, size: .small))
             }
         }
         .padding(11)
@@ -135,7 +131,7 @@ struct MenuBarExtraContent: View {
     private func perform(_ fix: ScoutStatus.Fix) {
         switch fix {
         case .setUp: openMainWindow()
-        case .openSettings: openScoutSettings()
+        case .openSettings: openScoutSettings(at: SettingsAnchor.engine)
         }
     }
 
@@ -176,7 +172,7 @@ struct MenuBarExtraContent: View {
         let isFiring = state.firingSlotKeys.contains(run.slotKey)
         return HStack(spacing: 9) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(run.type.displayName)
+                Text(run.displayName)
                     .font(DS.sans(11.5, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(run.scheduledAt.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
@@ -185,7 +181,7 @@ struct MenuBarExtraContent: View {
             }
             Spacer()
             Button {
-                Task { await state.fireNow(slotKey: run.slotKey, bypassBudget: false) }
+                Task { await state.fireNow(slotKey: run.slotKey) }
             } label: {
                 HStack(spacing: 5) {
                     if isFiring {
@@ -200,8 +196,8 @@ struct MenuBarExtraContent: View {
             .font(DS.sans(10.5, weight: .medium))
             .foregroundStyle(DS.Accent.ink)
             .disabled(isFiring)
-            .help(isFiring ? "This run is being started" : "Start \(run.type.displayName) now")
-            .accessibilityLabel(isFiring ? "Starting \(run.type.displayName)" : "Run \(run.type.displayName) now")
+            .help(isFiring ? "This run is being started" : "Start \(run.displayName) now")
+            .accessibilityLabel(isFiring ? "Starting \(run.displayName)" : "Run \(run.displayName) now")
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 8)
@@ -245,7 +241,7 @@ struct MenuBarExtraContent: View {
                 }
                 if updates.anyUpdateAvailable {
                     footerButton("Update available", systemImage: "arrow.down.circle") {
-                        openScoutSettings()
+                        openScoutSettings(at: SettingsAnchor.updates)
                     }
                 }
                 footerButton("Install wake schedule", systemImage: "alarm") {
@@ -281,10 +277,16 @@ struct MenuBarExtraContent: View {
         openWindow(id: "main")
     }
 
-    private func openScoutSettings() {
+    /// Front the app and open Settings, at `anchor`'s section when given:
+    /// Engine for the status card's fix, Updates for "Update available".
+    private func openScoutSettings(at anchor: String? = nil) {
         dismiss()
         NSApp.activate(ignoringOtherApps: true)
-        openSettings()
+        if let anchor {
+            HelpActions.showSettings(openSettings, at: anchor)
+        } else {
+            openSettings()
+        }
     }
 
     private func installWakeSchedule() {

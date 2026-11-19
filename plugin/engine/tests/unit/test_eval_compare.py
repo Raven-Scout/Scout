@@ -18,6 +18,8 @@ from tests.eval.harness.runner import load_sample, run_sample
 from tests.eval.harness.scenario import load_scenario
 from tests.unit.test_eval_runner import FAKE_CLAUDE
 
+# The runner uses this machine's git, not /usr/bin's xcrun shim, on macOS (tests/conftest.py).
+pytestmark = pytest.mark.usefixtures("eval_runner_git_off_xcrun")
 MONDAY = date(2026, 10, 12)
 SERVERS = "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack"
 

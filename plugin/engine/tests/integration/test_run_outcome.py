@@ -27,6 +27,13 @@ from scout.scripts.phase_assembly import render_template
 
 TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "run-outcome.sh.tmpl"
 
+# The sign-in race, as a synthetic line: the CLI's real one names the account's email.
+AUTH_RACE_LINE = (
+    "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being "
+    "refreshed, often by another Claude Code process), so it couldn't load your organization's settings "
+    "for alex@example.com."
+)
+
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, sys
 with open({calls!r}, "a") as fh:
@@ -296,6 +303,40 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
             "Failed to authenticate. API Error: 401\n",
             "oauth_expired",
             id="quoted-cloudflare-then-real-401",
+        ),
+        # The sign-in race (synthetic line): another Claude Code process was refreshing the
+        # shared login. The login is fine, so it is neither oauth_expired nor unknown.
+        pytest.param(f"{AUTH_RACE_LINE}\n", "auth_race", id="auth-race"),
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n"
+            "=== Transient API error detected — sleeping 60s before retry ===\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            f"{AUTH_RACE_LINE}\n"
+            "=== Retry exhausted: 2 attempts, last exit 1 ===\n",
+            "auth_race",
+            id="auth-race-on-every-attempt",
+        ),
+        # The class is the last attempt's: a race the retry got past didn't end the run.
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n=== Claude retry attempt 2/2 ===\nAPI Error: Connection closed mid-response.\n",
+            "network",
+            id="auth-race-then-network",
+        ),
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n=== Claude retry attempt 2/2 ===\nNot logged in · Please run /login\n",
+            "oauth_expired",
+            id="auth-race-then-signed-out",
+        ),
+        pytest.param(
+            f"API Error: Connection closed mid-response.\n=== Claude retry attempt 2/2 ===\n{AUTH_RACE_LINE}\n",
+            "auth_race",
+            id="network-then-auth-race",
+        ),
+        pytest.param("Claude Code couldn't verify your sign-in with Anthropic.\n", "unknown", id="no-race-wording"),
+        pytest.param(
+            "Briefing: two runs stopped because Claude Code couldn't verify your sign-in with Anthropic yet.\n",
+            "unknown",
+            id="quoted-auth-race-is-not-one",
         ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
@@ -718,6 +759,10 @@ def test_a_vault_without_history_is_unmeasured(vault: Path, outcome: Path, setup
         ({"SCOUT_FORCE_MODE": "morning-briefing"}, "schedule"),
         ({"SCOUT_TRIGGER": "heartbeat"}, "heartbeat"),
         ({"SCOUT_TRIGGER": "bogus", "SCOUT_FORCE_MODE": "x"}, "schedule"),
+        # A connector-event trigger forces its skill as the mode, which is no
+        # schedule: the app must not offer to "run again" a schedule by that name.
+        ({"SCOUT_TRIGGER_ID": "pr-opened", "SCOUT_FORCE_MODE": "review-pr"}, "event"),
+        ({"SCOUT_TRIGGER": "event"}, "event"),
     ],
 )
 def test_every_row_names_its_trigger(vault: Path, outcome: Path, env: dict[str, str], expected: str) -> None:

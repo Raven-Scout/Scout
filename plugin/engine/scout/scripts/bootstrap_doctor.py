@@ -35,6 +35,23 @@ class Severity(Enum):
 
 
 @dataclass(frozen=True)
+class WarningGroup:
+    """Several findings of one kind, reported as ONE doctor warning (UI audit R1, #505).
+
+    ``summary`` is that warning's text, verbatim as it appears in ``DoctorReport.warnings``;
+    ``items`` names each file it stands for, so a client can show the list behind a
+    disclosure instead of one warning per file.
+    """
+
+    kind: str  # e.g. "privacy.script-raw-kb-read"
+    summary: str
+    items: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": self.kind, "summary": self.summary, "count": len(self.items), "items": list(self.items)}
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     severity: Severity
     errors: list[str] = field(default_factory=list)
@@ -46,6 +63,8 @@ class DoctorReport:
     # an upgrade's post-upgrade check. None when the vault is missing or the
     # evaluator crashed.
     run_health: RunHealth | None = None
+    # Warnings that stand for many files of one kind; each summary is also in `warnings`.
+    warning_groups: list[WarningGroup] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
@@ -777,8 +796,48 @@ def _has_markers(path: Path) -> bool:
         return False
 
 
-def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
-    """Vault edits to plugin-owned files, as (warnings, notes), plus privacy drift.
+# One grouped warning per privacy-drift rule (#505): what the files do, and the fix, once.
+_PRIVACY_GROUP_TEXT = {
+    "runner-no-reader": (
+        "vault runners don't export SCOUT_READER=autonomous or SCOUT_MODE, so their sessions' reads "
+        "aren't marked as unattended",
+        'add `export SCOUT_MODE="<run-name>"` and `export SCOUT_READER=autonomous` before each launches claude',
+    ),
+    "script-raw-kb-read": (
+        "vault scripts read the knowledge base directly, not through `scoutctl kb`, so what they produce "
+        "carries no privacy labels",
+        "make them read through `scoutctl kb files` (and `scoutctl kb read`), and send an item from a private file "
+        "only to an owner-only channel, never Slack (#453)",
+    ),
+}
+
+
+def _privacy_drift_warnings(vault: Path) -> tuple[list[str], list[WarningGroup]]:
+    """Privacy drift as warnings: a rule one file breaks keeps its own message; a rule several
+    files break is one warning with a count and the first two names (#505), plus a group listing
+    them all."""
+    from scout.scripts import vault_drift
+
+    by_rule: dict[str, list[vault_drift.PrivacyDrift]] = {}
+    for finding in vault_drift.privacy_drift(vault):
+        by_rule.setdefault(finding.rule, []).append(finding)
+    warnings: list[str] = []
+    groups: list[WarningGroup] = []
+    for rule, findings in by_rule.items():
+        if len(findings) == 1 or rule not in _PRIVACY_GROUP_TEXT:
+            warnings.extend(f"privacy: {f.message}" for f in findings)
+            continue
+        what, fix = _PRIVACY_GROUP_TEXT[rule]
+        paths = [f.path for f in findings]
+        named = ", ".join(paths[:2]) + (f" and {len(paths) - 2} more" if len(paths) > 2 else "")
+        summary = f"privacy: {len(paths)} {what}: {named}. To fix, {fix}; `scoutctl bootstrap drift` lists them all."
+        warnings.append(summary)
+        groups.append(WarningGroup(kind=f"privacy.{rule}", summary=summary, items=tuple(paths)))
+    return warnings, groups
+
+
+def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str], list[WarningGroup]]:
+    """Vault edits to plugin-owned files, as (warnings, notes, groups), plus privacy drift.
 
     A conflict is a warning: the vault runs an older version of a plugin-owned
     file until it is resolved. An edit upgrades keep, and a copy the first
@@ -817,9 +876,10 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
             f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
-    # Vault-local runners and scripts that read around the privacy labels (#453).
-    warnings.extend(f"privacy: {finding.message}" for finding in vault_drift.privacy_drift(vault))
-    return warnings, notes
+    # Vault-local runners and scripts that read around the privacy labels (#453), grouped by rule (#505).
+    privacy_warnings, groups = _privacy_drift_warnings(vault)
+    warnings.extend(privacy_warnings)
+    return warnings, notes, groups
 
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
@@ -1149,8 +1209,9 @@ def run_doctor(
     notes.extend(timeout_notes)
     warnings.extend(_check_run_limits(vault=vault, now=now))
 
+    groups: list[WarningGroup] = []
     try:
-        drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+        drift_warnings, drift_notes, groups = _check_vault_drift(vault=vault)
     except OSError as e:
         drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
     warnings.extend(drift_warnings)
@@ -1220,7 +1281,16 @@ def run_doctor(
         notes.append(f"run health could not be evaluated: {e}")
 
     if errors:
-        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes, run_health=run_health)
+        return DoctorReport(
+            severity=Severity.RED,
+            errors=errors,
+            warnings=warnings,
+            notes=notes,
+            run_health=run_health,
+            warning_groups=groups,
+        )
     if warnings:
-        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes, run_health=run_health)
+        return DoctorReport(
+            severity=Severity.YELLOW, warnings=warnings, notes=notes, run_health=run_health, warning_groups=groups
+        )
     return DoctorReport(severity=Severity.GREEN, notes=notes, run_health=run_health)

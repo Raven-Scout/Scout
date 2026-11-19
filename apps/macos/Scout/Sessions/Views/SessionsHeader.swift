@@ -25,6 +25,8 @@ struct SessionsHeader: View {
     /// published, so the line ticks without re-rendering the page.
     let service: SessionIndexService
 
+    @State private var showingPRProblems = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // One row when the title, freshness line and controls fit beside
@@ -57,17 +59,57 @@ struct SessionsHeader: View {
                 .fixedSize()
                 .glossaryHelp(.session)
             TimelineView(.periodic(from: .now, by: 10)) { context in
-                Text(SessionsFormat.freshness(
-                    lastRefreshAt: service.lastRefreshAt,
-                    prFinishedAt: service.prStatus?.finishedAt,
-                    prErrors: service.prStatus?.errors.map(\.message) ?? [],
-                    now: context.date))
-                    .font(DS.sans(12))
-                    .foregroundStyle(DS.Ink.p3)
-                    .lineLimit(freshnessLines)
-                    .truncationMode(.tail)
-                    .help(service.prStatus?.errors.map(\.message).joined(separator: "\n") ?? "")
+                freshnessLine(now: context.date, lines: freshnessLines)
             }
+        }
+    }
+
+    /// "updated 10s ago · PRs checked 2m ago". When the PR check had
+    /// problems, its half is a button that lists them (UI audit R4).
+    @ViewBuilder
+    private func freshnessLine(now: Date, lines: Int) -> some View {
+        let errors = service.prStatus?.errors ?? []
+        let updated = SessionsFormat.updatedPart(lastRefreshAt: service.lastRefreshAt, now: now)
+        let prPart = SessionsFormat.prCheckPart(
+            prFinishedAt: service.prStatus?.finishedAt, prErrors: errors.map(\.message), now: now)
+        if let prPart, !errors.isEmpty {
+            HStack(spacing: 0) {
+                if let updated {
+                    Text("\(updated) · ").foregroundStyle(DS.Ink.p3).fixedSize()
+                }
+                Button { showingPRProblems = true } label: {
+                    HStack(spacing: 3) {
+                        Text(prPart).lineLimit(lines).truncationMode(.tail)
+                        Image(systemName: "chevron.down").imageScale(.small)
+                    }
+                    .foregroundStyle(DS.Status.warn)
+                }
+                .buttonStyle(.plainHit)
+                .accessibilityLabel(prPart)
+                .accessibilityHint("Shows which pull requests couldn't be checked")
+                .help("Show the problems")
+                .popover(isPresented: $showingPRProblems, arrowEdge: .bottom) {
+                    PRCheckProblemsView(
+                        errors: errors,
+                        finishedAt: service.prStatus?.finishedAt,
+                        now: now,
+                        onCheckAgain: {
+                            showingPRProblems = false
+                            Task { await service.refreshPRs() }
+                        })
+                }
+            }
+            .font(DS.sans(12))
+        } else {
+            Text(SessionsFormat.freshness(
+                lastRefreshAt: service.lastRefreshAt,
+                prFinishedAt: service.prStatus?.finishedAt,
+                prErrors: [],
+                now: now))
+                .font(DS.sans(12))
+                .foregroundStyle(DS.Ink.p3)
+                .lineLimit(lines)
+                .truncationMode(.tail)
         }
     }
 

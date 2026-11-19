@@ -2,7 +2,8 @@
 # Release Scout: one version, one tag, one GitHub release.
 # Spec: docs/superpowers/specs/2026-10-05-unified-release-design.md
 #
-#   scripts/release.sh prepare [patch|minor|major|X.Y.Z]  # bump everything on release/vX.Y.Z, open the release PR
+#   scripts/release.sh prepare [patch|minor|major|X.Y.Z]  # bump everything on release/vX.Y.Z, open the release PR;
+#                                                        # the changelog.d/ fragments become the [X.Y.Z] sections
 #   scripts/release.sh finalize vX.Y.Z                    # after the PR merges: build, sign, notarize, publish
 #   scripts/release.sh rc vX.Y.Z-rc.N                     # release candidate from HEAD: a pre-release, never Latest
 #
@@ -160,7 +161,7 @@ kb_gate_reminder() {
 }
 
 cmd_prepare() {
-  local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t
+  local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t frag_dir
   slug="$(require_slug)"
   require_clean_synced_main
   vers check >/dev/null || die "versions drift across the manifests; run: versioning check"
@@ -189,6 +190,9 @@ cmd_prepare() {
   for rel in plugin/CHANGELOG.md apps/macos/CHANGELOG.md; do
     if grep -q "^## \[$new\]" "$REPO_ROOT/$rel"; then die "$rel already has a [$new] section"; fi
   done
+  # Every changelog.d/ fragment must parse before anything changes; promote writes them into [$new].
+  "$PY" -m scout.scripts.changelog --repo-root "$REPO_ROOT" check >/dev/null \
+    || die "a changelog fragment does not parse (above); fix it on main first"
   [ "${SCOUT_RELEASE_SKIP_LINT:-0}" = 1 ] || run_lint
   git -C "$REPO_ROOT" checkout -q -b "$branch"
   vers set "$new" >/dev/null
@@ -199,6 +203,10 @@ cmd_prepare() {
     plugin/.claude-plugin/plugin.json \
     plugin/engine/pyproject.toml plugin/engine/scout/__init__.py \
     apps/macos/Scout.xcodeproj/project.pbxproj plugin/CHANGELOG.md apps/macos/CHANGELOG.md
+  # promote deleted the fragments it assembled; the release commit deletes them too.
+  for frag_dir in plugin/changelog.d apps/macos/changelog.d; do
+    [ -z "$(git -C "$REPO_ROOT" ls-files -- "$frag_dir")" ] || git -C "$REPO_ROOT" add -A -- "$frag_dir"
+  done
   git -C "$REPO_ROOT" commit -q -m "release: v$new"
   mkdir -p "$REPO_ROOT/.release"
   notes="$REPO_ROOT/.release/notes-v$new.md"
@@ -367,6 +375,14 @@ build_and_publish() {
   printf '{"name": "scout", "version": "%s", "tag": "%s"}\n' "$v" "$tag" > "$build/release/scout-release.json"
 
   set -- "$dmg" "$build/release/scout-release.json"
+  if [ "$kind" = release ]; then
+    # The website's Download for Mac button links to /releases/latest/download/Scout.dmg, which
+    # starts the download directly. This is a plain copy of the DMG signed, notarized and stapled
+    # above: nothing re-signs it. An rc isn't Latest, so it doesn't get one. Sparkle's appcast
+    # keeps the versioned name.
+    cp "$dmg" "$build/release/Scout.dmg"
+    set -- "$@" "$build/release/Scout.dmg"
+  fi
   [ ! -f "$build/appcast.xml" ] || set -- "$@" "$build/appcast.xml"
 
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then

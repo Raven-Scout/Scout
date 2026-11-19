@@ -15,9 +15,11 @@
 #   - the event is pull_request (anything else -> false: push, workflow_call
 #     and workflow_dispatch always run the suites);
 #   - at least one file changed, and every changed file is one that
-#     `release.sh prepare` writes (VERSION_FILES and CHANGELOGS below);
+#     `release.sh prepare` writes (VERSION_FILES and CHANGELOGS below) or a
+#     changelog fragment it deletes (FRAGMENT_DIRS);
 #   - in every VERSION_FILES file, every added or removed line is a version
-#     line (VERSION_LINE below). A CHANGELOG may change freely — it's prose.
+#     line (VERSION_LINE below). A CHANGELOG or a fragment may change freely —
+#     it's prose.
 # So a release PR that also edits code, or that slips a dependency change into
 # pyproject.toml, or a build setting into project.pbxproj, runs everything.
 #
@@ -41,6 +43,11 @@ VERSION_FILES=(
 CHANGELOGS=(
   plugin/CHANGELOG.md
   apps/macos/CHANGELOG.md
+)
+# prepare assembles the fragments here into the CHANGELOGs and deletes them.
+FRAGMENT_DIRS=(
+  plugin/changelog.d/
+  apps/macos/changelog.d/
 )
 # One of: "version": "X.Y.Z",   version = "X.Y.Z"   __version__ = "X.Y.Z"
 #         MARKETING_VERSION = X.Y.Z;   (X.Y.Z may carry a -rc.N suffix)
@@ -72,6 +79,7 @@ while IFS= read -r path; do
   kind=""
   for f in "${VERSION_FILES[@]}"; do [ "$path" = "$f" ] && kind=version; done
   for f in "${CHANGELOGS[@]}"; do [ "$path" = "$f" ] && kind=changelog; done
+  for d in "${FRAGMENT_DIRS[@]}"; do case "$path" in "$d"*) kind=changelog ;; esac; done
   case "$kind" in
     changelog) continue ;;
     version) ;;
@@ -96,4 +104,4 @@ while IFS= read -r path; do
   done <<<"$diff"
 done <<<"$changed"
 
-say true "every change is a version bump or a CHANGELOG edit"
+say true "every change is a version bump, a CHANGELOG edit or a changelog fragment"

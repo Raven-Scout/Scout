@@ -110,7 +110,7 @@ struct MainWindowView: View {
         case .controlCenter:
             ControlCenterView()
         case .health:
-            HealthView(openSettings: { appState.requestedSidebar = .settings },
+            HealthView(openSettings: { HelpActions.showEngineSettings { appState.requestedSidebar = .settings } },
                        logsDirectory: appState.scoutDirectory.appendingPathComponent(".scout-logs"))
                 .environmentObject(appState.runLedgerService)
                 .environmentObject(appState.engineHealth)

@@ -14,7 +14,7 @@ struct SchedulesView: View {
 
     @State private var staleBannerVisible = false
     @State private var stalenessDetail: String?
-    @State private var errorMessage: String?
+    @State private var errorProblem: Problem?
     @State private var isInitialLoading = true
     /// The page's width, for `DetailPaneLayout` (UI audit C6).
     @State private var pageWidth: CGFloat?
@@ -112,8 +112,8 @@ struct SchedulesView: View {
             if staleBannerVisible {
                 staleBanner
             }
-            if let err = errorMessage {
-                errorBanner(err)
+            if let problem = errorProblem {
+                errorBanner(problem)
             }
             if !drafts.droppedSlotNames.isEmpty {
                 droppedEditsBanner
@@ -214,7 +214,7 @@ struct SchedulesView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: 420)
             Button("Retry") { Task { await reload() } }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.dsPrimary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -236,7 +236,7 @@ struct SchedulesView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             Button("+ Add schedule") { addDraftSlot() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.dsPrimary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -260,10 +260,9 @@ struct SchedulesView: View {
             Button("Reload now") {
                 Task { await reload(); staleBannerVisible = false }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.dsPrimary)
             Button("Dismiss") { staleBannerVisible = false }
-                .buttonStyle(.plainHit)
-                .foregroundStyle(DS.Ink.p3)
+                .buttonStyle(.dsSecondary)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
@@ -286,19 +285,12 @@ struct SchedulesView: View {
         .background(DS.Status.warn.opacity(0.15))
     }
 
-    @ViewBuilder
-    private func errorBanner(_ text: String) -> some View {
-        HStack {
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(DS.Status.err)
-            Text(text).font(DS.sans(13)).foregroundStyle(DS.Ink.p1)
-            Spacer()
-            Button("Dismiss") { errorMessage = nil }
-                .buttonStyle(.plainHit)
-                .foregroundStyle(DS.Ink.p3)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .background(DS.Status.err.opacity(0.12))
+    /// A failed write: the plain title and what to do, with the engine's own
+    /// output (validator stderr, a system error) behind Details (R2).
+    private func errorBanner(_ problem: Problem) -> some View {
+        ProblemView(problem: problem, onDismiss: { errorProblem = nil })
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 
     // MARK: - Derived values
@@ -407,20 +399,22 @@ struct SchedulesView: View {
             finishNewDraft(key: draftKey)
             selectedSlotKey = nil
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "add the schedule")
+            errorProblem = Self.problem(written, action: "add the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "add the schedule")
+            errorProblem = Self.problem(error, action: "add the schedule")
         }
     }
 
-    /// Shared write-problem wording (C10) for the error banner.
-    static func problemText(_ error: Error, action: String) -> String {
-        let problem = WriteProblem.from(error, action: action)
-        guard let details = problem.details else { return "\(problem.title). \(problem.message)" }
-        return "\(problem.title). \(problem.message)\n\(details)"
+    /// Shared write-problem wording (C10) for the error banner. The details
+    /// stay in `Problem.details`, which `ProblemView` shows only behind
+    /// "Details", never on a visible line under the title.
+    static func problem(_ error: Error, action: String) -> Problem {
+        let write = WriteProblem.from(error, action: action)
+        return Problem(severity: write.kind == .committedOnDiskOnly ? .warning : .error,
+                       title: write.title, impact: write.message, details: write.details)
     }
 
     private func saveExistingSlot(_ saved: Slot, original: Slot) async {
@@ -431,12 +425,12 @@ struct SchedulesView: View {
         } catch let written as ScheduleReloadAfterWriteError {
             // Saved; the next successful load settles the form's draft.
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "save the schedule")
+            errorProblem = Self.problem(written, action: "save the schedule")
         } catch let stale as StaleScheduleError {
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
-            errorMessage = Self.problemText(error, action: "save the schedule")
+            errorProblem = Self.problem(error, action: "save the schedule")
         }
     }
 
@@ -458,14 +452,14 @@ struct SchedulesView: View {
             // load report it as dropped.
             if selectedSlotKey == slot.key { selectedSlotKey = nil }
             registerUndo(written.change)
-            errorMessage = Self.problemText(written, action: "delete the schedule")
+            errorProblem = Self.problem(written, action: "delete the schedule")
         } catch let stale as StaleScheduleError {
             restoreIfStillThere(setAside, key: slot.key)
             staleBannerVisible = true
             stalenessDetail = stale.errorDescription
         } catch {
             restoreIfStillThere(setAside, key: slot.key)
-            errorMessage = Self.problemText(error, action: "delete the schedule")
+            errorProblem = Self.problem(error, action: "delete the schedule")
         }
     }
 
@@ -490,6 +484,6 @@ struct SchedulesView: View {
     }
 
     private func handleFireNow(_ key: String) async {
-        await appState.fireNow(slotKey: key, bypassBudget: false)
+        await appState.fireNow(slotKey: key)
     }
 }

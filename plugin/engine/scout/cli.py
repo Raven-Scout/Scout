@@ -751,10 +751,17 @@ def kb_share(
     warning, then writes scout-config.yaml → privacy.federation_defaults and
     turns sharing on. Agnes enforces it once you commit scout-config.yaml and
     then run `scoutctl repo sync`, which refuses while the change is uncommitted.
-    Exit 1 = refused or not confirmed, 2 = bad argument.
+
+    On a vault linked to Agnes it also clears the stops `kb unshare` (or Agnes)
+    made on this share for the people named here, so they read it again at once.
+    That is the only way a stop is cleared, and only by the owner at the
+    keyboard: a scheduled run, an agent run and a delegate checkout are refused.
+    Exit 1 = refused or not confirmed, 2 = bad argument or a clear Scout refuses.
     """
     import json
+    import os
 
+    from scout.kb import share_stops
     from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_share
 
     _owner_only(as_json)
@@ -769,30 +776,53 @@ def kb_share(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
+    client, link_problem = share_stops.connect(root)
+    view, why = share_stops.fetch_view(client)
+    if view is not None:
+        plan.clears = share_stops.share_clears(view, plan.target, plan.principals)
+    else:
+        plan.stops_note = link_problem or why
+    if link_problem and not as_json:
+        print(f"warning: {link_problem}: its stops on this share, if any, stay in force.", file=sys.stderr)
+    clears = plan.clears if plan.clears else None
+    if clears is not None and client is not None and not dry_run:
+        refusal = share_stops.clear_refusal(root, os.environ, client)
+        if refusal:
+            _share_refused(refusal + "; nothing was written", as_json, 2)
     if not as_json:
         for line in plan.lines():
             print(line)
     written = False
-    if plan.changed and not dry_run:
+    cleared: list[str] = []
+    if (plan.changed or clears is not None) and not dry_run:
         if not yes:
             if not _interactive() or as_json:
                 if as_json:
-                    print(json.dumps({**plan.to_json(), "written": False}, indent=2))
+                    print(json.dumps({**plan.to_json(), "written": False, "cleared": []}, indent=2))
                 print("Preview only: nothing was written. Re-run with --yes to share.", file=sys.stderr)
                 raise typer.Exit(1)
             if not typer.confirm("Share these notes?"):
                 print("Nothing was written.")
                 raise typer.Exit(1)
-        apply(root, plan)
-        written = True
+        if plan.changed:
+            apply(root, plan)
+            written = True
+        if clears is not None and client is not None:
+            try:
+                cleared = share_stops.apply_clears(root, os.environ, client, clears)
+            except share_stops.ClearRefused as e:
+                _share_refused(str(e), as_json, 2)
     if as_json:
-        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
-    elif written:
+        print(json.dumps({**plan.to_json(), "written": written, "cleared": cleared}, indent=2))
+        return
+    for line in cleared:
+        print(line)
+    if written:
         from scout.kb.share import SYNC_NOTE
 
         print("Wrote scout-config.yaml → privacy.federation_defaults.")
         print(SYNC_NOTE)
-    elif not plan.changed:
+    elif not plan.changed and clears is None:
         print("Nothing to change: already shared that way.")
 
 
@@ -809,13 +839,23 @@ def kb_unshare(
 ) -> None:
     """Stop sharing a folder or note, with some people or everyone (owner only).
 
-    Narrows scout-config.yaml → privacy.federation_defaults. In this release it
-    is vault only, so Agnes stops the share once you commit scout-config.yaml and
-    then run `scoutctl repo sync`, which refuses while the change is uncommitted.
-    A note that shares itself in its own frontmatter is listed, not edited.
+    On a vault linked to Agnes, first asks Agnes to stop the share at once, so
+    readers lose it from their next read (a stop for one member of a shared
+    group included), then narrows scout-config.yaml →
+    privacy.federation_defaults. Only `kb share` clears that stop. While Agnes
+    has no stop endpoint, or can't be reached, the stop takes effect once you
+    commit scout-config.yaml and run `scoutctl repo sync`. A note that shares
+    itself in its own frontmatter is listed, not edited.
+
+    Exit 1 = refused, 2 = bad argument, 4 = the vault was narrowed but Agnes
+    didn't confirm every stop (unreachable, an error, a refusal): it may serve
+    the share until the next sync, and running the same command again retries
+    the stop. An Agnes without the stop endpoint, or with sharing off, isn't a
+    failure (exit 0).
     """
     import json
 
+    from scout.kb import share_stops
     from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_unshare
 
     _owner_only(as_json)
@@ -827,17 +867,26 @@ def kb_unshare(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
+    client, link_problem = share_stops.connect(root)
+    view, why = share_stops.fetch_view(client)
+    wanted, notes = share_stops.unshare_stops(view, plan.target, plan.principals) if view is not None else ([], [])
+    # The stop goes first (ruling 15): Agnes leaves the share out from the next read, before the vault changes.
+    plan.agnes = share_stops.make_stops(client, view, why, wanted, notes, dry_run=dry_run, link_problem=link_problem)
     written = False
     if plan.changed and not dry_run:
         apply(root, plan)
         written = True
     if as_json:
         print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+        if plan.agnes.failed:
+            raise typer.Exit(4)
         return
     for line in plan.lines():
         print(line)
-    if not plan.changed:
+    if not plan.changed and not plan.agnes.made and not plan.agnes.planned:
         print("Nothing to change: it wasn't shared that way.")
+    if plan.agnes.failed:
+        raise typer.Exit(4)
 
 
 @kb_app.command("shares")
@@ -852,12 +901,18 @@ def kb_shares(
 ) -> None:
     """List what this vault shares: per folder or note, the people, the notes shared and the notes left out.
 
-    Owner and autonomous readers only; another person's agent is denied
-    (exit 3). Group names come from Agnes when the vault is linked.
+    On a vault linked to Agnes it also shows the stops Agnes holds: open ones
+    per share (who, since when), ones on shares the vault no longer lists, and
+    the ones cleared in the last 30 days. Owner and autonomous readers only;
+    another person's agent is denied (exit 3). Group names come from Agnes when
+    the vault is linked.
     """
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
+        from typing import Any
+
+        from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
         from scout.kb.read import Output
         from scout.kb.share import directory_for, group_names, list_shares, shares_lines
@@ -866,8 +921,22 @@ def kb_shares(
             return Output(data={"denied": True}, lines=["denied"], denied=1, code=3)
         enabled, rows = list_shares(root)
         names = group_names(directory_for(root), rows)
-        data = {"enabled": enabled, "group_names": names, "shares": [row.to_json() for row in rows]}
-        return Output(data=data, lines=shares_lines(enabled, rows, names))
+        client, link_problem = share_stops.connect(root)
+        view, why = share_stops.fetch_view(client) if client is not None else (None, None)
+        if link_problem and who == "owner":  # a sandboxed autonomous run can't read the token: stay quiet there
+            why = link_problem
+        stops = {row.glob: share_stops.row_stops(view, row.glob) for row in rows}
+        shares = [{**row.to_json(), "stops": [s.to_json() for s in stops[row.glob]]} for row in rows]
+        agnes: dict[str, Any] = view.to_json() if view is not None else {"available": False, "note": why}
+        granted = {row.glob: row.principals for row in rows if row.source == "default"} if enabled else {}
+        served = share_stops.still_served(view, granted) if view is not None else []
+        if view is not None:
+            agnes["still_served"] = [{"glob": g, "principals": p} for g, p in served]
+        data = {"enabled": enabled, "group_names": names, "shares": shares, "agnes": agnes}
+        lines = shares_lines(enabled, rows, names, stops)
+        lines += share_stops.stop_lines(view, why, [row.glob for row in rows])
+        lines += share_stops.still_served_lines(served, granted)
+        return Output(data=data, lines=lines)
 
     _kb_run(args, reader, repo, as_json, body)
 
@@ -5245,6 +5314,52 @@ def _register_delegate() -> None:
             _fail(e, as_json)
         _say(result, as_json)
 
+    @delegate_app.command("init")
+    def cli_delegate_init(
+        clone: Path | None = typer.Option(  # noqa: B008
+            None, "--clone", help="The mirror clone (default: $SCOUT_DATA_DIR, else this folder or one above it)."
+        ),
+        print_env: bool = typer.Option(
+            False,
+            "--print-env",
+            help='Print only shell exports, for: e=$(scoutctl delegate init --print-env) && eval "$e".',
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Set up the agent's side of a delegate mirror: run in its clone, on the agent's platform.
+
+        Checks the clone, its config and this engine, reads once as the delegate,
+        and writes the environment Scout needs here inside the clone's .git (never
+        the tree). Safe to run again; the mirror's AGENTS.md says when.
+        """
+        import json as _json
+
+        from scout.delegate_agent import init
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = init(clone)
+        except Exception as e:  # every failure exits 2, so `e=$(... --print-env) && eval "$e"` loads nothing
+            failure = e if isinstance(e, RepoSyncError) else RepoSyncError("init_failed", f"refused: {e}")
+            if print_env:
+                typer.echo(failure.message, err=True)
+                raise typer.Exit(2) from e
+            _fail(failure, as_json)
+        if print_env:
+            for note in result.notes:
+                typer.echo(f"scoutctl delegate init: {note}", err=True)
+            typer.echo(result.exports(), nl=False)
+            return
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {result.files} file(s) visible to it")
+        for note in result.notes:
+            typer.echo(f"warning: {note}")
+        if result.env_file:
+            typer.echo(f"wrote {result.env_file}")
+        typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
+
     @delegate_app.command("status")
     def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
         """List the linked delegates: remote, last sync and the vault commit it mirrors."""
@@ -5411,6 +5526,7 @@ _DELEGATE_COMMANDS = frozenset(
         ("pre-session", "data"),
         ("bootstrap", "doctor"),
         ("manifest", "show"),
+        ("delegate", "init"),  # writes only the clone's .git/scout-delegate.env, never the tree
     }
 )
 _DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them

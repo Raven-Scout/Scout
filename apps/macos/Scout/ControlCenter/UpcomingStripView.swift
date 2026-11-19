@@ -59,7 +59,7 @@ struct UpcomingStripView: View {
             timeCell(up)
                 .frame(width: 88, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
-                Text(up.type.displayName)
+                Text(up.displayName)
                     .font(DS.sans(12.5, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(subtitle(for: up.type))
@@ -69,10 +69,11 @@ struct UpcomingStripView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Button("Run now") {
                 Task {
-                    await state.fireNow(slotKey: up.slotKey, bypassBudget: false)
+                    await state.fireNow(slotKey: up.slotKey)
                 }
             }
             .buttonStyle(.plainHit)
+            .accessibilityLabel("Run \(up.displayName) now")
             .font(DS.sans(11, weight: .medium))
             .foregroundStyle(DS.Ink.p2)
             .padding(.horizontal, 8)

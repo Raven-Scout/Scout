@@ -17,11 +17,17 @@ struct SessionsBoardView: View {
         let rows = SessionsLayout.rows(index: index, filter: filter, now: now)
         let strip = SessionsLayout.nowStrip(index: index, filter: filter, now: now)
         let titles = Dictionary(index.sessions.map { ($0.id, $0.displayTitle) }, uniquingKeysWith: { first, _ in first })
+        let projectNames = SessionsLayout.projectNames(in: index)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
+                // Now cards aren't repeated in the lanes below, so each one
+                // names its project.
                 if !strip.isEmpty {
                     lane(title: "Now", counts: nil) {
-                        ForEach(strip) { card($0, titles: titles) }
+                        ForEach(strip) {
+                            card($0, titles: titles,
+                                 projectName: projectNames[$0.projectKey] ?? SessionsLayout.basename($0.projectKey))
+                        }
                     }
                 }
                 ForEach(rows) { row in
@@ -89,13 +95,14 @@ struct SessionsBoardView: View {
         }
     }
 
-    private func card(_ session: AgentSession, titles: [String: String]) -> some View {
+    private func card(_ session: AgentSession, titles: [String: String], projectName: String? = nil) -> some View {
         Button {
             selectedID = session.id
         } label: {
             SessionCardView(
                 session: session,
                 now: now,
+                projectName: projectName,
                 parentTitle: session.parentSessionID.flatMap { titles[$0] },
                 isSelected: selectedID == session.id,
                 isHighlighted: hoveredParentID == session.id

@@ -55,6 +55,8 @@ nonisolated struct DoctorFindingItem: Equatable, Sendable, Identifiable {
     var fix: String? = nil
     var detail: String? = nil
     var logURL: URL? = nil
+    /// The files a grouped warning stands for, listed behind a disclosure (UI audit R1).
+    var items: [String] = []
 }
 
 /// Pure presentation model for Settings ▸ Engine (spec §5). Views stay thin;
@@ -107,10 +109,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Vault not set up" }
         if doctorFailed { return "Could not run doctor" }
         guard let doctor else { return "Unknown" }
-        switch doctor.severity {
-        case .green: return "Healthy"
-        case .yellow: return "Healthy, with warnings"
-        case .red: return "Needs attention"
+        // The install's verdict, then the runs': "Healthy" never sits beside a run that needs fixing (R1).
+        switch (doctor.severity, summary.severity) {
+        case (.red, _), (.green, .red): return "Needs attention"
+        case (.yellow, _), (.green, .yellow): return "Healthy, with warnings"
+        case (.green, .green): return "Healthy"
         }
     }
 
@@ -156,40 +159,32 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     /// Green health with warnings beside it: still usable, but not "OK" green.
     var healthHasWarnings: Bool { healthIsOK && !(findingGroups.first { $0.severity == .warning }?.items.isEmpty ?? true) }
 
+    /// What every health surface shares (UI audit R1); empty while the tabs are gated.
+    var summary: HealthSummary { HealthSummary(doctor: state.gatesTabs ? nil : doctor) }
+
     /// Every finding the doctor reported, install and run health together,
     /// grouped worst first (card C3: Settings used to show only the first).
     /// Empty groups are left out. A run-health severity this build doesn't
-    /// know is shown as a warning rather than hidden.
+    /// know is shown as a warning rather than hidden; warnings the engine
+    /// groups are one item with their files (R1).
     var findingGroups: [DoctorFindingGroup] {
-        guard let doctor, !state.gatesTabs else { return [] }
-        var bySeverity: [DoctorFindingGroup.Severity: [DoctorFindingItem]] = [:]
-        for (i, text) in doctor.errors.enumerated() {
-            bySeverity[.problem, default: []].append(DoctorFindingItem(id: "error.\(i)", summary: text))
-        }
-        for (i, text) in doctor.warnings.enumerated() {
-            bySeverity[.warning, default: []].append(DoctorFindingItem(id: "warning.\(i)", summary: text))
-        }
-        for (i, f) in (doctor.runHealth?.findings ?? []).enumerated() {
-            let severity: DoctorFindingGroup.Severity = switch f.severity {
-            case "red": .problem
-            case "note": .note
-            default: .warning
-            }
-            bySeverity[severity, default: []].append(DoctorFindingItem(
-                id: "\(f.id).\(i)", summary: f.summary, fix: f.fix.isEmpty ? nil : f.fix,
-                detail: f.detail, logURL: f.log.map { URL(fileURLWithPath: $0) }))
-        }
+        guard doctor != nil, !state.gatesTabs else { return [] }
+        let summary = summary
         return DoctorFindingGroup.Severity.allCases.compactMap { severity in
-            bySeverity[severity].map { DoctorFindingGroup(severity: severity, items: $0) }
+            let items = summary.issues(severity).map { issue in
+                DoctorFindingItem(id: issue.id, summary: issue.title, fix: issue.fix, detail: issue.detail,
+                                  logURL: issue.log.map { URL(fileURLWithPath: $0) }, items: issue.items)
+            }
+            return items.isEmpty ? nil : DoctorFindingGroup(severity: severity, items: items)
         }
     }
 
     /// "2 problems · 1 warning", for the Health row; nil when there is nothing.
+    /// The problem and warning counts are the ones every other surface shows.
     var findingCountsLabel: String? {
-        let parts = findingGroups.map { g -> String in
-            let n = g.items.count
-            return "\(n) \(n == 1 ? g.severity.singular : g.severity.title.lowercased())"
-        }
+        let summary = summary
+        let notes = summary.noteCount
+        let parts = [summary.attentionLabel, notes > 0 ? "\(notes) note\(notes == 1 ? "" : "s")" : nil].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 

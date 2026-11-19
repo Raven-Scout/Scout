@@ -47,4 +47,15 @@ struct UpdateRowFormattingTests {
     func noCurrentVersion() {
         #expect(UpdateRowFormatting.versionLine(currentVersion: nil, latestVersion: nil, state: .idle) == "—")
     }
+
+    @Test("a failed check shows the checker's own message (#92)")
+    func errorLineShowsTheMessage() {
+        #expect(UpdateRowFormatting.errorLine(state: .error("Couldn't check the latest plugin version: HTTP 404 from example.com"))
+            == "Couldn't check the latest plugin version: HTTP 404 from example.com.")
+        #expect(UpdateRowFormatting.errorLine(state: .error("Unsupported plugin source.")) == "Unsupported plugin source.")
+        #expect(UpdateRowFormatting.errorLine(state: .error("  ")) == "The check failed without saying why. Try again in a minute.")
+        for state: UpdateStatus.State in [.idle, .checking, .upToDate, .available] {
+            #expect(UpdateRowFormatting.errorLine(state: state) == nil)
+        }
+    }
 }

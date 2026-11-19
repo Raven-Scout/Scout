@@ -19,6 +19,11 @@ final class SessionLogService: ObservableObject {
     /// log's lines suggested; runs without a row (older engines, a run still
     /// going) keep their log-derived status.
     private var ledgerStatuses: [String: RunStatus] = [:]
+    /// Each ledger row's slot key, by log file name: the schedule a run ran
+    /// for, which "Run again" fires (`Run.slotKey`).
+    private var ledgerSlots: [String: String] = [:]
+    /// Each ledger row's `trigger`, by log file name (`Run.trigger`).
+    private var ledgerTriggers: [String: String] = [:]
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -298,19 +303,37 @@ final class SessionLogService: ObservableObject {
         )
     }
 
-    /// Promote `.running` runs whose `startedAt` is older than the
-    /// per-type `orphanAfter` threshold to `.orphaned`. All other
-    /// statuses pass through unchanged.
+    /// Promote a `.running` run to `.orphaned` once its log has been quiet for
+    /// longer than the per-type `orphanAfter` threshold. All other statuses
+    /// pass through unchanged.
+    ///
+    /// Quiet time counts from the run's last sign of life — the later of its
+    /// start and `lastActivityAt` (the log's modification time). On a vault
+    /// linked to Agnes, a live run keeps writing its log: the runner's lease
+    /// keepalive appends a line about every five minutes. Counting from the
+    /// start alone marked a healthy 23-minute consolidation "Didn't finish"
+    /// while it was still working, because consolidation's cutoff is 20
+    /// minutes. On an unlinked vault nothing writes the log while Claude works
+    /// (`claude -p` prints only when it exits), so a long run there can still
+    /// orphan, though never sooner than under the start-only rule.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
+        lastActivityAt: Date? = nil,
         type: RunType,
         now: Date
     ) -> RunStatus {
         guard parsedStatus == .running else { return parsedStatus }
-        return now.timeIntervalSince(startedAt) > type.orphanAfter
+        let lastSignOfLife = max(startedAt, lastActivityAt ?? startedAt)
+        return now.timeIntervalSince(lastSignOfLife) > type.orphanAfter
             ? .orphaned
             : .running
+    }
+
+    /// The log's modification time — the run's latest sign of life — or nil
+    /// when the file can't be read.
+    nonisolated static func logModifiedAt(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     /// Post-pass over an assembled run list that demotes `.running` entries
@@ -350,41 +373,40 @@ final class SessionLogService: ObservableObject {
         }
     }
 
-    /// Replace each run's status with its ledger row's, matched by log file name.
-    /// Each run has its own log (a later run in the same minute logs to a
-    /// seconds+PID name), so a row matches exactly one run.
-    nonisolated static func overlayLedger(_ runs: [Run], statuses: [String: RunStatus]) -> [Run] {
-        guard !statuses.isEmpty else { return runs }
+    /// Replace each run's status with its ledger row's, and give it the row's
+    /// slot key, matched by log file name. Each run has its own log (a later
+    /// run in the same minute logs to a seconds+PID name), so a row matches
+    /// exactly one run.
+    nonisolated static func overlayLedger(
+        _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
+        triggers: [String: String] = [:]
+    ) -> [Run] {
+        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty else { return runs }
         return runs.map { run in
-            guard let status = statuses[run.logPath.lastPathComponent], status != run.status else { return run }
-            return run.with(status: status)
+            let name = run.logPath.lastPathComponent
+            var out = run
+            if let status = statuses[name], status != out.status { out = out.with(status: status) }
+            if let slot = slots[name], slot != out.slotKey { out.slotKey = slot }
+            if let trigger = triggers[name], trigger != out.trigger { out.trigger = trigger }
+            return out
         }
     }
 
-    /// Adopt the run ledger's statuses (from `RunLedgerService`) and republish.
+    /// Adopt the run ledger's statuses and slots (from `RunLedgerService`) and republish.
     func applyLedger(_ entries: [String: RunLedgerEntry]) {
         ledgerStatuses = entries.mapValues(\.runStatus)
-        let updated = Self.resolveStaleRunning(Self.overlayLedger(runs, statuses: ledgerStatuses))
+        ledgerSlots = entries.mapValues(\.slot)
+        ledgerTriggers = entries.compactMapValues(\.trigger)
+        let updated = Self.resolveStaleRunning(overlaid(runs))
         if updated != runs { runs = updated }
     }
 
+    private func overlaid(_ runs: [Run]) -> [Run] {
+        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers)
+    }
+
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
-        let patterns: [String] = [
-            "429", "rate.?limit", "overloaded", "throttle", "too many requests",
-            "insufficient_quota", "context_length_exceeded", "internal server error"
-        ]
-        var out: [DetectedError] = []
-        let lines = text.components(separatedBy: "\n")
-        for (idx, line) in lines.enumerated() {
-            for pat in patterns {
-                if line.range(of: pat, options: [.regularExpression, .caseInsensitive]) != nil {
-                    let snippet = String(line.prefix(200))
-                    out.append(DetectedError(line: idx + 1, pattern: pat, snippet: snippet))
-                    break
-                }
-            }
-        }
-        return out
+        RunLogErrorScanner.scan(text)
     }
 
     /// Parse the `date`-style timestamp the runner script writes in finish
@@ -501,6 +523,7 @@ final class SessionLogService: ObservableObject {
                 let status = Self.promoteOrphan(
                     parsedStatus: body.status,
                     startedAt: filename.startedAt,
+                    lastActivityAt: meta.modifiedAt,
                     type: filename.type,
                     now: nowSnapshot
                 )
@@ -531,7 +554,7 @@ final class SessionLogService: ObservableObject {
         }.value
         // Cross-run reconciliation: a `.running` entry that has a newer
         // same-type terminal sibling is by definition stale → orphan.
-        runs = Self.resolveStaleRunning(Self.overlayLedger(assembled, statuses: ledgerStatuses))
+        runs = Self.resolveStaleRunning(overlaid(assembled))
         startWatching()
         startStaleSweep()
         return runs
@@ -590,6 +613,7 @@ final class SessionLogService: ObservableObject {
         let status = Self.promoteOrphan(
             parsedStatus: body.status,
             startedAt: filename.startedAt,
+            lastActivityAt: Self.logModifiedAt(url),
             type: filename.type,
             now: clock.now()
         )
@@ -625,7 +649,7 @@ final class SessionLogService: ObservableObject {
         }
         // Reconcile after every change — a newly-terminal run may now
         // invalidate an older same-type `.running` entry.
-        runs = Self.resolveStaleRunning(Self.overlayLedger(updated, statuses: ledgerStatuses))
+        runs = Self.resolveStaleRunning(overlaid(updated))
     }
 
     /// Re-applies orphan/stale rules against the current snapshot. Used by
@@ -635,15 +659,18 @@ final class SessionLogService: ObservableObject {
     func sweepStaleStatuses() {
         let now = clock.now()
         let resweeped = runs.map { run -> Run in
+            // Only a running run can change, so only its log is stat'ed.
+            guard run.status == .running else { return run }
             let promoted = Self.promoteOrphan(
                 parsedStatus: run.status,
                 startedAt: run.startedAt,
+                lastActivityAt: Self.logModifiedAt(run.logPath),
                 type: run.type,
                 now: now
             )
             return promoted == run.status ? run : run.with(status: promoted)
         }
-        let resolved = Self.resolveStaleRunning(Self.overlayLedger(resweeped, statuses: ledgerStatuses))
+        let resolved = Self.resolveStaleRunning(overlaid(resweeped))
         // Only republish if anything actually changed — avoids needless
         // SwiftUI re-renders on every tick.
         if resolved != runs { runs = resolved }
@@ -672,24 +699,26 @@ extension RunType {
 }
 
 extension RunType {
-    /// How long after `startedAt` a run with no terminal marker should be
-    /// promoted from `.running` to `.orphaned`. Tuned per run type from
-    /// observed realistic upper bounds — the old thresholds (6h briefings,
-    /// 12h dreaming) were way too loose and produced multi-hour false
-    /// "running" badges in the Now strip and Sessions list. CC-1/CC-5.
+    /// How long a run with no terminal marker may go without writing its log
+    /// before it is promoted from `.running` to `.orphaned` (see
+    /// `promoteOrphan`, which counts from the later of the start and the log's
+    /// modification time). The old thresholds (6h briefings, 12h dreaming)
+    /// were way too loose and produced multi-hour false "running" badges in
+    /// the Now strip and Sessions list. CC-1/CC-5.
     ///
-    /// Observed P95s (May 2026 on Alex's box):
-    ///   briefing: ~6 min   · consolidation: ~3 min
-    ///   dreaming: ~25 min  · research: ~40 min
-    /// Cutoffs leave ~3× headroom so a legitimately long run still resolves
-    /// as running, but a missing finish-marker tips into orphan inside ~30
-    /// minutes of inactivity, not half a day.
+    /// On a vault linked to Agnes, the runner's lease keepalive writes a log
+    /// line about every five minutes, so a live run never comes near these.
+    /// The keepalive watches the runner shell, not `claude`, so a hung agent
+    /// behind a live shell stays "running" until the runner's own timeout
+    /// ends it. On an unlinked vault there is no keepalive and the log is
+    /// quiet for the whole agent phase; the cutoff then bounds silence since
+    /// the last line, which is never longer than the time since the start.
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
             return 30 * 60           // 30 min — briefing runs short
         case .consolidation:
-            return 20 * 60           // 20 min — consolidation runs even shorter
+            return 20 * 60           // 20 min of silence — four missed keepalives on a linked vault
         case .dreaming:
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:
