@@ -23,8 +23,8 @@ struct ProblemAction: Identifiable {
 /// matters (impact), what to do (fix), then buttons, and the engine's own
 /// words behind "Details" with "Copy details".
 ///
-/// `.banner` is a full-width strip for the top of a page; `.inline` drops the
-/// background for use inside a card or a settings row.
+/// `.banner` draws through `DSBanner`, the design system's banner; `.inline`
+/// drops the background for use inside a card or a settings row.
 struct ProblemView: View {
     enum Style { case banner, inline }
 
@@ -38,77 +38,68 @@ struct ProblemView: View {
     @State private var copied = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: Self.symbol(problem.severity))
-                .foregroundStyle(Self.tint(problem.severity))
-                .font(DS.font(.body, weight: .semibold))
-                .accessibilityHidden(true)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(problem.title)
-                    .font(DS.font(.label, weight: .semibold))
-                    .foregroundStyle(DS.Ink.p1)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let impact = problem.impact {
-                    Text(impact)
-                        .font(DS.font(.label))
-                        .foregroundStyle(DS.Ink.p2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let fix = problem.fix {
-                    (Text("What to do: ").fontWeight(.semibold) + Text(fix))
-                        .font(DS.font(.label))
-                        .foregroundStyle(DS.Ink.p1)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                buttons
-                if showDetails, let details = problem.details {
-                    Text(details)
-                        .font(DS.font(.caption, .mono))
-                        .foregroundStyle(DS.Ink.p2)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk))
+        switch style {
+        case .banner:
+            DSBanner(tone: Self.tone(problem.severity), accessibilityTitle: problem.title, onDismiss: onDismiss) {
+                lines
+            }
+        case .inline:
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: Self.symbol(problem.severity))
+                    .foregroundStyle(Self.tint(problem.severity))
+                    .font(DS.font(.body, weight: .semibold))
+                    .accessibilityHidden(true)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 4) { lines }
+                Spacer(minLength: 0)
+                if let onDismiss {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark").font(DS.font(.caption2, weight: .semibold))
+                    }
+                    .buttonStyle(.ds(.quiet, size: .small))
+                    .help("Dismiss")
+                    .accessibilityLabel("Dismiss")
                 }
             }
-            Spacer(minLength: 0)
-            if let onDismiss {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark").font(DS.font(.caption2, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(DS.Ink.p3)
-                .help("Dismiss")
-                .accessibilityLabel("Dismiss")
-            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(Self.severityWord(problem.severity)): \(problem.title)")
         }
-        .padding(style == .banner ? 12 : 0)
-        .background {
-            if style == .banner {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Self.tint(problem.severity).opacity(0.08))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Self.tint(problem.severity).opacity(0.35), lineWidth: 1))
-            }
+    }
+
+    /// What happened, why it matters, what to do, the buttons and the details.
+    @ViewBuilder private var lines: some View {
+        Text(problem.title)
+            .font(DS.font(.label, weight: .semibold))
+            .foregroundStyle(DS.Ink.p1)
+            .fixedSize(horizontal: false, vertical: true)
+        if let impact = problem.impact {
+            Text(impact)
+                .font(DS.font(.label))
+                .foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(Self.severityWord(problem.severity)): \(problem.title)")
+        if let fix = problem.fix {
+            (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+                .font(DS.font(.label))
+                .foregroundStyle(DS.Ink.p1)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        buttons
+        if showDetails, let details = problem.details {
+            Text(details)
+                .font(DS.font(.caption, .mono))
+                .foregroundStyle(DS.Ink.p2)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk))
+        }
     }
 
     @ViewBuilder private var buttons: some View {
         if !actions.isEmpty || problem.details != nil {
-            HStack(spacing: 8) {
-                ForEach(Array(actions.enumerated()), id: \.element.id) { i, action in
-                    if i == 0 {
-                        Button(action.title) { action.perform() }
-                            .buttonStyle(.ds(.primary, size: .small))
-                    } else {
-                        Button(action.title) { action.perform() }
-                            .buttonStyle(.ds(.secondary, size: .small))
-                    }
-                }
+            DSBannerActions(actions: actions) {
                 if problem.details != nil {
                     Button(showDetails ? "Hide details" : "Details") { showDetails.toggle() }
                         .buttonStyle(.ds(.link, size: .small))
@@ -123,7 +114,6 @@ struct ProblemView: View {
                     .buttonStyle(.ds(.link, size: .small))
                 }
             }
-            .padding(.top, 2)
         }
     }
 
@@ -132,29 +122,19 @@ struct ProblemView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    static func symbol(_ s: Problem.Severity) -> String {
+    static func tone(_ s: Problem.Severity) -> DS.BannerTone {
         switch s {
-        case .info:    return "info.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .error:   return "xmark.octagon.fill"
+        case .info:    return .info
+        case .warning: return .warning
+        case .error:   return .error
         }
     }
 
-    static func tint(_ s: Problem.Severity) -> Color {
-        switch s {
-        case .info:    return DS.Ink.p3
-        case .warning: return DS.Status.warn
-        case .error:   return DS.Status.err
-        }
-    }
+    static func symbol(_ s: Problem.Severity) -> String { tone(s).symbol }
 
-    static func severityWord(_ s: Problem.Severity) -> String {
-        switch s {
-        case .info:    return "Note"
-        case .warning: return "Warning"
-        case .error:   return "Problem"
-        }
-    }
+    static func tint(_ s: Problem.Severity) -> Color { tone(s).tint.color }
+
+    static func severityWord(_ s: Problem.Severity) -> String { tone(s).word }
 }
 
 #if DEBUG

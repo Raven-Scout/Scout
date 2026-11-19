@@ -219,31 +219,19 @@ struct ProtectedFileBlock: View {
     let openLog: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(DS.Status.err)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(DS.font(.body, weight: .semibold)).foregroundStyle(DS.Status.err)
-                Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                HStack(spacing: 12) {
-                    if restored && !commits.isEmpty {
-                        Button("Show the change", action: showChange)
-                    }
-                    Button("Open log", action: openLog)
+        DSBanner(tone: .error, symbol: "exclamationmark.shield.fill", accessibilityTitle: title) {
+            Text(title).font(DS.font(.label, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text(message).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                if restored && !commits.isEmpty {
+                    Button("Show the change", action: showChange)
                 }
-                .buttonStyle(.dsLink)
+                Button("Open log", action: openLog)
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.ds(.link, size: .small))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Status.err.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Status.err.opacity(0.35), lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
     }
 
     var title: String {

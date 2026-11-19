@@ -308,15 +308,10 @@ struct KBEditorView: View {
     }
 
     private var changedOnDiskBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            Text("This file changed on disk. Reload to see the new version, or save to overwrite it.")
-                .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
-            Spacer()
-            Button("Reload") { requestReload() }.buttonStyle(.ds(.secondary, size: .small))
-        }
-        .padding(.horizontal, 20).padding(.vertical, 8)
-        .background(DS.Accent.wash)
+        DSBanner(tone: .warning, title: "This file changed on disk",
+                 message: "Reload to see the new version, or save to overwrite it.",
+                 actions: [ProblemAction("Reload") { requestReload() }])
+            .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
     // MARK: - Content

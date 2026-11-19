@@ -169,9 +169,6 @@ extension DS {
         /// Dark mode lightened from (0.895, 0.480, 0.410) so error text keeps
         /// 4.5:1 on an error pill's wash inside a card.
         static let statusErr  = Swatch(name: "StatusErr",  light: RGB(0.690, 0.255, 0.180), dark: RGB(0.930, 0.560, 0.490))
-        /// Text on a solid status fill (the Action Items error banner): white
-        /// on the light-mode red, dark ink on the lighter dark-mode red.
-        static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
 
         /// "Waiting on you": a topic-board item that is yours, a session that
         /// needs you. Cobalt, so it never reads as the urgent red (#107), and
@@ -308,9 +305,16 @@ extension DS {
             // The topic board's action chip: paper on the "waiting on you" fill.
             pairs.append(Pair(foreground: Palette.paperBase,
                               background: Surface(name: "Attention.you", swatch: Palette.attentionYou)))
-            // The Action Items error banner.
-            pairs.append(Pair(foreground: Palette.statusOnFill,
-                              background: Surface(name: "Status.err", swatch: Palette.statusErr)))
+            // A `DSBanner`'s text on each tone's wash, on the page and in a card.
+            for tone in BannerTone.allCases {
+                for paper in [Palette.paperBase, Palette.paperRaised] {
+                    let wash = Surface(name: "\(tone.tint.name) banner on \(paper.name)", swatch: tone.tint,
+                                       under: paper, opacity: bannerWashOpacity)
+                    for text in bannerText {
+                        pairs.append(Pair(foreground: text, background: wash))
+                    }
+                }
+            }
             // Slot-type pills, weekday dots and the day-circle strip.
             for slot in [Palette.slotBriefing, Palette.slotConsolidation, Palette.slotDreaming,
                          Palette.slotResearch, Palette.slotManual] {

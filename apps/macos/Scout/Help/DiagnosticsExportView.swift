@@ -151,16 +151,10 @@ struct DiagnosticsReviewNotice: View {
     static let short = "Read it through before you attach it."
 
     var body: some View {
-        Label {
+        DSBanner(tone: .warning, symbol: "eye", accessibilityTitle: Self.text) {
             Text(Self.text)
                 .font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: "eye").foregroundStyle(DS.Status.warn)
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.Accent.wash, in: RoundedRectangle(cornerRadius: 6))
-        .accessibilityElement(children: .combine)
     }
 }

@@ -72,10 +72,6 @@ enum DS {
         static let ok   = Palette.statusOk.color
         static let warn = Palette.statusWarn.color
         static let err  = Palette.statusErr.color
-        /// Text on a solid `err` (or other status) fill.
-        static let onFill = Palette.statusOnFill.color
-        /// Opacity of a status wash behind status-coloured text.
-        static let washOpacity = ContrastPairs.statusWashOpacity
     }
 
     /// Workflow states that mean "this is waiting on you": a topic-board item
