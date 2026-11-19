@@ -403,15 +403,23 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     if not isinstance(payload, dict):
         return None
 
-    session_id = str(payload.get("session_id") or "")
     transcript_path_str = str(payload.get("transcript_path") or "")
-    cwd = str(payload.get("cwd") or "")
     transcript_path = Path(transcript_path_str).expanduser() if transcript_path_str else None
     if transcript_path is not None and not transcript_path.is_file():
         transcript_path = None
     ctx = run_context.resolve(payload, transcript_path)
+    try:
+        return _record_tokens(payload, transcript_path, ctx)
+    finally:
+        # After the token row is on disk, so a slow reliance pass can't cost the session its row.
+        _record_reliance(payload, transcript_path, ctx)
+
+
+def _record_tokens(payload: dict[str, Any], transcript_path: Path | None, ctx: run_context.RunContext) -> Event:
+    """Sum the transcript's usage, append one tracker row (and a prompt-named run's cost), return the Event."""
+    session_id = str(payload.get("session_id") or "")
+    cwd = str(payload.get("cwd") or "")
     scout_mode = ctx.mode or "manual"
-    _record_reliance(payload, transcript_path, ctx)
 
     # Guard 1 + 2: missing / empty transcript path (bash line 40 `[ -z ... ]`), or no such
     # file. Don't poll — go straight to the error row.

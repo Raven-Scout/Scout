@@ -551,11 +551,6 @@ def test_newer_worktree_needs_a_git_file_somewhere_above():
     assert _newer_worktree("/", NOW) is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="review item 5: session_tokens.run calls record_reliance before it writes the tracker row; "
-    "scout/hooks/ was unreadable to the fixer, so the order is pinned here, not fixed. Drop this mark with the fix.",
-)
 def test_stop_hook_writes_the_token_row_before_the_reliance_pass(vault, home, tmp_path, monkeypatch):
     """Review item 5: a slow or failing reliance pass must not be able to lose the token-tracker row: the row must
     already be in the tracker when the reliance pass starts."""
