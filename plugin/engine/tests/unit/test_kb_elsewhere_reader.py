@@ -93,3 +93,50 @@ def test_kb_as_elsewhere_in_a_run_is_allowed_but_an_agent_cannot_widen_to_it(vau
     assert kb(vault, "files", "--reader", "elsewhere", env={"SCOUT_MODE": "briefing"}).exit_code == 0
     refused = kb(vault, "files", "--reader", "elsewhere", env={"SCOUT_READER": "agent:person:priya@example.com"})
     assert refused.exit_code == 2
+
+
+# Every kb read the scout-ask skill names, each aimed at the private person note (alias "Sammy"). Outside the vault
+# the skill passes `--reader elsewhere` on all of them (Jordan, 2026-11-19).
+SKILL_READS = [
+    ["resolve", "Sammy"],
+    ["read", SAM],
+    ["search", "-i", "sam", "--glob", "knowledge-base/people/**"],
+    ["files", "--glob", "knowledge-base/people/*.md"],
+    ["query", "--type", "person"],
+    ["related", "priya"],
+    ["traverse", "priya"],
+    ["path", "priya", "sam"],
+    ["entity", "sam"],
+    ["name-lookup", "Sammy"],
+    ["delta", "--since", "52w"],
+]
+
+
+def _reaches_sam(out: str) -> bool:
+    return SAM in out or '"sam"' in out
+
+
+@pytest.mark.parametrize("args", SKILL_READS, ids=" ".join)
+@pytest.mark.parametrize("env", [{}, {"SCOUT_MODE": "briefing"}], ids=["owner", "run"])
+def test_every_read_the_skill_uses_hides_private_notes_as_elsewhere(
+    vault: Path, args: list[str], env: dict[str, str]
+) -> None:
+    clear_frontmatter_cache()
+    assert _reaches_sam(kb(vault, *args, "--json", env=env).stdout)  # the session's own reader reaches it
+    hidden = kb(vault, *args, "--json", "--reader", "elsewhere", env=env)
+    assert hidden.exit_code in (0, 1, 3), hidden.output  # 1 = no match, 3 = denied; never a usage error
+    assert not _reaches_sam(hidden.output), hidden.output
+    assert not [c for c in CANARIES.values() if c in hidden.output]  # nor any other private or local-only note
+    if args[0] == "read":
+        assert hidden.exit_code == 3
+
+
+@pytest.mark.parametrize("args", SKILL_READS, ids=" ".join)
+@pytest.mark.parametrize("ambient", ["agent:person:priya@example.com", "delegate:phone"], ids=["agent", "delegate"])
+def test_every_read_the_skill_uses_refuses_elsewhere_under_an_agent_or_delegate(
+    vault: Path, args: list[str], ambient: str
+) -> None:
+    """The documented refusal: exit 2 naming --reader, before anything is read."""
+    refused = kb(vault, *args, "--reader", "elsewhere", env={"SCOUT_READER": ambient})
+    assert refused.exit_code == 2 and "--reader" in refused.output, refused.output
+    assert not _reaches_sam(refused.output) and CANARIES[SAM] not in refused.output

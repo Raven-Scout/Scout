@@ -28,25 +28,27 @@ Never call a bare `scoutctl` or anything inside the vault. It prints JSON:
 Every vault read goes through `scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
 
 - **Read-only.** Run only `kb vault` and these reads (they write only Scout's own cache); never write, edit, move or commit anything in the vault from outside it.
-- **Pass no `--reader`.** The default is the session's reader: the owner here, `autonomous` in a scheduled run, an agent when a host sets `SCOUT_READER`. `--reader` only narrows; `--reader owner` fails in a run.
-- **`[private]` results are for the owner only.** Use them in an answer to the owner in this conversation. In anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), leave them out and don't hint they exist. In a scheduled run, the brain file's privacy rule decides.
-- **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
+- **Pass no `--reader` but `<elsewhere>`**, which only narrows the session's reader.
+- **`[private]` results are for the owner only**: never in anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), not even a hint. In a scheduled run, the brain file's privacy rule decides.
+- **`denied` (exit 3), a refused `--reader` (exit 2), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
 
 ### Outside the vault
 
-When `in_vault` is false, the repository you are in is a shared place, like Slack. Every result is context for your answer to the user, nothing more. Never paste KB text, `[private]` results, people notes or client details into commits, PR or issue text, code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud or remote session. Skip `[private]` results entirely unless the user asks about their own life (health, family, money, career); even then, use them only in your reply here.
+When `in_vault` is false, the repository you are in is a shared place, like Slack, and `<elsewhere>` below is `--reader elsewhere` (inside the vault, nothing): it hides private, local-only and shared-in notes. Drop it only when the user explicitly asks for their own private notes about their own life (health, family, money, career); use those only in your reply here, and skip any other `[private]` result.
+
+Every result is context for your answer, nothing more. Never paste KB text, people notes or client details into commits, PR or issue text, code, comments, files or messages, that project's CLAUDE.md or auto-memory, subagent prompts, or a cloud or remote session.
 
 ## 1. Resolve the entity to its canonical file
 
 ```bash
-<scoutctl> kb resolve "<name>" --repo <vault>   # name, alias or slug → canonical file; exit 1 = no match
-<scoutctl> kb read <path> --repo <vault>        # when it resolves: you are done searching, go to step 2
+<scoutctl> kb resolve "<name>" <elsewhere> --repo <vault>   # name, alias or slug → canonical file; exit 1 = no match
+<scoutctl> kb read <path> <elsewhere> --repo <vault>        # when it resolves: you are done searching, go to step 2
 ```
 
 For a project or initiative that doesn't resolve, list the projects and match the user's words to a slug:
 
 ```bash
-<scoutctl> kb files --glob 'knowledge-base/projects/*/*.md' --repo <vault>
+<scoutctl> kb files --glob 'knowledge-base/projects/*/*.md' <elsewhere> --repo <vault>
 ```
 
 The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project. Use the map below for other entity types.
@@ -54,10 +56,10 @@ The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header s
 **When nothing matches**, search the entity folders rather than the vault:
 
 ```bash
-<scoutctl> kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' --repo <vault>
+<scoutctl> kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' <elsewhere> --repo <vault>
 ```
 
-Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md --repo <vault>` (matches print line numbers), after the entity folders come up empty.
+Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md <elsewhere> --repo <vault>` (matches print line numbers), after the entity folders come up empty.
 
 ## 2. Read the freshness gate, then answer
 
@@ -78,7 +80,7 @@ When you do, **use the reference the KB already recorded**: every synthesis cite
 
 ## Map
 
-Read each with `kb read <path> --repo <vault>`; list a folder with `kb files --glob '<folder>/*.md' --repo <vault>`.
+Read each with `kb read <path> <elsewhere> --repo <vault>`; list a folder with `kb files --glob '<folder>/*.md' <elsewhere> --repo <vault>`.
 
 | Question | Canonical file |
 |---|---|
