@@ -2,7 +2,8 @@
 
 It sees what a listed delegate without ``include_private`` sees, with no policy needed: no private,
 local-only or shared-in note and no phone inbox. Nothing defaults to it; ``--reader elsewhere`` narrows to it
-from ``owner`` or ``autonomous``, and nothing can widen it.
+from ``owner`` or ``autonomous``. It ranks with the delegates: it can't be swapped for a delegate (one with
+``include_private`` would see private notes) nor a delegate for it, and nothing above it can be reached from it.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ def test_elsewhere_narrows_owner_and_autonomous_and_widens_nothing() -> None:
         ("autonomous", {"SCOUT_READER": "elsewhere"}),
         ("elsewhere", {"SCOUT_READER": "agent:person:priya@example.com"}),
         ("elsewhere", {"SCOUT_READER": "delegate:phone"}),
+        ("delegate:phone", {"SCOUT_READER": "elsewhere"}),
     ):
         with pytest.raises(typer.BadParameter):
             resolve_reader(flag, env)

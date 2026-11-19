@@ -7,27 +7,27 @@ description: Use when the user asks about the state of a project, initiative, pe
 
 Scout has already done the investigation. Every KB file is a synthesis that a prior session built from live connectors and stamped with the date it was verified. Answering is **retrieval against a canonical file**, not a fresh investigation.
 
-Find the vault, then work the three steps in order. Most questions are done after step 2. Every path below is relative to the vault root.
+Find the vault, then work the three steps in order; most questions end at step 2. Every path below is relative to the vault root.
 
 ## 0. Find the vault
 
-The vault comes from Scout's configuration, never from the folder you are in. Run this line as written:
+The vault comes from Scout's configuration, never from the folder you are in. Run it as written:
 
 ```bash
-S="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; { [ "$S" != /engine/bin/scoutctl ] && [ -x "$S" ]; } || S="$HOME/.local/bin/scoutctl"; [ -x "$S" ] || S="$(/usr/bin/sed -n 's|^ *"scoutctl": *"\(/[^"]*\)".*|\1|p' "$HOME/.local/state/scout/engine.json" 2>/dev/null)"; { [ -n "$S" ] && [ -x "$S" ]; } || { echo "no Scout engine found" >&2; exit 127; }; "$S" kb vault --json
+S="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; { [ "$S" != /engine/bin/scoutctl ] && [ -f "$S" ] && [ -x "$S" ]; } || S="$HOME/.local/bin/scoutctl"; { [ -f "$S" ] && [ -x "$S" ]; } || { S="$(/usr/bin/sed -n 's|^ *"scoutctl": *"\(/[^"]*\)".*|\1|p' "$HOME/.local/state/scout/engine.json" 2>/dev/null)"; [ -f "${S%/bin/scoutctl}/pyvenv.cfg" ] || S=; }; { [ -n "$S" ] && [ -f "$S" ] && [ -x "$S" ]; } || { echo "no Scout engine found" >&2; exit 127; }; "$S" kb vault --json
 ```
 
-It finds Scout's engine by absolute path only. Never call a bare `scoutctl` or anything inside the vault. It prints JSON:
+Never call a bare `scoutctl` or anything inside the vault. It prints JSON:
 
-- Exit 1 (`vault` is null) or 127: no usable vault or engine. Tell the user `reason` and stop.
-- Otherwise put `vault` in place of `<vault>` and `scoutctl` in place of `<scoutctl>` below. Pass `--repo <vault>` on every call, inside the vault too: without it, `kb` reads the working directory's repository. Never `cd` into the vault.
+- Exit 1 (no usable vault) or 127 (no engine): tell the user `reason` and stop. Exit 2: the engine is too old for this skill; say so and stop.
+- Otherwise substitute `vault` for `<vault>` and `scoutctl` for `<scoutctl>` below, and pass `--repo <vault>` on every call, inside the vault too: without it, `kb` reads the current repository. Never `cd` into the vault.
 - A `reason` beside a vault: name the vault you read in your answer.
 
 ## Read through `<scoutctl> kb`
 
 Every vault read goes through `scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
 
-- **Read-only.** Run only `kb vault` and these reads (they write only Scout's cache and read log); never write, edit, move or commit anything in the vault from outside it.
+- **Read-only.** Run only `kb vault` and these reads (they write only Scout's own cache); never write, edit, move or commit anything in the vault from outside it.
 - **Pass no `--reader`.** The default is the session's reader: the owner here, `autonomous` in a scheduled run, an agent when a host sets `SCOUT_READER`. `--reader` only narrows; `--reader owner` fails in a run.
 - **`[private]` results are for the owner only.** Use them in an answer to the owner in this conversation. In anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), leave them out and don't hint they exist. In a scheduled run, the brain file's privacy rule decides.
 - **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
@@ -63,7 +63,7 @@ Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundre
 
 Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The frontmatter's `last_verified:` (with `verified_against:` naming the sources) is the last time a session checked the file against its sources even if nothing changed; older files carry it as a `**Last verified:** <timestamp> (<session type>)` line under the title instead. Gate on the newer of the two:
 
-- **Recently verified**: answer from the file and cite the timestamp. The recorded state *is* the current state; a live re-query returns the same facts and costs several turns.
+- **Recently verified**: answer from the file and cite the timestamp. The recorded state *is* the current state; re-querying only costs turns.
 - **Old enough that the answer could mislead, or neither timestamp present**: answer from the file, say how old it is, and offer to drill.
 
 The file's own hedges are load-bearing and belong in your answer: `[unverified]`, `[single-source]`, "not yet decided - do not record a verdict". Carry them through rather than flattening them into fact.
@@ -89,7 +89,7 @@ Read each with `kb read <path> --repo <vault>`; list a folder with `kb files --g
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
 | A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
 | What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
-| Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` (each with `--repo <vault>`) |
+| Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |
 

@@ -312,7 +312,7 @@ def test_scout_ask_names_the_vault_on_every_call() -> None:
     prose = [ln for ln in body.splitlines() if re.search(r"`kb (?:read|files|search) ", ln)]
     assert prose and all("--repo <vault>" in ln for ln in prose), prose
     for needle in (
-        "Tell the user `reason` and stop",
+        "tell the user `reason` and stop",
         "Never `cd` into the vault",
         "never from the folder you are in",
         "name the vault you read",
@@ -407,7 +407,20 @@ def test_step0_falls_back_to_the_bootstrap_shim(launcher: dict[str, Path], subst
 
 def test_step0_then_the_pointers_absolute_scoutctl(launcher: dict[str, Path], tmp_path: Path) -> None:
     _pointer_to(launcher["home"], str(_stub(tmp_path / "venv" / "bin" / "scoutctl", "pointer")))
+    (tmp_path / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     assert _run_locator(launcher, substitute=True)[:2] == (0, "pointer kb vault --json\n")
+
+
+def test_step0_trusts_the_pointers_scoutctl_only_inside_a_venv(launcher: dict[str, Path], tmp_path: Path) -> None:
+    """Like the launcher (#637): a pointer naming some other executable, outside a venv, is ignored."""
+    _pointer_to(launcher["home"], str(_stub(tmp_path / "not-a-venv" / "bin" / "scoutctl", "pointer")))
+    code, out, err = _run_locator(launcher, substitute=True)
+    assert (code, out) == (127, "") and "no Scout engine found" in err
+
+
+def test_step0_tells_an_old_engine_from_no_vault() -> None:
+    _, body = _scout_ask()
+    assert "Exit 2: the engine is too old for this skill; say so and stop" in body
 
 
 @pytest.mark.parametrize("pointed", [None, "bin/scoutctl", "scoutctl"], ids=["no-pointer", "relative", "bare"])

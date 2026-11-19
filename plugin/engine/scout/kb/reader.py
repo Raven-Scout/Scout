@@ -10,13 +10,14 @@ v1. ``<principal>`` is ``person:<email>`` or ``group:<id>`` (spec §12.2).
 end up in another repository's commits or files: it sees what a listed delegate
 without ``include_private`` would: no private, local-only or shared-in note
 and no phone inbox. Nothing defaults to it; a caller narrows to
-it with ``--reader elsewhere``.
+it with ``--reader elsewhere``. It ranks with the delegates, so it can be
+narrowed to an agent but never swapped for a delegate, nor a delegate for it.
 
 Readers are canonicalised (scheme case-insensitive, person email lower-cased).
 
 Resolution: ``SCOUT_READER`` if set; else ``autonomous`` if ``SCOUT_MODE`` is
 set (a scheduled run); else ``owner``. ``--reader`` may only *narrow* that
-(``owner`` > ``autonomous`` > ``elsewhere`` > ``delegate:*`` > ``agent:*``). A reader can't be
+(``owner`` > ``autonomous`` > ``elsewhere`` = ``delegate:*`` > ``agent:*``). A reader can't be
 swapped for another of its own rank either (an agent principal for another, a
 delegate for another): the two may have different rights, so it's refused.
 
@@ -86,7 +87,9 @@ def delegate_id(reader: str) -> str | None:
 def _rank(reader: str) -> int:
     if delegate_id(reader) is not None:
         return 1
-    return {"owner": 4, "autonomous": 3, ELSEWHERE_READER: 2}.get(reader, 0)
+    # elsewhere shares the delegates' rank: neither may be swapped for the other (a delegate with
+    # include_private would see private notes that elsewhere hides).
+    return {"owner": 3, "autonomous": 2, ELSEWHERE_READER: 1}.get(reader, 0)
 
 
 def resolve_reader(flag: str | None, env: Mapping[str, str]) -> str:

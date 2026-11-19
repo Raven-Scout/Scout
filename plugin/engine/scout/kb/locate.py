@@ -7,7 +7,8 @@ cwd's git top level, so the scout-ask skill names the vault itself. The vault co
    a fall-through. When it differs from the engine pointer's vault, ``reason`` says so.
 2. The ``vault`` in the engine pointer (``~/.local/state/scout/engine.json``). A pointer whose vault is gone or
    isn't absolute is an error too, never a silent fall-back to ``~/Scout``.
-3. ``~/Scout``, when there is no pointer.
+3. ``~/Scout``, when there is no pointer. A pointer file that is unreadable or malformed counts as none, and
+   ``reason`` says so.
 
 Never the cwd: a cloned repository could hold a planted ``scout-config.yaml`` and ``scripts/scoutctl``, and a
 vault found there would have its script run. The cwd only decides ``in_vault``. A folder counts as a vault only
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scout import paths
-from scout.scripts.engine_pointer import read_pointer
+from scout.scripts.engine_pointer import pointer_path, read_pointer
 
 
 @dataclass(frozen=True)
@@ -92,11 +93,14 @@ def locate_vault(env: Mapping[str, str], cwd: Path | None) -> VaultLocation:
             return VaultLocation(None, "none", False, why)
         return VaultLocation(v, "pointer", _inside(here, v))
 
+    # A pointer file that read_pointer rejects (unreadable, malformed, unknown schema) counts as no pointer.
+    bad = f"the engine pointer ({pointer_path(home)}) is unreadable or malformed" if pointer_path(home).exists() else ""
     default = _resolved(home / paths.DEFAULT_DATA_DIR_NAME)
     if default is not None and _is_vault(default):
-        return VaultLocation(default, "default", _inside(here, default))
+        return VaultLocation(default, "default", _inside(here, default), f"{bad}; using {default}" if bad else "")
 
-    return VaultLocation(None, "none", False, "no Scout vault is configured on this machine")
+    none = "no Scout vault is configured on this machine"
+    return VaultLocation(None, "none", False, f"{bad}; {none}" if bad else none)
 
 
 def _executable(p: Path) -> bool:

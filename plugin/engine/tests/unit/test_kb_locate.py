@@ -122,6 +122,19 @@ def test_a_bad_pointer_is_an_error_not_a_fall_back(
     assert (loc.vault, loc.source) == (None, "none") and why in loc.reason and "pointer" in loc.reason
 
 
+def test_a_malformed_pointer_counts_as_none_and_says_so(home: Path, elsewhere: Path) -> None:
+    from scout.scripts.engine_pointer import pointer_path
+
+    pointer_path(home).parent.mkdir(parents=True)
+    pointer_path(home).write_text("{not json", encoding="utf-8")
+    loc = locate_vault({"HOME": str(home)}, elsewhere)
+    assert loc.vault is None and "malformed" in loc.reason and "no Scout vault is configured" in loc.reason
+    default = _vault(home / "Scout")
+    loc = locate_vault({"HOME": str(home)}, elsewhere)
+    assert (loc.vault, loc.source) == (default, "default")
+    assert "malformed" in loc.reason and loc.reason.endswith(f"using {default}")
+
+
 def test_no_pointer_falls_back_to_home_scout(home: Path, elsewhere: Path) -> None:
     default = _vault(home / "Scout")
     assert locate_vault({"HOME": str(home)}, elsewhere) == VaultLocation(default, "default", False)
