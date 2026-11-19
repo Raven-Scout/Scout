@@ -88,6 +88,7 @@ class ApplyResult:
     delegate: str
     outcomes: dict[str, str] = field(default_factory=dict)  # ULID -> outcome, for what this apply decided
     waiting: int = 0  # observations: V4b
+    untaken: int = 0  # copies with no record at all: skipped, nothing recorded
     notes: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
@@ -308,33 +309,47 @@ def _write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+def _read_plain(vault: Path, rel: str) -> bytes | None:
+    """``rel``'s bytes when it is a plain file (:func:`_plain`), else None: never read through a link."""
+    return (vault / rel).read_bytes() if _plain(vault, rel) else None
+
+
 def _snapshot(vault: Path, rels: list[str]) -> dict[Path, bytes | None]:
-    return {vault / r: ((vault / r).read_bytes() if (vault / r).is_file() else None) for r in rels}
+    return {vault / r: _read_plain(vault, r) for r in rels}
 
 
 def _changed(vault: Path, saved: Mapping[Path, bytes | None]) -> list[str]:
-    out = []
-    for path, data in saved.items():
-        now = path.read_bytes() if path.is_file() else None
-        if now != data:
-            out.append(str(path.relative_to(vault)))
-    return sorted(out)
+    return sorted(
+        str(p.relative_to(vault)) for p, data in saved.items() if _read_plain(vault, str(p.relative_to(vault))) != data
+    )
 
 
 def _commit_change(vault: Path, message: str, saved: Mapping[Path, bytes | None], commit: Committer) -> str | None:
-    """Commit what changed since ``saved``; the new HEAD (None: nothing changed). If no commit lands and HEAD
-    hasn't moved, every file is put back and ``commit_failed`` is raised; if HEAD moved some other way,
-    ``commit_unclear``, with nothing put back."""
+    """Commit what changed since ``saved``; the new HEAD (None: nothing changed).
+
+    If no commit lands and HEAD hasn't moved, the paths are unstaged, and the files are put back only if each
+    still holds what the op wrote (``commit_failed``); one edited again meanwhile (the app, an editor) leaves
+    everything as it is (``commit_unclear``). If HEAD moved some other way, ``commit_unclear``, nothing put back.
+    """
     rels = _changed(vault, saved)
     if not rels:
         return None
+    post = {vault / r: _read_plain(vault, r) for r in rels}  # what the op left: restored only if still so
     before = _head(vault)
     try:
         return commit(vault, message, rels)
     except BaseException as e:
         after = _head(vault)
         if after == before:
-            for path, data in saved.items():
+            git(vault, "reset", "-q", "--", *rels, check=False)  # unstage: the next run must not commit it as its own
+            if any(_read_plain(vault, str(p.relative_to(vault))) != data for p, data in post.items()):
+                raise RepoSyncError(
+                    "commit_unclear",
+                    f"refused: no commit landed ({e}), and {', '.join(rels)} changed again since the op; left as it "
+                    "is for you to check (git diff)",
+                ) from e
+            for path in post:
+                data = saved[path]
                 if data is None:
                     path.unlink(missing_ok=True)
                 else:
@@ -404,8 +419,12 @@ def apply(
         burst: dict[str, int] = {}
         try:
             names = sorted(n for n in os.listdir(dir_fd) if n.endswith(".json") and dp.ULID_RE.match(n[:-5]))
+            changed = False
             for name in names:
                 ulid = name[:-5]
+                if ulid not in taken:  # never taken: counted, nothing recorded (a run can plant any number)
+                    result.untaken += 1
+                    continue
                 if not _retry(applied.get(ulid), today):
                     continue
                 try:
@@ -416,7 +435,8 @@ def apply(
                     result.waiting += 1
                     continue
                 outcome, entry = decided
-                if outcome == "applying":
+                applying = outcome == "applying"
+                if applying:
                     applied[ulid] = {k: v for k, v in entry.items() if k != "body"} | {
                         "outcome": "interrupted",
                         "at": at,
@@ -425,11 +445,18 @@ def apply(
                     outcome, entry = _apply_one(vault, entry, delegate, ulid, commit, state, applied)
                 applied[ulid] = {**entry, "outcome": outcome, "at": at}
                 result.outcomes[ulid] = outcome
+                if applying:
+                    di.save_state(vault, state)  # an applied change is recorded at once, with its commit
+                else:
+                    changed = True  # the rest are saved once, at the end
+            if changed:
                 di.save_state(vault, state)
         finally:
             os.close(dir_fd)
     if result.waiting:
         result.notes.append(f"{result.waiting} observation(s) wait for the review queue (V4b)")
+    if result.untaken:
+        result.notes.append(f"{result.untaken} cop(ies) in the copies folder were never taken by a pull; ignored")
     return result
 
 

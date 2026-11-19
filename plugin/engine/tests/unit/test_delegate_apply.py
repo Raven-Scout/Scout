@@ -108,7 +108,8 @@ def test_a_copy_the_record_didnt_take_is_never_applied(mirrored: Path) -> None:
         edited.to_bytes().replace(b'"EF56"', b'"AB12"')  # taken for EF56, edited afterwards to aim elsewhere
     )
     r = da.apply(mirrored, D)
-    assert r.outcomes == {planted.id: "not_taken", edited.id: "not_taken"}
+    assert r.outcomes == {edited.id: "not_taken"} and r.untaken == 1  # the planted one: counted, never recorded
+    assert planted.id not in di.load_state(mirrored).applied[D]
     assert _daily(mirrored) == TASKS
 
 
@@ -510,7 +511,7 @@ def test_plain_refuses_every_odd_shape(tmp_path: Path) -> None:
     (v / "action-items").unlink()
     (v / "action-items").write_text("a file\n", encoding="utf-8")
     assert not da._plain(v, DAILY)  # the folder is a file
-    assert da._commit_change(v, "m", {v / "elsewhere.md": (v / "elsewhere.md").read_bytes()}, _git_commit) is None
+    assert da._commit_change(v, "m", {v / "elsewhere.md": None}, _git_commit) is None  # a hard link reads as absent
 
 
 def test_cli_apply_and_revert_every_output(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -543,3 +544,61 @@ def test_cli_apply_and_revert_every_output(mirrored: Path, monkeypatch: pytest.M
     for args in (["inbox", "apply", "duet"], ["inbox", "apply", "duet", "--json"]):
         r = runner.invoke(app, args)
         assert r.exit_code == 2 and "busy" in r.output
+
+
+# ----- the #725 re-review nits -----------------------------------------------------------------
+
+
+def test_n1_junk_copies_are_counted_never_recorded(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = mirrored.joinpath(*di.INBOX_DIR, D)
+    folder.mkdir(parents=True, exist_ok=True)
+    junk = [dp.make(D, "observation", {"text": f"j{i}"}) for i in range(200)]
+    for p in junk:
+        (folder / f"{p.id}.json").write_bytes(p.to_bytes())  # a run planted them: no record took any
+    real = di.save_state
+    saves: list[int] = []
+
+    def counting(v: Path, state: di.InboxState) -> None:
+        saves.append(1)
+        real(v, state)
+
+    monkeypatch.setattr(di, "save_state", counting)
+    for _ in range(3):
+        r = da.apply(mirrored, D)
+        assert r.outcomes == {} and r.untaken == 200 and "never taken" in r.notes[-1]
+    assert di.load_state(mirrored).applied.get(D, {}) == {}
+    assert len(saves) <= 3  # once per apply at most, never once per copy
+
+
+def test_a_failed_commit_unstages_and_restores_only_what_the_op_left(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+
+    def stages_then_fails(v: Path, message: str, rels: list[str]) -> str:
+        git(v, "add", "--", *rels)
+        raise RuntimeError("the helper failed after staging")
+
+    with pytest.raises(RepoSyncError) as e:
+        da.apply(mirrored, D, commit=stages_then_fails)
+    assert e.value.code == "commit_failed" and _daily(mirrored) == TASKS
+    assert git(mirrored, "diff", "--cached", "--name-only").strip() == ""  # nothing left for a run to commit
+
+    def edited_meanwhile(v: Path, message: str, rels: list[str]) -> str:
+        (v / DAILY).write_text(_daily(v) + "- [ ] [#ZZ33] added in the app meanwhile\n", encoding="utf-8")
+        raise RuntimeError("the helper failed")
+
+    with pytest.raises(RepoSyncError) as e:
+        da.apply(mirrored, D, commit=edited_meanwhile)
+    assert e.value.code == "commit_unclear"
+    assert "ZZ33" in _daily(mirrored) and "- [x] [#AB12]" in _daily(mirrored)  # the owner's edit kept, nothing lost
+    assert di.load_state(mirrored).applied[D][p.id]["outcome"] == "interrupted"
+
+
+def test_cli_single_apply_reports_any_failure(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(mirrored))
+
+    def broken(*a: object, **k: object) -> object:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(da, "apply", broken)
+    r = runner.invoke(app, ["inbox", "apply", D, "--json"])
+    assert r.exit_code == 2 and json.loads(r.output)["code"] == "apply_failed"

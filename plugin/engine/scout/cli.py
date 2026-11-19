@@ -6021,6 +6021,10 @@ def _register_inbox() -> None:
             )
         except RepoSyncError as e:
             _fail(e, as_json)
+        except Exception as e:  # as --all does per delegate: a failure is a refusal, never a traceback
+            _fail(
+                RepoSyncError("apply_failed", f"refused: {delegate}'s apply failed ({type(e).__name__}: {e})"), as_json
+            )
         failed = [r for r in results if isinstance(r, RepoSyncError)]
         if as_json:
             typer.echo(
