@@ -10,12 +10,12 @@ struct SessionsEmptyStateView: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: reason == .noSessionsYet ? "rectangle.stack" : "line.3.horizontal.decrease.circle")
-                .font(DS.sans(24)).foregroundStyle(DS.Ink.p4)
+                .font(DS.symbol(24)).foregroundStyle(DS.Ink.p4)
                 .accessibilityHidden(true)
             Text(reason.title)
-                .font(DS.serif(15, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                .font(DS.font(.headline, .serif, weight: .medium)).foregroundStyle(DS.Ink.p2)
             Text(reason.detail)
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
                 .fixedSize(horizontal: false, vertical: true)
@@ -86,7 +86,7 @@ struct SessionsBoardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text(title)
-                    .font(DS.serif(17, weight: .medium))
+                    .font(DS.font(.title, .serif, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -113,7 +113,7 @@ struct SessionsBoardView: View {
                 HStack(spacing: 3) {
                     SessionStateDot(state: state)
                     Text("\(counts[state] ?? 0)")
-                        .font(DS.mono(10.5))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(DS.Ink.p3)
                 }
                 .padding(.horizontal, 6)
@@ -159,7 +159,7 @@ struct SessionsBoardView: View {
                         .imageScale(.small)
                     Text("\(label) (\(sessions.count))")
                 }
-                .font(DS.sans(11.5, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)

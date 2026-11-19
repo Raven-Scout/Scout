@@ -14,10 +14,10 @@ struct PRCheckProblemsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(errors.count == 1 ? "PR check problem" : "PR check problems")
-                .font(DS.serif(16, weight: .medium))
+                .font(DS.font(.headline, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
             Text(SessionsFormat.prProblemsSummary(count: errors.count))
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView {
@@ -25,7 +25,7 @@ struct PRCheckProblemsView: View {
                     ForEach(Array(errors.enumerated()), id: \.offset) { _, error in
                         Label {
                             Text(error.message)
-                                .font(DS.mono(11.5))
+                                .font(DS.font(.caption, .mono))
                                 .foregroundStyle(DS.Ink.p2)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -41,7 +41,7 @@ struct PRCheckProblemsView: View {
             .frame(maxHeight: 220)
             if let finishedAt {
                 Text("Last checked \(SessionsFormat.ago(finishedAt, now: now))")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
             }
             HStack(spacing: 8) {
@@ -53,7 +53,7 @@ struct PRCheckProblemsView: View {
                 }
             }
             .controlSize(.small)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
         }
         .padding(16)
         .frame(width: 380, alignment: .leading)

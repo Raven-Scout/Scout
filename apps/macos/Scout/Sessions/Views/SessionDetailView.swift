@@ -45,7 +45,7 @@ struct SessionDetailView: View {
                 actions(session, index: index)
                 section("Why") {
                     ForEach(Array(session.stateReasons.enumerated()), id: \.offset) { _, reason in
-                        Text("• \(reason)").font(DS.sans(12.5)).foregroundStyle(DS.Ink.p2)
+                        Text("• \(reason)").font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     }
                 }
                 if !session.prs.isEmpty {
@@ -56,7 +56,7 @@ struct SessionDetailView: View {
                 if let prompt = session.transcript?.firstPrompt, !prompt.isEmpty {
                     section("First prompt") {
                         Text(prompt)
-                            .font(DS.sans(12.5))
+                            .font(DS.font(.label))
                             .foregroundStyle(DS.Ink.p2)
                             .lineLimit(14)
                             .textSelection(.enabled)
@@ -65,7 +65,7 @@ struct SessionDetailView: View {
                 if let files = session.transcript?.filesTouched, !files.isEmpty {
                     section("Files touched") {
                         ForEach(files, id: \.self) { path in
-                            Text(path).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
+                            Text(path).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
                         }
                     }
                 }
@@ -87,12 +87,12 @@ struct SessionDetailView: View {
     private func header(_ session: AgentSession, index: SessionIndex) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.displayTitle)
-                .font(DS.serif(18, weight: .medium))
+                .font(DS.font(.title, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
                 .textSelection(.enabled)
             HStack(spacing: 8) {
                 Text(SessionsLayout.projectName(for: session.projectKey, in: index))
-                    .font(DS.sans(11.5, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(DS.Ink.p2)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -101,7 +101,7 @@ struct SessionDetailView: View {
                 if session.isOpen {
                     Label("open", systemImage: "circle.fill")
                         .labelStyle(.titleAndIcon)
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Status.ok)
                 }
             }
@@ -124,7 +124,7 @@ struct SessionDetailView: View {
             actionButtons(session, index: index)
             if let resumeNote, resumeNote.sessionID == session.id {
                 Label(resumeNote.text, systemImage: "exclamationmark.triangle")
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -185,15 +185,15 @@ struct SessionDetailView: View {
             .help("Copy a summary of this session to paste into another one")
         }
         .controlSize(.small)
-        .font(DS.sans(12))
+        .font(DS.font(.label))
     }
 
     private func prRow(_ pr: SessionPR) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text("\(pr.repo)#\(pr.number)").font(DS.mono(11.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text("\(pr.repo)#\(pr.number)").font(DS.font(.caption, .mono, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 if pr.stale {
-                    Text("cached").font(DS.sans(10.5)).foregroundStyle(DS.Status.warn)
+                    Text("cached").font(DS.font(.caption2)).foregroundStyle(DS.Status.warn)
                 }
                 Spacer(minLength: 0)
                 if let url = pr.webURL {
@@ -201,7 +201,7 @@ struct SessionDetailView: View {
                         .buttonStyle(.ds(.link, size: .small))
                 }
             }
-            Text(prDetail(pr)).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
+            Text(prDetail(pr)).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
         }
     }
 
@@ -229,9 +229,9 @@ struct SessionDetailView: View {
     private func relatedRow(_ other: AgentSession, prefix: String) -> some View {
         Button { onSelect(other.id) } label: {
             HStack(spacing: 6) {
-                Text(prefix).font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+                Text(prefix).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
                 SessionStateDot(state: other.state, isOpen: other.isOpen)
-                Text(other.displayTitle).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1).lineLimit(1)
+                Text(other.displayTitle).font(DS.font(.label)).foregroundStyle(DS.Ink.p1).lineLimit(1)
             }
         }
         .buttonStyle(.plainHit)
@@ -242,7 +242,7 @@ struct SessionDetailView: View {
     private func section<Body: View>(_ title: String, @ViewBuilder body: () -> Body) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(DS.sans(10.5, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.6)
                 .foregroundStyle(DS.Ink.p4)
             body()
@@ -251,34 +251,34 @@ struct SessionDetailView: View {
 
     private func fact(_ label: String, _ value: String, mono: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p4).frame(width: 78, alignment: .leading)
-            Text(value).font(mono ? DS.mono(11.5) : DS.sans(11.5)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
+            Text(label).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).frame(width: 78, alignment: .leading)
+            Text(value).font(mono ? DS.font(.caption, .mono) : DS.font(.caption)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "rectangle.stack.badge.person.crop")
-                .font(DS.sans(36))
+                .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text(index == nil ? "No session index yet" : "Pick a session")
-                .font(DS.serif(18, weight: .medium))
+                .font(DS.font(.title, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
             if let index {
                 let counts = SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now)
                 Text(AgentSessionState.allCases.compactMap { state in
                     counts[state].map { "\($0) \(state.label.lowercased())" }
                 }.joined(separator: " · "))
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 if let generated = index.generatedAt {
                     Text("Index built \(SessionsFormat.ago(generated, now: now))")
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p4)
                 }
             } else {
                 Text("Scout updates this list in the background.")
-                    .font(DS.sans(12.5))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
         }

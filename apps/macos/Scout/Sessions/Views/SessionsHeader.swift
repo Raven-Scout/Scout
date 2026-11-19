@@ -53,7 +53,7 @@ struct SessionsHeader: View {
     private func titleBlock(freshnessLines: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Sessions")
-                .font(DS.serif(28, weight: .medium))
+                .font(DS.font(.display, .serif, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
                 .fixedSize()
@@ -99,14 +99,14 @@ struct SessionsHeader: View {
                         })
                 }
             }
-            .font(DS.sans(12))
+            .font(DS.font(.label))
         } else {
             Text(SessionsFormat.freshness(
                 lastRefreshAt: service.lastRefreshAt,
                 prFinishedAt: service.prStatus?.finishedAt,
                 prErrors: [],
                 now: now))
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .lineLimit(lines)
                 .truncationMode(.tail)
@@ -140,7 +140,7 @@ struct SessionsHeader: View {
             }
         } label: {
             Text(Self.menuTitle(projects.first { $0.key == filter.projectKey }?.name ?? "All projects"))
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
@@ -193,9 +193,9 @@ struct SessionsHeader: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let state { SessionStateDot(state: state) }
-                Text(label).font(DS.sans(12, weight: .medium))
+                Text(label).font(DS.font(.label, weight: .medium))
                 Text("\(count)")
-                    .font(DS.mono(11))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
             }
             .padding(.horizontal, 10)

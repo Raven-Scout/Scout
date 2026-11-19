@@ -38,11 +38,11 @@ struct SessionStateLabel: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: SessionStateStyle.symbol(state))
-                .font(DS.sans(10.5, weight: .semibold))
+                .font(DS.font(.caption2, weight: .semibold))
                 .foregroundStyle(SessionStateStyle.color(state, isOpen: isOpen))
                 .accessibilityHidden(true)
             Text(state.label)
-                .font(DS.sans(10.5, weight: .semibold))
+                .font(DS.font(.caption2, weight: .semibold))
                 .foregroundStyle(DS.Ink.p2)
         }
         .accessibilityElement(children: .combine)
@@ -70,7 +70,7 @@ struct SessionStatePill: View {
         HStack(spacing: 5) {
             SessionStateDot(state: state, isOpen: isOpen)
             Text(state.label)
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
         }
         .padding(.horizontal, 8)
