@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from scout.changes.governance import diff_hash
 from scout.changes.models import CHANGE_KINDS, Change, Signal, Why
 from scout.changes.report import changes_report, daily_counts, engagement_report
 from scout.changes.store import (
@@ -141,6 +142,24 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
         encoding="utf-8",
     )
     (pending / "not-a-proposal.md").write_text("no frontmatter\n", encoding="utf-8")
+    # A harness-fallback item (`governance: false`: applying it is an ordinary change) that the owner approved; the
+    # approval names the hash of the diff they saw (scout.changes.governance.diff_hash).
+    fallback_diff = "--- a/DREAMING.md\n+++ b/DREAMING.md\n@@ -1 +1 @@\n-old\n+new\n"
+    (pending / "tighten-the-wrap.md").write_text(
+        "---\nsummary: Keep the dreaming wrap to five lines\nwhy: pattern-288\ngovernance: false\n---\n\n"
+        f"```diff\n{fallback_diff}```\n",
+        encoding="utf-8",
+    )
+    append_signal(
+        Signal(
+            ts=datetime(2026, 11, 15, 9, 30, tzinfo=UTC),
+            kind="approval",
+            surface="app",
+            ref=f"approve:gov-tighten-the-wrap@{diff_hash(fallback_diff)}",
+        ),
+        vault=vault,
+        env=env,
+    )
     # One torn line in each file.
     for path in (vault / ".scout-logs" / CHANGES_NAME, vault / ".scout-logs" / ENGAGEMENT_NAME):
         with path.open("a", encoding="utf-8") as f:
@@ -174,7 +193,9 @@ def test_changes_contract_matches_canonical(tmp_path):
     assert tests["driver"]["state"] == "testing" and tests["driver"]["after"] is None
     done = tests["wishlist-done"]
     assert done["state"] == "done" and done["verdict"] == "hurt" and done["reasons"] == ["recurrence-up"]
-    assert done["suspect"] is True and done["marked_wrong"] is True and done["would_have_done"]["targeted"] is True
+    # Marked wrong by the owner: still suspect on the map, but no auto-rollback mode would act on it.
+    assert done["suspect"] is True and done["marked_wrong"] is True
+    assert done["would_have_done"] == {"targeted": False, "one_at_a_time": False}
     assert {tests[k]["state"] for k in ("kb-structure", "rollback", "upgrade")} == {"not-tested"}
     rolled = tests["brain-edit"]
     assert rolled["verdict"] == "rolled back" and rolled["rolled_back_by"] == "chg-000000000004"
@@ -186,8 +207,21 @@ def test_changes_contract_matches_canonical(tmp_path):
             "targets": ["briefing"],
             "path": "governance-pending/skip-carried-red.md",
             "state": "awaiting-ok",
-        }
+            "diff_hash": doc["needs_ok"][0]["diff_hash"],
+            "governance": True,
+        },
+        {
+            "id": "gov-tighten-the-wrap",
+            "summary": "Keep the dreaming wrap to five lines",
+            "why": "pattern-288",
+            "targets": [],
+            "path": "governance-pending/tighten-the-wrap.md",
+            "state": "approved",
+            "diff_hash": diff_hash("--- a/DREAMING.md\n+++ b/DREAMING.md\n@@ -1 +1 @@\n-old\n+new\n"),
+            "governance": False,
+        },
     ]
+    assert len(doc["needs_ok"][0]["diff_hash"]) == 16
     assert doc["needs_ok_skipped"] == 1
     # The rollback (untested) and the 16-days-older wishlist-done change are not in the phase change's overlap.
     assert tests["phase"]["overlap"] == ["chg-000000000000", "chg-000000000001"]

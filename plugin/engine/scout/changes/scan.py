@@ -31,6 +31,9 @@ _WISHLIST_PATH_RE = re.compile(r"docs/wishlist/([A-Za-z0-9._-]+?)(?:\.md)?(?=\s|
 _STATUS_DONE_RE = re.compile(r"^\+\s*status:\s*done\b", re.MULTILINE)
 _REVERTS_BODY_RE = re.compile(r"^This reverts commit ([0-9a-f]{40})", re.MULTILINE)
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+# A governance change is the commit that moves an approved pending file into applied/ (scout.changes.actions); the
+# folder names are spelled out here because governance imports nothing from the scanner and vice versa.
+_PENDING_MD_RE = re.compile(r"^governance-pending/([a-z0-9][a-z0-9-]{0,60})\.md$")
 _RS, _US = "\x1e", "\x1f"
 
 
@@ -42,6 +45,27 @@ def parse_trailers(message: str) -> dict[str, str]:
         if m:
             out[m.group(1).lower()] = m.group(2)
     return out
+
+
+def is_self_path(status: str, path: str) -> bool:
+    """A path a self-change is made of, and so what undoing one restores: a brain file, anything under ``scripts/``
+    or ``docs/wishlist/``, or either side of a rename inside ``knowledge-base/``. Never session logs, the mistake
+    audit or action items: a later run's own bookkeeping there is not part of the change."""
+    return (
+        path in BRAIN_FILES
+        or path.startswith(("scripts/", "docs/wishlist/"))
+        or (status[:1] == "R" and path.startswith("knowledge-base/"))
+    )
+
+
+def own_paths(entries: Sequence[tuple[str, Sequence[str]]]) -> list[str]:
+    """Sorted, once each: every side of each ``(status, paths)`` entry that has a side :func:`is_self_path` accepts
+    (so both sides of a rename into or out of ``scripts/``)."""
+    out: set[str] = set()
+    for status, sides in entries:
+        if any(is_self_path(status, p) for p in sides):
+            out.update(sides)
+    return sorted(out)
 
 
 def lane_of(subject: str) -> str | None:
@@ -63,8 +87,11 @@ def classify(
 ) -> str | None:
     if lane_of(subject) == "update":
         return "upgrade"
-    if subject.startswith("Revert ") or "reverts" in (trailers or {}):
+    if "reverts" in (trailers or {}):
         return "rollback"
+    if subject.startswith("Revert "):
+        # A `git revert` is a rollback only when it puts back part of a self-change; anything else is no change.
+        return "rollback" if any(is_self_path(s, p) for s, p in paths) else None
     if any(p in BRAIN_FILES and s[:1] in ("A", "M") for s, p in paths):
         return "brain-edit"
     if any(p.startswith("scripts/") and s[:1] in ("A", "M") for s, p in paths):
@@ -101,13 +128,15 @@ def _summary(subject: str, trailers: dict[str, str]) -> str:
     return text.strip()[:SUMMARY_MAX]
 
 
-def _git_raw(vault: Path, args: Sequence[str]) -> bytes | None:
-    """The one git runner: stdout bytes, or None on a non-zero exit, a timeout or no git."""
+def _git_raw(vault: Path, args: Sequence[str], stdin: bytes | None = None) -> bytes | None:
+    """The one git runner: stdout bytes, or None on a non-zero exit, a timeout or no git. ``stdin`` is fed to git
+    (``git apply`` reading a patch); without it git reads nothing."""
     # Never take the index lock: a read must not make a concurrent run's `git add` fail.
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
+            input=stdin if stdin is not None else b"",
             capture_output=True,
             check=False,
             timeout=GIT_TIMEOUT_S,
@@ -126,12 +155,42 @@ def _git(vault: Path, *args: str) -> str | None:
     return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _git_bytes(vault: Path, *args: str) -> bytes | None:
+def _git_bytes(vault: Path, *args: str, stdin: bytes | None = None) -> bytes | None:
     """:func:`_git` without decoding: file content (``git show <rev>:<path>``) byte for byte."""
-    return _git_raw(vault, args)
+    return _git_raw(vault, args, stdin)
 
 
-def _parse_log(raw: str) -> list[tuple[str, datetime, str, str, list[tuple[str, str]]]]:
+_Commit = tuple[str, datetime, str, str, list[tuple[str, str]], list[tuple[str, str]]]
+
+
+def name_status(vault: Path, sha: str) -> list[tuple[str, tuple[str, ...]]] | None:
+    """What commit ``sha`` changed against its first parent (a root commit: everything it added), renames detected:
+    ``(status, (path,))``, or ``(status, (old, new))`` for a rename. None when ``sha`` is not a full hex sha, git
+    can't read it, or the output doesn't parse. Paths round-trip any bytes (``os.fsdecode``)."""
+    if not isinstance(sha, str) or not _FULL_SHA_RE.match(sha):
+        return None
+    raw = _git_bytes(vault, "diff-tree", "-r", "-z", "-M", "--name-status", "--no-commit-id", "--root", sha, "--")
+    if raw is None:
+        return None
+    fields = os.fsdecode(raw).split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
+    out: list[tuple[str, tuple[str, ...]]] = []
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        width = 2 if status[:1] in ("R", "C") else 1
+        sides = tuple(fields[i + 1 : i + 1 + width])
+        if not status or len(sides) != width or not all(sides):
+            return None
+        out.append((status, sides))
+        i += 1 + width
+    return out
+
+
+def _parse_log(raw: str) -> list[_Commit]:
+    """``(sha, ts, subject, body, paths, renames)`` per commit: ``paths`` is ``(status, path)`` with a rename's new
+    side, ``renames`` is ``(old, new)`` for each rename."""
     commits = []
     for rec in raw.split(_RS):
         if not rec.strip():
@@ -145,12 +204,26 @@ def _parse_log(raw: str) -> list[tuple[str, datetime, str, str, list[tuple[str, 
         except ValueError:
             continue
         paths = []
+        renames = []
         for line in rest.splitlines():
             cols = line.split("\t")
             if len(cols) >= 2 and cols[0]:
                 paths.append((cols[0], cols[-1]))
-        commits.append((sha, ts, subject, body, paths))
+                if cols[0][:1] == "R" and len(cols) == 3:
+                    renames.append((cols[1], cols[2]))
+        commits.append((sha, ts, subject, body, paths, renames))
     return commits
+
+
+def _applies_governance(renames: Sequence[tuple[str, str]]) -> bool:
+    """The commit moves ``governance-pending/<slug>.md`` to ``governance-pending/applied/<slug>.md``: what
+    ``scoutctl changes apply`` does to a governance item the owner approved. A trailer alone never makes a change
+    governance (a run could claim it to make any edit immune to rollback)."""
+    for old, new in renames:
+        m = _PENDING_MD_RE.match(old)
+        if m and new == f"governance-pending/applied/{m.group(1)}.md":
+            return True
+    return False
 
 
 def scan(vault: Path, *, since: datetime | None, backfilled: bool = False) -> list[Change]:
@@ -195,6 +268,7 @@ def _change_from_commit(
     subject: str,
     body: str,
     paths: list[tuple[str, str]],
+    renames: Sequence[tuple[str, str]],
     *,
     backfilled: bool,
 ) -> Change | None:
@@ -225,7 +299,7 @@ def _change_from_commit(
         commit=sha,
         files=files,
         targets=targets,
-        governance=trailers.get("governance", "").lower() == "yes",
+        governance=_applies_governance(renames),
         author_lane=lane,
         backfilled=backfilled,
         reverts=_reverts_of(trailers, body),
@@ -259,9 +333,9 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
         )
         if raw is None:
             return None
-        for sha, ts, subject, body, paths in _parse_log(raw):
+        for sha, ts, subject, body, paths, renames in _parse_log(raw):
             if sha in out:
-                out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=False)
+                out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=False)
     return out
 
 
@@ -272,10 +346,10 @@ def _record(vault: Path, revs: list[str], *, backfilled: bool) -> list[Change] |
         return None
     known = {c.id for c in read_changes(vault)[0]}
     new: list[Change] = []
-    for sha, ts, subject, body, paths in reversed(_parse_log(raw)):
+    for sha, ts, subject, body, paths, renames in reversed(_parse_log(raw)):
         if f"chg-{sha[:12]}" in known:
             continue
-        change = _change_from_commit(vault, sha, ts, subject, body, paths, backfilled=backfilled)
+        change = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=backfilled)
         if change is None:
             continue
         append_change(vault, change)

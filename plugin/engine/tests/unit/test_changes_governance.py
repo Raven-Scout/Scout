@@ -7,7 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from scout.changes.governance import PENDING_DIR, decision, read_pending, undo_requested
+from scout.changes.governance import (
+    PENDING_DIR,
+    decision,
+    decision_ref,
+    diff_hash,
+    diff_paths,
+    read_pending,
+    undo_requested,
+)
 from scout.changes.models import Signal
 
 GOOD = """---
@@ -118,12 +126,73 @@ def _sig(ref: str, minutes: int, kind: str = "approval") -> Signal:
     )
 
 
+H = "0123456789abcdef"
+
+
 def test_newest_decision_wins():
-    sigs = [_sig("approve:gov-a", 0), _sig("reject:gov-a", 5)]
-    assert decision(sigs, "gov-a") == "rejected"
-    assert decision([*sigs, _sig("approve:gov-a", 9)], "gov-a") == "approved"
-    assert decision(sigs, "gov-b") == "awaiting-ok"
-    assert decision([_sig("approve:gov-a", 0, kind="dm-reply")], "gov-a") == "awaiting-ok"
+    sigs = [_sig(f"approve:gov-a@{H}", 0), _sig(f"reject:gov-a@{H}", 5)]
+    assert decision(sigs, "gov-a", H) == "rejected"
+    assert decision([*sigs, _sig(f"approve:gov-a@{H}", 9)], "gov-a", H) == "approved"
+    assert decision(sigs, "gov-b", H) == "awaiting-ok"
+    assert decision([_sig(f"approve:gov-a@{H}", 0, kind="dm-reply")], "gov-a", H) == "awaiting-ok"
+
+
+def test_a_decision_counts_only_for_the_diff_it_was_made_on():
+    """I3: a row for another hash (the diff changed after the decision) or with none (the old ref form) is nothing."""
+    assert decision([_sig("approve:gov-a", 0)], "gov-a", H) == "awaiting-ok"
+    assert decision([_sig("approve:gov-a@ffffffffffffffff", 0)], "gov-a", H) == "awaiting-ok"
+    newer_diff = [_sig(f"approve:gov-a@{H}", 0), _sig("reject:gov-a@ffffffffffffffff", 5)]
+    assert decision(newer_diff, "gov-a", H) == "approved"
+    assert decision_ref("approve", "gov-a", H) == f"approve:gov-a@{H}"
+
+
+def test_the_hash_is_the_diff_blocks_and_changes_with_it(tmp_path):
+    _write(tmp_path, "skip-red.md", GOOD)
+    [item] = read_pending(tmp_path)[0]
+    assert item.hash == diff_hash(item.diff) and len(item.hash) == 16
+    _write(tmp_path, "skip-red.md", GOOD.replace("+new", "+newer"))
+    assert read_pending(tmp_path)[0][0].hash != item.hash
+    # Prose outside the diff block doesn't change what was approved.
+    _write(tmp_path, "skip-red.md", GOOD.replace("Some prose about it.", "Other prose."))
+    assert read_pending(tmp_path)[0][0].hash == item.hash
+
+
+def test_governance_flag_defaults_true_and_must_be_a_bool(tmp_path):
+    _write(tmp_path, "a.md", GOOD)
+    _write(tmp_path, "b.md", GOOD.replace("targets:", "governance: false\ntargets:"))
+    _write(tmp_path, "c.md", GOOD.replace("targets:", "governance: maybe\ntargets:"))
+    items, bad = read_pending(tmp_path)
+    assert [(i.id, i.governance) for i in items] == [("gov-a", True), ("gov-b", False)] and bad == 1
+
+
+def test_diff_paths_reads_every_header_side():
+    """m1: both sides of a rename come from the headers (git apply --numstat prints only the new one)."""
+    rename = (
+        "diff --git a/knowledge-base/a.md b/knowledge-base/b.md\nsimilarity index 100%\n"
+        "rename from knowledge-base/a.md\nrename to knowledge-base/b.md\n"
+    )
+    assert diff_paths(rename) == ["knowledge-base/a.md", "knowledge-base/b.md"]  # a pure rename
+    both = rename + "--- a/knowledge-base/a.md\n+++ b/knowledge-base/b.md\n@@ -1 +1 @@\n-x\n+y\n"
+    assert diff_paths(both) == ["knowledge-base/a.md", "knowledge-base/b.md"]
+    new_file = "--- /dev/null\n+++ b/scripts/new.py\n@@ -0,0 +1 @@\n+print()\n"
+    assert diff_paths(new_file) == ["scripts/new.py"]
+    # git apply strips one folder (-p1): an unprefixed ---/+++ name would patch another path, so it is refused.
+    assert diff_paths("--- scripts/x.py\n+++ scripts/x.py\n@@ -1 +1 @@\n-a\n+b\n") is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "@@ -1,2 +1 @@\n-old\n+new\n",  # the old side ends one line early
+        "@@ -1 +1,2 @@\n-old\n+new\n",  # the new side ends one line early
+        "@@ -1 +1 @@\n-old\n-older\n+new\n",  # one removed line too many
+        "@@ -1 +1 @@\n-old\n?what\n",  # a line no hunk can hold
+        "@@ junk @@\n-old\n+new\n",  # an @@ line that isn't a hunk header
+    ],
+)
+def test_hunk_counts_that_do_not_add_up_are_unreadable(tmp_path, body):
+    _write(tmp_path, "x.md", GOOD.replace("@@ -1 +1 @@\n-old\n+new\n", body))
+    assert read_pending(tmp_path) == ([], 1)
 
 
 def test_undo_requested():

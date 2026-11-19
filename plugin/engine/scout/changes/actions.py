@@ -6,9 +6,10 @@ asked for (``undo:<id>``) or an auto-rollback mode would make once calibration h
 be rolled back (``blocked``), the governance changes the owner approved or rejected, and the suspects no wrap has
 announced yet. It never raises; a broken input reads as nothing to do.
 
-``rollback`` restores, in the working tree only, each file a change's commit touched to its content in the commit's
-parent. ``apply_governance`` patches the working tree with an approved ``governance-pending/`` diff. Neither stages
-or commits anything: the run commits the returned paths through ``scripts/git-safe-commit.sh``. Every git call goes
+``rollback`` reverse-applies, in the working tree only, the change's own diff over its own paths (brain files,
+``scripts/``, ``docs/wishlist/``, both sides of a ``knowledge-base/`` rename), so later edits elsewhere in those files
+stay. ``apply_governance`` patches the working tree with an approved ``governance-pending/`` diff. Neither stages or
+commits anything: the run commits the returned paths through ``scripts/git-safe-commit.sh``. Every git call goes
 through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``, a timeout)."""
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from scout.changes.models import CHANGE_ID_RE, SCHEMA_VERSION, Change
-from scout.changes.scan import _git, _git_bytes
+from scout.changes.scan import _git, _git_bytes, name_status, own_paths
 
 ANNOUNCED_NAME = "changes-announced.json"
 _ANNOUNCED_SCHEMA = 1
@@ -59,44 +60,52 @@ def _announced_path(vault: Path) -> Path:
     return vault / ".scout-logs" / ANNOUNCED_NAME
 
 
-def read_announced(vault: Path) -> set[str]:
-    """Change ids a wrap already announced as suspect. Never raises: anything unreadable is none."""
+def _read_announced_doc(vault: Path) -> dict[str, set[str]]:
     try:
         data = json.loads(_announced_path(vault).read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
-        return set()
-    if not isinstance(data, dict) or data.get("schema") != _ANNOUNCED_SCHEMA or not isinstance(data.get("ids"), list):
-        return set()
-    return {i for i in data["ids"] if isinstance(i, str) and CHANGE_ID_RE.match(i)}
+        return {"ids": set(), "blocked": set()}
+    if not isinstance(data, dict) or data.get("schema") != _ANNOUNCED_SCHEMA:
+        return {"ids": set(), "blocked": set()}
+    out: dict[str, set[str]] = {}
+    for key in ("ids", "blocked"):
+        raw = data.get(key)
+        out[key] = {i for i in raw if isinstance(i, str) and CHANGE_ID_RE.match(i)} if isinstance(raw, list) else set()
+    return out
 
 
-def mark_announced(vault: Path, ids: Sequence[str]) -> None:
-    """Add ``ids`` to ``.scout-logs/changes-announced.json``. Run-writable on purpose: forging it only hides a wrap
-    line, and the map still shows the verdict. Raises ValueError for a non-change id, OSError when it didn't save."""
+def read_announced(vault: Path, *, blocked: bool = False) -> set[str]:
+    """Change ids a wrap already announced: as suspect, or (``blocked``) as an undo that may not run. The two lists
+    are apart so an announced suspect whose undo the owner then asks for, and which is blocked, is still reported.
+    Never raises: anything unreadable is none."""
+    return _read_announced_doc(vault)["blocked" if blocked else "ids"]
+
+
+def mark_announced(vault: Path, ids: Sequence[str], *, blocked: bool = False) -> None:
+    """Add ``ids`` to ``.scout-logs/changes-announced.json`` (the suspect list, or with ``blocked`` the blocked list).
+    Run-writable on purpose: forging it only hides a wrap line, and the map still shows the verdict. Raises
+    ValueError for a non-change id, OSError when it didn't save."""
     from scout.changes.store import atomic_write_json
 
     bad = [i for i in ids if not CHANGE_ID_RE.match(i)]
     if bad:
         raise ValueError(f"not a change id: {bad[0]!r}")
-    merged = sorted(read_announced(vault) | set(ids))
-    if not atomic_write_json(_announced_path(vault), {"schema": _ANNOUNCED_SCHEMA, "ids": merged}):
+    doc = _read_announced_doc(vault)
+    doc["blocked" if blocked else "ids"] |= set(ids)
+    data = {"schema": _ANNOUNCED_SCHEMA, "ids": sorted(doc["ids"]), "blocked": sorted(doc["blocked"])}
+    if not atomic_write_json(_announced_path(vault), data):
         raise OSError(f"{ANNOUNCED_NAME}: could not save")
 
 
-# --- what a commit touched ------------------------------------------------------------------------------------------
+# --- what undoing a change restores ----------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class _Entry:
-    status: str  # A, D, M or T: the commit's change to the path, against its parent
-    path: str  # repository-relative (the vault is the repository's top level)
-    parent_mode: str  # the path's mode in the parent; 000000 when the parent doesn't have it
+class _Plan:
+    """How to undo a change: reverse-apply ``diff`` (the commit's own diff over ``paths``) to the working tree."""
 
-
-@dataclass(frozen=True)
-class _Touched:
-    parent: str
-    entries: tuple[_Entry, ...]
+    paths: tuple[str, ...]  # the change's own paths (scout.changes.scan.own_paths), both sides of a rename
+    diff: bytes
 
 
 def _at_top(vault: Path) -> bool:
@@ -105,9 +114,42 @@ def _at_top(vault: Path) -> bool:
     return prefix is not None and not prefix.strip()
 
 
-def _touched(vault: Path, commit: str) -> _Touched | str:
-    """What ``commit`` changed against its first parent, one entry per path (a rename is its two sides), or the
-    problem: ``root-commit`` or ``git-unreadable`` (git failed, the commit isn't on HEAD, or a path isn't a file)."""
+def _modes_ok(vault: Path, parent: str, commit: str, paths: Sequence[str]) -> bool:
+    """Every own path is a regular file on both sides, except that the commit may have added or changed a symlink
+    (undoing that removes or replaces it). A symlink or submodule in the parent would be written back: refused."""
+    raw = _git_bytes(
+        vault, "--literal-pathspecs", "diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", parent, commit, "--",
+        *paths,
+    )  # fmt: skip
+    if raw is None:
+        return False
+    fields = os.fsdecode(raw).split("\0")
+    seen = 0
+    i = 0
+    while i < len(fields):
+        meta = fields[i]
+        if not meta:
+            i += 1
+            continue
+        cols = meta[1:].split(" ") if meta.startswith(":") else []
+        if len(cols) != 5 or i + 1 >= len(fields) or not fields[i + 1]:
+            return False
+        old_mode, new_mode, _, _, status = cols
+        status = status[:1]
+        i += 2
+        if status not in ("A", "D", "M", "T"):
+            return False
+        if status != "A" and old_mode not in _RESTORABLE_MODES:
+            return False
+        if status != "D" and new_mode not in _REMOVABLE_MODES:
+            return False
+        seen += 1
+    return seen > 0
+
+
+def _plan(vault: Path, commit: str) -> _Plan | str:
+    """The undo for ``commit``, or the problem: ``root-commit`` or ``git-unreadable`` (git failed, the commit isn't on
+    HEAD, it has no own paths, or one of them isn't a regular file)."""
     if not _FULL_SHA_RE.match(commit) or not _at_top(vault):
         return "git-unreadable"
     line = _git(vault, "rev-list", "--parents", "-n", "1", commit, "--")
@@ -119,59 +161,46 @@ def _touched(vault: Path, commit: str) -> _Touched | str:
     parent = shas[1]
     if _git(vault, "merge-base", "--is-ancestor", commit, "HEAD") is None:
         return "git-unreadable"
-    raw = _git_bytes(vault, "diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", parent, commit, "--")
-    if raw is None:
+    entries = name_status(vault, commit)
+    paths = own_paths(entries or [])
+    if not paths or not _modes_ok(vault, parent, commit, paths):
         return "git-unreadable"
-    # Paths go back to git and the filesystem as given: fsdecode round-trips any bytes (surrogateescape).
-    fields = os.fsdecode(raw).split("\0")
-    entries: list[_Entry] = []
-    i = 0
-    while i < len(fields):
-        meta = fields[i]
-        if not meta:
-            i += 1
-            continue
-        cols = meta[1:].split(" ") if meta.startswith(":") else []
-        if len(cols) != 5 or i + 1 >= len(fields) or not fields[i + 1]:
-            return "git-unreadable"
-        old_mode, new_mode, _, _, status = cols
-        status = status[:1]
-        path = fields[i + 1]
-        i += 2
-        if status not in ("A", "D", "M", "T"):
-            return "git-unreadable"
-        if status != "A" and old_mode not in _RESTORABLE_MODES:
-            return "git-unreadable"  # a symlink or submodule in the parent: not a file to write back
-        if status != "D" and new_mode not in _REMOVABLE_MODES:
-            return "git-unreadable"
-        entries.append(_Entry(status, path, old_mode if status != "A" else "000000"))
-    if not entries:
+    # Plumbing, with explicit prefixes: a user's diff.noprefix, colour or external-diff settings never reach it.
+    diff = _git_bytes(
+        vault, "--literal-pathspecs", "diff-tree", "-p", "--binary", "-M", "--no-commit-id", "--no-color",
+        "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", parent, commit, "--", *paths,
+    )  # fmt: skip
+    if not diff or not diff.strip():
         return "git-unreadable"
-    return _Touched(parent, tuple(entries))
+    return _Plan(tuple(paths), diff)
+
+
+def _reverse_apply(vault: Path, plan: _Plan, *, check: bool) -> bool:
+    """``git apply -R`` of the plan's diff to the working tree (never the index); all or nothing."""
+    args = ["apply", "-R", "--whitespace=nowarn"] + (["--check"] if check else [])
+    return _git_bytes(vault, *args, stdin=plan.diff) is not None
 
 
 def rollback_problem(vault: Path, change: Change, test: Mapping[str, Any]) -> str | None:
     """None when ``change`` can be rolled back, else why not: ``governance``, ``not-a-run-change`` (its test state is
-    ``not-tested``), ``root-commit``, ``edited-since`` (a later commit, or an uncommitted edit, touched one of its
-    paths) or ``git-unreadable``."""
+    ``not-tested``), ``root-commit``, ``edited-since`` (its own diff no longer reverses cleanly: a later edit changed
+    the same lines, or its own paths have uncommitted edits) or ``git-unreadable``.
+
+    Hunk-level: a later commit that changed other lines of the same file does not block."""
     if change.governance:
         return "governance"
     if test.get("state") == "not-tested":
         return "not-a-run-change"
-    touched = _touched(vault, change.commit)
-    if isinstance(touched, str):
-        return touched
-    paths = [e.path for e in touched.entries]
-    later = _git(vault, "--literal-pathspecs", "log", "--format=%H", f"{change.commit}..HEAD", "--", *paths)
-    if later is None:
-        return "git-unreadable"
-    if later.strip():
-        return "edited-since"
-    # Uncommitted work on these paths (a run mid-edit, a rollback not yet committed) would be overwritten too.
-    dirty = _git_bytes(vault, "--literal-pathspecs", "status", "--porcelain", "-z", "--", *paths)
+    plan = _plan(vault, change.commit)
+    if isinstance(plan, str):
+        return plan
+    # Uncommitted work on these paths (a run mid-edit, a rollback not yet committed) would be mixed into the undo.
+    dirty = _git_bytes(vault, "--literal-pathspecs", "status", "--porcelain", "-z", "--", *plan.paths)
     if dirty is None:
         return "git-unreadable"
     if dirty.strip(b"\0"):
+        return "edited-since"
+    if not _reverse_apply(vault, plan, check=True):
         return "edited-since"
     return None
 
@@ -227,7 +256,7 @@ def _compute(
     # Governance comes from governance-pending/ and the owner's decisions, not from change rows: listed either way.
     pending, _ = read_pending(vault)
     for p in pending:
-        state = decision(signals, p.id)
+        state = decision(signals, p.id, p.hash)
         if state == "approved":
             out["apply"].append(p.id)
         elif state == "rejected":
@@ -261,19 +290,31 @@ def _compute(
     if mode in _AUTO_KEYS and not doc.get("calibrating", True):
         for r in sorted(rows, key=lambda r: (r["ts"], r["id"])):
             test = r["test"]
-            if test.get("would_have_done", {}).get(_AUTO_KEYS[mode]) and not test.get("rolled_back_by"):
+            if (
+                test.get("would_have_done", {}).get(_AUTO_KEYS[mode])
+                and not test.get("rolled_back_by")
+                and not test.get("marked_wrong")
+            ):
                 candidates.setdefault(r["id"], f"auto-{mode}")
+    # A blocked undo is reported once (the wrap runs `changes announced --blocked <id>`), never re-listed every run.
+    announced_blocked = read_announced(vault, blocked=True)
     for cid, reason in candidates.items():
         problem = rollback_problem(vault, changes[cid], by_id[cid]["test"])
         summary = by_id[cid]["summary"]
         if problem is None:
             out["rollbacks"].append({"id": cid, "summary": summary, "reason": reason})
-        else:
+        elif cid not in announced_blocked:
             out["blocked"].append({"id": cid, "summary": summary, "why_blocked": problem})
 
     announced = read_announced(vault)
     out["suspect_unannounced"] = [
-        {"id": r["id"], "summary": r["summary"], "reasons": list(r["test"].get("reasons", []))}
+        {
+            "id": r["id"],
+            "summary": r["summary"],
+            "reasons": list(r["test"].get("reasons", [])),
+            # Why `scoutctl changes undo` would not help (governance, edited-since, ...), so the wrap words it.
+            "undo_blocked": rollback_problem(vault, changes[r["id"]], r["test"]),
+        }
         for r in rows
         if r["test"].get("suspect") and r["id"] not in announced
     ]
@@ -329,20 +370,6 @@ def _real_dir_inside(vault: Path, rel: str) -> bool:
     return True
 
 
-def _write_file(target: Path, data: bytes, mode: str) -> None:
-    """Atomic: a temp file beside ``target``, then a rename over it (which replaces a symlink, never follows it)."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.chmod(tmp, 0o755 if mode == "100755" else 0o644)
-        os.replace(tmp, target)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-
-
 def rollback(
     vault: Path,
     env: Mapping[str, str],
@@ -352,38 +379,25 @@ def rollback(
     tz: ZoneInfo,
     owner_vault: Path | None = None,
 ) -> list[str]:
-    """Undo ``change_id`` in the working tree: each path its commit touched gets its content in the commit's parent,
-    or is removed when the parent doesn't have it. Returns the sorted vault-relative paths (both sides of a rename)
-    for the run to commit through ``git-safe-commit.sh``.
+    """Undo ``change_id`` in the working tree: reverse-apply the change's own diff (its brain files, ``scripts/``,
+    ``docs/wishlist/`` and both sides of a ``knowledge-base/`` rename; never session logs or audit rows) with
+    ``git apply -R``. Later edits to other lines of those files stay. Returns the sorted vault-relative paths for the
+    run to commit through ``git-safe-commit.sh``.
 
-    Raises :class:`ActionRefused` unless the id is in ``due(...)["rollbacks"]``. All or nothing on reads: every
-    parent version is read before anything is written, so a git failure writes nothing."""
+    Raises :class:`ActionRefused` unless the id is in ``due(...)["rollbacks"]``. All or nothing: ``git apply`` checks
+    every hunk before it writes, so a hunk that no longer applies (``edited-since``) writes nothing."""
     doc, changes = _safe_compute(vault, env, now=now, tz=tz, owner_vault=owner_vault)
     if change_id not in {r["id"] for r in doc["rollbacks"]}:
         why = next((b["why_blocked"] for b in doc["blocked"] if b["id"] == change_id), "not-due")
         raise ActionRefused(why)
-    touched = _touched(vault, changes[change_id].commit)
-    if isinstance(touched, str):
-        raise ActionRefused(touched)
-    for e in touched.entries:
-        if not _inside(vault, e.path):
-            raise ActionRefused("path outside the vault")
-    plan: list[tuple[_Entry, bytes | None]] = []
-    for e in touched.entries:
-        if e.status == "A":
-            plan.append((e, None))
-            continue
-        data = _git_bytes(vault, "show", f"{touched.parent}:{e.path}")
-        if data is None:
-            raise ActionRefused("git-unreadable")
-        plan.append((e, data))
-    for e, data in plan:
-        target = vault / e.path
-        if data is None:
-            target.unlink(missing_ok=True)
-        else:
-            _write_file(target, data, e.parent_mode)
-    return sorted(e.path for e in touched.entries)
+    plan = _plan(vault, changes[change_id].commit)
+    if isinstance(plan, str):
+        raise ActionRefused(plan)
+    if not all(_inside(vault, p) for p in plan.paths):
+        raise ActionRefused("path outside the vault")
+    if not _reverse_apply(vault, plan, check=False):
+        raise ActionRefused("edited-since")
+    return list(plan.paths)
 
 
 def _pending_item(vault: Path, env: Mapping[str, str], gov_id: str, want: str, owner_vault: Path | None) -> Any:
@@ -398,52 +412,37 @@ def _pending_item(vault: Path, env: Mapping[str, str], gov_id: str, want: str, o
     if md.is_symlink() or not _inside(vault, item.path):
         raise ActionRefused("path outside the vault")
     signals, _ = read_signals(vault, env, owner_vault=owner_vault)
-    state = decision(signals, gov_id)
+    state = decision(signals, gov_id, item.hash)
     if state != want:
         raise ActionRefused(f"{gov_id} is {state}, not {want}")
     return item
 
 
-def _patched_paths(vault: Path, diff_file: Path) -> list[str] | None:
-    """The paths ``git apply`` would touch (both sides of a rename), without applying. None when git can't parse."""
-    raw = _git_bytes(vault, "apply", "--numstat", "-z", "--", str(diff_file))
-    if raw is None:
-        return None
-    fields = os.fsdecode(raw).split("\0")
-    out: list[str] = []
-    i = 0
-    while i < len(fields):
-        cols = fields[i].split("\t")
-        if not fields[i]:
-            i += 1
-        elif len(cols) == 3 and cols[2]:
-            out.append(cols[2])
-            i += 1
-        elif len(cols) == 3 and i + 2 < len(fields):  # a rename: "added\tdeleted\t\0old\0new\0"
-            out += [fields[i + 1], fields[i + 2]]
-            i += 3
-        else:
-            return None
-    return out
-
-
 def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_vault: Path | None = None) -> list[str]:
     """Apply an approved pending governance change to the working tree (``git apply``, never the index), then move
-    its file to ``governance-pending/applied/<slug>.md``. Returns the sorted patched paths and both file paths.
+    its file to ``governance-pending/applied/<slug>.md`` (that move is what makes the commit a governance change). A
+    ``governance: false`` item (a harness fallback) is an ordinary improvement: its file is deleted instead, so the
+    commit is tested and undoable like any other. Returns the sorted patched paths (from the diff's headers, both
+    sides of a rename) and the file paths.
 
-    Raises :class:`ActionRefused` unless the owner's decision is ``approved``; a patch that doesn't apply leaves the
+    Raises :class:`ActionRefused` unless the owner approved this exact diff; a patch that doesn't apply leaves the
     pending file where it is (``patch does not apply``). The temp diff in ``.scout-cache/`` is always removed."""
-    from scout.changes.governance import PENDING_DIR
+    from scout.changes.governance import PENDING_DIR, diff_paths
 
     item = _pending_item(vault, env, gov_id, "approved", owner_vault)
     applied_dir = f"{PENDING_DIR}/{APPLIED_DIR}"
     applied_rel = f"{applied_dir}/{item.slug}.md"
+    paths = diff_paths(item.diff)
+    if paths is None:  # read_pending already parsed it; a file changed since then
+        raise ActionRefused("patch does not apply")
+    if not all(_inside(vault, p) for p in paths):
+        raise ActionRefused("path outside the vault")
     # Both folders are run-writable: a planted symlink must not carry the temp diff or the md out of the vault.
     if not (
         _real_dir_inside(vault, CACHE_DIR) and _real_dir_inside(vault, applied_dir) and _inside(vault, applied_rel)
     ):
         raise ActionRefused("path outside the vault")
-    if os.path.lexists(vault / applied_rel):
+    if item.governance and os.path.lexists(vault / applied_rel):
         raise ActionRefused(f"{applied_rel} already exists")
     if not _at_top(vault):
         raise ActionRefused("git-unreadable")
@@ -457,15 +456,15 @@ def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(item.diff)
-        paths = _patched_paths(vault, diff_file)
-        if paths is None:
+        if _git(vault, "apply", "--check", "--whitespace=nowarn", "--", str(diff_file)) is None:
             raise ActionRefused("patch does not apply")
-        if not all(_inside(vault, p) for p in paths):
-            raise ActionRefused("path outside the vault")
         if _git(vault, "apply", "--whitespace=nowarn", "--", str(diff_file)) is None:
             raise ActionRefused("patch does not apply")
     finally:
         diff_file.unlink(missing_ok=True)
+    if not item.governance:
+        (vault / item.path).unlink()
+        return sorted({*paths, item.path})
     (vault / applied_dir).mkdir(parents=True, exist_ok=True)
     os.rename(vault / item.path, vault / applied_rel)
     return sorted({*paths, item.path, applied_rel})

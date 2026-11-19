@@ -38,6 +38,12 @@ def _change(**kw) -> Change:
     return Change(**base)
 
 
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    """The owner store follows HOME in tests (conftest); these tests name it tmp_path/home."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
 @pytest.fixture
 def vault(tmp_path):
     v = tmp_path / "vault"

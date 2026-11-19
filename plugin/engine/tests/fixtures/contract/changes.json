@@ -331,8 +331,8 @@
         "suspect": true,
         "verdict": "hurt",
         "would_have_done": {
-          "one_at_a_time": true,
-          "targeted": true
+          "one_at_a_time": false,
+          "targeted": false
         }
       },
       "ts": "2026-10-27T12:00:00+00:00",
@@ -356,6 +356,8 @@
   "generated_at": "2026-11-16T12:00:00+00:00",
   "needs_ok": [
     {
+      "diff_hash": "6e619f465dd034f6",
+      "governance": true,
       "id": "gov-skip-carried-red",
       "path": "governance-pending/skip-carried-red.md",
       "state": "awaiting-ok",
@@ -364,6 +366,16 @@
         "briefing"
       ],
       "why": "The same red item was carried for six days with no reply."
+    },
+    {
+      "diff_hash": "db9c703984254c16",
+      "governance": false,
+      "id": "gov-tighten-the-wrap",
+      "path": "governance-pending/tighten-the-wrap.md",
+      "state": "approved",
+      "summary": "Keep the dreaming wrap to five lines",
+      "targets": [],
+      "why": "pattern-288"
     }
   ],
   "needs_ok_skipped": 1,

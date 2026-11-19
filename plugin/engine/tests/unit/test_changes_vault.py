@@ -130,3 +130,92 @@ def test_unresolvable_vault_falls_back_to_an_absolute_path(tmp_path, monkeypatch
     monkeypatch.setattr(vault_mod.paths, "resolve_path", boom)
     target = tmp_path / "explicit"
     assert installed_vault({"HOME": str(tmp_path), "SCOUT_DATA_DIR": str(target)}) == target.absolute()
+
+
+# --- a vault worktree stands for the vault (I4) ----------------------------------------------------------------------
+
+
+def test_a_linked_worktree_as_scout_data_dir_is_the_main_vault(tmp_path, home):
+    vault = _repo(tmp_path / "Scout")
+    wt = vault / ".claude" / "worktrees" / "a"
+    _git(vault, "worktree", "add", "-q", "--detach", str(wt))
+    assert installed_vault({"HOME": str(home), "SCOUT_DATA_DIR": str(wt)}) == vault.resolve()
+    assert installed_vault({"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}) == vault.resolve()
+    _pointer(home, str(wt))
+    assert installed_vault({"HOME": str(home)}) == vault.resolve()
+
+
+def test_a_vault_subfolder_of_a_linked_worktree_maps_into_the_main_one(tmp_path, home):
+    repo = _repo(tmp_path / "repo")
+    (repo / "vault").mkdir()
+    (repo / "vault" / "scout-config.yaml").write_text("x: 1\n")
+    _git(repo, "add", "vault")
+    _git(repo, "commit", "-q", "-m", "vault")
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", "-q", "--detach", str(wt))
+    assert installed_vault({"HOME": str(home), "SCOUT_DATA_DIR": str(wt / "vault")}) == (repo / "vault").resolve()
+
+
+@pytest.mark.parametrize("error", [OSError("no git"), subprocess.TimeoutExpired("git", 2)])
+def test_main_worktree_never_raises(tmp_path, monkeypatch, error):
+    vault = _repo(tmp_path / "Scout")
+
+    def boom(*a, **k):
+        raise error
+
+    monkeypatch.setattr(vault_mod.subprocess, "run", boom)
+    assert vault_mod.main_worktree(vault) == vault
+
+
+def test_main_worktree_keeps_odd_git_answers_as_given(tmp_path, monkeypatch):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert vault_mod.main_worktree(plain) == plain  # not a repository
+
+    def answer(stdout: bytes):
+        return lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(vault_mod.subprocess, "run", answer(b"/x\n"))
+    assert vault_mod.main_worktree(plain) == plain  # not two lines
+    monkeypatch.setattr(vault_mod.subprocess, "run", answer(f"{tmp_path}/wt\n{tmp_path}/bare.git\n".encode()))
+    assert vault_mod.main_worktree(plain) == plain  # a bare repository's worktree
+    monkeypatch.setattr(vault_mod.subprocess, "run", answer(f"{tmp_path}/wt\n{tmp_path}/main/.git\n".encode()))
+    assert vault_mod.main_worktree(plain) == plain  # the path isn't inside the reported worktree
+
+
+def test_owner_commands_from_a_vault_worktree_file_under_the_main_vault(tmp_path, monkeypatch):
+    """I4: `undo` run from a vault worktree (its scripts/scoutctl names the worktree in SCOUT_DATA_DIR) finds the
+    change in the main vault's ledger and keys the row to the main vault, where `changes due` reads it."""
+    import json
+    import os
+
+    from typer.testing import CliRunner
+
+    from scout.changes.store import owner_dir, vault_key
+    from scout.cli import app
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    vault = _repo(tmp_path / "Scout")
+    (vault / ".gitignore").write_text(".scout-logs/\n")
+    (vault / "SKILL.md").write_text("v1\n")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-q", "-m", "seed")
+    (vault / "SKILL.md").write_text("v2\n")
+    _git(vault, "commit", "-qam", "dreaming [22:12]: SKILL.md self-edit — x")
+    wt = vault / ".claude" / "worktrees" / "a"
+    _git(vault, "worktree", "add", "-q", "--detach", str(wt))
+    runner = CliRunner()
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
+    assert runner.invoke(app, ["changes", "scan"]).exit_code == 0
+    changes = json.loads(runner.invoke(app, ["changes", "--json"]).stdout)["changes"]
+    cid = next(c["id"] for c in changes if c["author_lane"] == "dreaming")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(wt))
+    assert not (wt / ".scout-logs").exists()
+    r = runner.invoke(app, ["changes", "undo", cid])
+    assert r.exit_code == 0, r.output
+    [row] = [json.loads(x) for x in (owner_dir(os.environ) / "engagement.jsonl").read_text().splitlines()]
+    assert row["vault_key"] == vault_key(vault)
+    due = json.loads(runner.invoke(app, ["changes", "due", "--json"]).stdout)
+    assert [r["id"] for r in due["rollbacks"]] == [cid]

@@ -29,9 +29,31 @@ _SCAN_MARK_SCHEMA = 1
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
+# Where the owner store goes when the account database has no home for this user: a root-owned folder no run can
+# create files in, so writes fail (exit 2) and reads find nothing. Never a path taken from the environment.
+_NO_ACCOUNT_HOME = Path("/var/empty")
+
+
+def _account_home() -> Path:
+    """This user's home from the account database (``pwd``), never ``$HOME``: a run sets its own environment, and an
+    owner store found through ``HOME`` would let it plant the owner's decisions and settings."""
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        return _NO_ACCOUNT_HOME
+    return Path(home) if home else _NO_ACCOUNT_HOME
+
+
 def owner_dir(env: Mapping[str, str]) -> Path:
-    """``~/.local/state/scout/scout-change-ledger-owner/``: owner-sourced engagement rows. A protected engine root."""
-    return Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
+    """``~/.local/state/scout/scout-change-ledger-owner/``: owner-sourced engagement rows. A protected engine root.
+
+    ``~`` is the account's home (:func:`_account_home`) for every read and write; ``env`` is not consulted (no
+    ``HOME``, no ``XDG_*``), so a run can't point the reader at a store it wrote. The parameter stays so callers
+    pass the environment they have."""
+    del env
+    return _account_home() / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
 
 
 def vault_key(vault: Path) -> str:

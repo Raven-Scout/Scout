@@ -551,11 +551,12 @@ def cli_changes_scan(
 def _owner_changes(command: str) -> tuple[Path, Path]:
     """``(vault, installed)`` for an owner-only ``scoutctl changes`` command; exit 2 (nothing written) for anyone else.
 
-    ``vault`` is where git, ``.scout-logs/`` and ``governance-pending/`` live (the CLI's own vault); owner rows and
-    settings are keyed to ``installed``, as ``changes --json`` reads them."""
+    Both are the installed vault (a linked worktree resolves to its main one, scout.changes.vault.main_worktree):
+    git, ``.scout-logs/`` and ``governance-pending/`` are read from the vault the runs use, and owner rows and
+    settings are keyed to it, as ``changes --json`` and ``changes due`` read them. A decision made from a vault
+    worktree is filed where the runs look."""
     import os
 
-    from scout import paths as _paths
     from scout.changes.store import is_owner_caller
     from scout.changes.vault import installed_vault
 
@@ -563,13 +564,12 @@ def _owner_changes(command: str) -> tuple[Path, Path]:
         installed = installed_vault(os.environ)
         if not is_owner_caller(os.environ, installed):
             raise PermissionError("this is the owner's decision; a scheduled run may not make it")
-        vault = _paths.data_dir()
-        if not vault.is_dir():
+        if not installed.is_dir():
             raise ValueError("vault directory missing")
     except (ValueError, PermissionError) as e:
         typer.echo(f"scoutctl changes {command}: {e}", err=True)
         raise typer.Exit(2) from None
-    return vault, installed
+    return installed, installed
 
 
 def _decision_surface(command: str, surface: str) -> str:
@@ -603,42 +603,52 @@ def _record_decision(command: str, kind: str, ref: str, surface: str, installed:
         raise typer.Exit(2) from None
 
 
-def _decide_gov(command: str, verb: str, gov_id: str, surface: str) -> None:
+def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: str | None) -> None:
     import os
 
-    from scout.changes.governance import decision, read_pending
+    from scout.changes.governance import decision, decision_ref, read_pending
     from scout.changes.store import read_signals
 
     surface = _decision_surface(command, surface)
     vault, installed = _owner_changes(command)
-    if gov_id not in {p.id for p in read_pending(vault)[0]}:
+    item = next((p for p in read_pending(vault)[0] if p.id == gov_id), None)
+    if item is None:
         typer.echo(f"scoutctl changes {command}: no pending governance change {gov_id!r}", err=True)
+        raise typer.Exit(2)
+    # The decision is bound to the diff as it is now (its hash), so a diff edited afterwards waits for a new one.
+    if seen_hash is not None and seen_hash != item.hash:
+        typer.echo(f"scoutctl changes {command}: {gov_id} changed since you saw it; review it again", err=True)
         raise typer.Exit(2)
     state = {"approve": "approved", "reject": "rejected"}[verb]
     signals, _ = read_signals(vault, os.environ, owner_vault=installed)
-    if decision(signals, gov_id) == state:
+    if decision(signals, gov_id, item.hash) == state:
         typer.echo(f"already {state}")
         return
     # Not deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
-    _record_decision(command, "approval", f"{verb}:{gov_id}", surface, installed, once=False)
+    _record_decision(command, "approval", decision_ref(verb, gov_id, item.hash), surface, installed, once=False)
+
+
+_DIFF_HASH_HELP = "The diff_hash `changes --json` showed for it; refused if the diff has changed since."
 
 
 @changes_app.command("approve")
 def cli_changes_approve(
     gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
     surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
 ) -> None:
-    """Approve a pending governance change (owner only). The newest decision stands."""
-    _decide_gov("approve", "approve", gov_id, surface)
+    """Approve a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("approve", "approve", gov_id, surface, diff_hash)
 
 
 @changes_app.command("reject")
 def cli_changes_reject(
     gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
     surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
 ) -> None:
-    """Reject a pending governance change (owner only). The newest decision stands."""
-    _decide_gov("reject", "reject", gov_id, surface)
+    """Reject a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("reject", "reject", gov_id, surface, diff_hash)
 
 
 @changes_app.command("undo")
@@ -774,7 +784,6 @@ def cli_changes_due(
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from scout import paths as _paths
     from scout.changes.actions import due, empty_due
     from scout.changes.vault import installed_vault
     from scout.config import resolve_timezone
@@ -784,15 +793,11 @@ def cli_changes_due(
         return
     doc = empty_due()
     try:
-        vault = _paths.data_dir()
+        # The installed vault (a linked worktree resolves to its main one): where the owner's decisions are keyed
+        # and where the runs keep .scout-logs/ and governance-pending/.
+        vault = installed_vault(os.environ)
         if vault.is_dir():
-            doc = due(
-                vault,
-                os.environ,
-                now=_dt.now(UTC),
-                tz=resolve_timezone(vault),
-                owner_vault=installed_vault(os.environ),
-            )
+            doc = due(vault, os.environ, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=vault)
         else:
             typer.echo("scoutctl changes due: vault directory missing", err=True)
     except Exception as e:  # noqa: BLE001 - a run reads this every time; a broken input is nothing to do
@@ -867,14 +872,15 @@ def cli_changes_discard(
 
 @changes_app.command("announced")
 def cli_changes_announced(
-    change_ids: list[str] = typer.Argument(..., help="Change ids (chg-...) the wrap just announced as suspect."),
+    change_ids: list[str] = typer.Argument(..., help="Change ids (chg-...) the wrap just announced."),
+    blocked: bool = typer.Option(False, "--blocked", help="They were reported as blocked undos, not as suspects."),
 ) -> None:
-    """Record that these suspects were announced, so the next run doesn't announce them again."""
+    """Record that these suspects (or, with --blocked, blocked undos) were reported, so no later run repeats them."""
     from scout.changes.actions import mark_announced
 
     vault, _ = _run_vaults("announced")
     try:
-        mark_announced(vault, change_ids)
+        mark_announced(vault, change_ids, blocked=blocked)
     except (ValueError, OSError) as e:
         typer.echo(f"scoutctl changes announced: {e}", err=True)
         raise typer.Exit(2) from None
@@ -941,7 +947,7 @@ def cli_engagement_record(
             raise ValueError(f"vault directory missing: {vault}")
         if not append_signal_once(signal, vault=vault, env=os.environ):
             typer.echo("already recorded")
-    except (ValueError, PermissionError) as e:
+    except (ValueError, PermissionError, OSError) as e:  # OSError: the ledger couldn't be written
         typer.echo(f"scoutctl engagement record: {e}", err=True)
         raise typer.Exit(2) from None
 

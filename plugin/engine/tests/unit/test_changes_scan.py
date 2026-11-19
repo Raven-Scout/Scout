@@ -137,13 +137,23 @@ def test_non_repo_is_no_changes(tmp_path):
 
 
 def test_revert_update_and_summary_cap(repo):
-    commit(repo, "x.md", 'Revert "dreaming [01:00]: bad"')
+    commit(repo, "scripts/x.py", 'Revert "dreaming [01:00]: bad"')
     commit(repo, "y.md", "scout-update: upgrade to v0.19")
     commit(repo, "SKILL.md", "dreaming [03:00]: " + "w" * 300)
     got = {c.kind: c for c in scan(repo, since=None)}
     assert set(got) == {"rollback", "upgrade", "brain-edit"}
     assert got["upgrade"].author_lane == "update"
     assert len(got["brain-edit"].summary) == 120
+
+
+def test_a_git_revert_touching_no_self_change_path_is_not_a_change(repo):
+    """m11: a `Revert` subject alone doesn't make a rollback; it must put back part of a self-change."""
+    commit(repo, "README.md", 'Revert "dreaming [22:12]: SKILL.md self-edit"')
+    commit(repo, "knowledge-base/x.md", 'Revert "dreaming [22:13]: kb note"')
+    assert scan(repo, since=None) == []
+    assert classify([("M", "action-items/a.md")], 'Revert "x"', lambda p: "") is None
+    assert classify([("R100", "knowledge-base/b.md")], 'Revert "x"', lambda p: "") == "rollback"
+    assert classify([("M", "docs/wishlist/w.md")], 'Revert "x"', lambda p: "") == "rollback"
 
 
 def test_revert_touching_brain_file_is_rollback(repo):
@@ -217,10 +227,11 @@ def test_parse_log_skips_blank_short_and_undated_records():
             rec("c" * 40, "2026-11-17T10:00:00Z", "subject", "body", "M\tSKILL.md\n\nR090\told.md\tnew.md\nstray"),
         ]
     )
-    [(sha, ts, subject, body, paths)] = _parse_log(raw)
+    [(sha, ts, subject, body, paths, renames)] = _parse_log(raw)
     assert (sha, subject, body) == ("c" * 40, "subject", "body")
     assert ts.year == 2026
     assert paths == [("M", "SKILL.md"), ("R090", "new.md")]
+    assert renames == [("old.md", "new.md")]
 
 
 # --- the watermark: a plain `changes scan` reads from where the last one stopped (coordinator review item 2) ---

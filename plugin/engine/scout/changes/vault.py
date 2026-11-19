@@ -30,26 +30,64 @@ def _resolved(p: str | Path) -> Path:
         return Path(p).expanduser().absolute()
 
 
+def _git_env() -> dict[str, str]:
+    return {**{k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}, "GIT_OPTIONAL_LOCKS": "0"}
+
+
+def main_worktree(path: Path) -> Path:
+    """``path``, or the same folder in its repository's main worktree when ``path`` is inside a linked worktree.
+
+    A vault's own ``scripts/scoutctl`` names its folder in ``SCOUT_DATA_DIR``, so a command run from a vault
+    worktree would otherwise key the owner's decisions to the worktree and read its (absent, gitignored)
+    ``.scout-logs/``. Never raises: anything git can't answer leaves ``path`` as given."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return path
+    if proc.returncode != 0:
+        return path
+    lines = proc.stdout.decode("utf-8", errors="replace").splitlines()
+    if len(lines) != 2:
+        return path
+    top, common = _resolved(lines[0]), _resolved(lines[1])
+    if common.name != ".git":
+        return path  # a bare repository's worktree: no main working tree to point at
+    main = common.parent
+    if main == top:
+        return path  # the main worktree itself
+    try:
+        rel = _resolved(path).relative_to(top)
+    except ValueError:
+        return path
+    return main / rel
+
+
 def installed_vault(env: Mapping[str, str]) -> Path:
     """The installed vault: ``SCOUT_DATA_DIR``, else the engine pointer's ``vault``, else ``~/Scout``. Not the cwd.
+    A folder in a linked git worktree stands for the same folder in the main worktree (:func:`main_worktree`).
 
     Raises ``ValueError("no home directory")`` when none of those can be found."""
     explicit = env.get("SCOUT_DATA_DIR")
     if explicit:
-        return _resolved(explicit)
+        return main_worktree(_resolved(explicit))
     try:
         home = Path(env.get("HOME") or Path.home())
     except RuntimeError:  # Path.home() when no home directory can be found
         raise ValueError("no home directory") from None
     pointer = read_pointer(home=home)
     if pointer is not None and pointer.vault:
-        return _resolved(pointer.vault)
-    return _resolved(home / paths.DEFAULT_DATA_DIR_NAME)
+        return main_worktree(_resolved(pointer.vault))
+    return main_worktree(_resolved(home / paths.DEFAULT_DATA_DIR_NAME))
 
 
 def _worktrees(root: Path) -> list[Path]:
     """Every working tree of the repository ``root`` is in (main first), or [] when git can't say."""
-    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    env = _git_env()
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), "worktree", "list", "--porcelain", "-z"],

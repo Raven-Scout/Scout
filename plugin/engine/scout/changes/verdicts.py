@@ -27,6 +27,9 @@ TESTED_LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "
 UNTESTED_KINDS = frozenset({"rollback", "upgrade"})
 # The reasons a `targeted` auto-rollback would act on: the change's own target went bad, not the whole window.
 TARGETED_REASONS = frozenset({"recurrence-up", "named-negative"})
+# One-at-a-time waits this long after a rollback in a shared window before it may undo the next suspect (spec §7.5,
+# "wait a week, and re-check"): the rollback's own effect needs time to show.
+ONE_AT_A_TIME_WAIT = timedelta(days=7)
 _MARK_KINDS = frozenset({"recurrence", "owner-away"})
 # Rates are integer counts over whole days; this absorbs float error at an exact threshold (2.0 -> 2.3 is +15 %).
 _EPS = 1e-9
@@ -236,13 +239,21 @@ def evaluate(
             "overlap": sorted(o.id for o in tested if o.id != c.id and abs((local[o.id] - day).days) <= review),
         }
 
+    def rolled_back_lately(cid: str) -> bool:
+        by = out[cid]["rolled_back_by"]
+        rollback = by_id.get(by) if by else None
+        return rollback is not None and now - rollback.ts < ONE_AT_A_TIME_WAIT
+
     for c in tested:
         test = out[c.id]
-        hurt = test["verdict"] == "hurt"
-        # One-at-a-time undoes only the newest suspect in a shared window, waits, and re-checks.
+        # A verdict the owner marked wrong is never acted on, by either mode.
+        hurt = test["verdict"] == "hurt" and not test["marked_wrong"]
+        # One-at-a-time undoes only the newest suspect in a shared window, waits a week after any rollback in that
+        # window, and re-checks.
         newer_suspect = any(out[o]["suspect"] and (by_id[o].ts, o) > (c.ts, c.id) for o in test["overlap"])
+        waiting = any(rolled_back_lately(o) for o in test["overlap"])
         test["would_have_done"] = {
             "targeted": hurt and not TARGETED_REASONS.isdisjoint(test["reasons"]),
-            "one_at_a_time": hurt and not newer_suspect,
+            "one_at_a_time": hurt and not newer_suspect and not waiting,
         }
     return out

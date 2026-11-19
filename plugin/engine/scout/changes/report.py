@@ -13,7 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change, Signal
-from scout.changes.scan import derive
+from scout.changes.scan import derive, name_status, own_paths
 from scout.changes.store import read_changes, read_signals
 
 FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit", "verdict-wrong"})
@@ -46,8 +46,10 @@ def changes_report(
     Each change carries its ``test`` (scout.changes.verdicts), computed now from both engagement stores, the same
     rows ``engagement_report`` reads; days are local dates in ``tz``. ``calibrating`` and ``auto_rollback`` come from
     the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only. ``needs_ok`` lists
-    every readable ``governance-pending/`` file with the owner's decision on it (``awaiting-ok``, ``approved`` or
-    ``rejected``); ``needs_ok_skipped`` counts files that didn't fit.
+    every readable ``governance-pending/`` file with the owner's decision on its current diff (``awaiting-ok``,
+    ``approved`` or ``rejected``), that diff's ``diff_hash`` and whether applying it is a ``governance`` change;
+    ``needs_ok_skipped`` counts files that didn't fit. A rollback row's ``reverts`` is kept only when git shows its
+    commit touched every path undoing the target restores (:func:`_verified_reverts`).
 
     Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
     which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
@@ -71,7 +73,7 @@ def changes_report(
                 skipped += 1
                 continue
             kept[cid] = replace(row, backfilled=c.backfilled)
-        unique = kept
+        unique = _verified_reverts(vault, kept)
     inside = sorted((c for c in unique.values() if since <= c.ts <= now), key=lambda c: c.ts, reverse=True)
     limit = max(1, limit)
     counts = {kind: 0 for kind in sorted(CHANGE_KINDS)}
@@ -92,7 +94,9 @@ def changes_report(
             "why": p.why,
             "targets": list(p.targets),
             "path": p.path,
-            "state": decision(signals, p.id),
+            "state": decision(signals, p.id, p.hash),
+            "diff_hash": p.hash,
+            "governance": p.governance,
         }
         for p in pending
     ]
@@ -110,6 +114,31 @@ def changes_report(
         "needs_ok": needs_ok,
         "needs_ok_skipped": pending_skipped,
     }
+
+
+def _verified_reverts(vault: Path, changes: Mapping[str, Change]) -> dict[str, Change]:
+    """``changes`` with each rollback's ``reverts`` kept only when its commit touched every path undoing the target
+    restores (:func:`scout.changes.scan.own_paths` of the target's commit), both read from git now. A commit that
+    only claims to revert a change (a trailer, a ``Revert`` subject) must not clear the owner's undo request or the
+    suspect flag. A target the ledger doesn't hold is left as written: no verdict depends on it."""
+    touched: dict[str, list[tuple[str, tuple[str, ...]]] | None] = {}
+
+    def entries(sha: str) -> list[tuple[str, tuple[str, ...]]] | None:
+        if sha not in touched:
+            touched[sha] = name_status(vault, sha)
+        return touched[sha]
+
+    out = dict(changes)
+    for cid, c in changes.items():
+        target = changes.get(c.reverts) if c.kind == "rollback" and c.reverts else None
+        if target is None:
+            continue
+        mine, theirs = entries(c.commit), entries(target.commit)
+        needed = own_paths(theirs or [])
+        done = {p for _, sides in mine or [] for p in sides}
+        if not needed or not done.issuperset(needed):
+            out[cid] = replace(c, reverts=None)
+    return out
 
 
 def _sent_dms(signals: Sequence[Signal]) -> list[Signal]:

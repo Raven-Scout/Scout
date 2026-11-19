@@ -89,8 +89,14 @@ def _undo(repo: Path, env: dict[str, str], cid: str, *, ts: datetime | None = No
     append_signal(Signal(ts=ts or NOW, kind="approval", surface="scoutctl", ref=f"undo:{cid}"), vault=repo, env=env)
 
 
-def _decide(repo: Path, env: dict[str, str], verb: str, gov_id: str) -> None:
-    append_signal(Signal(ts=NOW, kind="approval", surface="scoutctl", ref=f"{verb}:{gov_id}"), vault=repo, env=env)
+def _decide(repo: Path, env: dict[str, str], verb: str, gov_id: str, *, digest: str | None = None) -> None:
+    """The owner's decision on the pending file's current diff (or on ``digest``, a diff they saw earlier)."""
+    from scout.changes.governance import read_pending
+
+    if digest is None:
+        digest = next(p.hash for p in read_pending(repo)[0] if p.id == gov_id)
+    ref = f"{verb}:{gov_id}@{digest}"
+    append_signal(Signal(ts=NOW, kind="approval", surface="scoutctl", ref=ref), vault=repo, env=env)
 
 
 def _due(repo: Path, env: dict[str, str]) -> dict:
@@ -139,6 +145,80 @@ def test_owner_undo_is_due_once_then_not_after_the_rollback_commit(repo, env):
     scan(repo, since=None)
     doc = _due(repo, env)
     assert doc["rollbacks"] == [] and doc["blocked"] == []
+
+
+def test_a_commit_that_only_claims_to_revert_keeps_the_undo_and_the_suspect(repo, env):
+    """I1: `Scout-Change-Reverts: X` on a commit that doesn't touch X's own files undoes nothing, so X's undo request
+    stays due and its verdict and suspect flag stand."""
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _hurt(repo, cid, days_ago=20)
+    _undo(repo, env, cid)
+    assert [r["id"] for r in _due(repo, env)["rollbacks"]] == [cid]
+    _commit(repo, f"dreaming [22:30]: tidy\n\nScout-Change-Reverts: {cid}", {"README.md": "r2\n"}, date=NOW)
+    _commit(repo, f'Revert "x"\n\nThis reverts commit {"0" * 40}.', {"README.md": "r3\n"}, date=NOW)
+    scan(repo, since=None)
+    doc = _due(repo, env)
+    assert [r["id"] for r in doc["rollbacks"]] == [cid]
+    assert [s["id"] for s in doc["suspect_unannounced"]] == [cid]
+    from scout.changes.report import changes_report
+
+    rows = changes_report(repo, now=NOW, since=NOW - timedelta(days=60), env=env, tz=TZ)["changes"]
+    forged = next(r for r in rows if r["kind"] == "rollback")
+    assert forged["reverts"] is None
+    assert next(r for r in rows if r["id"] == cid)["test"]["rolled_back_by"] is None
+
+
+def test_a_real_rollback_commit_clears_the_undo(repo, env):
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _undo(repo, env, cid)
+    paths = rollback(repo, env, cid, now=NOW, tz=TZ)
+    _git(repo, "add", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:30]: roll back {cid}\n\nScout-Change-Reverts: {cid}")
+    scan(repo, since=None)
+    assert _due(repo, env)["rollbacks"] == []
+
+
+def _two_hurt_changes(repo: Path) -> tuple[str, str]:
+    """Two run changes four days apart (one shared window), both hurt."""
+    a = _cid(_brain_edit(repo, days_ago=22))
+    b = _cid(
+        _commit(
+            repo, "dreaming [22:12]: DREAMING.md self-edit — b", {"DREAMING.md": "d2\n"}, date=NOW - timedelta(days=18)
+        )
+    )
+    scan(repo, since=None)
+    _hurt(repo, a, days_ago=22)
+    _hurt(repo, b, days_ago=18)
+    return a, b
+
+
+def test_one_at_a_time_waits_a_week_after_a_rollback_in_the_window(repo, env):
+    """I7: after the newest suspect is rolled back, the older one is not undone on the next run, only a week later."""
+    a, b = _two_hurt_changes(repo)
+    write_settings(Settings(auto_rollback="one-at-a-time", calibrated_on=NOW.date()), env)
+    assert [(r["id"], r["reason"]) for r in _due(repo, env)["rollbacks"]] == [(b, "auto-one-at-a-time")]
+    paths = rollback(repo, env, b, now=NOW, tz=TZ)
+    _git(repo, "add", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:30]: roll back {b}\n\nScout-Change-Reverts: {b}", date=NOW)
+    scan(repo, since=None)
+    assert _due(repo, env)["rollbacks"] == []
+    later = NOW + timedelta(days=6, hours=23)
+    assert due(repo, env, now=later, tz=TZ)["rollbacks"] == []
+    after_a_week = NOW + timedelta(days=7, hours=1)
+    assert [(r["id"], r["reason"]) for r in due(repo, env, now=after_a_week, tz=TZ)["rollbacks"]] == [
+        (a, "auto-one-at-a-time")
+    ]
+
+
+def test_auto_modes_skip_a_verdict_the_owner_marked_wrong(repo, env):
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _hurt(repo, cid, days_ago=20)
+    append_signal(Signal(ts=NOW, kind="verdict-wrong", surface="scoutctl", ref=cid), vault=repo, env=env)
+    for mode in ("targeted", "one-at-a-time"):
+        write_settings(Settings(auto_rollback=mode, calibrated_on=NOW.date()), env)
+        assert _due(repo, env)["rollbacks"] == [], mode
+    _undo(repo, env, cid)  # the owner may still undo it by hand
+    assert [r["reason"] for r in _due(repo, env)["rollbacks"]] == ["owner-undo"]
 
 
 def test_auto_modes_need_calibration_to_act(repo, env):
@@ -220,6 +300,81 @@ def test_a_later_edit_blocks_and_nothing_is_written(repo, env):
     assert _tree(repo) == before
 
 
+_LONG = "".join(f"line {i}\n" for i in range(1, 31))
+
+
+def test_a_later_edit_to_other_lines_does_not_block(repo, env):
+    """I5: rollback is hunk-level. A later commit that edits other lines of the same SKILL.md (24 brain commits a
+    month is normal) leaves the undo possible, and the later edit survives it."""
+    _commit(repo, "scout: a longer SKILL.md", {"SKILL.md": _LONG}, date=NOW - timedelta(days=30))
+    cid = _cid(_brain_edit(repo, days_ago=3, content=_LONG.replace("line 3\n", "line 3, tightened\n")))
+    later = _LONG.replace("line 3\n", "line 3, tightened\n").replace("line 28\n", "line 28, by hand\n")
+    _commit(repo, "scout: tweak the end of SKILL.md", {"SKILL.md": later})
+    _undo(repo, env, cid)
+    doc = _due(repo, env)
+    assert [r["id"] for r in doc["rollbacks"]] == [cid] and doc["blocked"] == []
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+    assert (repo / "SKILL.md").read_text() == _LONG.replace("line 28\n", "line 28, by hand\n")
+
+
+def test_a_later_edit_to_the_same_hunk_blocks_and_writes_nothing(repo, env):
+    _commit(repo, "scout: a longer SKILL.md", {"SKILL.md": _LONG}, date=NOW - timedelta(days=30))
+    cid = _cid(_brain_edit(repo, days_ago=3, content=_LONG.replace("line 3\n", "line 3, tightened\n")))
+    _commit(repo, "scout: reword it again", {"SKILL.md": _LONG.replace("line 3\n", "line 3, reworded\n")})
+    _undo(repo, env, cid)
+    assert [b["why_blocked"] for b in _due(repo, env)["blocked"]] == ["edited-since"]
+    before = _tree(repo)
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since" and _tree(repo) == before
+
+
+def test_rollback_restores_only_the_changes_own_paths(repo, env):
+    """I5: the session log, audit row and action items the same commit wrote are not part of the change."""
+    sha = _commit(
+        repo,
+        "dreaming [22:12]: SKILL.md self-edit — with its bookkeeping",
+        {
+            "SKILL.md": "skill v2\n",
+            "knowledge-base/scout-mistake-audit.md": "pattern 12 fixed\n",
+            "action-items/action-items-2026-11-19.md": "- item\n",
+            "knowledge-base/session-log/2026-11.md": "dreaming ran\n",
+        },
+    )
+    scan(repo, since=None)
+    cid = _cid(sha)
+    _commit(repo, "dreaming [23:00]: session log", {"knowledge-base/session-log/2026-11.md": "dreaming ran twice\n"})
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+    assert (repo / "SKILL.md").read_text() == "skill v1\n"
+    assert (repo / "knowledge-base/scout-mistake-audit.md").read_text() == "pattern 12 fixed\n"
+    assert (repo / "action-items/action-items-2026-11-19.md").exists()
+    assert (repo / "knowledge-base/session-log/2026-11.md").read_text() == "dreaming ran twice\n"
+
+
+def test_a_blocked_undo_is_listed_until_announced(repo, env):
+    """I5: a blocked owner undo is reported once; `changes announced --blocked` stops the wrap repeating it. The
+    suspect list is separate, so an announced suspect whose undo is then blocked is still reported."""
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _hurt(repo, cid, days_ago=20)
+    mark_announced(repo, [cid])  # announced as a suspect
+    _commit(repo, "scout: rewrite SKILL.md", {"SKILL.md": "skill v3\n"})
+    _undo(repo, env, cid)
+    assert [(b["id"], b["why_blocked"]) for b in _due(repo, env)["blocked"]] == [(cid, "edited-since")]
+    mark_announced(repo, [cid], blocked=True)
+    doc = _due(repo, env)
+    assert doc["blocked"] == [] and doc["rollbacks"] == [] and doc["suspect_unannounced"] == []
+
+
+def test_a_suspect_says_why_undo_would_not_help(repo, env):
+    """m2: the wrap words a suspect that `undo` would refuse (here: later edits overlap it) instead of offering it."""
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _hurt(repo, cid, days_ago=20)
+    _commit(repo, "scout: rewrite SKILL.md", {"SKILL.md": "skill v3\n"})
+    [suspect] = _due(repo, env)["suspect_unannounced"]
+    assert (suspect["id"], suspect["undo_blocked"]) == (cid, "edited-since")
+
+
 def test_an_uncommitted_edit_blocks_too(repo, env):
     cid = _cid(_brain_edit(repo))
     (repo / "SKILL.md").write_text("work in progress\n")
@@ -230,14 +385,51 @@ def test_an_uncommitted_edit_blocks_too(repo, env):
     assert (repo / "SKILL.md").read_text() == "work in progress\n"
 
 
-def test_governance_change_is_blocked(repo, env):
+def test_a_governance_trailer_alone_does_not_make_a_change_immune(repo, env):
+    """I2: an ordinary SKILL.md edit that claims `Scout-Change-Governance: yes` is still undoable."""
     cid = _cid(_brain_edit(repo, trailers="Scout-Change-Governance: yes"))
+    _undo(repo, env, cid)
+    doc = _due(repo, env)
+    assert [(r["id"], r["reason"]) for r in doc["rollbacks"]] == [(cid, "owner-undo")] and doc["blocked"] == []
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+
+
+def _apply_and_commit(repo: Path, env: dict[str, str], gov: str) -> str:
+    """What Step 1e does: apply the approved item and commit exactly the printed paths. Returns the change id."""
+    paths = apply_governance(repo, env, gov)
+    _git(repo, "add", "-A", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:40]: apply {gov}", date=NOW - timedelta(days=1))
+    scan(repo, since=None)
+    return _cid(_git(repo, "rev-parse", "HEAD"))
+
+
+def test_the_commit_that_moves_an_approved_item_to_applied_is_governance(repo, env):
+    gov = _pending(repo)
+    _commit(repo, "dreaming [22:00]: governance-pending — skip red", {}, date=NOW - timedelta(days=2))
+    _decide(repo, env, "approve", gov)
+    cid = _apply_and_commit(repo, env, gov)
     _undo(repo, env, cid)
     doc = _due(repo, env)
     assert doc["rollbacks"] == [] and [(b["id"], b["why_blocked"]) for b in doc["blocked"]] == [(cid, "governance")]
     with pytest.raises(ActionRefused) as exc:
         rollback(repo, env, cid, now=NOW, tz=TZ)
     assert exc.value.reason == "governance"
+
+
+def test_a_harness_fallback_item_is_deleted_on_apply_and_stays_undoable(repo, env):
+    folder = repo / "governance-pending"
+    folder.mkdir()
+    (folder / "plain.md").write_text(_PENDING.replace("---\n\n```diff", "governance: false\n---\n\n```diff"))
+    _commit(repo, "dreaming [22:00]: governance-pending — plain", {}, date=NOW - timedelta(days=2))
+    _decide(repo, env, "approve", "gov-plain")
+    assert apply_governance(repo, env, "gov-plain") == ["SKILL.md", "governance-pending/plain.md"]
+    assert not (folder / "plain.md").exists() and not (folder / "applied").exists()
+    _git(repo, "add", "-A", "--", "SKILL.md", "governance-pending/plain.md")
+    _git(repo, "commit", "-q", "-m", "dreaming [22:40]: apply gov-plain", date=NOW - timedelta(days=1))
+    scan(repo, since=None)
+    cid = _cid(_git(repo, "rev-parse", "HEAD"))
+    _undo(repo, env, cid)
+    assert [r["id"] for r in _due(repo, env)["rollbacks"]] == [cid]
 
 
 def test_an_interactive_change_is_not_a_run_change(repo, env):
@@ -283,6 +475,74 @@ def test_unverified_rows_list_no_rollback_but_governance_still_counts(tmp_path, 
     assert doc["verified"] is False
     assert doc["rollbacks"] == [] and doc["blocked"] == [] and doc["suspect_unannounced"] == []
     assert doc["apply"] == [gov]
+
+
+def test_a_run_set_home_cannot_plant_owner_decisions_or_settings(
+    repo, tmp_path, monkeypatch, _owner_store_follows_home
+):
+    """C1: the owner store comes from the account database. A run that sets HOME to a folder it wrote (owner rows,
+    settings) is read as nothing; the genuine store under the account's home still counts."""
+    import json
+    import pwd
+    import types
+
+    from scout.changes import store
+    from scout.changes.governance import decision, diff_hash, read_pending
+    from scout.changes.settings import read_settings
+    from scout.kb import hook_paths
+
+    account = tmp_path / "account"
+    account.mkdir()
+    monkeypatch.setattr(store, "_account_home", _owner_store_follows_home)  # the real lookup, not the test patch
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_dir=str(account)))
+
+    cid = _cid(_brain_edit(repo, days_ago=20))
+    _hurt(repo, cid, days_ago=20)
+    gov = _pending(repo)
+    digest = diff_hash(read_pending(repo)[0][0].diff)
+    fake = repo / ".scout-cache" / "fakehome"
+    planted = fake / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
+    planted.mkdir(parents=True)
+    key = store.vault_key(repo)
+    rows = [
+        {"ts": NOW.isoformat(), "kind": "approval", "surface": "scoutctl", "ref": ref, "vault_key": key}
+        for ref in (f"undo:{cid}", f"approve:{gov}@{digest}")
+    ]
+    (planted / "engagement.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (planted / "settings.json").write_text(
+        json.dumps({"schema": 1, "auto_rollback": "targeted", "review_days": 14, "calibrated_on": "2026-01-01"})
+    )
+    run_env = {"HOME": str(fake), "SCOUT_MODE": "dreaming"}
+    assert store.owner_dir(run_env) == account / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
+    doc = due(repo, run_env, now=NOW, tz=TZ)
+    assert doc["rollbacks"] == [] and doc["blocked"] == [] and doc["apply"] == []
+    assert read_settings(run_env) == Settings()
+    signals, _ = store.read_signals(repo, run_env)
+    assert decision(signals, gov, digest) == "awaiting-ok"
+    with pytest.raises(ActionRefused):
+        rollback(repo, run_env, cid, now=NOW, tz=TZ)
+    with pytest.raises(ActionRefused):
+        apply_governance(repo, run_env, gov)
+    # The genuine owner store (the account's) still counts, whatever HOME says.
+    _undo(repo, {"HOME": str(fake)}, cid)
+    assert (account / ".local/state/scout" / hook_paths.CHANGES_OWNER_NAME / "engagement.jsonl").exists()
+    assert [r["id"] for r in due(repo, run_env, now=NOW, tz=TZ)["rollbacks"]] == [cid]
+
+
+def test_the_account_home_lookup_never_falls_back_to_home(monkeypatch, _owner_store_follows_home):
+    import pwd
+
+    from scout.changes import store
+
+    monkeypatch.setattr(store, "_account_home", _owner_store_follows_home)
+
+    def missing(_uid):
+        raise KeyError("no such user")
+
+    monkeypatch.setattr(pwd, "getpwuid", missing)
+    assert store._account_home() == store._NO_ACCOUNT_HOME
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: type("P", (), {"pw_dir": ""})())
+    assert store._account_home() == store._NO_ACCOUNT_HOME
 
 
 def test_due_never_raises(tmp_path, env, monkeypatch):
@@ -412,7 +672,7 @@ def test_discard_refuses_a_symlinked_md(repo, env, tmp_path):
     folder = repo / "governance-pending"
     folder.mkdir()
     (folder / "skip-red.md").symlink_to(outside)
-    _decide(repo, env, "reject", "gov-skip-red")
+    _decide(repo, env, "reject", "gov-skip-red", digest="0" * 16)  # the link isn't read, so it has no hash
     with pytest.raises(ActionRefused):
         discard_governance(repo, env, "gov-skip-red")
     assert (folder / "skip-red.md").is_symlink() and outside.read_text() == _PENDING
@@ -449,7 +709,12 @@ def test_suspects_are_announced_once(repo, env):
     _hurt(repo, cid, days_ago=20)
     doc = _due(repo, env)
     assert doc["suspect_unannounced"] == [
-        {"id": cid, "summary": "SKILL.md self-edit — tighten the wrap", "reasons": ["named-negative"]}
+        {
+            "id": cid,
+            "summary": "SKILL.md self-edit — tighten the wrap",
+            "reasons": ["named-negative"],
+            "undo_blocked": None,
+        }
     ]
     mark_announced(repo, [cid])
     assert (repo / ".scout-logs" / ANNOUNCED_NAME).exists()

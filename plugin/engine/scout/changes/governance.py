@@ -1,12 +1,16 @@
 """Pending governance changes and the owner's decisions about them.
 
 A governance change (one that edits what Scout is allowed to do) waits for the owner's OK as one
-``governance-pending/<slug>.md`` file: YAML frontmatter (``summary``, ``why``, optional ``targets``) and exactly one
+``governance-pending/<slug>.md`` file: YAML frontmatter (``summary``, ``why``, optional ``targets``, optional
+``governance: false`` for an ordinary improvement a run's harness wouldn't let it commit directly) and exactly one
 fenced ``diff`` block. The folder is the source of truth. A decision is an owner-store ``approval`` row whose ref is
-``approve:<id>`` or ``reject:<id>``; the newest one wins. Readers never raise: a file that doesn't fit is counted."""
+``approve:<id>@<hash>`` or ``reject:<id>@<hash>``, ``<hash>`` being :func:`diff_hash` of the diff the owner saw; the
+newest one for the file's current diff wins, so a diff edited after the decision is waiting again. Readers never
+raise: a file that doesn't fit is counted."""
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -35,6 +39,18 @@ class Pending:
     targets: tuple[str, ...]
     path: str  # vault-relative
     diff: str
+    # False for a harness-fallback item: applying it deletes the file instead of moving it to applied/, so the
+    # commit is an ordinary, testable change rather than a governance one.
+    governance: bool = True
+
+    @property
+    def hash(self) -> str:
+        return diff_hash(self.diff)
+
+
+def diff_hash(diff: str) -> str:
+    """The first 16 hex digits of the SHA-256 of a pending file's diff block: what an owner decision is bound to."""
+    return hashlib.sha256(diff.encode("utf-8")).hexdigest()[:16]
 
 
 def _safe_path(raw: str) -> bool:
@@ -52,12 +68,14 @@ def _header_path_ok(raw: str, *, timestamped: bool) -> bool:
     return raw == "/dev/null" or _safe_path(raw)
 
 
-def _diff_paths_ok(diff: str) -> bool:
-    """Every file header in the diff names a path inside the vault, and there is at least one.
+def diff_paths(diff: str) -> list[str] | None:
+    """The vault-relative paths the diff patches, sorted, once each (both sides of a rename, never ``/dev/null``),
+    or None when a header names a path outside the vault, there is no header, or the diff doesn't parse.
 
     Only lines outside hunks are headers; a hunk's lines are counted off its ``@@`` line, so a removed line such as
-    ``-- foo`` (which reads ``--- foo``) is content. Anything that doesn't parse is unreadable."""
+    ``-- foo`` (which reads ``--- foo``) is content."""
     headers = 0
+    found: set[str] = set()
     old_left = new_left = 0
     for line in diff.split("\n"):
         if old_left or new_left:
@@ -72,29 +90,46 @@ def _diff_paths_ok(diff: str) -> bool:
                 old_left -= 1
                 new_left -= 1
             else:
-                return False
+                return None
             if old_left < 0 or new_left < 0:
-                return False
+                return None
             continue
         hunk = _HUNK_RE.match(line)
         if hunk:
             old_left, new_left = (int(g) if g is not None else 1 for g in hunk.groups())
             continue
         if line.startswith("@@"):
-            return False
+            return None
         if line.startswith("diff --git "):
             m = _GIT_HEADER_RE.match(line)
             if not (m and _safe_path(m.group(1)) and _safe_path(m.group(2))):
-                return False
+                return None
+            found.update(m.groups())
             headers += 1
             continue
         for prefix in _PATH_PREFIXES:
             if line.startswith(prefix):
-                if not _header_path_ok(line[len(prefix) :], timestamped=prefix in ("--- ", "+++ ")):
-                    return False
-                headers += prefix in ("--- ", "+++ ")
+                timestamped = prefix in ("--- ", "+++ ")
+                raw = line[len(prefix) :]
+                if not _header_path_ok(raw, timestamped=timestamped):
+                    return None
+                side = raw.split("\t", 1)[0] if timestamped else raw
+                if timestamped and side != "/dev/null":
+                    if not side.startswith(("a/", "b/")):
+                        return None  # git apply strips one leading folder (-p1): unprefixed, it patches another path
+                    side = side[2:]
+                if side != "/dev/null":
+                    found.add(side)
+                headers += timestamped
                 break
-    return headers > 0 and not (old_left or new_left)
+    if headers == 0 or old_left or new_left:
+        return None
+    return sorted(found)
+
+
+def _diff_paths_ok(diff: str) -> bool:
+    """Every file header in the diff names a path inside the vault, and there is at least one."""
+    return diff_paths(diff) is not None
 
 
 def _parse(path: Path, slug: str) -> Pending | None:
@@ -107,6 +142,9 @@ def _parse(path: Path, slug: str) -> Pending | None:
     if not isinstance(meta, dict):
         return None
     summary, why, targets = meta.get("summary"), meta.get("why"), meta.get("targets", [])
+    governance = meta.get("governance", True)
+    if not isinstance(governance, bool):
+        return None
     if not isinstance(summary, str) or not summary.strip() or len(summary) > SUMMARY_MAX:
         return None
     if not isinstance(why, str) or not why.strip():
@@ -126,6 +164,7 @@ def _parse(path: Path, slug: str) -> Pending | None:
         targets=tuple(targets),
         path=f"{PENDING_DIR}/{slug}.md",
         diff=blocks[0],
+        governance=governance,
     )
 
 
@@ -158,9 +197,18 @@ def read_pending(vault: Path) -> tuple[list[Pending], int]:
     return out, bad
 
 
-def decision(signals: Sequence[Signal], target_id: str) -> str:
-    """``approved``, ``rejected`` or ``awaiting-ok``: the newest ``approve:<id>`` / ``reject:<id>`` row wins."""
-    wanted = {f"approve:{target_id}": "approved", f"reject:{target_id}": "rejected"}
+def decision_ref(verb: str, target_id: str, digest: str) -> str:
+    """The ref an owner decision is recorded under: ``<verb>:<id>@<hash of the diff the owner saw>``."""
+    return f"{verb}:{target_id}@{digest}"
+
+
+def decision(signals: Sequence[Signal], target_id: str, digest: str) -> str:
+    """``approved``, ``rejected`` or ``awaiting-ok``: the newest ``approve:<id>@<digest>`` / ``reject:<id>@<digest>``
+    row wins. A row for another digest (the diff was changed after the decision) or with none counts for nothing."""
+    wanted = {
+        decision_ref("approve", target_id, digest): "approved",
+        decision_ref("reject", target_id, digest): "rejected",
+    }
     state, newest = "awaiting-ok", None
     for s in signals:
         if s.kind == "approval" and s.ref in wanted and (newest is None or s.ts >= newest):

@@ -371,6 +371,12 @@ def _owner_rows(home: Path) -> list[dict]:
     return [json.loads(x) for p in home.rglob("engagement.jsonl") for x in p.read_text().splitlines()]
 
 
+def _hash(vault: Path, gov: str) -> str:
+    from scout.changes.governance import read_pending
+
+    return next(p.hash for p in read_pending(vault)[0] if p.id == gov)
+
+
 def _needs_ok(cli) -> dict[str, str]:
     r = cli(["changes", "--json", "--since", "1d"])
     assert r.exit_code == 0, r.output
@@ -418,8 +424,27 @@ def test_approve_then_changes_json_shows_the_state(cli, vault, home):
     assert cli(["changes", "approve", gov]).exit_code == 0
     assert _needs_ok(cli) == {gov: "approved"}
     [row] = _owner_rows(home)
-    assert (row["kind"], row["ref"], row["surface"]) == ("approval", f"approve:{gov}", "scoutctl")
+    digest = _hash(vault, gov)
+    assert (row["kind"], row["ref"], row["surface"]) == ("approval", f"approve:{gov}@{digest}", "scoutctl")
     assert cli(["changes", "reject", gov, "--surface", "app"]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "rejected"}
+
+
+def test_a_decision_is_bound_to_the_diff_the_owner_saw(cli, vault, home):
+    """I3: approving binds the diff's hash; a diff edited afterwards is waiting again, and `--diff-hash` refuses a
+    diff that changed since the owner looked."""
+    gov = _pending(vault)
+    seen = json.loads(cli(["changes", "--json", "--since", "1d"]).stdout)["needs_ok"][0]
+    assert seen["diff_hash"] == _hash(vault, gov) and seen["governance"] is True
+    assert cli(["changes", "approve", gov, "--diff-hash", seen["diff_hash"]]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    path = vault / "governance-pending/skip-red.md"
+    path.write_text(path.read_text().replace("+new", "+something the owner never saw"))
+    assert _needs_ok(cli) == {gov: "awaiting-ok"}
+    r = cli(["changes", "approve", gov, "--diff-hash", seen["diff_hash"]])
+    assert r.exit_code == 2 and "changed since you saw it" in r.output
+    assert len(_owner_rows(home)) == 1
+    assert cli(["changes", "reject", gov]).exit_code == 0
     assert _needs_ok(cli) == {gov: "rejected"}
 
 
@@ -428,7 +453,8 @@ def test_approve_reject_approve_ends_approved(cli, vault, home):
     for verb in ("approve", "reject", "approve"):
         assert cli(["changes", verb, gov]).exit_code == 0
     assert _needs_ok(cli) == {gov: "approved"}
-    assert [r["ref"] for r in _owner_rows(home)] == [f"approve:{gov}", f"reject:{gov}", f"approve:{gov}"]
+    digest = _hash(vault, gov)
+    assert [r["ref"] for r in _owner_rows(home)] == [f"{v}:{gov}@{digest}" for v in ("approve", "reject", "approve")]
 
 
 def test_repeating_the_standing_decision_is_a_no_op(cli, vault, home):
@@ -466,11 +492,15 @@ def test_undo_records_once_for_a_tested_change(cli, git_vault, home):
 
 def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
     _commit_file(git_vault, "DREAMING.md", "interactive: tweak DREAMING.md")
-    _commit_file(
-        git_vault,
-        "RESEARCH.md",
-        "dreaming [22:12]: RESEARCH.md self-edit — y\n\nScout-Change-Governance: yes",
-    )
+    # A governance change: the commit moves an approved pending file to applied/ (a trailer alone isn't one).
+    (git_vault / "SKILL.md").write_text("old\n")
+    gov = _pending(git_vault)
+    _git(git_vault, "add", "-A")
+    _git(git_vault, "commit", "-q", "-m", "dreaming [22:00]: governance-pending — skip red")
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    printed = cli(["changes", "apply", gov]).stdout.splitlines()
+    _git(git_vault, "add", "-A", "--", *printed)
+    _git(git_vault, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}\n\nScout-Change-Governance: yes")
     assert cli(["changes", "scan", "--since", "2d"]).exit_code == 0
     changes = json.loads(cli(["changes", "--json"]).stdout)["changes"]
     governance = next(c for c in changes if c["governance"])
@@ -482,7 +512,7 @@ def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
     assert r.exit_code == 2 and "isn't under test" in r.output
     assert cli(["changes", "undo", "chg-ffffffffffff"]).exit_code == 2
     assert cli(["changes", "undo", "nonsense"]).exit_code == 2
-    assert not any(home.rglob("engagement.jsonl"))
+    assert [r["ref"].split(":")[0] for r in _owner_rows(home)] == ["approve"]  # no undo row was written
 
 
 def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault, home):
@@ -606,7 +636,10 @@ def test_apply_and_discard_print_paths(cli, git_vault, home):
 def test_announced_records_ids_and_refuses_junk(cli, vault):
     assert cli(["changes", "announced", "chg-0123456789ab", "chg-0123456789ac"]).exit_code == 0
     data = json.loads((vault / ".scout-logs/changes-announced.json").read_text())
-    assert data == {"schema": 1, "ids": ["chg-0123456789ab", "chg-0123456789ac"]}
+    assert data == {"schema": 1, "ids": ["chg-0123456789ab", "chg-0123456789ac"], "blocked": []}
+    assert cli(["changes", "announced", "--blocked", "chg-0123456789ad"]).exit_code == 0
+    data = json.loads((vault / ".scout-logs/changes-announced.json").read_text())
+    assert data["ids"] == ["chg-0123456789ab", "chg-0123456789ac"] and data["blocked"] == ["chg-0123456789ad"]
     assert cli(["changes", "announced", "../etc"]).exit_code == 2
 
 
