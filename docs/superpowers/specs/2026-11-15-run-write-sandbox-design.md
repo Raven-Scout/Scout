@@ -480,6 +480,20 @@ All of Q1–Q8 were answered with the recommendation.
   - A commit the session pushes reaches the remote before the check restores it. The
     restoring commit sits on top of the local branch, so the remote holds the change until
     the branch is pushed again, and a clone or pull elsewhere in between gets it.
+  - Linked worktrees share the vault's branches, so a branch an interactive session in a
+    vault worktree commits to during the run moves too (found 2026-11-19: a session's commit
+    of `.claude/settings.local.json` on its own branch was "restored" onto that live branch).
+    Jordan chose (2026-11-19) to attribute by evidence a run can't forge: a moved branch is
+    left alone, with a log line and no finding, when a linked worktree that existed at the
+    snapshot (`<common>/worktrees/*/HEAD`, read outside the sandbox) still has it checked
+    out and that worktree's own index holds exactly the tip's entry for every changed
+    protected path. The profile carves out only the vault's own git dirs, so a run can move
+    any branch (`commit-tree` + `update-ref`) but can't write another worktree's HEAD or
+    index, or create a worktree; a planted change on a session's branch fails the index test
+    and is restored. The worktree is read through its admin dir, never its folder's `.git`
+    file. Not trusted, so still restored: a worktree made after the snapshot (with the
+    sandbox off a run could make one, and `verify` can't tell), a worktree now on another
+    branch, and a session whose index no longer matches its tip for a changed path.
   - Tests: `tests/unit/test_run_integrity.py` (a committed, staged, new-branch, detached,
     mid-merge and tag case on real git; an ordinary run adds no commit) and the runner
     wiring in `tests/integration/test_runner_skip_outcomes.py`.

@@ -216,6 +216,144 @@ def test_a_tag_holding_a_change_is_reported_and_left_alone(vault: Vault) -> None
     assert any("refs/tags/t1 still holds the change" in line for line in result.lines())
 
 
+AGENT_SETTINGS = ".claude/settings.local.json"
+SESSION_BRANCH = "claude/session-a"
+
+
+def _session_worktree(vault: Vault) -> Path:
+    """An interactive session's linked worktree under the vault's ``.claude/worktrees/``, on its own branch."""
+    wt = vault.path / ".claude" / "worktrees" / "session-a"
+    vault.git("worktree", "add", "-q", "-b", SESSION_BRANCH, str(wt))
+    return wt
+
+
+def _wt_git(vault: Vault, wt: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(wt), *args], env=vault.env, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_a_worktree_sessions_own_commit_during_the_run_is_left_alone(vault: Vault) -> None:
+    wt = _session_worktree(vault)
+    snap = vault.snapshot()
+    # While the run goes, the session commits a protected file on its own branch, from its own work tree.
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / AGENT_SETTINGS).write_text('{"permissions": {}}\n', encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+    _wt_git(vault, wt, "commit", "-qm", "session: settings")
+    session_tip = _wt_git(vault, wt, "rev-parse", "HEAD").strip()
+
+    result = vault.verify(snap)
+
+    assert (result.status, result.exit_code) == ("clean", 0)
+    assert vault.git("rev-parse", f"refs/heads/{SESSION_BRANCH}").strip() == session_tip  # not rewritten
+    assert _wt_git(vault, wt, "status", "--porcelain") == ""
+    assert result.left_alone == {f"refs/heads/{SESSION_BRANCH}": [AGENT_SETTINGS]}
+    assert any(
+        f"refs/heads/{SESSION_BRANCH} changed" in line and "worktree" in line and AGENT_SETTINGS in line
+        for line in result.lines()
+    )
+
+
+def _plant_on_branch(vault: Vault, branch: str, rel: str, text: str) -> str:
+    """What a sandboxed run can do to any branch: write objects and move the ref, touching no worktree's index."""
+    blob = vault.git("hash-object", "-w", "--stdin", input_text=text).strip()
+    tip = vault.git("rev-parse", f"refs/heads/{branch}").strip()
+    env = {**vault.env, "GIT_INDEX_FILE": str(vault.path.parent / "planted-index")}
+    for args in (["read-tree", tip], ["update-index", "--add", "--cacheinfo", f"100644,{blob},{rel}"]):
+        subprocess.run(["git", "-C", str(vault.path), *args], env=env, check=True, capture_output=True)
+    tree = subprocess.run(
+        ["git", "-C", str(vault.path), "write-tree"], env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    planted = vault.git("commit-tree", tree, "-p", tip, "-m", "planted").strip()
+    vault.git("update-ref", f"refs/heads/{branch}", planted, tip)
+    return planted
+
+
+def test_a_run_moving_a_worktree_sessions_branch_is_still_put_back(vault: Vault) -> None:
+    wt = _session_worktree(vault)
+    start_blob = vault.blob(SESSION_BRANCH, RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    planted = _plant_on_branch(vault, SESSION_BRANCH, RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+    assert result.left_alone == {}
+    assert vault.git("rev-parse", f"{SESSION_BRANCH}^").strip() == planted
+    assert vault.blob(SESSION_BRANCH, RUNNER_SCRIPT) == start_blob
+    assert wt.is_dir()
+
+
+def test_a_worktree_session_doesnt_cover_the_runs_change_on_main(vault: Vault) -> None:
+    wt = _session_worktree(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+    _wt_git(vault, wt, "commit", "-qm", "session: settings")
+    vault.write(RUNNER_SCRIPT, "#!/bin/sh\necho changed\n")
+    vault.git("commit", "-qam", "run commit")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {"refs/heads/main"}
+    assert set(result.left_alone) == {f"refs/heads/{SESSION_BRANCH}"}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob
+
+
+def test_a_session_whose_index_differs_from_its_branch_tip_isnt_trusted(vault: Vault) -> None:
+    # The session committed the file, then staged another version of it before the run ended: the index no
+    # longer vouches for the tip, so the branch is held to its start content like any other.
+    wt = _session_worktree(vault)
+    snap = vault.snapshot()
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+    _wt_git(vault, wt, "commit", "-qm", "session: settings")
+    (wt / AGENT_SETTINGS).write_text('{"x": 1}\n', encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+
+
+def test_a_worktree_made_after_the_snapshot_isnt_trusted(vault: Vault) -> None:
+    # Jordan, 2026-11-19: only worktrees that existed when the run started vouch for a branch. With the
+    # sandbox off a run could create one, and verify can't tell whether the sandbox was on.
+    snap = vault.snapshot()
+    wt = _session_worktree(vault)
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
+    _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
+    _wt_git(vault, wt, "commit", "-qm", "session: settings")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+
+
+def test_a_worktree_that_moved_to_another_branch_doesnt_vouch_for_the_old_one(vault: Vault) -> None:
+    wt = _session_worktree(vault)
+    vault.git("branch", "-q", "other")
+    snap = vault.snapshot()
+    planted = _plant_on_branch(vault, "other", AGENT_SETTINGS, "{}\n")
+    # The worktree now has `other` checked out, its index and HEAD from the session, not from the planting.
+    _wt_git(vault, wt, "checkout", "-q", "other")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {"refs/heads/other"}
+    assert vault.git("rev-parse", "other^").strip() == planted
+
+
 def test_an_index_left_mid_merge_is_put_back(vault: Vault) -> None:
     vault.git("checkout", "-q", "-b", "other")
     vault.write(RUNNER_SCRIPT, "#!/bin/sh\necho other\n")

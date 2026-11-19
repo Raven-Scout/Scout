@@ -12,6 +12,13 @@ against that start state. A branch (or a detached HEAD) that changed gets one ne
 back the way it was at the start, and the index entries go back too. A tag or the stash that changed is reported,
 not rewritten. The runner records the result in the run-outcome row (``integrity``) and run health turns red.
 
+Linked worktrees share the vault's branches, so an interactive session in a vault worktree that commits on its own
+branch during a run moves a ref too. Such a branch is left alone (a log line, no finding) only on evidence a run
+can't forge: a linked worktree that existed at the snapshot still has it checked out, and that worktree's own index
+holds exactly the tip's entry for every changed path. A sandboxed run can move any ref, but can't write another
+worktree's HEAD or index (the profile carves out only the vault's own git dirs), so a change it plants on a
+session's branch is still put back.
+
 The protected tracked paths are ``hook_paths.protected_specs()`` entries inside the vault's work tree, outside its
 git dir: the runner scripts, ``.gitattributes``, ``.gitmodules``, ``.mcp.json``, ``.claude/``, the other agent dirs,
 the delegate state and ``.scout-state/schedule.yaml`` / ``triggers.yaml``. Paths compare NFC-normalised and
@@ -60,6 +67,8 @@ class Result:
     changed: dict[str, list[str]] = field(default_factory=dict)  # where ("HEAD", "index", a ref) -> paths
     restored: dict[str, str] = field(default_factory=dict)  # ref -> the restoring commit
     unrestored: list[str] = field(default_factory=list)  # refs reported but not rewritten
+    left_alone: dict[str, list[str]] = field(default_factory=dict)  # a worktree session's own branch -> its paths
+    left_alone_by: dict[str, str] = field(default_factory=dict)  # that branch -> the worktree's name
     reason: str = ""
 
     @property
@@ -68,11 +77,15 @@ class Result:
 
     def lines(self) -> list[str]:
         """What the runner's log gets: one line per finding, paths but never file content."""
-        if self.status == "clean":
-            return ["integrity check: protected tracked files unchanged"]
         if self.status == "error":
             return [f"integrity check: couldn't run: {self.reason}"]
-        out = []
+        out = [
+            f"integrity check: {ref} changed protected file(s): {', '.join(sorted(paths))}; committed in linked "
+            f"worktree {self.left_alone_by.get(ref, '?')!r}, which has it checked out, so left alone"
+            for ref, paths in sorted(self.left_alone.items())
+        ]
+        if self.status == "clean":
+            return [*out, "integrity check: protected tracked files unchanged"]
         for where, paths in sorted(self.changed.items()):
             out.append(f"integrity check: {where} changed protected file(s): {', '.join(sorted(paths))}")
         for ref, commit in sorted(self.restored.items()):
@@ -80,6 +93,67 @@ class Result:
         for ref in self.unrestored:
             out.append(f"integrity check: {ref} still holds the change (not rewritten; review it by hand)")
         return out
+
+
+def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
+    """``[admin dir, branch]`` for each other linked worktree with a branch checked out.
+
+    Read from ``<common dir>/worktrees/*/HEAD``, which a sandboxed run can't write (the profile carves out only the
+    vault's own git dirs). The vault's own admin dir, when the vault is itself a linked worktree, is left out.
+    """
+    common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
+    common = common if common.is_absolute() else vault / common
+    own = os.path.realpath(_git(vault, ["rev-parse", "--absolute-git-dir"], env).strip())
+    try:
+        admins = sorted(p for p in (common / "worktrees").iterdir() if p.is_dir())
+    except OSError:
+        return []
+    out = []
+    for admin in admins:
+        real = os.path.realpath(admin)
+        if real == own:
+            continue
+        branch = _symbolic_head(vault, env, git_dir=real)
+        if branch:
+            out.append([real, branch])
+    return out
+
+
+def _symbolic_head(vault: Path, env: Mapping[str, str], *, git_dir: str | None = None) -> str | None:
+    pre = [f"--git-dir={git_dir}"] if git_dir else []
+    try:
+        return _git(vault, [*pre, "symbolic-ref", "-q", "HEAD"], env).strip() or None
+    except IntegrityError:
+        return None
+
+
+def _vouching_worktree(
+    vault: Path,
+    start: dict,
+    ref: str,
+    tip_entries: Entries,
+    paths: list[str],
+    scope_list: list[Scope],
+    env: Mapping[str, str],
+) -> str | None:
+    """The name of a linked worktree that accounts for ``ref``'s change to ``paths``, or None.
+
+    It must have existed at the snapshot with ``ref`` checked out, still have it checked out, and its own index must
+    hold exactly the tip's entry for each changed path. A session committing from that worktree leaves it that
+    way. A run can't: it can move the ref, but can't write another worktree's HEAD or index.
+    """
+    for admin, branch in start.get("worktrees", []):
+        if branch != ref or _symbolic_head(vault, env, git_dir=admin) != ref:
+            continue
+        try:
+            # Through its admin dir, never through that worktree's `.git` file, which a run may be able to rewrite.
+            index = _index_entries(vault, scope_list, env, git_dir=admin)
+        except IntegrityError:
+            continue
+        unmerged = any(_plain(k) in paths for k in index if STAGE_SEP in k)
+        if not unmerged and all(index.get(p) == tip_entries.get(p) for p in paths):
+            return os.path.basename(admin)
+    return None
 
 
 def _norm(text: str) -> str:
@@ -188,8 +262,11 @@ def _tree_entries(vault: Path, commitish: str, scope_list: list[Scope], env: Map
     return entries
 
 
-def _index_entries(vault: Path, scope_list: list[Scope], env: Mapping[str, str]) -> Entries:
-    out = _git(vault, ["ls-files", "-s", "-z"], env)
+def _index_entries(
+    vault: Path, scope_list: list[Scope], env: Mapping[str, str], *, git_dir: str | None = None
+) -> Entries:
+    pre = [f"--git-dir={git_dir}"] if git_dir else []
+    out = _git(vault, [*pre, "ls-files", "-s", "-z"], env)
     entries: Entries = {}
     for item in out.split("\0"):
         meta, _, path = item.partition("\t")
@@ -228,6 +305,7 @@ def snapshot(vault: Path, env: Mapping[str, str] | None = None) -> dict:
         refs=refs,
         index=_index_entries(vault, scope_list, genv),
         trees=trees,
+        worktrees=_worktrees(vault, genv),
     )
     return snap
 
@@ -275,6 +353,12 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
         paths = _diff(want, have)
         if not paths:
             continue
+        if ref.startswith("refs/heads/"):
+            worktree = _vouching_worktree(vault, start, ref, have, paths, scope_list, genv)
+            if worktree is not None:
+                result.left_alone[ref] = paths
+                result.left_alone_by[ref] = worktree
+                continue
         result.changed[ref] = paths
         if ref.startswith("refs/heads/"):
             result.restored[ref] = _restore_ref(vault, ref, now_refs[ref], commit, want, paths, genv, label)
