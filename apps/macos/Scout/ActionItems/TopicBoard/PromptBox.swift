@@ -38,11 +38,10 @@ struct PromptBox: View {
                         focused = true
                     }
                 Button("Send", action: send)
-                    .buttonStyle(.borderedProminent)
-                    .tint(BoardState.mine.color)
+                    .buttonStyle(.dsPrimary)
                     .disabled(sending || draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("Cancel") { isOpen = false }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.dsSecondary)
                 if let failure {
                     Text(failure)
                         .font(DS.sans(12))

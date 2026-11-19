@@ -71,6 +71,16 @@ enum UpdateRowFormatting {
             return current
         }
     }
+
+    /// The checker's own message under a failed check, so "Couldn't check"
+    /// says what happened (audit #92): no network, a server error, a
+    /// manifest it couldn't read. nil unless the last check failed.
+    static func errorLine(state: UpdateStatus.State) -> String? {
+        guard case .error(let message) = state else { return nil }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "The check failed without saying why. Try again in a minute." }
+        return trimmed.hasSuffix(".") ? trimmed : trimmed + "."
+    }
 }
 
 /// One update track: title, `current → latest`, a state chip, an optional
@@ -101,6 +111,13 @@ private struct UpdateTrackRow: View {
                         .font(DS.sans(11.5))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
+                    if disabledNote == nil, let error = UpdateRowFormatting.errorLine(state: status.state) {
+                        Text(error)
+                            .font(DS.sans(11.5))
+                            .foregroundStyle(DS.Status.err)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let footnote {
                         Text(footnote)
                             .font(DS.sans(11.5))
@@ -112,12 +129,13 @@ private struct UpdateTrackRow: View {
                 if disabledNote == nil {
                     HStack(spacing: 8) {
                         if let linkTitle {
-                            Button(linkTitle, action: linkAction).buttonStyle(.link)
+                            Button(linkTitle, action: linkAction).buttonStyle(.ds(.link, size: .small))
                         }
                         if let primaryTitle {
-                            Button(primaryTitle, action: primaryAction)
+                            Button(primaryTitle, action: primaryAction).buttonStyle(.ds(.primary, size: .small))
                         }
                         Button("Check now", action: checkAction)
+                            .buttonStyle(.ds(.secondary, size: .small))
                             .disabled(!checkEnabled)
                     }
                 }

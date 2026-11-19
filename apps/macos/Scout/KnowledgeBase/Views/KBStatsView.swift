@@ -41,7 +41,7 @@ struct KBStatsView: View {
         }
     }
 
-    /// Archive copies and receipts aren't live notes, so they're left out of
+    /// Archive copies and paperwork aren't live notes, so they're left out of
     /// the rows above and the insight below; this line says how many.
     @ViewBuilder
     private var setAsideRow: some View {
@@ -52,7 +52,7 @@ struct KBStatsView: View {
                         .accessibilityHidden(true)
                     Text(summary).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 }
-                Text("Notes in archive folders, and receipts and invoices, aren't checked for links.")
+                Text("Notes in archive folders, and paperwork such as receipts, invoices and certificates, aren't checked for links.")
                     .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             }

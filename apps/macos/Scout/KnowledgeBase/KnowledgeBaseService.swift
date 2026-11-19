@@ -445,15 +445,15 @@ final class KnowledgeBaseService: ObservableObject {
         let allNotes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
         guard !allNotes.isEmpty else { return .empty }
         // Health and insight cover live notes and the links between them; archive
-        // copies and receipts are counted on their own (`KBNoteKind`).
+        // copies and paperwork are counted on their own (`KBNoteKind`).
         var archived: [String] = []
-        var receipts: [String] = []
+        var paperwork: [String] = []
         var notes: [String] = []
         for n in allNotes {
             switch KBNoteKind.of(n, type: index.typeByFile[n]) {
             case .live: notes.append(n)
             case .archived: archived.append(n)
-            case .receipt: receipts.append(n)
+            case .paperwork: paperwork.append(n)
             }
         }
         let live = Set(notes)
@@ -522,7 +522,7 @@ final class KnowledgeBaseService: ObservableObject {
             clusterCount: clusters.count,
             largestComponentSize: components.first?.count ?? 0,
             archived: archived.sorted(),
-            receipts: receipts.sorted())
+            paperwork: paperwork.sorted())
     }
 
     /// Full-text search across note names and contents (from the index's cached

@@ -925,11 +925,14 @@ def test_a_note_unreadable_for_the_link_check_is_skipped(vault: Path) -> None:
 _ORG_WIDGET = f'  federation: {{enabled: true}}\n  federation_defaults:\n    - {{glob: "{WIDGET}/**", scope: org}}\n'
 
 
-def test_a_person_added_to_an_org_entry_stays_unshared_and_the_preview_says_so(vault: Path) -> None:
+def test_adding_a_person_to_an_org_entry_is_refused(vault: Path) -> None:
+    # It used to stay org and admit nobody, silently (S1b, item 5).
     _privacy(vault, _ORG_WIDGET)
-    data = json.loads(kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run", "--json").stdout)
-    assert data["newly_shared"] == []
-    assert {"path": PLAN, "reason": "earlier-entry"} in data["excluded"]
+    before = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes", "--json")
+    assert res.exit_code == 1
+    assert "with org, which admits nobody" in json.loads(res.stdout)["refused"]
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == before
 
 
 def test_a_subfolder_of_an_org_entry_gets_only_the_named_people(vault: Path) -> None:

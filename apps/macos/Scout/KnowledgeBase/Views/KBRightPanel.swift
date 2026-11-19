@@ -32,11 +32,8 @@ struct KBRightPanel: View {
                     if let onShowOnMap {
                         Button { onShowOnMap(relPath) } label: {
                             Label("Show on full map", systemImage: "point.3.connected.trianglepath.dotted")
-                                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(EditorialChipBackground())
                         }
-                        .buttonStyle(.plainHit)
+                        .buttonStyle(.ds(.secondary, size: .small))
                         .padding(8)
                         .help("Open the knowledge map with this note selected")
                     }

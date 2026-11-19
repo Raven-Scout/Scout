@@ -143,7 +143,7 @@ struct KnowledgeBaseView: View {
                     Image(systemName: "plus").font(DS.sans(12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
-                .buttonStyle(.plainHit).help("New note")
+                .buttonStyle(.plainHit).help("New note") // ds-guard: hit area (an icon button)
                 .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
