@@ -48,10 +48,26 @@ struct SessionsEmptyAndStateTests {
         let hidden = all.filter { hiddenIDs.contains($0["id"] as? String ?? "") }
         try #require(!hidden.isEmpty)
         let onlyHidden = try index(sessions: hidden)
+        let hours = onlyHidden.display.doneVisibleHours
         let reason = SessionsLayout.emptyReason(index: onlyHidden, filter: SessionsFilter(), now: now)
-        #expect(reason == .onlyHiddenByDefault(count: hidden.count))
+        #expect(reason == .allHidden(count: hidden.count, showingScoutRuns: false,
+                                     showingRecentlyDone: false, doneHours: hours))
         #expect(reason?.detail.contains("View options") == true)
         #expect(reason?.offersClearFilters == false)
+    }
+
+    @Test("the hidden-sessions message names only the view options still off")
+    func hiddenMessageFollowsTheOptions() {
+        func detail(_ scout: Bool, _ done: Bool, count: Int = 3) -> String {
+            SessionsEmptyReason.allHidden(count: count, showingScoutRuns: scout,
+                                          showingRecentlyDone: done, doneHours: 24).detail
+        }
+        let showScout = "Show Scout's own runs", showDone = "Show recently done"
+        #expect(detail(false, false).contains(showScout) && detail(false, false).contains(showDone))
+        #expect(!detail(true, false).contains(showScout) && detail(true, false).contains(showDone))
+        #expect(detail(false, true).contains(showScout) && !detail(false, true).contains(showDone))
+        #expect(detail(true, true) == "All 3 sessions finished more than 24 hours ago, so they're hidden.")
+        #expect(detail(true, true, count: 1) == "Your one session finished more than 24 hours ago, so it's hidden.")
     }
 
     @Test("every state has its own symbol and a word")

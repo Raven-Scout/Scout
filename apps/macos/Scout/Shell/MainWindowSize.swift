@@ -11,7 +11,7 @@ import CoreGraphics
 /// Sessions (~818 pt) and Control Center (~790 pt) would allow ~1040.
 /// Going lower needs the Sessions header reworked first; `PageLayoutTests`
 /// fails if a page stops fitting.
-enum MainWindowSize {
+nonisolated enum MainWindowSize {
     static let minWidth: CGFloat = 1070
     static let minHeight: CGFloat = 640
 }

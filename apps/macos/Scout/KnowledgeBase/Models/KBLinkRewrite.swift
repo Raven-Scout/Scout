@@ -1,8 +1,7 @@
 import Foundation
 
 /// Rewrites the `[[wikilinks]]` that point at a note being renamed, so a
-/// rename doesn't silently break every note that links to it (UI audit #75;
-/// the vault's own `scripts/kb-move.sh` does the same for moves).
+/// rename doesn't silently break every note that links to it (UI audit #75).
 ///
 /// Only the target's name changes: a path form keeps its folders
 /// (`[[people/alex]]` → `[[people/alexandra]]`), and an anchor, an explicit
@@ -10,6 +9,12 @@ import Foundation
 /// kept as written. Whether a link points at the note is decided by the
 /// knowledge base's own resolver, so a same-named note elsewhere, a ticket id
 /// or a URL is never touched.
+///
+/// A bare `[[alex]]` is left alone when more than one note is named `alex`:
+/// the resolver picks one of them by tree order, which says nothing about
+/// which one the writer meant, so rewriting it could repoint a link meant for
+/// the other note. Those are counted as ambiguous instead. Markdown links
+/// (`[text](alex.md)`) aren't wikilinks and aren't touched.
 nonisolated enum KBLinkRewrite {
 
     /// A `[[target]]`, `[[target|alias]]` or `[[target\|alias]]`. Group 1 is
@@ -17,38 +22,98 @@ nonisolated enum KBLinkRewrite {
     /// Same grammar as `KnowledgeBaseService.extractWikilinks`.
     static let linkPattern = #"\[\[([^\]|]+?)((?:\\?\|[^\]]+)?)\]\]"#
 
-    /// Every note that links to `path`, with how many links each holds, most
-    /// links first (then path), leaving out `path` itself.
-    static func inboundNotes(to path: String, in index: KBIndex) -> [(path: String, links: Int)] {
-        var result: [(path: String, links: Int)] = []
+    /// A note that links to the one being renamed.
+    struct Inbound: Equatable, Sendable {
+        let path: String
+        /// Links a rename rewrites.
+        let links: Int
+        /// Bare links left alone because the old name isn't unique.
+        var ambiguous: Int = 0
+    }
+
+    /// Every other note that links to `path`, with its links counted, most
+    /// links first (then path).
+    static func inboundNotes(to path: String, in index: KBIndex) -> [Inbound] {
+        var result: [Inbound] = []
         for (source, resolved) in index.resolvedOut where source != path && resolved.contains(path) {
-            let text = index.textByFile[source] ?? ""
-            let count = links(in: text, from: source, to: path, index: index)
-            result.append((source, max(count, 1)))
+            let counts = classify(index.textByFile[source] ?? "", from: source, to: path, index: index)
+            guard counts.links + counts.ambiguous > 0 else { continue }
+            result.append(Inbound(path: source, links: counts.links, ambiguous: counts.ambiguous))
         }
         return result.sorted { $0.links != $1.links ? $0.links > $1.links : $0.path < $1.path }
     }
 
-    /// How many `[[links]]` in `text` (written in `source`) resolve to `target`.
-    static func links(in text: String, from source: String, to target: String, index: KBIndex) -> Int {
-        matches(in: text).filter { index.resolve($0.target, from: source) == target }.count
+    /// How many of `path`'s links point at itself by name (`[[alex#Role]]`
+    /// in alex.md). `[[#Role]]` names no note and needs no change.
+    static func selfLinks(of path: String, in index: KBIndex) -> Int {
+        classify(index.textByFile[path] ?? "", from: path, to: path, index: index).links
+    }
+
+    /// Links in `text` (written in `source`) that resolve to `target`: those
+    /// a rename rewrites, and bare ones left alone as ambiguous.
+    static func classify(_ text: String, from source: String, to target: String,
+                         index: KBIndex) -> (links: Int, ambiguous: Int) {
+        var links = 0, ambiguous = 0
+        for m in matches(in: text) where index.resolve(m.target, from: source) == target {
+            switch kind(m.target, oldPath: target, index: index) {
+            case .rewrite: links += 1
+            case .ambiguous: ambiguous += 1
+            case .none: break
+            }
+        }
+        return (links, ambiguous)
+    }
+
+    private enum Kind { case rewrite, ambiguous, none }
+
+    /// What a rename does with a link that resolves to `oldPath`.
+    private static func kind(_ target: String, oldPath: String, index: KBIndex) -> Kind {
+        let name = linkName(target)
+        guard !name.isEmpty else { return .none }   // [[#Role]]
+        if !name.contains("/") && oldNameIsShared(oldPath, index: index) { return .ambiguous }
+        return .rewrite
+    }
+
+    /// The name part of a link target: anchor dropped, trimmed.
+    private static func linkName(_ target: String) -> String {
+        let hash = target.firstIndex(of: "#") ?? target.endIndex
+        return target[..<hash].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// More than one note has `oldPath`'s name.
+    static func oldNameIsShared(_ oldPath: String, index: KBIndex) -> Bool {
+        let stem = KnowledgeBaseFileWriter.noteStem((oldPath as NSString).lastPathComponent).lowercased()
+        return (index.stemPaths[stem]?.count ?? 0) > 1
+    }
+
+    /// Another note already has the new name, so existing `[[newStem]]`
+    /// links may start pointing at the renamed note (and a bare link to it
+    /// is written as a path).
+    static func newNameCollides(_ newStem: String, oldPath: String, index: KBIndex) -> Bool {
+        (index.stemPaths[newStem.lowercased()] ?? []).contains { $0 != oldPath }
     }
 
     /// `text` with every link that resolves to `oldPath` pointed at the note's
-    /// new name, and how many links changed. `newStem` is the new file name
-    /// without its extension; `newKBPath` is the note's new path inside the
-    /// knowledge base, without extension (e.g. `people/alexandra`), used
-    /// instead of the bare name when another note already has that name, so
-    /// the link can't resolve to the wrong one.
+    /// new name; how many links changed; how many bare links were left as
+    /// ambiguous. `newStem` is the new file name without `.md`; `newKBPath`
+    /// is the note's new path inside the knowledge base, without `.md` (e.g.
+    /// `people/alexandra`), used instead of the bare name when another note
+    /// already has that name, so the link can't resolve to the wrong one.
     static func rewrite(_ text: String, source: String, oldPath: String,
-                        newStem: String, newKBPath: String, index: KBIndex) -> (text: String, count: Int) {
-        let collides = (index.stemPaths[newStem.lowercased()] ?? []).contains { $0 != oldPath }
+                        newStem: String, newKBPath: String,
+                        index: KBIndex) -> (text: String, count: Int, ambiguous: Int) {
+        let collides = newNameCollides(newStem, oldPath: oldPath, index: index)
         var out = ""
         var count = 0
+        var ambiguous = 0
         var cursor = text.startIndex
-        for m in matches(in: text) {
-            guard index.resolve(m.target, from: source) == oldPath,
-                  let replaced = renamedTarget(m.target, newStem: newStem,
+        for m in matches(in: text) where index.resolve(m.target, from: source) == oldPath {
+            switch kind(m.target, oldPath: oldPath, index: index) {
+            case .none: continue
+            case .ambiguous: ambiguous += 1; continue
+            case .rewrite: break
+            }
+            guard let replaced = renamedTarget(m.target, newStem: newStem,
                                                newKBPath: collides ? newKBPath : nil),
                   replaced != m.target else { continue }
             out += text[cursor..<m.targetRange.lowerBound]
@@ -57,7 +122,7 @@ nonisolated enum KBLinkRewrite {
             count += 1
         }
         out += text[cursor...]
-        return (count == 0 ? text : out, count)
+        return (count == 0 ? text : out, count, ambiguous)
     }
 
     /// The target with its note name replaced, or nil when it names no note
@@ -104,12 +169,31 @@ nonisolated enum KBLinkRewrite {
 
 /// What a rename did to the links that pointed at the note.
 nonisolated struct KBRenameLinkReport: Equatable, Sendable {
-    /// Links rewritten, and in how many notes.
+    /// Why a note that links here wasn't updated.
+    enum SkipReason: Equatable, Sendable {
+        /// Unsaved edits are open in it in the app.
+        case unsavedEdits
+        /// It changed on disk (or went away) while the rename ran.
+        case changedMeanwhile
+        /// It couldn't be read, or isn't UTF-8 text.
+        case unreadable
+        /// Writing it failed (permissions, a full disk).
+        case writeFailed
+    }
+
+    struct Skip: Equatable, Sendable {
+        let path: String
+        let reason: SkipReason
+    }
+
+    /// Links rewritten, and in how many notes (the renamed note counts when
+    /// its links to itself changed).
     var linksUpdated = 0
     var notesUpdated = 0
-    /// Notes that link here but weren't changed: unsaved edits are open in
-    /// them, or they changed on disk while the rename ran. Relative paths.
-    var notesSkipped: [String] = []
+    /// Notes that link here but weren't changed, by path.
+    var skipped: [Skip] = []
+    /// Bare links left as written because more than one note has the old name.
+    var ambiguousLinks = 0
 
     static let none = KBRenameLinkReport()
 }
