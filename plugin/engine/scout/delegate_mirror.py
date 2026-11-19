@@ -306,6 +306,8 @@ class DelegateLink:
     key_file: str | None = None  # where the agent's private key was written (outside the vault)
     checked_fingerprint: str | None = None  # the scan fingerprint check_tree passed last_mirror under
     last_inputs: str | None = None  # the live config and shared-reads ledger at the last good sync (sync_inputs)
+    # What the last good link or sync's mirror held, as counts only (COUNT_KEYS), for `delegate status`.
+    last_counts: dict[str, int] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -328,6 +330,7 @@ class DelegateLink:
             key_file=data.get("key_file"),
             checked_fingerprint=data.get("checked_fingerprint"),
             last_inputs=data.get("last_inputs"),
+            last_counts=data.get("last_counts"),
         )
 
 
@@ -411,9 +414,9 @@ def load_links(vault: Path) -> dict[str, DelegateLink]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+        body = _verified("links", data)
+    except (OSError, ValueError, RecursionError) as e:  # RecursionError: nested deeper than json parses
         raise RepoSyncError("state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it") from e
-    body = _verified("links", data)
     if body is None:
         raise RepoSyncError(
             "state_unverified",
@@ -1878,10 +1881,24 @@ class Result:
     left_out_files: dict[str, str] = field(default_factory=dict)  # path -> reason, for files that aren't text
     unchanged: bool = False
     in_history: int = 0
+    agent_config: int = 0  # visible files left out as agent config (#693): instructions, settings, root .github/
     notes: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+    def counts(self) -> dict[str, int]:
+        """What this mirror holds, as counts only: kept on the link for ``delegate status`` (:data:`COUNT_KEYS`)."""
+        return {
+            "files": self.files,
+            "withheld": self.withheld,
+            "left_out": self.left_out,
+            "redacted_lines": self.redacted_lines,
+            "agent_config": self.agent_config,
+        }
+
+
+COUNT_KEYS = ("files", "withheld", "left_out", "redacted_lines", "agent_config")
 
 
 def _head(vault: Path) -> str:
@@ -1946,6 +1963,7 @@ def _build_and_push(
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
+        agent_config=len(the_plan.agent_files),
         notes=_drop_warning(link.id, the_plan)
         + _left_out_note(link.id, the_plan)
         + _agent_files_note(link.id, the_plan),
@@ -2146,7 +2164,9 @@ def link(
         result, updated = _build_and_push(
             vault, new, fresh=True, expect=current, gh=gh, record=record, links=links, replace=replace_remote
         )
-        links[delegate] = dataclasses.replace(updated, last_inputs=sync_inputs(vault))  # else the first tick re-syncs
+        links[delegate] = dataclasses.replace(  # last_inputs: else the first tick re-syncs
+            updated, last_inputs=sync_inputs(vault), last_counts=result.counts()
+        )
         if ignored:
             result.notes.append(f"added {STATE_REL} to .gitignore")
         save_links(vault, links)
@@ -2213,7 +2233,9 @@ def sync(vault: Path, delegate: str, *, gh: GhRunner = _gh) -> Result:
             result.notes.append(f"added {STATE_REL} and its companions to .gitignore")
         updated, notes = _retry_stale_quietly(vault, updated, links, gh)
         result.notes += notes
-        links[delegate] = dataclasses.replace(updated, last_attempt=_now(), last_error=None, last_inputs=inputs)
+        links[delegate] = dataclasses.replace(
+            updated, last_attempt=_now(), last_error=None, last_inputs=inputs, last_counts=result.counts()
+        )
         save_links(vault, links)
     _event(vault, "delegate_mirror.synced", {"delegate": delegate, "pushed": result.pushed is not None})
     return result
@@ -2690,7 +2712,7 @@ def trust_state(
             claimed = {str(k): DelegateLink.from_json(v) for k, v in raw.items()}
         except FileNotFoundError as e:
             raise RepoSyncError("not_linked", f"refused: {STATE_REL} doesn't exist; there is nothing to check") from e
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
             raise RepoSyncError(
                 "state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it"
             ) from e
@@ -2766,6 +2788,7 @@ def preview(vault: Path, delegate: str) -> Result:
         redacted_lines=sum(the_plan.redacted.values()),
         left_out=the_plan.left_out,
         left_out_files=dict(sorted(the_plan.left_out_files.items())),
+        agent_config=len(the_plan.agent_files),
         notes=_drop_warning(delegate, the_plan)
         + _left_out_note(delegate, the_plan)
         + _agent_files_note(delegate, the_plan),

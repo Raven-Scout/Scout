@@ -5557,22 +5557,33 @@ def _register_delegate() -> None:
         typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
 
     @delegate_app.command("status")
-    def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
+    def cli_delegate_status(
+        as_json: bool = typer.Option(
+            False,
+            "--json",
+            help="Print the versioned status document the app reads (scout/delegate_status.py). Read-only; "
+            "a state it can't trust shows in it rather than failing.",
+        ),
+    ) -> None:
         """List the linked delegates: remote, last sync and the vault commit it mirrors."""
         import json as _json
+        import os as _os
 
         from scout import paths as _paths
         from scout.delegate_mirror import load_links
         from scout.repo_sync import RepoSyncError
 
+        if as_json:
+            from scout.delegate_status import report
+
+            typer.echo(_json.dumps(report(_paths.data_dir(), env=_os.environ), indent=2, sort_keys=True))
+            return
         try:
             links = load_links(_paths.data_dir())
         except RepoSyncError as e:
             _fail(e, as_json)
-        if as_json:
-            doc = {"ok": True, "links": [v.to_json() for _, v in sorted(links.items())]}
-            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
-            return
+        from scout.delegate_status import remote_text
+
         if not links:
             typer.echo("no delegate mirrors on this computer")
         for k, v in sorted(links.items()):
@@ -5580,7 +5591,7 @@ def _register_delegate() -> None:
             if v.stale_key_ids:
                 key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
-            typer.echo(f"{k}: {v.remote}; {key}; {synced}")
+            typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
 
     @delegate_app.command("key")
     def cli_delegate_key(

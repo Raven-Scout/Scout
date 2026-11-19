@@ -188,6 +188,11 @@ struct SettingsView: View {
             }
         }
         .id(SettingsAnchor.engine)
+
+        // Labels itself, and shows only once the engine reports an agent copy (#550).
+        if !appState.engineHealth.state.gatesTabs {
+            AgentCopiesSection(service: appState.delegateStatus)
+        }
     }
 
     @ViewBuilder private var runsTab: some View {
