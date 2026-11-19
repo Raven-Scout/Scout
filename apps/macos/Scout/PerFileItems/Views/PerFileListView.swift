@@ -46,9 +46,9 @@ struct PerFileListView: View {
         .background(
             Group {
                 Button("") { closeDetail() }
-                    .keyboardShortcut(".", modifiers: .command)
+                    .keyboardShortcut(AppShortcut.closeDetail)
                 Button("") { if selectedItemID != nil { detailIsFull.toggle() } }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .keyboardShortcut(AppShortcut.expandDetail)
             }
             .opacity(0)
             .frame(width: 0, height: 0)
@@ -156,7 +156,7 @@ struct PerFileListView: View {
             Button { closeDetail() } label: {
                 Image(systemName: "chevron.left").font(DS.sans(12, weight: .medium))
             }
-            .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help("Close (⌘.)")
+            .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close details")
             Text(item.title).font(DS.serif(16, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
@@ -169,7 +169,7 @@ struct PerFileListView: View {
                     .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
-            .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+            .help(ShortcutLabel.help(isExpanded ? "Collapse" : "Expand to full screen", AppShortcut.expandDetail))
             .accessibilityLabel(isExpanded ? "Collapse details" : "Expand details")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)

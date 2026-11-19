@@ -31,7 +31,6 @@ def _cfg(vault: Path, plugin_root: Path = PLUGIN_ROOT) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

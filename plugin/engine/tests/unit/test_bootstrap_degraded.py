@@ -39,7 +39,6 @@ def _config(vault: Path, plugin_root: Path, **overrides) -> BootstrapConfig:
         "enabled_connectors": set(),
         "connector_inputs": {},
         "skip_jobs": True,
-        "skip_claude": True,
     }
     base.update(overrides)
     return BootstrapConfig(**base)  # type: ignore[arg-type]

@@ -19,7 +19,6 @@ fi
 echo "=== install ==="
 SCOUT_DATA_DIR="$TEST_VAULT" "$SCOUTCTL" bootstrap install \
     --no-jobs \
-    --skip-claude \
     --instance-name "TestScout" \
     --user-name "Test User" \
     --user-email "test@example.com" \
@@ -52,7 +51,7 @@ grep -q "version_at_last_setup" "$TEST_VAULT/scout-config.yaml" || { echo "FAIL:
 
 echo ""
 echo "=== upgrade (idempotent) ==="
-SCOUT_DATA_DIR="$TEST_VAULT" "$SCOUTCTL" bootstrap upgrade --no-jobs --skip-claude || true
+SCOUT_DATA_DIR="$TEST_VAULT" "$SCOUTCTL" bootstrap upgrade --no-jobs || true
 
 # Should still pass all checks
 for kind in SKILL DREAMING RESEARCH; do

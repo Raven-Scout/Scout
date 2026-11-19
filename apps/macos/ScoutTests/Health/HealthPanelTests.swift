@@ -145,7 +145,7 @@ struct HealthViewSmokeTests {
         let svc = ledgerService(stdout: try RunLedgerContractTests.fixtureData())
         await svc.refresh()
         #expect(svc.ledger != nil)
-        for width in [1100.0, 1280, 1600] { render(svc, vault: vault, width: width) }
+        for width in LayoutSize.windowWidths { render(svc, vault: vault, width: width) }
     }
 
     @Test("the Health page renders loading, unsupported and failed")

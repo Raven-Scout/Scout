@@ -9,8 +9,8 @@ import Testing
 ///
 /// The gate is width: each page, and each header or filter row the audit
 /// found clipping, must lay out within the width it gets at the minimum
-/// window (1100 pt), so nothing is pushed off an edge at 1100, 1280 or
-/// 1600 pt. Run with `TEST_RUNNER_SCOUT_LAYOUT_SNAPSHOTS=<dir>` to also write
+/// window (`MainWindowSize`, 1070 pt), so nothing is pushed off an edge at
+/// that size, 1100, 1280 or 1600 pt. Run with `TEST_RUNNER_SCOUT_LAYOUT_SNAPSHOTS=<dir>` to also write
 /// a PNG of the whole window per page, size and appearance for review.
 @MainActor
 @Suite("Layout — pages at real window sizes", .serialized)
@@ -99,7 +99,8 @@ struct PageLayoutTests {
         let vault = try await Self.loadedVault(); defer { vault.tearDown() }
         let available = LayoutSize.pageWidth(window: LayoutSize.windowWidths[0])
         let needed = LayoutHarness.minimumWidth(of: Self.page(item, in: vault), height: LayoutSize.minimumPageHeight)
-        #expect(needed <= available, "\(item) needs \(needed) pt; it gets \(available) pt at a 1100 pt window")
+        #expect(needed <= available,
+                "\(item) needs \(needed) pt; it gets \(available) pt at a \(LayoutSize.windowWidths[0]) pt window")
     }
 
     // MARK: - Action Items filter row
@@ -198,6 +199,7 @@ struct PageLayoutTests {
     @Test("Control Center moves its rail under the main column only at the minimum window")
     func controlCenterRail() {
         #expect(ControlCenterView.railBelow(pageWidth: nil) == false)
+        #expect(ControlCenterView.railBelow(pageWidth: LayoutSize.pageWidth(window: MainWindowSize.minWidth)) == true)
         #expect(ControlCenterView.railBelow(pageWidth: LayoutSize.pageWidth(window: 1100)) == true)
         #expect(ControlCenterView.railBelow(pageWidth: LayoutSize.pageWidth(window: 1280)) == false)
         #expect(ControlCenterView.railBelow(pageWidth: LayoutSize.pageWidth(window: 1600)) == false)
@@ -211,12 +213,27 @@ struct PageLayoutTests {
         #expect(KB.rightPanelWidth(stored: 9000, pageWidth: nil) == KB.rightPanelMax)
         for window in LayoutSize.windowWidths {
             let page = LayoutSize.pageWidth(window: window)
-            let panel = KB.rightPanelWidth(stored: Double(KB.rightPanelMax), pageWidth: page)
-            let editor = page - KB.treeWidth - 1 - 8 - panel
-            #expect(panel >= KB.rightPanelMin)
-            #expect(editor >= KB.minEditorWidth - 0.5 || panel == KB.rightPanelMin,
-                    "editor gets \(editor) pt at \(window) pt")
+            for stored in [Double(KB.rightPanelMin), 300, Double(KB.rightPanelMax)] {
+                let panel = KB.rightPanelWidth(stored: stored, pageWidth: page)
+                let tree = KB.treeWidth(pageWidth: page, panelShown: true)
+                let editor = page - tree - 1 - 8 - panel
+                #expect(panel >= KB.rightPanelMin)
+                #expect(tree >= KB.minTreeWidth)
+                // At every size the window allows, the editor keeps its minimum.
+                #expect(editor >= KB.minEditorWidth - 0.5, "editor gets \(editor) pt at \(window) pt")
+            }
+            // With no note open (no panel), the tree keeps its full width.
+            #expect(KB.treeWidth(pageWidth: page, panelShown: false) == KB.treeWidth)
         }
+        #expect(KB.treeWidth(pageWidth: nil, panelShown: true) == KB.treeWidth)
+    }
+
+    @Test("the window's minimum is the one these tests check")
+    func minimumWindowIsTested() {
+        #expect(LayoutSize.windowWidths.first == MainWindowSize.minWidth)
+        #expect(LayoutSize.minimumWindowHeight == MainWindowSize.minHeight)
+        // Lowered from 1100 × 640 (UI audit #8/#98).
+        #expect(MainWindowSize.minWidth < 1100)
     }
 
     @Test("a progress-log body collapses; a short one doesn't")
@@ -250,7 +267,7 @@ struct PageLayoutTests {
 
     // MARK: - Every page
 
-    @Test("every page renders at 1100, 1280 and 1600 pt and the minimum height", arguments: SidebarItem.allCases)
+    @Test("every page renders at the minimum, 1100, 1280 and 1600 pt and the minimum height", arguments: SidebarItem.allCases)
     func pageRendersAtEverySize(_ item: SidebarItem) async throws {
         let vault = try await Self.loadedVault(); defer { vault.tearDown() }
         for width in LayoutSize.windowWidths {

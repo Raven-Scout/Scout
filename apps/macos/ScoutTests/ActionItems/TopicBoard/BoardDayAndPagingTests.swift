@@ -123,6 +123,22 @@ struct BoardDayAndPagingTests {
         #expect(calendar.isDate(week, inSameDayAs: day(2026, 11, 26)))
     }
 
+    /// The card's right-click Snooze menu (R7) goes through `presetTarget`,
+    /// so it must follow the popover's rule, not count from the day on screen.
+    @Test("the right-click Snooze presets count from the real today too")
+    func contextMenuSnoozePresets() throws {
+        let old = day(2026, 7, 20, hour: 0)
+        let now = day(2026, 11, 19, hour: 15)
+        for preset in SnoozePopoverView.presets {
+            let target = try #require(SnoozePopoverView.presetTarget(days: preset.days, from: old, now: now))
+            #expect(target == SnoozeDates.target(days: preset.days, sourceDate: old, now: now, calendar: calendar),
+                    "\(preset.label)")
+            #expect(target > now, "\(preset.label) on an old file landed in the past")
+        }
+        let tomorrow = try #require(SnoozePopoverView.presetTarget(days: 1, from: old, now: now))
+        #expect(calendar.isDate(tomorrow, inSameDayAs: day(2026, 11, 20)))
+    }
+
     // MARK: #49 — topic paging and the Board's read-only hint
 
     @Test("topic rows build a page at a time")
