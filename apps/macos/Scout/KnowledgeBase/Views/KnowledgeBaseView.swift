@@ -22,6 +22,7 @@ struct KnowledgeBaseView: View {
     @State private var searchQuery: String = ""
     @State private var searchHits: [KBSearchHit] = []
     @State private var searchTask: Task<Void, Never>? = nil
+    @FocusState private var searchFocused: Bool
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
     /// A rename that moved the note but couldn't commit it. Shown here, not in
@@ -77,6 +78,22 @@ struct KnowledgeBaseView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        // ⇧⌘F searches every note from anywhere on the page; ⌘F does too
+        // until a note is open, when it finds in that note instead (UI audit
+        // #77; `KBEditorView` binds it then).
+        .background {
+            Group {
+                Button("Search Notes") { searchFocused = true }
+                    .keyboardShortcut(AppShortcut.searchNotes)
+                if selectedNode?.isEditable != true {
+                    Button("Find") { searchFocused = true }
+                        .keyboardShortcut(AppShortcut.find)
+                }
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         // In-app wikilink navigation for every pane (editor, backlink excerpts,
         // search snippets): resolve against the index, fall back to the default
         // Linear/Obsidian opening when the target isn't a KB note.
@@ -170,6 +187,8 @@ struct KnowledgeBaseView: View {
             Image(systemName: "magnifyingglass").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
             TextField("Search notes…", text: $searchQuery)
                 .textFieldStyle(.plain).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
+                .focused($searchFocused)
+                .help(ShortcutLabel.help("Search every note", AppShortcut.searchNotes))
             if !searchQuery.isEmpty {
                 Button { searchQuery = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(DS.sans(11)).foregroundStyle(DS.Ink.p4)

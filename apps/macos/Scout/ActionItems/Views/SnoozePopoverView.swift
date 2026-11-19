@@ -23,7 +23,8 @@ struct SnoozePopoverView: View {
     /// committing it as a real date.
     @State private var customDate: Date = .distantPast
 
-    private static let presets: [(label: String, days: Int)] = [
+    /// Also the Snooze submenu of a card's context menu.
+    static let presets: [(label: String, days: Int)] = [
         ("Tomorrow",     1),
         ("In 3 days",    3),
         ("Next week",    7),
@@ -173,11 +174,16 @@ struct SnoozePopoverView: View {
         .disabled(submitting)
     }
 
-    private func commit(days: Int) {
-        guard let target = Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: days, to: sourceDate),
+    /// The date a preset snoozes to, counted from the day on screen.
+    static func presetTarget(days: Int, from sourceDate: Date) -> Date? {
+        guard let target = Calendar(identifier: .iso8601).date(byAdding: .day, value: days, to: sourceDate),
               target > sourceDate
-        else { return }
+        else { return nil }
+        return target
+    }
+
+    private func commit(days: Int) {
+        guard let target = Self.presetTarget(days: days, from: sourceDate) else { return }
         submitting = true
         Task { await onCommit(target) }
     }

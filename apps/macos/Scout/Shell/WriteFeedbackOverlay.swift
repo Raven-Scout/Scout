@@ -58,7 +58,7 @@ struct WriteFeedbackOverlay: View {
                 .foregroundStyle(DS.Ink.p1)
             Button("Undo") { controller.undoLatest(with: undoManager) }
                 .buttonStyle(.ds(.link, size: .small))
-                .help("Undo (⌘Z)")
+                .help(ShortcutLabel.help("Undo", AppShortcut.undo))
             Button { controller.dismissLatest() } label: {
                 Image(systemName: "xmark").font(DS.sans(10, weight: .semibold))
             }

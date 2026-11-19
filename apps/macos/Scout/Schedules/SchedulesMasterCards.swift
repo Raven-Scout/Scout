@@ -14,16 +14,27 @@ struct SchedulesMasterCards: View {
     ]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                if let draft = newDraftSlot {
-                    cardButton(for: draft)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                    if let draft = newDraftSlot {
+                        cardButton(for: draft)
+                    }
+                    ForEach(slots) { slot in
+                        cardButton(for: slot)
+                    }
                 }
-                ForEach(slots) { slot in
-                    cardButton(for: slot)
-                }
+                .padding(16)
             }
-            .padding(16)
+            // ↑ ↓ Home End step through the cards in reading order (#57).
+            .focusable()
+            .focusEffectDisabled()
+            .keyboardListNavigation(
+                ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
+                selection: $selectedSlotKey
+            ) { key in
+                proxy.scrollTo(key)
+            }
         }
     }
 
@@ -37,5 +48,6 @@ struct SchedulesMasterCards: View {
         }
         .buttonStyle(.plainHit)
         .accessibilitySelected(isSelected)
+        .id(slot.key)
     }
 }

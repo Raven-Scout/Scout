@@ -58,6 +58,8 @@ struct KBEditorView: View {
     /// Retry instead of an empty document, so nothing typed into a blank
     /// stand-in can be saved over the real file.
     @State private var isUnreadable = false
+    /// ⌘F in the open note, whichever mode it's in (UI audit #77).
+    @StateObject private var find = KBFindController()
 
     private var isDirty: Bool { draft != originalText }
 
@@ -140,13 +142,24 @@ struct KBEditorView: View {
                 baselineContents: baselineContents, baselineDate: baselineDate)
     }
     private var isMarkdown: Bool { node.ext == "md" }
+    /// Read mode's web page is on screen (the others are text views).
+    private var showsReader: Bool { isMarkdown && !isUnreadable && mode == .read }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             EditorialRule()
             if externallyChanged { changedOnDiskBanner }
+            if find.readerBarVisible && showsReader { KBReaderFindBar(controller: find) }
             content
+        }
+        .background {
+            Button("Find in Note") { find.show(inReader: showsReader) }
+                .keyboardShortcut(AppShortcut.find)
+                .disabled(isUnreadable)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
         }
         .background(Color.clear)
         .onChange(of: node.id) { _, _ in openFile() }
@@ -308,7 +321,7 @@ struct KBEditorView: View {
         if isUnreadable {
             unreadableState
         } else if !isMarkdown {
-            KBSourceEditor(text: $draft)
+            KBSourceEditor(text: $draft, find: find)
         } else {
             switch mode {
             case .read:
@@ -317,11 +330,11 @@ struct KBEditorView: View {
                 // Select any text to leave Scout a comment about it; a
                 // comment inserts a marker and saves immediately.
                 KBReaderWebView(source: $draft, resolve: { [service] in service.resolveWikilink($0) },
-                                onRequestSave: { save() })
+                                onRequestSave: { save() }, find: find)
             case .rich:
-                KBLiveEditor(text: $draft)
+                KBLiveEditor(text: $draft, find: find)
             case .source:
-                KBSourceEditor(text: $draft)
+                KBSourceEditor(text: $draft, find: find)
             }
         }
     }
@@ -590,17 +603,67 @@ struct KBEditorView: View {
 }
 
 /// Plain-text source editor with a monospaced font over the recessed paper
-/// surface. Wraps `TextEditor` so the KB editor reads markdown/YAML source the
-/// way the plugin writes it.
-struct KBSourceEditor: View {
+/// surface, so the KB editor reads markdown/YAML source the way the plugin
+/// writes it. A text view of its own rather than `TextEditor`, which has no
+/// find bar on macOS: ⌘F here opens the system one (UI audit #77).
+struct KBSourceEditor: NSViewRepresentable {
     @Binding var text: String
+    var find: KBFindController? = nil
 
-    var body: some View {
-        TextEditor(text: $text)
-            .font(DS.mono(12.5))
-            .foregroundStyle(DS.Ink.p1)
-            .scrollContentBackground(.hidden)
-            .background(DS.Paper.sunk)
-            .padding(.horizontal, 12).padding(.vertical, 10)
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = NSColor(DS.Paper.sunk)
+        guard let tv = scroll.documentView as? NSTextView else { return scroll }
+        tv.delegate = context.coordinator
+        tv.isRichText = false
+        tv.allowsUndo = true
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.textContainerInset = NSSize(width: 12, height: 10)
+        tv.backgroundColor = NSColor(DS.Paper.sunk)
+        tv.drawsBackground = true
+        tv.font = KBLiveEditor.Coordinator.mono(12.5)
+        tv.textColor = NSColor(DS.Ink.p1)
+        tv.string = text
+        find?.textView = tv
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.text = $text
+        guard let tv = scroll.documentView as? NSTextView else { return }
+        find?.textView = tv
+        if tv.string != text {
+            let sel = tv.selectedRange()
+            // Typing undo recorded against the old text would replay onto the
+            // new one (a reload, or a reverted save).
+            context.coordinator.textUndo.removeAllActions()
+            tv.string = text
+            let len = (text as NSString).length
+            tv.setSelectedRange(NSRange(location: min(sel.location, len), length: 0))
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        /// The editor's own typing undo, kept apart from the window's, which
+        /// holds the vault's undo steps (saves, renames), as in Rich mode.
+        let textUndo = UndoManager()
+        init(text: Binding<String>) { self.text = text }
+
+        func undoManager(for view: NSTextView) -> UndoManager? { textUndo }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            text.wrappedValue = tv.string
+        }
     }
 }
