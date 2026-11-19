@@ -21,6 +21,8 @@ from scout.scripts.phase_assembly import parse_phase_file
 PLUGIN = Path(__file__).resolve().parents[3]
 PHASES = PLUGIN / "phases"
 FEEDBACK = PHASES / "modes" / "feedback-processing.md"
+DECISIONS = PHASES / "modes" / "follow-change-decisions.md"
+STEP_1E = "## Step 1e: Test changes and act on your decisions"
 PRIVACY = PHASES / "core" / "privacy.md"
 CALENDAR = PHASES / "connectors" / "calendar.md"
 GIT_SETUP = PHASES / "core" / "git-setup.md"
@@ -82,8 +84,23 @@ def test_step_1d_routes_governance_to_a_pending_file() -> None:
     assert "Harness fallback" in step_1d
 
 
+def test_step_1e_is_its_own_dreaming_fragment_with_no_connector() -> None:
+    (section,) = parse_phase_file(DECISIONS)
+    assert section.requires is None
+    assert section.mode == ["dreaming"]
+    assert STEP_1E in section.body
+    # It assembles right after feedback processing (files sort by name within phases/modes/).
+    names = sorted(p.name for p in (PHASES / "modes").glob("*.md"))
+    assert names.index(DECISIONS.name) == names.index(FEEDBACK.name) + 1
+    # Feedback processing points at it by name and no longer carries the loop.
+    feedback = _text(FEEDBACK)
+    assert "Step 1e (Test changes and act on your decisions)" in feedback
+    assert "**Step 1e: Test changes and act on your decisions**" in feedback
+    assert "scoutctl changes due" not in feedback
+
+
 def test_step_1e_acts_on_due() -> None:
-    step_1e = _step(_text(FEEDBACK), "### Step 1e: Test changes and act on your decisions")
+    step_1e = _step(_text(DECISIONS), STEP_1E)
     assert "scripts/scoutctl changes due --json" in step_1e
     assert "scoutctl changes rollback <id>" in step_1e
     for trailer in ("Scout-Change-Reverts:", "Scout-Change-Why: owner-ask:undo-", "Scout-Change-Summary:"):
@@ -92,6 +109,7 @@ def test_step_1e_acts_on_due() -> None:
     assert "scoutctl changes apply" in step_1e and "scoutctl changes discard" in step_1e
     assert "Scout-Change-Governance: yes" in step_1e
     assert "blocked" in step_1e and "edited-since" in step_1e
+    assert "Slack" not in step_1e.replace("with or without Slack", "")  # the wrap, whatever its channel
     assert "Undo in the Changes tab, or run `scoutctl changes undo <id>`" in step_1e
     assert "scoutctl changes announced" in step_1e
     assert "engagement_tests_running" in step_1e
@@ -102,7 +120,7 @@ def test_step_1e_acts_on_due() -> None:
 
 
 def test_runs_never_call_owner_only_commands() -> None:
-    step_1e = _step(_text(FEEDBACK), "### Step 1e: Test changes and act on your decisions")
+    step_1e = _text(DECISIONS)
     for cmd in ("approve", "reject", "undo", "wrong", "auto-rollback", "calibrated"):
         assert f"`{cmd}`" in step_1e, cmd
     assert "Never run" in step_1e
@@ -171,20 +189,27 @@ def test_git_setup_names_the_trailers() -> None:
         "RESEARCH.md",
         "scripts/",
         "120",
+        "engagement_tests_running",
     ):
         assert needle in rule, needle
     assert re.search(r"git-safe-commit\.sh \$'[^']*\\n\\nScout-Change-Why: ", rule)
     for kind in ("SKILL", "DREAMING", "RESEARCH"):
         brain = _assemble(_config(set()), kind, custom={})
         assert "Scout-Change-Why:" in brain and "Scout-Change-Summary:" in brain, kind
+        assert "`engagement_tests_running` is 0" in brain, kind
 
 
 # --- what reaches the brains ------------------------------------------------------------------------------------------
 
 
 def test_dreaming_brain_carries_the_test_loop() -> None:
-    dreaming = _assemble(_config({"slack"}), "DREAMING", custom={})
-    assert "scoutctl changes due --json" in dreaming
+    for connectors in ({"slack"}, set()):  # the loop doesn't depend on Slack
+        dreaming = _assemble(_config(connectors), "DREAMING", custom={})
+        assert "scripts/scoutctl changes rollback <id>" in dreaming, connectors
+        assert dreaming.count(STEP_1E) == 1, connectors
+    with_slack = _assemble(_config({"slack"}), "DREAMING", custom={})
+    assert with_slack.index("## Phase 1: Feedback Processing") < with_slack.index(STEP_1E)
+    assert with_slack.index(STEP_1E) < with_slack.index("## Phase 2: KB Deep Work")
     skill = _assemble(_config({"calendar", "slack"}), "SKILL", custom={})
     assert "owner-away" in skill
     assert "dm-sent" in skill
