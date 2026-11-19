@@ -14,7 +14,7 @@ struct ErrorsTab: View {
             Text(runFailed
                  ? "This run failed, but its log has no error line Scout recognises. The Log tab shows the whole log."
                  : "No errors in this run's log.")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .multilineTextAlignment(.center)
                 .padding()
@@ -39,10 +39,10 @@ private struct ErrorRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(error.kind.displayName) · line \(error.line)")
-                .font(DS.sans(10, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .foregroundStyle(error.kind == .runner ? DS.Status.warn : DS.Status.err)
             Text(error.snippet)
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .textSelection(.enabled)
@@ -63,7 +63,7 @@ private struct ErrorRow: View {
                 if expanded {
                     ScrollView(.horizontal) {
                         Text(error.block.joined(separator: "\n"))
-                            .font(DS.mono(11))
+                            .font(DS.font(.caption, .mono))
                             .foregroundStyle(DS.Ink.p2)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: true, vertical: true)

@@ -61,7 +61,7 @@ struct NowStripView: View {
     private func column<Content: View>(label: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(label.uppercased())
-                .font(DS.sans(10.5, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.08 * 10.5)
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.bottom, 6)
@@ -101,7 +101,7 @@ struct NowStripView: View {
                         .accessibilityHidden(true)
                     Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .foregroundStyle(RunOutcomeDisplay.tone(r.status).color)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
@@ -162,7 +162,7 @@ struct NowStripView: View {
 
     private func bigName(_ s: String) -> some View {
         Text(s)
-            .font(DS.serif(22, weight: .medium))
+            .font(DS.font(.hero, .serif, weight: .medium))
             .foregroundStyle(DS.Ink.p1)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -170,7 +170,7 @@ struct NowStripView: View {
 
     private func sub(_ s: String, color: Color) -> some View {
         Text(s)
-            .font(DS.mono(12))
+            .font(DS.font(.label, .mono))
             .foregroundStyle(color)
     }
 

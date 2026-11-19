@@ -31,16 +31,16 @@ struct ConnectorAlertBanner: View {
             showPopover = true
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").font(DS.mono(13))
+                Image(systemName: "exclamationmark.triangle").font(DS.font(.body, .mono))
                     .foregroundStyle(critical ? DS.Status.onFill : DS.Status.warn)
                     .accessibilityHidden(true)
                 Text(text)
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .lineLimit(1)
                     .foregroundStyle(ink)
                 Spacer()
                 Text("Details")
-                    .font(DS.mono(11))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(ink)
             }
             .padding(.horizontal, 14)
@@ -60,7 +60,7 @@ struct ConnectorAlertBanner: View {
             if alerts.count > 1 {
                 HStack {
                     Text("\(alerts.count) connector problems")
-                        .font(DS.sans(12, weight: .semibold))
+                        .font(DS.font(.label, weight: .semibold))
                         .foregroundStyle(DS.Ink.p1)
                     Spacer()
                     Button("Acknowledge all") {

@@ -44,25 +44,25 @@ struct UsageRailCard: View {
             let today = summary.today
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(UsageFormat.tokens(today.tokens.inputOutput))
-                    .font(DS.serif(22, weight: .medium))
+                    .font(DS.font(.hero, .serif, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text("tokens in + out")
-                    .font(DS.mono(13))
+                    .font(DS.font(.body, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
             .accessibilityElement(children: .combine)
             Text(UsageFormat.cacheLine(today.tokens))
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.top, 6)
                 .fixedSize(horizontal: false, vertical: true)
             Text("cost " + UsageFormat.cost(today))
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
                 .padding(.top, 4)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Scout's scheduled runs only: \(UsageFormat.coverage(today)). Your own Claude sessions aren't counted.")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.top, 6)
                 .fixedSize(horizontal: false, vertical: true)
@@ -71,23 +71,23 @@ struct UsageRailCard: View {
 
             let week = summary.week
             Text("This week: \(UsageFormat.tokens(week.tokens.inputOutput)) in + out · cache \(UsageFormat.tokens(week.tokens.cache))")
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("cost " + UsageFormat.cost(week))
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.top, 2)
                 .fixedSize(horizontal: false, vertical: true)
         } else if let error = state.scoutUsageService.lastError {
             Text("Usage isn't available: \(error)")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             Text("Loading usage…")
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -110,7 +110,7 @@ struct UsageRailCard: View {
                 }
                 if !s.topTools.isEmpty {
                     Text("Top: " + s.topTools.map { "\($0.name) \($0.count)" }.joined(separator: " · "))
-                        .font(DS.mono(10.5))
+                        .font(DS.font(.caption2, .mono))
                         .foregroundStyle(DS.Ink.p4)
                         .padding(.top, 4)
                         .lineLimit(2)
@@ -119,11 +119,11 @@ struct UsageRailCard: View {
             }
         } else if loadingStats {
             Text("Loading session activity…")
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p4)
         } else {
             Text("No tool activity recorded today.")
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -131,11 +131,11 @@ struct UsageRailCard: View {
     private func statRow(label: String, value: String) -> some View {
         HStack {
             Text(label)
-                .font(DS.mono(11.5))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             Text(value)
-                .font(DS.mono(11.5, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
         }
     }

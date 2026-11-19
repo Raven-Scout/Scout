@@ -43,7 +43,7 @@ struct DiffViewer: View {
                             if let chunks = diffChunks[c.id] {
                                 ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
                                     Text(chunk)
-                                        .font(DS.mono(10))
+                                        .font(DS.font(.caption2, .mono))
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         // Chunks read as one diff: no rule or gap between them.
@@ -52,7 +52,7 @@ struct DiffViewer: View {
                                 }
                             } else {
                                 Text("Loading…")
-                                    .font(DS.mono(10))
+                                    .font(DS.font(.caption2, .mono))
                                     .foregroundStyle(.secondary)
                                     .padding(.vertical, 4)
                             }
@@ -60,7 +60,7 @@ struct DiffViewer: View {
                             VStack(alignment: .leading) {
                                 Text(c.subject)
                                 Text("\(c.shortSHA) · \(c.filesChanged) files · +\(c.insertions) −\(c.deletions)")
-                                    .font(DS.sans(10))
+                                    .font(DS.font(.caption2))
                                     .foregroundStyle(.secondary)
                             }
                         }

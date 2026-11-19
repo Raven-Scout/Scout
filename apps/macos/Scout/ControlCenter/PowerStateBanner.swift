@@ -12,7 +12,7 @@ struct PowerStateBanner: View {
             HStack {
                 Image(systemName: "bolt.slash.fill")
                 Text("On battery — runs may be missed if the lid closes. Plug in for guaranteed firing.")
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)

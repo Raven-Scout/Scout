@@ -92,15 +92,15 @@ struct LogViewer: View {
         HStack(spacing: 8) {
             Image(systemName: section.kind.icon)
                 .foregroundStyle(section.kind.color)
-                .font(DS.sans(10))
+                .font(DS.font(.caption2))
                 .accessibilityHidden(true)
             Text(section.title)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .fontWeight(.semibold)
                 .foregroundStyle(section.kind.color)
             if let when = section.timestamp {
                 Text(when, format: .dateTime.hour().minute().second())
-                    .font(DS.mono(10))
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(.secondary)
             }
         }
@@ -114,7 +114,7 @@ struct LogViewer: View {
             text.append(highlight(line: line))
         }
         return Text(text)
-            .font(DS.mono(12))
+            .font(DS.font(.label, .mono))
             .lineSpacing(1)
             .textSelection(.enabled)
             .lineLimit(nil)
@@ -159,11 +159,11 @@ struct LogViewer: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if rawChunks.isEmpty {
-                    Text("(empty log)").font(DS.mono(12)).foregroundStyle(.secondary)
+                    Text("(empty log)").font(DS.font(.label, .mono)).foregroundStyle(.secondary)
                 }
                 ForEach(Array(rawChunks.enumerated()), id: \.offset) { _, chunk in
                     Text(chunk)
-                        .font(DS.mono(12))
+                        .font(DS.font(.label, .mono))
                         .textSelection(.enabled)
                         .lineLimit(nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
