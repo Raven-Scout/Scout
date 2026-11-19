@@ -180,7 +180,9 @@ session transcript:
   read, the prompt, or the project the session ran in.
 - **Consent:** in-vault sessions are counted by default. Out-of-vault capture is asked once on
   every install, new or upgraded, and nothing outside the vault is counted until it's answered.
-  The answer is stored in `scout-config.yaml`.
+  The answer is stored in the owner-only store (`~/.local/state/scout/scout-change-ledger-owner/consent.json`),
+  not in `scout-config.yaml`: a scheduled run can write `scout-config.yaml`, so a run could grant itself
+  consent there. Only an owner session (`scoutctl engagement consent`) writes the answer.
 
 ### 6.4 Feedback and noise capture
 
