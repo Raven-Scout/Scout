@@ -195,7 +195,7 @@ nonisolated enum DisplayName {
 
     private static let runStatusReasons: [String: String] = [
         "timeout":             "The run reached its time limit and Scout stopped it.",
-        "orphaned":            "The run stopped without writing its last line, so Scout can't tell how it ended.",
+        "orphaned":            "The run never wrote its last line, so Scout can't tell how it ended. It stopped showing signs of work, or a later run of the same kind has started since.",
         "ratelimited":         "Your Claude plan's usage limit was reached. Scout tries again after it resets.",
         "skippedbudget":       "Running it would have gone over the budget you set, or the agent's daily usage cap.",
         "skippedconcurrency":  "Another Scout run was still going, so this one waited for the next time.",
