@@ -94,12 +94,15 @@ struct NowStripView: View {
                 sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
             } else if let r = resolved {
                 bigName(r.displayName)
+                // One status model (UI audit R10, #21): a routine skip is
+                // amber with a pause, not a red ✗.
                 HStack(spacing: 4) {
-                    Image(systemName: statusIcon(for: r.status)).imageScale(.small)
+                    Image(systemName: RunOutcomeDisplay.symbol(r.status)).imageScale(.small)
+                        .accessibilityHidden(true)
                     Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
                 .font(DS.mono(12))
-                .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)
+                .foregroundStyle(RunOutcomeDisplay.tone(r.status).color)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
                 // than pretending the latest is fine.
@@ -114,9 +117,8 @@ struct NowStripView: View {
 
     @ViewBuilder private var todayColumn: some View {
         let runs = todayRuns()
-        let failures = runs.filter { [.failure, .timeout, .rateLimited].contains($0.status) }.count
         VStack(alignment: .leading, spacing: 4) {
-            bigName("\(runs.count) runs · \(failures) failed")
+            bigName(Self.todayHeadline(runs))
             // Yesterday's figure (a refresh after midnight failed) is no figure for today.
             sub(Self.costLine(today: state.scoutUsageService.summary?.today.ifCurrent(at: Date()),
                               dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
@@ -161,8 +163,10 @@ struct NowStripView: View {
             .foregroundStyle(color)
     }
 
-    private func statusIcon(for status: RunStatus) -> String {
-        status == .success ? "checkmark" : status == .running ? "circle.fill" : "xmark"
+    /// "5 runs · 1 failed", counted by `RunOutcomeDisplay.isFailure`, the
+    /// rule the heatmap and the Signals card count with.
+    nonisolated static func todayHeadline(_ runs: [Run]) -> String {
+        "\(runs.count) run\(runs.count == 1 ? "" : "s") · \(RunOutcomeDisplay.failedCount(runs)) failed"
     }
 
     private func todayRuns() -> [Run] {

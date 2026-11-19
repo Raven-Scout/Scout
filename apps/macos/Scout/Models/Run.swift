@@ -134,6 +134,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// "slot" is the skill it ran, not a schedule). nil without a ledger row,
     /// or from a runner older than the field.
     var trigger: String? = nil
+    /// Why the run failed, from the run ledger's `failure_class` (`timeout`,
+    /// `rate_limited`, `auth_race`, …; `ok` for a run that didn't fail). nil
+    /// without a ledger row. The engine classifies the log; the app never
+    /// guesses a class from log text of its own.
+    var failureClass: String? = nil
 
     /// The slot "Run again" fires: this run's own, or nil when there isn't one
     /// to fire. A run started outside the schedule (`manual`,
@@ -197,7 +202,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger
+            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass
         )
     }
 }
@@ -220,7 +225,8 @@ extension Run {
         headerStartedAt: Date? = nil,
         model: String? = nil,
         slotKey: String? = nil,
-        trigger: String? = nil
+        trigger: String? = nil,
+        failureClass: String? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -248,7 +254,8 @@ extension Run {
             retryOf: retryOf,
             model: model,
             slotKey: slotKey,
-            trigger: trigger
+            trigger: trigger,
+            failureClass: failureClass
         )
     }
 }

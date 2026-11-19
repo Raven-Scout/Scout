@@ -24,6 +24,8 @@ final class SessionLogService: ObservableObject {
     private var ledgerSlots: [String: String] = [:]
     /// Each ledger row's `trigger`, by log file name (`Run.trigger`).
     private var ledgerTriggers: [String: String] = [:]
+    /// Each ledger row's `failure_class`, by log file name (`Run.failureClass`).
+    private var ledgerFailureClasses: [String: String] = [:]
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -379,15 +381,16 @@ final class SessionLogService: ObservableObject {
     /// exactly one run.
     nonisolated static func overlayLedger(
         _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
-        triggers: [String: String] = [:]
+        triggers: [String: String] = [:], failureClasses: [String: String] = [:]
     ) -> [Run] {
-        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty else { return runs }
+        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty || !failureClasses.isEmpty else { return runs }
         return runs.map { run in
             let name = run.logPath.lastPathComponent
             var out = run
             if let status = statuses[name], status != out.status { out = out.with(status: status) }
             if let slot = slots[name], slot != out.slotKey { out.slotKey = slot }
             if let trigger = triggers[name], trigger != out.trigger { out.trigger = trigger }
+            if let fc = failureClasses[name], fc != out.failureClass { out.failureClass = fc }
             return out
         }
     }
@@ -397,12 +400,14 @@ final class SessionLogService: ObservableObject {
         ledgerStatuses = entries.mapValues(\.runStatus)
         ledgerSlots = entries.mapValues(\.slot)
         ledgerTriggers = entries.compactMapValues(\.trigger)
+        ledgerFailureClasses = entries.compactMapValues(\.failureClass)
         let updated = Self.resolveStaleRunning(overlaid(runs))
         if updated != runs { runs = updated }
     }
 
     private func overlaid(_ runs: [Run]) -> [Run] {
-        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers)
+        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers,
+                           failureClasses: ledgerFailureClasses)
     }
 
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
