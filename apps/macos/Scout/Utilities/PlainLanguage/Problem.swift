@@ -62,7 +62,7 @@ extension Problem {
     /// A run that failed with a run-ledger `failure_class`.
     init(failureClass: String, details: String? = nil) {
         let e = DisplayName.failureClass(failureClass)
-        let soft = ["ratelimited", "network", "gitlock", "leaseheld"]
+        let soft = ["ratelimited", "authrace", "network", "gitlock", "leaseheld"]
             .contains(DisplayName.normalized(failureClass))
         let combined = [details, e.details].compactMap { $0 }.joined(separator: "\n")
         self.init(severity: soft ? .warning : .error, title: e.title,

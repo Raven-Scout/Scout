@@ -8,9 +8,11 @@ nonisolated struct MarkdownTask: Equatable, Sendable {
     var depth: Int = 0
 }
 
-/// A structural block of a per-file item body: headings, task lists, prose
-/// paragraphs and fenced code. Inline markup (bold, links, `[[wikilinks]]`)
-/// stays in the text and is rendered by `InlineMarkdownText`.
+/// A structural block of a per-file item body: headings, task lists, quotes,
+/// prose paragraphs and fenced code. Inline markup (bold, links,
+/// `[[wikilinks]]`) stays in the text and is rendered by `InlineMarkdownText`;
+/// markup it can't render (math, a stray `**`) is rewritten first by
+/// `InlineMarkupCleanup`.
 nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
     case prose(String)
     case code(language: String?, code: String)
@@ -18,6 +20,11 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
     case heading(level: Int, text: String)
     /// Consecutive task-list lines, in order.
     case tasks([MarkdownTask])
+    /// Consecutive `>` lines, without their markers; paragraphs inside are
+    /// separated by a blank line. A callout (`> [!note] Title`) carries its
+    /// kind, lowercased, and its title (the kind, capitalised, when the line
+    /// gives none). A plain quote has neither.
+    case quote(kind: String?, title: String?, text: String)
 
     /// `## Status`, `### Done`: up to six `#`, then a space, then the text. An
     /// optional closing run of `#` needs a space before it, so `## C#` keeps its `#`.
@@ -26,6 +33,10 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
     private static let taskRe = try! NSRegularExpression(
         pattern: #"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]+(\S.*)$"#
     )
+    /// `> text`, up to three spaces in. Nested markers (`> > text`) are peeled too.
+    private static let quoteRe = try! NSRegularExpression(pattern: #"^ {0,3}>"#)
+    /// `[!warning]`, `[!note]+ Title`: the first line of a callout.
+    private static let calloutRe = try! NSRegularExpression(pattern: #"^\[!([A-Za-z][\w-]*)\][+-]?[ \t]*(.*)$"#)
 
     static func blocks(from rawBody: String) -> [MarkdownBodyBlock] {
         let lines = rawBody.components(separatedBy: "\n")
@@ -33,17 +44,22 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         var proseBuffer: [String] = []
         var codeBuffer: [String] = []
         var taskBuffer: [MarkdownTask] = []
+        var quoteBuffer: [String] = []
         var codeLanguage: String?
         var inCode = false
 
         func flushProse() {
             let joined = proseBuffer.joined(separator: "\n")
-            for para in paragraphs(in: joined) { blocks.append(.prose(para)) }
+            for para in paragraphs(in: joined) { blocks.append(.prose(InlineMarkupCleanup.clean(para))) }
             proseBuffer.removeAll(keepingCapacity: true)
         }
         func flushTasks() {
             if !taskBuffer.isEmpty { blocks.append(.tasks(nested(taskBuffer))) }
             taskBuffer.removeAll(keepingCapacity: true)
+        }
+        func flushQuote() {
+            if !quoteBuffer.isEmpty, let q = quote(from: quoteBuffer) { blocks.append(q) }
+            quoteBuffer.removeAll(keepingCapacity: true)
         }
 
         for line in lines {
@@ -55,6 +71,7 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
                     codeLanguage = nil
                     inCode = false
                 } else {
+                    flushQuote()
                     flushTasks()
                     flushProse()
                     let lang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
@@ -64,6 +81,14 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
                 continue
             }
             if inCode { codeBuffer.append(line); continue }
+            if let inner = quoteContent(of: line) {
+                flushTasks()
+                flushProse()
+                quoteBuffer.append(inner)
+                continue
+            }
+            // A quote ends at the first line without a `>`, blank or not.
+            flushQuote()
             if let task = task(in: line) {
                 flushProse()
                 taskBuffer.append(task)
@@ -81,6 +106,7 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         }
 
         if inCode { blocks.append(.code(language: codeLanguage, code: codeBuffer.joined(separator: "\n"))) }
+        flushQuote()
         flushTasks()
         flushProse()
         return blocks
@@ -117,6 +143,7 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         case .prose(let t), .heading(_, let t): return t.count
         case .code(_, let c): return c.count
         case .tasks(let tasks): return tasks.reduce(0) { $0 + $1.text.count }
+        case .quote(_, let title, let text): return (title?.count ?? 0) + text.count
         }
     }
 
@@ -137,6 +164,10 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
                 kept.append(task)
             }
             return kept.isEmpty ? nil : .tasks(kept)
+        case .quote(let kind, let title, let text):
+            let room = limit - (title?.count ?? 0)
+            guard room > 0 else { return nil }
+            return .quote(kind: kind, title: title, text: String(text.prefix(room)) + "…")
         }
     }
 
@@ -145,7 +176,8 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         guard let m = headingRe.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else {
             return nil
         }
-        return .heading(level: m.range(at: 1).length, text: ns.substring(with: m.range(at: 2)))
+        return .heading(level: m.range(at: 1).length,
+                        text: InlineMarkupCleanup.clean(ns.substring(with: m.range(at: 2))))
     }
 
     private static func task(in line: String) -> MarkdownTask? {
@@ -155,8 +187,47 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable {
         }
         // `depth` holds the indent width (a tab counts 4) until `nested` ranks it.
         let indent = ns.substring(with: m.range(at: 1)).reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-        let text = ns.substring(with: m.range(at: 3)).trimmingCharacters(in: .whitespaces)
+        let text = InlineMarkupCleanup.clean(ns.substring(with: m.range(at: 3)).trimmingCharacters(in: .whitespaces))
         return MarkdownTask(checked: ns.substring(with: m.range(at: 2)) != " ", text: text, depth: indent)
+    }
+
+    /// The text of a `>` line with every leading marker (and the one space
+    /// after each) removed, or nil when the line isn't a quote line.
+    private static func quoteContent(of line: String) -> String? {
+        var rest = Substring(line)
+        guard quoteRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil else {
+            return nil
+        }
+        while true {
+            let trimmed = rest.drop(while: { $0 == " " })
+            guard trimmed.first == ">" else { break }
+            rest = trimmed.dropFirst()
+            if rest.first == " " { rest = rest.dropFirst() }
+        }
+        return String(rest)
+    }
+
+    /// One quote block from its lines (markers already removed). A callout's
+    /// first line gives its kind and title; blank lines separate paragraphs.
+    private static func quote(from lines: [String]) -> MarkdownBodyBlock? {
+        var lines = lines
+        var kind: String?
+        var title: String?
+        if let first = lines.first {
+            let ns = first as NSString
+            if let m = calloutRe.firstMatch(in: first, range: NSRange(location: 0, length: ns.length)) {
+                let k = ns.substring(with: m.range(at: 1)).lowercased()
+                let t = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                kind = k
+                title = InlineMarkupCleanup.clean(t.isEmpty ? k.prefix(1).uppercased() + k.dropFirst() : t)
+                lines.removeFirst()
+            }
+        }
+        let text = paragraphs(in: lines.joined(separator: "\n"))
+            .map(InlineMarkupCleanup.clean)
+            .joined(separator: "\n\n")
+        if text.isEmpty && title == nil { return nil }
+        return .quote(kind: kind, title: title, text: text)
     }
 
     /// Turn indent widths into nesting levels: a task is one level under the

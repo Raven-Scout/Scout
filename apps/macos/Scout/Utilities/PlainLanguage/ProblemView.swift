@@ -103,18 +103,15 @@ struct ProblemView: View {
                 ForEach(Array(actions.enumerated()), id: \.element.id) { i, action in
                     if i == 0 {
                         Button(action.title) { action.perform() }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
+                            .buttonStyle(.ds(.primary, size: .small))
                     } else {
                         Button(action.title) { action.perform() }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .buttonStyle(.ds(.secondary, size: .small))
                     }
                 }
                 if problem.details != nil {
                     Button(showDetails ? "Hide details" : "Details") { showDetails.toggle() }
-                        .buttonStyle(.link)
-                        .controlSize(.small)
+                        .buttonStyle(.ds(.link, size: .small))
                     Button(copied ? "Copied" : "Copy details") {
                         Self.copy(problem.copyText)
                         copied = true
@@ -123,8 +120,7 @@ struct ProblemView: View {
                             copied = false
                         }
                     }
-                    .buttonStyle(.link)
-                    .controlSize(.small)
+                    .buttonStyle(.ds(.link, size: .small))
                 }
             }
             .padding(.top, 2)

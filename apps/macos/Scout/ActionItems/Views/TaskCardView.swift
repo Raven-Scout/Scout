@@ -37,6 +37,8 @@ struct TaskCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openKBNote) private var openKBNote
     @Environment(\.revealTaggedTask) private var revealTaggedTask
+    /// Off while the engine check fails: the page's banner says so.
+    @Environment(\.actionItemsWritesEnabled) private var writesEnabled
 
     init(
         task: ActionTask,
@@ -204,6 +206,13 @@ struct TaskCardView: View {
         !task.done || task.shortPrefix != nil
     }
 
+    /// Whether a comment's Edit and Delete show: only where a comment could be
+    /// added, and only while writes are on. With the engine check failing
+    /// they'd fail every time, so they're left out like any write.
+    static func canChangeComments(_ task: ActionTask, writesEnabled: Bool) -> Bool {
+        writesEnabled && canComment(task)
+    }
+
     // MARK: - Source/context chips
 
     private var chips: [TaskChip] {
@@ -341,6 +350,9 @@ struct TaskCardView: View {
                     }
             }
         }
+        // Every quick action saves; the page's banner says why they're off.
+        .disabled(!writesEnabled)
+        .opacity(writesEnabled ? 1 : 0.45)
     }
 
     private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
@@ -485,7 +497,7 @@ struct TaskCardView: View {
     // Typed properties rather than inline `cond ? nil : { … }` ternaries:
     // Xcode 26.3 (CI) can't type-check those inside the detail VStack.
     private var editCommentHandler: ((Int, String) async -> Bool)? {
-        guard Self.canComment(task) else { return nil }
+        guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index, newText in
             await runOp(.editComment(
                 subject: task.matchableSubject,
@@ -497,7 +509,7 @@ struct TaskCardView: View {
     }
 
     private var deleteCommentHandler: ((Int) async -> Void)? {
-        guard Self.canComment(task) else { return nil }
+        guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index in
             await runOp(.deleteComment(
                 subject: task.matchableSubject,
@@ -554,6 +566,7 @@ struct TaskCardView: View {
                         author: author
                     ))
                 }
+                .disabled(!writesEnabled)
             }
 
             if let err = inlineError {

@@ -237,6 +237,17 @@ extension DS {
             // Labels on the accent (badges, primary buttons).
             pairs.append(Pair(foreground: Palette.accentOnFill,
                               background: Surface(name: "Accent.fill", swatch: Palette.accentFill)))
+            // Every design-system button label on its own fill, enabled and
+            // disabled (`DSButtonStyle`). Links have no fill; their labels are
+            // paper text, checked above.
+            for role in ButtonRole.allCases {
+                for enabled in [true, false] {
+                    let colors = buttonColors(role, enabled: enabled)
+                    guard let fill = colors.fill else { continue }
+                    pairs.append(Pair(foreground: colors.label,
+                                      background: Surface(name: fill.name, swatch: fill)))
+                }
+            }
             // The selected segment of `EditorialSegmentedControl`: paper on ink.
             pairs.append(Pair(foreground: Palette.paperBase,
                               background: Surface(name: "Ink.p1", swatch: Palette.inkP1)))

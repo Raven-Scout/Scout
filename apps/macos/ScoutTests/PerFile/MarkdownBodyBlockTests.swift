@@ -187,3 +187,74 @@ struct MarkdownBodyBlockTests {
         #expect(shown.truncated)
     }
 }
+
+// MARK: - Quotes, callouts and cleanup (UI audit R5)
+
+@Suite("MarkdownBodyBlock quotes")
+struct MarkdownBodyBlockQuoteTests {
+    @Test func blockquoteLinesBecomeOneQuoteWithoutMarkers() {
+        let body = "Before.\n> First line\n> second line\n>\n> New paragraph\nAfter."
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .prose("Before."),
+            .quote(kind: nil, title: nil, text: "First line\nsecond line\n\nNew paragraph"),
+            .prose("After."),
+        ])
+    }
+
+    @Test func aCalloutCarriesItsKindAndTitle() {
+        #expect(MarkdownBodyBlock.blocks(from: "> [!warning] Check the window\n> It moved to 09:30.") == [
+            .quote(kind: "warning", title: "Check the window", text: "It moved to 09:30."),
+        ])
+        // No title on the line: the kind, capitalised.
+        #expect(MarkdownBodyBlock.blocks(from: "> [!NOTE]-\n> Folded.") == [
+            .quote(kind: "note", title: "Note", text: "Folded."),
+        ])
+    }
+
+    @Test func nestedMarkersArePeeledAndABlankLineEndsTheQuote() {
+        #expect(MarkdownBodyBlock.blocks(from: "> > deep\n\n> next") == [
+            .quote(kind: nil, title: nil, text: "deep"),
+            .quote(kind: nil, title: nil, text: "next"),
+        ])
+    }
+
+    @Test func aQuoteInsideCodeStaysCode() {
+        #expect(MarkdownBodyBlock.blocks(from: "```\n> not a quote\n```") == [.code(language: nil, code: "> not a quote")])
+    }
+
+    @Test func aQuoteEndsATaskList() {
+        #expect(MarkdownBodyBlock.blocks(from: "- [ ] One\n> Aside") == [
+            .tasks([MarkdownTask(checked: false, text: "One")]),
+            .quote(kind: nil, title: nil, text: "Aside"),
+        ])
+    }
+
+    @Test func mathAndStrayBoldAreCleanedInEveryTextBlock() {
+        let body = #"""
+        ## Ratio \(\ge 2\)
+        Keep it **above
+        - [ ] Hold \(\le 3\)
+        > Note: \(\approx 1\)
+        """#
+        #expect(MarkdownBodyBlock.blocks(from: body) == [
+            .heading(level: 2, text: "Ratio ≥ 2"),
+            .prose("Keep it above"),
+            .tasks([MarkdownTask(checked: false, text: "Hold ≤ 3")]),
+            .quote(kind: nil, title: nil, text: "Note: ≈ 1"),
+        ])
+    }
+
+    @Test func prefixCutsAQuote() {
+        let shown = MarkdownBodyBlock.prefix([.quote(kind: "note", title: "Note", text: "abcdefgh")], characters: 7)
+        #expect(shown.blocks == [.quote(kind: "note", title: "Note", text: "abc…")])
+        #expect(shown.truncated)
+    }
+
+    @MainActor
+    @Test func calloutLabelsForVoiceOver() {
+        #expect(MarkdownBodyView.calloutLabel("warning") == "Warning")
+        #expect(MarkdownBodyView.calloutLabel(nil) == "Callout")
+        #expect(MarkdownBodyView.accessibilityPrefix(kind: "warning") == "Warning: ")
+        #expect(MarkdownBodyView.accessibilityPrefix(kind: nil) == "Quote: ")
+    }
+}

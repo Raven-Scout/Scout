@@ -8,7 +8,7 @@ import SwiftUI
 struct HealthView: View {
     @EnvironmentObject var ledgerService: RunLedgerService
     @EnvironmentObject var engineHealth: EngineHealthService
-    /// Opens Settings (Settings ▸ Engine holds the run protection controls).
+    /// Opens Settings at its Engine section, which holds the run protection controls.
     var openSettings: () -> Void = {}
     /// The vault's `.scout-logs/`, for "Show log" on a run.
     var logsDirectory: URL? = nil
@@ -17,7 +17,7 @@ struct HealthView: View {
     @State private var everythingElseExpanded = false
 
     private var model: HealthPanelModel {
-        HealthPanelModel(ledger: ledgerService.ledger, doctorNotes: engineHealth.doctor?.notes ?? [], filter: filter)
+        HealthPanelModel(ledger: ledgerService.ledger, doctor: engineHealth.doctor, filter: filter)
     }
 
     var body: some View {
@@ -85,7 +85,7 @@ struct HealthView: View {
 
     @ViewBuilder
     private func loaded(_ model: HealthPanelModel) -> some View {
-        if model.groups.isEmpty {
+        if model.groups.isEmpty && model.engineIssues.isEmpty {
             Text("Nothing needs fixing.")
                 .font(DS.sans(13))
                 .foregroundStyle(DS.Ink.p2)
@@ -97,6 +97,12 @@ struct HealthView: View {
                     FindingRow(finding: finding, tone: group.group == .red ? DS.Status.err : DS.Status.warn,
                                vaultDirectory: logsDirectory?.deletingLastPathComponent())
                 }
+            }
+        }
+        if !model.engineIssues.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("Scout's engine")
+                ForEach(model.engineIssues) { EngineIssueRow(issue: $0) }
             }
         }
         if !model.everythingElse.isEmpty {
@@ -212,6 +218,37 @@ struct FindingRow: View {
             url = vault.appendingPathComponent(log)
         }
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+}
+
+/// One of the engine's own warnings or problems (the doctor's install checks), with its
+/// fix and, for a grouped warning, its files behind a disclosure (UI audit R1).
+struct EngineIssueRow: View {
+    let issue: HealthSummary.Issue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(issue.title).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let fix = issue.fix {
+                (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+                    .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !issue.items.isEmpty {
+                IssueFilesDisclosure(files: issue.items)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1.5).fill(issue.severity == .problem ? DS.Status.err : DS.Status.warn)
+                .frame(width: 3).accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(issue.severity.singular.capitalized): \(issue.title)")
     }
 }
 

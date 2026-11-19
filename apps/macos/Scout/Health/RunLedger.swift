@@ -79,7 +79,8 @@ nonisolated struct RunLedgerEntry: Equatable, Sendable, Decodable, Identifiable 
     let mode: String
     /// scout | dreaming | research; nil for rows from older runners.
     let runner: String?
-    /// schedule | heartbeat | manual; nil for older runners.
+    /// schedule | heartbeat | manual | event (a connector-event trigger, whose
+    /// `slot` is the skill it ran); nil for older runners.
     let trigger: String?
     let startedAt: Date
     let finishedAt: Date

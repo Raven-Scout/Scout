@@ -221,6 +221,10 @@ nonisolated enum DisplayName {
             title: "Signed out of Claude",
             why: "Scheduled runs can't start until Claude Code is signed in again.",
             fix: "Open Claude Code in a terminal and sign in."),
+        "authrace": PlainExplanation(
+            title: "Claude login was busy",
+            why: "Another Claude Code window was refreshing your login when the run started. Your login is fine.",
+            fix: "Nothing to do: Scout tries again a minute later, and at the next scheduled time."),
         "network": PlainExplanation(
             title: "Network problem",
             why: "The run couldn't reach Claude or a connected service.",
@@ -265,6 +269,65 @@ nonisolated enum DisplayName {
             why: "The run stopped with an error Scout doesn't recognise.",
             fix: "Open the run's log for details."),
     ]
+
+    // MARK: - Projects
+
+    /// Names for a set of projects (folders) that can be told apart: a name
+    /// only one project has reads as written; projects sharing a name
+    /// (two "Scout" lanes for two folders) each get the shortest trailing
+    /// part of their folder path that differs, home written as `~` —
+    /// "Scout (~/Scout)" beside "Scout (code/Scout)". The `(…)` suffix is
+    /// the same shape `slotKey` uses for a clashing schedule name. Names
+    /// compare without case, and paths without trailing slashes. Two keys
+    /// for one folder (`/a/Scout`, `/a/Scout/`) can't be told apart, so
+    /// they show the folder's whole path, home still written as `~`. A key
+    /// that isn't a path is its own suffix.
+    static func projectNames(_ projects: [(key: String, name: String)], home: String) -> [String: String] {
+        var firstName: [String: String] = [:]
+        var keys: [String] = []
+        for project in projects where firstName[project.key] == nil {
+            firstName[project.key] = project.name
+            keys.append(project.key)
+        }
+        let groups = Dictionary(grouping: keys) { (firstName[$0] ?? "").lowercased() }
+        var result: [String: String] = [:]
+        for group in groups.values {
+            guard group.count > 1 else {
+                result[group[0]] = firstName[group[0]]
+                continue
+            }
+            let shown = group.map { abbreviatingHome(trimmingTrailingSlashes($0), home: home) }
+            let parts = shown.map(pathComponents)
+            let deepest = parts.map(\.count).max() ?? 1
+            var depth = 1
+            func trail(_ p: [String]) -> String { p.suffix(depth).joined(separator: "/") }
+            while depth < deepest, Set(parts.map(trail)).count < group.count { depth += 1 }
+            let unique = Set(parts.map(trail)).count == group.count
+            for (i, key) in group.enumerated() {
+                result[key] = "\(firstName[key] ?? key) (\(unique ? trail(parts[i]) : shown[i]))"
+            }
+        }
+        return result
+    }
+
+    private static func trimmingTrailingSlashes(_ path: String) -> String {
+        var trimmed = Substring(path)
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed = trimmed.dropLast() }
+        return String(trimmed)
+    }
+
+    private static func abbreviatingHome(_ path: String, home: String) -> String {
+        let home = trimmingTrailingSlashes(home)
+        guard !home.isEmpty else { return path }
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
+    private static func pathComponents(_ path: String) -> [String] {
+        let parts = path.split(separator: "/").map(String.init)
+        return parts.isEmpty ? [path] : parts
+    }
 
     // MARK: - Connectors, alerts and health
 

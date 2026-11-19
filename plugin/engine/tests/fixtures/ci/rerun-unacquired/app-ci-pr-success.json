@@ -1,0 +1,171 @@
+{
+  "_note": "Captured 2026-11-18 from the GitHub API. branch_runs is that workflow's runs on the same branch and event, as of when this attempt completed.",
+  "_source": "https://github.com/Raven-Scout/Scout/actions/runs/44351590473/attempts/1",
+  "annotations": {},
+  "branch_runs": [
+    {
+      "created_at": "2026-11-18T16:49:04Z",
+      "head_sha": "7fb51a9f69fb4927403419631f97952e5e85ca7f",
+      "id": 44351590473,
+      "run_number": 979
+    }
+  ],
+  "jobs": [
+    {
+      "completed_at": "2026-11-18T16:49:14Z",
+      "conclusion": "success",
+      "created_at": "2026-11-18T16:49:05Z",
+      "id": 134968391955,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "changes",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018667",
+      "started_at": "2026-11-18T16:49:07Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/changed-paths.sh '^(apps/macos/|plugin/\\.claude-plugin/plugin\\.json$|\\.github/workflows/app-ci\\.yml$|\\.github/scripts/(changed-paths|version-bump-only)\\.sh$)'"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/version-bump-only.sh"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T17:09:12Z",
+      "conclusion": "success",
+      "created_at": "2026-11-18T16:49:15Z",
+      "id": 134968508144,
+      "labels": [
+        "macos-15"
+      ],
+      "name": "ScoutTests",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018728",
+      "started_at": "2026-11-18T17:01:20Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Checkout"
+        },
+        {
+          "conclusion": "success",
+          "name": "Select newest Xcode"
+        },
+        {
+          "conclusion": "success",
+          "name": "Toolchain info"
+        },
+        {
+          "conclusion": "success",
+          "name": "sparkle-release tests"
+        },
+        {
+          "conclusion": "success",
+          "name": "Bundle-engine script tests"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run ScoutTests"
+        },
+        {
+          "conclusion": "success",
+          "name": "Check coverage floor"
+        },
+        {
+          "conclusion": "success",
+          "name": "Upload test results"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Checkout"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T16:49:15Z",
+      "conclusion": "skipped",
+      "created_at": "2026-11-18T16:49:15Z",
+      "id": 134968512121,
+      "labels": [
+        "xcode-27"
+      ],
+      "name": "ScoutTests (Xcode 27, non-blocking)",
+      "run_attempt": 1,
+      "runner_name": null,
+      "started_at": "2026-11-18T16:49:15Z",
+      "status": "completed",
+      "steps": []
+    },
+    {
+      "completed_at": "2026-11-18T17:09:18Z",
+      "conclusion": "success",
+      "created_at": "2026-11-18T17:09:12Z",
+      "id": 134982031309,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "app-ci",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018734",
+      "started_at": "2026-11-18T17:09:15Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Fail if any gated job failed or was cancelled"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    }
+  ],
+  "run": {
+    "conclusion": "success",
+    "created_at": "2026-11-18T16:49:04Z",
+    "event": "pull_request",
+    "head_branch": "ci/macos-runner-queue",
+    "head_sha": "7fb51a9f69fb4927403419631f97952e5e85ca7f",
+    "id": 44351590473,
+    "name": "app-ci",
+    "run_attempt": 1,
+    "run_number": 979,
+    "status": "completed",
+    "workflow_id": 374875398
+  }
+}

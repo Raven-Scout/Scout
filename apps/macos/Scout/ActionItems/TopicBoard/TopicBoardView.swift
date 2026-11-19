@@ -18,7 +18,10 @@ struct TopicBoardView: View {
     @State private var topics: [TopicMeta] = []
     @State private var doneDates: [String: Date] = [:]
     @State private var dismissed: Set<String> = []
+    /// Whether this engine has the board's write commands at all.
     @State private var canWrite = false
+    /// Off while the page's engine check fails (`ActionItemsView`).
+    @Environment(\.actionItemsWritesEnabled) private var writesEnabled
     @State private var writeError: String?
     @AppStorage("topicBoard.open") private var openRaw: String = ""
     @AppStorage("topicBoard.filter") private var filterRaw: String = ""
@@ -116,13 +119,24 @@ struct TopicBoardView: View {
         )
     }
 
+    /// Rename and Dismiss run `scoutctl action-items` too, so they need the
+    /// engine to support board writes AND the page's engine check to pass:
+    /// the same switch that turns the List's writes off (R2).
+    static func boardWritesAllowed(engineSupports: Bool, writesEnabled: Bool) -> Bool {
+        engineSupports && writesEnabled
+    }
+
+    private var boardWritesAllowed: Bool {
+        Self.boardWritesAllowed(engineSupports: canWrite, writesEnabled: writesEnabled)
+    }
+
     private func renameAction(for topic: BoardTopic) -> ((String) -> Void)? {
-        guard canWrite else { return nil }
+        guard boardWritesAllowed else { return nil }
         return { write(.renameTopic(tag: topic.key, name: $0)) }
     }
 
     private var dismissAction: ((SideEntry) -> Void)? {
-        canWrite ? { dismiss($0) } : nil
+        boardWritesAllowed ? { dismiss($0) } : nil
     }
 
     private func dismiss(_ entry: SideEntry) {

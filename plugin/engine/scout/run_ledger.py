@@ -62,7 +62,8 @@ def run_dict(row: OutcomeRow) -> dict:
         "exit_code": row.exit_code,
         # ok | failed | skipped_* (health.SKIP_OUTCOMES); a client treats an unknown value as "failed".
         "outcome": row.outcome,
-        # Why: "ok", a failure class (timeout, rate_limited, oauth_expired, network, budget, git_lock, unknown)
+        # Why: "ok", a failure class (timeout, rate_limited, oauth_expired, auth_race, network, budget,
+        # git_lock, unknown)
         # or a skip's cause (gates_unsafe_*, lease_held, lease_unavailable).
         "failure_class": _match(row.failure_class, _CLASS_RE),
         "resets_at": iso_z(row.resets_at) if row.resets_at else None,
