@@ -1,8 +1,9 @@
 """``no_drop``: no open item silently disappears (dropoff audit, phases/core/action-items.md:288-295).
 
 An open tag from yesterday must still be in today's file (open, or in
-✅ Recently Completed), or be in the stale archive marked today, or be one of
-the scenario's expected closures.
+✅ Recently Completed), be open in ``action-items/backlog.md`` (*The Backlog
+and the Budget*), be in the stale archive marked today, or be one of the
+scenario's expected closures.
 """
 
 from __future__ import annotations
@@ -26,10 +27,11 @@ def no_drop(
     *,
     archived_tags: set[str],
     expected_closures: set[str],
+    backlog_tags: frozenset[str] | set[str] = frozenset(),
 ) -> CheckResult:
     if today is None:
         return CheckResult("no_drop", None, ("missing_output",))
     present = set(by_tag(today))
-    gone = _open_tags(yesterday) - present - archived_tags - expected_closures
+    gone = _open_tags(yesterday) - present - backlog_tags - archived_tags - expected_closures
     details = tuple(f"{tag}: open yesterday, gone today" for tag in sorted(gone))
     return CheckResult("no_drop", not gone, details)

@@ -114,6 +114,26 @@ agent_sessions:
   desktop_support_dir: null
   claude_home: null
 
+# The daily action-items file's shape. MUST equal ActionItemsSettings()'s
+# defaults in scout/action_items/budget.py (tests/unit/test_action_items_budget.py).
+# `fit` (scoutctl action-items fit, run by materialize once a day) moves
+# Parked, Watching and 🟡 tasks not due within `backlog_due_days` to
+# action-items/backlog.md, spills 🟡 past `budget.target_open`, moves extra
+# prose sub-bullets to context notes and keeps `recently_completed_days` of
+# ✅ entries. `report` only writes .scout-logs/action-items-fit.json; `apply`
+# writes. `check-size` and the doctor warn past the target and the hard limit;
+# neither ever fails a run.
+action_items:
+  fit: report
+  backlog_due_days: 14
+  recently_completed_days: 3
+  budget:
+    target_bytes: 51200
+    target_open: 80
+    hard_bytes: 61440
+    hard_open: 100
+    prose_sub_bullets: 1
+
 # KB lint — `scoutctl kb lint`, run by the vault's git pre-commit hook.
 # Budgets: the first matching glob wins; `bytes: null` = no size budget.
 # Per-vault extra budgets go in a top-level `kb_budgets: {glob: bytes}` map,

@@ -23,6 +23,16 @@ When a block last changed comes from an activity ledger that replays the
 daily files in date order. The ledger is a cache — rebuilt from the archived
 daily files whenever it is missing — so it lives under ``.scout-cache/``.
 
+Two things the replay does not count as an item going away. A day whose file
+has no checklist items at all is a truncated rewrite, not a cleared board, so
+it is skipped: forgetting every tag on it restarted every clock. And an item
+that moved to ``action-items/backlog.md`` is still open: the replay keeps it,
+and :meth:`ActivityLedger.observe_backlog` folds the backlog's current text
+in, so moving an item between the two files is not a touch and a backlog item
+nobody works ages out like any other. The backlog has no dated history, so a
+backlog item the ledger has never seen starts its clock the day it is first
+observed (a rebuilt cache restarts those clocks).
+
 One edit is not a touch: the owner's one-off title cleanup (``action-items
 retitle``, #708) shortens titles without restarting their clocks. It records
 each rewrite in ``.scout-state/title-rewrites.jsonl`` (committed with the
@@ -52,6 +62,9 @@ STALE_AFTER_DAYS = 60
 # 2: hashes fold dates and ages out of the text (#372). A v1 ledger is rebuilt.
 _LEDGER_VERSION = 2
 _DAILY_NAME_RE = re.compile(r"^action-items-(\d{4}-\d{2}-\d{2})\.md$")
+BACKLOG_NAME = "backlog.md"
+# A checklist item in any state: a file with none lost its item sections.
+_CHECKBOX_RE = re.compile(r"^\s*[-*] \[[ xX]\]")
 _OPEN_TASK_RE = re.compile(r"^- \[ \]\s+")
 _SNOOZE_RE = re.compile(r"snoozed-until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^#{1,6}\s")
@@ -286,6 +299,24 @@ def daily_files(data_dir: Path) -> list[tuple[_dt.date, Path]]:
     return sorted(found.items())
 
 
+def backlog_path(data_dir: Path) -> Path:
+    return paths.action_items_dir(data_dir) / BACKLOG_NAME
+
+
+def read_backlog(data_dir: Path) -> str | None:
+    """The backlog's text, or None when it is missing or unreadable."""
+    try:
+        return backlog_path(data_dir).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def backlog_fingerprints(data_dir: Path) -> dict[str, str]:
+    """Tag → digest for every open item in the backlog (none when there is no backlog)."""
+    text = read_backlog(data_dir)
+    return _fingerprints(text.splitlines()) if text else {}
+
+
 class ActivityLedger:
     """When each open item's block last changed, by tag."""
 
@@ -343,11 +374,18 @@ class ActivityLedger:
     def _rewritten(self, tag: str, on: _dt.date, before: str, after: str) -> bool:
         return (before, after) in self.rewrites.get((tag, on), set())
 
-    def observe(self, lines: list[str], on: _dt.date) -> None:
+    def observe(self, lines: list[str], on: _dt.date, *, keep: frozenset[str] = frozenset()) -> None:
         """Fold one day's final file in. A tag absent that day is forgotten, so
-        an item that comes back later counts as new from the day it returns."""
+        an item that comes back later counts as new from the day it returns,
+        unless it is in ``keep`` (open in the backlog). A file with no
+        checklist items is skipped: it is a truncated rewrite, not a cleared board."""
+        if not any(_CHECKBOX_RE.match(line) for line in lines):
+            self.seen_through = on
+            return
         current = _fingerprints(lines)
-        updated: dict[str, dict[str, str]] = {}
+        updated: dict[str, dict[str, str]] = {
+            tag: entry for tag, entry in self._items.items() if tag in keep and tag not in current
+        }
         for tag, digest in current.items():
             prior = self._items.get(tag)
             if prior is not None and prior["hash"] == digest:
@@ -359,13 +397,39 @@ class ActivityLedger:
         self._items = updated
         self.seen_through = on
 
+    def observe_backlog(self, lines: list[str], on: _dt.date, *, skip: frozenset[str] = frozenset()) -> None:
+        """Fold the backlog's current text in, as of ``on``.
+
+        A block unchanged since the ledger last saw it (in the daily files or
+        here) keeps its date, and so does one changed by a recorded rewrite;
+        any other change, or a tag never seen, starts its clock ``on``. Tags in
+        ``skip`` (also open in the daily file, which wins) are left alone.
+        """
+        for tag, digest in _fingerprints(lines).items():
+            if tag in skip:
+                continue
+            prior = self._items.get(tag)
+            if prior is not None and (prior["hash"] == digest or self._rewritten_any(tag, prior["hash"], digest)):
+                self._items[tag] = {"hash": digest, "since": prior["since"]}
+            else:
+                self._items[tag] = {"hash": digest, "since": on.isoformat()}
+
+    def _rewritten_any(self, tag: str, before: str, after: str) -> bool:
+        """A recorded rewrite of ``tag`` from exactly ``before`` to exactly ``after``, on any day.
+
+        The backlog has no dated history to replay, so the day can't be matched."""
+        return any((before, after) in pairs for (t, _), pairs in self.rewrites.items() if t == tag)
+
     def catch_up(self, data_dir: Path, before: _dt.date) -> None:
-        """Replay every daily file dated after `seen_through` and before `before`."""
+        """Replay every daily file dated after `seen_through` and before `before`.
+
+        Items open in the backlog now are kept across days they are absent from."""
         self.rewrites = load_rewrites(data_dir)
+        keep = frozenset(backlog_fingerprints(data_dir))
         for day, path in daily_files(data_dir):
             if day >= before or (self.seen_through is not None and day <= self.seen_through):
                 continue
-            self.observe(path.read_text(encoding="utf-8").splitlines(), on=day)
+            self.observe(path.read_text(encoding="utf-8").splitlines(), on=day, keep=keep)
 
 
 def last_changed_by_tag(lines: list[str], *, data_dir: Path, today: _dt.date) -> dict[str, _dt.date]:
@@ -403,18 +467,22 @@ def split_stale(
     *,
     today: _dt.date,
     max_age_days: int = STALE_AFTER_DAYS,
+    exclude: frozenset[str] = frozenset(),
 ) -> SplitResult:
     """Separate the blocks unchanged for `max_age_days` from the rest of `lines`.
 
     A block whose text differs from what the ledger last saw was touched
     today, and one the ledger has never seen is new — neither is stale. So is
-    anything snoozed past today: a snooze is a decision to park it.
+    anything snoozed past today: a snooze is a decision to park it. Tags in
+    ``exclude`` are never archived here.
     """
     known = _fingerprints(lines)
     cutoff = today - _dt.timedelta(days=max_age_days)
     remove: set[int] = set()
     archived: list[ArchivedItem] = []
     for block in task_blocks(lines):
+        if block.tag in exclude:
+            continue
         since = ledger.last_changed(block.tag)
         if since is None or since > cutoff or not ledger.unchanged(block.tag, known.get(block.tag), today):
             continue
@@ -492,6 +560,38 @@ def write_archive(
     return target
 
 
+def split_backlog(
+    data_dir: Path,
+    ledger: ActivityLedger,
+    *,
+    today: _dt.date,
+    skip: frozenset[str],
+    max_age_days: int = STALE_AFTER_DAYS,
+) -> tuple[str, SplitResult] | None:
+    """Observe the backlog into ``ledger`` and split its stale items out.
+
+    Returns the backlog's raw text and the split, or None when there is no
+    backlog. ``skip`` is the tags open in the day's file, which wins.
+    """
+    raw = read_backlog(data_dir)
+    if raw is None:
+        return None
+    lines = raw.splitlines()
+    ledger.observe_backlog(lines, on=today, skip=skip)
+    # A tag also open in the day's file is the daily row's to age, not this copy's.
+    return raw, split_stale(lines, ledger, today=today, max_age_days=max_age_days, exclude=skip)
+
+
+def write_lines_like(target: Path, raw: str, lines: list[str]) -> None:
+    """Write ``lines`` to ``target`` with ``raw``'s newline style and trailing newline."""
+    atomic_write_lines(
+        target,
+        lines,
+        newline="\r\n" if "\r\n" in raw else "\n",
+        trailing_newline=raw.endswith("\n"),
+    )
+
+
 def archive_stale(
     *,
     data_dir: Path,
@@ -499,7 +599,7 @@ def archive_stale(
     max_age_days: int = STALE_AFTER_DAYS,
     dry_run: bool = False,
 ) -> list[ArchivedItem]:
-    """Archive stale items out of the existing daily file for `date`, in place."""
+    """Archive stale items out of the existing daily file for `date` and out of the backlog, in place."""
     target = paths.action_items_daily_path(data_dir, date=date)
     if not target.exists():
         return []
@@ -507,15 +607,16 @@ def archive_stale(
     ledger.catch_up(data_dir, before=date)
     raw = target.read_text(encoding="utf-8")
     result = split_stale(raw.splitlines(), ledger, today=date, max_age_days=max_age_days)
+    daily_tags = frozenset(b.tag for b in task_blocks(raw.splitlines()))
+    backlog = split_backlog(data_dir, ledger, today=date, skip=daily_tags, max_age_days=max_age_days)
+    archived = result.archived + (backlog[1].archived if backlog else [])
     if dry_run:
-        return result.archived
+        return archived
     ledger.save()
+    if archived:
+        write_archive(data_dir, date, archived, max_age_days=max_age_days)
     if result.archived:
-        write_archive(data_dir, date, result.archived, max_age_days=max_age_days)
-        atomic_write_lines(
-            target,
-            result.lines,
-            newline="\r\n" if "\r\n" in raw else "\n",
-            trailing_newline=raw.endswith("\n"),
-        )
-    return result.archived
+        write_lines_like(target, raw, result.lines)
+    if backlog and backlog[1].archived:
+        write_lines_like(backlog_path(data_dir), backlog[0], backlog[1].lines)
+    return archived

@@ -1038,6 +1038,32 @@ def _check_kb_lint_config(*, vault: Path) -> list[str]:
         return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
 
 
+def _check_action_items_size(*, vault: Path) -> list[str]:
+    """The newest daily action-items file past its hard limit (``action_items.budget``).
+
+    Runs only warn about it (``check-size``, a Run notes line), and a file this
+    size is hard to read, so the owner hears about it here too. Never an error."""
+    from scout.action_items.budget import load_settings, measure
+
+    folder = vault / "action-items"
+    try:
+        newest = max(folder.glob("action-items-????-??-??.md"), default=None)
+        if newest is None:
+            return []
+        text = newest.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    budget = load_settings(vault).budget
+    report = measure(text, budget)
+    if report.level(budget) != "hard":
+        return []
+    return [
+        f"action items: {newest.name} is past its hard limit — " + "; ".join(report.problems(budget)) + ". "
+        "Run `scoutctl action-items fit --dry-run` to see what would move, and set `action_items.fit: apply` "
+        "in scout-config.yaml to let materialize keep it to its budget"
+    ]
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -1258,6 +1284,7 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_action_items_size(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:

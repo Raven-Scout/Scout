@@ -500,6 +500,105 @@ def cli_archive_stale(
         sys.stdout.write(f"  [#{item.tag}] unchanged since {item.last_changed.isoformat()}\n")
 
 
+@app.command("fit")
+def cli_fit(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to fit, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    apply: bool | None = typer.Option(
+        None,
+        "--apply/--dry-run",
+        help="Write the changes, or only report them (default: action_items.fit in scout-config.yaml).",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Keep today's daily file to its budget: backlog, open-task cap, context notes, Recently Completed.
+
+    Moves 🅿️ Parked, 🟢 Watching and 🟡 tasks not due within 14 days to
+    `action-items/backlog.md` (and backlog 🟡 tasks that came due back), spills
+    the bottom of 🟡 past the open-task cap, moves extra prose sub-bullets to
+    each task's context note and drops Recently Completed entries past 3 days.
+    Nothing is deleted. `materialize` runs it once a day; with
+    `action_items.fit: report` (the default) it only reports, to
+    `.scout-logs/action-items-fit.json`.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings
+    from scout.action_items.fit import fit
+    from scout.config import today
+
+    vault = data_dir or paths.data_dir()
+    if date is None:
+        day = today(vault)
+    else:
+        try:
+            day = _dt.date.fromisoformat(date)
+        except ValueError as e:
+            raise ActionItemError(f"--date: invalid date {date!r}") from e
+    settings = load_settings(vault)
+    result = fit(data_dir=vault, date=day, apply=apply, settings=settings)
+    if result is None:
+        raise ActionItemError(f"no daily file for {day.isoformat()}")
+    applied = (settings.fit == "apply" if apply is None else apply) and result.changed
+    if json_out:
+        sys.stdout.write(_json.dumps({"applied": applied, "mode": settings.fit, **result.to_json()}) + "\n")
+        return
+    if not result.changed:
+        sys.stdout.write("fit: nothing to move — the daily file already fits\n")
+        return
+    verb = "fitted" if applied else "would fit (dry run; `--apply` or action_items.fit: apply writes)"
+    sys.stdout.write(f"fit: {verb}: {result.summary()}\n")
+    for move in result.moves:
+        sys.stdout.write(f"  [#{move.tag}] {move.section} → {move.to} ({move.reason})\n")
+
+
+@app.command("check-size")
+def cli_check_size(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Check today's daily file against its budget (`action_items.budget` in scout-config.yaml).
+
+    Measures the file's size, its open tasks and the tasks carrying more prose
+    sub-bullets than allowed. Exit codes: 0 = within the target, 1 = over the
+    target or the hard limit (a warning: run `fit`, then note it in this run's
+    🪵 Run notes), 2 = cannot check.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings, measure
+
+    name = "check-size"
+    day = _check_day(name, date, data_dir)
+    vault = data_dir or paths.data_dir()
+    target = paths.action_items_daily_path(vault, date=_dt.date.fromisoformat(day))
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise _cannot_check(name, e, json_out) from e
+    budget = load_settings(vault).budget
+    report = measure(text, budget)
+    level = report.level(budget)
+    if json_out:
+        sys.stdout.write(_json.dumps({"day": day, **report.to_json(budget)}) + "\n")
+    elif level == "ok":
+        sys.stdout.write(f"{name}: within budget ({report.bytes / 1024:.1f} KB, {report.open_tasks} open tasks)\n")
+    else:
+        label = "over the hard limit" if level == "hard" else "over the target"
+        sys.stdout.write(f"{name}: {label}:\n")
+        for problem in report.problems(budget):
+            sys.stdout.write(f"  {problem}\n")
+        sys.stdout.write(
+            "Run `scoutctl action-items fit`, then add `action items over budget: <these numbers>` to this "
+            "run's 🪵 Run notes entry.\n"
+        )
+    if level != "ok":
+        raise typer.Exit(code=1)
+
+
 @app.command("check-review-requests")
 def cli_check_review_requests(
     date: str | None = typer.Option(
