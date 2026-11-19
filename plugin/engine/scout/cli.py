@@ -695,6 +695,10 @@ def hook_kb_pre_filter(
 kb_app = typer.Typer(help="Knowledge-base structure checks (size budgets, run-diary headings).")
 app.add_typer(kb_app, name="kb")
 
+_READER_HELP = (
+    "owner | autonomous | elsewhere | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow."
+)
+
 
 def _kb_repo(repo: Path | None) -> Path:
     from scout import paths
@@ -775,7 +779,7 @@ def kb_classify(
     reader: str | None = typer.Option(
         None,
         "--reader",
-        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -831,7 +835,7 @@ def kb_policy(
     reader: str | None = typer.Option(
         None,
         "--reader",
-        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -1090,7 +1094,7 @@ def kb_shares(
     reader: str | None = typer.Option(
         None,
         "--reader",
-        help="owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow.",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -1149,7 +1153,6 @@ def _scope_text(scope: object) -> str:
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
 
-_READER_HELP = "owner | autonomous | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow."
 _KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
 _SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
 
@@ -1242,6 +1245,36 @@ _J = typer.Option(False, "--json", help="Print JSON; every result carries its la
 _REPO = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd).")
 _KBR = typer.Option(None, "--kb-root", help=_KB_ROOT_HELP)
 _SCH = typer.Option(None, "--schema", help=_SCHEMA_HELP)
+
+
+@kb_app.command("vault")
+def kb_vault(
+    as_json: bool = typer.Option(False, "--json", help="Print {vault, scoutctl, source, in_vault, reason}."),
+) -> None:
+    """Print the vault's absolute path, from any working directory. Exit 1 = no usable vault.
+
+    From configuration only: SCOUT_DATA_DIR, else the engine pointer's vault, else ~/Scout (when there is no
+    pointer); never the cwd, which only sets `in_vault`. `--json` adds the absolute `scoutctl` of this engine,
+    which a skill calls with `--repo <vault>`; nothing in the vault is ever run. Reads no note.
+    """
+    import json
+    import os
+
+    from scout.kb.locate import engine_scoutctl, locate_vault
+
+    try:
+        cwd: Path | None = Path.cwd()
+    except OSError:  # the working directory was deleted
+        cwd = None
+    loc = locate_vault(os.environ, cwd)
+    if as_json:
+        typer.echo(json.dumps(loc.as_json(engine_scoutctl())))
+    else:
+        if loc.vault is not None:
+            typer.echo(str(loc.vault))
+        if loc.reason:
+            typer.echo(f"scoutctl kb vault: {loc.reason}", err=True)
+    raise typer.Exit(0 if loc.vault is not None else 1)
 
 
 @kb_app.command("files")
