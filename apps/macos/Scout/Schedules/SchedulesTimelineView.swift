@@ -15,10 +15,11 @@ struct SchedulesTimelineView: View {
     @Binding var selectedSlotKey: String?
 
     @State private var nowMin: Int = currentMinute()
-    /// The day the timeline draws: a weekday token ("Mon"…"Sun"), or nil for
-    /// every schedule regardless of day. Starts on today, so a weekday-only
+    /// The day the timeline draws. Starts on today, so a weekday-only
     /// schedule no longer shows on a Saturday (UI audit #60).
-    @State private var day: String? = Self.weekdayToken(for: .now)
+    @State private var day: TimelineDay = .today
+    /// Re-read once a minute (`tick`), so "Today" rolls over at midnight.
+    @State private var now: Date = .now
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     // Layout constants — keep in sync with schedules.jsx
@@ -35,25 +36,51 @@ struct SchedulesTimelineView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             dayPicker
-            if Self.slots(slots, on: day).isEmpty, let day {
-                emptyDay(day)
+            if Self.slots(slots, on: day, now: now).isEmpty {
+                emptyDay
             } else {
                 timeline
             }
+        }
+        .onReceive(tick) { _ in
+            now = .now
+            nowMin = Self.currentMinute()
         }
     }
 
     // MARK: - Day (UI audit #60)
 
+    /// Which schedules the timeline draws.
+    enum TimelineDay: Hashable {
+        /// The ones that run today, each by its own time zone's date.
+        case today
+        /// The ones whose weekdays include this token ("Mon"…"Sun").
+        case weekday(String)
+        /// All of them, whatever their days.
+        case everyDay
+    }
+
     static let weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
                                "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
 
-    /// The schedules that run on `day` (a weekday token), or all of them
-    /// when `day` is nil.
-    nonisolated static func slots(_ slots: [Slot], on day: String?) -> [Slot] {
-        guard let day else { return slots }
-        return slots.filter { $0.weekdays.contains(day) }
+    /// The schedules drawn for `day`. "Today" asks each schedule's own time
+    /// zone (`tz`, else `calendar`'s) what day `now` is, as the engine does
+    /// when it decides whether a schedule is due today.
+    nonisolated static func slots(_ slots: [Slot], on day: TimelineDay, now: Date,
+                                  calendar: Calendar = .current) -> [Slot] {
+        switch day {
+        case .everyDay:
+            return slots
+        case .weekday(let token):
+            return slots.filter { $0.weekdays.contains(token) }
+        case .today:
+            return slots.filter { slot in
+                var cal = calendar
+                if let tz = slot.tz.flatMap(TimeZone.init(identifier:)) { cal.timeZone = tz }
+                return slot.weekdays.contains(weekdayToken(for: now, calendar: cal))
+            }
+        }
     }
 
     /// `date`'s weekday as the schedule spells it ("Mon"…"Sun").
@@ -65,15 +92,17 @@ struct SchedulesTimelineView: View {
 
     /// Whether the timeline's "now" line belongs on the day shown: today,
     /// or every day at once.
-    nonisolated static func showsNow(day: String?, today: String) -> Bool {
-        day == nil || day == today
+    nonisolated static func showsNow(day: TimelineDay, today: String) -> Bool {
+        switch day {
+        case .today, .everyDay: return true
+        case .weekday(let token): return token == today
+        }
     }
 
     private var dayPicker: some View {
-        let today = Self.weekdayToken(for: .now)
-        let options: [(label: String, value: String?)] = Self.weekdayOrder.map { token in
-            (token == today ? "Today" : token, token)
-        } + [("Every day", nil)]
+        let options: [(label: String, value: TimelineDay)] = [("Today", .today)]
+            + Self.weekdayOrder.map { ($0, .weekday($0)) }
+            + [("Every day", .everyDay)]
         return AdaptiveSegmentedControl(
             selection: $day,
             options: options,
@@ -84,10 +113,15 @@ struct SchedulesTimelineView: View {
         .padding(.vertical, 10)
     }
 
-    private func emptyDay(_ day: String) -> some View {
-        VStack(spacing: 8) {
+    private var emptyDay: some View {
+        let title: String = switch day {
+        case .today: "Nothing runs today"
+        case .weekday(let token): "Nothing runs on \(Self.weekdayNames[token] ?? token)"
+        case .everyDay: "No schedules"
+        }
+        return VStack(spacing: 8) {
             Spacer()
-            Text("Nothing runs on \(Self.weekdayNames[day] ?? day)")
+            Text(title)
                 .font(DS.serif(17, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
             Text("Pick another day, or Every day to see all schedules.")
@@ -100,7 +134,7 @@ struct SchedulesTimelineView: View {
     }
 
     private var timeline: some View {
-        let sorted = Self.slots(slots, on: day).sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
+        let sorted = Self.slots(slots, on: day, now: now).sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
         let timeline = computeSegments(events: sorted.map { minutes($0.firesAtLocal) })
         let positioned = layoutCards(sorted: sorted, yFor: timeline.yForMinute)
 
@@ -122,7 +156,7 @@ struct SchedulesTimelineView: View {
                 }
 
                 // NOW marker.
-                if Self.showsNow(day: day, today: Self.weekdayToken(for: .now)) && showNow(timeline: timeline) {
+                if Self.showsNow(day: day, today: Self.weekdayToken(for: now)) && showNow(timeline: timeline) {
                     nowMarker(y: timeline.yForMinute(nowMin), totalH: timeline.totalH)
                 }
 
@@ -136,7 +170,6 @@ struct SchedulesTimelineView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 32)
         }
-        .onReceive(tick) { _ in nowMin = Self.currentMinute() }
     }
 
     // MARK: - Pieces

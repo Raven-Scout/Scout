@@ -8,7 +8,9 @@ struct SlotEditForm: View {
     let liveSlot: Slot
     let isNewDraft: Bool
 
-    let onSave: (Slot) async -> Void
+    /// The edited slot, and `liveSlot` it was typed against (so the save can
+    /// rebase onto a slot a reload changed meanwhile).
+    let onSave: (Slot, Slot) async -> Void
     let onDelete: () async -> Void
     let onFireNow: (String) async -> Void
     let onRevertNewDraft: (() -> Void)?
@@ -41,7 +43,7 @@ struct SlotEditForm: View {
     init(
         liveSlot: Slot,
         isNewDraft: Bool = false,
-        onSave: @escaping (Slot) async -> Void,
+        onSave: @escaping (Slot, Slot) async -> Void,
         onDelete: @escaping () async -> Void,
         onFireNow: @escaping (String) async -> Void,
         onRevertNewDraft: (() -> Void)? = nil,
@@ -174,7 +176,7 @@ struct SlotEditForm: View {
         Binding(
             get: {
                 SlotDraft.date(fromFiresAt: draft.firesAtLocal)
-                    ?? Calendar.current.startOfDay(for: .now)
+                    ?? SlotDraft.date(fromFiresAt: "00:00") ?? .now
             },
             set: { draft.firesAtLocal = SlotDraft.firesAt(from: $0) }
         )
@@ -183,7 +185,7 @@ struct SlotEditForm: View {
     private func performSave() async {
         isSaving = true
         defer { isSaving = false }
-        await onSave(draft.toSlot())
+        await onSave(draft.toSlot(), liveSlot)
     }
 
     // MARK: - Subviews
@@ -200,7 +202,9 @@ struct SlotEditForm: View {
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel(SlotFieldLabel.name)
-                if let err = SlotDraft.validateSlotKey(draft.key)
+                // Not while saving: the save's own reload puts the new name in
+                // `existingKeys` a moment before the form closes.
+                if !isSaving, let err = SlotDraft.validateSlotKey(draft.key)
                     ?? SlotDraft.validateNewSlotKey(draft.key, existingKeys: takenKeys) {
                     Text(err).font(DS.sans(10)).foregroundStyle(DS.Status.err)
                         .fixedSize(horizontal: false, vertical: true)
@@ -465,7 +469,7 @@ struct SlotEditForm: View {
             .disabled(isSaving || saveBlockedReason != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
             .accessibilityLabel(isSaving ? "Saving" : "Save")
         }
-            if let reason = saveBlockedReason {
+            if !isSaving, let reason = saveBlockedReason {
                 // Some fields sit in the collapsed Advanced group, so say
                 // why Save is off rather than leave a dead button.
                 Label(reason, systemImage: "exclamationmark.circle")

@@ -23,7 +23,10 @@ struct SlotDraft: Equatable {
         self.key = slot.key
         self.type = slot.type
         self.runner = slot.runner
-        self.firesAtLocal = slot.firesAtLocal
+        // A hand-edited "8:00" opens as "08:00", so the time picker and its
+        // check agree (the engine reads both the same).
+        self.firesAtLocal = SlotDraft.date(fromFiresAt: slot.firesAtLocal)
+            .map { SlotDraft.firesAt(from: $0) } ?? slot.firesAtLocal
         self.weekdays = Set(slot.weekdays)
         self.missedWindowHours = slot.missedWindowHours
         self.onMiss = slot.onMiss
@@ -156,10 +159,15 @@ struct SlotDraft: Equatable {
         // kebab-case: lowercase letter, then lowercase letters/digits/hyphens.
         let re = try! NSRegularExpression(pattern: #"^[a-z][a-z0-9-]*$"#)
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        return re.firstMatch(in: s, range: range) == nil
-            ? SlotValidationMessage.badName
-            : nil
+        if re.firstMatch(in: s, range: range) == nil { return SlotValidationMessage.badName }
+        return yamlReservedNames.contains(s) ? SlotValidationMessage.reservedName(s) : nil
     }
+
+    /// Names the engine's YAML loader (PyYAML's SafeLoader, YAML 1.1) reads
+    /// as a boolean or null rather than a string, once lowercase: a schedule
+    /// called `yes` or `on` would become the key `True`. Only lowercase
+    /// forms can pass the name pattern above.
+    static let yamlReservedNames: Set<String> = ["yes", "no", "true", "false", "on", "off", "null"]
 
     /// A new schedule's name must not be one already in the schedule: the
     /// engine reads schedule.yaml with a YAML loader that keeps the last of
@@ -190,13 +198,15 @@ struct SlotDraft: Equatable {
     /// `firesAtLocal` as a time today, for the form's time picker, or nil
     /// when the file holds something that isn't a time. Accepts a missing
     /// leading zero ("8:00"), which a hand-edited file may have.
-    static func date(fromFiresAt s: String, calendar: Calendar = .current, on day: Date = .now) -> Date? {
+    /// The day is fixed (1 January 2001), not today: on a daylight-saving
+    /// changeover day, 02:30 doesn't exist and would show as 03:30.
+    static func date(fromFiresAt s: String, calendar: Calendar = .current) -> Date? {
         let parts = s.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2,
               let h = Int(parts[0]), let m = Int(parts[1]),
               (0...23).contains(h), (0...59).contains(m),
               parts[1].count == 2 else { return nil }
-        return calendar.date(bySettingHour: h, minute: m, second: 0, of: day)
+        return calendar.date(from: DateComponents(year: 2001, month: 1, day: 1, hour: h, minute: m))
     }
 
     /// The `fires_at_local` value for a time the picker chose: always
@@ -217,6 +227,9 @@ nonisolated enum SlotValidationMessage {
         "There's already a schedule called \(DisplayName.slotKey(key)). Pick another name."
     }
     static let badTime = "Pick a time"
+    static func reservedName(_ key: String) -> String {
+        "“\(key)” can't be a schedule name: the schedule file would read it as yes, no or empty. Pick another name."
+    }
     static let noWeekdays = "Pick at least one weekday"
     static let emptyScript = "\(SlotFieldLabel.script) can't be empty. Open Advanced and enter the script to start, usually run-scout.sh."
     static let negativeWait = "\(SlotFieldLabel.waitBetweenRuns) can't be less than 0 minutes"

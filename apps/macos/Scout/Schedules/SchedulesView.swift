@@ -83,9 +83,6 @@ struct SchedulesView: View {
             }
         }
         .background(DS.Paper.base)
-        // schedule.yaml changed outside the app and the service reloaded it
-        // (UI audit #61): a notice asking to reload is moot now.
-        .onChange(of: service.externalReloadCount) { _, _ in staleBannerVisible = false }
         .task {
             // A new slot added before leaving the page comes back with it.
             // (ScheduleEditService reconciles stored drafts on every load.)
@@ -379,13 +376,13 @@ struct SchedulesView: View {
         isInitialLoading = false
     }
 
-    private func handleSave(_ saved: Slot) async {
+    /// `baseline` is the slot as the form last saw it, which the edit was
+    /// typed against (not `service.slots` now: a reload may have landed).
+    private func handleSave(_ saved: Slot, baseline: Slot) async {
         if detailIsNewDraft {
             await saveNewDraft(saved)
         } else {
-            guard let key = selectedSlotKey,
-                  let original = service.slots.first(where: { $0.key == key }) else { return }
-            await saveExistingSlot(saved, original: original)
+            await saveExistingSlot(saved, baseline: baseline)
         }
     }
 
@@ -428,11 +425,9 @@ struct SchedulesView: View {
                        title: write.title, impact: write.message, details: write.details)
     }
 
-    private func saveExistingSlot(_ saved: Slot, original: Slot) async {
+    private func saveExistingSlot(_ saved: Slot, baseline: Slot) async {
         do {
-            registerUndo(try await service.update(actionName: "Edit Schedule") { slots in
-                slots.map { $0.key == original.key ? saved : $0 }
-            })
+            registerUndo(try await service.saveSlot(saved, baseline: baseline))
         } catch let written as ScheduleReloadAfterWriteError {
             // Saved; the next successful load settles the form's draft.
             registerUndo(written.change)

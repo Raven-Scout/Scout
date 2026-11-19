@@ -7,7 +7,8 @@ import SwiftUI
 struct SchedulesDetailPane: View {
     let slot: Slot?
     let isNewDraft: Bool
-    let onSave: (Slot) async -> Void
+    /// The edited slot, and the slot the edit was typed against.
+    let onSave: (Slot, Slot) async -> Void
     let onDelete: () async -> Void
     let onFireNow: (String) async -> Void
     let onRevertNewDraft: (() -> Void)?

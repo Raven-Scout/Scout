@@ -69,8 +69,7 @@ struct SchedulesR8FormTests {
     func timeRoundTrip(_ value: String) throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/Prague")!
-        let day = Date(timeIntervalSince1970: 1_780_000_000)
-        let date = try #require(SlotDraft.date(fromFiresAt: value, calendar: calendar, on: day))
+        let date = try #require(SlotDraft.date(fromFiresAt: value, calendar: calendar))
         #expect(SlotDraft.firesAt(from: date, calendar: calendar) == value)
     }
 
@@ -78,11 +77,41 @@ struct SchedulesR8FormTests {
     func timeEdges() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let day = Date(timeIntervalSince1970: 0)
-        let eight = try #require(SlotDraft.date(fromFiresAt: "8:00", calendar: calendar, on: day))
+        let eight = try #require(SlotDraft.date(fromFiresAt: "8:00", calendar: calendar))
         #expect(SlotDraft.firesAt(from: eight, calendar: calendar) == "08:00")
         for bad in ["", "noon", "24:00", "08:60", "08:5", "08:00:00"] {
-            #expect(SlotDraft.date(fromFiresAt: bad, calendar: calendar, on: day) == nil, "\(bad)")
+            #expect(SlotDraft.date(fromFiresAt: bad, calendar: calendar) == nil, "\(bad)")
+        }
+    }
+
+    @Test("02:30 stays 02:30 in a zone that skips it on its spring-forward day")
+    func timeSurvivesDSTGap() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let date = try #require(SlotDraft.date(fromFiresAt: "02:30", calendar: calendar))
+        #expect(SlotDraft.firesAt(from: date, calendar: calendar) == "02:30")
+    }
+
+    @Test("a hand-written time without a leading zero opens as a valid time")
+    func draftNormalizesTime() {
+        let slot = Slot(key: "research", type: .research, runner: "run-scout.sh", firesAtLocal: "8:00",
+                        weekdays: ["Mon"], missedWindowHours: 4, onMiss: .fire, cooldownMinutes: 60)
+        let draft = SlotDraft(from: slot)
+        #expect(draft.firesAtLocal == "08:00")
+        #expect(draft.firstError() == nil)
+        #expect(!draft.isDirty(against: slot))
+    }
+
+    // Review of #709: YAML 1.1 reads these as booleans or null.
+    @Test("names the schedule file would read as yes/no/null are refused", arguments: ["yes", "no", "on", "off", "true", "false", "null"])
+    func reservedNames(_ name: String) {
+        #expect(SlotDraft.validateSlotKey(name) == SlotValidationMessage.reservedName(name))
+    }
+
+    @Test("ordinary names that merely contain those words are fine")
+    func reservedNamesOnlyWhole() {
+        for name in ["yes-briefing", "on-call", "nothing", "offline-research", "y", "n"] {
+            #expect(SlotDraft.validateSlotKey(name) == nil, "\(name)")
         }
     }
 }
@@ -133,9 +162,25 @@ struct SchedulesR8TimelineTests {
         let weekday = Self.slot("morning-briefing", ["Mon", "Tue", "Wed", "Thu", "Fri"])
         let weekend = Self.slot("weekend-briefing", ["Sat", "Sun"])
         let all = [weekday, weekend]
-        #expect(SchedulesTimelineView.slots(all, on: "Sat").map(\.key) == ["weekend-briefing"])
-        #expect(SchedulesTimelineView.slots(all, on: "Wed").map(\.key) == ["morning-briefing"])
-        #expect(SchedulesTimelineView.slots(all, on: nil).count == 2)
+        let now = Date(timeIntervalSince1970: 0)
+        #expect(SchedulesTimelineView.slots(all, on: .weekday("Sat"), now: now).map(\.key) == ["weekend-briefing"])
+        #expect(SchedulesTimelineView.slots(all, on: .weekday("Wed"), now: now).map(\.key) == ["morning-briefing"])
+        #expect(SchedulesTimelineView.slots(all, on: .everyDay, now: now).count == 2)
+    }
+
+    @Test("Today asks each schedule's own time zone what day it is")
+    func todayUsesSlotTimeZone() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        // Sunday 1970-01-04 23:30 UTC is already Monday in Tokyo.
+        let now = Date(timeIntervalSince1970: 3 * 86_400 + 23 * 3600 + 1800)
+        let mondayLocal = Self.slot("monday-local", ["Mon"])
+        let mondayTokyo = Slot(key: "monday-tokyo", type: .briefing, runner: "run-scout.sh", firesAtLocal: "08:00",
+                               weekdays: ["Mon"], missedWindowHours: 4, onMiss: .fire, cooldownMinutes: 60,
+                               budgetUsd: nil, tz: "Asia/Tokyo", runtime: .local)
+        let sunday = Self.slot("sunday", ["Sun"])
+        let shown = SchedulesTimelineView.slots([mondayLocal, mondayTokyo, sunday], on: .today, now: now, calendar: utc)
+        #expect(shown.map(\.key) == ["monday-tokyo", "sunday"])
     }
 
     @Test("weekday tokens match the schedule's spelling")
@@ -150,9 +195,10 @@ struct SchedulesR8TimelineTests {
 
     @Test("the now line shows only on today or every day")
     func nowLine() {
-        #expect(SchedulesTimelineView.showsNow(day: nil, today: "Tue"))
-        #expect(SchedulesTimelineView.showsNow(day: "Tue", today: "Tue"))
-        #expect(!SchedulesTimelineView.showsNow(day: "Sat", today: "Tue"))
+        #expect(SchedulesTimelineView.showsNow(day: .today, today: "Tue"))
+        #expect(SchedulesTimelineView.showsNow(day: .everyDay, today: "Tue"))
+        #expect(SchedulesTimelineView.showsNow(day: .weekday("Tue"), today: "Tue"))
+        #expect(!SchedulesTimelineView.showsNow(day: .weekday("Sat"), today: "Tue"))
     }
 }
 
@@ -170,6 +216,13 @@ private let editedListJSON = """
   "fires_at_local":"09:15","weekdays":["Mon","Tue","Wed","Thu","Fri"],
   "missed_window_hours":4,"on_miss":"fire","cooldown_minutes":60,
   "budget_usd":null,"tz":null,"runtime":"local"}]
+"""
+
+private let modelListJSON = """
+[{"key":"morning-briefing","type":"briefing","runner":"run-scout.sh",
+  "fires_at_local":"08:00","weekdays":["Mon","Tue","Wed","Thu","Fri"],
+  "missed_window_hours":4,"on_miss":"fire","cooldown_minutes":60,
+  "budget_usd":null,"tz":null,"runtime":"local","model":"sonnet"}]
 """
 
 private let yaml = """
@@ -221,13 +274,12 @@ struct SchedulesR8ServiceTests {
         try await service.loadAll()
         #expect(await service.reloadIfChangedOnDisk() == false)
         #expect(await runner.calls.count == 1)
-        #expect(service.externalReloadCount == 0)
 
         try yaml.replacingOccurrences(of: "\"08:00\"", with: "\"09:15\"")
             .write(to: canonical, atomically: true, encoding: .utf8)
         #expect(await service.reloadIfChangedOnDisk() == true)
         #expect(service.slots[0].firesAtLocal == "09:15")
-        #expect(service.externalReloadCount == 1)
+        #expect(await runner.calls.count == 2)
         // The reload's baseline is the new file, so a save isn't stale.
         #expect(await service.reloadIfChangedOnDisk() == false)
     }
@@ -272,11 +324,82 @@ struct SchedulesR8ServiceTests {
         fs.emit(FileSystemEvent(url: canonical, kind: .modified))
         fs.emit(FileSystemEvent(url: canonical, kind: .modified))
 
-        for _ in 0..<200 where service.externalReloadCount == 0 {
+        for _ in 0..<200 where service.slots[0].firesAtLocal != "09:15" {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(service.externalReloadCount == 1)
+        try await Task.sleep(for: .milliseconds(50))
         #expect(service.slots[0].firesAtLocal == "09:15")
         #expect(await runner.calls.count == 2)
+    }
+    // Review of #709: a reload landing between Save's click and its write
+    // must not let the save write the form's stale baseline back.
+    @Test("a save typed before an outside change keeps that change")
+    func saveAfterReloadKeepsOutsideChange() async throws {
+        let (service, runner, canonical) = try makeService(stdouts: [listJSON, modelListJSON])
+        try await service.loadAll()
+        let baseline = service.slots[0]
+        var draft = SlotDraft(from: baseline)
+        draft.cooldownMinutes = 120          // the user's unrelated edit
+
+        // Outside the app, the slot's model changes; the watcher reloads.
+        try yaml.appending("\n    model: sonnet\n").write(to: canonical, atomically: true, encoding: .utf8)
+        #expect(await service.reloadIfChangedOnDisk())
+        #expect(service.slots[0].model == "sonnet")
+
+        // Save lands now, still typed against the old baseline.
+        try await service.saveSlot(draft.toSlot(), baseline: baseline)
+        let written = try String(contentsOf: canonical, encoding: .utf8)
+        #expect(written.contains("model: sonnet"))
+        #expect(written.contains("cooldown_minutes: 120"))
+        #expect(await runner.calls.contains { $0.arguments.contains("validate") })
+    }
+
+    @Test("a reload and a save started together: the save waits and rebases")
+    func reloadAndSaveRace() async throws {
+        let (service, _, canonical) = try makeService(stdouts: [listJSON, modelListJSON])
+        try await service.loadAll()
+        let baseline = service.slots[0]
+        var draft = SlotDraft(from: baseline)
+        draft.cooldownMinutes = 120
+        try yaml.appending("\n    model: sonnet\n").write(to: canonical, atomically: true, encoding: .utf8)
+
+        // Queue the reload, then the save, without awaiting between. Writes
+        // and reloads run one at a time, so whichever goes first, the
+        // outside change is never written back over: the save either
+        // rebases onto it or is refused as stale.
+        let reload = Task { await service.reloadIfChangedOnDisk() }
+        await Task.yield()
+        var saved = true
+        do {
+            try await service.saveSlot(draft.toSlot(), baseline: baseline)
+        } catch is StaleScheduleError {
+            saved = false
+        }
+        _ = await reload.value
+        let written = try String(contentsOf: canonical, encoding: .utf8)
+        #expect(written.contains("model: sonnet"))
+        #expect(written.contains("cooldown_minutes: 120") == saved)
+    }
+
+    @Test("a field changed both outside and in the form refuses the save as stale")
+    func saveConflictIsStale() async throws {
+        let (service, _, canonical) = try makeService(stdouts: [listJSON, modelListJSON])
+        try await service.loadAll()
+        let baseline = service.slots[0]
+        var draft = SlotDraft(from: baseline)
+        draft.model = "haiku"
+        try yaml.appending("\n    model: sonnet\n").write(to: canonical, atomically: true, encoding: .utf8)
+        #expect(await service.reloadIfChangedOnDisk())
+        let before = try Data(contentsOf: canonical)
+        await #expect(throws: StaleScheduleError.self) {
+            try await service.saveSlot(draft.toSlot(), baseline: baseline)
+        }
+        #expect(try Data(contentsOf: canonical) == before)
+    }
+
+    @Test("applying an edit to a slot that's gone yields nothing to write")
+    func applyingToMissingSlot() {
+        let slot = SchedulesR8FormTests.slot
+        #expect(ScheduleEditService.applying(slot, baseline: slot, to: []) == nil)
     }
 }

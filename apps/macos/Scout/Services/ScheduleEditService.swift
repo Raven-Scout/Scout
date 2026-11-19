@@ -69,10 +69,6 @@ final class ScheduleEditService: ObservableObject {
     /// off screen (an undo from another page, a save that finished after the
     /// page closed). nil: none (tests that don't need it).
     private let drafts: SlotDraftStore?
-    /// Bumped each time a change made outside the app (by hand, another
-    /// app, a sync) was picked up from disk, so the page can drop a notice
-    /// that asked the user to reload (UI audit #61).
-    @Published private(set) var externalReloadCount = 0
     private var watchTask: Task<Void, Never>?
     private var pendingExternalReload: Task<Void, Never>?
 
@@ -191,7 +187,6 @@ final class ScheduleEditService: ObservableObject {
                 return false
             }
             try? await self.loadAll()
-            self.externalReloadCount += 1
             return true
         }) ?? false
     }
@@ -227,10 +222,39 @@ final class ScheduleEditService: ObservableObject {
     /// first then builds on the first's result instead of writing stale slots
     /// over it.
     @discardableResult
-    func update(actionName: String, _ transform: @escaping @MainActor ([Slot]) -> [Slot]) async throws -> VaultChange? {
+    func update(actionName: String, _ transform: @escaping @MainActor ([Slot]) throws -> [Slot]) async throws -> VaultChange? {
         try await serialized {
-            try await self.performSave(allSlots: transform(self.slots), actionName: actionName)
+            try await self.performSave(allSlots: try transform(self.slots), actionName: actionName)
         }
+    }
+
+    /// Save the form's edit to one existing slot. `saved` was typed against
+    /// `baseline`, the slot as the form last saw it; by the time this
+    /// write's turn comes, a reload (the schedule.yaml watcher, UI audit
+    /// #61) may have brought in a change made elsewhere. The edit is
+    /// rebased onto the slot as it is then: fields the user didn't touch
+    /// take the new values, so that change isn't written back over. A
+    /// field changed on both sides, or a slot that's gone, throws
+    /// `StaleScheduleError` and writes nothing.
+    @discardableResult
+    func saveSlot(_ saved: Slot, baseline: Slot, actionName: String = "Edit Schedule") async throws -> VaultChange? {
+        try await update(actionName: actionName) { slots in
+            guard let next = Self.applying(saved, baseline: baseline, to: slots) else {
+                throw StaleScheduleError(loadedAt: self.loadedMtime, modifiedAt: self.loadedMtime ?? .now)
+            }
+            return next
+        }
+    }
+
+    /// `slots` with `saved` (typed against `baseline`) rebased onto the slot
+    /// of the same key, or nil when that slot is gone or a field changed
+    /// both in `saved` and in `slots` since `baseline`.
+    nonisolated static func applying(_ saved: Slot, baseline: Slot, to slots: [Slot]) -> [Slot]? {
+        guard let current = slots.first(where: { $0.key == baseline.key }) else { return nil }
+        let rebased = SlotDraft(from: saved).rebased(from: baseline, onto: current)
+        guard rebased.conflicts.isEmpty else { return nil }
+        let merged = rebased.draft.toSlot()
+        return slots.map { $0.key == baseline.key ? merged : $0 }
     }
 
     /// Tail of the write chain: each write awaits the previous one.
