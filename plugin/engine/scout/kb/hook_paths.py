@@ -36,7 +36,9 @@ Protected (each with the form name a deny and the audit row use):
 - ``Scout's secrets``: ``~/.scout-secrets`` and ``$SCOUT_SECRETS_DIR`` (also read-gated in runs: Read, Grep, Glob,
   and a Bash command that spells a secret's path, except :data:`TELEGRAM_SECRETS` when the run has no send-only
   broker);
-- ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json`` and ``.scout-state/delegate-scan/``.
+- ``Scout's delegate state``: the vault's ``.scout-state/delegate-mirrors.json``, ``.scout-state/delegate-scan/`` and
+  the folder ``.scout-state/delegate-inbox/`` (what each inbox pull took and what ``inbox revert`` restores, its
+  temporary files, its lock and each pull's throwaway repository).
 
 :func:`protected_specs` is the list as built (before resolving and case-folding), for the OS write sandbox
 (Phase 1c); :func:`protected_roots` is it normalised for matching.
@@ -366,6 +368,7 @@ def protected_specs(
         # delegate's view of the vault.
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
+        add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
         # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
         add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
         engine = _precommit_engine(vault, hooks)
@@ -626,6 +629,7 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     ".scout-secrets",
     "delegate-mirrors.json",
     "delegate-scan",
+    "delegate-inbox",
     "LaunchAgents",
     *AGENT_DIRS,
     *SHELL_STARTUP,
