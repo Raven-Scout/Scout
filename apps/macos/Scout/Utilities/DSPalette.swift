@@ -171,6 +171,11 @@ extension DS {
         /// on the light-mode red, dark ink on the lighter dark-mode red.
         static let statusOnFill = Swatch(name: "StatusOnFill", light: RGB(1.000, 1.000, 1.000), dark: RGB(0.100, 0.080, 0.040))
 
+        /// "Waiting on you": a topic-board item that is yours, a session that
+        /// needs you. Blue, so it never reads as the urgent red (#107).
+        /// Text-safe on paper.
+        static let attentionYou = Swatch(name: "AttentionYou", light: RGB(0.235, 0.380, 0.700), dark: RGB(0.560, 0.690, 0.930))
+
         // Slot-type hues (fills; their labels use `inkOnTint`)
         static let slotBriefing      = Swatch(name: "SlotBriefing",      light: RGB(0.860, 0.660, 0.180), dark: RGB(0.910, 0.760, 0.340))
         static let slotConsolidation = Swatch(name: "SlotConsolidation", light: RGB(0.400, 0.580, 0.760), dark: RGB(0.520, 0.700, 0.870))
@@ -228,6 +233,7 @@ extension DS {
         static let paperText: [Swatch] = [
             Palette.inkP1, Palette.inkP2, Palette.inkP3, Palette.inkP4,
             Palette.accentInk, Palette.statusOk, Palette.statusWarn, Palette.statusErr,
+            Palette.attentionYou,
         ]
 
         static let all: [Pair] = {

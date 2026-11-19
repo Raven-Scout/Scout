@@ -77,17 +77,30 @@ enum DS {
         static let washOpacity = ContrastPairs.statusWashOpacity
     }
 
+    /// Workflow states that mean "this is waiting on you": a topic-board item
+    /// that is yours ("Mine") and a session that needs you. Kept apart from
+    /// `Priority.urgent` so the urgent red means only Urgent (audit #107).
+    enum Attention {
+        static let you = Palette.attentionYou.color
+    }
+
     // MARK: - Typography
     //
     // macOS has no Dynamic Type: `.dynamicTypeSize` and `Font.TextStyle` sizes
     // don't change with any system setting (checked on macOS 26 — a `.body`
     // Text measures the same at every `DynamicTypeSize`). So every size the
     // app draws goes through ONE knob instead: `TextScale.shared`, set in
-    // Settings ▸ General ▸ Text size. `serif`/`mono`/`sans` multiply their
-    // point size by it, and new code should prefer the semantic
-    // `DS.font(_:_:weight:)` styles, which are defined in one place below.
+    // Settings ▸ General ▸ Text size.
+    //
+    // Views pick a role, never a point size (design-system v2, audit #104):
+    // `DS.font(.caption)`, `DS.font(.body, .serif)`, `DS.font(.label, .mono)`.
+    // The roles live in `TextStyle` below. The sized `serif`/`mono`/`sans`
+    // functions are the scale's own building blocks, and `TypeRoleGuardTests`
+    // fails on a call to them from anywhere else. An SF Symbol drawn as a
+    // picture (an empty-state glyph) takes `DS.symbol(_:)` instead.
 
     /// Reading voice. Falls back to Apple's "New York" serif on macOS.
+    /// Views call `DS.font(_:.serif)`; this is the scale's building block.
     static func serif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
         if FontAvailability.newsreader {
@@ -99,7 +112,7 @@ enum DS {
         return .system(size: size, weight: weight, design: .serif)
     }
 
-    /// IDs, timestamps, key counts.
+    /// IDs, timestamps, key counts. Views call `DS.font(_:.mono)`.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let size = scaled(size)
         if FontAvailability.jetBrainsMono {
@@ -108,9 +121,18 @@ enum DS {
         return .system(size: size, weight: weight, design: .monospaced)
     }
 
-    /// UI chrome (buttons, labels, filters). SF Pro on macOS.
+    /// UI chrome (buttons, labels, filters). SF Pro on macOS. Views call
+    /// `DS.font(_:)`.
     static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: scaled(size), weight: weight, design: .default)
+    }
+
+    /// An SF Symbol drawn as a picture at a fixed design size: an empty-state
+    /// glyph, or a symbol sized to the shape around it (the day-circle
+    /// strip). Text never uses this; it takes a role through `DS.font`.
+    /// It still follows the Text size setting.
+    static func symbol(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        sans(size, weight: weight)
     }
 
     /// A design point size at the user's chosen text size. Reading
@@ -128,10 +150,14 @@ enum DS {
         return (size * factor * 2).rounded() / 2
     }
 
-    /// The semantic type scale. New views pick a role, not a point size; the
+    /// The semantic type scale. Views pick a role, not a point size; the
     /// scale maps each role to one design size, and `TextScale` grows them
-    /// all together.
+    /// all together. Nine sizes cover the whole app: the 26 sizes views used
+    /// before design-system v2 snapped to the nearest role.
     enum TextStyle: CaseIterable, Sendable {
+        /// The smallest type: count badges, chevrons and keycaps inside a
+        /// control, timeline tick labels.
+        case micro
         /// Small uppercase group labels, badges, dense metadata.
         case caption2
         /// Help text, secondary lines, timestamps.
@@ -144,18 +170,23 @@ enum DS {
         case headline
         /// Page section titles.
         case title
+        /// A large figure or the title of a sheet or window that isn't a
+        /// page: a usage total, the onboarding and glossary titles.
+        case hero
         /// Page titles.
         case display
 
         /// Design size in points at the standard text size.
         nonisolated var pointSize: CGFloat {
             switch self {
+            case .micro:    return 9
             case .caption2: return 10.5
             case .caption:  return 11.5
             case .label:    return 12.5
             case .body:     return 13
             case .headline: return 15
             case .title:    return 18
+            case .hero:     return 22
             case .display:  return 28
             }
         }
