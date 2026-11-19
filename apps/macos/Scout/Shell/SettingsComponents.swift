@@ -109,7 +109,7 @@ struct SettingsField<Input: View>: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(label.uppercased())
                 .font(DS.font(.caption, weight: .medium))
-                .tracking(0.06 * 11)
+                .tracking(0.06 * DS.scaled(DS.TextStyle.caption.pointSize))
                 .foregroundStyle(DS.Ink.p4)
                 .accessibilityHidden(true)   // the input below is labelled with it
             input()

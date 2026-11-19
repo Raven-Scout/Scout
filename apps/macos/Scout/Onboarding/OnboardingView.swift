@@ -43,7 +43,7 @@ struct OnboardingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(model.flowTitle).font(DS.font(.hero, .serif, weight: .medium)).foregroundStyle(DS.Ink.p1)
+            Text(model.flowTitle).dsFont(.hero, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .accessibilityAddTraits(.isHeader)
             Text(subtitle).font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
         }.padding(.bottom, 14)
@@ -354,7 +354,7 @@ struct OnboardingView: View {
     private func bullet(_ text: String) -> some View { Text("• " + text).font(DS.font(.body)).foregroundStyle(DS.Ink.p2) }
 
     private func fieldLabel(_ label: String) -> some View {
-        Text(label.uppercased()).font(DS.font(.caption, weight: .medium)).tracking(0.66).foregroundStyle(DS.Ink.p4)
+        Text(label.uppercased()).font(DS.font(.caption, weight: .medium)).tracking(0.06 * DS.scaled(DS.TextStyle.caption.pointSize)).foregroundStyle(DS.Ink.p4)
             .accessibilityHidden(true)
     }
 
