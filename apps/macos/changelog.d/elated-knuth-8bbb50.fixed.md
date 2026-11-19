@@ -1,0 +1,4 @@
+- A run notification now picks up the reason the run ledger adds a moment later, even when both land within milliseconds. When the ledger says the run succeeded or was a routine skip, Scout takes the notification back; when the ledger turns a quiet outcome into a failure, it notifies.
+- A Run again from a notification that Scout's engine refuses now posts a notification that says why.
+- "Install wake schedule" no longer waits forever on `pmset -g sched`. It says when Scout couldn't check, and no longer takes an unrelated wake time as confirmation.
+- The pretty log view cuts a single line over 64 KB; Raw still shows all of it.

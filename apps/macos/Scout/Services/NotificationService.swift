@@ -28,28 +28,69 @@ final class NotificationService: @unchecked Sendable {
         ])
     }
 
-    /// `quietly` replaces the notification already shown for this run (same
-    /// identifier) without a sound or, in the foreground, a banner: the run
-    /// ledger often names a failure's reason, class and schedule a moment
-    /// after the run's log ended. One the owner already dismissed stays
-    /// dismissed: it's replaced only while still in Notification Center.
-    func notify(run: Run, quietly: Bool = false) {
+    /// Posts `run`'s notification under its id. `quietly` replaces the one
+    /// already shown for this run without a sound or, in the foreground, a
+    /// banner: the run ledger often names a failure's reason, class and
+    /// schedule a moment after the run's log ended. Whether to replace at
+    /// all (only while it's still in Notification Center, so one the owner
+    /// dismissed stays dismissed) is `RunNotificationTracker`'s call.
+    func post(run: Run, quietly: Bool) {
         let content = Self.content(for: run)
         if quietly {
             content.sound = nil
             content.userInfo[Self.quietUpdateKey] = true
         }
-        let req = UNNotificationRequest(identifier: run.id, content: content, trigger: nil)
-        let center = UNUserNotificationCenter.current()
-        guard quietly else {
-            center.add(req)
-            return
+        UNUserNotificationCenter.current()
+            .add(UNNotificationRequest(identifier: run.id, content: content, trigger: nil))
+    }
+
+    func isDelivered(runID: Run.ID) async -> Bool {
+        await withCheckedContinuation { cont in
+            UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
+                cont.resume(returning: delivered.contains { $0.request.identifier == runID })
+            }
         }
-        let id = run.id
-        center.getDeliveredNotifications { delivered in
-            guard delivered.contains(where: { $0.request.identifier == id }) else { return }
-            center.add(req)
+    }
+
+    func removeDelivered(runID: Run.ID) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [runID])
+    }
+
+    /// A notification's Run again that Scout's engine refused (an unknown
+    /// schedule, another run starting at that moment): it says so, since the
+    /// owner pressed it from outside the app and would see nothing otherwise.
+    /// One per schedule; a second refusal replaces the first.
+    func postRunAgainRefused(slotKey: String, error: String) {
+        let content = Self.runAgainRefusedContent(slotKey: slotKey, error: error)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "\(Self.runAgainRefusedPrefix)\(slotKey)", content: content, trigger: nil))
+    }
+
+    static let runAgainRefusedPrefix = "scout.run-again-refused."
+
+    static func runAgainRefusedContent(slotKey: String, error: String) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Couldn't run \(DisplayName.slotKey(slotKey)) again"
+        content.body = runAgainRefusedReason(error)
+        content.sound = .default
+        content.categoryIdentifier = runCategory
+        return content
+    }
+
+    /// Why a Run again didn't start, in plain words. `error` is
+    /// `AppState.fireNowError`, which carries scoutctl's own words: they
+    /// never reach the notification, only the reason they point to.
+    nonisolated static func runAgainRefusedReason(_ error: String) -> String {
+        if error.contains("already being started") {
+            return "It's already starting."
         }
+        if error.contains("lock_held") {
+            return "Scout was starting another run at that moment. Try again in a minute."
+        }
+        if error.contains("unknown slot") {
+            return "That schedule no longer exists. Check the Schedules page."
+        }
+        return "Scout's engine didn't start it. Try again in a minute, or open Scout's Schedules page to see why."
     }
 
     static func content(for run: Run) -> UNMutableNotificationContent {
@@ -142,9 +183,32 @@ nonisolated enum RunNotificationPolicy {
     /// straight away when its first sighting is already finished (a fast
     /// failure or skip). Later changes replace that one notification
     /// (`shouldUpdate`) rather than raising another.
-    static func shouldNotify(previous: RunStatus?, run: Run, armed: Bool, preferences: Preferences) -> Bool {
-        guard armed, previous == nil || previous == .running, previous != run.status else { return false }
+    ///
+    /// `shown` is the notification already posted for this run, if any.
+    /// `isLive` says the app saw this run start, or first saw it after
+    /// launch: then a first outcome that wasn't worth telling (a usage limit
+    /// with that toggle off, a routine skip) that the ledger later turns into
+    /// one that is (failed) notifies too. A run already on disk at launch is
+    /// never live, so the ledger catching up on it stays quiet.
+    static func shouldNotify(previous: RunStatus?, run: Run, armed: Bool, preferences: Preferences,
+                             shown: Shown? = nil, isLive: Bool = false) -> Bool {
+        guard armed, shown == nil, previous != run.status,
+              previous == nil || previous == .running || isLive else { return false }
         return isWorthTelling(run.status, preferences: preferences)
+    }
+
+    /// Whether the notification shown for this run should be taken back: the
+    /// ledger says it succeeded after all, or was a routine skip (budget,
+    /// lock, lease, redundant), so the "failed" in Notification Center is
+    /// wrong and there's nothing to tell instead.
+    static func shouldWithdraw(shown: Shown?, run: Run) -> Bool {
+        guard let shown, run.status != shown.status else { return false }
+        switch run.status {
+        case .success, .skippedBudget, .skippedConcurrency, .skippedLease, .skippedRedundant:
+            return true
+        default:
+            return false
+        }
     }
 
     /// The outcomes a notification is raised for, under the owner's toggles.
@@ -167,11 +231,13 @@ nonisolated enum RunNotificationPolicy {
     /// status), the reason and whether it offers "Run again". All three can
     /// change once the run ledger has its row.
     struct Shown: Equatable, Sendable {
+        let status: RunStatus
         let title: String
         let body: String
         let retrySlotKey: String?
 
         init(run: Run) {
+            status = run.status
             title = NotificationService.title(for: run)
             body = NotificationService.body(for: run)
             retrySlotKey = NotificationService.retrySlotKey(for: run)
