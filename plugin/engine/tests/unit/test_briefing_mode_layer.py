@@ -33,7 +33,6 @@ def _config(*, enabled_connectors: set[str] | None = None) -> BootstrapConfig:
         enabled_connectors=enabled_connectors or set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 
