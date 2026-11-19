@@ -65,7 +65,10 @@ struct ProposalCardView: View {
 
     private var actions: some View {
         HStack(spacing: 6) {
-            actButton(ProposalDecision.approve.actionName, systemImage: "checkmark", decision: .approve, role: .primary)
+            // An unknown status gets no primary Approve (review of #716):
+            // approving tells the next dreaming run to apply the change.
+            actButton(ProposalDecision.approve.actionName, systemImage: "checkmark", decision: .approve,
+                      role: proposal.status.hasPrimaryApprove ? .primary : .secondary)
             actButton(ProposalDecision.decline.actionName, systemImage: "xmark", decision: .decline, role: .secondary)
             Spacer(minLength: 0)
         }

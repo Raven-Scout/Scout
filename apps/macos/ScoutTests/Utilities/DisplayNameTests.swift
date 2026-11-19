@@ -442,6 +442,11 @@ struct GlossaryTests {
         #expect(GlossaryTerm.matching(query).contains(term))
     }
 
+    @Test("a search for an unrelated word doesn't turn up Archived")
+    func archivedHasNoStrayAlias() {
+        #expect(!GlossaryTerm.matching("details").contains(.archived))
+    }
+
     @Test("definitions are plain sentences without engine words")
     func definitions() {
         for t in GlossaryTerm.allCases {

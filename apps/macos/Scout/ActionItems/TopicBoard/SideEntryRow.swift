@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// An Inbox or Loose ends entry with a × that closes it. Undo (⌘Z) brings
-/// it back. The × is always drawn, faint until the row is hovered, so it can
-/// be found without hovering (audit #45).
+/// An Inbox or Loose ends entry with a × that closes it. Edit ▸ Undo can
+/// usually bring it back while the app stays open (only when the engine
+/// reports the change it made). The × is always drawn, faint until the row
+/// is hovered, so it can be found without hovering (audit #45).
 struct SideEntryRow: View {
-    static let closeHelp = "Close: outdated or not relevant. Edit ▸ Undo brings it back."
+    static let closeHelp = "Close: outdated or not relevant. You can usually undo this with Edit ▸ Undo while Scout stays open."
 
     let entry: SideEntry
     /// `nil` hides the ×.

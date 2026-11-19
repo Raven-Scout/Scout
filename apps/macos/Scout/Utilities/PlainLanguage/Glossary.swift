@@ -64,7 +64,7 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .onHold:
             return "An action item that isn't asking for anything right now: it is snoozed until a later day, or it sits in Parked. A snoozed item comes back by itself on its date."
         case .parked:
-            return "A section for action items set aside on purpose. They stay on the page but don't count as today's work until they are moved back."
+            return "A section for action items set aside, by you or by Scout: a run parks a past-due task once it has gone weeks with no news. Parked items stay on the page but don't count as today's work; any new news on one puts it back in the list."
         case .archived:
             return "Older lists a Scout run folded away on the day's page, such as an earlier focus list. They sit behind a collapsed row for reference; nothing in them is lost."
         }
@@ -88,7 +88,7 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .done:          return ["completed", "Recently Completed"]
         case .onHold:        return ["snoozed", "hold"]
         case .parked:        return ["🅿️ Parked"]
-        case .archived:      return ["collapsed", "details"]
+        case .archived:      return ["collapsed"]
         }
     }
 

@@ -69,6 +69,13 @@ struct TopicBoardView: View {
                 }
                 if let board {
                     topicRows(board)
+                } else {
+                    // The first frame, before `onChange(initial:)` builds it.
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(14)
+                        .accessibilityLabel("Loading the board")
                 }
                 BoardSideListsView(
                     inbox: sideEntries("Inbox"),

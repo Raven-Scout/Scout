@@ -136,4 +136,50 @@ struct DisplayProfileServiceTests {
         service.reload()
         #expect(service.profile == DisplayProfile())
     }
+
+    // MARK: - The Topics board's old Done range (audit #46)
+
+    private func legacyDefaults(_ value: String?) -> UserDefaults {
+        let suite = "r9-done-range-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        if let value { defaults.set(value, forKey: DisplayProfileService.legacyDoneRangeKey) }
+        return defaults
+    }
+
+    @Test func aLegacyDoneRangeMovesIntoTheProfileOnce() throws {
+        let service = makeService()
+        let defaults = legacyDefaults("yesterday")
+        service.migrateLegacyDoneRange(from: defaults)
+        #expect(service.profile.actionItems.topics.doneRange == .yesterday)
+        #expect(try onDisk(service) == ["schema": 1, "actionItems": ["topics": ["doneRange": "yesterday"]]] as NSDictionary)
+        #expect(defaults.object(forKey: DisplayProfileService.legacyDoneRangeKey) == nil)
+    }
+
+    @Test func aRangeChosenInSettingsWinsAndTheOldKeyGoes() throws {
+        try Data(#"{"schema":1,"actionItems":{"topics":{"doneRange":"today"}}}"#.utf8).write(to: vault.appendingPathComponent("scout-display.json"))
+        let service = makeService()
+        let defaults = legacyDefaults("yesterday")
+        service.migrateLegacyDoneRange(from: defaults)
+        #expect(service.profile.actionItems.topics.doneRange == .today)
+        #expect(defaults.object(forKey: DisplayProfileService.legacyDoneRangeKey) == nil)
+    }
+
+    @Test func theDefaultOrAnUnknownLegacyValueWritesNothing() {
+        for value in ["week", "fortnight"] {
+            let service = makeService()
+            let defaults = legacyDefaults(value)
+            service.migrateLegacyDoneRange(from: defaults)
+            #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
+            #expect(defaults.object(forKey: DisplayProfileService.legacyDoneRangeKey) == nil)
+        }
+    }
+
+    @Test func anUnwritableFileKeepsTheOldKeyForLater() throws {
+        try Data("not json".utf8).write(to: vault.appendingPathComponent("scout-display.json"))
+        let service = makeService()
+        let defaults = legacyDefaults("today")
+        service.migrateLegacyDoneRange(from: defaults)
+        #expect(defaults.string(forKey: DisplayProfileService.legacyDoneRangeKey) == "today")
+    }
 }

@@ -84,8 +84,62 @@ struct ProposalStatusTests {
         #expect(onDay.contains("Applies automatically after"))
         let after = try #require(status.explanation(today: Self.day(2026, 6, 14, hour: 9), calendar: Self.calendar))
         #expect(after.contains("next dreaming run"))
+        // A bare Pending (governance and safety) is applied only after an
+        // explicit Approved; it must never read as applying by itself.
         let undated = try #require(ProposalStatus.pending(autoApplyDate: nil).explanation(calendar: Self.calendar))
-        #expect(undated.contains("Applies automatically"))
+        #expect(!undated.contains("Applies automatically"))
+        #expect(undated.contains("only after you approve"))
+    }
+
+    @Test("only an auto-apply clause's date is an auto-apply date")
+    func autoApplyDateComesFromTheClause() {
+        #expect(ProposalStatus.parse("Pending") == .pending(autoApplyDate: nil))
+        #expect(ProposalStatus.parse("Pending (filed 2026-06-01, needs review)") == .pending(autoApplyDate: nil))
+        #expect(ProposalStatus.parse("Pending (filed 2026-06-01; auto-apply after 2026-06-04)")
+                == .pending(autoApplyDate: "2026-06-04"))
+        #expect(ProposalStatus.parse("pending (Auto-apply after: 2026-06-04)") == .pending(autoApplyDate: "2026-06-04"))
+    }
+
+    @Test("leading emoji and punctuation don't hide the status word", arguments: [
+        ("✅ Approved (2026-06-14)", ProposalStatus.approved),
+        ("❌ Rejected", .rejected),
+        ("**Applied** — 2026-06-02", .applied(date: "2026-06-02")),
+        ("⏳ Pending (auto-apply after 2026-06-13)", .pending(autoApplyDate: "2026-06-13")),
+    ])
+    func stripsLeadingNonLetters(raw: String, expected: ProposalStatus) {
+        #expect(ProposalStatus.parse(raw) == expected)
+    }
+
+    @Test("settled-without-a-decision statuses are resolved, not waiting on you", arguments: [
+        ("Superseded — 2026-06-10 (merged into another proposal)", "Superseded"),
+        ("Withdrawn", "Withdrawn"),
+        ("obsolete: no longer needed", "Obsolete"),
+    ])
+    func closedStatuses(raw: String, label: String) throws {
+        let status = ProposalStatus.parse(raw)
+        guard case .closed = status else {
+            Issue.record("\(raw) parsed as \(status)")
+            return
+        }
+        #expect(!status.isAwaitingDecision)
+        #expect(!status.hasPrimaryApprove)
+        #expect(status.displayName == label)
+        #expect(status.explanation() == nil)
+    }
+
+    @Test("a partially applied proposal counts as applied")
+    func partiallyApplied() {
+        #expect(ProposalStatus.parse("Partially Applied") == .applied(date: nil))
+        #expect(ProposalStatus.parse("Partially applied — 2026-06-05").isResolved)
+    }
+
+    @Test("an unknown status stays visible but gets no primary Approve")
+    func unknownHasNoPrimaryApprove() {
+        let unknown = ProposalStatus.parse("Deferred to Q3")
+        #expect(unknown.isAwaitingDecision)
+        #expect(!unknown.hasPrimaryApprove)
+        #expect(ProposalStatus.proposed.hasPrimaryApprove)
+        #expect(ProposalStatus.pending(autoApplyDate: nil).hasPrimaryApprove)
     }
 
     @Test("an unknown status explains itself; settled statuses need no line")
