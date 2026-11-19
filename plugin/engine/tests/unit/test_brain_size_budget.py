@@ -62,7 +62,6 @@ def _config() -> BootstrapConfig:
         enabled_connectors=_shipped_connectors(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

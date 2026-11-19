@@ -47,7 +47,6 @@ def vault(tmp_path: Path) -> Path:
             enabled_connectors={"slack"},
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
     return v

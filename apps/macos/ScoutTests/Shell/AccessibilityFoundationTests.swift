@@ -77,17 +77,17 @@ struct AccessibilityFoundationTests {
 
     // MARK: - Sidebar and Go menu metadata
 
-    @Test("Go menu shortcuts are unique digits, ⌘1 Control Center to ⌘9 Settings")
-    func goShortcutsAreUnique() {
+    @Test("Go menu numbers count down the sidebar: ⌘N is the Nth row")
+    func goShortcutsFollowTheSidebar() {
         let keys = SidebarItem.allCases.compactMap(\.goShortcutKey)
         #expect(Set(keys).count == keys.count, "two pages share a Go shortcut")
-        #expect(keys.allSatisfy { "123456789".contains($0) })
-        #expect(SidebarItem.controlCenter.goShortcutKey == "1")
-        #expect(SidebarItem.settings.goShortcutKey == "9")
-        // Health (C8) came after the nine digits were given out: menu item only.
-        #expect(SidebarItem.health.goShortcutKey == nil)
-        // In sidebar order, so ⌘-numbers count down the list.
-        #expect(keys == keys.sorted())
+        // The sidebar's Scout section, in the order it draws them.
+        let scoutRows = SidebarItem.allCases.filter { $0 != .settings }
+        for (index, item) in scoutRows.enumerated() {
+            #expect(item.goShortcutKey == Character(String(index + 1)), "\(item.title) is row \(index + 1)")
+        }
+        // Settings is in the App section and has ⌘, from the app menu.
+        #expect(SidebarItem.settings.goShortcutKey == nil)
     }
 
     @Test("page titles and identifiers are unique and non-empty")

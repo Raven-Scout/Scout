@@ -349,7 +349,7 @@ struct ComponentSmokeTests {
     func editorialActionButtonRenders() {
         ViewHost.render(
             HStack {
-                EditorialActionButton("Send", style: .primary, shortcut: "⌘↵") {}
+                EditorialActionButton("Send", style: .primary, keyboardShortcut: AppShortcut.commit) {}
                 EditorialActionButton("Cancel") {}
                 EditorialActionButton("Add comment", systemImage: "text.bubble") {}
                 EditorialActionButton("Send", style: .primary) {}

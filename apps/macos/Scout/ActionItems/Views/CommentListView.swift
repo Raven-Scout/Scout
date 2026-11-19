@@ -139,9 +139,10 @@ private struct CommentRow: View {
                     draft = ""
                     editing = false
                 }
+                // ⌘↵ saves only while this editor has focus (see the composer).
                 EditorialActionButton(
-                    "Save", style: .primary, shortcut: "⌘↵",
-                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                    "Save", style: .primary,
+                    keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { performSave() }
                     .disabled(
                         submitting ||

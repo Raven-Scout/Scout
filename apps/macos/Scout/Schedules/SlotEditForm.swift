@@ -465,7 +465,7 @@ struct SlotEditForm: View {
                 }
             }
             .buttonStyle(.dsPrimary)
-            .keyboardShortcut(.return, modifiers: [.command])
+            .keyboardShortcut(AppShortcut.commit)
             .disabled(isSaving || saveBlockedReason != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
             .accessibilityLabel(isSaving ? "Saving" : "Save")
         }

@@ -32,7 +32,6 @@ def _config(vault: Path, *, version: str = "0.4.0", email: str = "alex@example.c
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 
