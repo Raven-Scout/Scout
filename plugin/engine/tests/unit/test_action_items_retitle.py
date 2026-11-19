@@ -308,7 +308,17 @@ class Stub:
 
 
 def _snapshot(vault: Path) -> dict[Path, bytes]:
-    return {p: p.read_bytes() for p in vault.rglob("*") if p.is_file() and ".scout-cache" not in p.parts}
+    """The working tree's bytes. Not .git/: git's object store isn't the rollback's contract (see `_git_state`)."""
+    return {
+        p: p.read_bytes()
+        for p in vault.rglob("*")
+        if p.is_file() and ".scout-cache" not in p.parts and ".git" not in p.relative_to(vault).parts
+    }
+
+
+def _git_state(vault: Path) -> tuple[str, str]:
+    """What the rollback promises about git: HEAD, and the index and working tree against it."""
+    return _git(vault, "rev-parse", "HEAD").strip(), _git(vault, "status", "--porcelain")
 
 
 def _setup(vault: Path) -> None:
@@ -552,6 +562,9 @@ def _repo(vault: Path) -> None:
     helper.write_text(text, encoding="utf-8")
     helper.chmod(0o755)
     _git(vault, "init", "-q")
+    # No detached auto-maintenance (git >= 2.47) repacking or pruning while a test compares states.
+    _git(vault, "config", "maintenance.auto", "false")
+    _git(vault, "config", "gc.auto", "0")
     _git(vault, "config", "user.email", "alex@example.com")
     _git(vault, "config", "user.name", "Alex")
     _git(vault, "add", "-A")
@@ -682,23 +695,21 @@ def test_a_commit_that_landed_is_never_rolled_back(vault: Path) -> None:
 def test_a_helper_that_makes_no_commit_rolls_everything_back(vault: Path) -> None:
     sheet = _planned(vault)
     _repo(vault)
-    before = _snapshot(vault)
     (vault / "scripts" / "git-safe-commit.sh").write_text("#!/bin/sh\necho nope >&2\nexit 5\n", encoding="utf-8")
+    before, git_before = _snapshot(vault), _git_state(vault)
     with pytest.raises(RetitleError, match="exited 5 and made no commit"):
         retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
-    after = _snapshot(vault)
-    helper = vault / "scripts" / "git-safe-commit.sh"
-    assert {p: b for p, b in after.items() if p != helper} == {p: b for p, b in before.items() if p != helper}
+    assert _snapshot(vault) == before and _git_state(vault) == git_before
 
 
 def test_records_that_git_ignores_are_refused_up_front(vault: Path) -> None:
     sheet = _planned(vault)
     (vault / ".gitignore").write_text(".scout-state/\n", encoding="utf-8")
     _repo(vault)
-    before = _snapshot(vault)
+    before, git_before = _snapshot(vault), _git_state(vault)
     with pytest.raises(RetitleError, match="is gitignored"):
         retitle.apply(vault=vault, today=TODAY.isoformat(), sha=sheet.sha)
-    assert _snapshot(vault) == before
+    assert _snapshot(vault) == before and _git_state(vault) == git_before
 
 
 def test_apply_refuses_while_the_session_lock_is_held(vault: Path) -> None:
