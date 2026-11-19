@@ -273,3 +273,84 @@ def test_consent_write_failure_leaves_no_temp_file(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         consent.set_out_of_vault(True, env)
     assert list(owner_dir(env).iterdir()) == []
+
+
+def test_signal_change_field_round_trips_and_rejects_bad_ids():
+    sig = Signal(ts=NOW, kind="dm-reply", surface="slack-dm", ref="1.2/3.4", change="chg-0123456789ab")
+    row = sig.to_row()
+    assert row["change"] == "chg-0123456789ab"
+    assert Signal.from_row(row) == sig
+    assert Signal.from_row({**row, "change": None}).change is None
+    without = {k: v for k, v in row.items() if k != "change"}
+    assert Signal.from_row(without).change is None
+    for bad in ("chg-xyz", "chg-0123456789AB", "chg-0123456789abc", 7):
+        with pytest.raises(ValueError):
+            Signal.from_row({**row, "change": bad})
+
+
+def test_change_reverts_validates_like_a_change_id():
+    row = _change().to_row()
+    assert Change.from_row(row).reverts is None
+    assert Change.from_row({**row, "reverts": "chg-0123456789ab"}).reverts == "chg-0123456789ab"
+    assert _change(reverts="chg-0123456789ab").to_row()["reverts"] == "chg-0123456789ab"
+    with pytest.raises(ValueError):
+        Change.from_row({**row, "reverts": "nope"})
+
+
+def test_new_kinds_surfaces_and_why_types_are_known():
+    from scout.changes.models import OWNER_KINDS, REF_REQUIRED, RUN_KINDS, SURFACES, WHY_TYPES
+
+    assert {"recurrence", "owner-away", "red-carried", "dm-sent"} <= RUN_KINDS
+    assert "verdict-wrong" in OWNER_KINDS
+    assert {"mistake-audit", "calendar"} <= SURFACES
+    assert "verdict" in WHY_TYPES
+    assert REF_REQUIRED == RUN_KINDS | {"approval", "verdict-wrong"}
+    Signal.from_row({"ts": NOW.isoformat(), "kind": "owner-away", "surface": "calendar", "ref": "2026-11-17"})
+
+
+def test_append_signal_once_skips_a_duplicate_kind_and_ref(tmp_path, vault):
+    from scout.changes.store import append_signal_once, has_signal
+
+    env = {"HOME": str(tmp_path / "home")}
+    sig = Signal(ts=NOW, kind="dm-reply", surface="slack-dm", ref="1.2/3.4")
+    assert has_signal(vault, env, "dm-reply", "1.2/3.4") is False
+    assert append_signal_once(sig, vault=vault, env=env) is True
+    assert has_signal(vault, env, "dm-reply", "1.2/3.4") is True
+    assert append_signal_once(sig, vault=vault, env=env) is False
+    rows, _ = read_signals(vault, env)
+    assert len(rows) == 1
+    # The same ref under another kind is a different signal.
+    other = Signal(ts=NOW, kind="dm-reaction", surface="slack-dm", ref="1.2/3.4")
+    assert append_signal_once(other, vault=vault, env=env) is True
+
+
+def test_append_signal_once_reads_the_owner_store_for_owner_kinds(tmp_path, vault):
+    from scout.changes.store import append_signal_once, has_signal
+
+    env = {"HOME": str(tmp_path / "home")}
+    sig = Signal(ts=NOW, kind="approval", surface="app", ref="approve:chg-0123456789ab")
+    assert append_signal_once(sig, vault=vault, env=env) is True
+    assert has_signal(vault, env, "approval", "approve:chg-0123456789ab") is True
+    assert append_signal_once(sig, vault=vault, env=env) is False
+    # Owner rows are keyed to one vault: another vault has not recorded it.
+    other = tmp_path / "other"
+    other.mkdir()
+    assert has_signal(other, env, "approval", "approve:chg-0123456789ab") is False
+
+
+def test_append_signal_once_without_a_ref_always_writes(tmp_path, vault):
+    from scout.changes.store import append_signal_once
+
+    env = {"HOME": str(tmp_path / "home")}
+    sig = Signal(ts=NOW, kind="session-reliance", surface="kb", session="ab12")
+    assert append_signal_once(sig, vault=vault, env=env) is True
+    assert append_signal_once(sig, vault=vault, env=env) is True
+
+
+def test_has_signal_never_raises(tmp_path, vault):
+    from scout.changes.store import has_signal
+
+    (vault / ".scout-logs").mkdir()
+    (vault / ".scout-logs" / "engagement.jsonl").write_text('not json\n[1]\n{"kind": "dm-sent", "ref": "9.9"}\n')
+    assert has_signal(vault, {"HOME": str(tmp_path / "home")}, "dm-sent", "9.9") is True
+    assert has_signal(vault, {}, "nonsense-kind", "x") is False

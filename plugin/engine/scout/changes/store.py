@@ -154,6 +154,28 @@ def append_signal(signal: Signal, *, vault: Path, env: Mapping[str, str]) -> Non
         _append(_logs(vault) / ENGAGEMENT_NAME, signal.to_row())
 
 
+def has_signal(vault: Path, env: Mapping[str, str], kind: str, ref: str) -> bool:
+    """Whether a row of this ``kind`` and ``ref`` is already in the store ``kind`` is written to. Never raises."""
+    try:
+        if kind in OWNER_KINDS:
+            raw, _ = _read(owner_dir(env) / ENGAGEMENT_NAME)
+            key = vault_key(vault)
+            raw = [r for r in raw if r.get("vault_key") == key]
+        else:
+            raw, _ = _read(_logs(vault) / ENGAGEMENT_NAME)
+        return any(r.get("kind") == kind and r.get("ref") == ref for r in raw)
+    except Exception:  # noqa: BLE001 - a dedupe check that can't read says "not recorded"
+        return False
+
+
+def append_signal_once(signal: Signal, *, vault: Path, env: Mapping[str, str]) -> bool:
+    """:func:`append_signal` unless ``signal.ref`` is set and a row of its kind and ref exists: then False, no write."""
+    if signal.ref and has_signal(vault, env, signal.kind, signal.ref):
+        return False
+    append_signal(signal, vault=vault, env=env)
+    return True
+
+
 def read_signals(vault: Path, env: Mapping[str, str]) -> tuple[list[Signal], int]:
     key = vault_key(vault)
     out: list[Signal] = []

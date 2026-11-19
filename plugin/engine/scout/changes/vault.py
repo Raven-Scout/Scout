@@ -31,11 +31,16 @@ def _resolved(p: str | Path) -> Path:
 
 
 def installed_vault(env: Mapping[str, str]) -> Path:
-    """The installed vault: ``SCOUT_DATA_DIR``, else the engine pointer's ``vault``, else ``~/Scout``. Not the cwd."""
+    """The installed vault: ``SCOUT_DATA_DIR``, else the engine pointer's ``vault``, else ``~/Scout``. Not the cwd.
+
+    Raises ``ValueError("no home directory")`` when none of those can be found."""
     explicit = env.get("SCOUT_DATA_DIR")
     if explicit:
         return _resolved(explicit)
-    home = Path(env.get("HOME") or Path.home())
+    try:
+        home = Path(env.get("HOME") or Path.home())
+    except RuntimeError:  # Path.home() when no home directory can be found
+        raise ValueError("no home directory") from None
     pointer = read_pointer(home=home)
     if pointer is not None and pointer.vault:
         return _resolved(pointer.vault)

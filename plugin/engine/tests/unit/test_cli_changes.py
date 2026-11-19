@@ -60,7 +60,7 @@ def test_record_refuses_owner_kind_in_a_run(cli, vault, home, monkeypatch):
 
 
 def test_record_owner_kind_in_an_owner_session(cli, vault, home):
-    r = cli(["engagement", "record", "approval", "--surface", "action-items"])
+    r = cli(["engagement", "record", "approval", "--surface", "action-items", "--ref", "approve:chg-0123456789ab"])
     assert r.exit_code == 0
     assert len(list(home.rglob("engagement.jsonl"))) == 1
     assert not (vault / ".scout-logs/engagement.jsonl").exists()
@@ -182,12 +182,15 @@ def test_owner_kinds_refused_when_the_process_table_shows_a_run(cli, vault, home
     assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
     assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("consent.json"))
     # A run kind is still the run's to record.
-    assert cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"]).exit_code == 0
+    assert cli(["engagement", "record", "dm-reply", "--surface", "slack-dm", "--ref", "1.2/3.4"]).exit_code == 0
 
 
 def test_owner_host_during_a_run_may_record(cli, vault, home, monkeypatch):
     _a_live_run(monkeypatch, runs=False)
-    assert cli(["engagement", "record", "approval", "--surface", "app"]).exit_code == 0
+    assert (
+        cli(["engagement", "record", "approval", "--surface", "app", "--ref", "approve:chg-0123456789ab"]).exit_code
+        == 0
+    )
     assert cli(["engagement", "consent", "--out-of-vault", "no"]).exit_code == 0
 
 
@@ -217,6 +220,67 @@ def test_changes_report_needs_an_existing_vault(cli, tmp_path, home, monkeypatch
 
 def test_record_needs_an_existing_vault(cli, tmp_path, home, monkeypatch):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
-    r = cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"])
+    r = cli(["engagement", "record", "dm-reply", "--surface", "slack-dm", "--ref", "1.2/3.4"])
     assert r.exit_code == 2
     assert "vault directory missing" in r.output
+
+
+_DM = ["engagement", "record", "dm-reply", "--surface", "slack-dm"]
+
+
+def test_record_twice_prints_already_recorded(cli, vault):
+    args = [*_DM, "--ref", "1791624082.460129/1791625000.000100", "--ts", "1791625000.000100"]
+    first = cli(args)
+    second = cli(args)
+    assert first.exit_code == 0 and second.exit_code == 0
+    assert "already recorded" not in first.output and second.output.strip() == "already recorded"
+    rows = [json.loads(x) for x in (vault / ".scout-logs/engagement.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["ts"].startswith("2026-10-10T") and rows[0]["ts"].endswith("+00:00")
+
+
+def test_record_ts_accepts_slack_ts_and_iso_only(cli, vault):
+    assert cli([*_DM, "--ref", "a/b", "--ts", "1791625000"]).exit_code == 0
+    assert cli([*_DM, "--ref", "a/c", "--ts", "2026-10-10T09:00:00+00:00"]).exit_code == 0
+    assert cli([*_DM, "--ref", "a/d", "--ts", "12345"]).exit_code == 2
+
+
+def test_record_refuses_a_run_kind_without_ref(cli, vault, home):
+    assert cli(["engagement", "record", "dm-sent", "--surface", "slack-dm"]).exit_code == 2
+    assert cli(["engagement", "record", "approval", "--surface", "app"]).exit_code == 2
+    assert not (vault / ".scout-logs/engagement.jsonl").exists() and not any(home.rglob("engagement.jsonl"))
+
+
+def test_record_refuses_change_on_other_kinds(cli, vault):
+    ok = cli([*_DM, "--ref", "1.2/3.4", "--change", "chg-0123456789ab"])
+    assert ok.exit_code == 0
+    row = json.loads((vault / ".scout-logs/engagement.jsonl").read_text())
+    assert row["change"] == "chg-0123456789ab"
+    for kind in ("dm-sent", "dm-reaction", "recurrence"):
+        r = cli(["engagement", "record", kind, "--surface", "slack-dm", "--ref", "5.6", "--change", "chg-0123456789ab"])
+        assert r.exit_code == 2, kind
+    assert cli([*_DM, "--ref", "1.2/9.9", "--change", "chg-xyz"]).exit_code == 2
+
+
+def test_verdict_wrong_is_owner_only(cli, vault, home, monkeypatch):
+    args = ["engagement", "record", "verdict-wrong", "--surface", "app", "--ref", "chg-0123456789ab"]
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    assert cli(args).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl")) and not (vault / ".scout-logs/engagement.jsonl").exists()
+    monkeypatch.delenv("SCOUT_MODE")
+    assert cli(args).exit_code == 0
+    assert len(list(home.rglob("engagement.jsonl"))) == 1
+
+
+def test_record_with_no_home_exits_2(cli, vault, home, monkeypatch):
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("SCOUT_DATA_DIR")
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    r = cli([*_DM, "--ref", "1.2/3.4"])
+    assert r.exit_code == 2 and not isinstance(r.exception, RuntimeError)
+    assert "no home directory" in r.output
+    assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
+    assert cli(["engagement", "--json"]).exit_code == 2

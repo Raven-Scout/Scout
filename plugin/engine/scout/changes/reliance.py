@@ -78,7 +78,7 @@ def _rows(transcript_path: Path):
             for raw in f:
                 try:
                     row = json.loads(raw)
-                except ValueError:
+                except (ValueError, RecursionError):  # RecursionError: a line nested deeper than the decoder goes
                     continue
                 if isinstance(row, dict):
                     yield row
@@ -268,7 +268,10 @@ def record_reliance(
         in_vault = _in_vault(cwd, roots)
         if not in_vault and not consented:
             return 0
-    session = hashlib.sha256(str(payload.get("session_id") or "").encode()).hexdigest()[:16]
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return 0  # every session without an id would hash to one shared key and count once, ever
+    session = hashlib.sha256(session_id.encode()).hexdigest()[:16]
     # Stop fires after every turn; count each (session, surface) once.
     seen = _read_seen(env)
     already = set((seen.get(session) or {}).get("surfaces") or [])

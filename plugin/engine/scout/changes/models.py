@@ -3,6 +3,7 @@ no path outside the vault); readers ignore unknown keys."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,12 +12,28 @@ SCHEMA_VERSION = 1
 SUMMARY_MAX = 120
 
 CHANGE_KINDS = frozenset({"brain-edit", "driver", "phase", "kb-structure", "wishlist-done", "upgrade", "rollback"})
-WHY_TYPES = frozenset({"pattern", "owner-ask", "wishlist", "research", "unknown"})
+WHY_TYPES = frozenset({"pattern", "owner-ask", "wishlist", "research", "verdict", "unknown"})
 LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "work", "interactive", "update"})
-OWNER_KINDS = frozenset({"session-reliance", "app-edit", "inline-comment", "approval"})
-RUN_KINDS = frozenset({"dm-reply", "dm-reaction", "dm-sent", "red-carried"})
-SURFACES = frozenset({"slack-dm", "telegram", "kb", "action-items", "skill", "scoutctl", "vault-session", "app"})
+OWNER_KINDS = frozenset({"session-reliance", "app-edit", "inline-comment", "approval", "verdict-wrong"})
+RUN_KINDS = frozenset({"dm-reply", "dm-reaction", "dm-sent", "red-carried", "recurrence", "owner-away"})
+# Kinds whose row means nothing without an id to dedupe on and to join to: the CLI refuses them without --ref.
+REF_REQUIRED = RUN_KINDS | {"approval", "verdict-wrong"}
+SURFACES = frozenset(
+    {
+        "slack-dm",
+        "telegram",
+        "kb",
+        "action-items",
+        "skill",
+        "scoutctl",
+        "vault-session",
+        "app",
+        "mistake-audit",
+        "calendar",
+    }
+)
 SENTIMENTS = frozenset({"positive", "negative", "neutral"})
+CHANGE_ID_RE = re.compile(r"^chg-[0-9a-f]{12}$")
 
 
 def _check(value: Any, allowed: frozenset[str], name: str) -> str:
@@ -51,6 +68,15 @@ def _strs(value: Any, name: str) -> tuple[str, ...]:
 def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name}: expected a bool, got {value!r}")
+    return value
+
+
+def _change_id(value: Any, name: str) -> str | None:
+    """None, or a change id (``chg-`` and 12 hex digits)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not CHANGE_ID_RE.match(value):
+        raise ValueError(f"{name}: not a change id: {value!r}")
     return value
 
 
@@ -98,6 +124,7 @@ class Change:
     governance: bool = False
     author_lane: str = "interactive"
     backfilled: bool = False
+    reverts: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -113,6 +140,7 @@ class Change:
             "governance": self.governance,
             "author_lane": self.author_lane,
             "backfilled": self.backfilled,
+            "reverts": self.reverts,
         }
 
     @classmethod
@@ -133,6 +161,7 @@ class Change:
             governance=_bool(row.get("governance", False), "governance"),
             author_lane=_check(row.get("author_lane", "interactive"), LANES, "author_lane"),
             backfilled=_bool(row.get("backfilled", False), "backfilled"),
+            reverts=_change_id(row.get("reverts"), "reverts"),
         )
 
 
@@ -145,6 +174,7 @@ class Signal:
     sentiment: str | None = None
     session: str | None = None
     vault_key: str | None = None
+    change: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -156,6 +186,7 @@ class Signal:
             "sentiment": self.sentiment,
             "session": self.session,
             "vault_key": self.vault_key,
+            "change": self.change,
         }
 
     @classmethod
@@ -172,4 +203,5 @@ class Signal:
             sentiment=sentiment,
             session=_str(row.get("session"), "session", optional=True),
             vault_key=_str(row.get("vault_key"), "vault_key", optional=True),
+            change=_change_id(row.get("change"), "change"),
         )
