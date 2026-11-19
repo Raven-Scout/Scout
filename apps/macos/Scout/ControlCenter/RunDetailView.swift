@@ -127,14 +127,7 @@ struct RunDetailView: View {
         }
     }
 
-    private var statusColor: Color {
-        switch run.status {
-        case .success: return .green
-        case .failure, .timeout, .rateLimited: return .red
-        case .running: return .orange
-        default: return .secondary
-        }
-    }
+    private var statusColor: Color { RunOutcomeDisplay.tone(run.status).color }
 
     /// "Run again" fires this run's own schedule (`Run.rerunSlotKey`, from the
     /// run ledger), never one guessed from the run type: several schedules

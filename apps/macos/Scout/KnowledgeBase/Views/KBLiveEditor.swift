@@ -154,8 +154,14 @@ struct KBLiveEditor: NSViewRepresentable {
             if DS.BrandFont.available, let font = NSFont(name: DS.BrandFont.jetBrainsMono(.regular), size: size) { return font }
             return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         }
+        /// No bundled brand face sets a bold style bit (the heaviest is
+        /// SemiBold), so trait conversion can't find one; take the SemiBold
+        /// face by name instead.
         static func bold(_ font: NSFont) -> NSFont {
-            NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+            if let name = DS.BrandFont.boldFace(of: font.fontName), let face = NSFont(name: name, size: font.pointSize) {
+                return face
+            }
+            return NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
         }
         static func italic(_ font: NSFont) -> NSFont {
             NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)

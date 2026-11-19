@@ -123,14 +123,11 @@ struct ToolsTab: View {
 
     private func color(for name: String) -> Color {
         switch name {
-        case "Bash":        return .orange
-        case "Read":        return .blue
-        case "Edit":        return .yellow
-        case "Write":       return .green
-        case "Grep", "Glob": return .purple
-        case "WebFetch", "WebSearch": return .pink
-        case "TodoWrite":   return .gray
-        default:            return .secondary
+        case "Bash":        return DS.Status.warn     // runs commands
+        case "Edit":        return DS.Accent.ink      // changes a file
+        case "Write":       return DS.Status.ok       // creates one
+        case "Read", "Grep", "Glob", "WebFetch", "WebSearch": return DS.Ink.p2
+        default:            return DS.Ink.p3
         }
     }
 }

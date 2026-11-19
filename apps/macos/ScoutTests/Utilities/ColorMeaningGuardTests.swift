@@ -5,7 +5,7 @@ import Testing
 /// means Urgent and nothing else: "Mine" and "needs you" take
 /// `DS.Attention.you`, a note type takes its own hue, a warning takes
 /// `DS.Status.warn`. And no view paints with a system named colour
-/// (`Color.yellow`, `.foregroundStyle(.red)`), which `ContrastPairsTests`
+/// (`Color.yellow`, `.foregroundStyle(.red)`, `return .green`), which `ContrastPairsTests`
 /// can't check and which ignores the palette's dark and Increase Contrast
 /// values.
 @Suite("Colours carry one meaning")
@@ -23,9 +23,15 @@ struct ColorMeaningGuardTests {
     /// The urgent red by any spelling: qualified, unqualified inside
     /// `extension DS`, or through the section-kind lookup.
     static let urgentRed = try! NSRegularExpression(pattern: #"\bPriority\.urgent\b|priorityColor\(\.urgent\)"#)
+    static let hues = "red|orange|yellow|green|mint|teal|cyan|blue|indigo|purple|pink|brown|gray|grey"
+    /// A system named colour in any of the forms the app used: `Color.red`,
+    /// `.foregroundStyle(.red)`, and the plain `.red` a `Color`-typed
+    /// `return`, `case …:`, `color:` argument or colour assignment takes.
+    /// Not `== .red` or `self = .red`: those are severity enums.
     static let systemNamed = try! NSRegularExpression(
-        pattern: #"\bColor\.(red|orange|yellow|green|mint|teal|cyan|blue|indigo|purple|pink|brown)\b"#
-            + #"|\.(foregroundColor|foregroundStyle|fill|tint|background)\(\.(red|orange|yellow|green|mint|teal|cyan|blue|indigo|purple|pink|brown)\b"#)
+        pattern: #"\bColor\.(\#(hues))\b"#
+            + #"|\.(foregroundColor|foregroundStyle|fill|tint|background)\(\.(\#(hues))\b"#
+            + #"|(?:\breturn|\bcase [^:\n]*:|\bcolor:|\b(?:foregroundColor|backgroundColor|tint)\s*=)\s*\.(\#(hues))\b"#)
 
     static var sourceRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -85,6 +91,12 @@ struct ColorMeaningGuardTests {
         #expect(!matches(".foregroundStyle(DS.Status.warn)"))
         #expect(!matches(".foregroundStyle(.secondary)"))
         #expect(!matches("Color.clear"))
+        #expect(matches("case .success: return .green"))
+        #expect(matches("section(\"Read\", paths: a, color: .blue)"))
+        #expect(matches("attr.foregroundColor = .orange"))
+        #expect(matches("return .gray"))
+        #expect(!matches("doctor.severity == .red"))
+        #expect(!matches("case \"red\": self = .red"))
         func urgent(_ s: String) -> Bool {
             Self.urgentRed.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
         }

@@ -16,9 +16,9 @@ struct FilesTab: View {
                 if !didLoad {
                     Text("Loading…").foregroundStyle(.secondary).padding()
                 } else if let a = activity {
-                    section("Edited", paths: a.filesEdited, color: .yellow)
-                    section("Created", paths: a.filesWritten, color: .green)
-                    section("Read", paths: a.filesRead, color: .blue)
+                    section("Edited", paths: a.filesEdited, color: DS.Accent.ink)
+                    section("Created", paths: a.filesWritten, color: DS.Status.ok)
+                    section("Read", paths: a.filesRead, color: DS.Ink.p2)
                     if a.filesEdited.isEmpty && a.filesWritten.isEmpty && a.filesRead.isEmpty {
                         Text("No file activity recorded for this run.")
                             .foregroundStyle(.secondary)

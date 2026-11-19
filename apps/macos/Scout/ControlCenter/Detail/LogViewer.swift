@@ -135,15 +135,15 @@ struct LogViewer: View {
         let lower = line.lowercased()
         if lower.contains("error") || lower.contains("rate limit")
             || lower.contains("timeout") || lower.contains("failed") {
-            attr.foregroundColor = .red
+            attr.foregroundColor = DS.Status.err
         } else if lower.contains("budget") {
-            attr.foregroundColor = .orange
+            attr.foregroundColor = DS.Status.warn
         } else if lower.contains("[schema-parity] ok")
             || lower.contains("budget ok")
             || lower.contains("success") {
-            attr.foregroundColor = .green
+            attr.foregroundColor = DS.Status.ok
         } else if line.hasPrefix("**") || line.hasPrefix("# ") {
-            attr.foregroundColor = .accentColor
+            attr.foregroundColor = DS.Accent.ink
         }
         return attr
     }
@@ -301,12 +301,12 @@ struct LogSection: Identifiable {
         }
         var color: Color {
             switch self {
-            case .start:   return .blue
-            case .finish:  return .green
-            case .summary: return .accentColor
-            case .budget:  return .orange
-            case .error:   return .red
-            case .info:    return .secondary
+            case .start:   return DS.Ink.p2
+            case .finish:  return DS.Status.ok
+            case .summary: return DS.Accent.ink
+            case .budget:  return DS.Status.warn
+            case .error:   return DS.Status.err
+            case .info:    return DS.Ink.p3
             }
         }
     }

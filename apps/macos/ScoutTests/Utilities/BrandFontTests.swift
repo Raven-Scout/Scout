@@ -63,6 +63,19 @@ struct BrandFontTests {
         #expect(text.contains(#"--font-mono: "Scout JetBrains Mono""#))
     }
 
+    @Test("bold in the KB editor is the SemiBold face, not a regular one")
+    func editorBoldIsSemiBold() {
+        #expect(DS.BrandFont.available)
+        let body = KBLiveEditor.Coordinator.serif(13)
+        #expect(body.fontName == "Newsreader16pt-Regular")
+        #expect(KBLiveEditor.Coordinator.bold(body).fontName == "Newsreader16pt-SemiBold")
+        let italic = KBLiveEditor.Coordinator.italic(body)
+        #expect(italic.fontName == "Newsreader16pt-Italic")
+        #expect(KBLiveEditor.Coordinator.bold(italic).fontName == "Newsreader16pt-SemiBoldItalic")
+        #expect(KBLiveEditor.Coordinator.bold(KBLiveEditor.Coordinator.mono(12)).fontName == "JetBrainsMono-SemiBold")
+        #expect(DS.BrandFont.boldFace(of: "Helvetica") == nil)
+    }
+
     @Test("each weight maps to a real face, never a synthesised one")
     func weightsMapToFaces() {
         #expect(DS.BrandFont.newsreader(.regular) == "Newsreader16pt-Regular")

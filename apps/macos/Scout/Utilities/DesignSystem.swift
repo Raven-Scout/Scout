@@ -255,6 +255,16 @@ enum DS {
         }()
 
         static func newsreader(_ weight: Font.Weight) -> String { newsreaderFaces[index(weight)] }
+
+        /// The bundled face AppKit text (the KB editor) uses for bold: the
+        /// SemiBold of the same family and slant. Nil for a face that isn't
+        /// a bundled brand face.
+        static func boldFace(of name: String) -> String? {
+            if newsreaderItalicFaces.contains(name) { return newsreaderItalicFaces[2] }
+            if newsreaderFaces.contains(name) { return newsreaderFaces[2] }
+            if jetBrainsMonoFaces.contains(name) { return jetBrainsMonoFaces[2] }
+            return nil
+        }
         static func jetBrainsMono(_ weight: Font.Weight) -> String { jetBrainsMonoFaces[index(weight)] }
 
         /// Regular for regular and lighter, Medium for medium, SemiBold for
