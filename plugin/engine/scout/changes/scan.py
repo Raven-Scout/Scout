@@ -172,9 +172,9 @@ def name_status(vault: Path, sha: str) -> list[tuple[str, tuple[str, ...]]] | No
     raw = _git_bytes(vault, "diff-tree", "-r", "-z", "-M", "--name-status", "--no-commit-id", "--root", sha, "--")
     if raw is None:
         return None
-    fields = os.fsdecode(raw).split("\0")
-    if fields and fields[-1] == "":
-        fields.pop()
+    if not raw:
+        return []  # a commit that changed nothing
+    fields = os.fsdecode(raw.removesuffix(b"\0")).split("\0")
     out: list[tuple[str, tuple[str, ...]]] = []
     i = 0
     while i < len(fields):
@@ -333,9 +333,8 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
         )
         if raw is None:
             return None
-        for sha, ts, subject, body, paths, renames in _parse_log(raw):
-            if sha in out:
-                out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=False)
+        for sha, ts, subject, body, paths, renames in _parse_log(raw):  # git lists only the shas it was given
+            out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=False)
     return out
 
 

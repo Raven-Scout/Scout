@@ -195,6 +195,16 @@ def test_hunk_counts_that_do_not_add_up_are_unreadable(tmp_path, body):
     assert read_pending(tmp_path) == ([], 1)
 
 
+def test_no_newline_markers_frontmatter_shapes_and_empty_targets(tmp_path):
+    marker = "\\ No newline at end of file\n"
+    no_newline = GOOD.replace("-old\n+new\n", f"-old\n{marker}+new\n{marker}")
+    _write(tmp_path, "a.md", no_newline)
+    _write(tmp_path, "b.md", GOOD.replace("targets:\n  - briefing\n", "targets:\n"))
+    _write(tmp_path, "c.md", "---\n- a list\n- not a mapping\n---\n" + GOOD.split("---\n", 2)[2])
+    items, bad = read_pending(tmp_path)
+    assert [(i.id, i.targets) for i in items] == [("gov-a", ("briefing",)), ("gov-b", ())] and bad == 1
+
+
 def test_undo_requested():
     assert undo_requested([_sig("undo:chg-0123456789ab", 0)], "chg-0123456789ab")
     assert not undo_requested([_sig("approve:chg-0123456789ab", 0)], "chg-0123456789ab")

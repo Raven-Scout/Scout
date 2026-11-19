@@ -138,3 +138,14 @@ def test_materialize_records_a_carried_red_item(tmp_path: Path) -> None:
     mat.materialize(data_dir=vault, date=_dt.date(2026, 7, 6))
     (row,) = _rows(vault)
     assert row.ref.endswith("@2026-07-01")
+
+
+def test_record_red_carried_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.action_items import stale
+
+    def boom(*_a, **_k):
+        raise RuntimeError("stale tracker unreadable")
+
+    monkeypatch.setattr(stale, "last_changed_by_tag", boom)
+    now = _dt.datetime(2026, 7, 6, 9, 0, tzinfo=_dt.UTC)
+    assert record_red_carried(_vault(tmp_path), [], today=now.date(), now=now, env={}) == 0

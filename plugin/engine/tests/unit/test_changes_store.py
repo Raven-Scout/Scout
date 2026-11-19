@@ -360,3 +360,4 @@ def test_has_signal_never_raises(tmp_path, vault):
     (vault / ".scout-logs" / "engagement.jsonl").write_text('not json\n[1]\n{"kind": "dm-sent", "ref": "9.9"}\n')
     assert has_signal(vault, {"HOME": str(tmp_path / "home")}, "dm-sent", "9.9") is True
     assert has_signal(vault, {}, "nonsense-kind", "x") is False
+    assert has_signal(vault, {}, ["unhashable"], "x") is False  # type: ignore[arg-type]

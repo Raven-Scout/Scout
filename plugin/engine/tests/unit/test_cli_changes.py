@@ -643,6 +643,30 @@ def test_announced_records_ids_and_refuses_junk(cli, vault):
     assert cli(["changes", "announced", "../etc"]).exit_code == 2
 
 
+def test_a_ledger_that_cannot_be_written_is_exit_2_with_one_line(cli, git_vault, home, monkeypatch):
+    """m9: `engagement record` and the owner commands turn a failed append into exit 2 and one line, no traceback."""
+    from scout.changes import store
+
+    def full(*_a, **_k):
+        raise OSError("No space left on device")
+
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    gov = _pending(git_vault)
+    monkeypatch.setattr(store, "_append", full)
+    for args in (
+        ["engagement", "record", "dm-sent", "--surface", "slack-dm", "--ref", "1790330702.929009"],
+        ["engagement", "record", "app-edit", "--surface", "app"],
+        ["changes", "approve", gov],
+        ["changes", "undo", cid],
+        ["changes", "wrong", cid],
+    ):
+        r = cli(args)
+        assert r.exit_code == 2, args
+        assert r.exception is None or isinstance(r.exception, SystemExit), args
+        assert "No space left on device" in r.output and "Traceback" not in r.output, args
+
+
 def test_due_with_a_missing_vault_prints_nothing_to_do(cli, tmp_path, home, monkeypatch):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
     r = cli(["changes", "due", "--json"])

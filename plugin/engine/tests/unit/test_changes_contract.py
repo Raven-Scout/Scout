@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from scout.changes.governance import diff_hash
 from scout.changes.models import CHANGE_KINDS, Change, Signal, Why
-from scout.changes.report import changes_report, daily_counts, engagement_report
+from scout.changes.report import changes_report, daily_counts, engagement_report, pending_dm_count
 from scout.changes.store import (
     CHANGES_NAME,
     ENGAGEMENT_NAME,
@@ -420,6 +420,19 @@ def test_a_reply_at_49h_leaves_it_noise():
     days = _dm_day([sent, reply])
     assert days[sent.ts.astimezone(PRAGUE).date().isoformat()]["noise"] == 1
     assert days[reply.ts.astimezone(PRAGUE).date().isoformat()]["feedback"] == 1
+
+
+def test_a_dm_exactly_48h_old_is_noise_and_a_reply_at_exactly_48h_answers_it():
+    """T3: both edges of the 48 h window are inclusive: noise from 48 h on, and a reply at +48 h still counts."""
+    sent = _sent(48)
+    assert sum(d["noise"] for d in _dm_day([sent]).values()) == 1
+    assert pending_dm_count([sent], since=NOW - timedelta(days=14), now=NOW) == 0
+    just_under = _sent(48 - 1 / 3600)
+    assert sum(d["noise"] for d in _dm_day([just_under]).values()) == 0
+    assert pending_dm_count([just_under], since=NOW - timedelta(days=14), now=NOW) == 1
+    older = _sent(60)
+    assert sum(d["noise"] for d in _dm_day([older, _answer(older, 48)]).values()) == 0
+    assert sum(d["noise"] for d in _dm_day([older, _answer(older, 48 + 1 / 3600)]).values()) == 1
 
 
 def test_a_reaction_within_48h_answers_it():

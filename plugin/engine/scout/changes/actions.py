@@ -124,7 +124,6 @@ def _modes_ok(vault: Path, parent: str, commit: str, paths: Sequence[str]) -> bo
     if raw is None:
         return False
     fields = os.fsdecode(raw).split("\0")
-    seen = 0
     i = 0
     while i < len(fields):
         meta = fields[i]
@@ -143,8 +142,7 @@ def _modes_ok(vault: Path, parent: str, commit: str, paths: Sequence[str]) -> bo
             return False
         if status != "D" and new_mode not in _REMOVABLE_MODES:
             return False
-        seen += 1
-    return seen > 0
+    return True
 
 
 def _plan(vault: Path, commit: str) -> _Plan | str:
@@ -228,10 +226,7 @@ def _first_review(changes: Sequence[Mapping[str, Any]]) -> date | None:
     for c in changes:
         test = c["test"]
         if test.get("state") == "done" and isinstance(test.get("review_on"), str):
-            try:
-                days.append(date.fromisoformat(test["review_on"]))
-            except ValueError:
-                continue
+            days.append(date.fromisoformat(test["review_on"]))  # written by scout.changes.verdicts: always ISO
     return min(days, default=None)
 
 
@@ -359,15 +354,12 @@ def _inside(vault: Path, rel: str) -> bool:
 
 
 def _real_dir_inside(vault: Path, rel: str) -> bool:
-    """``rel`` is absent or a real folder (not a symlink, not a file), and it resolves inside the vault."""
+    """``rel`` is absent or a real folder (not a symlink, not a file), and its parent resolves inside the vault, so it
+    does too."""
     path = vault / rel
     if path.is_symlink() or (path.exists() and not path.is_dir()):
         return False
-    try:
-        path.resolve().relative_to(vault.resolve())
-    except (OSError, ValueError, RuntimeError):
-        return False
-    return True
+    return _inside(vault, rel)
 
 
 def rollback(
@@ -427,27 +419,26 @@ def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_
 
     Raises :class:`ActionRefused` unless the owner approved this exact diff; a patch that doesn't apply leaves the
     pending file where it is (``patch does not apply``). The temp diff in ``.scout-cache/`` is always removed."""
-    from scout.changes.governance import PENDING_DIR, diff_paths
+    from scout.changes.governance import PENDING_DIR
 
     item = _pending_item(vault, env, gov_id, "approved", owner_vault)
     applied_dir = f"{PENDING_DIR}/{APPLIED_DIR}"
     applied_rel = f"{applied_dir}/{item.slug}.md"
-    paths = diff_paths(item.diff)
-    if paths is None:  # read_pending already parsed it; a file changed since then
-        raise ActionRefused("patch does not apply")
+    paths = list(item.paths)  # from the diff's headers, checked when the file was read
     if not all(_inside(vault, p) for p in paths):
         raise ActionRefused("path outside the vault")
     # Both folders are run-writable: a planted symlink must not carry the temp diff or the md out of the vault.
-    if not (
-        _real_dir_inside(vault, CACHE_DIR) and _real_dir_inside(vault, applied_dir) and _inside(vault, applied_rel)
-    ):
+    if not (_real_dir_inside(vault, applied_dir) and _inside(vault, applied_rel)):
         raise ActionRefused("path outside the vault")
     if item.governance and os.path.lexists(vault / applied_rel):
         raise ActionRefused(f"{applied_rel} already exists")
     if not _at_top(vault):
         raise ActionRefused("git-unreadable")
     cache = vault / CACHE_DIR
-    cache.mkdir(parents=True, exist_ok=True)
+    try:
+        cache.mkdir(exist_ok=True)  # a no-op on a planted link to a folder; checked right after
+    except FileExistsError:  # a file, or a link to nothing, by that name
+        pass
     if not _real_dir_inside(vault, CACHE_DIR):
         raise ActionRefused("path outside the vault")
     # A fresh file (O_EXCL), never a pre-existing name a run could have linked elsewhere; this exact file is removed.
@@ -456,8 +447,7 @@ def apply_governance(vault: Path, env: Mapping[str, str], gov_id: str, *, owner_
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(item.diff)
-        if _git(vault, "apply", "--check", "--whitespace=nowarn", "--", str(diff_file)) is None:
-            raise ActionRefused("patch does not apply")
+        # git apply checks every hunk before it writes: a patch that doesn't apply writes nothing.
         if _git(vault, "apply", "--whitespace=nowarn", "--", str(diff_file)) is None:
             raise ActionRefused("patch does not apply")
     finally:

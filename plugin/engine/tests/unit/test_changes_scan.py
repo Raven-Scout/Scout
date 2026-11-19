@@ -483,3 +483,44 @@ def test_git_calls_never_take_optional_locks(repo, monkeypatch):
     monkeypatch.setattr(scan_mod.subprocess, "run", spy)
     scan_mod._git(repo, "status")
     assert seen["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+# --- what a commit is made of (name_status / own_paths): what undoing it restores, and what a revert must touch ---
+
+
+def test_name_status_reads_renames_and_root_commits(repo):
+    from scout.changes.scan import name_status, own_paths
+
+    root = commit(repo, "scripts/a.py", "seed", content="x\n")
+    assert name_status(repo, root) == [("A", ("scripts/a.py",))]
+    (repo / "tools").mkdir()
+    _git(repo, "mv", "scripts/a.py", "tools/a.py")
+    commit(repo, "SKILL.md", "dreaming [22:12]: move a driver out")
+    moved = _git(repo, "rev-parse", "HEAD")
+    entries = name_status(repo, moved)
+    assert entries is not None and ("R100", ("scripts/a.py", "tools/a.py")) in entries
+    # Both sides of a rename out of scripts/ are the change's own; README never is.
+    assert own_paths([*entries, ("M", ("README.md",))]) == ["SKILL.md", "scripts/a.py", "tools/a.py"]
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "empty", date=_next_date())
+    assert name_status(repo, _git(repo, "rev-parse", "HEAD")) == []
+
+
+def test_name_status_fails_closed(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    assert scan_mod.name_status(repo, "HEAD") is None  # never a revision expression
+    assert scan_mod.name_status(repo, "e" * 40) is None  # git can't read it
+    for raw in (b"M\0", b"R100\0old\0", b"\0x\0"):
+        monkeypatch.setattr(scan_mod, "_git_bytes", lambda *a, _raw=raw, **k: _raw)
+        assert scan_mod.name_status(repo, "a" * 40) is None, raw
+
+
+def test_the_commit_that_moves_a_pending_file_to_applied_is_governance(repo):
+    """I2: only the move into applied/ makes a governance change; the trailer is ignored."""
+    commit(repo, "governance-pending/skip-red.md", "dreaming [22:00]: pending", content="---\nsummary: s\n---\n")
+    (repo / "governance-pending/applied").mkdir()
+    _git(repo, "mv", "governance-pending/skip-red.md", "governance-pending/applied/skip-red.md")
+    commit(repo, "SKILL.md", "dreaming [22:40]: apply gov-skip-red")
+    commit(repo, "SKILL.md", "dreaming [22:50]: SKILL.md self-edit\n\nScout-Change-Governance: yes")
+    got = {c.summary: c.governance for c in scan(repo, since=None)}
+    assert got == {"apply gov-skip-red": True, "SKILL.md self-edit": False}

@@ -39,6 +39,7 @@ class Pending:
     targets: tuple[str, ...]
     path: str  # vault-relative
     diff: str
+    paths: tuple[str, ...] = ()  # what the diff patches (diff_paths): both sides of a rename, never /dev/null
     # False for a harness-fallback item: applying it deletes the file instead of moving it to applied/, so the
     # commit is an ordinary, testable change rather than a governance one.
     governance: bool = True
@@ -127,11 +128,6 @@ def diff_paths(diff: str) -> list[str] | None:
     return sorted(found)
 
 
-def _diff_paths_ok(diff: str) -> bool:
-    """Every file header in the diff names a path inside the vault, and there is at least one."""
-    return diff_paths(diff) is not None
-
-
 def _parse(path: Path, slug: str) -> Pending | None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_BYTES:
         return None
@@ -154,7 +150,8 @@ def _parse(path: Path, slug: str) -> Pending | None:
     if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
         return None
     blocks = _FENCE_RE.findall(m.group(2))
-    if len(blocks) != 1 or not _diff_paths_ok(blocks[0]):
+    patched = diff_paths(blocks[0]) if len(blocks) == 1 else None
+    if patched is None:
         return None
     return Pending(
         id=ID_PREFIX + slug,
@@ -164,6 +161,7 @@ def _parse(path: Path, slug: str) -> Pending | None:
         targets=tuple(targets),
         path=f"{PENDING_DIR}/{slug}.md",
         diff=blocks[0],
+        paths=tuple(patched),
         governance=governance,
     )
 

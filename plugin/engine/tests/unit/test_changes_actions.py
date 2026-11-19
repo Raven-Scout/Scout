@@ -156,6 +156,8 @@ def test_a_commit_that_only_claims_to_revert_keeps_the_undo_and_the_suspect(repo
     assert [r["id"] for r in _due(repo, env)["rollbacks"]] == [cid]
     _commit(repo, f"dreaming [22:30]: tidy\n\nScout-Change-Reverts: {cid}", {"README.md": "r2\n"}, date=NOW)
     _commit(repo, f'Revert "x"\n\nThis reverts commit {"0" * 40}.', {"README.md": "r3\n"}, date=NOW)
+    # A self-change path, but not the one the target changed: still not an undo of it.
+    _commit(repo, f"dreaming [22:40]: tidy\n\nScout-Change-Reverts: {cid}", {"scripts/other.py": "x\n"}, date=NOW)
     scan(repo, since=None)
     doc = _due(repo, env)
     assert [r["id"] for r in doc["rollbacks"]] == [cid]
@@ -757,3 +759,198 @@ def test_git_calls_set_optional_locks_off(monkeypatch, repo, env):
     (repo / "SKILL.md").write_text("skill v1\n")
     apply_governance(repo, env, gov)
     assert seen and all(e is not None and e.get("GIT_OPTIONAL_LOCKS") == "0" for e in seen)
+
+
+# --- fail-closed branches (I8) ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,  # git failed
+        b"not-a-meta-line\0SKILL.md\0",  # no leading colon
+        b":100644 100644 a b M\0",  # a meta line with no path after it
+        b":100644 100644 a b X\0SKILL.md\0",  # a status a commit diff never has
+        b":120000 100644 a b T\0SKILL.md\0",  # a symlink in the parent would be written back
+        b":100644 160000 a b M\0SKILL.md\0",  # a submodule in the commit
+    ],
+)
+def test_modes_refuse_what_cannot_be_written_back(repo, monkeypatch, raw):
+    from scout.changes import actions
+
+    monkeypatch.setattr(actions, "_git_bytes", lambda *a, **k: raw)
+    assert actions._modes_ok(repo, "p" * 40, "c" * 40, ["SKILL.md"]) is False
+
+
+def test_a_change_that_turned_a_symlink_into_a_file_is_unreadable(repo, env):
+    (repo / "scripts").mkdir()
+    (repo / "scripts/tool.sh").symlink_to("../README.md")
+    _commit(repo, "seed a link", {}, date=NOW - timedelta(days=30))
+    (repo / "scripts/tool.sh").unlink()
+    sha = _commit(
+        repo, "dreaming [22:12]: SKILL.md self-edit — a real tool", {"SKILL.md": "v2\n", "scripts/tool.sh": "echo\n"}
+    )
+    scan(repo, since=None)
+    _undo(repo, env, _cid(sha))
+    assert [b["why_blocked"] for b in _due(repo, env)["blocked"]] == ["git-unreadable"]
+
+
+def test_plan_refusals(repo, monkeypatch):
+    from scout.changes import actions
+
+    assert actions._plan(repo, "not-a-sha") == "git-unreadable"
+    assert actions._plan(repo, "e" * 40) == "git-unreadable"  # well-formed, not in the repository
+    readme_only = _commit(repo, "dreaming [22:12]: README tweak", {"README.md": "new readme\n"})
+    assert actions._plan(repo, readme_only) == "git-unreadable"  # no own paths to undo
+    # A commit that isn't on HEAD (another branch).
+    _git(repo, "checkout", "-q", "-b", "side")
+    side = _commit(repo, "dreaming [22:12]: SKILL.md on a side branch", {"SKILL.md": "side\n"})
+    _git(repo, "checkout", "-q", "-")
+    assert actions._plan(repo, side) == "git-unreadable"
+    # A vault that is a subfolder of its repository: git's paths aren't vault-relative.
+    assert actions._plan(repo / "knowledge-base", readme_only) == "git-unreadable"
+    # The diff can't be read.
+    sha = _brain_edit(repo)
+    real = actions._git_bytes
+
+    def no_patch(vault, *args, **kw):
+        return None if "-p" in args else real(vault, *args, **kw)
+
+    monkeypatch.setattr(actions, "_git_bytes", no_patch)
+    assert actions._plan(repo, sha) == "git-unreadable"
+
+
+def test_rollback_problem_when_git_status_fails(repo, monkeypatch):
+    from scout.changes import actions
+
+    sha = _brain_edit(repo)
+    real = actions._git_bytes
+    monkeypatch.setattr(actions, "_git_bytes", lambda vault, *a, **k: None if "status" in a else real(vault, *a, **k))
+    change = Change(
+        id=_cid(sha),
+        ts=NOW,
+        kind="brain-edit",
+        summary="s",
+        why=Why("unknown", "", inferred=True),
+        commit=sha,
+        files=("SKILL.md",),
+        author_lane="dreaming",
+    )
+    assert actions.rollback_problem(repo, change, {"state": "testing"}) == "git-unreadable"
+
+
+def _due_then(monkeypatch, after) -> None:
+    """Run ``after`` once `due` has been worked out inside `rollback`, before it writes: a change racing the run."""
+    from scout.changes import actions
+
+    real = actions._safe_compute
+
+    def racing(*a, **k):
+        out = real(*a, **k)
+        after()
+        return out
+
+    monkeypatch.setattr(actions, "_safe_compute", racing)
+
+
+def test_rollback_refuses_what_changed_after_due(repo, env, monkeypatch):
+    cid = _cid(_brain_edit(repo))
+    _undo(repo, env, cid)
+    _due_then(monkeypatch, lambda: (repo / "SKILL.md").write_text("edited meanwhile\n"))
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since" and (repo / "SKILL.md").read_text() == "edited meanwhile\n"
+
+
+def test_rollback_refuses_a_folder_swapped_for_a_link_after_due(repo, env, monkeypatch, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sha = _commit(repo, "dreaming [22:12]: driver", {"scripts/x.py": "print(2)\n"})
+    scan(repo, since=None)
+    cid = _cid(sha)
+    _undo(repo, env, cid)
+
+    def swap() -> None:
+        (repo / "scripts/x.py").unlink()
+        (repo / "scripts").rmdir()
+        (repo / "scripts").symlink_to(outside)
+
+    _due_then(monkeypatch, swap)
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "path outside the vault" and list(outside.iterdir()) == []
+
+
+def test_rollback_refuses_a_plan_that_went_away_after_due(repo, env, monkeypatch):
+    from scout.changes import actions
+
+    cid = _cid(_brain_edit(repo))
+    _undo(repo, env, cid)
+    _due_then(monkeypatch, lambda: monkeypatch.setattr(actions, "_plan", lambda *_a: "git-unreadable"))
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "git-unreadable"
+
+
+def test_apply_refuses_a_git_path_and_an_existing_applied_file(repo, env):
+    folder = repo / "governance-pending"
+    folder.mkdir()
+    (folder / "git.md").write_text(
+        "---\nsummary: s\nwhy: w\n---\n\n```diff\n--- a/.git/config\n+++ b/.git/config\n@@ -1 +1 @@\n-a\n+b\n```\n"
+    )
+    _decide(repo, env, "approve", "gov-git")
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(repo, env, "gov-git")
+    assert exc.value.reason == "path outside the vault"
+    gov = _pending(repo)
+    _decide(repo, env, "approve", gov)
+    (folder / "applied").mkdir()
+    (folder / "applied/skip-red.md").write_text("an earlier one\n")
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(repo, env, gov)
+    assert "already exists" in exc.value.reason and (repo / "SKILL.md").read_text() == "skill v1\n"
+
+
+def test_apply_refuses_a_pending_folder_linked_out_of_the_vault(repo, env, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "skip-red.md").write_text(_PENDING)
+    (repo / "governance-pending").symlink_to(outside)
+    _decide(repo, env, "approve", "gov-skip-red")
+    for act in (apply_governance, discard_governance):
+        with pytest.raises(ActionRefused) as exc:
+            act(repo, env, "gov-skip-red")
+        assert exc.value.reason == "path outside the vault"
+    assert (outside / "skip-red.md").read_text() == _PENDING
+
+
+def test_apply_refuses_a_scout_cache_that_is_a_file(repo, env):
+    (repo / ".scout-cache").write_text("not a folder\n")
+    gov = _pending(repo)
+    _decide(repo, env, "approve", gov)
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(repo, env, gov)
+    assert exc.value.reason == "path outside the vault" and (repo / "SKILL.md").read_text() == "skill v1\n"
+
+
+def test_apply_needs_the_vault_at_its_repository_top(repo, env):
+    sub = repo / "inner"
+    sub.mkdir()
+    gov = _pending(sub)
+    _decide(sub, env, "approve", gov)
+    with pytest.raises(ActionRefused) as exc:
+        apply_governance(sub, env, gov)
+    assert exc.value.reason == "git-unreadable"
+
+
+def test_announced_file_that_does_not_fit_is_empty_and_a_failed_save_raises(repo, monkeypatch):
+    from scout.changes import actions, store
+
+    path = repo / ".scout-logs" / ANNOUNCED_NAME
+    path.parent.mkdir()
+    for text in ("[1]", '{"schema": 2, "ids": ["chg-0123456789ab"]}', '{"schema": 1, "ids": "chg-0123456789ab"}'):
+        path.write_text(text)
+        assert actions.read_announced(repo) == set() and actions.read_announced(repo, blocked=True) == set()
+    monkeypatch.setattr(store, "atomic_write_json", lambda *_a: False)
+    with pytest.raises(OSError):
+        mark_announced(repo, ["chg-0123456789ab"])
