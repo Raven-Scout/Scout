@@ -45,9 +45,12 @@ struct CommentComposerView: View {
                 }
                 Spacer()
                 EditorialActionButton("Cancel") { cancel() }
+                // ⌘↵ sends only while this editor has focus: another card's
+                // composer, or Done on the keyboard-current card, owns it
+                // otherwise (`commentEditorFocused`).
                 EditorialActionButton(
-                    "Send", style: .primary, shortcut: "⌘↵",
-                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                    "Send", style: .primary,
+                    keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { submit() }
                     .disabled(!state.canSubmit)
             }
@@ -121,5 +124,16 @@ struct CommentTextEditor: View {
             .padding(.vertical, 4)
             .frame(minHeight: minHeight, maxHeight: 120)
             .neumorphicPressed(cornerRadius: 5)
+            .preference(key: CommentEditorFocusedKey.self, value: focus.wrappedValue)
+    }
+}
+
+/// True while any comment editor on the page has keyboard focus. Action Items
+/// reads it so ⌘↵ goes to that editor's Send or Save, not to Done on the
+/// keyboard-current card: two buttons bound to one key would fire either.
+struct CommentEditorFocusedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
     }
 }

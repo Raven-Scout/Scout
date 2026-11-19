@@ -58,9 +58,9 @@ struct ControlCenterView: View {
         .background(
             Group {
                 Button("") { closeDetail() }
-                    .keyboardShortcut(".", modifiers: .command)
+                    .keyboardShortcut(AppShortcut.closeDetail)
                 Button("") { toggleExpansion() }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .keyboardShortcut(AppShortcut.expandDetail)
             }
             .opacity(0)
             .frame(width: 0, height: 0)
@@ -150,7 +150,7 @@ struct ControlCenterView: View {
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
-            .help("Close (⌘.)")
+            .help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close run details")
 
             Text(run.displayName)
@@ -165,7 +165,7 @@ struct ControlCenterView: View {
                     .foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
-            .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+            .help(ShortcutLabel.help(isExpanded ? "Collapse" : "Expand to full screen", AppShortcut.expandDetail))
             .accessibilityLabel(isExpanded ? "Collapse run details" : "Expand run details")
         }
         .padding(.horizontal, 14)
@@ -507,14 +507,17 @@ struct SignalsRailCard: View {
 
 /// Only shortcuts that exist on this page (bound in `ControlCenterView`'s
 /// background buttons), plus the system Settings one. The card used to list
-/// ⌘1, ⌘2, ⌘R, ⌘K and ⌘↵, none of which were bound (card C3). Add a row
-/// here only together with its `.keyboardShortcut`.
+/// ⌘1, ⌘2, ⌘R, ⌘K and ⌘↵, none of which were bound (card C3). Each row's
+/// keys come from the `AppShortcut` its button binds.
 struct KeyboardRailCard: View {
-    static let shortcuts: [(keys: String, label: String)] = [
-        ("⌘.", "Close run details"),
-        ("⇧⌘F", "Expand run details"),
-        ("⌘,", "Settings"),
+    static let rows: [(shortcut: KeyboardShortcut, label: String)] = [
+        (AppShortcut.closeDetail, "Close run details"),
+        (AppShortcut.expandDetail, "Expand run details"),
+        (AppShortcut.settings, "Settings"),
     ]
+    static var shortcuts: [(keys: String, label: String)] {
+        rows.map { (ShortcutLabel.text($0.shortcut), $0.label) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

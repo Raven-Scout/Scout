@@ -33,21 +33,24 @@ nonisolated extension SidebarItem {
         }
     }
 
-    /// The Go menu's ⌘-number. Spelled out per page, not derived from the
+    /// The Go menu's ⌘-number: the page's place in the sidebar's Scout
+    /// section, so ⌘3 is the third row. Settings isn't a page: the App
+    /// section's Settings row opens the ⌘, window (UI audit #10). Spelled out per page, not derived from the
     /// case order: there are only nine digits, so a new page has to be given
     /// one (or `nil`, no shortcut) on purpose — this switch won't compile
-    /// until it is. `AccessibilityFoundationTests` checks the keys stay unique.
+    /// until it is. `AccessibilityFoundationTests` checks the keys stay unique
+    /// and in sidebar order.
     var goShortcutKey: Character? {
         switch self {
         case .controlCenter: return "1"
-        case .health:        return nil   // no free key; Go ▸ Health is a menu item only
-        case .sessions:      return "2"
-        case .actionItems:   return "3"
-        case .schedules:     return "4"
-        case .proposals:     return "5"
-        case .wishlist:      return "6"
-        case .research:      return "7"
-        case .knowledgeBase: return "8"
+        case .health:        return "2"
+        case .sessions:      return "3"
+        case .actionItems:   return "4"
+        case .schedules:     return "5"
+        case .proposals:     return "6"
+        case .wishlist:      return "7"
+        case .research:      return "8"
+        case .knowledgeBase: return "9"
         }
     }
 
@@ -79,8 +82,8 @@ nonisolated extension SidebarItem {
 
 // MARK: - Go menu
 
-/// The Go menu: one item per page with ⌘1–⌘8, like Finder's Go menu
-/// (Settings is the app menu's ⌘,, not a page). It
+/// The Go menu: one item per page, ⌘1–⌘9 down the sidebar, like Finder's
+/// Go menu (Settings isn't a page: it is the app menu's ⌘, window). It
 /// fronts the main window (reopening it if it was closed) and switches the
 /// sidebar through `AppState.requestedSidebar`, the same path the menu-bar
 /// panel already uses.

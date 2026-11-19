@@ -31,7 +31,7 @@ Then commit it: `{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: ses
 ## Step 4c: Session Cost
 
 ```bash
-{{SCOUT_DIR}}/scripts/write-session-cost.sh research "${CLAUDE_MAX_BUDGET_USD:-0}" "${CLAUDE_BUDGET_SPENT_USD:-0}" 0
+{{SCOUT_DIR}}/scripts/write-session-cost.sh research 0 0 0
 ```
 
 ---

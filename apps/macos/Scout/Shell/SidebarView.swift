@@ -4,11 +4,12 @@ import SwiftUI
 /// style, so arrow keys move between pages, VoiceOver reads each row as a
 /// selectable item with its badge, and the row highlight follows the system.
 /// (It was a hand-built stack of buttons with none of that, C7.) The Go menu
-/// (`GoCommands`) reaches the same pages, all but Health with ⌘1–⌘8.
+/// (`GoCommands`) reaches the same pages, ⌘1–⌘9 in this order.
 ///
 /// The last row, Settings, isn't a page: it opens the Settings window (⌘,),
 /// Scout's only Settings (UI audit #10), and keeps its update count and
 /// attention mark so the sidebar still says when Settings needs a look.
+/// Being a button, not a selectable row, arrow keys pass over it; ⌘, opens it.
 struct SidebarView: View {
     @Binding var selection: SidebarItem
     @Environment(\.openSettings) private var openSettings
@@ -132,7 +133,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plainHit) // ds-guard: hit area — a sidebar row, drawn like its neighbours
         .badge(settingsBadge)
-        .help("Open Settings (⌘,)")
+        .help(ShortcutLabel.help("Open Settings", AppShortcut.settings))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Settings")
         .accessibilityValue(Self.settingsAccessibilityValue(updates: settingsBadge, attention: settingsAttention))
