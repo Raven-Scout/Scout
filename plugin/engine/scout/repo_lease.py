@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scout import repo_sync
+from scout import repo_sync, safe_write
 from scout.repo_sync import Host, RepoSyncError
 from scout.sessions.cli_home import pid_alive
 
@@ -118,12 +118,7 @@ def save(vault: Path, lease: LocalLease) -> None:
     p = lease_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(p.parent, 0o700)
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(dataclasses.asdict(lease), indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(dataclasses.asdict(lease), indent=2, sort_keys=True) + "\n", mode=0o600)
 
 
 def forget(vault: Path, token: str) -> None:
@@ -153,7 +148,9 @@ def machine_ref() -> str:
     os.chmod(p.parent, 0o700)
     new = secrets.token_hex(6)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # A stale temp file is ours to remove; then O_EXCL | O_NOFOLLOW: never written through a planted symlink.
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(new + "\n")
     try:

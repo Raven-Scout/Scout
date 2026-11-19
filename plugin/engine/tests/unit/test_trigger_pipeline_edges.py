@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from scout import safe_write
 from scout.errors import ConfigError
 from scout.triggers import dedup as dedup_mod
 from scout.triggers import engine as engine_mod
@@ -150,14 +151,10 @@ def test_a_failed_dedup_save_never_raises_and_leaves_no_tempfile(
     path = tmp_path / "d.json"
     store = DedupStore(path)
 
-    real_open = Path.open
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only filesystem")
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.name.endswith(".json.tmp"):
-            raise OSError("read-only filesystem")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write.os, "replace", boom)  # fails once the temp file is written
     store.record_fire("t1", "e1", NOW)  # must not raise
 
     assert not path.exists()

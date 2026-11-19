@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
-from scout import custom_connectors, yaml_blocks
+from scout import custom_connectors, safe_write, yaml_blocks
 from scout.errors import ConfigError
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
@@ -320,9 +320,9 @@ def _auto_update_enabled(cfg: BootstrapConfig) -> str:
 
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    # A random temp name made O_EXCL | O_NOFOLLOW: a symlink a run planted beside a protected file (a runner
+    # script, a settings file) is never written through.
+    safe_write.atomic_write_text(path, content)
 
 
 def merge_gitignore(vault_text: str, template_text: str) -> str:

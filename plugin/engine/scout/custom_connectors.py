@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from scout import yaml_blocks
+from scout import safe_write, yaml_blocks
 from scout.yaml_safe import YAMLValueError, load_yaml, yaml_problem
 
 CUSTOM_FILE = "connectors.custom.yaml"
@@ -664,9 +664,7 @@ def write(vault: Path, raw_connectors: dict[str, Any]) -> None:
     except (OSError, UnicodeDecodeError):
         text = None
     new_text = dump(raw_connectors) if text is None else _write_keeping_comments(text, raw_connectors)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    tmp.replace(path)
+    safe_write.atomic_write_text(path, new_text)
 
 
 def enabled_keys(vault: Path) -> set[str]:

@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.privacy import Policy, label_file, load_policy, normalize_rel
 from scout.scripts._config_scan import scan_overrides
 
@@ -523,7 +523,7 @@ def launch_runner(runner: Path, *, vault: Path, log_path: Path) -> int:
     §6.2), whatever runner it is. Returns the child's PID.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with safe_write.open_append(log_path) as log_fh:
         proc = subprocess.Popen(
             [str(runner)],
             cwd=str(vault),
@@ -556,7 +556,7 @@ def _log_line(log_path: Path, reason: str, tz_name: str | None = None) -> None:
         stamp = datetime.now().isoformat(timespec="minutes")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with log_path.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(log_path) as f:
             f.write(f"[{stamp}] {reason}\n")
     except OSError:
         pass

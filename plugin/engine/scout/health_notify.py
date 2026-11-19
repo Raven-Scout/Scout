@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from scout import health, notify_desktop
+from scout import health, notify_desktop, safe_write
 from scout.errors import ConfigError
 from scout.health import RunHealth
 from scout.scripts import notify_telegram
@@ -97,7 +97,7 @@ def desktop_channel(push: Push, *, vault: Path, now: datetime, send: Callable | 
     if send(push.title, push.body):
         if AUTH_FINDING_ID in ids:
             try:
-                _wrapper_alert_marker(vault).write_text(str(int(now.timestamp())), encoding="utf-8")
+                safe_write.atomic_write_text(_wrapper_alert_marker(vault), str(int(now.timestamp())))
             except OSError:
                 pass  # best-effort: the wrapper may alert again, as before
         return _result("desktop", True, "sent")
@@ -220,11 +220,9 @@ def load_state(vault: Path) -> dict:
 def save_state(vault: Path, state: dict) -> None:
     """Atomically write the state; a write failure must never break a run."""
     path = vault / STATE_FILE
-    tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        safe_write.atomic_write_text(path, json.dumps(state, indent=2))
     except OSError:
         return
 
@@ -366,7 +364,7 @@ def _acquire_lock(vault: Path, *, timeout: float, sleep: Callable[[float], None]
     """Take the exclusive advisory lock, retrying up to ``timeout`` s; None if it stays held."""
     path = vault / LOCK_FILE
     path.parent.mkdir(exist_ok=True)  # the state dir only, never the vault itself
-    handle = path.open("a")
+    handle = safe_write.open_lock(path)
     deadline = time.monotonic() + timeout
     while True:
         try:

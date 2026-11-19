@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
-from scout import __version__
+from scout import __version__, safe_write
 from scout.errors import ConfigError, ScoutError
 
 if TYPE_CHECKING:
@@ -4908,7 +4908,7 @@ def self_update_run_cmd(
         # The heartbeat starts a scheduled run once per local day; this marker is what it checks.
         marker = vault / ".scout-cache" / f"self-update-{today}.done"
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        safe_write.atomic_write_text(marker, "")  # never through a symlink a run put in the cache
     if json_out:
         payload = {
             "row": attempt.row.to_json() if attempt.row else None,

@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.scripts.engine_pointer import EnginePointer
 from scout.scripts.self_update import ReleaseStatus, UpdateStatus, _semver_tuple, release_status
 from scout.update_outcomes import UpdateOutcome
@@ -481,7 +482,7 @@ def run_lock(vault: Path) -> Iterator[bool]:
     """
     path = vault / LOCK_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
+    with safe_write.open_lock(path) as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -505,7 +506,7 @@ def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any]
     an argv that runs Python must come from ``scout._spawn.python_module_argv``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with safe_write.open_append(log_path) as log_fh:
         proc = popen(
             argv,
             env=os.environ.copy(),

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from scout import safe_write
+
 LEDGER = ".scout-logs/update-outcomes.jsonl"
 RESULTS = (
     "up_to_date",
@@ -63,7 +65,7 @@ class UpdateOutcome:
 def append(vault: Path, row: UpdateOutcome) -> None:
     path = vault / LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(path) as f:
         f.write(json.dumps(row.to_json(), sort_keys=True) + "\n")
 
 

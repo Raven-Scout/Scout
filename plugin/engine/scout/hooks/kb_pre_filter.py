@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scout import paths
+from scout import paths, safe_write
 from scout.config import resolve_timezone
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
@@ -579,7 +579,7 @@ def run(
     out_path = cache_dir / "kb-filter.md"
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding="utf-8")
+        safe_write.atomic_write_text(out_path, content)
     except OSError:
         # Best-effort — never raise from a hook.
         pass
