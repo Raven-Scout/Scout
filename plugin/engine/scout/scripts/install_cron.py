@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from scout import config as scout_config
+from scout import safe_write
 
 TEMPLATE = Path(__file__).parent.parent / "defaults" / "cron-managed-block.tmpl"
 BLOCK_OPEN = "# >>> scout-managed >>>"
@@ -117,7 +118,7 @@ def _backup(previous: str, backup_dir: Path) -> None:
         # Configured-zone date (scout.config.today) so the backup suffix
         # agrees with every other daily stamp (#207).
         today = scout_config.today().isoformat()
-        (backup_dir / f".crontab.scout-bak.{today}").write_text(previous, encoding="utf-8")
+        safe_write.atomic_write_text(backup_dir / f".crontab.scout-bak.{today}", previous)
     except OSError as e:
         # Best-effort — don't mask the successful crontab apply.
         import sys

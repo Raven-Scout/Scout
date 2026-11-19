@@ -252,44 +252,20 @@ struct SchedulesView: View {
 
     // MARK: - Banners
 
-    @ViewBuilder
     private var staleBanner: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("The schedule changed outside the app")
-                    .font(DS.font(.body, weight: .medium))
-                    .foregroundStyle(DS.Ink.p1)
-                if let detail = stalenessDetail {
-                    Text(detail).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
-                }
-            }
-            Spacer()
-            Button("Reload now") {
-                Task { await reload(); staleBannerVisible = false }
-            }
-            .buttonStyle(.dsPrimary)
-            Button("Dismiss") { staleBannerVisible = false }
-                .buttonStyle(.dsSecondary)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .background(DS.Status.warn.opacity(0.15))
+        DSBanner(tone: .warning, title: "The schedule changed outside the app",
+                 message: stalenessDetail,
+                 actions: [ProblemAction("Reload now") { Task { await reload(); staleBannerVisible = false } }],
+                 onDismiss: { staleBannerVisible = false })
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 
     private var droppedEditsBanner: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            Text(Self.droppedEditsText(drafts.droppedSlotNames))
-                .font(DS.font(.body))
-                .foregroundStyle(DS.Ink.p1)
-            Spacer()
-            Button("Dismiss") { drafts.clearDropped() }
-                .buttonStyle(.dsQuiet)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .background(DS.Status.warn.opacity(0.15))
+        DSBanner(tone: .warning, title: Self.droppedEditsText(drafts.droppedSlotNames),
+                 onDismiss: { drafts.clearDropped() })
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 
     /// A failed write: the plain title and what to do, with the engine's own

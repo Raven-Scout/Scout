@@ -14,12 +14,11 @@ dropping a subtree a newer bootstrap wrote.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any
 
-from scout import paths
+from scout import paths, safe_write
 from scout.scripts.budget_check import CONFIG_BOUNDS, BudgetConfig, load_config_with_source
 
 # Dataclass field name -> canonical YAML key under `budget:`.
@@ -254,12 +253,9 @@ def write_budget(
         if _mtime_ns(config_path) != mtime_at_read:
             continue
 
-        tmp = config_path.with_name(f"{config_path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(updated, encoding="utf-8")
-            os.replace(tmp, config_path)
+            safe_write.atomic_write_text(config_path, updated)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
             raise BudgetWriteError(f"cannot write {config_path}: {e}") from e
         return show_payload(target)
 

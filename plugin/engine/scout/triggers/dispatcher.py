@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
 from scout.events import now_iso
 from scout.redact import redact_secrets
 from scout.triggers.actions import interactive, notify, run_skill
@@ -76,5 +77,5 @@ def log_fire(log_dir: Path, outcome: FireOutcome, *, extra: dict[str, Any] | Non
     row = asdict(outcome)
     if extra:
         row.update(extra)
-    with log_path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(log_path) as f:
         f.write(json.dumps(row) + "\n")

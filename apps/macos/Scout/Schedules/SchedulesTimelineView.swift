@@ -178,7 +178,7 @@ struct SchedulesTimelineView: View {
         GeometryReader { geo in
             let center = geo.size.width / 2
             ZStack {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 14)  // ds-guard: not a card — the timeline's axis track
                     .fill(DS.Paper.raised)
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                     .frame(width: axisWidth)
@@ -222,15 +222,7 @@ struct SchedulesTimelineView: View {
         return GeometryReader { geo in
             let center = geo.size.width / 2
             VStack(spacing: 0) {
-                Text("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
-                    .font(DS.font(.caption2, .mono, weight: .medium))
-                    .foregroundStyle(DS.Ink.p4)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(DS.Paper.sunk)
-                            .overlay(Capsule().strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                    )
+                DSPill("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
             }
             .position(x: center, y: seg.y0 + gapPx / 2)
         }
@@ -304,26 +296,11 @@ struct SchedulesTimelineView: View {
                     selectedSlotKey = slot.key
                 } label: {
                     cardContents(slot: slot, ring: ring)
+                        .editorialCard(padding: 0, selected: isSelected, accentBar: ring)
                         .frame(width: cardW)
                 }
-                .buttonStyle(.plainHit)
-                .accessibilitySelected(selectedSlotKey == slot.key)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(ring.opacity(0.85))
-                        .frame(width: 3)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(isSelected ? DS.Paper.raised : DS.Paper.base)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9)
-                                .strokeBorder(isSelected ? ring.opacity(0.7) : DS.Rule.soft, lineWidth: isSelected ? 1.5 : 0.5)
-                        )
-                        .shadow(color: DS.Neumorphic.shadow.opacity(0.6), radius: 4, x: 2, y: 2)
-                        .shadow(color: DS.Neumorphic.highlight, radius: 3, x: -1, y: -1)
-                )
+                .buttonStyle(.dsCard())
+                .accessibilitySelected(isSelected)
                 .position(x: xCenter, y: p.y)
             }
         }
@@ -342,13 +319,7 @@ struct SchedulesTimelineView: View {
                     .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
-                Text(slot.type.displayName)
-                    .font(DS.font(.micro, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(DS.Ink.onTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(ring))
+                DSPill(slot.type.displayName, tone: .slot(slot.type))
             }
             Text(slot.displayName)
                 .font(DS.font(.caption, weight: .medium))

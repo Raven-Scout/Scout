@@ -41,19 +41,8 @@ struct BoardCardView: View {
                     .textSelection(.enabled)
             }
         }
-        .padding(density == .compact ? 8 : 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 6)
-                .opacity(task.done ? 0.5 : 1)
-        }
+        .editorialCard(padding: density == .compact ? 8 : 12,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
     }
 
     private var header: some View {

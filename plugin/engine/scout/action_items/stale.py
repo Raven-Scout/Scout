@@ -58,7 +58,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items.task_fields import match_field_line
 from scout.action_items.writer import atomic_write_lines
 from scout.ids import leading_prefix_pattern
@@ -368,9 +368,7 @@ class ActivityLedger:
             "seen_through": self.seen_through.isoformat() if self.seen_through else None,
             "items": self._items,
         }
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        safe_write.atomic_write_text(self.path, json.dumps(payload, indent=1, sort_keys=True))
 
     def last_changed(self, tag: str) -> _dt.date | None:
         entry = self._items.get(tag)

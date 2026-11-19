@@ -260,12 +260,8 @@ struct KBEditorView: View {
 
             Button(action: save) {
                 Label("Save", systemImage: "checkmark")
-                    .font(DS.font(.label, weight: .semibold))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(isDirty && !isSaving ? DS.Accent.onFill : DS.Ink.p4)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(isDirty && !isSaving ? DS.Accent.fill : DS.Paper.sunk))
+            .buttonStyle(.dsPrimary)
             .disabled(!isDirty || isSaving || isUnreadable)
             .keyboardShortcut("s", modifiers: .command)
 
@@ -312,15 +308,10 @@ struct KBEditorView: View {
     }
 
     private var changedOnDiskBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Status.warn)
-            Text("This file changed on disk. Reload to see the new version, or save to overwrite it.")
-                .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
-            Spacer()
-            Button("Reload") { requestReload() }.buttonStyle(.ds(.secondary, size: .small))
-        }
-        .padding(.horizontal, 20).padding(.vertical, 8)
-        .background(DS.Accent.wash)
+        DSBanner(tone: .warning, title: "This file changed on disk",
+                 message: "Reload to see the new version, or save to overwrite it.",
+                 actions: [ProblemAction("Reload") { requestReload() }])
+            .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
     // MARK: - Content
