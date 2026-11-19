@@ -1,6 +1,7 @@
 """``scoutctl delegate status --json``: the delegate mirrors, for the app's Settings ▸ Agent copies card (#550).
 
-Read-only: no lock, no network, no write, and no key, token or secret is read.
+Read-only: no lock, no network, no write. Of the secrets, only the state's signing key is read, to verify
+the state; no deploy key or push token is.
 The document is versioned (:data:`SCHEMA_VERSION`); the canonical example is
 ``tests/fixtures/contract/delegate-status.json``, which the macOS app keeps a
 byte copy of.
@@ -35,9 +36,9 @@ from typing import Any
 SCHEMA_VERSION = 1
 GENERATOR = "scoutctl delegate status"
 
-_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-_CODE = re.compile(r"^[a-z][a-z_]{0,47}$")
-_SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_CODE = re.compile(r"[a-z][a-z_]{0,47}")
+_SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 _REMOTE_MAX = 512
 _COUNT_MAX = 10**9
 
@@ -76,7 +77,7 @@ GENERIC_REASON = "The sync was refused; run it in a terminal to see why."
 
 
 def _stamp(value: Any) -> str | None:
-    return value if isinstance(value, str) and _STAMP.match(value) else None
+    return value if isinstance(value, str) and _STAMP.fullmatch(value) else None
 
 
 def _count(value: Any) -> int | None:
@@ -114,11 +115,23 @@ def _remote(value: Any, home: str) -> dict[str, str | None] | None:
     return {"kind": "other", "display": None}
 
 
+def remote_text(remote: Any, env: Mapping[str, str]) -> str:
+    """The remote as ``delegate status`` prints it: as in the JSON, and only to the owner at the keyboard."""
+    from scout.scripts.privacy_migrate import headless_reason
+
+    if headless_reason(env) is not None:
+        return "remote hidden (not the owner at the keyboard)"
+    shown = _remote(remote, env.get("HOME", ""))
+    if shown is None or shown["display"] is None:
+        return "remote not shown (not a GitHub repository or a local path)"
+    return f"{'GitHub' if shown['kind'] == 'github' else 'folder'} {shown['display']}"
+
+
 def _refusal(error: Any) -> dict[str, str | None] | None:
     if not isinstance(error, dict):
         return None
     code = error.get("code")
-    code = code if isinstance(code, str) and _CODE.match(code) else "unknown"
+    code = code if isinstance(code, str) and _CODE.fullmatch(code) else "unknown"
     return {
         "code": code,
         "reason": REASONS.get(code, GENERIC_REASON),
@@ -130,7 +143,7 @@ def _refusal(error: Any) -> dict[str, str | None] | None:
 def _entry(key: str, raw: Mapping[str, Any], *, verified: bool, owner: bool, home: str) -> dict[str, Any]:
     refusal = _refusal(raw.get("last_error"))
     last_sync = _stamp(raw.get("last_sync"))
-    pending = isinstance(raw.get("pending_mirror"), str) and bool(_SHA.match(raw["pending_mirror"]))
+    pending = isinstance(raw.get("pending_mirror"), str) and bool(_SHA.fullmatch(raw["pending_mirror"]))
     if refusal is not None:
         result = "failed"
     elif pending:
@@ -212,13 +225,14 @@ def report(vault: Path, *, env: Mapping[str, str], now: datetime | None = None) 
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            verified_body = _verified("links", data)  # serialises the whole state: as deep as the parse
+        except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested deeper than Python handles
             data = None
         raw_links = data.get("links") if isinstance(data, dict) else None
         if not isinstance(raw_links, dict):
             state = "unreadable"
+            verified_body = None
         else:
-            verified_body = _verified("links", data)
             state = "ok" if verified_body is not None else "unverified"
             for key, raw in raw_links.items():
                 well_formed = isinstance(key, str) and is_delegate_id(key) and isinstance(raw, dict)
@@ -239,7 +253,7 @@ def report(vault: Path, *, env: Mapping[str, str], now: datetime | None = None) 
         entries.setdefault(key, _unlinked(key))["listed"] = True
     for e in entries.values():
         e["can_preview"] = owner and e["listed"]
-        e["can_sync"] = owner and state == "ok" and e["linked"]
+        e["can_sync"] = owner and state == "ok" and e["linked"] and e["listed"]
     order = {k: i for i, k in enumerate(listed)}
     delegates = sorted(entries.values(), key=lambda e: (order.get(e["id"], len(order)), e["id"]))
     return {

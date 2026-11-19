@@ -99,9 +99,17 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         return status
     }
 
-    /// A delegate id as the engine accepts one (`is_delegate_id`): the app passes only these to scoutctl.
-    static func isDelegateID(_ id: String) -> Bool {
-        id.range(of: #"^[a-z0-9][a-z0-9-]{0,39}$"#, options: .regularExpression) != nil
+    /// A delegate id as the engine accepts one (`is_delegate_id`, matched whole: no trailing newline). The app
+    /// passes only these to scoutctl.
+    static func isDelegateID(_ id: String) -> Bool { wholeMatch(id, #"[a-z0-9][a-z0-9-]{0,39}"#) }
+
+    /// A refusal code as the engine writes one, matched whole.
+    static func isRefusalCode(_ code: String) -> Bool { wholeMatch(code, #"[a-z][a-z_]{0,47}"#) }
+
+    /// Whether all of `text` matches `pattern`. Unlike `^…$` with `.regularExpression`, a trailing newline fails.
+    private static func wholeMatch(_ text: String, _ pattern: String) -> Bool {
+        guard let regex = try? Regex(pattern) else { return false }
+        return (try? regex.wholeMatch(in: text)) != nil
     }
 }
 

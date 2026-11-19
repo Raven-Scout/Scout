@@ -110,7 +110,9 @@ nonisolated struct AgentCopiesModel: Equatable, Sendable {
             return text
         case .synced(let c):
             return c.unchanged == true ? "Synced just now: already up to date." : "Synced just now: pushed a new copy."
-        case .refused(let code):
+        case .refused(.preview, let code):
+            return "The preview just now was refused (\(code))."
+        case .refused(_, let code):
             return "The sync just now was refused (\(code))."
         }
     }

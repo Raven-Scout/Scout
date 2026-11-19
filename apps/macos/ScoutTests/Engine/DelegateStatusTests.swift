@@ -35,16 +35,16 @@ struct DelegateStatusTests {
         #expect(s.skipped == 0)
         #expect(s.delegates.map(\.id) == ["grok-personal", "duet", "research-bot"])
         let grok = s.delegates[0], duet = s.delegates[1], bot = s.delegates[2]
-        #expect(grok.remote == .init(kind: "github", display: "example-org/grok-mirror"))
+        #expect(grok.remote == .init(kind: "github", display: "example-user/grok-mirror"))
         #expect(grok.lastResult == "ok" && grok.lastSync == "2026-11-19T11:45:00Z" && grok.behind == false)
         #expect(grok.counts == .init(files: 412, withheld: 37, leftOut: 3, redactedLines: 9, agentConfig: 2))
-        #expect(grok.agentConfigLeftOut == 2 && grok.deployKey == true && grok.oldKeysLive == 0)
+        #expect(grok.agentConfigLeftOut == 2 && grok.deployKey == true && grok.oldKeysLive == 1)
         #expect(grok.canSync && grok.canPreview && !grok.stateUnverified)
         #expect(duet.lastResult == "failed" && duet.behind == true)
         #expect(duet.refusal?.code == "mirror_diverged")
         #expect(duet.refusal?.since == "2026-11-19T08:00:00Z")
         #expect(duet.remote == .init(kind: "local", display: "~/mirrors/duet.git"))
-        #expect(duet.oldKeysLive == 1)
+        #expect(duet.deployKey == false && duet.oldKeysLive == 0)   // a local mirror has no deploy key
         #expect(!bot.linked && bot.listed && bot.remote == nil && bot.counts == nil)
         #expect(bot.canPreview && !bot.canSync)
     }
@@ -63,7 +63,7 @@ struct DelegateStatusTests {
 
     @Test func delegateIDsAreCheckedBeforeTheyReachScoutctl() {
         #expect(DelegateStatus.isDelegateID("grok-personal"))
-        for bad in ["", "-x", "Grok", "a b", "--all", "x/y", String(repeating: "a", count: 41)] {
+        for bad in ["", "-x", "Grok", "a b", "--all", "x/y", "grok\n", String(repeating: "a", count: 41)] {
             #expect(!DelegateStatus.isDelegateID(bad), "\(bad)")
         }
     }
@@ -78,16 +78,17 @@ struct DelegateStatusTests {
         let grok = try #require(rows["grok-personal"])
         #expect(grok.value == "Synced 12 minutes ago")
         #expect(grok.tone == .ok)
-        #expect(grok.help.contains("GitHub: example-org/grok-mirror."))
+        #expect(grok.help.contains("GitHub: example-user/grok-mirror."))
         #expect(grok.help.contains("Holds 412 files; 37 withheld, 3 left out, 9 lines removed."))
         #expect(grok.help.contains("2 files left out as agent config"))
+        #expect(grok.help.contains("1 old deploy key is still live"))
         #expect(grok.offersSync && grok.offersPreview)
         let duet = try #require(rows["duet"])
         #expect(duet.value == "Sync refused")
         #expect(duet.tone == .bad)
         #expect(duet.help.contains("The mirror repository moved since the last sync"))
         #expect(duet.help.contains("Failing since"))
-        #expect(duet.help.contains("1 old deploy key is still live"))
+        #expect(!duet.help.contains("deploy key"))
         let bot = try #require(rows["research-bot"])
         #expect(bot.value == "Not linked")
         #expect(bot.help.contains("scoutctl delegate link research-bot"))
@@ -123,7 +124,8 @@ struct DelegateStatusTests {
                 == "Preview: would hold 10 files; 2 withheld, 1 left out. 3 files left out as agent config.")
         let same = DelegateMirrorCounts(files: 10, withheld: 2, leftOut: 0, redactedLines: 0, agentConfig: 0, unchanged: true)
         #expect(AgentCopiesModel.outcomeText(.synced(same)) == "Synced just now: already up to date.")
-        #expect(AgentCopiesModel.outcomeText(.refused("mirror_diverged")) == "The sync just now was refused (mirror_diverged).")
+        #expect(AgentCopiesModel.outcomeText(.refused(.sync, "mirror_diverged")) == "The sync just now was refused (mirror_diverged).")
+        #expect(AgentCopiesModel.outcomeText(.refused(.preview, "no_commits")) == "The preview just now was refused (no_commits).")
     }
 
     // MARK: - The service
@@ -176,7 +178,7 @@ struct DelegateStatusTests {
         await svc.refresh()
         await svc.sync("duet")
         #expect(runner.calls(to: "scoutctl").dropFirst() == [["delegate", "sync", "duet", "--json"], ["delegate", "status", "--json"]])
-        #expect(svc.results["duet"] == .refused("mirror_diverged"))
+        #expect(svc.results["duet"] == .refused(.sync, "mirror_diverged"))
         #expect(svc.lastError == nil)
     }
 
@@ -190,13 +192,45 @@ struct DelegateStatusTests {
         #expect(runner.calls(to: "scoutctl") == [["delegate", "status", "--json"]])
     }
 
-    @Test func anEngineFromBeforeTheCardSaysToUpdate() async {
+    @Test func anOlderEngineWithNothingToShowHidesTheCard() async {
+        for (stdout, stderr) in [(#"{"ok": true, "links": []}"#, ""), ("", "Error: No such command 'delegate'.")] {
+            let runner = RuleBasedRunner()
+            runner.on(tool: "scoutctl", prefix: ["delegate", "status"], stdout: stdout, stderr: stderr, exit: stderr.isEmpty ? 0 : 2)
+            let svc = service(runner)
+            await svc.refresh()
+            #expect(svc.status == nil && svc.lastError == nil)
+        }
+    }
+
+    @Test func anOlderEngineWithALinkSaysToUpdate() async {
         let runner = RuleBasedRunner()
-        runner.on(tool: "scoutctl", prefix: ["delegate", "status"], stdout: #"{"ok": true, "links": []}"#)
+        runner.on(tool: "scoutctl", prefix: ["delegate", "status"], stdout: #"{"ok": true, "links": [{"id": "grok-personal"}]}"#)
         let svc = service(runner)
         await svc.refresh()
         #expect(svc.status == nil)
         #expect(svc.lastError?.contains("Update the engine") == true)
+    }
+
+    @Test func aFailedReadKeepsTheLastGoodStatus() async throws {
+        let fixture = try Self.sharedFixture()
+        final class Flag: @unchecked Sendable { var failing = false }
+        let flag = Flag()
+        let runner = RuleBasedRunner()
+        runner.on({ _, args in args.starts(with: ["delegate", "status"]) }) { _, _, _ in
+            flag.failing ? ProcessResult(exitCode: 1, stdout: Data(), stderr: Data("Traceback: boom".utf8))
+                         : ProcessResult(exitCode: 0, stdout: fixture, stderr: Data())
+        }
+        let svc = service(runner)
+        await svc.refresh()
+        #expect(svc.status?.delegates.count == 3 && svc.lastError == nil)
+        flag.failing = true
+        await svc.refresh()
+        #expect(svc.status?.delegates.count == 3)   // the card stays, and says why the read failed
+        #expect(svc.lastError?.hasPrefix("Couldn't read agent copies") == true)
+        // With no earlier status, the error alone is what the card shows.
+        let fresh = service(runner)
+        await fresh.refresh()
+        #expect(fresh.status == nil && fresh.lastError?.hasPrefix("Couldn't read agent copies") == true)
     }
 
     @Test func noEngineRunsNothing() async {
@@ -207,32 +241,34 @@ struct DelegateStatusTests {
         #expect(svc.lastError == "Scout's engine isn't set up yet.")
     }
 
-    /// The card adds no delegate write path: no app source runs a `scoutctl delegate` command but
-    /// status, preview and sync, and the card's own code opens no state, key or token file.
+    /// The card adds no delegate write path. Every `scoutctl delegate` command goes through
+    /// `DelegateStatusService.runDelegate`, whose `Command` allows status, preview and sync only: a
+    /// `"delegate"` literal anywhere else in the app fails (Glossary's word list aside). And the card's
+    /// own code opens no state, key or token file.
     @Test func theAppNeverRunsLinkKeysOrTrustState() throws {
+        #expect(DelegateStatusService.Command.allCases.map(\.rawValue) == ["status", "preview", "sync"])
         let source = URL(fileURLWithPath: #filePath)   // …/apps/macos/ScoutTests/Engine/DelegateStatusTests.swift
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Scout")
         let files = try #require(FileManager.default.enumerator(at: source, includingPropertiesForKeys: nil))
             .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         #expect(files.count > 20)
-        let delegateArgv = try Regex(#""delegate",\s*"([a-z-]+)""#)
-        var seen = Set<String>()
+        var inService = 0
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
-            for match in text.matches(of: delegateArgv) {
-                let sub = String(match.output[1].substring ?? "")
-                seen.insert(sub)
-                #expect(["status", "preview", "sync"].contains(sub), "\(file.lastPathComponent) runs scoutctl delegate \(sub)")
+            let count = text.components(separatedBy: #""delegate""#).count - 1
+            switch file.lastPathComponent {
+            case "DelegateStatusService.swift": inService = count
+            case "Glossary.swift": break   // display synonyms for the word, not a command
+            default: #expect(count == 0, "\(file.lastPathComponent) has a \"delegate\" literal outside DelegateStatusService")
             }
-            // The card's own code opens no state, key or token file. (DiagnosticsScrubber reads the state's
-            // delegate ids to redact them from reports; that predates the card and is not a run path.)
+            // DiagnosticsScrubber reads the state's delegate ids to redact them from reports; that predates the card.
             guard ["DelegateStatus.swift", "DelegateStatusService.swift", "AgentCopiesSection.swift"]
                 .contains(file.lastPathComponent) else { continue }
             for word in ["delegate-mirrors", ".scout-secrets", "push-token", "FileManager", "contentsOf"] {
                 #expect(!text.contains(word), "\(file.lastPathComponent) mentions \(word)")
             }
         }
-        #expect(seen == ["status", "preview", "sync"])   // found the service's commands, so the scan works
+        #expect(inService == 1)   // runDelegate's argv, and nothing else
     }
 }

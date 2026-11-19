@@ -13,10 +13,18 @@ struct AgentCopiesSection: View {
     var now: () -> Date = Date.init
 
     var body: some View {
-        Group {
+        // A VStack, not a Group: a Group with nothing in it hands `.task` to no view, so the first read never ran.
+        VStack(alignment: .leading, spacing: 0) {
             if let status = service.status {
                 let model = AgentCopiesModel(status: status, results: service.results, now: now())
                 if model.isVisible { content(model) }
+            } else if let error = service.lastError {
+                // No status to show, but something to say (an engine too old for the card, a failed read).
+                labelled {
+                    SettingsCard {
+                        SettingsRow(title: "Agent copies", help: error) { refreshButton }
+                    }
+                }
             }
         }
         // On its own the card only reads.
@@ -25,24 +33,32 @@ struct AgentCopiesSection: View {
 
     @ViewBuilder
     private func content(_ model: AgentCopiesModel) -> some View {
+        labelled {
+            SettingsCard {
+                SettingsRow(title: "Agent copies", help: service.lastError ?? AgentCopiesModel.intro) { refreshButton }
+                if let problem = model.stateProblem { problemRow(problem.summary, problem.fix) }
+                ForEach(model.rows) { row in delegateRow(row) }
+            }
+        }
+    }
+
+    private func labelled<Content: View>(@ViewBuilder _ card: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("AGENT COPIES")
                 .font(DS.sans(10, weight: .medium))
                 .tracking(0.08 * 10)
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.horizontal, 4)
-            SettingsCard {
-                SettingsRow(title: "Agent copies", help: service.lastError ?? AgentCopiesModel.intro) {
-                    Button(service.work == .checking ? "Checking…" : "Refresh") { Task { await service.refresh() } }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(12))
-                        .disabled(service.work != nil)
-                }
-                if let problem = model.stateProblem { problemRow(problem.summary, problem.fix) }
-                ForEach(model.rows) { row in delegateRow(row) }
-            }
+            card()
         }
         .padding(.bottom, 22)
+    }
+
+    private var refreshButton: some View {
+        Button(service.work == .checking ? "Checking…" : "Refresh") { Task { await service.refresh() } }
+            .buttonStyle(.plainHit)
+            .font(DS.sans(12))
+            .disabled(service.work != nil)
     }
 
     private func delegateRow(_ row: AgentCopiesModel.Row) -> some View {

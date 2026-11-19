@@ -5383,6 +5383,8 @@ def _register_delegate() -> None:
             links = load_links(_paths.data_dir())
         except RepoSyncError as e:
             _fail(e, as_json)
+        from scout.delegate_status import remote_text
+
         if not links:
             typer.echo("no delegate mirrors on this computer")
         for k, v in sorted(links.items()):
@@ -5390,7 +5392,7 @@ def _register_delegate() -> None:
             if v.stale_key_ids:
                 key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
-            typer.echo(f"{k}: {v.remote}; {key}; {synced}")
+            typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
 
     @delegate_app.command("key")
     def cli_delegate_key(

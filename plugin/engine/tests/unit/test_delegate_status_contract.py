@@ -5,9 +5,10 @@
 ``SCOUT_REGEN_CONTRACT=1`` to rewrite the canonical file from the deterministic vault below, then ``cp`` it over
 the app copy and update the pins in ``apps/macos/ScoutTests/Engine/DelegateStatusTests.swift``.
 
-The vault lists three delegates: ``grok-personal`` synced cleanly to a GitHub mirror with two files left out as
-agent config, ``duet``'s last sync to a local mirror was refused and an old deploy key is still live, and
-``research-bot`` is listed but not linked yet. A new field or state goes into the builder, never the JSON.
+The vault lists three delegates: ``grok-personal`` synced cleanly to a GitHub mirror under the owner's own user
+(the engine refuses an organisation's), with two files left out as agent config and an old deploy key still live;
+``duet``'s last sync to a local mirror (which has no deploy key) was refused; and ``research-bot`` is listed but
+not linked yet. A new field or state goes into the builder, never the JSON.
 """
 
 from __future__ import annotations
@@ -57,14 +58,15 @@ def build_vault(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
     links = {
         "grok-personal": dm.DelegateLink(
             id="grok-personal",
-            remote="https://github.com/example-org/grok-mirror.git",
+            remote="https://github.com/example-user/grok-mirror.git",
             linked_at="2026-11-10T09:00:00Z",
             account_unshared=True,
             last_mirror="a" * 40,
             last_vault=head,
             last_sync="2026-11-19T11:45:00Z",
             last_attempt="2026-11-19T11:45:00Z",
-            deploy_key_id=101,
+            deploy_key_id=102,
+            stale_key_ids=[101],
             key_file=str(home / ".scout-secrets" / "delegate-mirrors" / "0123456789abcdef-grok-personal"),
             checked_fingerprint="f" * 64,
             last_inputs=inputs,
@@ -80,8 +82,6 @@ def build_vault(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
             last_sync="2026-11-18T22:00:00Z",
             last_attempt="2026-11-19T11:00:00Z",
             pending_mirror="d" * 40,
-            deploy_key_id=202,
-            stale_key_ids=[201],
             last_error={
                 "code": "mirror_diverged",
                 "at": "2026-11-19T11:00:00Z",
@@ -123,9 +123,10 @@ def test_the_fixture_exercises_every_state(doc: dict) -> None:
     assert [d["id"] for d in doc["delegates"]] == ["grok-personal", "duet", "research-bot"]  # the config's order
     grok, duet, bot = by_id["grok-personal"], by_id["duet"], by_id["research-bot"]
     assert grok["last_result"] == "ok" and grok["behind"] is False and grok["refusal"] is None
-    assert grok["remote"] == {"kind": "github", "display": "example-org/grok-mirror"}
+    assert grok["remote"] == {"kind": "github", "display": "example-user/grok-mirror"}
     assert grok["agent_config_left_out"] == 2 and grok["counts"]["files"] == 412
     assert grok["can_sync"] and grok["can_preview"]
+    assert grok["deploy_key"] is True and grok["old_keys_live"] == 1
     assert duet["last_result"] == "failed" and duet["behind"] is True
     assert duet["refusal"] == {
         "code": "mirror_diverged",
@@ -134,7 +135,7 @@ def test_the_fixture_exercises_every_state(doc: dict) -> None:
         "since": "2026-11-19T08:00:00Z",
     }
     assert duet["remote"] == {"kind": "local", "display": "~/mirrors/duet.git"}
-    assert duet["deploy_key"] is True and duet["old_keys_live"] == 1
+    assert duet["deploy_key"] is False and duet["old_keys_live"] == 0
     assert bot["linked"] is False and bot["listed"] is True and bot["can_preview"] and not bot["can_sync"]
     for d in doc["delegates"]:
         assert d["state_unverified"] is False

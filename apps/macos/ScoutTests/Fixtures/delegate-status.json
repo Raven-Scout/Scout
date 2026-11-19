@@ -20,10 +20,10 @@
       "linked": true,
       "linked_at": "2026-11-10T09:00:00Z",
       "listed": true,
-      "old_keys_live": 0,
+      "old_keys_live": 1,
       "refusal": null,
       "remote": {
-        "display": "example-org/grok-mirror",
+        "display": "example-user/grok-mirror",
         "kind": "github"
       },
       "state_unverified": false
@@ -40,7 +40,7 @@
         "redacted_lines": 0,
         "withheld": 12
       },
-      "deploy_key": true,
+      "deploy_key": false,
       "id": "duet",
       "last_attempt": "2026-11-19T11:00:00Z",
       "last_result": "failed",
@@ -48,7 +48,7 @@
       "linked": true,
       "linked_at": "2026-11-12T15:30:00Z",
       "listed": true,
-      "old_keys_live": 1,
+      "old_keys_live": 0,
       "refusal": {
         "at": "2026-11-19T11:00:00Z",
         "code": "mirror_diverged",

@@ -414,9 +414,9 @@ def load_links(vault: Path) -> dict[str, DelegateLink]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+        body = _verified("links", data)
+    except (OSError, ValueError, RecursionError) as e:  # RecursionError: nested deeper than json parses
         raise RepoSyncError("state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it") from e
-    body = _verified("links", data)
     if body is None:
         raise RepoSyncError(
             "state_unverified",
@@ -2712,7 +2712,7 @@ def trust_state(
             claimed = {str(k): DelegateLink.from_json(v) for k, v in raw.items()}
         except FileNotFoundError as e:
             raise RepoSyncError("not_linked", f"refused: {STATE_REL} doesn't exist; there is nothing to check") from e
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
             raise RepoSyncError(
                 "state_unreadable", f"refused: {STATE_REL} can't be read ({e}); fix or delete it"
             ) from e

@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from scout import delegate_mirror as dm
 from scout import delegate_status as ds
 from scout.cli import app
+from scout.repo_sync import RepoSyncError
 
 from .privacy_vault_helpers import git
 
@@ -141,3 +142,51 @@ def test_the_key_file_and_fingerprints_never_show(vault: Path) -> None:
     )
     text = json.dumps(ds.report(vault, env=_owner()))
     assert "/secret/place" not in text and "e" * 64 not in text and "9" * 64 not in text
+
+
+# ----- review of #714 (coordinator, 2026-11-19) -----------------------------------------------------
+
+
+def test_a_state_nested_too_deep_to_parse_is_unreadable_not_a_traceback(vault: Path) -> None:
+    dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    dm.state_path(vault).write_text('{"links": ' + "[" * 100_000 + "]" * 100_000 + "}", encoding="utf-8")
+    assert ds.report(vault, env=_owner())["state"] == "unreadable"
+    r = runner.invoke(app, ["delegate", "status", "--json"])
+    assert r.exit_code == 0 and json.loads(r.stdout)["state"] == "unreadable"
+    with pytest.raises(RepoSyncError) as e:
+        dm.load_links(vault)
+    assert e.value.code == "state_unreadable"  # so `due()` and doctor see a refusal, not a crash
+
+
+def test_a_trailing_newline_never_passes_a_shape_check(vault: Path) -> None:
+    _raw_state(
+        vault,
+        {
+            "grok-personal": {
+                "id": "grok-personal",
+                "last_sync": "2026-11-19T11:45:00Z\n",
+                "last_error": {"code": "mirror_diverged\n"},
+                "pending_mirror": "a" * 40 + "\n",
+            }
+        },
+    )
+    grok = ds.report(vault, env=_owner())["delegates"][0]
+    assert grok["last_sync"] is None and grok["refusal"]["code"] == "unknown" and grok["last_result"] == "failed"
+
+
+def test_a_linked_delegate_no_longer_listed_offers_no_sync(vault: Path) -> None:
+    dm.save_links(vault, {"old-bot": _link(id="old-bot")})
+    old = next(d for d in ds.report(vault, env=_owner())["delegates"] if d["id"] == "old-bot")
+    assert old["linked"] and not old["listed"] and old["can_sync"] is False and old["can_preview"] is False
+
+
+def test_the_text_form_shows_the_remote_as_the_json_does_and_only_to_the_owner(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dm.save_links(vault, {"grok-personal": _link(remote="https://github.com/example-user/grok-mirror.git")})
+    r = runner.invoke(app, ["delegate", "status"])
+    assert "grok-personal: GitHub example-user/grok-mirror;" in r.stdout
+    monkeypatch.setenv("SCOUT_MODE", "briefing")
+    r = runner.invoke(app, ["delegate", "status"])
+    assert "example-user" not in r.stdout and "remote hidden" in r.stdout
+    assert ds.remote_text("https://user:tok@github.com/x/y.git", _owner()).startswith("remote not shown")

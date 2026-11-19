@@ -34,5 +34,9 @@ struct AgentCopiesSectionSmokeTests {
         await none.refresh()
         #expect(none.status?.delegates.isEmpty == true)
         ViewHost.render(AgentCopiesSection(service: none, now: now))
+        let failing = service(stderr: "Traceback: boom", exit: 1)
+        await failing.refresh()
+        #expect(failing.status == nil && failing.lastError != nil)
+        ViewHost.render(AgentCopiesSection(service: failing, now: now))   // the error-only card
     }
 }
