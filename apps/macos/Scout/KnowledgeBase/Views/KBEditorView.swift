@@ -18,6 +18,10 @@ struct KBEditorView: View {
     /// shows it: reopening the note at its new path replaces this view, so an
     /// alert here would never appear.
     let onRenameProblem: (String) -> Void
+    /// Called after a rename that left some linking notes alone (unsaved edits
+    /// in them, or they changed meanwhile), with a title and message. Shown by
+    /// the parent for the same reason as `onRenameProblem`.
+    var onRenameNotice: ((_ title: String, _ message: String) -> Void)? = nil
     /// Called when the user clicks the breadcrumb root — parent clears the
     /// selection, returning to the overview (stats + global graph).
     let onOverview: () -> Void
@@ -51,6 +55,16 @@ struct KBEditorView: View {
     @State private var externallyChanged = false
     @State private var showRename = false
     @State private var renameText = ""
+    /// Point the notes that link here at the new name (UI audit #75).
+    @State private var renameUpdatesLinks = true
+    /// Why the last rename didn't happen, shown in the sheet so the typed
+    /// name isn't lost.
+    @State private var renameError: String? = nil
+    @State private var isRenaming = false
+    /// The notes linking here and the note's links to itself, read once when
+    /// the sheet opens rather than on every keystroke.
+    @State private var renameInbound: [KBLinkRewrite.Inbound] = []
+    @State private var renameSelfLinks = 0
     @State private var showDeleteConfirm = false
     /// Reload was asked for with unsaved edits: confirm before discarding.
     @State private var showReloadConfirm = false
@@ -58,6 +72,8 @@ struct KBEditorView: View {
     /// Retry instead of an empty document, so nothing typed into a blank
     /// stand-in can be saved over the real file.
     @State private var isUnreadable = false
+    /// ⌘F in the open note, whichever mode it's in (UI audit #77).
+    @StateObject private var find = KBFindController()
 
     private var isDirty: Bool { draft != originalText }
 
@@ -140,16 +156,31 @@ struct KBEditorView: View {
                 baselineContents: baselineContents, baselineDate: baselineDate)
     }
     private var isMarkdown: Bool { node.ext == "md" }
+    /// Read mode's web page is on screen (the others are text views).
+    private var showsReader: Bool { isMarkdown && !isUnreadable && mode == .read }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             EditorialRule()
             if externallyChanged { changedOnDiskBanner }
+            if find.readerBarVisible && showsReader { KBReaderFindBar(controller: find) }
             content
         }
+        .background {
+            Button("Find in Note") { find.show(inReader: showsReader) }
+                .keyboardShortcut(AppShortcut.find)
+                .disabled(isUnreadable)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
         .background(Color.clear)
-        .onChange(of: node.id) { _, _ in openFile() }
+        .onChange(of: node.id) { _, _ in
+            find.readerBarVisible = false   // a find bar belongs to the note it was opened on
+            openFile()
+        }
+        .onChange(of: mode) { _, _ in find.readerBarVisible = false }
         .onAppear { openFile() }
         // Mirror every change into the app-lifetime draft store, so leaving
         // this note (another note, a link, the overview, another page) keeps
@@ -239,7 +270,14 @@ struct KBEditorView: View {
             .keyboardShortcut("s", modifiers: .command)
 
             Menu {
-                Button("Rename…") { renameText = node.displayName; showRename = true }
+                Button("Rename…") {
+                    renameText = node.displayName
+                    renameUpdatesLinks = true
+                    renameError = nil
+                    renameInbound = KBLinkRewrite.inboundNotes(to: node.relativePath, in: service.index)
+                    renameSelfLinks = KBLinkRewrite.selfLinks(of: node.relativePath, in: service.index)
+                    showRename = true
+                }
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([node.url]) }
                 Divider()
                 Button("Delete…", role: .destructive) { showDeleteConfirm = true }
@@ -308,7 +346,7 @@ struct KBEditorView: View {
         if isUnreadable {
             unreadableState
         } else if !isMarkdown {
-            KBSourceEditor(text: $draft)
+            KBSourceEditor(text: $draft, find: find)
         } else {
             switch mode {
             case .read:
@@ -317,11 +355,11 @@ struct KBEditorView: View {
                 // Select any text to leave Scout a comment about it; a
                 // comment inserts a marker and saves immediately.
                 KBReaderWebView(source: $draft, resolve: { [service] in service.resolveWikilink($0) },
-                                onRequestSave: { save() })
+                                onRequestSave: { save() }, find: find)
             case .rich:
-                KBLiveEditor(text: $draft)
+                KBLiveEditor(text: $draft, find: find)
             case .source:
-                KBSourceEditor(text: $draft)
+                KBSourceEditor(text: $draft, find: find)
             }
         }
     }
@@ -520,31 +558,151 @@ struct KBEditorView: View {
     }
 
     private func performRename() {
+        guard !isRenaming, !renameText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let newName = renameText
         let source = node.url
         let planned = try? KnowledgeBaseFileWriter.renameDestination(for: source, to: newName)
+        let plan: KBRenameLinkPlan? = renameUpdatesLinks
+            ? KBRenameLinkPlan.make(renaming: node.relativePath, inbound: renameInbound, index: service.index,
+                                    scoutDirectory: service.scoutDirectory, drafts: service.drafts)
+            : nil
+        isRenaming = true
+        renameError = nil
         Task {
             do {
-                let (dest, change) = try await writer.renameReturningChange(fileURL: source, to: newName)
+                let result = try await writer.renameUpdatingLinks(fileURL: source, to: newName, links: plan)
                 await MainActor.run {
-                    finishRename(from: source, to: dest)
-                    // Undo only when the rename fully succeeded: a rename
-                    // whose commit failed threw before its change was
-                    // captured, so it has nothing safe to restore.
-                    registerRenameUndo(change, from: source, to: dest)
+                    isRenaming = false
+                    finishRename(from: source, to: result.url)
+                    // The undo step covers the move and every rewritten
+                    // note, and is registered even when the commit failed:
+                    // the files changed either way.
+                    registerRenameUndo(result.change, from: source, to: result.url)
+                    if let notice = RenameLinks.outcomeNotice(result.links, commitProblem: result.commitProblem) {
+                        if let onRenameNotice {
+                            onRenameNotice(notice.title, notice.message)
+                        } else if let problem = result.commitProblem {
+                            onRenameProblem(problem)
+                        }
+                    }
                 }
             } catch {
                 await MainActor.run {
+                    isRenaming = false
+                    // `renameUpdatingLinks` reports a failed commit in its
+                    // result; a thrown commit failure is kept for safety.
                     switch Self.renameOutcome(after: error, planned: planned) {
                     case .movedButUncommitted(let moved, let problem):
                         finishRename(from: source, to: moved)
                         onRenameProblem(problem)
                     case .notMoved(let problem):
-                        errorMessage = problem
-                        showRename = false
+                        // Stay in the sheet with the typed name, so it can
+                        // be corrected and tried again.
+                        renameError = problem
                     }
                 }
             }
+        }
+    }
+
+    /// What the rename sheet and its result say about the notes that link to
+    /// the note being renamed (UI audit #75). Pure, so tests pin the wording.
+    struct RenameLinks: Equatable {
+        /// Links the rename rewrites, and the notes holding them (the note
+        /// itself counts when it links to itself by name).
+        let links: Int
+        let notes: Int
+        /// Of those notes, how many have unsaved edits (left alone).
+        let unsaved: Int
+        /// Bare links left alone because more than one note has the old name.
+        var ambiguous: Int = 0
+
+        static func make(inbound: [KBLinkRewrite.Inbound], selfLinks: Int = 0,
+                         unsavedPaths: Set<String>) -> RenameLinks {
+            let linking = inbound.filter { $0.links > 0 }
+            return RenameLinks(
+                links: linking.reduce(0) { $0 + $1.links } + selfLinks,
+                notes: linking.count + (selfLinks > 0 ? 1 : 0),
+                unsaved: linking.filter { unsavedPaths.contains($0.path) }.count,
+                ambiguous: inbound.reduce(0) { $0 + $1.ambiguous })
+        }
+
+        private static func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
+
+        /// Nothing to say about links at all.
+        var isEmpty: Bool { notes == 0 && ambiguous == 0 }
+
+        /// The toggle: "Update 3 links in 2 notes".
+        var toggleTitle: String { "Update \(Self.count(links, "link")) in \(Self.count(notes, "note"))" }
+
+        /// Under the toggle: what happens either way.
+        func detail(updating: Bool) -> String {
+            if updating {
+                return "Wikilinks to this note will use the new name. Edit ▸ Undo puts them back, "
+                    + "as long as none of those notes has changed since."
+            }
+            return "\(Self.count(links, "link")) in \(Self.count(notes, "note")) will stop working: they'll point to a note that no longer exists."
+        }
+
+        /// Notes with unsaved edits aren't changed under the user's hands.
+        var unsavedNote: String? {
+            guard unsaved > 0 else { return nil }
+            return unsaved == 1
+                ? "1 note with unsaved edits won't be updated. Save it first to include it."
+                : "\(unsaved) notes with unsaved edits won't be updated. Save them first to include them."
+        }
+
+        /// Bare links to a name several notes share are left as they are.
+        func ambiguousNote(name: String) -> String? {
+            guard ambiguous > 0 else { return nil }
+            return "\(Self.count(ambiguous, "link")) say\(ambiguous == 1 ? "s" : "") [[\(name)]], and more than one note "
+                + "has that name, so \(ambiguous == 1 ? "it isn't" : "they aren't") changed."
+        }
+
+        /// The renamed note's own links to itself stay as written while it
+        /// has unsaved edits (its draft moves with it untouched).
+        static func selfUnsavedNote(selfLinks: Int, hasUnsavedEdits: Bool) -> String? {
+            guard hasUnsavedEdits, selfLinks > 0 else { return nil }
+            return "This note has unsaved edits, so its \(count(selfLinks, "link")) to itself won't be updated. "
+                + "Save it first to include \(selfLinks == 1 ? "it" : "them")."
+        }
+
+        /// Another note already has the new name.
+        static func collisionNote(newName: String) -> String {
+            "Another note is already called \u{201C}\(newName)\u{201D}. Links that say [[\(newName)]] may start pointing to this note."
+        }
+
+        /// After the rename: a failed commit, and the linking notes that
+        /// still use the old name, and why. nil when there's nothing to say.
+        static func outcomeNotice(_ report: KBRenameLinkReport,
+                                  commitProblem: String?) -> (title: String, message: String)? {
+            var parts: [String] = []
+            if let commitProblem {
+                let links = report.linksUpdated > 0
+                    ? " and \(count(report.linksUpdated, "link")) in \(count(report.notesUpdated, "note")) updated" : ""
+                let problem = commitProblem.trimmingCharacters(in: .whitespacesAndNewlines)
+                let stop = problem.last.map { ".!?".contains($0) } == true ? "" : "."
+                parts.append("The note was renamed\(links), but the git commit failed: \(problem)\(stop) "
+                             + "Edit ▸ Undo puts it all back.")
+            }
+            if !report.skipped.isEmpty {
+                let groups: [(KBRenameLinkReport.SkipReason, String)] = [
+                    (.unsavedEdits, "unsaved edits"), (.changedMeanwhile, "changed while renaming"),
+                    (.unreadable, "couldn't be read"), (.writeFailed, "couldn't be written"),
+                ]
+                let listed = groups.compactMap { reason, why -> String? in
+                    let names = report.skipped.filter { $0.reason == reason }.map { KBNode.displayName(forPath: $0.path) }
+                    guard !names.isEmpty else { return nil }
+                    let shown = names.prefix(5).joined(separator: ", ") + (names.count > 5 ? " and \(names.count - 5) more" : "")
+                    return "\(shown) (\(why))"
+                }.joined(separator: "; ")
+                let n = report.skipped.count
+                parts.append("Not updated: \(listed). \(n == 1 ? "Its" : "Their") links still use the old name; "
+                             + "fix them by hand, or undo the rename.")
+            }
+            guard !parts.isEmpty else { return nil }
+            let title = commitProblem != nil ? "Renamed, but not committed" : "Renamed, but some links still use the old name"
+            return (title, parts.joined(separator: "\n\n"))
         }
     }
 
@@ -571,36 +729,160 @@ struct KBEditorView: View {
         service.reload(); onRenamed(dest); showRename = false
     }
 
+    /// A typed name a note can't take, said before Rename is pressed.
+    static func renameNameProblem(_ typed: String, for url: URL) -> String? {
+        guard url.pathExtension.lowercased() == "md" else { return nil }
+        return KnowledgeBaseFileWriter.noteNameProblem(typed)
+    }
+
     private var renameSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let unsaved = Set(renameInbound.map(\.path).filter {
+            service.drafts.draft(for: service.scoutDirectory.appendingPathComponent($0))?.isDirty == true
+        })
+        let links = RenameLinks.make(inbound: renameInbound, selfLinks: renameSelfLinks, unsavedPaths: unsaved)
+        let nameProblem = Self.renameNameProblem(renameText, for: node.url)
+        let newStem = (try? KnowledgeBaseFileWriter.renameDestination(for: node.url, to: renameText))
+            .map { KnowledgeBaseFileWriter.noteStem($0.lastPathComponent) }
+        let collides = isMarkdown && newStem.map {
+            $0.lowercased() != node.displayName.lowercased()
+                && KBLinkRewrite.newNameCollides($0, oldPath: node.relativePath, index: service.index)
+        } == true
+        return VStack(alignment: .leading, spacing: 14) {
             Text("Rename note").font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p1)
             TextField("New name", text: $renameText)
+                .accessibilityLabel("New name")
                 .textFieldStyle(.roundedBorder).font(DS.sans(13))
                 .onSubmit(performRename)
+            if let nameProblem {
+                Text(nameProblem).font(DS.sans(11)).foregroundStyle(DS.Status.err)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if collides, let newStem {
+                Text(RenameLinks.collisionNote(newName: newStem)).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !isMarkdown {
+                EmptyView()
+            } else if links.isEmpty {
+                Text("No other notes wikilink here.").font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    if links.notes > 0 {
+                        Toggle(links.toggleTitle, isOn: $renameUpdatesLinks)
+                            .toggleStyle(.checkbox).font(DS.sans(12.5))
+                        Text(links.detail(updating: renameUpdatesLinks))
+                            .font(DS.sans(11)).foregroundStyle(renameUpdatesLinks ? DS.Ink.p3 : DS.Status.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if renameUpdatesLinks, let note = links.unsavedNote {
+                            Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if renameUpdatesLinks,
+                           let note = RenameLinks.selfUnsavedNote(selfLinks: renameSelfLinks, hasUnsavedEdits: isDirty) {
+                            Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let note = links.ambiguousNote(name: node.displayName) {
+                        Text(note).font(DS.sans(11)).foregroundStyle(DS.Status.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if let renameError {
+                Label(renameError, systemImage: "exclamationmark.triangle.fill")
+                    .font(DS.sans(11.5)).foregroundStyle(DS.Status.err)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
+                if isRenaming { ProgressView().controlSize(.small).accessibilityLabel("Renaming") }
                 Spacer()
                 Button("Cancel") { showRename = false }.keyboardShortcut(.cancelAction)
                 Button("Rename") { performRename() }.keyboardShortcut(.defaultAction)
-                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty || isRenaming
+                              || nameProblem != nil)
             }
         }
-        .padding(20).frame(width: 360)
+        .padding(20).frame(width: 380)
     }
 
 }
 
 /// Plain-text source editor with a monospaced font over the recessed paper
-/// surface. Wraps `TextEditor` so the KB editor reads markdown/YAML source the
-/// way the plugin writes it.
-struct KBSourceEditor: View {
+/// surface, so the KB editor reads markdown/YAML source the way the plugin
+/// writes it. A text view of its own rather than `TextEditor`, which has no
+/// find bar on macOS: ⌘F here opens the system one (UI audit #77).
+struct KBSourceEditor: NSViewRepresentable {
     @Binding var text: String
+    var find: KBFindController? = nil
 
-    var body: some View {
-        TextEditor(text: $text)
-            .font(DS.mono(12.5))
-            .foregroundStyle(DS.Ink.p1)
-            .scrollContentBackground(.hidden)
-            .background(DS.Paper.sunk)
-            .padding(.horizontal, 12).padding(.vertical, 10)
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = NSColor(DS.Paper.sunk)
+        guard let tv = scroll.documentView as? NSTextView else { return scroll }
+        tv.delegate = context.coordinator
+        tv.isRichText = false
+        tv.allowsUndo = true
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.textContainerInset = NSSize(width: 12, height: 10)
+        tv.backgroundColor = NSColor(DS.Paper.sunk)
+        tv.drawsBackground = true
+        tv.string = text
+        context.coordinator.applyStyle(to: tv)
+        find?.textView = tv
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.text = $text
+        guard let tv = scroll.documentView as? NSTextView else { return }
+        find?.textView = tv
+        context.coordinator.applyStyle(to: tv)
+        if tv.string != text {
+            let sel = tv.selectedRange()
+            // Typing undo recorded against the old text would replay onto the
+            // new one (a reload, or a reverted save).
+            context.coordinator.textUndo.removeAllActions()
+            tv.string = text
+            let len = (text as NSString).length
+            tv.setSelectedRange(NSRange(location: min(sel.location, len), length: 0))
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        /// The editor's own typing undo, kept apart from the window's, which
+        /// holds the vault's undo steps (saves, renames), as in Rich mode.
+        let textUndo = UndoManager()
+        /// The font and colour last applied. Compared with these, not with
+        /// `tv.font`: a note starting with an emoji or CJK reports AppKit's
+        /// fallback font there, which would restyle the note on every key.
+        private var appliedFont: NSFont?
+        private var appliedInk: NSColor?
+        init(text: Binding<String>) { self.text = text }
+
+        /// Font and colour, applied on every update too so Settings ▸ General
+        /// ▸ Text size reaches an open note without reopening it.
+        func applyStyle(to tv: NSTextView) {
+            let font = KBLiveEditor.Coordinator.mono(12.5)
+            if font != appliedFont { tv.font = font; appliedFont = font }
+            let ink = NSColor(DS.Ink.p1)
+            if ink != appliedInk { tv.textColor = ink; appliedInk = ink }
+        }
+
+        func undoManager(for view: NSTextView) -> UndoManager? { textUndo }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            text.wrappedValue = tv.string
+        }
     }
 }

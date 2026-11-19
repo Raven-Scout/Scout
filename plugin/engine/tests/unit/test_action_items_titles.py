@@ -16,12 +16,14 @@ import pytest
 from typer.testing import CliRunner
 
 from scout.action_items.cli import app
+from scout.action_items.stale import STALE_AFTER_DAYS
 from scout.action_items.titles import (
     FOCUS_MAX_BULLETS,
     LEGACY_PER_RUN,
     TITLE_MAX,
     check_titles,
     judge,
+    list_long_titles,
     title_of,
 )
 
@@ -279,3 +281,110 @@ def test_cli_json(vault: Path) -> None:
 def test_cli_exit_2_when_it_cannot_check(vault: Path) -> None:
     result = _cli()
     assert result.exit_code == 2 and "check-titles: cannot check" in result.stdout
+
+
+# ----- the whole-file listing (`--all`) -----------------------------------------------
+#
+# A read-only inventory for the one-off title cleanup (#687): every open title
+# over the budget, carried or not, with its stale clock. It names tags and
+# lengths only, never a title, so its output can be pasted anywhere.
+
+LONGER = LONG + " and the follow-up"
+LONGEST = LONGER + " notes for the quarterly review"
+
+
+def _all_tags(vault: Path) -> list[tuple[str, int]]:
+    return [(t.tag, t.chars) for t in list_long_titles(today=TODAY.isoformat()).long]
+
+
+def test_all_lists_every_long_title_in_every_section_longest_first(vault: Path) -> None:
+    _file(
+        vault,
+        TODAY,
+        red=_task("RED1", LONG),
+        yellow=_task("YEL1", LONGEST) + _task("YEL2"),
+        green=_task("GRN1", LONGER),
+        parked=_task("PRK1", LONG),
+    )
+    assert _all_tags(vault) == [("YEL1", len(LONGEST)), ("GRN1", len(LONGER)), ("PRK1", len(LONG)), ("RED1", len(LONG))]
+
+
+def test_all_counts_carried_and_new_alike_and_says_which(vault: Path) -> None:
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("OLD1", LONG))
+    _file(vault, TODAY, yellow=_task("OLD1", LONG) + _task("NEW1", LONG))
+    listing = list_long_titles(today=TODAY.isoformat())
+    assert {t.tag: t.carried for t in listing.long} == {"OLD1": True, "NEW1": False}
+    assert listing.checked == 2
+
+
+def test_all_skips_short_nested_and_closed_rows(vault: Path) -> None:
+    rows = _task("OPEN", SHORT) + f"  - [ ] [#KIDX] **{LONG}** — nested\n" + f"- [x] [#DONE] **{LONG}** — done\n"
+    _file(vault, TODAY, yellow=rows)
+    assert _all_tags(vault) == []
+
+
+def test_all_reports_each_items_stale_clock(vault: Path) -> None:
+    first = TODAY - dt.timedelta(days=40)
+    _file(vault, first, yellow=_task("IDLE", LONG) + _task("BUSY", LONG))
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("IDLE", LONG) + _task("BUSY", LONG))
+    _file(vault, TODAY, yellow=_task("IDLE", LONG) + _task("BUSY", LONG, body="a reply came in."))
+    by_tag = {t.tag: t for t in list_long_titles(today=TODAY.isoformat()).long}
+    assert by_tag["IDLE"].last_changed == first
+    assert by_tag["IDLE"].archive_due == first + dt.timedelta(days=STALE_AFTER_DAYS)
+    assert by_tag["BUSY"].last_changed == TODAY  # touched today: its clock restarts today
+
+
+def test_all_writes_nothing(vault: Path) -> None:
+    _file(vault, TODAY - dt.timedelta(days=1), yellow=_task("IDLE", LONG))
+    _file(vault, TODAY, yellow=_task("IDLE", LONG))
+    before = {p: p.read_bytes() for p in vault.rglob("*") if p.is_file()}
+    list_long_titles(today=TODAY.isoformat())
+    _cli("--all", "--json")
+    assert {p: p.read_bytes() for p in vault.rglob("*") if p.is_file()} == before
+
+
+def test_cli_all_json_names_tags_and_lengths_never_titles(vault: Path) -> None:
+    _file(vault, TODAY - dt.timedelta(days=1), red=_task("RED1", LONGEST))
+    _file(vault, TODAY, red=_task("RED1", LONGEST) + _task("SHRT"), yellow=_task("YEL1", LONG))
+    result = _cli("--all", "--json")
+    assert result.exit_code == 0  # an inventory, not a gate
+    out = json.loads(result.stdout)
+    assert out["date"] == TODAY.isoformat() and out["limit"] == TITLE_MAX
+    assert out["checked"] == 3 and out["over"] == 2 and out["longest"] == len(LONGEST)
+    assert out["buckets"] == {"81-100": 0, "101-120": 1, "121+": 1}
+    assert out["items"][0] == {
+        "tag": "RED1",
+        "chars": len(LONGEST),
+        "section": "🔴",
+        "carried": True,
+        "last_changed": (TODAY - dt.timedelta(days=1)).isoformat(),
+        "archive_due": (TODAY - dt.timedelta(days=1) + dt.timedelta(days=STALE_AFTER_DAYS)).isoformat(),
+    }
+    assert [i["tag"] for i in out["items"]] == ["RED1", "YEL1"]
+    assert "quota migration" not in result.stdout and "Alex" not in result.stdout
+
+
+def test_cli_all_text_is_a_count_line_then_one_line_per_tag(vault: Path) -> None:
+    _file(vault, TODAY, yellow=_task("YEL1", LONG) + _task("YEL2"))
+    result = _cli("--all")
+    assert result.exit_code == 0
+    head, *rows = result.stdout.splitlines()
+    assert head == (
+        f"check-titles --all: 1 of 2 open titles over {TITLE_MAX} characters "
+        f"(longest {len(LONG)}; 81-100: 0, 101-120: 1, 121+: 0)"
+    )
+    due = TODAY + dt.timedelta(days=STALE_AFTER_DAYS)
+    assert rows == [f"  [#YEL1] {len(LONG)} chars · 🟡 · new · unchanged since {TODAY} · archives {due} if untouched"]
+    assert "quota migration" not in result.stdout
+
+
+def test_cli_all_with_nothing_long(vault: Path) -> None:
+    _file(vault, TODAY, yellow=_task("YEL2"))
+    result = _cli("--all")
+    assert result.exit_code == 0
+    assert result.stdout.startswith(f"check-titles --all: 0 of 1 open titles over {TITLE_MAX} characters")
+
+
+def test_cli_all_exit_2_when_it_cannot_check(vault: Path) -> None:
+    result = _cli("--all", "--json")
+    assert result.exit_code == 2 and json.loads(result.stdout)["error"]

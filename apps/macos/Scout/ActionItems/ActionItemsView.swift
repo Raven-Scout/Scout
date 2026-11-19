@@ -36,6 +36,13 @@ struct ActionItemsView: View {
     /// A row a cross-ref paged in; scrolled to once it appears.
     @State private var pendingScrollID: UUID?
     @FocusState private var searchFocused: Bool
+    /// The keyboard-current card (#50) and the list's own focus, which the
+    /// arrow keys need. See `ActionItemsKeyboardContext`.
+    @State private var cursorTaskID: UUID?
+    @State private var navigableRows: [ActionItemsKeyboardContext.Row] = []
+    @State private var commentEditorFocused = false
+    @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
+    @FocusState private var listFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
 
@@ -87,7 +94,7 @@ struct ActionItemsView: View {
         .searchFocused($searchFocused)
         .background {
             Button("Find") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
+                .keyboardShortcut(AppShortcut.find)
                 .frame(width: 0, height: 0)
                 .opacity(0)
         }
@@ -123,6 +130,7 @@ struct ActionItemsView: View {
         .onAppear {
             load()
             relayout()
+            reconcileCursor()
         }
         // Opening the page with the check failed tries it once more.
         .task {
@@ -145,15 +153,19 @@ struct ActionItemsView: View {
         .onChange(of: docService.state) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
         .onChange(of: filter) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
         .onChange(of: display) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
+        .onChange(of: windows) { _, _ in reconcileCursor() }
     }
 
     // MARK: - Content
@@ -168,7 +180,8 @@ struct ActionItemsView: View {
                 columns: layout?.boardColumns ?? ActionBoardColumn.columns(from: boardSections(doc)),
                 scoutDirectory: scoutDirectory,
                 density: display.density,
-                fields: display.fields
+                fields: display.fields,
+                openList: { displayProfile.currentView = .list }
             )
         } else if case .loaded(let doc) = docService.state, viewMode == .topics {
             TopicBoardView(
@@ -176,7 +189,8 @@ struct ActionItemsView: View {
                 fileDate: doc.date,
                 actionItemsDirectory: actionItemsDirectory,
                 scoutDirectory: scoutDirectory,
-                search: filter.searchText
+                search: filter.searchText,
+                doneRange: displayProfile.binding(\.topics.doneRange)
             )
         } else {
             listContent
@@ -194,7 +208,69 @@ struct ActionItemsView: View {
                     scroll(to: id, proxy: proxy)
                 })
                 .environment(\.highlightedTaskID, highlightedTaskID)
+                .environment(\.actionItemsKeyboard, keyboardContext)
+                .onPreferenceChange(CommentEditorFocusedKey.self) { focused in
+                    // A comment sent or cancelled takes its editor (and the
+                    // focus) away: hand the keys back to the list unless
+                    // another field took them.
+                    if commentEditorFocused, !focused, !searchFocused { listFocused = true }
+                    commentEditorFocused = focused
+                }
+                // The list takes keyboard focus (a click on it, or opening the
+                // page) so the arrows move the current card rather than scroll.
+                .focusable()
+                .focused($listFocused)
+                .focusEffectDisabled()
+                // Each handler acts only while the list itself has focus, never
+                // for keys typed into a comment editor or a focused button
+                // inside it (`listOwnsKeys`).
+                .keyboardListNavigation(
+                    ids: { listOwnsKeys ? navigableRows.map(\.id) : [] },
+                    selection: $cursorTaskID
+                ) { id in
+                    scroll(to: id, proxy: proxy, anchor: nil)
+                }
+                .onKeyPress(keys: [.return, .space], phases: .down) { press in
+                    guard listOwnsKeys, press.modifiers.isEmpty, let id = cursorTaskID else { return .ignored }
+                    toggleRequest = .init(id: id, serial: (toggleRequest?.serial ?? 0) + 1)
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard listOwnsKeys, cursorTaskID != nil else { return .ignored }
+                    cursorTaskID = nil
+                    return .handled
+                }
+                .onAppear { listFocused = true }
         }
+    }
+
+    private var listOwnsKeys: Bool {
+        ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused, commentEditorFocused: commentEditorFocused)
+    }
+
+    private var keyboardContext: ActionItemsKeyboardContext {
+        ActionItemsKeyboardContext(
+            cursorID: cursorTaskID,
+            commitKeyFree: !commentEditorFocused && !searchFocused,
+            toggleRequest: toggleRequest,
+            setCursor: StableAction { id in cursorTaskID = id },
+            focusCard: StableAction { id in
+                cursorTaskID = id
+                listFocused = true
+            })
+    }
+
+    /// Keep the current card on screen after a write or a filter change: the
+    /// same card if it's still drawn, else the one now in its place.
+    private func reconcileCursor() {
+        let previous = navigableRows
+        guard case .loaded(let doc) = docService.state else {
+            navigableRows = []
+            cursorTaskID = nil
+            return
+        }
+        navigableRows = ActionItemsKeyboardContext.navigableRows(in: listSections(doc), windows: windows)
+        cursorTaskID = ActionItemsKeyboardContext.reconcile(cursor: cursorTaskID, previous: previous, rows: navigableRows)
     }
 
     @ViewBuilder
@@ -319,13 +395,15 @@ struct ActionItemsView: View {
         }
     }
 
-    private func scroll(to id: UUID, proxy: ScrollViewProxy) {
+    /// `anchor: nil` scrolls only as far as it takes to show the row, as the
+    /// arrow keys want; a cross-ref jump centres it.
+    private func scroll(to id: UUID, proxy: ScrollViewProxy, anchor: UnitPoint? = .center) {
         // After this update's layout, so a row that just appeared has a frame.
         DispatchQueue.main.async {
             if reduceMotion {
-                proxy.scrollTo(id, anchor: .center)
+                proxy.scrollTo(id, anchor: anchor)
             } else {
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: anchor) }
             }
         }
     }
@@ -609,9 +687,9 @@ struct ActionItemsView: View {
                 Label("Copy", systemImage: "doc.on.doc")
             }
             .buttonStyle(.ds(.primary, size: .small))
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .keyboardShortcut(AppShortcut.copySelected)
             .disabled(selectedTaskIDs.isEmpty)
-            .help("Copy selected items with full context (⌘⇧C)")
+            .help(ShortcutLabel.help("Copy selected items with full context", AppShortcut.copySelected))
 
             Menu {
                 ForEach([ClaudeLauncher.CopyFormat.concise, .markdownChecklist]) { format in

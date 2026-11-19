@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from scout import health, update_outcomes
+from scout import doctor_triage, health, update_outcomes
 from scout.scripts import bootstrap_doctor
 from scout.scripts.bootstrap_auto import doctor_dict
 
@@ -44,6 +44,9 @@ slots:
 """
 
 
+REVIEWED = "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)"
+
+
 def _ts(t: datetime) -> str:
     return t.isoformat().replace("+00:00", "Z")
 
@@ -69,11 +72,20 @@ def _build_vault(root: Path) -> Path:
     (v / "scout-config.yaml").write_text(
         "plugin:\n  version_at_last_setup: 0.16.0\n  version_at_last_update: 0.16.0\n", encoding="utf-8"
     )
-    # Install warnings: a runner backup left by an older engine, and two vault scripts that read the
-    # knowledge base around `scoutctl kb`, which the doctor reports as ONE grouped warning (#505).
+    # Install warnings: a runner backup left by an older engine (the owner reviewed it, R13), two vault
+    # scripts that read the knowledge base around `scoutctl kb` but send nothing (ONE grouped low-risk
+    # warning, #505), and one that posts what it reads (its own high-risk warning).
     (v / "run-scout.sh.bak.1").write_text("x\n", encoding="utf-8")
     for name in ("link-check.py", "tag-audit.py"):
         (v / "scripts" / name).write_text("open('knowledge-base/index.md').read()\n", encoding="utf-8")
+    # One send the privacy check held back this week: a run-protection warning the owner can't review (R13).
+    (logs / "kb-reads.jsonl").write_text(
+        json.dumps({"blocked": True, "paths_denied": 0, "ts": _ts(NOW - timedelta(days=1))}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (v / "scripts" / "weekly-digest.py").write_text(
+        "import requests\nrequests.post(URL, data=open('knowledge-base/index.md').read())\n", encoding="utf-8"
+    )
     # morning-briefing last ran 54 h ago (a yellow slot.stale): its last two runs failed on an expired
     # login. Its last fire is that last run's session end, 2 s before the ledger row's finished_at
     # (§13.1). weekly-research fired on its own Wednesday slot and left no outcome (slot.fired_silent).
@@ -136,7 +148,10 @@ def _render(tmp_path: Path, monkeypatch) -> str:
     monkeypatch.setattr(health, "tick_job_installed", lambda home=None: True)
     monkeypatch.setattr(health, "recent_commits", lambda *a, **k: [])
     v = _build_vault(tmp_path)
-    report = bootstrap_doctor.run_doctor(vault=v, check_jobs=False, home=tmp_path / "home", now=NOW)
+    home = tmp_path / "home"
+    (backup,) = doctor_triage.apply(v, [REVIEWED], {}, home=home).entries
+    doctor_triage.set_review(v, backup.id, backup.fingerprint, home=home, now=NOW - timedelta(days=1))
+    report = bootstrap_doctor.run_doctor(vault=v, check_jobs=False, home=home, now=NOW)
     text = json.dumps(doctor_dict(report), indent=2, sort_keys=True) + "\n"
     return text.replace(str(v), "/Users/alex/Scout").replace(str(tmp_path), "/Users/alex")
 
@@ -152,12 +167,24 @@ def test_doctor_run_health_matches_the_shared_fixture(tmp_path, monkeypatch):
 
 def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     d = json.loads(_render(tmp_path, monkeypatch))
-    assert d["severity"] == "yellow" and len(d["warnings"]) == 2 and d["errors"] == []
-    # The two KB-reading scripts are one warning, and its group lists both (#505).
+    assert d["severity"] == "yellow" and len(d["warnings"]) == 3 and d["errors"] == []
+    # The two KB-reading scripts that send nothing are one warning, and its group lists both (#505).
     (group,) = d["warning_groups"]
-    assert group["kind"] == "privacy.script-raw-kb-read" and group["count"] == 2
+    assert group["kind"] == "privacy.script-raw-kb-read.internal" and group["count"] == 2
     assert group["items"] == ["scripts/link-check.py", "scripts/tag-audit.py"]
     assert group["summary"] in d["warnings"]
+    # Every warning, highest risk first; the reviewed backup is listed but not in "warnings" (R13).
+    triage = d["warning_triage"]
+    assert [e["risk"] for e in triage] == ["high", "high", "medium", "low"]
+    # The privacy audit's blocked-send count is about run protection: never reviewable.
+    assert triage[0]["kind"] == "protection" and triage[0]["reviewable"] is False
+    assert triage[0]["id"].startswith("protection.") and triage[0]["summary"].startswith("privacy: 1 blocked")
+    assert triage[1]["id"] == "privacy.script-raw-kb-read:scripts/weekly-digest.py"
+    assert triage[1]["summary"] in d["warnings"] and triage[1]["reviewed_at"] is None and triage[1]["reviewable"]
+    assert triage[2]["summary"] == REVIEWED and triage[2]["reviewed_at"] == "2026-10-10T12:00:00Z"
+    assert REVIEWED not in d["warnings"]
+    assert triage[3]["kind"] == group["kind"] and triage[3]["id"] == group["kind"]
+    assert all(sorted(e) == sorted(TRIAGE_KEYS) for e in triage)
     rh = d["run_health"]
     assert rh["severity"] == "red"
     ids = {f["id"]: f["severity"] for f in rh["findings"]}
@@ -172,6 +199,9 @@ def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     outcomes = [s["last_outcome"] for s in rh["slots"]]
     assert len(outcomes) == 2 and sum(o is None for o in outcomes) == 1
     assert "pytest" not in json.dumps(d)
+
+
+TRIAGE_KEYS = ("id", "kind", "risk", "reason", "summary", "items", "fingerprint", "reviewed_at", "reviewable")
 
 
 def test_the_fixture_models_a_state_the_engine_can_reach(tmp_path, monkeypatch):

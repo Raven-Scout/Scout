@@ -85,11 +85,20 @@ RUN_LIMITS_NAME = "run-limits.json"
 # The run brokers' owner folder, in ~/.local/state/scout/ (scout.sandbox.broker): the Telegram limits, the hourly
 # send count and the drain lock.
 RUN_BROKERS_NAME = "run-brokers"
+# The owner's reviewed doctor warnings (scout.doctor_triage): a run that could write them could mark its own
+# privacy warnings reviewed and hide them from the owner. Also a protected token, so the name carries Scout's
+# prefix (see CHANGES_OWNER_NAME): no vault file of a run's would be called this.
+REVIEWED_WARNINGS_NAME = "scout-reviewed-warnings.json"
+# The change map's owner-only engagement rows (scout.changes.store): a run that could write them could forge the
+# owner's reliance on its own work. Also a protected token, so the name is one no vault folder would carry: a
+# generic `change-map` denied a run's own `knowledge-base/change-map/` notes.
+CHANGES_OWNER_NAME = "scout-change-ledger-owner"
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
 SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
+TITLE_REWRITES = "Scout's title-rewrite records"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
 INLINE_WRITE = "an inline program that writes next to a protected name"
@@ -269,6 +278,8 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
     roots.append(state / RUN_LIMITS_NAME)
     # The run brokers' limits and counts (Phase 1d): a run that could write them could lift its own send limit.
     roots.append(state / RUN_BROKERS_NAME)
+    roots.append(state / REVIEWED_WARNINGS_NAME)
+    roots.append(state / CHANGES_OWNER_NAME)
     return roots
 
 
@@ -358,6 +369,8 @@ def protected_specs(
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
         add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
+        # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
+        add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
@@ -609,6 +622,8 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     "provider-consent.json",
     "run-limits.json",
     RUN_BROKERS_NAME,
+    REVIEWED_WARNINGS_NAME,
+    CHANGES_OWNER_NAME,
     "hooks.json",
     "pyvenv.cfg",
     ".scout-secrets",

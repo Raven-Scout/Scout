@@ -134,6 +134,22 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Health/RunLedgerContractTests.swift` — all in one
   commit. A new ledger field or outcome goes into the test's vault builder, not
   the JSON.
+- **The changes map has two canonical copies:**
+  `plugin/engine/tests/fixtures/contract/changes.json` and `engagement.json`, the output of
+  `scoutctl changes --json` and `scoutctl engagement --json` (`scout/changes/report.py`, versioned by
+  `schema_version`). Generate them from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_changes_contract.py`.
+  The app's byte copies and the `contract.yml` comparison land with the first client (Plan 3).
+- **The delegate status has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/delegate-status.json`, the output of
+  `scoutctl delegate status --json` (`scout/delegate_status.py`, #550), which
+  the app's Settings ▸ Agent copies card reads (`DelegateStatus.parse`).
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_delegate_status_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/delegate-status.json` and update the pins in
+  `apps/macos/ScoutTests/Engine/DelegateStatusTests.swift` — all in one commit.
+  It never carries a key, token, vault path or note name.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

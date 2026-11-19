@@ -1,0 +1,89 @@
+{
+  "delegates": [
+    {
+      "agent_config_left_out": 2,
+      "behind": false,
+      "can_preview": true,
+      "can_sync": true,
+      "counts": {
+        "agent_config": 2,
+        "files": 412,
+        "left_out": 3,
+        "redacted_lines": 9,
+        "withheld": 37
+      },
+      "deploy_key": true,
+      "id": "grok-personal",
+      "last_attempt": "2026-11-19T11:45:00Z",
+      "last_result": "ok",
+      "last_sync": "2026-11-19T11:45:00Z",
+      "linked": true,
+      "linked_at": "2026-11-10T09:00:00Z",
+      "listed": true,
+      "old_keys_live": 1,
+      "refusal": null,
+      "remote": {
+        "display": "example-user/grok-mirror",
+        "kind": "github"
+      },
+      "state_unverified": false
+    },
+    {
+      "agent_config_left_out": 0,
+      "behind": true,
+      "can_preview": true,
+      "can_sync": true,
+      "counts": {
+        "agent_config": 0,
+        "files": 530,
+        "left_out": 0,
+        "redacted_lines": 0,
+        "withheld": 12
+      },
+      "deploy_key": false,
+      "id": "duet",
+      "last_attempt": "2026-11-19T11:00:00Z",
+      "last_result": "failed",
+      "last_sync": "2026-11-18T22:00:00Z",
+      "linked": true,
+      "linked_at": "2026-11-12T15:30:00Z",
+      "listed": true,
+      "old_keys_live": 0,
+      "refusal": {
+        "at": "2026-11-19T11:00:00Z",
+        "code": "mirror_diverged",
+        "reason": "The mirror repository moved since the last sync; nothing was pushed.",
+        "since": "2026-11-19T08:00:00Z"
+      },
+      "remote": {
+        "display": "~/mirrors/duet.git",
+        "kind": "local"
+      },
+      "state_unverified": false
+    },
+    {
+      "agent_config_left_out": null,
+      "behind": null,
+      "can_preview": true,
+      "can_sync": false,
+      "counts": null,
+      "deploy_key": null,
+      "id": "research-bot",
+      "last_attempt": null,
+      "last_result": "never",
+      "last_sync": null,
+      "linked": false,
+      "linked_at": null,
+      "listed": true,
+      "old_keys_live": null,
+      "refusal": null,
+      "remote": null,
+      "state_unverified": false
+    }
+  ],
+  "generator": "scoutctl delegate status",
+  "owner": true,
+  "schema_version": 1,
+  "skipped": 0,
+  "state": "ok"
+}

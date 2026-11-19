@@ -13,6 +13,7 @@ struct BoardCardView: View {
     var fields = ActionItemsDisplay.Fields()
 
     @State private var launchError: String?
+    @Environment(\.openKBNote) private var openKBNote
 
     /// Same rule as the list card's action row: Launch Claude on open tasks only.
     static func showsLaunchMenu(for task: ActionTask) -> Bool { !task.done }
@@ -86,12 +87,7 @@ struct BoardCardView: View {
         if !links.isEmpty || commentCount > 0 {
             HStack(spacing: 8) {
                 ForEach(links) { link in
-                    HStack(spacing: 3) {
-                        Image(systemName: linkGlyph(link))
-                            .imageScale(.small)
-                        Text(link.displayLabel)
-                            .lineLimit(1)
-                    }
+                    linkView(link)
                 }
                 if commentCount > 0 {
                     HStack(spacing: 3) {
@@ -104,6 +100,33 @@ struct BoardCardView: View {
             }
             .font(DS.mono(10))
             .foregroundStyle(DS.Ink.p3)
+        }
+    }
+
+    /// A reference that opens: a KB note in the Knowledge Base tab, an
+    /// external link in its app (audit #49: they were plain text). A ref with
+    /// nowhere to go stays text.
+    @ViewBuilder
+    private func linkView(_ link: TaskDeepLink) -> some View {
+        let label = HStack(spacing: 3) {
+            Image(systemName: linkGlyph(link))
+                .imageScale(.small)
+                .accessibilityHidden(true)
+            Text(link.displayLabel)
+                .lineLimit(1)
+        }
+        if case .entity(let target, _) = link, let openKBNote {
+            Button { openKBNote(target) } label: { label.underline(pattern: .dot) }
+                .buttonStyle(.plainHit)
+                .help("Open \(link.displayLabel) in the Knowledge Base")
+                .accessibilityLabel("Open \(link.displayLabel) in the Knowledge Base")
+        } else if let url = link.openURL {
+            Button { NSWorkspace.shared.open(url) } label: { label.underline(pattern: .dot) }
+                .buttonStyle(.plainHit)
+                .help(url.absoluteString)
+                .accessibilityLabel("Open \(link.displayLabel)")
+        } else {
+            label
         }
     }
 

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Combine
+import os
 
 @MainActor
 final class AppState: ObservableObject {
@@ -49,7 +50,9 @@ final class AppState: ObservableObject {
     /// Action Items display options from `scout-display.json` in the vault root (#52).
     let displayProfileService: DisplayProfileService
     let gitService: GitService
-    let notificationService: NotificationService
+    let notificationService: any RunNotificationPosting
+    /// Which runs' notifications to post, replace or take back.
+    let runNotifications: RunNotificationTracker
     let claudeSessionService: ClaudeSessionService
     /// The Sessions page's `scoutctl session index` driver.
     let sessionIndexService: SessionIndexService
@@ -71,6 +74,9 @@ final class AppState: ObservableObject {
     /// Settings ▸ Engine ▸ Run protection (card C9): `scoutctl protection status`, the privacy-check
     /// re-check and the owner's write-protection switch.
     let runProtection: RunProtectionService
+    /// Settings ▸ Agent copies (#550): `scoutctl delegate status --json`, and the CLI's own
+    /// Preview and Sync now for a delegate mirror. Nothing else about delegates runs from the app.
+    let delegateStatus: DelegateStatusService
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
@@ -137,7 +143,6 @@ final class AppState: ObservableObject {
     /// Privacy labels for the KB tree's lock badge, via `scoutctl kb classify`.
     let knowledgeBasePrivacy: KBPrivacyLabelService
 
-    private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
     /// Production entry point — the vault root resolves per spec §4.4 (the
@@ -175,6 +180,16 @@ final class AppState: ObservableObject {
 
         // Asks the engine health for scoutctl each time, so it follows the engine that's found; none while setup gates the tabs.
         let runProtection = RunProtectionService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
+        )
+        // Settings ▸ Agent copies (#550): the same engine, the same way.
+        let delegateStatus = DelegateStatusService(
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             scoutctl: { [weak engineHealth] in
@@ -252,7 +267,7 @@ final class AppState: ObservableObject {
             runner: runner,
             argumentsPrefix: scoutctlArgsPrefix
         )
-        let notif = NotificationService()
+        let notif = configuration.notifications ?? NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: configuration.claudeSessionsDirectory
         )
@@ -348,6 +363,7 @@ final class AppState: ObservableObject {
         self.modelSettingsService = modelSettings
         self.displayProfileService = displayProfile
         self.notificationService = notif
+        self.runNotifications = RunNotificationTracker(poster: notif)
         self.claudeSessionService = ccSessions
         self.sessionIndexService = sessionIndex
         self.actionItemsDocumentService = docService
@@ -370,6 +386,7 @@ final class AppState: ObservableObject {
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
         self.runProtection = runProtection
+        self.delegateStatus = delegateStatus
         self.runLedgerService = runLedger
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
@@ -484,6 +501,12 @@ final class AppState: ObservableObject {
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
         displayProfile.startWatching()
+        // A Done range the Topics board kept in UserDefaults moves into
+        // scout-display.json once (UI audit #46).
+        displayProfile.migrateLegacyDoneRange(from: defaults)
+        // schedule.yaml edited outside the app reloads the Schedules page
+        // (UI audit #61), drafts kept.
+        scheduleEditService.startWatching(events)
 
         // A finished run adds a runner row to the usage tracker, and the
         // tracker service re-reads the file on every change to it, so re-read
@@ -657,6 +680,7 @@ final class AppState: ObservableObject {
                                                resolveClaude: resolveClaude),
             makeInstaller: { [weak self] sink in await self?.makeInstaller(progress: sink) },
             appVault: scoutDirectory,
+            authorDefaults: defaults,
             onFinished: { [weak self] in
                 Task { @MainActor in
                     await self?.engineHealth.refresh()
@@ -870,6 +894,9 @@ final class AppState: ObservableObject {
         var resolveClaude: @Sendable (String) -> String? = { _ in nil }
         /// Downloads uv when no copy exists yet (installer only).
         var fileDownloader: any FileDownloader = URLSessionDownloader()
+        /// Where run notifications go; nil is `NotificationService`, the
+        /// real Notification Center. Tests pass a fake.
+        var notifications: (any RunNotificationPosting)? = nil
 
         static func production() -> Configuration {
             let layout = EngineLayout.live
@@ -999,16 +1026,20 @@ final class AppState: ObservableObject {
     /// After the dispatch returns, immediately refresh `ScheduleService` so
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
-    func fireNow(slotKey: String) async {
+    ///
+    /// Returns `fireNowError` as this call left it: nil when the run started.
+    @discardableResult
+    func fireNow(slotKey: String) async -> String? {
         guard firingSlotKeys.insert(slotKey).inserted else {
             // Surface the drop: several UI surfaces can fire the same slot
             // (upcoming strip, RunDetailView's Run again, menu panel), and a
             // silently discarded request looks like it was dispatched.
             fireNowError = "\(slotKey) is already being started — request ignored."
-            return
+            return fireNowError
         }
         defer { firingSlotKeys.remove(slotKey) }
         let args = Self.fireNowArguments(argumentsPrefix: scoutctlArgumentsPrefix, slotKey: slotKey)
+        var error: String?
         do {
             let result = try await runner.run(
                 executable: scoutctlExecutable,
@@ -1019,15 +1050,175 @@ final class AppState: ObservableObject {
             if result.exitCode != 0 {
                 let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
                 let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                fireNowError = "Run now failed (exit \(result.exitCode))"
+                error = "Run now failed (exit \(result.exitCode))"
                     + (detail.isEmpty ? "" : ": \(detail)")
-            } else {
-                fireNowError = nil
             }
-        } catch {
-            fireNowError = "Run now failed: \(error.localizedDescription)"
+        } catch let launch {
+            error = "Run now failed: \(launch.localizedDescription)"
         }
+        fireNowError = error
         await scheduleService.refresh()
+        return error
+    }
+
+    /// What the last "Install wake schedule" did, shown in the menu-bar panel
+    /// until dismissed: `.info` when it worked. It used to run under `try?`
+    /// and report nothing either way (UI audit #4).
+    @Published var wakeScheduleResult: WakeScheduleResult? = nil
+    @Published private(set) var installingWakeSchedule = false
+
+    /// What "Install wake schedule" did, and the command to run by hand when
+    /// macOS needs an administrator (shown on its own line, with Copy).
+    nonisolated struct WakeScheduleResult: Equatable, Sendable {
+        var problem: Problem
+        /// `sudo pmset repeat wakeorpoweron MTWRF 07:55:00`; nil unless the
+        /// install was refused and the dry run named the command.
+        var sudoCommand: String? = nil
+    }
+
+    /// `scoutctl schedule install-wake-schedule`: a `pmset repeat` rule that
+    /// wakes the Mac at the earliest weekday run's time, on that run's days.
+    /// A dry run first names the exact `pmset` command, so when macOS refuses
+    /// it (it needs an administrator) the panel can say what to run instead;
+    /// after a clean exit `pmset -g sched` (read-only) confirms the rule is
+    /// there before the panel says "installed".
+    ///
+    /// `checkLimit` is how long that check may take before the panel says
+    /// Scout couldn't check: `SystemProcessRunner` has no timeout of its own.
+    func installWakeSchedule(checkLimit: Duration = .seconds(5)) async {
+        guard !installingWakeSchedule else { return }
+        installingWakeSchedule = true
+        defer { installingWakeSchedule = false }
+        let base = scoutctlArgumentsPrefix + ["schedule", "install-wake-schedule"]
+        func run(_ extra: [String]) async throws -> ProcessResult {
+            try await runner.run(executable: scoutctlExecutable, arguments: base + extra,
+                                 environment: [:], workingDirectory: scoutDirectory)
+        }
+        let dryRun = try? await run(["--dry-run"])
+        do {
+            let result = try await run([])
+            var check: ProcessResult?
+            if result.exitCode == 0 {
+                let runner = self.runner
+                check = await Self.withinTimeLimit(checkLimit) {
+                    try? await runner.run(executable: URL(fileURLWithPath: "/usr/bin/pmset"),
+                                          arguments: ["-g", "sched"], environment: [:], workingDirectory: nil)
+                }
+            }
+            wakeScheduleResult = Self.wakeScheduleResult(result, dryRun: dryRun, check: check)
+        } catch {
+            wakeScheduleResult = Self.wakeScheduleResult(nil, dryRun: dryRun, check: nil,
+                                                         launchError: error.localizedDescription)
+        }
+    }
+
+    /// `operation`'s result, or nil once `limit` passes first. The operation
+    /// is cancelled then; a child process it started that ignores that is
+    /// left to finish on its own, but nothing waits for it.
+    ///
+    /// Both tasks are detached: under approachable concurrency this function
+    /// runs on its caller's actor, and the timer must not need that actor
+    /// (the main one, for `installWakeSchedule`) free to fire. The caller
+    /// itself still resumes only once its actor is free.
+    nonisolated static func withinTimeLimit<T: Sendable>(
+        _ limit: Duration, _ operation: @escaping @Sendable () async -> T?
+    ) async -> T? {
+        let settled = OSAllocatedUnfairLock(initialState: false)
+        @Sendable func first() -> Bool {
+            settled.withLock { done in
+                defer { done = true }
+                return !done
+            }
+        }
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            let work = Task.detached {
+                let value = await operation()
+                if first() { cont.resume(returning: value) }
+            }
+            Task.detached {
+                try? await Task.sleep(for: limit)
+                if first() {
+                    work.cancel()
+                    cont.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    /// The `pmset` command a dry run names: "[dry-run] would run: pmset …". Pure.
+    nonisolated static func wakeCommand(fromDryRun dryRun: ProcessResult?) -> String? {
+        guard let dryRun, dryRun.exitCode == 0,
+              let out = String(data: dryRun.stdout, encoding: .utf8) else { return nil }
+        let marker = "would run: "
+        return out.components(separatedBy: "\n")
+            .first { $0.contains(marker) }
+            .map { String($0[$0.range(of: marker)!.upperBound...]).trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.hasPrefix("pmset ") ? $0 : nil }
+    }
+
+    /// Whether `pmset -g sched` lists the repeating wake `command` sets:
+    /// "wakepoweron at 7:55AM" for `… wakeorpoweron MTWRF 07:55:00`. Without
+    /// a command (or one with no time in it) nothing counts: a wake set
+    /// earlier, by Scout or anyone else, proves nothing about this one. Pure.
+    nonisolated static func wakeScheduleConfirmed(sched: String, command: String?) -> Bool {
+        let lines = sched.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.hasPrefix("Repeating power events") }) else { return false }
+        let repeating = lines[(start + 1)...].prefix { $0.hasPrefix(" ") }.map { $0.lowercased() }
+        let wakes = repeating.filter { $0.contains("wake") }
+        guard let time = command?.split(separator: " ").last.map(String.init) else { return false }
+        let parts = time.split(separator: ":").compactMap { Int($0) }
+        guard parts.count >= 2 else { return false }
+        let hour12 = parts[0] % 12 == 0 ? 12 : parts[0] % 12
+        let label = String(format: "%d:%02d%@", hour12, parts[1], parts[0] < 12 ? "am" : "pm")
+        return wakes.contains { $0.contains("at \(label)") }
+    }
+
+    /// The panel's words for an install-wake-schedule result. Pure.
+    nonisolated static func wakeScheduleResult(_ result: ProcessResult?, dryRun: ProcessResult?,
+                                               check: ProcessResult?, launchError: String? = nil) -> WakeScheduleResult {
+        func text(_ data: Data?) -> String {
+            data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        let out = text(result?.stdout), err = text(result?.stderr)
+        let command = wakeCommand(fromDryRun: dryRun)
+        let details = [out, err, launchError].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+        if let result, result.exitCode == 0 {
+            // nil `check`: `pmset -g sched` didn't start, or ran out of time.
+            let checked = check?.exitCode == 0
+            let sched = text(checked ? check?.stdout : nil)
+            guard checked, wakeScheduleConfirmed(sched: sched, command: command) else {
+                let impact = !checked
+                    ? "Scout set it, but couldn't check macOS's list of this Mac's repeating wake times."
+                    : command == nil
+                        ? "Scout set it, but couldn't tell which wake time to look for in macOS's list."
+                        : "Scout set it, but macOS doesn't list it among this Mac's repeating wake times."
+                return WakeScheduleResult(problem: Problem(
+                    severity: .warning, title: "Couldn't confirm the wake schedule",
+                    impact: impact,
+                    fix: "Check with `pmset -g sched` in Terminal, or try again.",
+                    details: [details, sched.isEmpty ? nil : "pmset -g sched:\n\(sched)"]
+                        .compactMap { $0 }.joined(separator: "\n")))
+            }
+            return WakeScheduleResult(problem: Problem(
+                severity: .info, title: "Wake schedule installed",
+                impact: "Your Mac wakes at the time of the earliest weekday run, on that run's days, while it's plugged in. It replaced any repeating wake time set before.",
+                details: details))
+        }
+        if (err + out).contains("no weekday slot") {
+            return WakeScheduleResult(problem: Problem(
+                severity: .warning, title: "Nothing to wake for",
+                impact: "No schedule runs on a weekday, so there's no time to wake the Mac.",
+                fix: "Add a weekday time on the Schedules page, then try again.", details: details))
+        }
+        let fix = command == nil
+            ? "macOS needs an administrator for this. Copy the details when asking for help."
+            : "macOS needs an administrator for this. Run this command in Terminal. It replaces any repeating wake time already set on this Mac."
+        return WakeScheduleResult(
+            problem: Problem(severity: .error, title: "Couldn't install the wake schedule",
+                             impact: "Scheduled runs only start while the Mac is awake.",
+                             fix: fix, details: details),
+            sudoCommand: command.map { "sudo \($0)" })
     }
 
     /// Recompute the menu-bar urgent badge for today.
@@ -1156,6 +1347,22 @@ final class AppState: ObservableObject {
     /// disk never notify.
     private var runNotificationsArmed = false
 
+    /// A notification's "Run again": fire the schedule the failed run ran for,
+    /// as Run again in its detail does. The notification only offers it for a
+    /// run with a schedule of its own (`NotificationService.retrySlotKey`).
+    func retryFromNotification(slotKey: String) {
+        Task { await runAgainFromNotification(slotKey: slotKey) }
+    }
+
+    /// `retryFromNotification`'s work. The owner pressed it outside the app,
+    /// where `fireNowError` shows nowhere, so a refusal (an unknown schedule,
+    /// another run starting at that moment) comes back as a notification too.
+    func runAgainFromNotification(slotKey: String) async {
+        if let error = await fireNow(slotKey: slotKey) {
+            notificationService.postRunAgainRefused(slotKey: slotKey, error: error)
+        }
+    }
+
     private func startNotificationWatch() {
         sessionLogService.$runs.sink { [weak self] runs in
             guard let self else { return }
@@ -1164,13 +1371,7 @@ final class AppState: ObservableObject {
                 let prefs = RunNotificationPolicy.Preferences(
                     onFailure: defaults.object(forKey: RunNotificationPolicy.failureKey) as? Bool ?? true,
                     onRateLimit: defaults.object(forKey: RunNotificationPolicy.rateLimitKey) as? Bool ?? true)
-                for r in runs {
-                    if RunNotificationPolicy.shouldNotify(previous: self.previousStatus[r.id], run: r,
-                                                          armed: self.runNotificationsArmed, preferences: prefs) {
-                        self.notificationService.notify(run: r)
-                    }
-                    self.previousStatus[r.id] = r.status
-                }
+                self.runNotifications.update(runs: runs, armed: self.runNotificationsArmed, preferences: prefs)
                 self.recomputeStatus()
             }
         }.store(in: &cancellables)

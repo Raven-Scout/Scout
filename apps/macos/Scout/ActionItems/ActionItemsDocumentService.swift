@@ -113,7 +113,7 @@ final class ActionItemsDocumentService: ObservableObject {
     /// faulted in this codebase before. Callers read it here and hand the
     /// result to the `nonisolated` parser.
     static func inlineCommentAuthor(from defaults: UserDefaults) -> String {
-        defaults.string(forKey: "authorName") ?? "user"
+        CommentAuthor.configuredName(defaults)
     }
 
     /// Load the action-items file for ``date`` (local timezone). Starts (or

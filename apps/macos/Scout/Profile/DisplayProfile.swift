@@ -77,9 +77,9 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
         var plan = true
     }
 
-    /// Topics view options. The Done toggle on the Topics screen reads and
-    /// writes `doneRange` in a follow-up (Raven-Scout/Scout#347 §3); until
-    /// then only Settings changes it.
+    /// Topics view options. Settings and the Done list's range toggle on the
+    /// Topics screen both read and write `doneRange` (Raven-Scout/Scout#347
+    /// §3, audit #46).
     struct Topics: Equatable, Sendable {
         var doneRange: DoneRange = .week
     }

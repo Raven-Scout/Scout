@@ -42,33 +42,46 @@ struct KBOverviewView: View {
 
     var body: some View {
         let net = service.networkStats()
+        let loading = KnowledgeBaseView.showsLoading(service.state, treeIsEmpty: service.tree.isEmpty)
         VStack(spacing: 0) {
-            header(net)
+            header(net, loading: loading)
             EditorialRule()
-            switch tab {
-            case .map:
-                KBMapWebView(service: service, mode: .vault, focus: mapFocus, onOpen: onNavigate)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .health:
-                ScrollView {
-                    KBStatsView(stats: net, onOpen: onNavigate)
-                        .padding(28)
-                        .frame(maxWidth: 820, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if loading {
+                // Not "0 notes" or the map's "No notes yet" while the first
+                // scan runs (UI audit #76).
+                KnowledgeBaseView.LoadingState()
+            } else {
+                content(net)
             }
         }
         .onChange(of: mapFocus) { _, new in if new != nil { tab = .map } }
     }
 
-    private func header(_ net: KBNetworkStats) -> some View {
+    @ViewBuilder
+    private func content(_ net: KBNetworkStats) -> some View {
+        switch tab {
+        case .map:
+            KBMapWebView(service: service, mode: .vault, focus: mapFocus, onOpen: onNavigate)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .health:
+            ScrollView {
+                KBStatsView(stats: net, onOpen: onNavigate)
+                    .padding(28)
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func header(_ net: KBNetworkStats, loading: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Knowledge Base")
                         .font(DS.serif(22, weight: .semibold)).foregroundStyle(DS.Ink.p1)
                         .glossaryHelp(.knowledgeBase)
-                    Text("\(net.noteCount.formatted()) notes · \(net.linkCount.formatted()) links\(healthNote(net))")
+                    Text(loading ? "Loading notes…"
+                         : "\(net.noteCount.formatted()) notes · \(net.linkCount.formatted()) links\(healthNote(net))")
                         .font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
                 }
                 Spacer(minLength: 12)

@@ -53,7 +53,7 @@ struct EngineSettingsModelTests {
     @Test func vaultNotBootstrappedShowsHonestHealthLabel() {
         let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false),
                                     doctor: DoctorReport(severity: .green, errors: [], warnings: []), lastError: nil, bundledVersion: nil)
-        #expect(m.healthLabel == "Vault not set up")
+        #expect(m.healthLabel == "Scout folder not set up")
         #expect(!m.healthIsOK)
         #expect(m.messages.isEmpty)
     }
@@ -85,7 +85,7 @@ struct EngineSettingsModelTests {
     @Test func gatingStatesKeepTheirOwnLabelsOverADoctorError() {
         let err = "doctor output not understood: Traceback"
         let unset = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: err, bundledVersion: nil)
-        #expect(unset.healthLabel == "Vault not set up")
+        #expect(unset.healthLabel == "Scout folder not set up")
         #expect(!unset.messages.contains(err))
         let broken = EngineSettingsModel(state: .broken(install, reason: "engine pointer names a missing scoutctl: /s"),
                                          doctor: nil, lastError: err, bundledVersion: nil)
@@ -103,7 +103,7 @@ struct EngineSettingsModelTests {
         #expect(notInstalled.setupAction == .setUp && notInstalled.setupHelp != nil)
         let unset = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: nil, bundledVersion: "0.11.0")
         #expect(unset.setupAction == .setUp)
-        #expect(unset.setupHelp == "The engine is installed; finish setting up your vault.")
+        #expect(unset.setupHelp == "The engine is installed; finish setting up your Scout folder.")
         #expect(!unset.canUpdate)         // finish onboarding first, as the launch upgrade does
         for state in [EngineState.broken(install, reason: "r"), .broken(nil, reason: "r")] {
             let broken = EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil)
@@ -397,7 +397,7 @@ struct EngineSettingsModelTests {
         let warnings = m.findingGroups.first { $0.severity == .warning }?.items ?? []
         #expect(warnings.count == 2)
         let grouped = warnings[1]
-        #expect(grouped.summary == "34 vault scripts read the knowledge base directly, without Scout's privacy labels")
+        #expect(grouped.summary == "34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels")
         #expect(grouped.items == files)
         #expect(grouped.fix?.contains("scoutctl kb files") == true)
         #expect(m.findingCountsLabel == "2 warnings")

@@ -182,6 +182,7 @@ struct SectionView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plainHit)
+            .glossaryHelp(.archived)
         }
         .padding(.vertical, 4)
     }
@@ -200,6 +201,7 @@ struct SectionView: View {
                 .font(DS.sans(12, weight: .medium))
                 .tracking(0.05 * 12)   // letter-spacing: 0.04em → 0.48
                 .foregroundStyle(DS.Ink.p2)
+                .glossaryHelp(ifAny: Self.glossaryTerm(for: section))
             if showCount {
                 Text("\(section.tasks.count)")
                     .font(DS.mono(11, weight: .medium))
@@ -223,7 +225,14 @@ struct SectionView: View {
         !section.tasks.isEmpty && section.kind != .focus && section.kind != .digest && section.kind != .meetings
     }
 
+    /// The glossary word a section header explains on hover (audit #51).
+    nonisolated static func glossaryTerm(for section: ActionSection) -> GlossaryTerm? {
+        if BoardState.isParked(section) { return .parked }
+        return section.kind == .done ? .done : nil
+    }
+
     private var hint: String? {
+        if BoardState.isParked(section) { return "set aside" }
         switch section.kind {
         case .urgent:   return "act today"
         case .todo:     return "this week"
@@ -358,6 +367,7 @@ struct SectionView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plainHit)
+            .glossaryHelp(.done)
         }
     }
 

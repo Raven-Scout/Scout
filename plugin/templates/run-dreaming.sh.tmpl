@@ -385,6 +385,11 @@ if [ $EXIT_CODE -ne 0 ]; then
     fi
 fi
 
+# Record what changed in Scout's own brain (the changes map). Reads the vault's git log from
+# where the last scan stopped, so commits made while runs were skipped are still read;
+# idempotent, never fatal, and it writes no session content.
+"$SCOUTCTL_BIN" changes scan >> "$LOG_FILE" 2>&1 || true
+
 # Record how this run ended, out-of-band. This has to be a runner step, not a
 # session step: the failure being watched for is a run that never reaches its
 # phases (an expired login, a dead network), and nothing the session writes can

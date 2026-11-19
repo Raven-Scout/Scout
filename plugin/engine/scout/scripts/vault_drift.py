@@ -761,21 +761,39 @@ def privacy_drift(vault: Path) -> list[PrivacyDrift]:
     """
     found: list[PrivacyDrift] = []
     for runner in sorted(vault.glob("run-*.sh")):
-        text = _head_text(runner) if runner.is_file() else None
-        if text is not None and not _READER_EXPORT_RE.search(text):
-            rel = _rel(vault, runner)
+        if not runner.is_file():
+            continue
+        rel = _rel(vault, runner)
+        text = _head_text(runner)
+        # A runner Scout can't read could be launching claude any way it likes (#717 review): report it.
+        if (text is None and _unreadable(runner)) or (text is not None and not _READER_EXPORT_RE.search(text)):
             found.append(PrivacyDrift(rel, "runner-no-reader", _runner_message(rel)))
     scripts = vault / "scripts"
     if scripts.is_dir():
         for path in sorted(scripts.rglob("*")):
-            if not path.is_file() or path.is_symlink():
-                continue
-            if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
-                continue
-            rel = _rel(vault, path)
-            if snapshot_path(vault, rel).is_file():
-                continue  # engine-rendered: the engine keeps it compliant
-            text = _head_text(path)
-            if text is not None and _reads_kb_raw(path, text):
+            # One file that can't be looked at is its own finding, never the end of the scan.
+            try:
+                if not path.is_file() or path.is_symlink():
+                    continue
+                if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
+                    continue
+                rel = _rel(vault, path)
+                if snapshot_path(vault, rel).is_file():
+                    continue  # engine-rendered: the engine keeps it compliant
+                text = _head_text(path)
+                hit = _unreadable(path) if text is None else _reads_kb_raw(path, text)
+            except OSError:
+                rel, hit = _rel(vault, path), True
+            if hit:
                 found.append(PrivacyDrift(rel, "script-raw-kb-read", _script_message(rel)))
     return found
+
+
+def _unreadable(path: Path) -> bool:
+    """True when *path* can't be opened: Scout can't tell what it reads, so it is reported (a binary file,
+    which ``_head_text`` also skips, is not)."""
+    try:
+        with path.open("rb"):
+            return False
+    except OSError:
+        return True

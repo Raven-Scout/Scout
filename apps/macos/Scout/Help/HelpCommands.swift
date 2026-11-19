@@ -39,21 +39,23 @@ extension Notification.Name {
     static let scoutShowSettingsSection = Notification.Name("scout.showSettingsSection")
 }
 
-/// Scroll targets inside Settings.
-enum SettingsAnchor {
+/// Places inside the Settings window: each selects its `SettingsTab` and
+/// scrolls to its section.
+nonisolated enum SettingsAnchor {
     static let engine = "settings-engine"
     /// The panel's "Update available" opens here (audit #93).
     static let updates = "settings-updates"
+    /// General ▸ Your name, which Scout asks for while it's unset (audit #85).
+    static let authorship = "settings-authorship"
 }
 
 /// The actions Help ▸ … and Settings ▸ Engine ▸ Troubleshooting share, so the
 /// two places name and do the same things.
 enum HelpActions {
-    /// Which Settings section something last asked for, and when. A Settings view that appears soon
-    /// after scrolls there; one opened later (⌘, a minute on) opens at the top as usual. An open Settings
-    /// view scrolls on the notification instead. The request expires rather than being cleared by whichever
-    /// view sees it first, so the main window's Settings page can't swallow a new window's request:
-    /// every Settings view that appears within the window scrolls to the section.
+    /// Which Settings section something last asked for, and when. A Settings window that appears soon
+    /// after opens on that section's tab and scrolls there; one opened later (⌘, a minute on) opens as
+    /// usual. An open Settings window switches on the notification instead. The request expires rather
+    /// than being cleared by whichever view sees it first, so no reader can swallow another's request.
     private static var settingsRequest: (anchor: String, at: Date)?
     static let engineSettingsRequestWindow: TimeInterval = 2
 
@@ -62,9 +64,9 @@ enum HelpActions {
         showEngineSettings { openSettings() }
     }
 
-    /// Show Settings at its Engine section, however `open` shows it: the
-    /// Settings window, or the main window's Settings page. Every "Open
-    /// Settings ▸ Engine" button goes through here, so none opens at the top.
+    /// Show Settings at its Engine tab, however `open` opens the Settings
+    /// window. Every "Open Settings ▸ Engine" button goes through here, so
+    /// none opens on another tab.
     static func showEngineSettings(_ open: () -> Void, now: Date = Date()) {
         showSettings(at: SettingsAnchor.engine, open, now: now)
     }

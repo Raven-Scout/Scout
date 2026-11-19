@@ -58,13 +58,13 @@ struct SlotEditFormTests {
     func test_first_error_when_validation_fails() {
         var draft = SlotDraft(from: Self.sampleSlot)
         draft.firesAtLocal = "25:00"
-        #expect(draft.firstError != nil)
+        #expect(draft.firstError() != nil)
     }
 
     @Test("firstError returns nil when all fields valid")
     func test_first_error_when_all_clean() {
         let draft = SlotDraft(from: Self.sampleSlot)
-        #expect(draft.firstError == nil)
+        #expect(draft.firstError() == nil)
     }
 
     @Test("requiresTypeChangeConfirmation triggers when draft.type != live.type")

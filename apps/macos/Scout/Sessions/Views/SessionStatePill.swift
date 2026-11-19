@@ -13,6 +13,41 @@ enum SessionStateStyle {
         case .done:     return DS.Priority.done
         }
     }
+
+    /// A symbol per state, so the state reads without telling colours apart
+    /// (UI audit #35).
+    static func symbol(_ state: AgentSessionState) -> String {
+        switch state {
+        case .needsYou: return "exclamationmark.circle.fill"
+        case .running:  return "play.circle.fill"
+        case .waiting:  return "hourglass"
+        case .parked:   return "pause.circle"
+        case .stale:    return "moon.zzz"
+        case .done:     return "checkmark.circle"
+        }
+    }
+}
+
+/// A card's state in words with its symbol: "Needs you", "Running"…
+/// The coloured edge alone said it only to people who can tell the colours
+/// apart (UI audit #35).
+struct SessionStateLabel: View {
+    let state: AgentSessionState
+    var isOpen = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: SessionStateStyle.symbol(state))
+                .font(DS.sans(10.5, weight: .semibold))
+                .foregroundStyle(SessionStateStyle.color(state, isOpen: isOpen))
+                .accessibilityHidden(true)
+            Text(state.label)
+                .font(DS.sans(10.5, weight: .semibold))
+                .foregroundStyle(DS.Ink.p2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("State: \(state.label)")
+    }
 }
 
 struct SessionStateDot: View {

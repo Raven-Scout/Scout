@@ -44,7 +44,7 @@ struct ActionItemsDisplaySection: View {
                 SettingsRow(title: "Planned time", help: "List: the /scout-plan block, estimate and actual time on a card.") {
                     SettingsToggle(isOn: service.binding(\.fields.plan))
                 }
-                SettingsRow(title: "Done range", help: "Topics, from the next update: how far back the Done list goes.") {
+                SettingsRow(title: "Done range", help: "Topics: how far back the Done list goes. Clicking the range above the Done list changes it too.") {
                     Picker("", selection: service.binding(\.topics.doneRange)) {
                         ForEach(DoneRange.allCases, id: \.self) { Text($0.label.capitalizedFirst).tag($0) }
                     }

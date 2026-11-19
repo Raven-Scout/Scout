@@ -215,7 +215,7 @@ struct LeafSmokeTests {
     func proposalStatusPillRenders() {
         let statuses: [ProposalStatus] = [
             .proposed, .pending(autoApplyDate: "2026-06-20"), .approved,
-            .rejected, .applied(date: "2026-06-16"), .unknown("Weird"),
+            .rejected, .applied(date: "2026-06-16"), .closed("Superseded"), .unknown("Weird"),
         ]
         for status in statuses {
             ViewHost.render(

@@ -94,6 +94,15 @@ def _register_planning() -> None:
 _register_planning()
 
 
+def _register_wishlist() -> None:
+    from scout.wishlist.cli import app as wishlist_app
+
+    app.add_typer(wishlist_app, name="wishlist")
+
+
+_register_wishlist()
+
+
 hook_app = typer.Typer(help="PostToolUse / lifecycle hook entry points (invoked by Claude Code).")
 app.add_typer(hook_app, name="hook")
 
@@ -404,6 +413,193 @@ def cli_broker_drain(
         typer.echo(result.line())
     for reason in result.reasons:
         typer.echo(f"  failed: {reason}")
+
+
+changes_app = typer.Typer(
+    help="The changes map: what changed in Scout's own brain, and why.", invoke_without_command=True
+)
+engagement_app = typer.Typer(
+    help="Engagement signals for the changes map, and the owner's consent.", invoke_without_command=True
+)
+app.add_typer(changes_app, name="changes")
+app.add_typer(engagement_app, name="engagement")
+
+
+def _changes_document(command: str, since: str, build: Callable[..., dict], *, installed: bool = False) -> None:
+    """Shared tail of ``scoutctl changes --json`` / ``engagement --json``: resolve --since and the vault, print.
+
+    ``installed``: owner engagement is keyed to the installed vault (``scout.changes.vault``), never the cwd's."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.changes.vault import installed_vault
+    from scout.run_ledger import parse_since
+
+    now = _dt.now(UTC)
+    try:
+        cutoff = parse_since(since, now=now)
+    except ValueError as e:
+        typer.echo(f"scoutctl {command}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    vault = installed_vault(os.environ) if installed else _paths.data_dir()
+    if not vault.is_dir():
+        typer.echo(f"scoutctl {command}: vault directory missing", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(_json.dumps(build(vault, now, cutoff)))
+
+
+@changes_app.callback()
+def cli_changes(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+    limit: int = typer.Option(500, "--limit", min=1, max=5000, help="At most this many changes, newest first."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    from scout.changes.report import changes_report
+
+    _changes_document(
+        "changes", since, lambda vault, now, cutoff: changes_report(vault, now=now, since=cutoff, limit=limit)
+    )
+
+
+@engagement_app.callback()
+def cli_engagement(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    import os
+
+    from scout.changes.report import engagement_report
+    from scout.config import resolve_timezone
+
+    _changes_document(
+        "engagement",
+        since,
+        lambda vault, now, cutoff: engagement_report(
+            vault, os.environ, now=now, since=cutoff, tz=resolve_timezone(vault)
+        ),
+        installed=True,
+    )
+
+
+@changes_app.command("scan")
+def cli_changes_scan(
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="How far back: 2d, 48h, 90m, or an ISO time. Default: every commit since the last plain scan.",
+    ),
+    backfill: bool = typer.Option(False, "--backfill", help="Mark rows as backfilled; --since defaults to 2026-06-01."),
+) -> None:
+    """Read the vault's git log and record any new changes (idempotent).
+
+    With no --since, it reads from where the last plain scan stopped (its first time: the last 14 days), so a
+    gap between runs loses nothing. An explicit --since or --backfill reads that window and leaves the mark."""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths
+    from scout.changes.scan import scan, scan_new
+    from scout.run_ledger import parse_since
+
+    now = _dt.now(UTC)
+    if not (since or backfill):
+        typer.echo(f"{len(scan_new(paths.require_data_dir(), now=now))} new change(s)")
+        return
+    try:
+        cutoff = parse_since(since or "2026-06-01", now=now)
+    except ValueError as e:
+        typer.echo(f"scoutctl changes scan: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"{len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill))} new change(s)")
+
+
+@engagement_app.command("record")
+def cli_engagement_record(
+    kind: str = typer.Argument(
+        ..., help="session-reliance, app-edit, inline-comment, approval (owner only) or a run kind."
+    ),
+    surface: str = typer.Option(
+        ..., "--surface", help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app."
+    ),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="An id: a Slack message ts, a commit sha or a slug. Never content; a path outside the vault is refused.",
+    ),
+    sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
+    ts: str | None = typer.Option(None, "--ts", help="ISO time; default now."),
+) -> None:
+    """Append one engagement row. Owner kinds are refused (exit 2) in a scheduled run."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.models import OWNER_KINDS, Signal
+    from scout.changes.store import append_signal, is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    vault = installed_vault(os.environ)
+    try:
+        if ref is not None and ref.startswith(("/", "~")):
+            raise ValueError("--ref is an id (a Slack ts, a commit sha), not a path")
+        when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
+        signal = Signal.from_row(
+            {"ts": when.isoformat(), "kind": kind, "surface": surface, "ref": ref, "sentiment": sentiment}
+        )
+        if signal.kind in OWNER_KINDS and not is_owner_caller(os.environ, vault):
+            raise PermissionError(f"{signal.kind!r} is owner-sourced; a run may not write it")
+        if not vault.is_dir():
+            raise ValueError(f"vault directory missing: {vault}")
+        append_signal(signal, vault=vault, env=os.environ)
+    except (ValueError, PermissionError) as e:
+        typer.echo(f"scoutctl engagement record: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@engagement_app.command("consent")
+def cli_engagement_consent(
+    out_of_vault: str | None = typer.Option(
+        None, "--out-of-vault", help="yes or no: may Scout read activity outside the vault?"
+    ),
+    show: bool = typer.Option(False, "--show", help="Print yes, no or 'not asked'."),
+) -> None:
+    """The owner's out-of-vault answer. Only an owner session may set it."""
+    import os
+
+    from scout.changes import consent
+
+    if show:
+        answer = consent.out_of_vault_answer(os.environ)
+        typer.echo("not asked" if answer is None else "yes" if answer else "no")
+        return
+    if out_of_vault not in ("yes", "no"):
+        typer.echo("scoutctl engagement consent: pass --out-of-vault yes|no or --show", err=True)
+        raise typer.Exit(2)
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        if not is_owner_caller(os.environ, installed_vault(os.environ)):
+            raise PermissionError("the consent answer is the owner's; a scheduled run may not write it")
+        consent.set_out_of_vault(out_of_vault == "yes", os.environ)
+    except PermissionError as e:
+        typer.echo(f"scoutctl engagement consent: {e}", err=True)
+        raise typer.Exit(2) from None
 
 
 @hook_app.command("connector-log")
@@ -4025,7 +4221,62 @@ def _register_bootstrap() -> None:
             typer.echo(f"run health: {report.run_health.severity}")
             for f in report.run_health.findings:
                 typer.echo(f"run health {f.severity}: {f.id}: {f.summary}")
+        for entry in getattr(report, "warning_triage", None) or []:  # stand-in reports in tests lack it
+            if entry.reviewed_at:
+                typer.echo(f"reviewed {entry.reviewed_at}: {entry.id}: {entry.summary}")
         raise typer.Exit(code=report.exit_code)
+
+    @bootstrap_app.command("review-warning")
+    def cli_bootstrap_review_warning(
+        warning: str = typer.Argument(..., help="The warning's id, from `bootstrap doctor --json` warning_triage."),
+        fingerprint: str | None = typer.Option(
+            None, "--fingerprint", help="The fingerprint shown beside it: the review holds only while it matches."
+        ),
+        undo: bool = typer.Option(False, "--undo", help="Drop the review, so the warning shows again."),
+        json_out: bool = typer.Option(False, "--json", help='Emit {"id", "fingerprint", "reviewed_at"}.'),
+    ) -> None:
+        """Mark a doctor warning reviewed, or (--undo) not. The owner only, never a run (exit 2).
+
+        A reviewed warning leaves the doctor's warnings and severity until what it is about changes (its
+        files, a high-risk file's content, or its text). Kept in ~/.local/state/scout/scout-reviewed-warnings.json,
+        which runs can't write.
+        """
+        import json as _json
+        import os
+
+        from scout import doctor_triage
+        from scout import paths as _paths
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(os.environ)
+        if not why:
+            # Whatever its environment says (a run can `env -u SCOUT_MODE`): is a scheduled run the caller?
+            from scout.kb import live_run
+
+            src = live_run.commit_source_now(_paths.data_dir())
+            if src is not None and src.runs:
+                why = f"this command runs inside a scheduled run ({src.mode}, by {src.by})"
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may mark a warning reviewed; nothing was changed.", err=True)
+            raise typer.Exit(2)
+        if undo == (fingerprint is not None):
+            typer.echo("error: give --fingerprint to mark it reviewed, or --undo", err=True)
+            raise typer.Exit(1)
+        try:
+            record = doctor_triage.set_review(_paths.data_dir(), warning, None if undo else fingerprint)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        except OSError as e:
+            typer.echo(f"error: couldn't save the review: {e}", err=True)
+            raise typer.Exit(1) from e
+        if json_out:
+            out = {"id": warning, "fingerprint": None, "reviewed_at": None, **(record or {})}
+            typer.echo(_json.dumps(out))
+        elif record:
+            typer.echo(f"{warning}: reviewed {record['reviewed_at']}")
+        else:
+            typer.echo(f"{warning}: not reviewed")
 
     @bootstrap_app.command("migrate-legacy")
     def cli_bootstrap_migrate_legacy(
@@ -5364,22 +5615,33 @@ def _register_delegate() -> None:
         typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
 
     @delegate_app.command("status")
-    def cli_delegate_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
+    def cli_delegate_status(
+        as_json: bool = typer.Option(
+            False,
+            "--json",
+            help="Print the versioned status document the app reads (scout/delegate_status.py). Read-only; "
+            "a state it can't trust shows in it rather than failing.",
+        ),
+    ) -> None:
         """List the linked delegates: remote, last sync and the vault commit it mirrors."""
         import json as _json
+        import os as _os
 
         from scout import paths as _paths
         from scout.delegate_mirror import load_links
         from scout.repo_sync import RepoSyncError
 
+        if as_json:
+            from scout.delegate_status import report
+
+            typer.echo(_json.dumps(report(_paths.data_dir(), env=_os.environ), indent=2, sort_keys=True))
+            return
         try:
             links = load_links(_paths.data_dir())
         except RepoSyncError as e:
             _fail(e, as_json)
-        if as_json:
-            doc = {"ok": True, "links": [v.to_json() for _, v in sorted(links.items())]}
-            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
-            return
+        from scout.delegate_status import remote_text
+
         if not links:
             typer.echo("no delegate mirrors on this computer")
         for k, v in sorted(links.items()):
@@ -5387,7 +5649,7 @@ def _register_delegate() -> None:
             if v.stale_key_ids:
                 key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
-            typer.echo(f"{k}: {v.remote}; {key}; {synced}")
+            typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
 
     @delegate_app.command("key")
     def cli_delegate_key(
