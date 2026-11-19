@@ -71,6 +71,9 @@ final class AppState: ObservableObject {
     /// Settings ▸ Engine ▸ Run protection (card C9): `scoutctl protection status`, the privacy-check
     /// re-check and the owner's write-protection switch.
     let runProtection: RunProtectionService
+    /// Settings ▸ Agent copies (#550): `scoutctl delegate status --json`, and the CLI's own
+    /// Preview and Sync now for a delegate mirror. Nothing else about delegates runs from the app.
+    let delegateStatus: DelegateStatusService
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
@@ -175,6 +178,16 @@ final class AppState: ObservableObject {
 
         // Asks the engine health for scoutctl each time, so it follows the engine that's found; none while setup gates the tabs.
         let runProtection = RunProtectionService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
+        )
+        // Settings ▸ Agent copies (#550): the same engine, the same way.
+        let delegateStatus = DelegateStatusService(
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             scoutctl: { [weak engineHealth] in
@@ -370,6 +383,7 @@ final class AppState: ObservableObject {
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
         self.runProtection = runProtection
+        self.delegateStatus = delegateStatus
         self.runLedgerService = runLedger
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL

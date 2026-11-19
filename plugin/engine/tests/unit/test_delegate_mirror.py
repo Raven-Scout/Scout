@@ -703,7 +703,10 @@ def test_the_cli_reports_failures_and_the_other_commands(vault: Path, tmp_path: 
     r = runner.invoke(app, ["delegate", "sync", "grok-personal"])
     assert r.exit_code == 0 and "up to date" in r.stdout
     r = runner.invoke(app, ["delegate", "status", "--json"])
-    assert [x["id"] for x in json.loads(r.stdout)["links"]] == ["duet", "grok-personal"]
+    linked = {x["id"]: x for x in json.loads(r.stdout)["delegates"] if x["linked"]}
+    assert sorted(linked) == ["duet", "grok-personal"]
+    assert linked["grok-personal"]["last_result"] == "ok" and linked["grok-personal"]["counts"]["files"] > 0
+    assert dm.load_links(vault)["grok-personal"].last_counts == linked["grok-personal"]["counts"]
     shutil.rmtree(duet)
     git(vault, "add", "-A")  # link's .gitignore line: a change both mirrors carry
     git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "ignore state")
