@@ -8,6 +8,9 @@ struct TaskActionsView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
+    /// The key Done binds, and shows as its keycap: ⌘↵ on the keyboard-current
+    /// card while no comment editor has focus, else nil (UI audit #42).
+    var doneShortcut: KeyboardShortcut? = nil
     let onOp: @MainActor (WriteOp) async -> Void
 
     @State private var showingSnooze = false
@@ -27,7 +30,8 @@ struct TaskActionsView: View {
                     }
                     .disabled(!writesEnabled)
                 } else {
-                    EditorialActionButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
+                    EditorialActionButton("Done", systemImage: "checkmark", style: .primary,
+                                          keyboardShortcut: doneShortcut) {
                         Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
                     .disabled(!writesEnabled)
@@ -111,7 +115,9 @@ struct TaskActionsView: View {
         .keyWindowPointingHand()
     }
 
-    private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
+    /// Puts one action item on the clipboard in `format`. Also the card's
+    /// context menu Copy.
+    static func copy(_ task: ActionTask, format: ClaudeLauncher.CopyFormat, scoutDirectory: URL) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(
             ClaudeLauncher.prompt(
@@ -120,6 +126,10 @@ struct TaskActionsView: View {
             ),
             forType: .string
         )
+    }
+
+    private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
+        Self.copy(task, format: format, scoutDirectory: scoutDirectory)
         didCopy = true
         // Cancel the previous reset so a rapid second copy keeps its
         // confirmation for the full 1.5 s instead of being snapped back

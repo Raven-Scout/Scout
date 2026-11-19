@@ -18,6 +18,8 @@ import AppKit
 /// stays correct no matter where the window sits.
 struct KBLiveEditor: NSViewRepresentable {
     @Binding var text: String
+    /// ⌘F opens this text view's find bar (UI audit #77).
+    var find: KBFindController? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -31,6 +33,8 @@ struct KBLiveEditor: NSViewRepresentable {
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.allowsUndo = true
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.isAutomaticTextReplacementEnabled = false
@@ -40,6 +44,7 @@ struct KBLiveEditor: NSViewRepresentable {
         tv.typingAttributes = Coordinator.baseAttributes
         tv.string = text
         context.coordinator.textView = tv
+        find?.textView = tv
 
         // Restyle newly revealed text when the user scrolls.
         scroll.contentView.postsBoundsChangedNotifications = true
@@ -62,6 +67,7 @@ struct KBLiveEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = scroll.documentView as? NSTextView else { return }
+        find?.textView = tv
         if tv.string != text {
             context.coordinator.isProgrammatic = true
             let sel = tv.selectedRange()

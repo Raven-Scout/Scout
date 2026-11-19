@@ -4,7 +4,7 @@ import SwiftUI
 /// style, so arrow keys move between pages, VoiceOver reads each row as a
 /// selectable item with its badge, and the row highlight follows the system.
 /// (It was a hand-built stack of buttons with none of that, C7.) The Go menu
-/// (`GoCommands`) reaches the same pages, all but Health with ⌘1–⌘9.
+/// (`GoCommands`) reaches the same pages, ⌘1–⌘9 in this order (Settings: ⌘,).
 struct SidebarView: View {
     @Binding var selection: SidebarItem
     /// Count of agent sessions that need you — drives the badge on the

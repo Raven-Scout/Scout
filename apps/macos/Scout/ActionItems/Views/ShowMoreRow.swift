@@ -23,7 +23,7 @@ struct ShowMoreRow: View {
                         .font(DS.sans(11.5, weight: .medium))
                         .buttonStyle(.borderless)
                 }
-                Text("\(hidden) not shown · ⌘F searches all of them")
+                Text("\(hidden) not shown · \(ShortcutLabel.text(AppShortcut.find)) searches all of them")
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)

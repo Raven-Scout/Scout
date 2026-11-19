@@ -17,6 +17,8 @@ struct KBReaderWebView: View {
     /// Resolves a wikilink target to a note path, or nil when there's no note.
     let resolve: (String) -> String?
     var onRequestSave: () -> Void = {}
+    /// ⌘F's find bar searches this page (UI audit #77).
+    var find: KBFindController? = nil
 
     @Environment(\.kbWikilinkHandler) private var kbWikilinkHandler
     @Environment(\.kbTagHandler) private var kbTagHandler
@@ -41,6 +43,7 @@ struct KBReaderWebView: View {
         KBWebViewHost(bridge: bridge)
             .accessibilityLabel("Note")
             .onAppear {
+                find?.webView = bridge.webView
                 wire()
                 // A new page renders on `ready`; one already up needs the note now.
                 if bridge.isReady { render(reset: true) }

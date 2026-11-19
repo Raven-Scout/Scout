@@ -390,7 +390,7 @@ struct SlotEditForm: View {
                 Text("Save")
             }
             .buttonStyle(.dsPrimary)
-            .keyboardShortcut(.return, modifiers: [.command])
+            .keyboardShortcut(AppShortcut.commit)
             .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
         }
         .padding(.top, 8)
