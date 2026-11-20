@@ -658,6 +658,7 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
     if demarked != text:
         hits += [(p, spans[a][0], spans[b][1]) for p, a, b in _hits(demarked, terms)]
     # And line by line, so markup a join swallowed (a comment that does close, lines later) can't hide one.
+    # It also flags a name inside a closed comment, which doesn't render: that fails closed, on purpose.
     per_line = "\n".join(_clean_line(ln) for ln in text.split("\n"))
     if per_line not in (text, demarked):
         hits += _hits(per_line, terms)

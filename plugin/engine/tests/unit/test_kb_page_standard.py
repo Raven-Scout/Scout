@@ -103,7 +103,9 @@ def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "`$SCOUT_MODE` is `dreaming-nightly`" in step
     assert "`scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit" in step
-    assert "with `nightly KB pass — <page>` as the commit summary" in step
+    # Every commit of the step carries the summary --next printed: the resume check reads it.
+    assert "with the printed `commit:` summary on every commit, the 5.2 moves included" in step
+    assert "`commit: nightly KB pass — <page>`, is the summary for every commit of this step" in step
 
 
 def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None:

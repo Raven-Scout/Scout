@@ -563,6 +563,18 @@ def _shared_rebuild_unsafe(vault: Path, folder: _Folder, policy: Policy, front: 
 REBUILD_SUBJECT = "nightly KB pass"
 
 
+def rebuild_subject(front: str) -> str:
+    """The commit summary ``kb structure --next`` prints for a page's nightly pass, for every commit of it."""
+    return f"{REBUILD_SUBJECT} — {front}"
+
+
+def _is_rebuild_subject(subject: str, front: str) -> bool:
+    """Whether ``subject`` names this page's nightly pass, in any case, with any prefix (``dreaming: ``)
+    and any dash. Tied to ``front``, so another page's pass can't vouch for files here."""
+    pattern = re.escape(REBUILD_SUBJECT.casefold()) + r"\s*[—–-]+\s*" + re.escape(front.casefold()) + r"(?![\w./-])"
+    return re.search(pattern, subject.casefold()) is not None
+
+
 def _git_out(vault: Path, *args: str) -> str | None:
     try:
         proc = subprocess.run(["git", *args], cwd=vault, capture_output=True)
@@ -578,8 +590,10 @@ def _rebuild_own_files(vault: Path, folder: _Folder, day: dt.date) -> set[str]:
     date, not the date in its name, which a run could write), and only a copy added within
     :data:`RESUME_DAYS` and still tracked counts; an uncommitted or untracked copy opens
     none. A file counts when a commit in the window added it (a move in counts as an add)
-    and that commit is the rebuild's: its subject starts with ``nightly KB pass``, or it
-    also changed the front page."""
+    and that commit is the rebuild's: its subject names this page's pass
+    (:func:`rebuild_subject`, matched by :func:`_is_rebuild_subject`). A move in (git's
+    ``R``) isn't an add: the file was the vault's before. Changing the front page doesn't
+    make a commit the rebuild's either: an owner's commit may add a note and edit the page."""
     front = f"{folder.rel}/{folder.name}.md"
     archive = vault / folder.rel / "archive"
     copy = re.compile(re.escape(folder.name) + r"-\d{4}-\d{2}-\d{2}-pre-restructure\.md")
@@ -599,7 +613,8 @@ def _rebuild_own_files(vault: Path, folder: _Folder, day: dt.date) -> set[str]:
         return set()
     since = min(opened)
     out = _git_out(
-        vault, "log", "--relative", "--no-renames", "--name-status", "--format=%x01%cI%x02%s",
+        # --full-diff: a move in from another folder must show as git's R, which needs both paths in the diff.
+        vault, "log", "--relative", "--full-diff", "--find-renames", "--name-status", "--format=%x01%cI%x02%s",
         f"--since={since.isoformat()}", "--", folder.rel,
     )  # fmt: skip
     own: set[str] = set()
@@ -608,10 +623,10 @@ def _rebuild_own_files(vault: Path, folder: _Folder, day: dt.date) -> set[str]:
         stamp, _, subject = head.partition("\x02")
         if dt.datetime.fromisoformat(stamp) < since:
             continue
+        if not _is_rebuild_subject(subject, front):
+            continue
         changes = [line.split("\t") for line in body.splitlines() if "\t" in line]
-        added = {parts[-1] for parts in changes if parts[0].startswith("A")}
-        if subject.startswith(REBUILD_SUBJECT) or any(parts[-1] == front for parts in changes):
-            own |= added
+        own |= {parts[-1] for parts in changes if parts[0].startswith("A") and parts[-1].startswith(folder.rel + "/")}
     return own
 
 
@@ -896,7 +911,8 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
             )
         if target is None:
             return Output(data=None, lines=[""], labels=[])
-        data: dict[str, Any] = {"project": target["project"], "path": target["path"]}
+        commit = rebuild_subject(target["path"])
+        data: dict[str, Any] = {"project": target["project"], "path": target["path"], "commit": commit}
         picked = [label for label in labels if label["path"] == target["path"]]
         lines = [target["project"]]
         if target["trim_only"]:
@@ -904,6 +920,7 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
             data |= {"mode": "trim", "move_to": [d.path for d in move_to]}
             picked += [{"path": d.path, "visibility": d.visibility} for d in move_to]
             lines += ["trim-only", *(f"move-to: {d.path}" for d in move_to)]
+        lines.append(f"commit: {commit}")  # last, so `trim-only` stays the second line
         return Output(data=data, lines=lines, labels=picked)
     ok = sum(1 for r in rows if r["conforms"])
     lines = [f"{ok}/{len(rows)} project folders meet the KB page standard", ""]
