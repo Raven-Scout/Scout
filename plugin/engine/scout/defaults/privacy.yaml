@@ -12,8 +12,11 @@ local_only:
     - ".mcp.json"
     - ".env*"
     - ".scout-state/**"           # per-machine runtime state, except sync_allow
-  default: []        # no user content by default (D6). The overlay adds paths with
+    - ".scout-inbox/agents/**"    # what the owner's agents proposed (#550): untrusted, never synced
+  default:           # no user content by default (D6). The overlay adds paths with
                      # `local_only_add:`; the link step adds trading/brokerage paths there.
+    - ".scout-inbox/agents/**"    # also here (it is in `always` too): `default` is what Agnes is told and
+                                  # enforces for every clone (host_local_only_paths); `always` keeps it plumbing
   sync_allow:        # carve-outs from .scout-state/
     - ".scout-state/schedule.yaml"
     - ".scout-state/id-map.json"

@@ -1378,7 +1378,97 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
-def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+def delegate_state_unchecked(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the delegate state can't be checked here: a scheduled run (#517's rule) that can't read the state's
+    signing key (the run's sandbox denies ~/.scout-secrets). Such a check would report every signed state as
+    forged on every run; the owner's terminal, the doctor and the app check it instead."""
+    from scout.delegate_mirror import STATE_KEY, secrets_dir
+    from scout.kb.reader import is_scheduled
+
+    if not is_scheduled(os.environ if env is None else env):
+        return False
+    try:
+        (secrets_dir() / STATE_KEY).read_bytes()
+    except FileNotFoundError:
+        return False  # gone, not hidden: that is reported, wherever the check runs
+    except OSError:
+        return True  # denied (the run's sandbox): this place can't check it
+    return False
+
+
+def delegate_inbox_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
+    """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, or whose copies
+    folder holds files no pull took (#550 V4b1). Nothing for a vault with no inbox, nor in a run that can't read
+    the state's key (:func:`delegate_state_unchecked`)."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists() or delegate_state_unchecked(env):
+        return []
+    from scout.delegate_inbox_sync import summary
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        inboxes = summary(vault, now=now)
+    except RepoSyncError as e:
+        return [
+            Finding(
+                id="delegate.inbox_state",
+                severity="yellow",
+                since=None,
+                summary=f"The delegate inbox state can't be trusted ({e.code}), so no agent's proposals are taken "
+                "or applied",
+                fix="Check it from a terminal with: scoutctl bootstrap doctor. Don't move or delete "
+                ".scout-state/delegate-inbox/: its signed records are what inbox revert needs, and if the state key "
+                "(~/.scout-secrets/delegate-mirrors/state.key) went missing, restore it from a backup",
+                source="state",
+            )
+        ]
+    now = now or datetime.now(UTC)
+    found = []
+    for key, box in inboxes.items():
+        if box["last_error"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_failed",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: the last pull failed ({box['last_error']}); its agent's "
+                    "proposals wait",
+                    fix=f"See why with: scoutctl inbox pull {key}",
+                    source="state",
+                )
+            )
+            continue
+        pulled = _parse_ts(box["last_pull"]) or _parse_ts(box["linked_at"])
+        if pulled is not None and now - pulled > timedelta(days=1):
+            found.append(
+                Finding(
+                    id="delegate.inbox_stalled",
+                    severity="yellow",
+                    since=pulled,
+                    summary=f"Delegate inbox {key} hasn't been pulled for over a day; is the schedule tick running?",
+                    fix="Pull now with: scoutctl inbox sync (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+        if box["untaken"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_untaken",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: {box['untaken']} file(s) in .scout-inbox/agents/{key}/ were "
+                    "never taken by a pull (something else put them there); they are ignored",
+                    fix=f"Look at them, then delete them: .scout-inbox/agents/{key}/",
+                    source="state",
+                )
+            )
+    return found
+
+
+def delegate_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
     """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
     (#550 V2c): its agent reads an older copy until one works.
 
@@ -1386,8 +1476,8 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
     this is where it shows. "No sync tried" covers what records nothing itself: a tick
     that stopped, a sync that couldn't start, or one that died before it began.
     """
-    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
-        return []
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists() or delegate_state_unchecked(env):
+        return []  # nothing to check, or a run that can't read the signing key: checked outside runs
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError
 
@@ -2177,7 +2267,7 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
     config = config_findings(vault)
-    delegates = delegate_findings(vault)
+    delegates = delegate_findings(vault) + delegate_inbox_findings(vault)
     return build_report(
         found + sched + lanes + updates + engine + config + delegates,
         now=now,

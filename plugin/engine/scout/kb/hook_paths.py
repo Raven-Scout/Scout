@@ -98,6 +98,9 @@ SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
 SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
+# Copies of what the owner's agents proposed (#550 V4): untrusted text, which never reaches a run (spec §7.1b).
+AGENT_TEXT = "the agents' inbox copies"
+AGENT_TEXT_DIR = (".scout-inbox", "agents")
 TITLE_REWRITES = "Scout's title-rewrite records"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
@@ -369,6 +372,7 @@ def protected_specs(
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
         add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
+        add(vault.joinpath(*AGENT_TEXT_DIR), AGENT_TEXT, tree=True)
         # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
         add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
         engine = _precommit_engine(vault, hooks)
@@ -596,6 +600,29 @@ def secret_read(target: str | Path, env: Mapping[str, str] | None = None) -> str
             if _under(key, root) and key[len(root) :].lstrip("/") not in readable:
                 return SECRETS
     return None
+
+
+def _agent_text_roots(vault: Path, env: Mapping[str, str]) -> set[str]:
+    root = vault.joinpath(*AGENT_TEXT_DIR)
+    return {canon(root, env), spelled(root, env)}
+
+
+def agent_text_read(target: str | Path, vault: Path, env: Mapping[str, str] | None = None) -> str | None:
+    """:data:`AGENT_TEXT` when reading ``target`` reads a copy of what an agent proposed (or its ledger), else
+    None. Both spellings are judged, so a link to the copies counts too."""
+    env = os.environ if env is None else env
+    roots = _agent_text_roots(vault, env)
+    for key in (canon(target, env), spelled(target, env)):
+        if any(_under(key, root) for root in roots):
+            return AGENT_TEXT
+    return None
+
+
+def holds_agent_text(target: str | Path, vault: Path, env: Mapping[str, str] | None = None) -> bool:
+    """Whether a folder searched from ``target`` takes in the agents' inbox copies (the vault root does)."""
+    env = os.environ if env is None else env
+    keys = {canon(target, env), spelled(target, env)}
+    return any(_under(root, key) for root in _agent_text_roots(vault, env) for key in keys)
 
 
 def holds_secrets(target: str | Path, env: Mapping[str, str] | None = None) -> bool:
