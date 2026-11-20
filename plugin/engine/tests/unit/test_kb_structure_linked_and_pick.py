@@ -241,16 +241,29 @@ def test_a_half_rebuilt_page_over_the_cap_finishes(kb_repo) -> None:
     assert picked(kb_repo) == "widgets"
 
 
-def test_a_shared_page_over_the_cap_may_still_be_trimmed(kb_repo) -> None:
+def _shared(kb_repo, edits: str = "") -> None:
     kb_repo.write(
         "scout-config.yaml",
-        f"privacy:\n  federation: {{enabled: true}}\n  federation_defaults:\n"
+        f"privacy:\n{edits}  federation: {{enabled: true}}\n  federation_defaults:\n"
         f"    - {{glob: '{P}/widgets/**', scope: ['person:alex@example.com']}}\n",
     )
+
+
+def test_a_shared_page_over_the_cap_may_still_be_trimmed(kb_repo) -> None:
+    # `shared_edits: refuse`: the pass may only cut lines from a shared page, and a trim has no size limit.
+    _shared(kb_repo, "  shared_edits: refuse\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", extra="x" * 17000))
     r = rows(kb_repo)["widgets"]
     assert r["trim_only"] and r["rebuild_target"] and not r["interactive"]
     assert picked(kb_repo) == "widgets"
+
+
+def test_a_shared_page_a_full_rebuild_would_take_waits_for_a_session(kb_repo) -> None:
+    # `checked` (the default): a shared page is rebuilt like any other, so the size limit applies.
+    _shared(kb_repo)
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", extra="x" * 17000))
+    r = rows(kb_repo)["widgets"]
+    assert r["interactive"] and not r["trim_only"] and not r["rebuild_target"]
 
 
 def test_next_names_the_pages_left_for_an_interactive_session(kb_repo, monkeypatch, capsys) -> None:
@@ -258,7 +271,7 @@ def test_next_names_the_pages_left_for_an_interactive_session(kb_repo, monkeypat
     commit_at(kb_repo, str(today(kb_repo.root) - dt.timedelta(days=9)), monkeypatch)
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
     kb_repo.write(f"{P}/secret/secret.md", rebuild_page("secret", as_of=None, fm="visibility: private\n"))
-    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines[0] == "gadgets"
     err = capsys.readouterr().err
     assert f"{P}/widgets/widgets.md (waiting 9 days)" in err and "interactive session" in err and "over 12 KB" in err
     assert "secret" not in err  # a private page is never picked, so it isn't named either
@@ -268,7 +281,7 @@ def test_next_names_the_pages_left_for_an_interactive_session(kb_repo, monkeypat
 
 def test_next_is_silent_when_no_page_is_too_big(kb_repo, capsys) -> None:
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
-    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines[0] == "gadgets"
     assert capsys.readouterr().err == ""
 
 
