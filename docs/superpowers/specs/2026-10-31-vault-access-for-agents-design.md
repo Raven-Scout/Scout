@@ -1168,6 +1168,81 @@ were added, and V4b1 builds them in:
   way out the local lease file is dropped first, then Agnes is asked to
   release it.
 
+#### V4b2 plan: the owner's review (2026-11-19, for the coordinator's review)
+
+**Reading what waits.** `scoutctl inbox review [--json]` is the owner's only
+(`headless_gate`). It lists, per delegate:
+
+- held `add-comment` ops;
+- observations;
+- `limited` ops still within a week.
+
+Each item shows its ULID, kind, op, `[#TAG]` and date, and its text with every
+character outside printable ASCII and ordinary Unicode letters shown as
+`\u{…}`. The schema already refuses hidden characters, so this is a second
+look, not the gate. Each copy is read with `_read_copy` and must match the
+signed record's HMAC; a copy that doesn't is never listed.
+
+**`inbox review accept <ULID>`.** It asks to type the ULID at a terminal, or
+takes `--confirm`, and re-runs every text rule (`parse` on the copy's exact
+bytes) before writing anything.
+
+- **A comment** goes through `add_comment` with author `delegate-<id>`. It
+  takes apply's checks: today's file, seen in the mirror, still visible, a
+  plain and committed file, the session lock and the inbox lock. It gets one
+  commit, `inbox: add-comment [#TAG] from delegate-<id> (<ULID>), accepted by
+  the owner`, and the outcome `accepted` with the block's before and after,
+  so `inbox revert` works for it.
+- **An observation** becomes
+  `knowledge-base/from-agents/<id>/<ULID>.md`, written with `safe_write`. Its
+  frontmatter comes from `yaml.safe_dump`, so no field can break out of it:
+  - `title` (from `about`, or "Observation from <id>");
+  - `source: delegate:<id>`;
+  - `visibility: private`;
+  - `accepted_at`;
+  - `agent_source` (the observation's own `source`, as a plain string).
+
+  The body is the text. It is one commit naming the delegate and the owner,
+  and the outcome is `accepted`. `inbox revert` removes the note in a commit,
+  only if it is unchanged.
+- **After accepting, runs will read it.** That is the one way agent text
+  reaches a run, and only because the owner reviewed it.
+
+**`inbox review reject <ULID>`** records `rejected` by ULID and removes the
+local copy.
+
+**`inbox review promote <ULID> [--to <id>,…]`** applies to an accepted
+observation only. It re-reads the note, re-runs the text rules on its body,
+shows it the same way, and asks again.
+
+- Promoting rewrites the provenance: `source: delegate:<id>` becomes
+  `promoted_from: delegate:<id>`, and visibility becomes `normal`.
+- With `--to`, it also writes `delegate_scope: [ids]`. `--to author` names
+  the author.
+- It is one commit, and the signed state records `promoted` (to whom, when).
+
+**The classifier**, in `kb/privacy.py`:
+
+- `NoteFacts` gains `delegate_source` (a `source:` value starting
+  `delegate:`; unreadable frontmatter counts, failing closed, as
+  `holds_shared` does) and `delegate_scope`.
+- `visible_to` hides a `delegate_source` note from every delegate reader, the
+  author included.
+- For a note with a `delegate_scope`, it shows the note only to the delegates
+  named.
+- `CLASSIFIER_VERSION` and `INDEX_VERSION` are bumped (5).
+- The mirror follows from `visible_to`, the scanner redacts lines naming a
+  hidden note, and `lint_privacy` learns `delegate_scope`.
+
+**Health and app.** `delegate.inbox_waiting` (yellow) means items have waited
+over a week, and the fix is `scoutctl inbox review`. The app's list is V4b3.
+
+**What isn't in V4b2.**
+
+- `dismiss`, `rename-topic` and burst routing to review: the schema still
+  refuses those ops (V4c).
+- `kb_note_proposal`, which is V4c.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
