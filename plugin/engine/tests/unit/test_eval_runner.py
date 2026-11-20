@@ -280,6 +280,7 @@ def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tm
         "Bash(python *)",
         "Bash(git *)",
         "Bash(gh *)",
+        "Bash(scripts/*)",  # the brain's `scripts/scout-tz.sh date …`: a `TZ="$(…)"` form no rule can admit
         "mcp__claude_ai_Slack",
     ):
         assert needed in tools

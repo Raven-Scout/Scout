@@ -28,9 +28,19 @@
 # note on stderr, so a bad edit can never make a run timezone-blind.
 #
 # Usage:
-#   TZ=$(scripts/scout-tz.sh) date '+%H:%M %Z'      # the intended call site
+#   scripts/scout-tz.sh date '+%H:%M %Z'             # the intended call site: `date` in the resolved zone
 #   scripts/scout-tz.sh                              # prints the resolved tz name
 #   scripts/scout-tz.sh --self-test                  # assertions, exit 0 = pass
+#
+# The `date` form is what the brain files prescribe. `TZ="$(scripts/scout-tz.sh)" date …`
+# does the same, but a command substitution is one call an allowlisted session
+# (Claude Code's dontAsk mode) can never be granted, and a run that sees one call
+# denied can wrongly stop. It only ever runs `date` with ONE `+FORMAT` operand:
+# date's other options read files (GNU `-f FILE` echoes every line, `-r FILE`,
+# BSD `-j -f`) or set the clock (`-s`), and an allowlist admits every
+# `scripts/*` call. Anything else, including any argument but these, exits 2
+# with nothing on stdout, so a typo or a caller that expects an older script
+# fails loudly instead of reading a zone name as a date.
 #
 # Connector-free, deterministic, no network. Safe to call from any run.
 
@@ -213,6 +223,11 @@ self_test() {
 
 case "${1:-}" in
     --self-test) self_test ;;
-    -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}" ;;
-    *)           resolve_tz ;;
+    -h|--help)   sed -n '2,45p' "${BASH_SOURCE[0]}" ;;
+    date)
+        [[ $# -eq 2 && "$2" == +* ]] || { echo "usage: scout-tz.sh date '+FORMAT'" >&2; exit 2; }
+        TZ="$(resolve_tz)" exec date "$2" ;;
+    *)
+        [[ $# -eq 0 ]] || { echo "usage: scout-tz.sh [date '+FORMAT' | --self-test | --help]" >&2; exit 2; }
+        resolve_tz ;;
 esac

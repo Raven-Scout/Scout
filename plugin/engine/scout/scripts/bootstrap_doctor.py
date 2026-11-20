@@ -421,6 +421,37 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+_YEAR_RE = re.compile(r"\d{4}")
+
+
+def _check_scout_tz(*, vault: Path) -> list[str]:
+    """The brain dates through ``scripts/scout-tz.sh date '+FORMAT'``; an older copy prints the zone name for it.
+
+    That exits 0, so every weekday and filename date a run writes would come out as a zone name and nothing would
+    say so. An upgrade that kept an edited copy, or a vault restored from an old backup, leaves one.
+    """
+    script = vault / "scripts" / "scout-tz.sh"
+    if not script.is_file():
+        return []  # a missing script is reported by the cat-1 file check
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault)}
+    try:
+        out = subprocess.run(
+            ["bash", str(script), "date", "+%Y"],
+            capture_output=True, text=True, timeout=10, env=env, stdin=subprocess.DEVNULL, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"scripts/scout-tz.sh date +%Y could not run ({e}): runs can't date anything in your timezone."]
+    printed = out.stdout.strip()
+    if out.returncode == 0 and _YEAR_RE.fullmatch(printed):
+        return []
+    shown = printed[:40] or f"nothing, exit {out.returncode}"
+    return [
+        f"scripts/scout-tz.sh date +%Y printed {shown!r}, not a year: it is older than this plugin or edited, so "
+        "the dates and weekdays runs write come out wrong. Run /scout-update (`scoutctl bootstrap drift` shows a "
+        "kept edit)."
+    ]
+
+
 def _scheduled_runtimes(*, vault: Path) -> tuple[dict[str, list[str]], list[str], list[str]]:
     """The agent runtimes the schedule uses, each with its slot keys, plus warnings and notes (spec 2026-11-13 §8.9).
 
@@ -1439,6 +1470,7 @@ def run_doctor(
     warnings.extend(_check_action_items_size(vault=vault))
     warnings.extend(_check_backlog_lint(vault=vault))
     warnings.extend(_check_action_items_conflicts(vault=vault))
+    warnings.extend(_check_scout_tz(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:
