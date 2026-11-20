@@ -53,7 +53,9 @@ REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration",
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
 MODE_CHECKS = frozenset({"size", "mega-line", "diary"}) | REPORT_UNTIL_NAMED
 # Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
-PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+PRIVACY_BLOCKING = frozenset(
+    {"private-link", "private-mention", "privacy-widening", "privacy-check-failed", "delegate-source-private"}
+)
 # Warnings: never block, whatever the mode.
 WARNING_CHECKS = frozenset(
     {

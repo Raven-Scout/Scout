@@ -30,8 +30,9 @@ Text that can reach the vault can't forge a line there, hide one, or speak
 for the owner. No text field holds a control, format, surrogate, private-use,
 unassigned or invisible character (``text`` alone may keep a newline and a
 tab). None holds markup: ``[[`` or ``[#`` (a proposal can neither link a note
-nor name a task), ``<!--``, ``-->``, ``![``, ``](``, or a task checkbox at a
-line's start. And none holds the owner-directive marker ``//==<<`` or
+nor name a task), ``<!--``, ``-->``, ``![``, ``](``, ``%%`` (an Obsidian
+comment, or a ``%%privacy:allow%%`` marker), ``[from-agent`` (Scout's own
+mark, any case), or a task checkbox at a line's start. And none holds the owner-directive marker ``//==<<`` or
 ``>>==//``, even with whitespace inside it. No key may repeat, and no float
 may be NaN or infinite. Every pattern is anchored with ``\\Z``, so a trailing
 newline never passes. ``made_at`` is the agent's claim, shown and never used
@@ -84,7 +85,8 @@ _INVISIBLE = frozenset(
 # Markup that means something to Scout or to a renderer: a wikilink, a task tag, an HTML comment, an image or a
 # link. A task checkbox at a line's start, and the owner-directive marker (//==<< … >>==//, matched with all
 # whitespace removed, as the phases sweep for it), are refused too.
-_MARKUP_RE = re.compile(r"\[\[|\[#|<!--|-->|!\[|\]\(")
+# %% opens an Obsidian comment (hidden text) and a %%privacy:allow%% marker; [from-agent is Scout's own mark.
+_MARKUP_RE = re.compile(r"\[\[|\[#|<!--|-->|!\[|\]\(|%%|\[from-agent", re.IGNORECASE)
 _CHECKBOX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[[ xX]\]", re.MULTILINE)
 _DIRECTIVES = ("//==<<", ">>==//")
 FUTURE_SLACK = dt.timedelta(minutes=10)  # a ULID's time may run this far ahead of the laptop's clock
@@ -154,7 +156,9 @@ def _text(value: Any, field: str, limit: int, *, one_line: bool, minimum: int = 
     if _hidden(value, keep="" if one_line else "\n\t"):
         raise ProposalError("bad_field", f"{field} holds a control, format, invisible or unassigned character")
     if _MARKUP_RE.search(value) or _CHECKBOX_RE.search(value):
-        raise ProposalError("bad_field", f"{field} holds markup: [[, [#, <!--, -->, ![, ]( or a task checkbox")
+        raise ProposalError(
+            "bad_field", f"{field} holds markup: [[, [#, <!--, -->, ![, ](, %%, [from-agent or a task checkbox"
+        )
     squeezed = re.sub(r"\s+", "", value)
     if any(d in squeezed for d in _DIRECTIVES):
         raise ProposalError("bad_field", f"{field} holds the owner-directive marker")

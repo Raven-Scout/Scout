@@ -357,6 +357,8 @@ def summary(vault: Path, *, now: dt.datetime | None = None) -> dict[str, dict[st
             outcomes[key] = outcomes.get(key, 0) + 1
         waiting = [u for u in taken if applied.get(u, {}).get("outcome") in WAITING]
         oldest = min((str(taken[u].get("at", "")) for u in waiting), default=None)
+        review = [u for u in taken if applied.get(u, {}).get("outcome") in (None, "held")]  # inbox review's
+        oldest_review = min((str(taken[u].get("at", "")) for u in review), default=None)
         out[delegate] = {
             "linked_at": link.linked_at,
             "last_pull": link.last_pull,
@@ -364,6 +366,8 @@ def summary(vault: Path, *, now: dt.datetime | None = None) -> dict[str, dict[st
             "outcomes": dict(sorted(outcomes.items())),
             "waiting": len(waiting),
             "oldest_waiting": oldest,
+            "review": len(review),
+            "oldest_review": oldest_review,
             "untaken": _untaken(vault, delegate, taken),
         }
     return out

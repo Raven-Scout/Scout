@@ -1049,7 +1049,10 @@ def _frontmatter_parses(text: str) -> bool:
 
 
 def _same_label(a: Label, b: Label) -> bool:
-    return (a.visibility, a.local_only, a.shared_source) == (b.visibility, b.local_only, b.shared_source)
+    def key(label: Label) -> tuple[object, ...]:
+        return (label.visibility, label.local_only, label.shared_source, label.delegate_source, label.delegate_scope)
+
+    return key(a) == key(b)
 
 
 def _scoped(value: Any, mirrored: Sequence[str]) -> Any:

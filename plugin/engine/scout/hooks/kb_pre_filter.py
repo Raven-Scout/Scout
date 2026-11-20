@@ -95,7 +95,7 @@ SKIP_PATH_FRAGMENTS: tuple[str, ...] = ("/ontology/", "archive", "/personal/")
 # own lifecycle (a `status:`, a creation `date:`), not a freshness budget, and
 # together they buried the real KB documents in the NO DATE list (#201).
 SKIP_KB_SUBDIRS: frozenset[str] = frozenset(
-    {"scout-mistake-audit", "research-queue", "session-log", "kg-audits", "review-queue"}
+    {"scout-mistake-audit", "research-queue", "session-log", "kg-audits", "review-queue", "from-agents"}
 )
 
 # The vault's content roots, walked in this order. meetings/ holds the home

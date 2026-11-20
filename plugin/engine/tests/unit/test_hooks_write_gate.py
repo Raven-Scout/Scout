@@ -1144,3 +1144,20 @@ def test_a_run_cant_write_the_agents_inbox_copies(vault: Path) -> None:
     rel = ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"
     assert "agents' inbox copies" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
     assert "agents' inbox copies" in _denied(_bash(vault, f"echo x > {rel}"))
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "knowledge-base/from-agents/grok-personal/01JD5Z0000000000000000ABCD.md",
+        "knowledge-base/from-agents/grok-personal/new.md",
+        "knowledge-base/from-agents/x.md",
+    ],
+)
+def test_a_run_cant_create_or_edit_an_agents_accepted_note(vault: Path, rel: str) -> None:
+    """#550 V4b2: only `inbox review` writes there, so promote publishes what the owner accepted."""
+    assert "agents' accepted notes" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
+    assert "agents' accepted notes" in _denied(_decision(vault, "Edit", _input("Edit", str(vault / rel))))
+    assert "agents' accepted notes" in _denied(_bash(vault, f"echo x >> {rel}"))
+    assert "agents' accepted notes" in _denied(_bash(vault, f"mv knowledge-base/topics/a.md {rel}"))
+    assert "agents' accepted notes" in _denied(_bash(vault, f"cp /tmp/x.md {rel}"))

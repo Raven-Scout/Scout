@@ -101,6 +101,10 @@ DELEGATE_STATE = "Scout's delegate state"
 # Copies of what the owner's agents proposed (#550 V4): untrusted text, which never reaches a run (spec §7.1b).
 AGENT_TEXT = "the agents' inbox copies"
 AGENT_TEXT_DIR = (".scout-inbox", "agents")
+# Agents' observations the owner accepted (#550 V4b2): only `scoutctl inbox review` writes them, so what promote
+# publishes is what the owner accepted. A run reads them (marked [from-agent]) but never creates, edits or moves one.
+AGENT_NOTES = "agents' accepted notes"
+AGENT_NOTES_DIR = ("knowledge-base", "from-agents")
 TITLE_REWRITES = "Scout's title-rewrite records"
 TOO_MANY = "too many paths to check"
 UNRESOLVED = "a path the gate can't resolve"
@@ -373,6 +377,7 @@ def protected_specs(
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
         add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
         add(vault.joinpath(*AGENT_TEXT_DIR), AGENT_TEXT, tree=True)
+        add(vault.joinpath(*AGENT_NOTES_DIR), AGENT_NOTES, tree=True)
         # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
         add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
         engine = _precommit_engine(vault, hooks)
