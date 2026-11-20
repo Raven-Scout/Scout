@@ -266,9 +266,16 @@ kb_structure:
   allowed_dirs: [knowledge, documents, research, archive]
   page_target_bytes: 8192
   page_budget_bytes: 15360
-  # Stale = a commit to another file in the folder (archive/ aside) landed
-  # more than this many days after the front page's `as_of`.
+  # Stale = a commit to another file in the folder (archive/ aside), or to a
+  # note under linked_dirs that links to the project, landed more than this
+  # many days after the front page's `as_of`.
   stale_days: 3
+  linked_dirs: [knowledge-base/sources, knowledge-base/topics]
+  # The nightly KB pass doesn't rebuild a front page bigger than this: it is
+  # marked for an interactive session instead (`kb structure` shows
+  # [interactive]). A shared page it may only trim is still picked. Default
+  # 12288 (scout.kb.structure.NIGHTLY_MAX_BYTES); set it here to change it.
+  # nightly_max_bytes: 12288
   required_sections:
     - "Where it stands"
     - "What's next"
@@ -279,10 +286,13 @@ kb_structure:
     - "History"
   # Run narration that belongs in the commit message and session log, not
   # the page body (Python regexes; the label is what the report prints).
-  # kb lint's `page-bullet`: an entry the commit adds to one of these
-  # sections (a bullet with its wrapped lines, or a paragraph) over this many
-  # characters. The detail belongs in a knowledge/ note the bullet links to.
+  # An entry in one of these sections (a bullet with its wrapped lines, or a
+  # paragraph) over max_bullet_chars characters, or a section with more than
+  # max_bullets entries, fails `kb structure`; kb lint's `page-bullet` refuses
+  # a commit that adds either. The detail belongs in a knowledge/ note the
+  # bullet links to.
   max_bullet_chars: 300
+  max_bullets: 6
   bullet_sections: ["Where it stands"]
   narration_markers:
     - {label: "Last verified", pattern: "(?i)last verified"}

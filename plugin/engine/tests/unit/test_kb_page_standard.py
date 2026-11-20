@@ -116,7 +116,7 @@ def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None
     # The hand-written ranking is gone: the command owns the order and the skips.
     assert "kb lint --report --top" not in step and "start the largest" not in step
     # A page failing only on freshness or filing is refreshed, not rebuilt.
-    assert "**If it fails only on `stale`, `as_of`, narration or loose files, refresh it instead:**" in step
+    assert "**If it fails only on `stale`, `as_of`, narration, bullets or loose files, refresh it instead:**" in step
     assert "`kb structure` row comes clear on the night you rewrite it" in step
     # A page that only needs shrinking takes the light path, not a rebuild.
     assert "**If it fails only on size (and any narration), do 5.2 for one area, then 5.5, toward 8 KB.**" in step
@@ -164,6 +164,9 @@ def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
     assert "It resumes a half-rebuilt page" in step
     # A partial night is a finished night, and the archive copy is made once.
     assert "**A page too big for one session** takes several nights" in step
+    # A full rebuild too big for a night waits for an interactive session; the size is config.
+    assert "`kb_structure.nightly_max_bytes`" in step and "needs an interactive rebuild" in step
+    assert "12 KB" not in step
     assert "once, on its first night" in step
     assert "a partial night only has to shrink it" in step
 

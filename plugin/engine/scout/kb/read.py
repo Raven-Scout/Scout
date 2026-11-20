@@ -889,7 +889,45 @@ def cmd_search(vault: Path, reader: str, pattern: str, globs: Sequence[str], fix
     )
 
 
-def cmd_read(vault: Path, reader: str, path: str) -> Output:
+_LINES = re.compile(r"^\s*(-?\d+)?\s*:\s*(\d+)?\s*$")
+
+
+def parse_lines(spec: str) -> tuple[int | None, int | None]:
+    """``A:B`` (1-based, inclusive), ``A:`` (to the end), ``:B`` (the first B) or ``-N:`` (the last N).
+
+    In place of ``sed -n 'A,Bp'``, ``head -n B`` and ``tail -n N`` on a note. ``UsageError`` otherwise."""
+    m = _LINES.match(spec)
+    if not m or (m.group(1) is None and m.group(2) is None):
+        raise UsageError(f"--lines takes A:B, A:, :B or -N: (1-based, inclusive), not {spec!r}")
+    start = int(m.group(1)) if m.group(1) is not None else None
+    end = int(m.group(2)) if m.group(2) is not None else None
+    if start == 0 or end == 0:
+        raise UsageError("--lines counts from 1")
+    if start is not None and start < 0 and end is not None:
+        raise UsageError("--lines -N: takes no end: it is the last N lines")
+    if start is not None and end is not None and end < start:
+        raise UsageError(f"--lines {spec}: the end comes before the start")
+    return start, end
+
+
+def _select_lines(content: str, spec: str) -> tuple[str, int, int, int]:
+    """``(the selected text, first, last, total)``; first > last when nothing is selected."""
+    start, end = parse_lines(spec)
+    lines = content.splitlines(keepends=True)
+    total = len(lines)
+    if start is not None and start < 0:
+        first = max(total + start + 1, 1)
+        last = total
+    else:
+        first = start or 1
+        last = min(end, total) if end is not None else total
+    chosen = lines[first - 1 : last] if first <= last else []
+    return "".join(chosen), first, last, total
+
+
+def cmd_read(vault: Path, reader: str, path: str, lines: str | None = None) -> Output:
+    if lines is not None:
+        parse_lines(lines)  # a bad range is a usage error before any file is touched
     try:
         label, data = read_file(vault, reader, path)
     except Denied:
@@ -903,7 +941,61 @@ def cmd_read(vault: Path, reader: str, path: str) -> Output:
     out: dict[str, Any] = {"label": label.to_json(), "content": content}
     if agent is not None:
         out["from_agent"] = label.delegate_author or True
-    return Output(data=out, raw=header + content, labels=[label.to_json()])
+    if lines is None:
+        return Output(data=out, raw=header + content, labels=[label.to_json()])
+    chosen, first, last, total = _select_lines(content, lines)
+    out |= {"content": chosen, "first_line": first, "last_line": max(last, first - 1), "total_lines": total}
+    return Output(data=out, raw=header + chosen, labels=[label.to_json()])
+
+
+def _stat_row(label: Label, data: bytes) -> dict[str, Any]:
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "path": label.path,
+        "bytes": len(data),
+        "lines": text.count("\n") + (0 if not text or text.endswith("\n") else 1),
+        "words": len(text.split()),
+        "label": label.to_json(),
+    }
+
+
+def cmd_stat(vault: Path, reader: str, paths: Sequence[str], globs: Sequence[str]) -> Output:
+    """Size of each named file and each visible file a glob matches: bytes, lines, words, label.
+
+    In place of ``wc``, ``ls -l`` and ``stat`` on notes. A file the reader may not see gets a
+    denial row (no counts) and exit 3, as ``kb read`` does; a path that isn't a vault file is a
+    usage error (exit 2)."""
+    if not paths and not globs:
+        raise UsageError("kb stat takes paths, --glob, or both")
+    rows: list[dict[str, Any]] = []
+    labels: list[Label] = []
+    denied = 0
+    seen: set[str] = set()
+    named: list[str] = list(paths)
+    if globs:
+        named += [rel for rel, _ in visible_files(vault, reader, globs)]
+    for path in named:
+        try:
+            label, data = read_file(vault, reader, path)
+        except Denied:
+            denied += 1
+            rows.append({"path": path, "denied": True, "reason": f"not visible to {reader}"})
+            continue
+        if label.path in seen:
+            continue
+        seen.add(label.path)
+        rows.append(_stat_row(label, data))
+        labels.append(label)
+    lines = []
+    for r in rows:
+        if r.get("denied"):
+            lines.append(f"{r['path']}: not visible to {reader}")
+        else:
+            lines.append(f"{_mark(r['label'])}{r['path']}  {r['bytes']} bytes  {r['lines']} lines  {r['words']} words")
+    if len(rows) - denied > 1:
+        total = sum(r.get("bytes", 0) for r in rows)
+        lines.append(f"{len(rows) - denied} file(s), {total} bytes")
+    return Output(data=rows, lines=lines, labels=_labels_json(labels), denied=denied, code=3 if denied else 0)
 
 
 def resolve(vault: Path, reader: str, graph: KnowledgeGraph, name: str) -> list[dict[str, Any]]:
