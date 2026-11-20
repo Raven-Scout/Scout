@@ -105,9 +105,11 @@ def _strip(words: list[str]) -> _Stripped:
     pending = 0  # positionals the prefix still takes before the command (`timeout 10 …`)
     while words:
         word = words[0]
-        if word in _PREFIX_WORDS:
-            if word == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
+        base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
+        if base in _PREFIX_WORDS and (word == base or "/" in word):
+            if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
+            word = base
             prefix = word
             fed = fed or word in ("xargs", "parallel")
             pending = _PREFIX_POSITIONAL.get(word, 0)
@@ -363,6 +365,8 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
         filters = [g for g in globs if not g.strip("\"'").startswith("!")]
         depth = _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"}))
         types = _flag_values(args, {"-t", "--type"}) + [a.split("=", 1)[1] for a in args if a.startswith("--type=")]
+        if any(a == "--type-add" or a.startswith("--type-add=") for a in args):
+            types = []  # a type defined in the command itself: it can name anything
         return _filtered(_Recursive(roots, True, depth, _exclusions(args)), filters, types)
     if name == "find":
         roots = []
@@ -391,13 +395,69 @@ def _pattern_flag(args: list[str]) -> bool:
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
-    """None when a file filter keeps the search out of the KB, root or no root, as the Grep tool's
-    ``filter_reaches_kb`` has it: ``--include=*.py``, ``-g '*.py'``, ``rg -t py``."""
-    if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS for f in filters):
+    """None when a file filter keeps the search out of the KB, root or no root: ``--include=*.py``,
+    ``-g '*.py'``, ``-g 'docs/*.md'``, ``rg -t py``. A filter bounds the search only if it can't
+    match a KB note (``*people*``, ``*.m?``, ``*.{md,txt}`` and ``*.MD`` all can)."""
+    if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(f) for f in filters):
         return None
     if types and not any(t.strip("\"'") in ("md", "markdown", "all") for t in types):
         return None
     return rec
+
+
+def _glob_regex(glob: str) -> re.Pattern[str]:
+    """A ripgrep-style glob as a regex, ignoring case: ``**`` crosses folders, ``*`` and ``?`` don't,
+    ``{a,b}`` is either."""
+    out, i, depth = [], 0, 0
+    while i < len(glob):
+        c = glob[i]
+        if glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+            if glob.startswith("/", i):
+                i += 1
+                out.append("/?")
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            end = glob.find("]", i + 1)
+            if end < 0:
+                out.append(re.escape(c))
+            else:
+                body = glob[i + 1 : end].replace("\\", "\\\\")
+                out.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+                i = end
+        elif c == "{":
+            depth += 1
+            out.append("(?:")
+        elif c == "}" and depth:
+            depth -= 1
+            out.append(")")
+        elif c == "," and depth:
+            out.append("|")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    try:
+        return re.compile("".join(out) + ")" * depth, re.IGNORECASE)
+    except re.error:
+        return re.compile(".*")  # a glob the gate can't read bounds nothing
+
+
+def _may_match_kb(glob: str) -> bool:
+    """Whether a file filter could match a KB note: tried on note names built from its own words
+    (``*people*`` → ``people.md``) under each KB folder, by file name for a glob with no ``/``."""
+    g = glob.strip("\"'").removeprefix("!")
+    words = [w for w in re.findall(r"[A-Za-z0-9_-]+", g) if w.lower() not in ("md", "markdown")]
+    names = {"x.md", *(n for w in words for n in (f"{w}.md", f"{w}x.md", f"x{w}.md", f"x{w}x.md"))}
+    rx = _glob_regex(g)
+    if "/" not in g:
+        return any(rx.fullmatch(n) for n in names)
+    paths = (f"{kb}/{sub}{n}" for kb in KB_DIRS for sub in ("", "x/", "projects/x/") for n in names)
+    return any(rx.fullmatch(p) for p in paths)
 
 
 def _split_args(args: list[str]) -> tuple[list[str], list[str]]:
@@ -544,6 +604,10 @@ def raw_kb_read(
     recursive read that gets to a KB note (``rg x``, ``grep -r x action-items``, ``git grep x``,
     ``find .``) counts too; ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and
     quoted commit messages never count.
+
+    Known gaps, none of which main denied: ``xargs`` fed by a command that prints no KB path
+    (``ls | xargs rg x`` from the vault); ``cd action-items && cat context/x.md`` (the shell
+    pre-filter sees no KB word); and a vault reached through a symlink, spelled with ``~``.
     """
     command = _MESSAGE_ARG.sub(r"\1 ''", command)
     env = env or {}
@@ -619,24 +683,41 @@ _GLOB_CHARS = re.compile(r"[*?\[]")
 
 
 def _glob_names_kb(word: str) -> bool:
-    """A glob that spells a KB folder (``know*/people.md``, ``knowledge-bas?/x``): a component with
-    at least three plain letters that matches a KB folder's name. ``*/x`` names nothing in particular."""
+    """A glob that spells a KB folder (``know*/people.md``, ``action-items/con*/x``): it matches the
+    folder's name, and a run of three or more of its plain letters comes from that name. ``*/x``,
+    ``*.md`` and ``action-items/*.md`` spell nothing in particular."""
     parts = _unquoted(word).split("/")
-    for kb in (*KB_DIRS, "knowledge-base.md"):
+    for kb in KB_DIRS:
         want = kb.split("/")
         for i in range(len(parts) - len(want) + 1):
             got = parts[i : i + len(want)]
-            if not any(_GLOB_CHARS.search(g) for g in got):
+            globbed = [(g, w) for g, w in zip(got, want, strict=True) if _GLOB_CHARS.search(g)]
+            if not globbed or not all(fnmatch.fnmatchcase(w, g) for g, w in zip(got, want, strict=True)):
                 continue
-            literal = sum(len(_GLOB_CHARS.sub("", g)) for g in got)
-            if literal >= 3 and all(fnmatch.fnmatchcase(w, g) for g, w in zip(got, want, strict=True)):
+            if any(_stem_letters(g, w) for g, w in globbed):
                 return True
     return False
 
 
+def _stem_letters(glob: str, name: str) -> bool:
+    """A run of 3+ plain characters in ``glob`` that is part of ``name`` (``know*`` → ``knowledge-base``)."""
+    return any(len(run) >= 3 and run.lower() in name.lower() for run in re.split(r"[*?\[\]]+", glob))
+
+
 # ----- the recursive-read rule, on a split that keeps quotes whole ---------------------------------
 
-_SUBST = "\x01"  # stands for a command substitution's output: files the gate can't see
+_SUBST = "\x01"  # marks a command substitution's output (`\x01<n>\x01`): files the gate can't see
+_SUBST_INDEX = re.compile("\x01(\\d+)\x01")
+# A substitution that prints where the vault is, or names a KB folder: `$(pwd)`, `$(git rev-parse --show-toplevel)`.
+_RISKY_SUBSTITUTION = re.compile(
+    r"(?:^|[\s;&|(])(?:pwd|dirname|realpath|readlink|basename)\b|rev-parse\s+--show-(?:toplevel|prefix|cdup)"
+    r"|\$\{?(?:PWD|HOME|OLDPWD|SCOUT_DATA_DIR)\b|~|kno|ledge|context|action-items",
+    re.IGNORECASE,
+)
+
+
+def _risky_substitution(inner: str) -> bool:
+    return bool(_names_kb(inner) or _RISKY_SUBSTITUTION.search(inner))
 
 
 def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
@@ -671,7 +752,7 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
         if command.startswith("$(", i) or c == "`":
             end = _substitution_end(command, i)
             substitutions.append(command[i + (1 if c == "`" else 2) : end - 1])
-            buf.append(_SUBST)
+            buf.append(f"{_SUBST}{len(substitutions) - 1}{_SUBST}")
             i = end
             continue
         if quote == '"':
@@ -775,7 +856,10 @@ def _judge_recursive(
                     return True
                 continue
             if _SUBST in root:
-                continue  # files a command prints: the gate can't see them, and they aren't a folder to walk
+                # Files a command prints are not a folder to walk, unless it prints where the vault is.
+                if rec.content and any(_risky_substitution(substitutions[int(i)]) for i in _SUBST_INDEX.findall(root)):
+                    return True
+                continue
             word = _expand(root, env, local)
             if word == _UNKNOWN:
                 if rec.content:
@@ -784,8 +868,10 @@ def _judge_recursive(
             folder = _root_folder(word)
             if not folder.startswith("/"):
                 if where is None:
-                    # Run from a folder the gate can't tell: only the folder itself (or its parent) may be the vault.
-                    if rec.content and folder.rstrip("/") in ("", ".", ".."):
+                    # Run from a folder the gate can't tell: the folder itself, its parent, the vault by its
+                    # own name or a KB folder's parent may be what it reads.
+                    first = posixpath.normpath(folder or ".").split("/")[0]
+                    if rec.content and first in (".", "..", "action-items", posixpath.basename(vault.rstrip("/"))):
                         return True
                     continue
                 folder = posixpath.join(where, folder)
@@ -806,7 +892,7 @@ def _judge_recursive(
             name, args = _command_name(words[0]), words[1:]
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
             if name in ("cd", "pushd"):
-                here = _cd(here, args[0], env, local) if args else None
+                here = _cd(here, args[0] if args else "~", env, local)  # a bare `cd` goes home
                 continue
             if name in _READ_COMMANDS:
                 rec = _recursive(name, args)

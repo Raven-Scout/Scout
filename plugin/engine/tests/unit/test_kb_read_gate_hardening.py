@@ -403,3 +403,73 @@ def test_a_scoped_search_is_allowed_through_the_real_cli(vault, command: str) ->
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0 and res.stdout == "", (command, res.stdout, res.stderr)
+
+
+# ----- #734 round 3: daily-file globs, glob routing, unknown folders, filter bounds, prefixes -------
+
+DAILY_GLOBS = [
+    "ls action-items/*.md 2>/dev/null",
+    "ls -la *.md 2>/dev/null",
+    "head -3 docs/*.md > /tmp/heads.txt",
+    "rg -l TODO docs/*.md",
+    "sed -n 1,5p action-items/*.md",
+]
+
+
+@pytest.mark.parametrize("command", [*DAILY_GLOBS, "rg x -g 'docs/*.md'", "rg foo -g '*.py' ."])
+def test_round_three_globs_over_daily_files_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # after a cd the gate can't follow
+        'cd "$X" && rg x action-items',
+        "cd - && rg x action-items",
+        "cd && rg x Scout",
+        'cd "$X" && rg x ./action-items',
+        # a substitution that prints where the vault is, or names a KB folder
+        'rg x "$(pwd)"',
+        "rg x $(echo knowledge-base)",
+        "rg x \"$(printf 'know%s' ledge-base)\"",
+        'rg x "$(pwd)/action-items"',
+        # filters that can still match a KB note
+        "rg x -g '*people*'",
+        "rg x -g '*.m?'",
+        "rg x -g '*.{md,txt}'",
+        "rg x --iglob '*.MD'",
+        "grep -r x --include='*.m*' .",
+        "rg --type-add 'k:*.md' -t k x",
+        # prefixes by absolute path
+        "/usr/bin/env rg x",
+        "/usr/bin/timeout 10 rg x",
+        "scripts/scoutctl kb files | /usr/bin/xargs wc -c",
+    ],
+)
+def test_round_three_denies(command: str) -> None:
+    assert judged(command)
+
+
+def test_the_documented_residual_stays_allowed() -> None:
+    # xargs fed by a command that prints no KB path: main never denied it (raw_kb_read's docstring).
+    assert not judged("ls | xargs rg x")
+
+
+@pytest.mark.parametrize(
+    "command", ["cat know*/people.md", "head action-items/con*/today.md", "cat knowledge-bas?/x.md"]
+)
+def test_a_kb_spelling_glob_reaches_python_and_is_denied(vault, command: str) -> None:  # noqa: F811
+    import json
+
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", command
+
+
+@pytest.mark.parametrize("command", DAILY_GLOBS)
+def test_daily_file_globs_are_allowed_through_the_real_cli(vault, command: str) -> None:  # noqa: F811
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", (command, res.stdout, res.stderr)
