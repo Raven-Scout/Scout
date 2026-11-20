@@ -14,12 +14,15 @@ struct UpcomingRun: Identifiable, Equatable, Hashable, Sendable {
     let type: RunType
     let scheduledAt: Date
 
-    /// What the run is called on screen. A default schedule keeps its run
-    /// type's name ("Consolidation", as before); a schedule the owner made
-    /// reads as its own name ("Late research"), since its type alone ("Research")
-    /// wouldn't tell it from the default one.
+    /// What the run is called on screen: its schedule's name from the slot
+    /// key, for a default schedule ("Midday consolidation", "Nightly
+    /// dreaming") and one the owner made ("Late research") alike. The Runs
+    /// list names a finished run from the same key (`DisplayName.ledgerRun`),
+    /// so one schedule has one name in the Upcoming strip, the menu bar, the
+    /// status bar and the run list. The type's name ("Consolidation") can't
+    /// tell the four consolidation schedules apart.
     var displayName: String {
-        RunType(slotKey: slotKey) != nil ? type.displayName : DisplayName.slotKey(slotKey)
+        DisplayName.slotKey(slotKey)
     }
 }
 

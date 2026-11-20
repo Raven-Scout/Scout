@@ -105,10 +105,7 @@ nonisolated enum DisplayName {
     /// falls back to its own guess. Control Center and the Health page both
     /// name runs with this (card T2).
     static func ledgerRun(slot: String?, mode: String?, runner: String? = nil, startedAt: Date? = nil) -> String? {
-        let key = [slot, mode]
-            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
-            .first { $0 != "unknown" && isLedgerKey($0) }
-        guard let key else { return nil }
+        guard let key = ledgerRunKey(slot: slot, mode: mode) else { return nil }
         if key == "manual" {
             switch runner {
             case "dreaming": return "Dreaming (manual)"
@@ -119,11 +116,29 @@ nonisolated enum DisplayName {
             default:         return "Manual run"
             }
         }
-        if key.hasSuffix("-manual") {
+        if isHandRunKey(key) {
             let family = String(key.dropLast("-manual".count))
             return family.isEmpty ? "Manual run" : "\(humanize(family)) (manual)"
         }
         return slotKey(key)
+    }
+
+    /// The key a run-ledger row names its run by: `slot`, or `mode` when the
+    /// slot is missing, `unknown`, or not shaped like a key the engine writes;
+    /// nil when neither names anything. `ledgerRun` names the run from it,
+    /// and the run's "Started by you" badge, Type filter and search read the
+    /// same key, so they never disagree about what kind of run it was.
+    static func ledgerRunKey(slot: String?, mode: String?) -> String? {
+        [slot, mode]
+            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+            .first { $0 != "unknown" && isLedgerKey($0) }
+    }
+
+    /// A key for a run started by hand outside any schedule (`manual`,
+    /// `dreaming-manual`, `research-manual`), whose name already says
+    /// "(manual)".
+    static func isHandRunKey(_ key: String) -> Bool {
+        key == "manual" || key.hasSuffix("-manual")
     }
 
     /// The engine's slot/mode shape, `[A-Za-z0-9][A-Za-z0-9._-]{0,80}`. A
