@@ -191,7 +191,7 @@ struct SettingsView: View {
 
         // Labels itself, and shows only once the engine reports an agent copy (#550).
         if !appState.engineHealth.state.gatesTabs {
-            AgentCopiesSection(service: appState.delegateStatus)
+            AgentCopiesSection(service: appState.delegateStatus, review: appState.inboxReview)
         }
     }
 
