@@ -1099,6 +1099,10 @@ def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[
     """
     if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
         return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate mirrors: checked outside runs (a run can't read the state's signing key)"]
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError, git
 
@@ -1138,6 +1142,56 @@ def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[
                     f"delegate mirror {key}: behind HEAD, and no sync has tried for over an hour; is the schedule "
                     "tick running? (scoutctl delegate sync --all syncs now)"
                 )
+    return warnings, notes
+
+
+def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[str], list[str]]:
+    """Each delegate inbox at a glance, as (warnings, notes) (#550 V4b1). Nothing for a vault with no inbox."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists():
+        return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate inboxes: checked outside runs (a run can't read the state's signing key)"]
+    from scout.delegate_inbox_sync import summary
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        inboxes = summary(vault, now=now)
+    except RepoSyncError as e:
+        return [f"delegate inboxes: {e.message}"], []
+    now = now or datetime.now(UTC)
+    warnings: list[str] = []
+    notes: list[str] = []
+    for key, box in inboxes.items():
+        pulled = box["last_pull"]
+        when = datetime.fromisoformat(pulled.replace("Z", "+00:00")) if pulled else None
+        counts = ", ".join(f"{k} {v}" for k, v in box["outcomes"].items()) or "nothing applied yet"
+        notes.append(
+            f"delegate inbox {key}: last pulled {_age(now - when)} ago; {box['waiting']} wait; {counts}"
+            if when
+            else f"delegate inbox {key}: never pulled; {box['waiting']} wait"
+        )
+        if box["last_error"]:
+            warnings.append(f"delegate inbox {key}: the last pull failed ({box['last_error']}); see why with: "
+                            f"scoutctl inbox pull {key}")  # fmt: skip
+        elif when is not None and now - when > timedelta(days=1):
+            warnings.append(f"delegate inbox {key}: not pulled for over a day; is the schedule tick running? "
+                            "(scoutctl inbox sync pulls now)")  # fmt: skip
+        if box["untaken"]:
+            warnings.append(f"delegate inbox {key}: {box['untaken']} file(s) in its copies folder were never taken "
+                            "by a pull; they are ignored")  # fmt: skip
+    from scout.repo_sync import git
+
+    tracked = git(vault, "ls-files", "--", ".scout-inbox/agents", check=False).stdout.split()
+    stray = [t for t in tracked if t != ".scout-inbox/agents/.gitignore" and not t.endswith("/taken.ledger")]
+    if stray:
+        warnings.append(
+            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b), "
+            "and stay in the vault's git history even once untracked; untrack them, keeping the files: "
+            "git rm -r -q --cached .scout-inbox/agents && git add .scout-inbox/agents && "
+            "git commit -m 'inbox: untrack the copies'"
+        )
     return warnings, notes
 
 
@@ -1275,6 +1329,9 @@ def run_doctor(
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)
+    inbox_warnings, inbox_notes = _check_delegate_inboxes(vault=vault, now=now)
+    warnings.extend(inbox_warnings)
+    notes.extend(inbox_notes)
     timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
     warnings.extend(timeout_warnings)
     notes.extend(timeout_notes)

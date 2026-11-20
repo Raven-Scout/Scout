@@ -740,7 +740,7 @@ def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path],
     So hand edits (Obsidian) reach the owner's agents between scheduled runs,
     which sync at their own end. A vault with no delegate links costs one stat.
     """
-    if not (vault / _DELEGATE_STATE).exists():
+    if not (vault / _DELEGATE_STATE).exists() or _in_a_run():
         return
     try:
         from scout import delegate_mirror
@@ -754,6 +754,71 @@ def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path],
         _emit_event(
             log_dir,
             kind="delegate_mirror.spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+# The delegates' inboxes (#550 V4b1): pulled and applied between runs, as the owner, never inside a run.
+_INBOX_STATE = ".scout-state/delegate-inbox/state.json"
+_INBOX_LOG = "delegate-inbox-sync.log"
+
+
+def _in_a_run() -> bool:
+    """Whether this tick runs inside a scheduled run (#517's rule): it then starts no step that acts as the owner
+    (the mirror sync, the inbox sync), since those drop SCOUT_MODE and SCOUT_READER for their child."""
+    from scout.kb.reader import is_scheduled
+
+    return is_scheduled(os.environ)
+
+
+def _spawn_inbox_sync(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl inbox sync`` detached. ``SCOUT_MODE`` and ``SCOUT_READER`` are both removed: the sync is
+    the owner's (apply refuses a run's reader by design), and it holds the session lock only briefly."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_MODE", None)
+    env.pop("SCOUT_READER", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from scout._spawn import python_module_argv
+
+    with safe_write.open_append(log_dir / _INBOX_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
+        proc = subprocess.Popen(
+            python_module_argv("scout", "inbox", "sync"),
+            cwd=str(Path.home()),  # never the vault: the vault reaches it as SCOUT_DATA_DIR
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _sync_inboxes(
+    *, vault: Path, log_dir: Path, now: _dt.datetime, spawn: Callable[[Path, Path], int] | None = None
+) -> None:
+    """Start an inbox sync when an inbox is linked, none started for 15 minutes, and no slot fires within the next
+    5 minutes (a sync never stands in a run's way). Never raises; a vault with no inbox costs one stat."""
+    if not (vault / _INBOX_STATE).exists() or _in_a_run():
+        return
+    try:
+        from scout import delegate_inbox_sync
+
+        schedule = _load_or_default(vault)
+        soon = now + delegate_inbox_sync.SLOT_GUARD  # tomorrow's first slot counts too, across midnight
+        targets = [
+            t for slot in schedule.values() for t in (slot.target_today(now=now), slot.target_today(now=soon)) if t
+        ]
+        if not delegate_inbox_sync.due(vault, now=now, slot_times=targets):
+            return
+        delegate_inbox_sync.mark_started(vault)
+        pid = (spawn or _spawn_inbox_sync)(vault, log_dir)
+        _emit_event(log_dir, kind="delegate_inbox.sync_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="delegate_inbox.spawn_failed",
             source="cli:schedule_tick",
             payload={"error": f"{type(exc).__name__}: {exc}"},
         )
@@ -839,6 +904,7 @@ def _do_tick(
     # Event triggers evaluate first (spec: docs/specs/event-triggers.md §Event flow).
     _evaluate_triggers(vault=vault, log_dir=log_dir)
     _sync_delegates(vault=vault, log_dir=log_dir)
+    _sync_inboxes(vault=vault, log_dir=log_dir, now=_now())
     _drain_brokers(vault=vault, log_dir=log_dir)
 
     schedule = _load_or_default(vault)

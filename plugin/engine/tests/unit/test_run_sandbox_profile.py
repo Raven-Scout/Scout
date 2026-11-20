@@ -487,3 +487,14 @@ def test_status_failed_on_a_bad_list_or_self_test(world, monkeypatch) -> None:
     assert (result.status, result.exit_code, result.profile) == ("failed", 3, "")
     monkeypatch.setattr(hook_paths, "protected_specs", lambda *_a, **_k: [])
     assert _prepare(vault, env).status == "failed"
+
+
+def test_the_kernel_denies_runs_the_agents_inbox_copies(tmp_path: Path) -> None:
+    """#550 V4b1: what agents proposed is untrusted text a run never reads (and never writes)."""
+    from scout.sandbox import profile
+
+    vault = tmp_path / "vault"
+    (vault / ".scout-inbox" / "agents").mkdir(parents=True)
+    rules = profile.build_rules(vault, {"HOME": str(tmp_path / "home")})
+    for op in ("file-read-data", "file-write*"):
+        assert any(r.action == "deny" and r.op == op and r.path.endswith("/.scout-inbox/agents") for r in rules), op
