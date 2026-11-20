@@ -18,7 +18,9 @@ can't forge: a linked worktree that existed at the snapshot still has it checked
 holds exactly the tip's entry for every changed path. A sandboxed run can move any ref, but can't write another
 worktree's HEAD or index (the profile carves out only the vault's own git dirs), so a change it plants on a
 session's branch is still put back. Without an enforced sandbox (``SCOUT_SANDBOX_STATUS`` from the runner isn't
-``enforced``: off, unavailable, Linux) the run could write that evidence too, so no branch is left alone.
+``enforced``: off, unavailable, Linux) the run could write that evidence too, so no branch is left alone. The
+vault's own branch and a prunable worktree (its folder gone) never vouch. Accepted (spec §13): a run could commit
+onto a session's branch exactly what that session has already staged for a protected path, and have it pass.
 
 The protected tracked paths are ``hook_paths.protected_specs()`` entries inside the vault's work tree, outside its
 git dir: the runner scripts, ``.gitattributes``, ``.gitmodules``, ``.mcp.json``, ``.claude/``, the other agent dirs,
@@ -100,7 +102,8 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
     """``[admin dir, branch]`` for each other linked worktree with a branch checked out.
 
     Read from ``<common dir>/worktrees/*/HEAD``, which a sandboxed run can't write (the profile carves out only the
-    vault's own git dirs). The vault's own admin dir, when the vault is itself a linked worktree, is left out.
+    vault's own git dirs). The vault's own admin dir, when the vault is itself a linked worktree, is left out, and
+    so is a prunable one: its work tree is gone, so no session works there.
     """
     common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
     common = common if common.is_absolute() else vault / common
@@ -112,12 +115,21 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
     out = []
     for admin in admins:
         real = os.path.realpath(admin)
-        if real == own:
+        if real == own or not _worktree_present(real):
             continue
         branch = _symbolic_head(vault, env, git_dir=real)
         if branch:
             out.append([real, branch])
     return out
+
+
+def _worktree_present(admin: str) -> bool:
+    """Whether the work tree an admin dir points at is still there (``git worktree list`` calls it prunable if not)."""
+    try:
+        target = Path(admin, "gitdir").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return bool(target) and os.path.exists(target)
 
 
 def _symbolic_head(vault: Path, env: Mapping[str, str], *, git_dir: str | None = None) -> str | None:
@@ -189,7 +201,10 @@ def _in_scope(path: str, scope_list: list[Scope]) -> bool:
 def _git_env(env: Mapping[str, str]) -> dict[str, str]:
     # The runner's environment is trusted, but nothing should point git at another repository or index, or add
     # command-line config (which config files git reads stays as it is).
-    drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    drop = (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    )  # fmt: skip
     out = {
         k: v
         for k, v in env.items()
@@ -346,6 +361,8 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
     trust_worktrees = env.get("SCOUT_SANDBOX_STATUS") == "enforced"
     result = Result("clean")
     head, branch = _head(vault, genv)
+    # The vault's own branch is the run's: no linked worktree vouches for it, even one that has it checked out too.
+    own_branches = {b for b in (start.get("branch"), branch) if b}
     now_refs = _refs(vault, genv)
     moved = sorted(r for r, sha in now_refs.items() if start["refs"].get(r) != sha)
     for ref in moved:
@@ -357,7 +374,7 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
         paths = _diff(want, have)
         if not paths:
             continue
-        if trust_worktrees and ref.startswith("refs/heads/"):
+        if trust_worktrees and ref.startswith("refs/heads/") and ref not in own_branches:
             worktree = _vouching_worktree(vault, start, ref, have, paths, scope_list, genv)
             if worktree is not None:
                 result.left_alone[ref] = paths
