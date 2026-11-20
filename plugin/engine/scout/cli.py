@@ -6316,9 +6316,12 @@ def _register_inbox() -> None:
         vault = _paths.data_dir()
         targets = [t.strip() for t in to.split(",") if t.strip()] if to is not None else None
         try:
-            if not as_json and confirm is None:
-                _show_item(delegate_review.preview_promote(vault, ulid))
-            decision = delegate_review.promote(vault, ulid, confirm=_typed(ulid, confirm, "promote"), to=targets)
+            preview = delegate_review.preview_promote(vault, ulid)  # shown with --confirm too: what goes out
+            if not as_json:
+                _show_item(preview)
+            decision = delegate_review.promote(
+                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=preview.sha256, to=targets
+            )
         except RepoSyncError as e:
             _fail(e, as_json)
         _decided(decision, as_json)

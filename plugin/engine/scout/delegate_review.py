@@ -120,6 +120,7 @@ class Item:
     about: str | None = None
     source: str | None = None
     look_alikes: list[str] = field(default_factory=list)
+    sha256: str | None = None  # promote's preview: the note's bytes it shows, which promote must still find
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -491,16 +492,32 @@ def _accepted_note(vault: Path, state: di.InboxState, ulid: str) -> tuple[str, d
     return delegate, entry, rel, (vault / rel).read_bytes()
 
 
+def _as_accepted(entry: Mapping[str, Any], rel: str, data: bytes) -> None:
+    """Refuse a note that isn't byte for byte what the owner accepted (or what unpromote put back): promote
+    publishes exactly the reviewed text, never something added since (Raven-Scout/Scout#738 review, H1)."""
+    if not hmac.compare_digest(_sha(data), str(entry.get("sha256"))):
+        raise RepoSyncError(
+            "note_changed",
+            f"refused: {rel} changed since you accepted it, and promote only publishes what you accepted. Revert "
+            "it (scoutctl inbox revert) and have the agent propose it again, or keep it private",
+        )
+
+
 def preview_promote(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None) -> Item:
-    """The accepted note's text as promote would show it, after the text rules (``bad_text`` otherwise)."""
+    """The accepted note's text as promote would publish it, with its hash (``Item.sha256``) for :func:`promote`.
+
+    Refused when the note changed since it was accepted (``note_changed``) or fails the text rules (``bad_text``)."""
     headless_gate(os.environ if env is None else env, "Promoting an agent's note")
     vault = vault.resolve()
     with di.locked(vault):
         state = di.load_state(vault)
-        delegate, _entry, _rel, data = _accepted_note(vault, state, ulid)
+        delegate, entry, rel, data = _accepted_note(vault, state, ulid)
+    if entry.get("promoted"):
+        raise RepoSyncError("already_promoted", f"refused: {ulid} is promoted already")
+    _as_accepted(entry, rel, data)
     text = _checked_body(data)
     item = Item(delegate=delegate, ulid=ulid, kind="observation", status="accepted",
-                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(text))  # fmt: skip
+                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(text), sha256=_sha(data))  # fmt: skip
     item.look_alikes = look_alikes(text)
     return item
 
@@ -523,6 +540,7 @@ def promote(
     ulid: str,
     *,
     confirm: str | None,
+    previewed: str | None,
     to: Sequence[str] | None = None,
     now: dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
@@ -530,7 +548,9 @@ def promote(
 ) -> Decision:
     """Let delegates read an accepted observation: its provenance becomes ``promoted_from``, visibility normal.
 
-    ``to`` (delegate ids, ``author`` for its author) limits it to those delegates (``delegate_scope``)."""
+    ``to`` (delegate ids, ``author`` for its author) limits it to those delegates (``delegate_scope``).
+    ``previewed`` is :func:`preview_promote`'s ``sha256``: the note must still be exactly what the owner was shown,
+    and exactly what they accepted."""
     from scout.kb.privacy import load_policy
 
     env = os.environ if env is None else env
@@ -555,6 +575,11 @@ def promote(
                     f"refused: --to names no delegate this vault lists ({', '.join(unknown) or 'none'}); "
                     "see privacy.delegates in scout-config.yaml",
                 )
+        _as_accepted(entry, rel, data)
+        if previewed is None or not hmac.compare_digest(_sha(data), previewed):
+            raise RepoSyncError(
+                "note_changed", f"refused: {rel} isn't what the preview showed; run promote again to see it"
+            )
         _checked_body(data)
         fm, body = _split(data.decode("utf-8"))
         if fm.get("source") != f"delegate:{delegate}":
@@ -583,7 +608,9 @@ def promote(
         note=rel,
         notes=[
             f"Visible to {who} from the next mirror sync. An agent that reads it can quote it back in a proposal; "
-            f"that comes to this review again. Undo with: scoutctl inbox review unpromote {ulid}"
+            "that comes to this review again. It stays out of the knowledge graph (it has no name or type), but "
+            "kb search and kb files find it. "
+            f"Undo with: scoutctl inbox review unpromote {ulid}"
         ],
     )
 

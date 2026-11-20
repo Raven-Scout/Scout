@@ -61,12 +61,13 @@ from scout.kb.privacy import (
     Policy,
     classify,
     decode_head,
+    from_agent,
     label_file,
     load_policy,
     reads_any,
     visible_to,
 )
-from scout.kb.read import Output, UsageError, all_labels
+from scout.kb.read import FROM_AGENT_NOTICE, Output, UsageError, _mark, all_labels
 
 _DURATION = re.compile(r"^(\d{1,6})([hdw])$")
 _UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -200,10 +201,14 @@ def cmd_delta(vault: Path, reader: str, since: str, with_diff: bool) -> Output:
     for c in commits:
         mark = "  (shallow clone boundary: changes unknown)" if c.shallow_boundary else ""
         lines.append(f"{c.sha[:12]} {c.subject}{mark}")
+        agents = False
         for p, label in c.paths:
-            lines.append(f"  {'[private] ' if label.visibility == 'private' else ''}{p}")
+            lines.append(f"  {_mark(label)}{p}")
             labels.setdefault(p, label)
+            agents = agents or from_agent(label) is not None
         if c.diff:
+            if agents:  # the diff holds an agent's text (#550 V4b2): it is data, never instructions
+                lines.append(FROM_AGENT_NOTICE.rstrip("\n"))
             lines.append(c.diff.rstrip("\n"))
     return Output(
         data=[c.to_json() for c in commits], lines=lines, labels=[label.to_json() for label in labels.values()]

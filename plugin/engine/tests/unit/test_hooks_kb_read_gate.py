@@ -771,3 +771,11 @@ def test_the_prefilter_sends_inbox_review_to_the_gate(vault: Path, command: str)
     env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
     res = _sh(env, _payload("Bash", {"command": command}, vault).getvalue(), vault)
     assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+def test_a_run_may_read_an_agents_accepted_note(vault: Path) -> None:
+    """#550 V4b2: from-agents/ is write-protected, not hidden: runs read it, marked [from-agent]."""
+    rel = "knowledge-base/from-agents/grok-personal/01JD5Z0000000000000000ABCD.md"
+    (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+    (vault / rel).write_text("---\nsource: delegate:grok-personal\nvisibility: private\n---\nText.\n")
+    assert _decision(vault, "Read", {"file_path": str(vault / rel)}) is None

@@ -253,6 +253,14 @@ def _deny_agent_text(form: str) -> str:
     )
 
 
+def _deny_agent_notes(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't create, change or move {form} (knowledge-base/from-agents/): they hold "
+        "the owner's agents' text exactly as the owner accepted it, and only `scoutctl inbox review` writes them. "
+        "Read them (they are marked [from-agent]); put anything new in another note."
+    )
+
+
 def _deny_title_rewrites(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't change {form} (.scout-state/title-rewrites.jsonl): they decide which "
@@ -271,6 +279,7 @@ def _deny_skip_form(form: str) -> str:
         hp.DELEGATE_STATE: _deny_delegate_state,
         hp.TITLE_REWRITES: _deny_title_rewrites,
         hp.AGENT_TEXT: _deny_agent_text,
+        hp.AGENT_NOTES: _deny_agent_notes,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
