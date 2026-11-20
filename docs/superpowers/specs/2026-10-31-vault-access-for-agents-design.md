@@ -1356,7 +1356,18 @@ reads (the root `CLAUDE.md`'s rule).
      in review), its look-alike words, the audience (the `--to` ids resolved, or every delegate that can see the folder when
      there is no `--to`, as delegate ids) and the note's `sha256`. `promote <ULID> --previewed <sha> --confirm <ULID>` refuses
      unless the note is byte for byte what was accepted and what was previewed, as now. `unpromote <ULID> --preview --json`
-     returns what goes back (the text, and who stops seeing it); `unpromote` gains `--confirm` and `--previewed` the same way.
+     returns what goes back (the text, and who stops seeing it); `unpromote` gains `--previewed`, checked the same way. It
+     needs no `--confirm` in the engine, because it only narrows who sees the note. The app still shows the preview and a named
+     button (`Make private again: hide from delegate-a, delegate-b`).
+   - **The audience is pinned.** The app passes `--to` with exactly the previewed delegate ids, so the note is scoped to
+     the delegates the button named and never reaches one added to the config later. The audience is found by classifying
+     the note as promote would write it and asking `visible_to` for each listed delegate.
+   - **Something to promote later.** `inbox review --accepted --json` lists the accepted observations from the signed
+     state: delegate, ULID, note path, when accepted, and whether and to whom promoted. It holds ids and times only; the
+     text comes from a preview.
+   - **The status document:** the signed inbox state is all or nothing, so a top-level `inbox_state` (`ok`, `none`,
+     `unverified`, `unsafe`, `unreadable`) replaces a per-delegate `state_unverified`. Each delegate gains `inbox` and
+     `can_review`.
    - **App.** The promote dialog shows the full text and exactly who will see it, and its button names them (`Promote to
      delegate-a, delegate-b`). The app passes the previewed hash back. A refusal (`note_changed` and the rest) is shown in
      the engine's own words. Unpromote follows the same pattern: a preview of what reverts, then a named button.
