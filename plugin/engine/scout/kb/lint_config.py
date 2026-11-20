@@ -53,7 +53,18 @@ REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration",
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
 MODE_CHECKS = frozenset({"size", "mega-line", "diary"}) | REPORT_UNTIL_NAMED
 # Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
-PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+# shared-source-*: a note built from someone's shared note (Agnes #6090 §7). They were blocking findings but
+# missing here, so they blocked only where a path's lint mode was `block` (#550 review of #738).
+PRIVACY_BLOCKING = frozenset(
+    {
+        "private-link",
+        "private-mention",
+        "privacy-widening",
+        "privacy-check-failed",
+        "shared-source-private",
+        "shared-source-reshared",
+    }
+)
 # Warnings: never block, whatever the mode.
 WARNING_CHECKS = frozenset(
     {

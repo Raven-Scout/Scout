@@ -122,7 +122,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 4  # 4: NoteFacts.shared_source, for delegates (#550); 3: Stage 2 (Agnes #6090 §4)
+CLASSIFIER_VERSION = 5  # 5: a shared: source caps federation at none; 4: NoteFacts.shared_source (#550); 3: Stage 2
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -1067,7 +1067,9 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         warnings.append("privacy-contradiction")
 
     by_folder = folder_ceiling(policy, rel, facts.kind)
-    forced_none = visibility == "private" or local_only
+    # A note built from someone's shared note (``source: shared:…``) is never federated on, whatever its
+    # visibility or folder default says: your sharing must not pass on theirs (Agnes #6090 §7).
+    forced_none = visibility == "private" or local_only or facts.shared_source
     ceiling: CeilingLevel = "none" if forced_none else by_folder
     if not forced_none and cap_scope(declared, by_folder) != declared:
         warnings.append("federation-ceiling")
