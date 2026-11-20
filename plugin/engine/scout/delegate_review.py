@@ -500,9 +500,10 @@ EDITED = (
 
 
 def _accepted_commit(entry: Mapping[str, Any]) -> str:
-    """The commit that last wrote the note's accepted bytes: unpromote's, or else accept's."""
-    unpromoted = entry.get("unpromoted")
-    return str((unpromoted or {}).get("commit") or entry.get("commit") or "HEAD")
+    """The commit that last wrote the note's accepted bytes: unpromote's, or else accept's. Never HEAD, which
+    is the edited version once that is committed."""
+    commit = (entry.get("unpromoted") or {}).get("commit") or entry.get("commit")
+    return str(commit) if isinstance(commit, str) and commit else "<the commit that accepted it>"
 
 
 def _as_accepted(entry: Mapping[str, Any], rel: str, data: bytes) -> None:
