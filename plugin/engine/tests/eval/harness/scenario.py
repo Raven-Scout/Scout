@@ -27,7 +27,7 @@ SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
 KNOWN_CHECKS = {
     "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget", "title_budget",
     "outage_reported", "no_false_outage", "dropoff_caught", "demotion", "privacy_canary", "privacy_hygiene",
-    "linear_delta", "red_poll", *KB_CHECKS,
+    "linear_delta", "red_poll", "size_budget", "backlog", *KB_CHECKS,
 }  # fmt: skip
 DEFAULT_FRONT_PAGE_GROWTH = 512  # bytes; kb-front-page's scenario.yaml says why it can be small
 # A recorded Linear API response in a scenario's fixtures/: the runner's pre-fetch reads it
@@ -47,6 +47,7 @@ class Scenario:
     expected_placement: dict[str, set[str]]
     expected_closures: set[str]
     expected_waiting: tuple[str, ...] = ()
+    expected_backlog: tuple[str, ...] = ()
     personas_down: tuple[str, ...] = ()
     dropped_tags: tuple[str, ...] = ()
     expected_demotion: dict[str, str] = field(default_factory=dict)
@@ -188,6 +189,7 @@ def load_scenario(name: str) -> Scenario:
         expected_placement={str(k): set(v) for k, v in (raw.get("expected_placement") or {}).items()},
         expected_closures=set(raw.get("expected_closures") or []),
         expected_waiting=tuple(raw.get("expected_waiting") or []),
+        expected_backlog=tuple(raw.get("expected_backlog") or []),
         personas_down=tuple(raw.get("personas_down") or []),
         dropped_tags=tuple(raw.get("dropped_tags") or []),
         expected_demotion={str(k): str(v) for k, v in (raw.get("expected_demotion") or {}).items()},
