@@ -22,7 +22,9 @@ file exists), and quiet when there is nothing to do — runner preambles invoke
 it best-effort before every session.
 
 Creating the day's file is also when items untouched for 60+ days leave it
-(``scout.action_items.stale``): once a day, before any session reads it.
+and the backlog (``scout.action_items.stale``), and when ``fit`` keeps it to
+its budget (``scout.action_items.fit``; it only reports unless
+``action_items.fit`` is ``apply``): once a day, before any session reads it.
 """
 
 from __future__ import annotations
@@ -245,13 +247,18 @@ def _archive_stale(data_dir: Path | None, today: _dt.date, body: str) -> tuple[s
         ledger = stale.ActivityLedger.load(vault)
         ledger.catch_up(vault, before=today)
         result = stale.split_stale(body.splitlines(), ledger, today=today)
-        archive = stale.write_archive(vault, today, result.archived) if result.archived else None
+        daily_tags = frozenset(b.tag for b in stale.task_blocks(body.splitlines()))
+        backlog = stale.split_backlog(vault, ledger, today=today, skip=daily_tags)
+        archived = result.archived + (backlog[1].archived if backlog else [])
+        archive = stale.write_archive(vault, today, archived) if archived else None
+        if backlog and backlog[1].archived:
+            stale.write_lines_like(stale.backlog_path(vault), backlog[0], backlog[1].lines)
         ledger.save()
     except Exception:  # noqa: BLE001 — housekeeping must never block the copy
         return body, ""
     if archive is None:
         return body, ""
-    count = len(result.archived)
+    count = len(archived)
     noun = "item" if count == 1 else "items"
     note = f" 🗄️ {count} {noun} untouched for {stale.STALE_AFTER_DAYS}+ days auto-archived → [[archive/{archive.stem}]]."
     trailing = "\n" if body.endswith("\n") else ""
@@ -274,6 +281,23 @@ def _drop_dismissed(data_dir: Path | None, body: str) -> str:
         return body
     trailing = "\n" if body.endswith("\n") else ""
     return "\n".join(kept) + trailing
+
+
+def _fit(data_dir: Path | None, day: _dt.date) -> None:
+    """Keep the new file to its budget (or only report, per ``action_items.fit``).
+    Best-effort, like the archive: the file already exists complete. A failure
+    is said on stderr (the run log) and recorded in the fit report, never swallowed."""
+    import sys
+
+    from scout.action_items import fit as fit_module
+
+    try:
+        fit_module.fit(data_dir=data_dir, date=day)
+    except Exception as e:  # noqa: BLE001 — housekeeping must never block the copy
+        sys.stderr.write(
+            f"materialize: action-items fit failed ({type(e).__name__}: {e}); the day's file is complete\n"
+        )
+        fit_module.write_error_report(data_dir, day=day, error=e)
 
 
 def materialize(
@@ -331,6 +355,7 @@ def materialize(
             body = "\n" + compacted
         content = f"# Action Items — {_human_date(target_date)}\n{banner}{archived_note}\n{body}"
         safe_write.atomic_write_text(target, content)
+        _fit(data_dir, target_date)
         return target
 
     return None
