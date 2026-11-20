@@ -15,11 +15,12 @@ git call goes through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``,
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
+import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -48,6 +49,8 @@ _LINK_MODE = "120000"
 _REMOVABLE_MODES = _RESTORABLE_MODES | {_LINK_MODE}
 # git's own binary test (what `git merge-file` refuses to merge): a NUL in the first this-many bytes.
 _BINARY_PROBE = 8000
+# <unistd.h>: the per-user temp folder macOS gives an account (Python doesn't name it).
+_CS_DARWIN_USER_TEMP_DIR = 65537
 _AUTO_KEYS = {"targeted": "targeted", "one-at-a-time": "one_at_a_time"}
 
 
@@ -229,46 +232,86 @@ def _blob(vault: Path, side: _Side | None) -> bytes | None:
     return b"" if side is None else _git_bytes(vault, "cat-file", "blob", side.blob)
 
 
-def _current(path: Path) -> tuple[str, bytes]:
-    """What stands at ``path`` now, never followed: ``("file", bytes)``, ``("link", target)``, ``("absent", b"")``,
-    or ``("other", b"")`` (a folder, anything else, or unreadable)."""
+def _current(path: Path) -> tuple[str, bytes, int]:
+    """What stands at ``path`` now, never followed, with its permission bits: ``("file", bytes, bits)``,
+    ``("link", target, 0)``, ``("absent", b"", 0)``, or ``("other", b"", 0)`` (a folder, anything else, or
+    unreadable: a path under something that is no longer a folder)."""
     try:
         st = os.lstat(path)
         if stat.S_ISLNK(st.st_mode):
-            return "link", os.readlink(os.fsencode(path))
+            return "link", os.readlink(os.fsencode(path)), 0
         if stat.S_ISREG(st.st_mode):
-            return "file", path.read_bytes()
+            return "file", path.read_bytes(), stat.S_IMODE(st.st_mode)
     except FileNotFoundError:
-        return "absent", b""
+        return "absent", b"", 0
     except OSError:
         pass
-    return "other", b""
+    return "other", b"", 0
 
 
 def _binary(data: bytes) -> bool:
     return b"\0" in data[:_BINARY_PROBE]
 
 
+def _temp_root() -> str:
+    """Where the merge's private folder is made: the account's own temp folder, never one the environment names (a
+    run sets ``TMPDIR``, and could point it into the vault, or at a folder it watches to swap an input before
+    ``merge-file`` reads it). macOS: the per-user folder the system gives (``confstr`` of
+    ``_CS_DARWIN_USER_TEMP_DIR``); elsewhere, or if it gives none, ``/tmp``."""
+    if sys.platform == "darwin":
+        try:
+            found = os.confstr(_CS_DARWIN_USER_TEMP_DIR)
+        except (OSError, ValueError):
+            found = None
+        if found:
+            return found
+    return "/tmp"  # noqa: S108 - the fallback root; the folder made in it is a fresh, private mkdtemp
+
+
+def _reversed_lines(data: bytes) -> bytes:
+    """The lines in reverse order; exact and its own inverse (a missing final newline included)."""
+    return b"\n".join(reversed(data.split(b"\n")))
+
+
+def _merge_in(vault: Path, folder: str, tag: str, current: bytes, base: bytes, other: bytes) -> bytes | None:
+    names = []
+    for role, data in (("current", current), ("base", base), ("other", other)):
+        name = os.path.join(folder, f"{tag}-{role}")
+        with open(name, "xb") as f:  # a fresh name in a fresh private folder
+            f.write(data)
+        names.append(name)
+    return _git_bytes(vault, "merge-file", "-p", "--", *names)
+
+
 def _merge(vault: Path, current: bytes, base: bytes, other: bytes) -> bytes | str:
     """``git merge-file -p <current> <base> <other>``, git's default resolution (never ours/theirs/union): the merged
-    bytes, ``edited-since`` on a conflict or a merge-file error (the runner can't tell them apart, and both mean
-    the undo can't be worked out from the file as it is), or ``git-unreadable`` when the temp files can't be
-    written. They are made outside the vault (the system temp folder) and always removed."""
-    names: list[str] = []
+    bytes, or ``edited-since``.
+
+    The merge runs twice, on the files and on their lines reversed, and counts only when both are clean and agree.
+    Where the file repeats a block (adjacent twins, or twins whose separators repeat too) and a later edit deleted
+    the change's own copy, the bytes say nothing about which copy went; xdiff picks one by position, and a forward
+    merge alone could take back the copy that was never the change's. Reversed, xdiff picks the other one, so the
+    two disagree or one conflicts. ``edited-since`` covers a conflict, a merge-file error (the runner can't tell
+    them apart) and a disagreement: the undo can't be worked out from the file as it is.
+
+    The inputs go to a fresh private folder (``mkdtemp``) under :func:`_temp_root`, always removed;
+    ``git-unreadable`` when it can't be made or written, or when it would be inside the vault."""
     try:
-        for data in (current, base, other):
-            fd, name = tempfile.mkstemp(prefix="scout-undo.")
-            names.append(name)
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-        merged = _git_bytes(vault, "merge-file", "-p", "--", *names)
+        folder = tempfile.mkdtemp(prefix="scout-undo.", dir=_temp_root())
+    except OSError:
+        return "git-unreadable"
+    try:
+        if Path(folder).resolve().is_relative_to(vault.resolve()):
+            return "git-unreadable"
+        forward = _merge_in(vault, folder, "forward", current, base, other)
+        backward = _merge_in(vault, folder, "reversed", *(_reversed_lines(b) for b in (current, base, other)))
     except OSError:
         return "git-unreadable"
     finally:
-        for name in names:
-            with contextlib.suppress(OSError):
-                os.unlink(name)
-    return "edited-since" if merged is None else merged
+        shutil.rmtree(folder, ignore_errors=True)
+    if forward is None or backward is None or _reversed_lines(backward) != forward:
+        return "edited-since"
+    return forward
 
 
 def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
@@ -276,11 +319,11 @@ def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
     after = _blob(vault, step.after)
     if before is None or after is None:
         return "git-unreadable"
-    kind, now = _current(vault / step.read)
+    kind, now, bits = _current(vault / step.read)
     if step.after is None:  # the change deleted it: put it back, unless something stands there now
         if kind != "absent" or step.before is None:
             return "edited-since"
-        return [_Op(step.write, before, _file_mode(step.before))]
+        return [_Op(step.write, before, _file_mode(step.before.mode))]
     if kind != ("link" if step.after.mode == _LINK_MODE else "file"):
         return "edited-since"
     if step.before is None:  # the change added it (a symlink: its target): remove it, unless edited since
@@ -300,14 +343,19 @@ def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
             # doesn't count as its rollback): an undo would write nothing and stay due forever.
             return "edited-since"
         result = merged
-    ops = [_Op(step.write, result, _file_mode(step.before))]
+    # The mode merges like the content: P's where the change set it and the file still has the change's, else the
+    # file's own (a later chmod stays). W's kind matches C's (checked above) and a file has two modes, so the three
+    # can't all differ.
+    now_mode = _LINK_MODE if kind == "link" else ("100755" if bits & stat.S_IXUSR else "100644")
+    mode = _file_mode(step.before.mode) if now_mode == step.after.mode != step.before.mode else bits
+    ops = [_Op(step.write, result, mode)]
     if step.read != step.write:
         ops.append(_Op(step.read, None))
     return ops
 
 
-def _file_mode(side: _Side) -> int:
-    return 0o755 if side.mode == "100755" else 0o644
+def _file_mode(mode: str) -> int:
+    return 0o755 if mode == "100755" else 0o644
 
 
 def _undo(vault: Path, plan: _Plan) -> list[_Op] | str:
@@ -322,9 +370,13 @@ def _undo(vault: Path, plan: _Plan) -> list[_Op] | str:
     - a file the change added: removed only when ``W`` is exactly ``C`` (a symlink: the same target);
     - a file it deleted: restored only when nothing stands at that path now;
     - a rename: merged as modified (``W`` read at the new path), written at the old path (refused if something stands
-      there now), the new path removed.
+      there now), the new path removed;
+    - a file and a folder that traded places (the change turned a file into a folder, or the reverse): refused as
+      ``edited-since``. Undoing it would mean removing a folder before writing a file there, which the undo doesn't
+      do; no truer reason exists among the ones ``due`` reports, so it fails closed under that one.
 
-    Restored and merged files get ``P``'s mode (the executable bit)."""
+    The mode merges 3-way like the content: a restored file gets ``P``'s; a merged one gets ``P``'s where the change
+    changed it and the file still has ``C``'s, and otherwise keeps its own (a later ``chmod +x`` stays)."""
     # Uncommitted work on these paths (a run mid-edit, a rollback not yet committed) would be mixed into the undo.
     dirty = _git_bytes(vault, "--literal-pathspecs", "status", "--porcelain", "-z", "--", *plan.paths)
     if dirty is None:

@@ -382,6 +382,84 @@ def test_an_undo_beside_an_edited_twin_block_restores_the_first_and_keeps_the_ed
     assert (repo / "SKILL.md").read_text() == _twin_skill(_TWIN, second)
 
 
+_SEP = "---\n"
+
+
+@pytest.mark.parametrize(
+    ("parent", "change", "since"),
+    [
+        # Adjacent twins: the run made the first block match the second, a later commit deleted the first. Deleting
+        # either copy gives the same bytes, and a forward merge alone takes back the copy that was never the change's.
+        (f"# Skill\n\n{_TWIN}{_TIGHT}end\n", f"# Skill\n\n{_TIGHT}{_TIGHT}end\n", f"# Skill\n\n{_TIGHT}end\n"),
+        # Periodic twins (S B S B S, the separators repeat too), the first "B S" deleted.
+        (f"{_SEP}{_TWIN}{_SEP}{_TIGHT}{_SEP}", f"{_SEP}{_TIGHT}{_SEP}{_TIGHT}{_SEP}", f"{_SEP}{_TIGHT}{_SEP}"),
+    ],
+    ids=["adjacent", "periodic"],
+)
+def test_an_undo_never_takes_back_the_other_copy_when_the_changes_own_block_was_deleted(
+    repo, env, parent, change, since
+):
+    """I-1: the merge is also run on the line-reversed files, and the two must agree."""
+    _commit(repo, "scout: a SKILL.md with a repeated block", {"SKILL.md": parent}, date=NOW - timedelta(days=30))
+    cid = _cid(_brain_edit(repo, days_ago=3, content=change))
+    _commit(repo, "scout: drop the first block", {"SKILL.md": since})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def test_a_later_chmod_survives_the_undo(repo, env):
+    """I-2: the mode merges like the content. The change didn't touch the bit, a later commit set it: it stays."""
+    _commit(repo, "seed a script", {"scripts/run.sh": _LONG}, date=NOW - timedelta(days=30))
+    cid = _cid(
+        _commit(repo, "dreaming [22:12]: driver tweak", {"scripts/run.sh": _LONG.replace("line 3\n", "line 3!\n")})
+    )
+    (repo / "scripts/run.sh").chmod(0o755)
+    _commit(repo, "scout: make it executable", {})
+    scan(repo, since=None)
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["scripts/run.sh"]
+    assert (repo / "scripts/run.sh").read_text() == _LONG and os.access(repo / "scripts/run.sh", os.X_OK)
+    assert "mode change" not in _git(repo, "diff", "--summary")
+
+
+def test_a_later_chmod_at_a_renames_new_path_moves_back_with_it(repo, env):
+    cid = _renaming_change(repo)
+    (repo / "knowledge-base/b/a.md").chmod(0o755)
+    _commit(repo, "scout: make the note executable", {})
+    _undo(repo, env, cid)
+    rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert (repo / "knowledge-base/a.md").read_text() == _LONG and os.access(repo / "knowledge-base/a.md", os.X_OK)
+
+
+@pytest.mark.parametrize("direction", ["file to folder", "folder to file"])
+def test_a_file_and_a_folder_trading_places_is_refused(repo, env, direction):
+    """M-3: undoing it would mean removing a folder before writing a file there (or the reverse), which the undo
+    doesn't do; it refuses as edited-since (no truer reason exists) and writes nothing."""
+    first, second = ("scripts/x", "scripts/x/y") if direction == "file to folder" else ("scripts/x/y", "scripts/x")
+    _commit(repo, "seed", {first: "one\n"}, date=NOW - timedelta(days=30))
+    (repo / first).unlink()
+    if direction == "folder to file":
+        (repo / "scripts/x").rmdir()
+    sha = _commit(
+        repo, "dreaming [22:12]: SKILL.md self-edit — reshape a driver", {"SKILL.md": "v2\n", second: "two\n"}
+    )
+    scan(repo, since=None)
+    assert _refused(repo, env, _cid(sha)) == "edited-since"
+
+
+def test_an_undo_blocked_on_one_file_writes_no_other(repo, env):
+    """M-4: all or nothing across files. SKILL.md would undo cleanly, but the driver's line was edited since."""
+    sha = _commit(
+        repo,
+        "dreaming [22:12]: SKILL.md self-edit — and its driver",
+        {"SKILL.md": "skill v2\n", "scripts/x.py": "print(2)\n"},
+        date=NOW - timedelta(days=3),
+    )
+    _commit(repo, "scout: the driver by hand", {"scripts/x.py": "print(3)\n"})
+    scan(repo, since=None)
+    assert _refused(repo, env, _cid(sha)) == "edited-since"
+    assert (repo / "SKILL.md").read_text() == "skill v2\n"
+
+
 def _changes_rows(repo: Path, env: dict[str, str]) -> list[dict]:
     from scout.changes.report import changes_report
 
@@ -1072,16 +1150,17 @@ def test_plan_refusals(repo, monkeypatch):
 
 @pytest.fixture
 def tmpdir_for_merges(tmp_path, monkeypatch) -> Path:
-    """The system temp folder `merge-file`'s inputs go to, watched: it must be empty after every undo."""
-    import tempfile
+    """The temp root the merges' folder is made in, watched: it must be empty after every undo."""
+    from scout.changes import actions
 
-    folder = tmp_path / "system-tmp"
+    folder = tmp_path / "account-tmp"
     folder.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    monkeypatch.setattr(actions, "_temp_root", lambda: str(folder))
     return folder
 
 
-def test_merge_temp_files_live_outside_the_vault_and_are_always_removed(repo, env, tmpdir_for_merges, monkeypatch):
+def _merge_inputs_spy(monkeypatch, check) -> list[str]:
+    """Record every `merge-file` input path, calling ``check(paths)`` while the inputs exist."""
     from scout.changes import actions
 
     seen: list[str] = []
@@ -1089,19 +1168,79 @@ def test_merge_temp_files_live_outside_the_vault_and_are_always_removed(repo, en
 
     def spy(vault, *args, **kw):
         if "merge-file" in args:
-            seen.extend(a for a in args if a.startswith(str(tmpdir_for_merges)))
-            assert len(list(tmpdir_for_merges.iterdir())) == 3  # current, base, other: all outside the vault
+            names = list(args[args.index("--") + 1 :])
+            check(names)
+            seen.extend(names)
         return real(vault, *args, **kw)
 
     monkeypatch.setattr(actions, "_git_bytes", spy)
+    return seen
+
+
+def test_merge_temp_files_live_outside_the_vault_and_are_always_removed(repo, env, tmpdir_for_merges, monkeypatch):
+    def check(names: list[str]) -> None:
+        assert len(names) == 3 and all(Path(n).is_file() for n in names)
+        [folder] = tmpdir_for_merges.iterdir()  # one fresh folder for the forward and the reversed merge
+        assert all(Path(n).parent == folder for n in names)
+
+    seen = _merge_inputs_spy(monkeypatch, check)
     cid = _cid(_brain_edit(repo, days_ago=3))
     _undo(repo, env, cid)
     assert _problem(repo, env, cid) is None  # a clean merge
     assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
     _commit(repo, "scout: rewrite SKILL.md", {"SKILL.md": "skill v3\n"})
     assert _problem(repo, env, cid) == "edited-since"  # a conflict
-    assert len(seen) >= 9 and not any(s.startswith(str(repo)) for s in seen)
+    assert len(seen) >= 18 and not any(s.startswith(str(repo)) for s in seen)
     assert list(tmpdir_for_merges.iterdir()) == [] and not list(repo.glob("**/scout-undo.*"))
+
+
+def test_a_run_set_tmpdir_never_puts_merge_inputs_in_the_vault(repo, env, monkeypatch):
+    """M-1: a run's environment doesn't choose where the merge inputs go (it could point TMPDIR into the vault, or
+    at a folder it watches to swap an input before merge-file reads it)."""
+    import tempfile
+
+    planted = repo / ".scout-cache" / "tmp"
+    planted.mkdir(parents=True)
+    monkeypatch.setenv("TMPDIR", str(planted))
+    monkeypatch.setattr(tempfile, "tempdir", None)  # re-read TMPDIR
+    assert tempfile.gettempdir() == str(planted)
+    seen = _merge_inputs_spy(monkeypatch, lambda names: None)
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+    assert seen and not any(Path(n).resolve().is_relative_to(repo.resolve()) for n in seen)
+    assert list(planted.iterdir()) == []
+
+
+def test_the_temp_root_ignores_the_environment(monkeypatch):
+    from scout.changes import actions
+
+    monkeypatch.setenv("TMPDIR", "/somewhere/a/run/chose")
+    monkeypatch.setattr(actions.sys, "platform", "darwin")
+    monkeypatch.setattr(actions.os, "confstr", lambda name: "/var/folders/xx/T/" if name == 65537 else None)
+    assert actions._temp_root() == "/var/folders/xx/T/"
+    for answer in (None, ""):
+        monkeypatch.setattr(actions.os, "confstr", lambda name, a=answer: a)
+        assert actions._temp_root() == "/tmp"
+
+    def unknown(name):
+        raise ValueError("unrecognized configuration name")
+
+    monkeypatch.setattr(actions.os, "confstr", unknown)
+    assert actions._temp_root() == "/tmp"
+    monkeypatch.setattr(actions.sys, "platform", "linux")
+    assert actions._temp_root() == "/tmp"
+
+
+def test_a_temp_root_inside_the_vault_is_refused(repo, env, monkeypatch):
+    from scout.changes import actions
+
+    inside = repo / ".scout-cache"
+    inside.mkdir()
+    monkeypatch.setattr(actions, "_temp_root", lambda: str(inside))
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    assert _refused(repo, env, cid) == "git-unreadable"
+    assert list(inside.iterdir()) == []
 
 
 def test_a_merge_file_error_is_edited_since(repo, env, tmpdir_for_merges, monkeypatch):
@@ -1115,23 +1254,30 @@ def test_a_merge_file_error_is_edited_since(repo, env, tmpdir_for_merges, monkey
     assert list(tmpdir_for_merges.iterdir()) == []
 
 
-@pytest.mark.parametrize("fails_on", [1, 3])
+@pytest.mark.parametrize("fails", ["the folder", "an input"])
 def test_temp_files_that_cannot_be_made_are_git_unreadable_and_leave_nothing(
-    repo, env, tmpdir_for_merges, monkeypatch, fails_on
+    repo, env, tmpdir_for_merges, monkeypatch, fails
 ):
+    import builtins
     import tempfile
 
+    from scout.changes import actions
+
     cid = _cid(_brain_edit(repo, days_ago=3))
-    real = tempfile.mkstemp
-    calls = {"n": 0}
 
-    def flaky(*a, **k):
-        calls["n"] += 1
-        if calls["n"] % 3 == fails_on % 3:
-            raise OSError(28, "No space left on device")
-        return real(*a, **k)
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(tempfile, "mkstemp", flaky)
+    if fails == "the folder":
+        monkeypatch.setattr(tempfile, "mkdtemp", full)
+    else:
+        calls = {"n": 0}
+
+        def second_input_fails(*a, **k):
+            calls["n"] += 1
+            return full() if calls["n"] % 3 == 2 else builtins.open(*a, **k)  # every merge loses an input
+
+        monkeypatch.setattr(actions, "open", second_input_fails, raising=False)
     assert _refused(repo, env, cid) == "git-unreadable"
     assert list(tmpdir_for_merges.iterdir()) == []
 
