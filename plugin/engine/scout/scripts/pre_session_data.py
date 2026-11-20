@@ -60,7 +60,7 @@ REVIEW_REQUEST_LIMIT = 50
 KB_HEAD_SCAN_LINES = 5
 
 # Match the bash find filter: skip */ontology/* and *archive*.
-_SKIP_PATH_FRAGMENTS = ("/ontology/", "archive")
+_SKIP_PATH_FRAGMENTS = ("/ontology/", "archive", "/from-agents/")  # from-agents: agents' accepted text (#550 V4b2)
 
 # Mirrors the *intent* of the bash's ``grep -i 'last updated\|last verified'``
 # followed by ``sed 's/.*: *//'``. The bash sed is greedy on the LAST colon,

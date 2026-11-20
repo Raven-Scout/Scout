@@ -74,6 +74,7 @@ from scout.errors import KBError, KBSchemaError
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
+    FROM_AGENTS,
     FULL_READERS,
     Label,
     NoteFacts,
@@ -447,6 +448,11 @@ class KnowledgeGraph:
                 text, unreadable = read_head(md_file)
                 facts = note_facts(text, unreadable=unreadable)
             label = labeller.label_obj(md_file, facts)
+            if label.delegate_source and (facts.state == "ok" or label.path.startswith(FROM_AGENTS)):
+                # An agent's text the owner hasn't promoted is never an entity, for any reader: its name could
+                # stand in for a real one (#550 V4b2). It stays readable as a note. (Unreadable frontmatter
+                # elsewhere counts as one only for delegates, who never see it: it stays an entity.)
+                continue
             if not self._full and not visible_to(label, self.reader, labeller.policy):
                 continue
             frontmatter["_source_path"] = str(md_file)

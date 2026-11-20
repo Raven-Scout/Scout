@@ -187,13 +187,16 @@ kb_lint:
   # file is rewritten by the briefings, the legacy session log is migrated by
   # a one-time sharding step, and the topic board's files are state the app
   # and scoutctl read line by line (a "current state + links" rewrite would
-  # lose dismissals and names).
+  # lose dismissals and names). Agents' accepted observations
+  # (knowledge-base/from-agents/, #550 V4b2) are their text, quoted as the
+  # owner accepted it: never a rewrite target.
   report_exclude_globs:
     - "action-items/action-items-*.md"
     - "knowledge-base/session-log.md"
     - "action-items/topics.md"
     - "action-items/topic-names.md"
     - "action-items/dismissed.md"
+    - "knowledge-base/from-agents/**"
     # The backlog is a task list: a shrink pass would have to drop tasks.
     - "action-items/backlog.md"
   log_globs:

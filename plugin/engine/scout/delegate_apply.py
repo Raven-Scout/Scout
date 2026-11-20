@@ -109,7 +109,7 @@ def _event(vault: Path, payload: dict[str, Any], delegate: str) -> None:
 class ApplyResult:
     delegate: str
     outcomes: dict[str, str] = field(default_factory=dict)  # ULID -> outcome, for what this apply decided
-    waiting: int = 0  # observations: V4b
+    waiting: int = 0  # observations: for the owner's review (inbox review, V4b2)
     untaken: int = 0  # copies with no record at all: skipped, nothing recorded
     notes: list[str] = field(default_factory=list)
 
@@ -486,7 +486,7 @@ def apply(
         finally:
             os.close(dir_fd)
     if result.waiting:
-        result.notes.append(f"{result.waiting} observation(s) wait for the review queue (V4b)")
+        result.notes.append(f"{result.waiting} observation(s) wait for your review: scoutctl inbox review")
     if result.untaken:
         result.notes.append(f"{result.untaken} cop(ies) in the copies folder were never taken by a pull; ignored")
     return result
@@ -597,7 +597,10 @@ def _apply_one(
 
 
 def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None, commit: Committer | None = None) -> str:
-    """Put an applied op's task back as it was, in a commit of its own. The owner only. Returns the delegate."""
+    """Put an applied op's task back as it was, in a commit of its own. The owner only. Returns the delegate.
+
+    It also undoes what the owner accepted in ``inbox review`` (V4b2): a comment, the same way, and an
+    observation, by removing its note while it is unchanged and not promoted."""
     env = os.environ if env is None else env
     vault = vault.resolve()
     headless_gate(env, "Reverting a delegate's change")
@@ -611,9 +614,14 @@ def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None, comm
             raise RepoSyncError(
                 "ambiguous", f"refused: {ulid} is on record for {len(found)} delegates; fix the state by hand"
             )
-        if not found or found[0][1].get("outcome") != "applied":
+        if not found or found[0][1].get("outcome") not in ("applied", "accepted"):
             raise RepoSyncError("not_applied", f"refused: {ulid} wasn't applied, so there is nothing to revert")
         delegate, entry = found[0]
+        if entry.get("kind") == "observation":
+            from scout.delegate_review import revert_observation
+
+            revert_observation(vault, delegate, ulid, entry, state, commit)
+            return delegate
         rel = _daily_rel(entry["date"])
         path = vault / rel
         if not _plain(vault, rel):

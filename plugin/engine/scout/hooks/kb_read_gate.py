@@ -154,9 +154,10 @@ def _deny_detach() -> str:
 def _deny_delegate_write() -> str:
     return (
         f"{MARK} A scheduled run doesn't link, unlink or re-trust the owner's agents' mirrors, change their deploy "
-        "keys (`scoutctl delegate link|unlink|key|trust-state`), or pull, apply or revert their inboxes "
-        "(`scoutctl inbox pull|apply|revert|sync`): those are the owner's, or the schedule tick's own step between "
-        "runs. `scoutctl delegate sync` and `status` are fine. If one of these is needed, say so in the run notes."
+        "keys (`scoutctl delegate link|unlink|key|trust-state`), or pull, apply, revert or review their "
+        "inboxes (`scoutctl inbox pull|apply|revert|sync|review`): those are the owner's, or the schedule "
+        "tick's own step between runs. `scoutctl delegate sync` and `status` are fine. If one of these is "
+        "needed, say so in the run notes."
     )
 
 
@@ -252,6 +253,14 @@ def _deny_agent_text(form: str) -> str:
     )
 
 
+def _deny_agent_notes(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't create, change or move {form} (knowledge-base/from-agents/): they hold "
+        "the owner's agents' text exactly as the owner accepted it, and only `scoutctl inbox review` writes them. "
+        "Read them (they are marked [from-agent]); put anything new in another note."
+    )
+
+
 def _deny_title_rewrites(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't change {form} (.scout-state/title-rewrites.jsonl): they decide which "
@@ -270,6 +279,7 @@ def _deny_skip_form(form: str) -> str:
         hp.DELEGATE_STATE: _deny_delegate_state,
         hp.TITLE_REWRITES: _deny_title_rewrites,
         hp.AGENT_TEXT: _deny_agent_text,
+        hp.AGENT_NOTES: _deny_agent_notes,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
