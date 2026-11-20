@@ -11,7 +11,7 @@
         "severity": "red",
         "since": "2026-11-16T08:30:00Z",
         "source": "ledger",
-        "summary": "The last 1 scheduled run(s) were skipped: Scout couldn't check its privacy hooks safely, because a Claude setting names an endpoint the check can't keep on this machine.",
+        "summary": "The last scheduled run was skipped: Scout couldn't check its privacy hooks safely, because a Claude setting names an endpoint the check can't keep on this machine.",
         "until": null
       },
       {
@@ -22,7 +22,7 @@
         "severity": "red",
         "since": "2026-11-14T09:00:00Z",
         "source": "ledger",
-        "summary": "1 scheduled run(s) in the last 7 days changed a protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new commit.",
+        "summary": "1 scheduled run in the last 7 days changed a protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new commit.",
         "until": null
       },
       {
@@ -44,7 +44,7 @@
         "severity": "note",
         "since": null,
         "source": "ledger",
-        "summary": "1 run(s) skipped in the last 24 h because Agnes held the repository writer lease (an Agnes-hosted run): evening-consolidation.",
+        "summary": "1 run skipped in the last 24 h because Agnes held the repository writer lease (an Agnes-hosted run): evening-consolidation.",
         "until": null
       }
     ],

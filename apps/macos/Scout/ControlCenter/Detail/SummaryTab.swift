@@ -154,7 +154,7 @@ struct SummaryTab: View {
             await MainActor.run {
                 summary = extracted
                 if extracted == nil {
-                    fallbackPreview = Self.tail(text, lines: 20)
+                    fallbackPreview = Self.fallbackPreview(of: text)
                 }
             }
         } catch {
@@ -192,7 +192,14 @@ struct SummaryTab: View {
         return body.isEmpty ? nil : body
     }
 
-    static func tail(_ text: String, lines n: Int) -> String {
+    /// The last lines of a log with no summary block, as plain text: the
+    /// session's own markdown (`**Housekeeping:**`) showed raw in the
+    /// monospaced box (UI audit T3), and a log tail isn't worth rendering.
+    nonisolated static func fallbackPreview(of text: String) -> String {
+        PlainText.strippingMarkdown(tail(text, lines: 20))
+    }
+
+    nonisolated static func tail(_ text: String, lines n: Int) -> String {
         let arr = text.components(separatedBy: "\n")
         return arr.suffix(n).joined(separator: "\n")
     }

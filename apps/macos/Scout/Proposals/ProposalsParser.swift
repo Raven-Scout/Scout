@@ -70,18 +70,16 @@ nonisolated enum ProposalsParser {
 
     /// Parse simple `key: value` frontmatter lines. Keys are lowercased; the
     /// value keeps everything after the first colon (so a value may itself
-    /// contain colons), with surrounding double quotes stripped.
+    /// contain colons), unquoted as YAML reads a quoted scalar
+    /// (`PerFileItemParser.yamlUnquoted`).
     static func parseFrontmatterFields(_ frontmatter: String) -> [String: String] {
         var out: [String: String] = [:]
         for line in frontmatter.components(separatedBy: "\n") {
             guard let colon = line.firstIndex(of: ":") else { continue }
             let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
             guard !key.isEmpty else { continue }
-            var value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
-                value = String(value.dropFirst().dropLast())
-            }
-            out[key] = value
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            out[key] = PerFileItemParser.yamlUnquoted(value)
         }
         return out
     }

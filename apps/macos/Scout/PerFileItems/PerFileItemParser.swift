@@ -48,10 +48,50 @@ nonisolated enum PerFileItemParser {
             let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
             guard !key.isEmpty else { continue }
             var value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            if unquote, value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
-                value = String(value.dropFirst().dropLast())
-            }
+            if unquote { value = yamlUnquoted(value) }
             out[key] = value
+        }
+        return out
+    }
+
+    /// A one-line YAML scalar's value as YAML reads it: a double-quoted
+    /// string loses its quotes and its escapes (`\"`, `\\`, `\n`, `\t`,
+    /// `\uXXXX`); a single-quoted one loses its quotes and reads `''` as `'`.
+    /// Anything else is kept as written. Without the escapes, a Research
+    /// title written `"Ship the \"bigger\" plan"` showed its backslashes
+    /// (UI audit T3).
+    static func yamlUnquoted(_ value: String) -> String {
+        guard value.count >= 2, let quote = value.first, quote == "\"" || quote == "'",
+              value.last == quote else { return value }
+        let inner = value.dropFirst().dropLast()
+        if quote == "'" { return inner.replacingOccurrences(of: "''", with: "'") }
+        var out = ""
+        var chars = inner.makeIterator()
+        while let ch = chars.next() {
+            guard ch == "\\", let escaped = chars.next() else {
+                out.append(ch)
+                continue
+            }
+            switch escaped {
+            case "\"", "\\", "/": out.append(escaped)
+            case "n": out.append("\n")
+            case "t": out.append("\t")
+            case "0": out.append("\0")
+            case " ": out.append(" ")
+            case "u", "x":
+                let digits = escaped == "u" ? 4 : 2
+                var hex = ""
+                while hex.count < digits, let h = chars.next() { hex.append(h) }
+                if hex.count == digits, let code = UInt32(hex, radix: 16), let scalar = Unicode.Scalar(code) {
+                    out.unicodeScalars.append(scalar)
+                } else {
+                    out += "\\\(escaped)\(hex)"
+                }
+            default:
+                // Not a YAML escape: keep it as written rather than guess.
+                out.append("\\")
+                out.append(escaped)
+            }
         }
         return out
     }

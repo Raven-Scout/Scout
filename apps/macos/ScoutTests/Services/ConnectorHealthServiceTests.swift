@@ -44,7 +44,7 @@ struct ConnectorHealthServiceTests {
         let alertState = """
         {"schema_version": 1, "generated_at": "\(alertTs)", "mode": "consolidation", "alerts": [
           {"connector_key": "mcp:claude_ai_Google_Drive", "level": "CRITICAL", "name": "Google Drive",
-           "reason": "3 failed call(s) in `consolidation` run", "ts": "\(alertTs)", "first_seen": "\(firstSeen)"}
+           "reason": "3 failed calls in `consolidation` run", "ts": "\(alertTs)", "first_seen": "\(firstSeen)"}
         ]}
         """
         try alertState.write(

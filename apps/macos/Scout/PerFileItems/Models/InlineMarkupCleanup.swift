@@ -127,9 +127,12 @@ nonisolated enum InlineMarkupCleanup {
     /// Exactly two asterisks, not part of a longer run (`***` is left alone).
     private static let boldMarkRe = try! NSRegularExpression(pattern: #"(?<!\*)\*\*(?!\*)"#)
 
-    /// When the `**` marks (outside code) don't pair up, drop the last one if
-    /// it reads as a cut-off bold span. A mark with spaces on both sides can
-    /// neither open nor close bold, so it doesn't count toward the pairing.
+    /// Drop each `**` (outside code) that pairs with nothing, if it reads as a
+    /// cut-off bold span. Marks pair the way the markdown parser pairs them: a
+    /// mark with text after it can open, one with text before it can close,
+    /// and a closer takes the nearest open mark. So in `**A and **B**` the
+    /// first mark is the stray one, not the last (UI audit T3). A mark with
+    /// spaces on both sides can do neither, so it doesn't count.
     private static func balanceBold(_ parts: [Segment]) -> [Segment] {
         var parts = parts
         let joined = parts.map(\.text).joined() as NSString
@@ -150,11 +153,27 @@ nonisolated enum InlineMarkupCleanup {
         }
         func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
         let pairing = marks.filter { !(isSpace(unit($0.absolute - 1)) && isSpace(unit($0.absolute + 2))) }
-        guard pairing.count % 2 == 1, let last = pairing.last,
-              isCutOffBold(at: last.absolute, in: joined, unit: unit) else { return parts }
-
-        let ns = parts[last.segment].text as NSString
-        parts[last.segment].text = ns.replacingCharacters(in: NSRange(location: last.location, length: 2), with: "")
+        var open: [Int] = []       // indexes into `pairing`
+        var unpaired: [Int] = []
+        for (i, mark) in pairing.enumerated() {
+            let canClose = !isSpace(unit(mark.absolute - 1))
+            let canOpen = !isSpace(unit(mark.absolute + 2))
+            if canClose, !open.isEmpty {
+                open.removeLast()
+            } else if canOpen {
+                open.append(i)
+            } else {
+                unpaired.append(i)
+            }
+        }
+        unpaired += open
+        // Last first, so each removal leaves the earlier marks' offsets as they were.
+        for i in unpaired.sorted(by: >) {
+            let mark = pairing[i]
+            guard isCutOffBold(at: mark.absolute, in: joined, unit: unit) else { continue }
+            let ns = parts[mark.segment].text as NSString
+            parts[mark.segment].text = ns.replacingCharacters(in: NSRange(location: mark.location, length: 2), with: "")
+        }
         return parts
     }
 

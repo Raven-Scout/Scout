@@ -67,19 +67,21 @@ struct ProblemView: View {
     }
 
     /// What happened, why it matters, what to do, the buttons and the details.
+    /// The engine writes commands in backticks; `PlainText.codeSpans` sets
+    /// them in monospace instead of showing the backticks (UI audit T3).
     @ViewBuilder private var lines: some View {
-        Text(problem.title)
+        Text(PlainText.codeSpans(problem.title))
             .font(DS.font(.label, weight: .semibold))
             .foregroundStyle(DS.Ink.p1)
             .fixedSize(horizontal: false, vertical: true)
         if let impact = problem.impact {
-            Text(impact)
+            Text(PlainText.codeSpans(impact))
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let fix = problem.fix {
-            (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+            (Text("What to do: ").fontWeight(.semibold) + Text(PlainText.codeSpans(fix)))
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)

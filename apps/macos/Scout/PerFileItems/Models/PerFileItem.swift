@@ -6,6 +6,9 @@ nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
     let fileURL: URL          // stable identity + the file the writer rewrites
     let date: String          // frontmatter date: or filename YYYY-MM-DD prefix
     let title: String         // frontmatter title: or filename stem
+    /// `title` as a card shows it: model-written titles carry stray markdown
+    /// (a cut-off `**`, backticks), which a title can't render (UI audit T3).
+    let displayTitle: String
     let status: ItemStatus
     let priority: ItemPriority
     let source: String?       // wishlist provenance (optional)
@@ -20,6 +23,7 @@ nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
         self.fileURL = fileURL
         self.date = date
         self.title = title
+        self.displayTitle = PlainText.strippingMarkdown(title)
         self.status = status
         self.priority = priority
         self.source = source

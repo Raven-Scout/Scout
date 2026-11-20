@@ -75,7 +75,10 @@ struct KBRightPanel: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bl.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                                     if !bl.excerpt.isEmpty {
-                                        InlineMarkdownText(bl.excerpt)
+                                        // Plain text: a one-line snippet of a table row or a bold
+                                        // label can't render, and links inside a row that is
+                                        // itself a button would compete with it (UI audit T3).
+                                        Text(PlainText.strippingMarkdown(bl.excerpt))
                                             .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                             .lineLimit(2).multilineTextAlignment(.leading)
                                     }

@@ -158,7 +158,7 @@ struct PerFileListView: View {
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close details")
-            Text(item.title).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
+            Text(item.displayTitle).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
             Spacer()
             ItemStatusPill(status: item.status)
