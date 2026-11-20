@@ -286,3 +286,146 @@ def test_to_dict_has_every_key():
         "cwd": "/v",
         "prompt": "p",
     }
+
+
+# --- connectors and runs (Task 2) ----------------------------------------------------------------
+
+
+def _write_alerts(vault: Path, alerts: list[dict]) -> None:
+    doc = {"schema_version": 1, "generated_at": "2026-11-19T17:09:00Z", "mode": "morning-briefing", "alerts": alerts}
+    (vault / ".scout-logs" / "connector-alerts.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+ALERT = {
+    "connector_key": "mcp:example_tracker",
+    "level": "CRITICAL",
+    "name": "Example tracker",
+    "reason": "3 errors in a row",
+    "ts": "2026-11-19T17:09:00Z",
+    "first_seen": "2026-11-18T17:09:00Z",
+}
+
+
+def test_connector_prompt(tmp_path):
+    vault = build_vault(tmp_path)
+    _write_alerts(vault, [ALERT])
+    p = resolve_prompt.for_connector(vault, "mcp:example_tracker")
+    assert (p.kind, p.key, p.current, p.cwd) == ("connector", "mcp:example_tracker", True, str(vault))
+    assert "mcp:example_tracker" in p.prompt and "3 errors in a row" in p.prompt and "CRITICAL" in p.prompt
+    assert "2026-11-18T17:09:00Z" in p.prompt
+    evidence = _section(p.prompt, "## Evidence to read")
+    assert str(vault / ".scout-logs" / "connector-alerts.json") in evidence
+    assert str(vault / ".scout-logs" / "connector-alerts.log") in evidence
+    assert "scoutctl connectors probe-registry" in p.prompt
+    assert resolve_prompt.GUARDRAILS in p.prompt
+
+
+def test_connector_picks_the_critical_alert(tmp_path):
+    vault = build_vault(tmp_path)
+    _write_alerts(vault, [{**ALERT, "level": "WARNING", "reason": "1 slow call"}, ALERT])
+    p = resolve_prompt.for_connector(vault, "mcp:example_tracker")
+    assert "3 errors in a row" in _section(p.prompt, "## What Scout saw").split("\n- ")[1]
+
+
+def test_connector_not_in_alerts_is_not_current(tmp_path):
+    vault = build_vault(tmp_path)
+    _write_alerts(vault, [ALERT])
+    p = resolve_prompt.for_connector(vault, "notify:desktop")
+    assert p.current is False
+    assert "confirm it cleared, and why" in p.prompt.lower()
+
+
+def test_connector_without_alerts_file_is_not_current(tmp_path):
+    vault = build_vault(tmp_path)
+    assert resolve_prompt.for_connector(vault, "mcp:example_tracker").current is False
+
+
+def _failed_vault(tmp_path: Path, **fields) -> Path:
+    started = datetime(2026, 11, 19, 17, 3, tzinfo=UTC)
+    row = _row(started, 2, **{"outcome": "failed", "exit_code": 1, "failure_class": "oauth_expired", **fields})
+    vault = build_vault(tmp_path, rows=[row])
+    with (vault / ".scout-logs" / LOG).open("a", encoding="utf-8") as f:
+        f.write("API Error: 401 OAuth token has expired. Please obtain a new token.\n")
+    return vault
+
+
+def test_run_prompt_failed(tmp_path):
+    vault = _failed_vault(tmp_path)
+    p = resolve_prompt.for_run(vault, LOG)
+    assert (p.kind, p.key, p.current, p.cwd) == ("run", LOG, True, str(vault))
+    evidence = _section(p.prompt, "## Evidence to read")
+    assert str(vault / ".scout-logs" / LOG) in evidence
+    assert str(vault / ".scout-logs" / "run-outcomes.jsonl") in evidence
+    started = int(datetime(2026, 11, 19, 17, 3, tzinfo=UTC).timestamp())
+    assert f"`started_at` {started}" in evidence
+    assert "oauth_expired" in p.prompt and "morning-briefing" in p.prompt
+    assert "API Error: 401 OAuth token has expired" in _section(p.prompt, "## What Scout saw")
+    assert resolve_prompt.GUARDRAILS in p.prompt
+
+
+def test_run_rate_limited_names_reset(tmp_path):
+    resets = datetime(2026, 11, 19, 22, 0, tzinfo=UTC)
+    vault = _failed_vault(tmp_path, failure_class="rate_limited", resets_at=int(resets.timestamp()))
+    p = resolve_prompt.for_run(vault, LOG)
+    assert "2026-11-19T22:00:00Z" in p.prompt
+    assert "scoutctl budget usage --json" in p.prompt
+
+
+@pytest.mark.parametrize(
+    ("outcome", "command"),
+    [
+        ("skipped_gates", "scoutctl protection status --json"),
+        ("skipped_sandbox", "scoutctl sandbox status"),
+        ("skipped_runtime", "scoutctl agent-runtime check --slot morning-briefing"),
+        ("skipped_lease", "scoutctl repo lease status"),
+    ],
+)
+def test_run_safety_skips_name_their_state_command(tmp_path, outcome, command):
+    row = _row(datetime(2026, 11, 19, 17, 3, tzinfo=UTC), 0, outcome=outcome, commits_in_window=0)
+    vault = build_vault(tmp_path, rows=[row])
+    p = resolve_prompt.for_run(vault, row["log"])
+    assert command in _section(p.prompt, "## Reproduce and verify")
+
+
+def test_run_later_ok_is_not_current(tmp_path):
+    failed = _row(datetime(2026, 11, 19, 17, 3, tzinfo=UTC), 2, outcome="failed", exit_code=1, failure_class="network")
+    ok = _row(datetime(2026, 11, 19, 19, 0, tzinfo=UTC), 5)
+    vault = build_vault(tmp_path, rows=[failed, ok])
+    p = resolve_prompt.for_run(vault, LOG)
+    assert p.current is False
+    assert "a later run of `morning-briefing` succeeded" in p.prompt.lower()
+
+
+def test_run_without_ledger_row_builds_from_log(tmp_path):
+    vault = build_vault(tmp_path, rows=[])
+    p = resolve_prompt.for_run(vault, LOG)
+    assert p.current is True
+    evidence = _section(p.prompt, "## Evidence to read")
+    assert str(vault / ".scout-logs" / LOG) in evidence
+    assert "run-outcomes.jsonl" not in evidence
+    assert "no row" in _section(p.prompt, "## What Scout saw")
+
+
+def test_run_with_no_row_and_no_log_raises(tmp_path):
+    vault = build_vault(tmp_path, rows=[])
+    with pytest.raises(resolve_prompt.ResolveError):
+        resolve_prompt.for_run(vault, "scout-2026-01-01_00-00.log")
+
+
+def test_run_and_connector_prompts_never_contain_file_content(tmp_path):
+    vault = _failed_vault(tmp_path)
+    _write_alerts(vault, [ALERT])
+    for p in (resolve_prompt.for_run(vault, LOG), resolve_prompt.for_connector(vault, "mcp:example_tracker")):
+        assert CANARY_LOG not in p.prompt and CANARY_SETTINGS not in p.prompt
+
+
+def test_build_dispatches_and_validates(tmp_path, quiet_health):
+    vault = _failed_vault(tmp_path)
+    _write_alerts(vault, [ALERT])
+    assert resolve_prompt.build(vault, "run", LOG).kind == "run"
+    assert resolve_prompt.build(vault, "connector", "mcp:example_tracker").kind == "connector"
+    assert resolve_prompt.build(vault, "finding", "runs.failing", now=NOW, home=tmp_path / "home").kind == "finding"
+    with pytest.raises(resolve_prompt.ResolveError):
+        resolve_prompt.build(vault, "run", "../x.log")
+    with pytest.raises(resolve_prompt.ResolveError):
+        resolve_prompt.build(vault, "bogus", "x")
