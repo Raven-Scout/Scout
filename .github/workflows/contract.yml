@@ -463,6 +463,46 @@ jobs:
           done <<< "$tracked"
           exit $status
 
+      # 11. The investigation prompts (`scoutctl health resolve-prompt <kind>
+      #     <key> --json`) behind the app's "Resolve with Claude" button: same
+      #     rule as the doctor fixture.
+      - name: Resolve prompt fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/resolve-prompt.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/resolve-prompt.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::resolve-prompt.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_resolve_prompt_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of resolve-prompt.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*resolve-prompt.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked resolve-prompt.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
   contract:
     name: contract
     needs: [changes, verify]
