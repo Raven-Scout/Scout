@@ -2222,5 +2222,181 @@
     "frontmatter_text": "---\nn: !!bool foo\nvisibility: normal\n---\n# Note\n\nBody text.\n",
     "path": "knowledge-base/topics/misc/unbuildable-tag.md",
     "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/from-a-shared-note.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: From a shared note\nvisibility: normal\nsource: shared:priya@example.com:knowledge-base/topics/plan.md\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/from-a-shared-note.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/from-agents/helper/01JD5Z0000000000000000ABCD.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntitle: Observation from helper\nsource: delegate:helper\nvisibility: private\n---\n\nBody text.\n",
+    "path": "knowledge-base/from-agents/helper/01JD5Z0000000000000000ABCD.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/from-agents/helper/hand-made.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntitle: Hand made\nvisibility: normal\n---\nBody text.\n",
+    "path": "knowledge-base/from-agents/helper/hand-made.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/from-agents/helper/01JD5Z0000000000000000ABCE.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntitle: Observation from helper\npromoted_from: delegate:helper\nvisibility: normal\ndelegate_scope:\n- helper\n---\n\nBody text.\n",
+    "path": "knowledge-base/from-agents/helper/01JD5Z0000000000000000ABCE.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/from-an-agent.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: From an agent\nvisibility: normal\nsource: delegate:helper\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/from-an-agent.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/promoted-observation.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntitle: Observation from helper\npromoted_from: delegate:helper\nvisibility: normal\n---\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/promoted-observation.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
   }
 ]
