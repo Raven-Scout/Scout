@@ -1294,7 +1294,7 @@ line limit.
   caught. An accepted agent's note is private, so naming or linking it is already caught, but its text
   isn't. Not needed for V4b2.
 
-#### V4b3 plan: the review in the app (2026-11-20, for the coordinator's review)
+#### V4b3 plan: the review in the app (2026-11-20, approved)
 
 Two PRs. The first is small and engine-only; the second is one cross-cutting commit, because it changes a contract the app
 reads (the root `CLAUDE.md`'s rule).
@@ -1337,24 +1337,33 @@ reads (the root `CLAUDE.md`'s rule).
     - Reject runs `scoutctl inbox review reject <ULID> --json`.
     - The sheet then refreshes both the list and the status.
   - **One allow-list.** A new `InboxReviewService` runs every `scoutctl inbox` command in the app through one `Command` enum
-    (`review`, `accept`, `reject`). A test fails on the quoted word `inbox` anywhere else in the app, as `DelegateStatusTests`
-    does for `delegate`. The app never runs `pull`, `apply`, `revert`, `sync`, `promote` or `unpromote`.
-  - **After accepting an observation,** the sheet says it stays private and names the Terminal command to promote it.
+    (see the decisions below). A test fails on the quoted word `inbox` anywhere else in the app, as `DelegateStatusTests`
+    does for `delegate`. The app never runs `pull`, `apply`, `revert` or `sync`.
+  - **After accepting an observation,** the sheet says it stays private until promoted.
 - **Tests.**
   - Engine: the builders and both contract tests, the `inbox` field's shape checks (a bad state, no inbox, a refused pull)
     and the counts.
   - App: decoding both fixtures, the model's plain-language lines, the confirmation's wording, and the allow-list scan.
   - The app's affected suites are derived from the touched symbols, with the source-scan guard suites added.
 
-**Open for the coordinator (each with a recommendation).**
+**Decided (2026-11-20, Jordan, through the coordinator).**
 
-1. **Confirming in the app.** Recommended: the confirmation shows the delegate id and the full text, its button names the
-   delegate, and the app passes `--confirm <ULID>`. The `--confirm` rule is there so that no script accepts by accident; a
-   person pressing a button that names the agent, under its full text, is the deliberate act it stands for. The alternative
-   is to make the owner type the ULID's last four characters.
-2. **Promote in the app: not in V4b3** (recommended). It stays the deliberate Terminal step, with its byte-bound preview.
-   An app button needs a `--preview --json` that returns the previewed hash and a `--previewed <sha>` the app passes back, and
-   that can come later if wanted.
+1. **Accept in the app: the named button.** The confirmation repeats the delegate id and the full escaped text, its button
+   reads `Accept from delegate-<id>`, and the app passes `--confirm <ULID>`. A person pressing a button that names the agent,
+   under its full text, is the deliberate act `--confirm` stands for.
+2. **Promote and unpromote in the app, in V4b3.** So PR 2 grows:
+   - **Engine.** `inbox review promote <ULID> --preview --json` writes nothing and returns the note's exact text (escaped as
+     in review), its look-alike words, the audience (the `--to` ids resolved, or every delegate that can see the folder when
+     there is no `--to`, as delegate ids) and the note's `sha256`. `promote <ULID> --previewed <sha> --confirm <ULID>` refuses
+     unless the note is byte for byte what was accepted and what was previewed, as now. `unpromote <ULID> --preview --json`
+     returns what goes back (the text, and who stops seeing it); `unpromote` gains `--confirm` and `--previewed` the same way.
+   - **App.** The promote dialog shows the full text and exactly who will see it, and its button names them (`Promote to
+     delegate-a, delegate-b`). The app passes the previewed hash back. A refusal (`note_changed` and the rest) is shown in
+     the engine's own words. Unpromote follows the same pattern: a preview of what reverts, then a named button.
+   - **The allow-list** becomes `review`, `accept`, `reject`, `promote` and `unpromote` (each with `--preview` where it has
+     one). The source-scan test still fails on `pull`, `apply`, `revert` or `sync`.
+   - **The contract.** `inbox-review.json` gains a promote preview from the builder, under the same byte copy and
+     `contract.yml` compare.
 
 ### 7.2 Why not let delegates write `main`
 
