@@ -60,7 +60,7 @@ def test_next_skips_pages_the_pass_must_not_copy(kb_repo) -> None:
     assert not rows["widgets"]["rebuild_target"] and not rows["widgets"]["conforms"]
     assert not rows["gadgets"]["rebuild_target"] and rows["sprockets"]["rebuild_target"]
     result = runner.invoke(cli.app, ["kb", "structure", "--next", "--repo", str(kb_repo.root)])
-    assert result.output == "sprockets\n"
+    assert result.output.splitlines()[0] == "sprockets"
     table = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)]).output
     assert sum("[--next skips]" in line for line in table.splitlines()) == 2
 
@@ -453,7 +453,10 @@ def test_a_share_skip_with_another_page_to_pick_is_silent(kb_repo, capsys) -> No
     kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/widgets/knowledge/**']\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
-    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == [
+        "gadgets",
+        f"commit: nightly KB pass — {P}/gadgets/gadgets.md",
+    ]
     assert capsys.readouterr().err == ""
 
 
