@@ -121,6 +121,10 @@ class SessionContext:
     # scout.action_items.past_due. None when it couldn't be computed; `action-items check-demotion`.
     past_due_tasks: list[dict[str, Any]] | None = field(default_factory=list)
     past_due_source: str = ""  # the date of the daily file they were read from
+    # The KB notes changed in the last few days that no run has re-verified since, most consequential
+    # first, each labelled: the dreaming fact-check pass's work list (scout.kb.fact_check). None when it
+    # couldn't be computed; `kb check-fact-check` holds a deep-work run to it before it commits.
+    fact_check_targets: list[dict[str, Any]] | None = field(default_factory=list)
     # What the owner's agents changed in today's file (#550 V4b, spec §7.1b), read from the signed inbox state,
     # never from git messages a run could forge: {"delegate", "op", "tag", "date", "commit", "ulid", "at"}.
     # Ids only: agent text never reaches a run. `phases/core/action-items.md` credits these, never the owner.
@@ -492,6 +496,7 @@ def gather(
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
     project_rows, people, queue = get_kb_sections(target, reader, labels, graph, now_dt.date())
+    fact_check = fact_check_for(session_type, target, now_dt.date(), reader)
     delegate_changes = get_delegate_changes(target, now_dt.date()) if full else []
 
     return SessionContext(
@@ -515,6 +520,7 @@ def gather(
         project_knowledge=project_rows,
         people_context=people,
         research_queue=queue,
+        fact_check_targets=fact_check,
         delegate_changes=delegate_changes,
     )
 
@@ -597,6 +603,22 @@ def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, 
     return source or "", [t.to_json() for t in tasks]
 
 
+def fact_check_for(session_type: str, scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """Only the dreaming run fact-checks: every other mode skips the history walk and the labels."""
+    return get_fact_check_targets(scout_dir, day, reader) if "dreaming" in session_type else []
+
+
+def get_fact_check_targets(scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """The dreaming fact-check pass's targets; see :mod:`scout.kb.fact_check`.
+    None when it fails, so `kb check-fact-check` says it couldn't check."""
+    from scout.kb.fact_check import fact_check_targets
+
+    try:
+        return [t.to_json() for t in fact_check_targets(scout_dir, day, reader)]
+    except Exception:
+        return None
+
+
 def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
     """The user's own Linear actions since the last run; see :mod:`scout.linear_activity`."""
     return fetch_own_activity(scout_dir, now=now)
@@ -642,6 +664,8 @@ __all__ = [
     "gather",
     "gather_kb_file_dates",
     "get_daily_before",
+    "fact_check_for",
+    "get_fact_check_targets",
     "get_git_recent",
     "get_kb_sections",
     "get_linear_own_activity",

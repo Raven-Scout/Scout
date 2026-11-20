@@ -624,12 +624,14 @@ def _page_bullets(f: StagedFile) -> list[Finding]:
         return []
     limit, sections = rules.cfg.max_bullet_chars, rules.cfg.bullet_sections
     added = {n for n, _ in f.added}
-    entries = section_entries(staged_text_lossy(f.repo, f.rel), sections)
+    staged = staged_text_lossy(f.repo, f.rel)
+    entries = section_entries(staged, sections)
     long = [(first, len(t)) for first, last, t in entries if len(t) > limit and any(first <= n <= last for n in added)]
-    if not long:
-        return []
     was_front = f.size_base is not None and _page_kind(rules, f.size_base) == "front"
     old = head_text_lossy(f.repo, f.size_base) if f.size_base and was_front else None
+    counted = _bullet_count_findings(f, rules, staged, old)
+    if not long:
+        return counted
     kept = {t for _, _, t in entries}
     spare = sorted(
         (len(t) for _, _, t in section_entries(old or "", sections) if len(t) > limit and t not in kept), reverse=True
@@ -657,7 +659,34 @@ def _page_bullets(f: StagedFile) -> list[Finding]:
     ]
     if len(new) > PAGE_NARRATION_SHOWN:
         out.append(Finding(f.rel, "page-bullet", True, f"and {len(new) - PAGE_NARRATION_SHOWN} more long entries"))
-    return out
+    return counted + out
+
+
+def _quoted(text: str) -> str:
+    return f'"{text}"'
+
+
+def _bullet_count_findings(f: StagedFile, rules: PageRules, staged: str, old: str | None) -> list[Finding]:
+    """A commit that leaves a bullet section over ``max_bullets`` entries, with more than it had."""
+    from scout.kb.structure import check_bullets
+
+    cfg = rules.cfg
+    now = check_bullets(staged, cfg).over(cfg.max_bullets)
+    before = check_bullets(old or "", cfg).counts
+    grown = {s: n for s, n in now.items() if n > before.get(s, 0)}
+    if not grown:
+        return []
+    private = _page_private(f)
+    return [
+        Finding(
+            f.rel,
+            "page-bullet",
+            True,
+            f"{'a section' if private else _quoted(s)} now has {n} entries (limit {cfg.max_bullets}) — keep "
+            "the most important current state, and move the rest into the project's knowledge/ notes or History",
+        )
+        for s, n in grown.items()
+    ]
 
 
 # The checks `lint_staged` runs on each in-scope staged file, in output order.

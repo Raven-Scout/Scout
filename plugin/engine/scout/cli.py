@@ -1321,15 +1321,42 @@ def kb_search(
 @kb_app.command("read")
 def kb_read(
     path: str = typer.Argument(..., help="A vault file (any spelling)."),
+    lines: str | None = typer.Option(
+        None,
+        "--lines",
+        help="Only these lines, 1-based and inclusive: A:B, A: (to the end), :B (the first B), -N: (the last N). "
+        "In place of sed -n, head and tail.",
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file."""
-    args = _kb_args("read", dict(locals()))
+    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file or a bad --lines."""
+    params = dict(locals())
+    if lines is None:
+        del params["lines"]  # a whole-file read's audit arguments stay as they were
+    args = _kb_args("read", params)
     from scout.kb.read import cmd_read
 
-    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path, lines))
+
+
+@kb_app.command("stat")
+def kb_stat(
+    paths: list[str] | None = typer.Argument(None, help="Vault files (any spelling)."),
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Each file's size, labelled: bytes, lines, words. In place of wc, ls -l and stat.
+
+    Exit 3 = a named file is not visible to the reader (its row has no counts); 2 = not a vault file.
+    """
+    args = _kb_args("stat", dict(locals()))
+    from scout.kb.read import cmd_stat
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_stat(vault, who, paths or (), glob or ()))
 
 
 @kb_app.command("delta")
@@ -1615,6 +1642,105 @@ def kb_structure(
     from scout.kb.structure import cmd_structure
 
     _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
+
+
+@kb_app.command("check-fact-check")
+def kb_check_fact_check(
+    date: str | None = typer.Option(
+        None, "--date", help="The run's day, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    skipped: str | None = typer.Option(
+        None, "--skipped", help="Why no live source could be reached this run; accepts the run as it stands."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check a deep-work run re-verified the KB notes the runner pre-fetched for its fact-check pass.
+
+    The runner lists the KB notes changed in the last 3 days that no run has
+    re-verified since (`fact_check_targets`, most consequential first). At least
+    2 of them (all, if fewer) must now carry `last_verified:` of today and a
+    `verified_against:`. A target moved, archived or shared since counts as done;
+    a shared note is never a target. `--skipped "<reason>"` accepts a run that
+    could not reach a live source, and prints the line for its session-log row.
+    Run it before committing a dreaming deep-work run. Exit codes: 0 = done,
+    1 = not done, 2 = cannot check (or no reason given). Prints paths only,
+    private ones marked `[private]`.
+    """
+    import datetime as dt
+    import json as _json
+
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.config import today as _today
+    from scout.kb.fact_check import SKIP_MARK, check_fact_check
+
+    name = "check-fact-check"
+    if date is not None:
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            typer.echo(f"{name}: --date: invalid date {date!r}")
+            raise typer.Exit(2) from None
+    day = date or _today(data_dir).isoformat()
+    try:
+        result = check_fact_check(data_dir=data_dir, today=day, context=context, skipped=skipped)
+    except PrefetchCheckError as e:
+        typer.echo(_json.dumps({"error": str(e)}) if as_json else f"{name}: cannot check — {e}")
+        raise typer.Exit(2) from e
+
+    def mark(visibility: str) -> str:
+        return "[private] " if visibility != "normal" else ""
+
+    if result.skipped is not None:
+        import os
+
+        from scout import paths as _paths
+        from scout.kb.fact_check import record_skip
+
+        try:
+            record_skip(_paths.data_dir(data_dir), day, len(result.targets), os.environ.get("SCOUT_MODE"))
+        except OSError:
+            pass  # the skip stands; `scoutctl doctor` just won't count it
+
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "targets": [t.to_json() for t in result.targets],
+                    "verified": result.verified,
+                    "required": result.required,
+                    "skipped": result.skipped is not None,
+                    "settled": result.settled,
+                    "passed": result.passed,
+                }
+            )
+        )
+    elif not result.targets:
+        typer.echo(f"{name}: no KB note changed in the last days is waiting to be re-verified")
+    elif result.passed and result.skipped is None:
+        typer.echo(f"{name}: {len(result.verified)} of {len(result.targets)} recent note(s) re-verified today")
+    elif result.passed:
+        typer.echo(
+            f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
+        )
+    else:
+        typer.echo(
+            f"{name}: {len(result.verified)} of the {result.required} required recent note(s) re-verified today. "
+            "Re-check the highest-stakes claims in these against a freshly read primary source, correct or mark "
+            "what doesn't hold, and set `last_verified:` (today) and `verified_against:` in each one you check:"
+        )
+        done = set(result.verified)
+        for t in result.targets:
+            typer.echo(f"  {'✓' if t.path in done else '·'} {mark(t.visibility)}{t.path} (changed {t.changed})")
+        typer.echo(
+            'If no live source could be reached this run, run this again with `--skipped "<why>"`, '
+            "and put the line it prints in this run's session-log row."
+        )
+    if not result.passed:
+        raise typer.Exit(1)
 
 
 # Top-level command — `connector-health-report` is a script, not a hook
@@ -6360,6 +6486,7 @@ _DELEGATE_COMMANDS = frozenset(
                 "files",
                 "search",
                 "read",
+                "stat",
                 "resolve",
                 "query",
                 "related",

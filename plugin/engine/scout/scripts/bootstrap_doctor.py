@@ -1038,6 +1038,46 @@ def _check_kb_lint_config(*, vault: Path) -> list[str]:
         return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
 
 
+def _check_kb_interactive(*, vault: Path) -> list[str]:
+    """Front pages the nightly KB pass left for an interactive session (a full rebuild over
+    ``kb_structure.nightly_max_bytes``) and how long each has waited: no run will do them.
+    A note, not a warning; nothing when there are none or the check can't run."""
+    from scout.config import today
+    from scout.kb.structure import interactive_waits, load_structure_config, structure_rows
+
+    try:
+        if not (vault / load_structure_config(vault).projects_dir).is_dir():
+            return []
+        waiting = interactive_waits(structure_rows(vault), today(vault))
+    except Exception:  # noqa: BLE001 - informational: `kb structure` reports its own errors
+        return []
+    if not waiting:
+        return []
+    listed = ", ".join(f"{path} ({'?' if days is None else days} d)" for path, days in waiting[:5])
+    more = f" and {len(waiting) - 5} more" if len(waiting) > 5 else ""
+    return [
+        f"kb: {len(waiting)} project page(s) wait for an interactive rebuild, too big for the nightly pass: "
+        f"{listed}{more}. Rebuild them in a session (`scoutctl kb structure` marks them [interactive])."
+    ]
+
+
+def _check_fact_check_skips(*, vault: Path, now: datetime | None) -> list[str]:
+    """The dreaming fact-check pass skipped (``kb check-fact-check --skipped``) again and again:
+    a connector the pass needs is probably down. A note, not a warning."""
+    from scout.kb.fact_check import SKIP_NOTE_AT, SKIP_WINDOW_DAYS, recent_skips
+
+    try:
+        skips = recent_skips(vault, now or datetime.now(UTC))
+    except Exception:  # noqa: BLE001 - informational
+        return []
+    if skips < SKIP_NOTE_AT:
+        return []
+    return [
+        f"kb: the dreaming fact-check pass was skipped {skips} time(s) in the last {SKIP_WINDOW_DAYS} days "
+        "(no live source reached): check the connectors it verifies against"
+    ]
+
+
 def _check_action_items_size(*, vault: Path) -> list[str]:
     """The newest daily action-items file past its hard limit (``action_items.budget``).
 
@@ -1413,6 +1453,8 @@ def run_doctor(
         # A lint config that can't be read blocks nothing: a run could break it on purpose (#717 review).
         warnings.extend(protection([line]) if "can't be read" in line else [line])
     warnings.extend(protection(_check_repo_sync_host_cache(vault=vault, now=now)))
+    notes.extend(_check_kb_interactive(vault=vault))
+    notes.extend(_check_fact_check_skips(vault=vault, now=now))
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)

@@ -18,6 +18,17 @@ from tests.unit.test_kb_structure_next import PRIVATE_NOTE, P, archive_copy, old
 
 runner = CliRunner()
 RUN = {"SCOUT_MODE": "dreaming-nightly"}
+
+
+@pytest.fixture(autouse=True)
+def _no_nightly_size_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests use 17 KB unshared pages as rebuild targets; pages over ``nightly_max_bytes`` leave
+    the pick (test_kb_structure_linked_and_pick.py), so lift it here."""
+    from scout.kb import structure
+
+    monkeypatch.setattr(structure, "NIGHTLY_MAX_BYTES", 10**9)
+
+
 FRONT = f"{P}/widgets/widgets.md"
 ALEX = "['person:alex@example.com']"
 

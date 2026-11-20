@@ -16,11 +16,13 @@ Per ``<projects_dir>/<name>/`` folder with a ``<name>.md`` front page:
   one over ``page_target_bytes``.
 - **sections**: the standard's ``##`` headings, all present.
 - **narration**: run-log markers in the body (``narration_markers``).
-- **bullets** (``kb lint`` only): an entry in a ``bullet_sections`` section over
-  ``max_bullet_chars``, a bullet with its wrapped lines or a paragraph.
+- **bullets**: a ``bullet_sections`` section with more than ``max_bullets``
+  entries, or an entry over ``max_bullet_chars``; an entry is a bullet with its
+  wrapped lines, or a paragraph. ``kb lint`` checks what a commit adds.
 - **as_of**: the front page's frontmatter has one.
 - **stale**: the newest commit touching any other file in the folder (the
-  front page and ``archive/`` aside) is more than ``stale_days`` after ``as_of``.
+  front page and ``archive/`` aside), or a source or topic note under
+  ``linked_dirs`` that links to the project, is more than ``stale_days`` after ``as_of``.
 
 The settings live under ``kb_structure`` in scout-config.yaml; the defaults match
 the standard the plugin seeds (``docs/kb-page-standard.md``). Folders, files and
@@ -31,8 +33,11 @@ priority, dates, section names or marker names.
 
 ``--next`` takes the first row in table order that the pass can act on, except
 that a rebuild left half done in the last weeks, sections still missing, comes
-first. A page failing only on size or narration ranks after every other
-failing page, so one that can't get small soon doesn't hold the pick. It never picks a
+first. Among pages with the same kind of problem, priority × staleness (days since
+``as_of``) orders them. A page failing only on size, narration or bullets ranks after every other
+failing page, so one that can't get small soon doesn't hold the pick. A page over
+``nightly_max_bytes`` is never picked for a rebuild: it is marked ``interactive``, and
+``--next`` names it on stderr for the run's report. It never picks a
 page labelled private, shared or local-only, whose new copies could widen it or
 hit a hard privacy block, or a folder where a rebuild could write into a share,
 including a source note, which would skip every page. When that leaves it nothing
@@ -101,6 +106,10 @@ PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
 # An archive copy older than this is a finished rebuild, or one that stopped making
 # progress: either way the page goes back in line. A big page's rebuild runs for weeks.
 RESUME_DAYS = 45
+# How far back staleness looks for changes to linked notes: one `git log` walks no further.
+LINKED_WINDOW_DAYS = 90
+# The biggest front page the nightly pass rebuilds (`kb_structure.nightly_max_bytes`'s default).
+NIGHTLY_MAX_BYTES = 12288
 # Where the nightly pass writes, whatever `allowed_dirs` says: the phase names these folders.
 _STEP_DIRS = frozenset({"knowledge", "documents", "research", "archive"})
 # A source note's `kind` values (phases/core/write-protocol.md).
@@ -126,6 +135,9 @@ class StructureConfig:
     narration_markers: tuple[Marker, ...]
     max_bullet_chars: int = 300
     bullet_sections: tuple[str, ...] = ("Where it stands",)
+    max_bullets: int = 6
+    nightly_max_bytes: int = NIGHTLY_MAX_BYTES
+    linked_dirs: tuple[str, ...] = (f"{KB_PREFIX}sources", f"{KB_PREFIX}topics")
 
 
 def _strs(raw: dict[str, Any], key: str) -> tuple[str, ...]:
@@ -158,9 +170,11 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
     if not parts or ".." in parts:
         raise KBError("kb_structure.projects_dir must be a folder inside the vault")
     try:
-        max_bullet_chars = int(raw.get("max_bullet_chars", 300))
-        if max_bullet_chars <= 0:
-            raise ValueError(f"max_bullet_chars must be a positive number, not {max_bullet_chars}")
+        max_bullet_chars = _positive(raw, "max_bullet_chars", 300)
+        linked_dirs = _strs(raw, "linked_dirs") if "linked_dirs" in raw else StructureConfig.linked_dirs
+        for d in linked_dirs:
+            if not PurePosixPath(d.strip("/")).parts or ".." in PurePosixPath(d).parts:
+                raise ValueError(f"linked_dirs entries must be folders inside the vault, not {d!r}")
         return StructureConfig(
             projects_dir="/".join(parts),
             skip_projects=frozenset(_strs(raw, "skip_projects")),
@@ -172,9 +186,19 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
             narration_markers=_markers(raw),
             max_bullet_chars=max_bullet_chars,
             bullet_sections=_strs(raw, "bullet_sections") if "bullet_sections" in raw else ("Where it stands",),
+            max_bullets=_positive(raw, "max_bullets", 6),
+            nightly_max_bytes=_positive(raw, "nightly_max_bytes", NIGHTLY_MAX_BYTES),
+            linked_dirs=tuple("/".join(PurePosixPath(d.strip("/")).parts) for d in linked_dirs),
         )
     except (TypeError, ValueError) as e:
         raise KBError(f"kb_structure: {e}") from e
+
+
+def _positive(raw: dict[str, Any], key: str, default: int) -> int:
+    value = int(raw.get(key, default))
+    if value <= 0:
+        raise ValueError(f"{key} must be a positive number, not {value}")
+    return value
 
 
 # ----- per-page checks (pure: text in, findings out) ---------------------------
@@ -251,6 +275,32 @@ def section_entries(text: str, sections: Sequence[str]) -> list[tuple[int, int, 
     return out
 
 
+@dataclass(frozen=True)
+class BulletCheck:
+    """A front page's ``bullet_sections`` against the standard: how many entries each holds, and
+    how many entries in all run over ``max_bullet_chars``."""
+
+    counts: dict[str, int]  # section -> entries, for each section present
+    long: int
+
+    def over(self, limit: int) -> dict[str, int]:
+        """The sections holding more than ``limit`` entries."""
+        return {s: n for s, n in self.counts.items() if n > limit}
+
+
+def check_bullets(text: str, cfg: StructureConfig) -> BulletCheck:
+    """Count ``text``'s entries per bullet section (a bullet with its wrapped lines, or a paragraph,
+    as :func:`section_entries` reads them) and those over the per-entry limit."""
+    counts: dict[str, int] = {}
+    long = 0
+    for section in cfg.bullet_sections:
+        entries = section_entries(text, [section])
+        if entries:
+            counts[section] = len(entries)
+        long += sum(len(t) > cfg.max_bullet_chars for _, _, t in entries)
+    return BulletCheck(counts, long)
+
+
 def page_as_of(fm: dict[str, Any]) -> dt.date | None:
     value = fm.get("as_of")
     if isinstance(value, dt.datetime):
@@ -266,17 +316,25 @@ def page_as_of(fm: dict[str, Any]) -> dt.date | None:
 # ----- history: one pass --------------------------------------------------------
 
 
-def newest_changes(vault: Path, pathspec: str, now: dt.date) -> dict[str, dt.date]:
+def newest_changes(
+    vault: Path, pathspec: str | Sequence[str], now: dt.date, since: dt.date | None = None
+) -> dict[str, dt.date]:
     """Each path ever committed under ``pathspec`` → the date of the newest commit touching it.
 
-    One ``git log`` for the whole folder, newest first, so a path's first sighting
+    One ``git log`` for the whole folder (or folders), newest first, so a path's first sighting
     is its newest change. The date is the author date, which an amend or a rebase
     leaves alone. A date after ``now`` doesn't count: one commit from a wrong
     clock would otherwise keep the page stale until that date, whatever a night did.
-    Paths are relative to ``vault``, which may sit inside a larger repo. ``{}``
-    outside a repo, before the first commit, or without git.
+    ``since`` leaves out commits made before that day (git's commit date) and changes
+    dated before it, so a caller that only cares about recent changes doesn't walk
+    the whole history. Paths are relative to ``vault``, which may sit inside a
+    larger repo. ``{}`` outside a repo, before the first commit, or without git.
     """
-    cmd = ["git", "log", "--relative", "--no-renames", "--name-only", "-z", "--format=%x00%as", "--", pathspec]
+    specs = [pathspec] if isinstance(pathspec, str) else list(pathspec)
+    if not specs:
+        return {}
+    window = [f"--since={since.isoformat()}"] if since is not None else []
+    cmd = ["git", "log", *window, "--relative", "--no-renames", "--name-only", "-z", "--format=%x00%as", "--", *specs]
     try:
         proc = subprocess.run(cmd, cwd=vault, capture_output=True)
     except OSError:
@@ -286,11 +344,13 @@ def newest_changes(vault: Path, pathspec: str, now: dt.date) -> dict[str, dt.dat
     newest: dict[str, dt.date] = {}
     day: dt.date | None = None
     # NUL-separated: empty, date, then the paths, the first with a leading newline.
+    prefixes = tuple(s + "/" for s in specs)
+    floor = since or dt.date.min
     for raw in proc.stdout.decode("utf-8", errors="replace").split("\0"):
         token = raw.removeprefix("\n")
-        if token.startswith(pathspec + "/"):
+        if token.startswith(prefixes):
             # The newest date wins, not the first sighting: author dates needn't follow commit order.
-            if day is not None and day <= now and day > newest.get(token, dt.date.min):
+            if day is not None and floor <= day <= now and day > newest.get(token, dt.date.min):
                 newest[token] = day
         elif token:
             day = dt.date.fromisoformat(token)
@@ -381,6 +441,112 @@ def _folder_last_change(
         if counts and not excluded(path) and (newest is None or day > newest):
             newest = day
     return newest
+
+
+@dataclass(frozen=True)
+class LinkedChange:
+    """The newest change to a source or topic note that links to a project.
+
+    ``shown`` is the newest such change to a note that isn't private: what a row may print."""
+
+    newest: dt.date
+    shown: dt.date | None
+
+
+# A linked note is read whole to find its links; the standard keeps them under 10 KB, so this is generous.
+_LINKED_READ_CAP = 256 * 1024
+
+
+def _project_keys(vault: Path, folders: Sequence[_Folder]) -> dict[str, str]:
+    """Each name a wikilink may use for a project's front page, lowercased → the project.
+
+    The file's stem, as Obsidian resolves a link, and the front page's ``aliases``."""
+    keys: dict[str, str] = {}
+    for folder in folders:
+        keys.setdefault(folder.name.lower(), folder.name)
+    for folder in folders:
+        text, _ = read_head(vault / folder.rel / f"{folder.name}.md")
+        fm, _ = split_page(text or "")
+        aliases = fm.get("aliases")
+        for alias in aliases if isinstance(aliases, list) else [aliases] if isinstance(aliases, str) else []:
+            if isinstance(alias, str) and alias.strip():
+                keys.setdefault(alias.strip().lower(), folder.name)
+    return keys
+
+
+def _linked_projects(text: str, projects_dir: str, keys: Mapping[str, str]) -> set[str]:
+    """The projects a note's wikilinks point at: a front page by name or alias, or any path
+    inside a project folder (``[[projects/<name>/knowledge/x]]``)."""
+    from scout.kb.lint_rules import wikilink_targets
+
+    folder_word = PurePosixPath(projects_dir).name.lower()
+    out: set[str] = set()
+    for target in wikilink_targets(text):
+        parts = [p for p in target.strip().removesuffix(".md").split("/") if p]
+        if not parts:
+            continue
+        lowered = [p.lower() for p in parts]
+        # A path into a project folder: the segment after `projects/` is the folder's own name.
+        inside = {
+            name
+            for i, word in enumerate(lowered[:-1])
+            if word == folder_word and (name := keys.get(lowered[i + 1])) is not None and name.lower() == lowered[i + 1]
+        }
+        out |= inside
+        # A bare name resolves by file stem or alias; a path elsewhere names some other file.
+        if len(parts) == 1 and (name := keys.get(lowered[0])) is not None:
+            out.add(name)
+    return out
+
+
+def linked_changes(
+    vault: Path,
+    folders: Sequence[_Folder],
+    cfg: StructureConfig,
+    since: dt.date | None,
+    now: dt.date,
+    excluded: Callable[[str], bool],
+    policy: Policy,
+) -> dict[str, LinkedChange]:
+    """Each project → the newest change, from ``since`` on, to a note under ``linked_dirs``
+    (source and topic notes) that links to it.
+
+    A project page is current only if what landed about it since ``as_of`` is in it. New
+    knowledge often lands outside the folder: a meeting's source note, a cross-project topic.
+    One ``git log`` over ``linked_dirs``; each note changed in the window is read once, as it
+    stands now. A note's later edit that drops the link no longer counts, which is right: the
+    page doesn't need it."""
+    if since is None or not folders:
+        return {}
+    dirs = [d for d in cfg.linked_dirs if (vault / d).is_dir()]
+    if not dirs:
+        return {}
+    changed = newest_changes(vault, dirs, now, since=since)
+    if not changed:
+        return {}
+    keys = _project_keys(vault, folders)
+    out: dict[str, LinkedChange] = {}
+    for rel, day in changed.items():
+        if not rel.endswith(".md") or excluded(rel):
+            continue
+        path = vault / rel
+        try:
+            with path.open("rb") as fh:
+                text = fh.read(_LINKED_READ_CAP).decode("utf-8", errors="replace")
+        except OSError:
+            continue  # deleted since, or unreadable: nothing links from it now
+        names = _linked_projects(text, cfg.projects_dir, keys)
+        if not names:
+            continue
+        private = label_file(vault, rel, policy).visibility == "private"
+        for name in names:
+            seen = out.get(name)
+            newest = day if seen is None or day > seen.newest else seen.newest
+            shown = None if seen is None else seen.shown
+            if not private and (shown is None or day > shown):
+                shown = day
+            out[name] = LinkedChange(newest, shown)
+    return out
 
 
 def _pinned(label: Label, shared_edits: SharedEdits = "refuse") -> bool:
@@ -665,17 +831,25 @@ def check_folder(
     pinned_loose: int,
     day: dt.date,
     shared_edits: SharedEdits = "refuse",
+    linked: LinkedChange | None = None,
 ) -> dict[str, Any]:
     private = label.visibility == "private"
     front = f"{folder.rel}/{folder.name}.md"
     raw = (vault / front).read_bytes()
-    fm, body = split_page(raw.decode("utf-8", errors="replace"))
+    text = raw.decode("utf-8", errors="replace")
+    fm, body = split_page(text)
     size = len(raw)
     missing = missing_sections(body, cfg.required_sections)
     narration = narration_found(body, cfg.narration_markers)
+    bullets = check_bullets(text, cfg)
+    too_many = bullets.over(cfg.max_bullets)
     as_of = page_as_of(fm)
     newest = _folder_last_change(folder, history, excluded)
-    stale = bool(as_of and newest and (newest - as_of).days > cfg.stale_days)
+    # New knowledge about the project often lands outside its folder: a source or topic note linking to it.
+    linked_newest = linked.newest if linked is not None else None
+    behind = max((d for d in (newest, linked_newest) if d is not None), default=None)
+    stale = bool(as_of and behind and (behind - as_of).days > cfg.stale_days)
+    by_link = stale and linked_newest is not None and (newest is None or linked_newest > newest)
     priority = str(fm.get("priority") or "").strip()[:1]
     priority = priority if priority in PRIORITY_RANK else ""
 
@@ -690,10 +864,23 @@ def check_folder(
         problems.append(f"{len(missing)} sections missing")
     if narration:
         problems.append(f"narration: {len(narration)} marker(s)" if private else "narration: " + ",".join(narration))
+    for section, count in too_many.items():
+        where = "" if private else f" in {section}"
+        problems.append(f"{count} bullets{where} (limit {cfg.max_bullets})")
+    if bullets.long:
+        problems.append(f"{bullets.long} bullet(s) over {cfg.max_bullet_chars} chars")
     if as_of is None:
-        problems.append("no as_of")
+        # A date the check can't read is its own problem: the night must rewrite it as YYYY-MM-DD.
+        problems.append("unreadable as_of" if fm.get("as_of") not in (None, "") else "no as_of")
     if stale:
-        problems.append("stale" if private else f"stale (as_of {as_of}, folder changed {newest})")
+        if private:
+            problems.append("stale")
+        elif not by_link:
+            problems.append(f"stale (as_of {as_of}, folder changed {newest})")
+        elif linked is not None and linked.shown is not None and as_of is not None and linked.shown > as_of:
+            problems.append(f"stale (as_of {as_of}, linked note changed {linked.shown})")
+        else:
+            problems.append(f"stale (as_of {as_of}, a linked note changed)")
     # A night can clear the page's own problems and any loose file that isn't pinned. Nothing
     # in the step clears an odd subfolder, so one alone must not hold the pick night after night.
     page_problems = len(problems) - bool(folder.loose) - bool(folder.odd_dirs)
@@ -701,14 +888,29 @@ def check_folder(
     # A page with its sections and a current date only needs shrinking, so it waits behind the
     # pages a reader can't follow. Odd subfolders and pinned files don't count: no night clears them.
     in_shape = not (missing or as_of is None or stale or len(folder.loose) > pinned_loose)
-    half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
-    # Cutting lines fixes size and narration only. It ranks after every page that only needs
-    # shrinking: a trim may find nothing it can cut, and must not hold the pick night after night.
-    # With `checked` a shared page is rebuilt instead; structure_rows falls back to a trim when a
-    # rebuild could write wider than the page's share.
-    trimmable = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration))
+    under_way = _rebuild_under_way(vault, folder, day)  # an archive copy from the last weeks
+    half_rebuilt = bool(missing) and under_way
+    # Cutting lines fixes size, narration and a section with too many bullets only. It ranks after
+    # every page that only needs shrinking: a trim may find nothing it can cut, and must not hold
+    # the pick night after night. With `checked` a shared page is rebuilt instead; structure_rows
+    # falls back to a trim when a rebuild could write wider than the page's share.
+    trimmable = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration) or bool(too_many))
     pinned = _pinned(label, shared_edits)
     trim_only = trimmable and pinned
+    # A full rebuild of a page this big can take several nights and still not be done: it goes
+    # to an interactive session, where the owner can rebuild it in one sitting.
+    # A page that only needs a refresh keeps its nightly refresh, a rebuild already under way
+    # finishes, and a trim only cuts lines.
+    needs_rebuild = bool(missing) or size > cfg.page_budget_bytes
+    interactive = (
+        actionable
+        and not pinned
+        and not trim_only
+        and not under_way  # a rebuild or shrink already started finishes, sections or not
+        and needs_rebuild
+        and size > cfg.nightly_max_bytes
+    )
+    front_change = history.get(front)
     return {
         "project": folder.name,
         "path": front,
@@ -725,16 +927,46 @@ def check_folder(
         "narration_count": len(narration),
         "as_of": None if private or as_of is None else as_of.isoformat(),
         "folder_last_change": None if private or newest is None else newest.isoformat(),
+        # The front page's newest commit: how long a page left for an interactive session has waited.
+        "front_last_change": None if private or front_change is None else front_change.isoformat(),
+        "linked_last_change": None if private or linked is None or linked.shown is None else linked.shown.isoformat(),
+        "bullets": None if private else bullets.counts,
+        "bullets_over": sum(too_many.values()),
+        "long_bullets": bullets.long,
         "stale": stale,
         "conforms": not problems,
         "problems": problems,
-        "rebuild_target": (actionable and not pinned) or trim_only,
+        "rebuild_target": (actionable and not pinned and not interactive) or trim_only,
         "resume": half_rebuilt and actionable and not pinned,
         "trim_only": trim_only,
+        "interactive": interactive,
         "share_blocked": False,
         "_trimmable": trimmable,
-        "_rank": (not problems, in_shape or trim_only, trim_only, PRIORITY_RANK.get(priority, 3), -size, folder.name),
+        "_rank": (
+            not problems,
+            in_shape or trim_only,
+            trim_only,
+            -pick_score(priority, as_of, day),
+            -size,
+            folder.name,
+        ),
     }
+
+
+# How much a page's priority weighs in the nightly pick: a 🔴 page a week behind outranks a 🟢 page
+# two weeks behind, and a 🟢 page a month behind outranks a 🔴 page three days behind. A page with
+# no priority ranks below 🟢, so small reference pages (a skill or a how-to) don't take the night
+# from a project.
+PRIORITY_WEIGHT = {"🔴": 4, "🟡": 3, "🟢": 2, "": 1}
+# Days a page with no `as_of` counts as behind, and the most any page counts.
+STALENESS_CAP_DAYS = 365
+
+
+def pick_score(priority: str, as_of: dt.date | None, day: dt.date) -> int:
+    """The nightly pick's order among pages with the same kind of problem: priority × staleness,
+    where staleness is one plus the days since ``as_of`` (capped; a missing ``as_of`` counts as the cap)."""
+    lag = STALENESS_CAP_DAYS if as_of is None else min(max((day - as_of).days, 0), STALENESS_CAP_DAYS)
+    return PRIORITY_WEIGHT.get(priority, 1) * (1 + lag)
 
 
 def _graph_excludes(vault: Path) -> tuple[str, ...]:
@@ -797,9 +1029,23 @@ def load_page_rules(vault: Path, lint_excludes: Sequence[str]) -> PageRules:
     return PageRules(load_structure_config(vault), _excluder(vault, lint_excludes))
 
 
+def _oldest_as_of(vault: Path, folders: Sequence[_Folder]) -> dt.date | None:
+    """The oldest ``as_of`` among the front pages: no linked change before it can make one stale."""
+    dates = []
+    for folder in folders:
+        text, _ = read_head(vault / folder.rel / f"{folder.name}.md")
+        as_of = page_as_of(split_page(text or "")[0])
+        if as_of is not None:
+            dates.append(as_of)
+    oldest = min(dates, default=None)
+    # A page this far behind is stale on any linked change in the window, so the walk stops there.
+    return None if oldest is None else max(oldest, today(vault) - dt.timedelta(days=LINKED_WINDOW_DAYS))
+
+
 def structure_rows(vault: Path) -> list[dict[str, Any]]:
     """Every checked project folder's row, rebuild order first: non-conforming, then pages
-    failing on more than size or narration, then 🔴 > 🟡 > 🟢 > none, then the largest front page."""
+    failing on more than size, narration or bullets, then :func:`pick_score` (priority ×
+    staleness), highest first, then the largest front page."""
     cfg = load_structure_config(vault)
     excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
     root = vault / cfg.projects_dir
@@ -824,17 +1070,31 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     edits = _shared_edits(vault, policy)
     probes = _probe_policy(policy)
     sources_shared = _new_sources_shared(probes, day)
+    linked = linked_changes(vault, folders, cfg, _oldest_as_of(vault, folders), day, excluded, policy)
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
         # A loose shared file stays put in either mode: moving it could change who it is shared with.
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
-        row = check_folder(vault, folder, cfg, history.get(folder.name, {}), excluded, label, pinned_loose, day, edits)
+        row = check_folder(
+            vault,
+            folder,
+            cfg,
+            history.get(folder.name, {}),
+            excluded,
+            label,
+            pinned_loose,
+            day,
+            shared_edits=edits,
+            linked=linked.get(folder.name),
+        )
         scope = label.federation_scope  # `none` unless an effective share; a page shared otherwise is pinned
         sources_wider = sources_shared if scope == "none" else _new_sources_shared(probes, day, scope)
+        # A page left for an interactive session is checked too: if a rebuild could write wider than its
+        # share, a nightly trim is still open to it, and the size limit is for full rebuilds only.
         if (
-            row["rebuild_target"]
+            (row["rebuild_target"] or row["interactive"])
             and not row["trim_only"]
             and (
                 sources_wider
@@ -842,14 +1102,16 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
                 or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes, scope)
             )
         ):
+            was_target = row["rebuild_target"]
             row["rebuild_target"] = row["resume"] = False
             if row["_trimmable"]:
                 # A shared page a rebuild can't leave alone may still have lines cut (`checked`).
                 row["rebuild_target"] = row["trim_only"] = True
+                row["interactive"] = False
                 rank = list(row["_rank"])
                 rank[1:3] = [True, True]
                 row["_rank"] = tuple(rank)
-            else:
+            elif was_target:
                 row["share_blocked"] = True
         rows.append(row)
     rows.sort(key=lambda r: r["_rank"])
@@ -884,6 +1146,21 @@ def trim_destinations(vault: Path, front: str) -> list[Label]:
     return out
 
 
+def interactive_waits(rows: Sequence[dict[str, Any]], day: dt.date) -> list[tuple[str, int | None]]:
+    """Each page left for an interactive session, with the days since its front page last
+    changed (None when git has no history for it), longest wait first."""
+    out: list[tuple[str, int | None]] = []
+    for r in rows:
+        if r["interactive"]:
+            since = r.get("front_last_change")
+            out.append((r["path"], (day - dt.date.fromisoformat(since)).days if since else None))
+    return sorted(out, key=lambda w: (-(w[1] if w[1] is not None else -1), w[0]))
+
+
+def _waited(days: int | None) -> str:
+    return "no history" if days is None else f"waiting {days} day{'s' if days != 1 else ''}"
+
+
 def next_target(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
     """The nightly pass's page: a half-done rebuild first, else the first row it can act on."""
     targets = [r for r in rows if r["rebuild_target"]]
@@ -909,6 +1186,17 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
                 "(`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass stopped.",
                 file=sys.stderr,
             )
+        waiting = interactive_waits(rows, today(vault))
+        if waiting:
+            cfg = load_structure_config(vault)
+            # Never private: a private page is never picked, so it is never left for a session either.
+            listed = ", ".join(f"{path} ({_waited(days)})" for path, days in waiting)
+            print(
+                f"Left for an interactive session: {len(waiting)} page(s) over {cfg.nightly_max_bytes // 1024} KB "
+                f"that need a full rebuild, too big for a night: {listed}. "
+                "List them in this run's report for the owner.",
+                file=sys.stderr,
+            )
         if target is None:
             return Output(data=None, lines=[""], labels=[])
         commit = rebuild_subject(target["path"])
@@ -929,6 +1217,7 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
         pri = r["priority"] or "·"
         name = r["project"] + (" [private]" if r["private"] else "")
         skipped = " [--next skips]" if not r["conforms"] and not r["rebuild_target"] else ""
+        skipped = " [interactive]" if r["interactive"] else skipped
         skipped = " [trim-only]" if r["trim_only"] else skipped
         lines.append(f"{mark} {pri} {name:<30} {r['size'] // 1024:>4} KB  {'; '.join(r['problems']) or 'ok'}{skipped}")
     return Output(data=rows, lines=lines, labels=labels)

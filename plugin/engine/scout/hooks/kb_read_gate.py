@@ -6,7 +6,8 @@ reads. A shell ``cat``/``grep``/``ls``/``find`` into ``knowledge-base/`` skips
 all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
 (hard-rule audit 2026-10, row 2). This gate makes it mechanical:
 
-  - **Bash**: a command :func:`raw_kb_read` flags is denied. ``scoutctl``
+  - **Bash**: a command :func:`raw_kb_read` flags is denied, judged with the session's cwd and
+    vault so a recursive read rooted at the vault (``rg x``, ``grep -r x .``) counts. ``scoutctl``
     segments (so ``scripts/scoutctl kb …``), the engine's scripts, ``git
     add``/``commit`` and quoted commit messages are never flagged. So is one
     that sets, unsets or blanks ``SCOUT_MODE``/``SCOUT_READER`` or clears the
@@ -72,6 +73,8 @@ WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _REPLACEMENT = (
     "Read the KB through `scripts/scoutctl kb` instead: `kb search <words>`, `kb files [dir]`, "
     "`kb read <path>`, `kb resolve <name>`, `kb name-lookup <name>`, `kb delta` (in place of git log/diff). "
+    "`kb read <path> --lines A:B` (or `:B`, `A:`, `-N:`) in place of sed -n, head and tail; "
+    "`kb stat <path>…` or `kb stat --glob '<glob>'` (bytes, lines, words) in place of wc, ls -l and stat. "
     "`.scout-cache/session-context.json` already lists personal tasks and KB file dates."
 )
 
@@ -122,8 +125,10 @@ def _target(raw: str, cwd: Path) -> Path:
 def _deny_bash() -> str:
     return (
         f"{MARK} Scheduled runs don't read knowledge-base/ or action-items/context/ with shell commands "
-        f"(cat, grep, ls, find, head, git show …): that skips the privacy labels. {_REPLACEMENT} "
-        "To change a note, Read it and Edit it."
+        f"(cat, grep, ls, find, head, tail, sed, awk, wc, git show …), directly or through a variable, a loop, "
+        f"xargs or a recursive search from the vault: that skips the privacy labels. {_REPLACEMENT} "
+        "To change a note, Read it and Edit it. To search other folders, name one outside the KB "
+        "(e.g. `rg x scripts/`)."
     )
 
 
@@ -404,7 +409,8 @@ def decide(
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
-        return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
+        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
+        return _deny_bash() if flagged else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd
