@@ -72,6 +72,11 @@ PAUSED_FINDING_ID = "runs.paused"
 # (runs.failing) clears on any later success, so a failed morning briefing followed by a clean
 # consolidation read "healthy" all day; this keeps it yellow until that schedule itself finishes.
 FAILED_TODAY_FINDING_ID = "runs.failed_today"
+# The newest run exited 0 in under a minute with nothing committed in its window. Exit 0 only says the session
+# ended: one that stopped before doing its work (the v0.18.19 KB gate's took one denied Bash call to mean "Bash is
+# off" and quit after 28 s) is green under every other finding. Every scheduled run commits its session-log row.
+HOLLOW_FINDING_ID = "runs.hollow_ok"
+HOLLOW_MAX_S = 60
 
 # Runner log filename prefixes written under <vault>/.scout-logs/ by the three
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
@@ -735,6 +740,36 @@ def failed_today(rows: list[OutcomeRow], *, vault: Path, now: datetime, tz: tzin
     return failed_today_finding(found, rows=rows, vault=vault, zone=zone)
 
 
+def hollow_ok(rows: list[OutcomeRow], *, vault: Path) -> Finding | None:
+    """runs.hollow_ok: the newest run (skips aside) exited ok in under :data:`HOLLOW_MAX_S` with zero commits.
+
+    Only a measured window counts: a row whose commits or length weren't measured (an older runner, no git)
+    says nothing. It clears when the next run finishes with a commit, fails, or takes longer.
+    """
+    newest = next((r for r in reversed(rows) if r.outcome not in SKIP_OUTCOMES), None)
+    if newest is None or newest.outcome != "ok" or newest.commits_in_window != 0:
+        return None
+    if newest.duration_s is None or newest.duration_s >= HOLLOW_MAX_S:
+        return None
+    log = _run_log(vault, newest)
+    log_hint = f" (.scout-logs/{newest.log})" if newest.log else ""
+    return Finding(
+        id=HOLLOW_FINDING_ID,
+        severity="yellow",
+        since=newest.finished_at,
+        summary=(
+            f"The last run ({newest.slot}) ended ok after {newest.duration_s} s with no commits in its window: "
+            "it probably stopped before doing its work."
+        ),
+        fix=(
+            f"Read the end of its log{log_hint}: a session that stops early says why, e.g. a denied tool call it "
+            "took to mean the run can't go on. This clears when the next run commits."
+        ),
+        source="ledger",
+        log=str(log) if log else None,
+    )
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -823,6 +858,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     failed_today_ = failed_today_finding(today, rows=rows, vault=vault, zone=zone)
     if failed_today_ is not None:
         findings.append(failed_today_)
+    hollow = hollow_ok(rows, vault=vault)
+    if hollow is not None:
+        findings.append(hollow)
 
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
