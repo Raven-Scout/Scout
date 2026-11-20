@@ -100,9 +100,11 @@ struct ResolvePromptServiceTests {
         #expect(ResolvePromptError.engineFailed("boom").errorDescription == "Couldn't build the prompt: boom")
     }
 
-    @Test func supportCachesOnlyYes() async {
-        final class Count: @unchecked Sendable { var n = 0 }
-        let count = Count()
+    private final class Count: @unchecked Sendable { var n = 0 }
+    private final class Clock { var now = Date(timeIntervalSince1970: 1_800_000_000) }
+
+    /// A runner whose first `manifest show` lacks the feature and later ones have it.
+    private func upgradingEngine(_ count: Count) -> RuleBasedRunner {
         let runner = RuleBasedRunner()
         runner.on({ _, args in args == ["manifest", "show"] }) { _, _, _ in
             count.n += 1
@@ -110,10 +112,43 @@ struct ResolvePromptServiceTests {
                                         : #"{"features": {"resolve_prompt_v1": true}}"#
             return ProcessResult(exitCode: 0, stdout: Data(features.utf8), stderr: Data())
         }
-        let s = service(runner)
+        return runner
+    }
+
+    private func service(_ runner: RuleBasedRunner, clock: Clock) -> ResolvePromptService {
+        ResolvePromptService(scoutctl: scoutctl, runner: runner, environment: [:], scoutDirectory: vault,
+                             now: { clock.now })
+    }
+
+    @Test func supportCachesAYesAndANoForAMinute() async {
+        let count = Count(), clock = Clock()
+        let s = service(upgradingEngine(count), clock: clock)
         #expect(await s.isSupported() == false)
-        #expect(await s.isSupported() == true)
-        #expect(await s.isSupported() == true)
+        clock.now += 30
+        #expect(await s.isSupported() == false)   // a no is remembered for a minute
+        #expect(count.n == 1)
+        clock.now += 31
+        #expect(await s.isSupported() == true)    // then asked again: the engine was upgraded
+        clock.now += 3600
+        #expect(await s.isSupported() == true)    // a yes is remembered for good
         #expect(count.n == 2)
+    }
+
+    @Test func buttonsShareOneCheck() async {
+        let count = Count()
+        let runner = RuleBasedRunner()
+        runner.on({ _, args in args == ["manifest", "show"] }) { _, _, _ in
+            count.n += 1
+            try await Task.sleep(for: .milliseconds(50))
+            return ProcessResult(exitCode: 0, stdout: Data(#"{"features": {"resolve_prompt_v1": true}}"#.utf8),
+                                 stderr: Data())
+        }
+        let s = service(runner, clock: Clock())
+        async let a = s.isSupported()
+        async let b = s.isSupported()
+        async let c = s.isSupported()
+        let all = await [a, b, c]
+        #expect(all == [true, true, true])
+        #expect(count.n == 1)
     }
 }

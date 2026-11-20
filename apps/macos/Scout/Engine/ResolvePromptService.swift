@@ -35,29 +35,48 @@ final class ResolvePromptService {
     private let argumentsPrefix: [String]
     private let runner: any ProcessRunner
     private let environment: [String: String]
+    private let now: @MainActor () -> Date
     private var supported = false
+    /// When the engine last said no; asked again only after `noCacheSeconds`.
+    private var lastNo: Date?
+    /// The one `manifest show` every button on screen waits for.
+    private var inFlight: Task<Bool, Never>?
+    static let noCacheSeconds: TimeInterval = 60
 
     init(scoutctl: URL, argumentsPrefix: [String] = [], runner: any ProcessRunner,
-         environment: [String: String], scoutDirectory: URL) {
+         environment: [String: String], scoutDirectory: URL, now: @escaping @MainActor () -> Date = { Date() }) {
         self.scoutctl = scoutctl
         self.argumentsPrefix = argumentsPrefix
         self.runner = runner
         self.environment = environment
         self.scoutDirectory = scoutDirectory
+        self.now = now
     }
 
     nonisolated static func arguments(for subject: ResolveSubject) -> [String] {
         ["health", "resolve-prompt", subject.kind, subject.key, "--json"]
     }
 
-    /// Whether the engine advertises `resolve_prompt_v1`. Only a yes is remembered, like
-    /// `BoardWriter.supportsBoardWrites`: an engine upgraded while the app runs gets the button.
+    /// Whether the engine advertises `resolve_prompt_v1`. A yes is remembered for good; a no for
+    /// `noCacheSeconds`, so an engine upgraded while the app runs gets the button within a minute,
+    /// and a Health page full of findings on an older engine starts one `manifest show`, not one
+    /// per row. Buttons that ask at once share one check.
     func isSupported() async -> Bool {
         if supported { return true }
-        let result = try? await runner.run(executable: scoutctl, arguments: argumentsPrefix + ["manifest", "show"],
-                                           environment: environment, workingDirectory: scoutDirectory)
-        supported = result.map { $0.exitCode == 0 && EngineFeatures.decode($0.stdout).contains(Self.feature) } ?? false
-        return supported
+        if let lastNo, now().timeIntervalSince(lastNo) < Self.noCacheSeconds { return false }
+        if let inFlight { return await inFlight.value }
+        let check = Task { [runner, scoutctl, argumentsPrefix, environment, scoutDirectory] () -> Bool in
+            guard let result = try? await runner.run(executable: scoutctl,
+                                                     arguments: argumentsPrefix + ["manifest", "show"],
+                                                     environment: environment, workingDirectory: scoutDirectory)
+            else { return false }
+            return result.exitCode == 0 && EngineFeatures.decode(result.stdout).contains(Self.feature)
+        }
+        inFlight = check
+        let yes = await check.value
+        inFlight = nil
+        if yes { supported = true } else { lastNo = now() }
+        return yes
     }
 
     /// The engine's prompt for `subject`. Throws `ResolvePromptError`.

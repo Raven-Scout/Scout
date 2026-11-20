@@ -251,8 +251,9 @@ def _integrity_row(ctx: _Ctx) -> OutcomeRow | None:
 
 
 def _row_line(row: OutcomeRow) -> str:
+    slot = _token(row.slot, _SLOT_RE, "unknown")
     return (
-        f"Its ledger row: slot `{row.slot}`, `started_at` {int(row.started_at.timestamp())} "
+        f"Its ledger row: slot `{slot}`, `started_at` {int(row.started_at.timestamp())} "
         f"({_iso(row.started_at)}), finished {_iso(row.finished_at)}, outcome `{row.outcome}`"
     )
 
@@ -376,10 +377,11 @@ def _gates(ctx: _Ctx) -> Guide:
             "Run `scoutctl protection status --json`: the last privacy-check probe and what it found.",
             "Read the hook registration in the vault's `.claude/settings.json` (read it; don't edit it).",
             "Read the newest skipped run's log for the probe's exit line.",
-            "Only with the owner's OK, re-run the probe: `scoutctl gates probe` (a local fake endpoint, no model "
-            "and no spend).",
+            "Only with the owner's OK, re-run the probe: `scoutctl gates probe`. It starts claude against a local "
+            "fake endpoint (no model, no spend) and rewrites the probe's cache, so it is not read-only.",
         ],
-        commands=["scoutctl protection status --json", "scoutctl gates probe --cached"],
+        # Never `gates probe`, even --cached: without a fresh cached pass it runs a new probe and writes state.
+        commands=["scoutctl protection status --json"],
     )
 
 
@@ -600,8 +602,9 @@ def for_connector(vault: Path, connector_key: str) -> ResolvePrompt:
 _SKIP_GUIDES: dict[str, tuple[str, list[str]]] = {
     "skipped_gates": (
         "The privacy-check probe found claude not loading Scout's hooks, so the run didn't start. Read the last probe "
-        "in `scoutctl protection status --json`; re-run `scoutctl gates probe` only with the owner's OK.",
-        ["scoutctl protection status --json", "scoutctl gates probe --cached"],
+        "in `scoutctl protection status --json`. Re-running `scoutctl gates probe` starts claude and rewrites the "
+        "probe's cache: only with the owner's OK.",
+        ["scoutctl protection status --json"],
     ),
     "skipped_sandbox": (
         "The write sandbox couldn't start, so the run didn't. Read `scoutctl sandbox status` and the log's sandbox "
