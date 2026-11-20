@@ -80,6 +80,9 @@ final class AppState: ObservableObject {
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
+    /// "Resolve with Claude" (`scoutctl health resolve-prompt`): the engine-built investigation
+    /// prompt behind health, connector and run banners. Views read it from the environment.
+    let resolvePromptService: ResolvePromptService
 
     // Engine install + upgrade (spec §5)
     /// The engine this build ships; nil only when the resource is missing
@@ -206,6 +209,13 @@ final class AppState: ObservableObject {
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
             fileEvents: events
+        )
+        let resolvePrompt = ResolvePromptService(
+            scoutctl: scoutctlResolved.executable,
+            argumentsPrefix: scoutctlResolved.argsPrefix,
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutDirectory: scoutDir
         )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
@@ -388,6 +398,7 @@ final class AppState: ObservableObject {
         self.runProtection = runProtection
         self.delegateStatus = delegateStatus
         self.runLedgerService = runLedger
+        self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
         self.resolveClaude = configuration.resolveClaude
