@@ -227,7 +227,7 @@ CONFIG_FILE = "scout-config.yaml"
 def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
     """Whether the privacy checks (#453, spec §8.2) look at ``rel``.
 
-    Wider than :meth:`LintConfig.in_scope`: markdown under ``knowledge-base/``
+    Wider than :meth:`LintConfig.in_scope`: markdown (any case of ``.md``) under ``knowledge-base/``
     and ``action-items/`` (exclude globs don't apply: they are size-lint
     tuning), every file matching a ``shared_files`` glob whatever its suffix,
     and ``scout-config.yaml`` (the widening guard watches its ``privacy:``
@@ -235,7 +235,7 @@ def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
     """
     if rel == CONFIG_FILE:
         return True
-    if rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES):
+    if rel.lower().endswith(".md") and rel.startswith(_SCOPE_PREFIXES):  # `.MD` too: git and macOS keep the case
         return True
     return any_match(shared_files, rel)
 
