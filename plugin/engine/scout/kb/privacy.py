@@ -122,7 +122,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 5  # 5: delegate_source/delegate_scope (#550 V4b2); 4: shared_source (#550); 3: Stage 2
+CLASSIFIER_VERSION = 6  # 6: a shared: source caps federation at none; 5: delegate_source/delegate_scope (V4b2)
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -1133,8 +1133,10 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
 
     by_folder = folder_ceiling(policy, rel, facts.kind)
     by_delegate = holds_delegate(rel, facts)
-    # An agent's text the owner hasn't promoted is never shared, whatever its frontmatter or folder says (V4b2).
-    forced_none = visibility == "private" or local_only or by_delegate
+    # Never shared, whatever the frontmatter or folder default says: an agent's text the owner hasn't promoted
+    # (#550 V4b2), and a note built from someone's shared note (``source: shared:…``): your sharing must not
+    # pass on theirs (Agnes #6090 §7).
+    forced_none = visibility == "private" or local_only or by_delegate or facts.shared_source
     ceiling: CeilingLevel = "none" if forced_none else by_folder
     if not forced_none and cap_scope(declared, by_folder) != declared:
         warnings.append("federation-ceiling")

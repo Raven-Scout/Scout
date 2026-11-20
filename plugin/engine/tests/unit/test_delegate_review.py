@@ -126,7 +126,7 @@ def test_the_new_fields_stay_out_of_published_labels() -> None:
     assert label.delegate_source and label.delegate_author == D
     assert not {"delegate_source", "delegate_scope", "delegate_author"} & set(label.to_json())
     assert label == classify("knowledge-base/topics/x.md", "---\nvisibility: private\n---\nBody\n", POLICY)
-    assert privacy.CLASSIFIER_VERSION == 5
+    assert privacy.CLASSIFIER_VERSION >= 5  # V4b2 took 5
 
 
 # ----- showing text ------------------------------------------------------------------------------
