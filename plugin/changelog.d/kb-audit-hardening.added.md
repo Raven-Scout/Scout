@@ -1,1 +1,0 @@
-- **`scoutctl kb read <path> --lines A:B`** (also `:B`, `A:`, `-N:`) and **`scoutctl kb stat <path>…`** or **`kb stat --glob <glob>`** (bytes, lines, words, labelled): the privacy-labelled replacements for `sed -n`, `head`, `tail`, `wc` and `ls -l` on notes. Delegates may run `kb stat`.
