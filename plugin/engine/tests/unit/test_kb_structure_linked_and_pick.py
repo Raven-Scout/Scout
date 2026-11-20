@@ -337,3 +337,34 @@ def test_an_over_budget_page_mid_shrink_keeps_its_nights(kb_repo) -> None:
     assert r["over_budget"] and r["missing_count"] == 0
     assert not r["interactive"] and r["rebuild_target"] and not r["resume"]
     assert picked(kb_repo) == "widgets"
+
+
+# ----- edges -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["../outside", "/"])
+def test_linked_dirs_must_stay_inside_the_vault(kb_repo, bad: str) -> None:
+    from scout.errors import KBError
+    from scout.kb.structure import load_structure_config
+
+    kb_repo.write("scout-config.yaml", f"kb_structure:\n  linked_dirs: ['{bad}']\n")
+    with pytest.raises(KBError):
+        load_structure_config(kb_repo.root)
+
+
+def test_newest_changes_of_no_paths_is_empty(kb_repo) -> None:
+    from scout.kb.structure import newest_changes
+
+    assert newest_changes(kb_repo.root, [], dt.date(2026, 10, 10)) == {}
+
+
+def test_a_linking_note_deleted_since_and_an_empty_link_do_not_count(kb_repo, monkeypatch) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
+    commit_at(kb_repo, "2026-10-01", monkeypatch)
+    gone = "knowledge-base/sources/2026-10/2026-10-09-sync.md"
+    kb_repo.write(gone, "See [[widgets]].\n")
+    kb_repo.write("knowledge-base/topics/infra/infra.md", "See [[/]] and [[ ]].\n")
+    commit_at(kb_repo, "2026-10-09", monkeypatch)
+    (kb_repo.root / gone).unlink()  # still in the history, gone from disk
+    r = rows(kb_repo)["widgets"]
+    assert not r["stale"] and r["linked_last_change"] is None

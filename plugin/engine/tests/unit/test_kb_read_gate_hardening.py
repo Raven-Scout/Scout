@@ -473,3 +473,87 @@ def test_daily_file_globs_are_allowed_through_the_real_cli(vault, command: str) 
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0 and res.stdout == "", (command, res.stdout, res.stderr)
+
+
+# ----- the parsing helpers, one edge each ----------------------------------------------
+
+
+def test_glob_regex_reads_ripgrep_globs() -> None:
+    from scout.kb.raw_read import _glob_regex
+
+    assert _glob_regex("**/people/**").fullmatch("knowledge-base/people/priya.md")
+    assert _glob_regex("[ab]c").fullmatch("ac") and not _glob_regex("[!a]c").fullmatch("ac")
+    assert _glob_regex("[!a]c").fullmatch("bc")
+    assert _glob_regex("[x").fullmatch("[x")  # an unclosed bracket is a literal
+    assert _glob_regex("{a,b").fullmatch("b")  # an unclosed brace still closes
+    assert _glob_regex("[z-a]").pattern == ".*"  # a glob the gate can't read bounds nothing
+
+
+def test_flag_and_exclusion_helpers() -> None:
+    from scout.kb.raw_read import _exclusions, _flag_value, _int
+
+    assert _int("two") is None and _int(None) is None and _int("2") == 2
+    assert _flag_value(["--max-depth=2"], {"--max-depth"}) == "2"
+    assert _flag_value(["-L", "3"], {"-L"}) == "3"
+    assert _exclusions(["--exclude-dir=knowledge-base", "--glob=!action-items/**", "-g", "*.py"]) == (
+        "knowledge-base",
+        "action-items/**",
+    )
+
+
+def test_read_names_skips_a_flags_value() -> None:
+    from scout.kb.raw_read import _read_names
+
+    assert _read_names("read", ["-r", "-p", "prompt", "f"]) == {"f"}
+    assert _read_names("mapfile", ["-t", "-n", "5", "lines"]) == {"lines"}
+
+
+def test_git_with_only_global_options_has_no_subcommand() -> None:
+    from scout.kb.raw_read import _git
+
+    assert _git(["--no-pager", "-C", "docs"]) == (None, [], ["docs"])
+
+
+def test_find_without_tests_takes_every_word_as_a_root() -> None:
+    from scout.kb.raw_read import _recursive
+
+    rec = _recursive("find", ["docs", "scripts"])
+    assert rec is not None and rec.roots == ["docs", "scripts"] and not rec.content
+
+
+def test_reaches_kb_inside_the_kb_needs_a_depth() -> None:
+    from scout.kb.raw_read import _reaches_kb, _Recursive
+
+    inside = f"{VAULT}/knowledge-base/projects"
+    assert _reaches_kb(inside, VAULT, _Recursive([], True, None))
+    assert _reaches_kb(inside, VAULT, _Recursive([], True, 1))
+    assert not _reaches_kb(inside, VAULT, _Recursive([], True, 0))
+
+
+def test_expand_a_tilde_without_home_is_unknown() -> None:
+    from scout.kb.raw_read import _UNKNOWN, _expand
+
+    assert _expand("~/x", {}, {}) == _UNKNOWN
+    assert _expand("~/x", {"HOME": "/home/alex"}, {}) == "/home/alex/x"
+
+
+def test_shell_split_and_substitution_edges() -> None:
+    from scout.kb.raw_read import _shell_split, _shell_words, _substitution_end
+
+    statements, _ = _shell_split("sleep 1 & cat docs/x.md")
+    assert len(statements) == 2
+    assert _substitution_end("`ls` docs", 0) == 4
+    assert _substitution_end("`ls docs", 0) == len("`ls docs")
+    assert _substitution_end("$(a $(b) (c)) d", 0) == len("$(a $(b) (c))")
+    assert _shell_words('echo "unclosed docs') == ["echo", '"unclosed', "docs"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "scripts/scoutctl kb files | while read -r -d '' f; do cat \"$f\"; done",
+        "2>/dev/null; rg -n TODO .",
+    ],
+)
+def test_edge_forms_into_the_kb_are_flagged(command: str) -> None:
+    assert raw_kb_read(command, cwd=VAULT, vault=VAULT, env={"HOME": "/home/alex"})

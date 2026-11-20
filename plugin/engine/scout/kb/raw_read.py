@@ -81,10 +81,6 @@ ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontolog
 WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
 
 
-def _words(segment: str) -> list[str]:
-    return _strip(segment.split()).words
-
-
 class _Stripped:
     """A segment's command words after its prefixes, and what the prefixes said."""
 

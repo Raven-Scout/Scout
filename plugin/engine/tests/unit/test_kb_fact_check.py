@@ -312,3 +312,46 @@ def test_a_refused_skip_is_not_recorded(kb_repo) -> None:
     import datetime as _dt
 
     assert recent_skips(kb_repo.root, _dt.datetime.now(_dt.UTC)) == 0
+
+
+# ----- edges -------------------------------------------------------------------------------
+
+
+def test_rank_and_verified_on_edges() -> None:
+    from scout.kb.fact_check import _rank, verified_on
+
+    assert _rank(f"{P}/widgets/knowledge/costs.md") == 1
+    assert verified_on("---\nlast_verified: 2026-10-09 08:00:00\n---\nx\n") == (dt.date(2026, 10, 9), False)
+    assert verified_on("---\nlast_verified: soon\n---\nx\n") == (None, False)
+
+
+@pytest.mark.parametrize("raw", [{"path": FRONT}, [{"changed": "2026-10-09"}], ["x"]])
+def test_a_malformed_context_is_refused(raw: object) -> None:
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.kb.fact_check import _rows
+
+    with pytest.raises(PrefetchCheckError):
+        _rows(raw)
+
+
+def test_a_note_gone_since_its_commit_is_not_a_target(kb_repo, monkeypatch) -> None:
+    from scout.kb import fact_check
+
+    kb_repo.write(FRONT, note())
+    commit_at(kb_repo, "2026-10-09", monkeypatch)
+    monkeypatch.setattr(fact_check, "_read", lambda vault, rel: None)
+    assert fact_check_targets(kb_repo.root, DAY, "owner") == []
+
+
+def test_skip_count_ignores_unreadable_event_lines(kb_repo) -> None:
+    import datetime as _dt
+
+    from scout.events import EVENT_LOG_PREFIX
+    from scout.kb.fact_check import SKIP_EVENT, recent_skips
+
+    now = _dt.datetime.now(_dt.UTC)
+    logs = kb_repo.root / ".scout-logs"
+    logs.mkdir(exist_ok=True)
+    good = json.dumps({"kind": SKIP_EVENT})
+    (logs / f"{EVENT_LOG_PREFIX}{now.date().isoformat()}.jsonl").write_text(f"not json\n[1]\n{good}\n")
+    assert recent_skips(kb_repo.root, now) == 1
