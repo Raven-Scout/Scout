@@ -352,12 +352,17 @@ def _set_backlog_line(lines: list[str], n: int) -> list[str]:
 
 def _moved_away(row: list[str], copy: list[str], note: str | None) -> bool:
     """Whether ``copy`` is ``row`` before a trim: the same task line, and every line ``row``
-    lacks already in the tag's context note (where the trim put it)."""
+    lacks is prose (what a trim moves) already in the tag's context note.
+
+    A missing machine line (a nested task, a comment, ``Refs:``, a snooze) never
+    counts, even when the note happens to hold it: a trim never moves one."""
     if note is None or not row or row[0].rstrip() != copy[0].rstrip():
         return False
     have = {ln.rstrip() for ln in row}
+    prose = {ln.rstrip() for is_prose, group in sub_bullet_groups(copy) if is_prose for ln in group}
     noted = {ln.strip() for ln in note.splitlines()}
-    return all(ln.strip() in noted for ln in copy if ln.strip() and ln.rstrip() not in have)
+    missing = [ln for ln in copy[1:] if ln.strip() and ln.rstrip() not in have]
+    return all(ln.rstrip() in prose and ln.strip() in noted for ln in missing)
 
 
 def _dedupe_backlog(
@@ -437,6 +442,8 @@ def plan_fit(
     # A row under ✅ is history, never a task's live copy: it can't stand in for a backlog copy.
     # A tag that stays in the daily file (an open row under ✅ included) is never promoted beside it.
     leaving_tags = {b.tag for _, b in _blocks_by_section(daily) if b.start in leaving}
+    # A leaver merges into a backlog copy with its task line (step 5), so that copy isn't promoted.
+    leaving_lines = {daily[b.start].rstrip() for b in stale.task_blocks(daily) if b.start in leaving}
     staying_tags = {b.tag for b in stale.task_blocks(daily)} - leaving_tags
     daily_blocks: dict[str, list[str]] = {}
     for section, block in _blocks_by_section(daily):
@@ -448,12 +455,14 @@ def plan_fit(
     for section, block in _blocks_by_section(backlog):
         if section not in (YELLOW, GREEN) or block.tag in staying_tags or block.tag in seen:
             continue
+        if block.tag in leaving_tags and backlog[block.start].rstrip() in leaving_lines:
+            continue
         # One copy per tag: with two differing copies (a named conflict) the first that is due comes
         # back, so a due task never drops out of view while a person merges them.
-        seen.add(block.tag)
         due = _due(backlog[block.start : block.end], today)
         if due is not None and due <= horizon:
             coming.append((due, section, block))
+            seen.add(block.tag)
     coming.sort(key=lambda item: item[0])
 
     # 3. The cap: fewer promotions first, then the bottom of 🟡.
@@ -646,13 +655,28 @@ def _note_reader(vault: Path) -> Callable[[str], str | None]:
     return read
 
 
+_TAG = re.compile(r"[A-Za-z0-9]{2,8}")
+
+
 def read_report(data_dir: Path | None) -> dict[str, Any] | None:
-    """The last fit report, or None when there is none or it can't be read."""
+    """The last fit report, or None when there is none or it can't be read.
+
+    ``.scout-logs`` is writable by a run, so the report is opened without
+    following a link (a planted symlink reads as no report), and only
+    ``conflicts`` entries that are tags are kept: callers print them."""
     try:
-        raw = json.loads(report_path(paths.data_dir(data_dir)).read_text(encoding="utf-8"))
+        fd = os.open(report_path(paths.data_dir(data_dir)), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as fh:
+            raw = json.loads(fh.read())
     except (OSError, UnicodeDecodeError, ValueError):
         return None
-    return raw if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    conflicts = raw.get("conflicts")
+    raw["conflicts"] = (
+        [t for t in conflicts if isinstance(t, str) and _TAG.fullmatch(t)] if isinstance(conflicts, list) else []
+    )
+    return raw
 
 
 def report_conflicts(data_dir: Path | None, *, day: _dt.date) -> list[str]:
@@ -660,8 +684,7 @@ def report_conflicts(data_dir: Path | None, *, day: _dt.date) -> list[str]:
     report = read_report(data_dir)
     if report is None or report.get("day") != day.isoformat():
         return []
-    conflicts = report.get("conflicts")
-    return [str(t) for t in conflicts] if isinstance(conflicts, list) else []
+    return list(report["conflicts"])
 
 
 def write_error_report(data_dir: Path | None, *, day: _dt.date, error: BaseException) -> None:
@@ -802,6 +825,8 @@ def _started_by_the_run(vault: Path, lock: Path) -> bool:
     try:
         table = process_table()
     except (OSError, subprocess.SubprocessError, ValueError):
+        # The lock-age check needs ps, so it can't run here. A reused PID is a negligible risk on this
+        # path: a new run re-takes the lock under its own PID, and the marker must name the holder.
         held = run_without_ps(vault)
         return held is not None and held[0] == holder and is_scheduled(os.environ)
     try:

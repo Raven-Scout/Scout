@@ -502,3 +502,64 @@ def test_check_size_and_doctor_name_conflicts(tmp_path: Path) -> None:
     assert _check_action_items_conflicts(vault=vault) == []
     report.write_text("not json")
     assert _check_action_items_conflicts(vault=vault) == []
+
+
+# --- round 4 -------------------------------------------------------------------------------------------------
+
+
+def test_moved_away_never_drops_a_twin_whose_extra_line_is_a_nested_task(tmp_path: Path) -> None:
+    """A nested open task in the backlog copy, even one the note happens to hold, keeps the copy."""
+    vault = _vault(tmp_path)
+    _daily_path(vault).write_text("## 🔴 Urgent\n\n- [ ] [#NOTE] **Same line** — due 2026-11-20\n", encoding="utf-8")
+    stale.backlog_path(vault).write_text(
+        "## 🅿️ Parked\n\n- [ ] [#NOTE] **Same line** — due 2026-11-20\n  - [ ] [#SUBT] nested open follow-up\n",
+        encoding="utf-8",
+    )
+    ctx = vault / "action-items" / "context"
+    ctx.mkdir(parents=True)
+    (ctx / "NOTE.md").write_text("---\ntag: NOTE\n---\n\n- [ ] [#SUBT] nested open follow-up\n", encoding="utf-8")
+    fit(data_dir=vault, date=TODAY, apply=True)
+    live = _daily_path(vault).read_text() + stale.backlog_path(vault).read_text()
+    assert "[#SUBT]" in live
+
+
+def test_a_far_first_copy_never_hides_a_due_second_copy() -> None:
+    backlog = [
+        "## 🟡 To Do (soon)",
+        "- [ ] [#HIDE] **Far wording** — due 2027-03-01",
+        "## 🟢 Watching (no action yet)",
+        "- [ ] [#HIDE] **Soon wording** — due 2026-11-20",
+    ]
+    result = _plan([], backlog)
+    assert "HIDE" in _open(result.daily) and "**Soon wording**" in "\n".join(result.daily)
+    assert "**Far wording**" in "\n".join(result.backlog)
+
+
+def test_a_parked_leaver_merging_into_a_due_copy_is_not_also_promoted() -> None:
+    line = "- [ ] [#SWAP] **Same** — due 2026-11-21"
+    daily = ["## 🅿️ Parked", "", line, "  - only in daily", ""]
+    backlog = ["# Backlog", "", "## 🟡 To Do (soon)", "", line, "  - only in backlog", ""]
+    result = _plan(daily, backlog)
+    text = "\n".join(result.daily + result.backlog)
+    assert "only in daily" in text and "only in backlog" in text
+    assert not ("SWAP" in _open(result.daily) and "SWAP" in _open(result.backlog))
+    assert result.conflicts == []
+
+
+def test_the_fit_report_is_read_without_following_a_link_and_keeps_only_tags(tmp_path: Path) -> None:
+    from scout.action_items.fit import read_report, report_conflicts
+
+    vault = _vault(tmp_path)
+    logs = vault / ".scout-logs"
+    logs.mkdir()
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text(json.dumps({"day": TODAY.isoformat(), "conflicts": ["LINK"]}))
+    (logs / "action-items-fit.json").symlink_to(elsewhere)
+    assert read_report(vault) is None
+    (logs / "action-items-fit.json").unlink()
+    (logs / "action-items-fit.json").write_text(
+        json.dumps({"day": TODAY.isoformat(), "conflicts": ["GOOD", "\u001b[31mred", 7, "x" * 40]})
+    )
+    assert report_conflicts(vault, day=TODAY) == ["GOOD"]
+    (logs / "action-items-fit.json").write_text(json.dumps(["not", "a", "dict"]))
+    assert read_report(vault) is None
