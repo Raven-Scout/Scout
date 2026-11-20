@@ -180,7 +180,8 @@ struct ConnectorHealthRailCard: View {
 
     private func sessionHeaderTooltip(session: ConnectorHealthMatrix.Session, index: Int) -> String {
         let when = session.startedAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-        return "\(DisplayName.slotKey(session.mode)), \(when)"
+        let name = DisplayName.ledgerRun(slot: session.mode, mode: nil, startedAt: session.startedAt) ?? DisplayName.slotKey(session.mode)
+        return "\(name), \(when)"
     }
 
     private func cellTooltip(

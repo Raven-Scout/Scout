@@ -28,6 +28,9 @@ final class SessionLogService: ObservableObject {
     private var ledgerFailureClasses: [String: String] = [:]
     /// Each ledger row's write protection and integrity check, by log file name (`Run.protection`).
     private var ledgerProtection: [String: Run.Protection] = [:]
+    /// Each ledger row's run name (`DisplayName.ledgerRun` of its slot or mode), by log file name
+    /// (`Run.ledgerName`): the ledger, not the log's file name, says what kind of run it was.
+    private var ledgerNames: [String: String] = [:]
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -385,16 +388,16 @@ final class SessionLogService: ObservableObject {
     }
 
     /// Replace each run's status with its ledger row's, and give it the row's
-    /// slot key, matched by log file name. Each run has its own log (a later
+    /// slot key and name, matched by log file name. Each run has its own log (a later
     /// run in the same minute logs to a seconds+PID name), so a row matches
     /// exactly one run.
     nonisolated static func overlayLedger(
         _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
         triggers: [String: String] = [:], failureClasses: [String: String] = [:],
-        protection: [String: Run.Protection] = [:]
+        protection: [String: Run.Protection] = [:], names: [String: String] = [:]
     ) -> [Run] {
         guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty || !failureClasses.isEmpty
-                || !protection.isEmpty else { return runs }
+                || !protection.isEmpty || !names.isEmpty else { return runs }
         return runs.map { run in
             let name = run.logPath.lastPathComponent
             var out = run
@@ -403,6 +406,7 @@ final class SessionLogService: ObservableObject {
             if let trigger = triggers[name], trigger != out.trigger { out.trigger = trigger }
             if let fc = failureClasses[name], fc != out.failureClass { out.failureClass = fc }
             if let facts = protection[name], facts != out.protection { out.protection = facts }
+            if let runName = names[name], runName != out.ledgerName { out.ledgerName = runName }
             return out
         }
     }
@@ -413,6 +417,7 @@ final class SessionLogService: ObservableObject {
         ledgerSlots = entries.mapValues(\.slot)
         ledgerTriggers = entries.compactMapValues(\.trigger)
         ledgerFailureClasses = entries.compactMapValues(\.failureClass)
+        ledgerNames = entries.compactMapValues { DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner, startedAt: $0.startedAt) }
         ledgerProtection = entries.compactMapValues { e in
             guard e.sandbox != nil || e.integrity != nil else { return nil }
             return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity,
@@ -424,7 +429,8 @@ final class SessionLogService: ObservableObject {
 
     private func overlaid(_ runs: [Run]) -> [Run] {
         Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers,
-                           failureClasses: ledgerFailureClasses, protection: ledgerProtection)
+                           failureClasses: ledgerFailureClasses, protection: ledgerProtection,
+                           names: ledgerNames)
     }
 
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {

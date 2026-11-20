@@ -144,6 +144,13 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// `integrity`); nil without a ledger row. Never worked out from the log.
     var protection: Protection? = nil
 
+    /// The run's name from its run ledger row's `slot` or `mode`
+    /// (`DisplayName.ledgerRun`): "Overnight research" for a run whose log is
+    /// a plain `scout-…` file that the hour alone would call a briefing. nil
+    /// without a ledger row, or when the row names nothing; `displayName` then
+    /// falls back to the log-name guess.
+    var ledgerName: String? = nil
+
     /// The ledger's word on a run's write protection and the post-run integrity check.
     struct Protection: Equatable, Hashable, Sendable {
         /// enforced | unavailable | off | conflict | failed; nil from an older runner.
@@ -211,11 +218,16 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         return pid.map { "\(base)-\($0)" } ?? base
     }
 
-    /// Display name for the Control Center. When the typed bucket is `.manual`
-    /// (the catch-all for runs that didn't match any scheduled slot), fall
-    /// back to the runner script's family so the row still tells the user
-    /// what kind of work happened — "Briefing (manual)" beats just "manual".
+    /// The run's name on every page that lists or details runs. The run
+    /// ledger's word wins (`ledgerName`, from the row's slot or mode), since
+    /// the log's file name only says which runner script ran and the hour it
+    /// started (card T2: a 1 AM `overnight-research` run read as "Morning
+    /// briefing"). Without one, the log-name guess: the type, or, when the
+    /// typed bucket is `.manual` (the catch-all for runs that didn't match any
+    /// scheduled slot), the runner script's family so the row still tells the
+    /// user what kind of work happened — "Briefing (manual)" beats just "manual".
     var displayName: String {
+        if let ledgerName { return ledgerName }
         if type != .manual { return type.displayName }
         switch runnerScript {
         case "run-dreaming.sh": return "Dreaming (manual)"
@@ -230,6 +242,14 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         source == .manual || source == .retry || type == .manual
     }
 
+    /// Whether a row or header should add its "manual" / "Started by you" mark:
+    /// a hand-started run whose name doesn't already say so ("Dreaming (manual)").
+    var showsManualBadge: Bool {
+        guard wasManuallyTriggered, type != .manual else { return false }
+        if let key = slotKey, key == "manual" || key.hasSuffix("-manual") { return false }
+        return true
+    }
+
     /// Copy with a different `status`. Used by the stale-running reconciler
     /// (`SessionLogService.resolveStaleRunning`) to demote a stuck `.running`
     /// run to `.orphaned` without rebuilding every field by hand.
@@ -241,7 +261,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
             model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
-            protection: protection
+            protection: protection, ledgerName: ledgerName
         )
     }
 }
@@ -266,7 +286,8 @@ extension Run {
         slotKey: String? = nil,
         trigger: String? = nil,
         failureClass: String? = nil,
-        protection: Protection? = nil
+        protection: Protection? = nil,
+        ledgerName: String? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -296,7 +317,8 @@ extension Run {
             slotKey: slotKey,
             trigger: trigger,
             failureClass: failureClass,
-            protection: protection
+            protection: protection,
+            ledgerName: ledgerName
         )
     }
 }

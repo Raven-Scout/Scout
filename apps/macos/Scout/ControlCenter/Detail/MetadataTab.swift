@@ -17,6 +17,7 @@ struct MetadataTab: View {
         let info: [String: String] = [
             "id": run.id,
             "type": run.type.rawValue,
+            "slot": run.slotKey ?? "—",
             "runnerScript": run.runnerScript,
             "source": run.source.rawValue,
             "status": run.status.rawValue,
