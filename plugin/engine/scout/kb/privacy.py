@@ -122,7 +122,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 4  # 4: NoteFacts.shared_source, for delegates (#550); 3: Stage 2 (Agnes #6090 §4)
+CLASSIFIER_VERSION = 5  # 5: delegate_source/delegate_scope (#550 V4b2); 4: shared_source (#550); 3: Stage 2
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -157,6 +157,13 @@ FULL_READERS = frozenset({"owner", "autonomous"})
 # inbox. Notes that cite someone's shared note (``source: shared:…``) are kept from delegates
 # by ``Label.shared_source`` instead.
 DELEGATE_NEVER = (".scout-inbox/**",)
+
+# Where an accepted agent observation lands (#550 V4b2): ``from-agents/<delegate>/<ULID>.md``. A note
+# here counts as an agent's text (``Label.delegate_source``) unless its frontmatter records the
+# owner's promotion (``promoted_from: delegate:<id>``): a hand-made or broken note here fails closed.
+FROM_AGENTS = "knowledge-base/from-agents/"
+_FROM_AGENT = "[from-agent] "
+_DELEGATE_REF_RE = re.compile(r"^delegate:([a-z0-9][a-z0-9-]{0,39})\Z")
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
@@ -311,6 +318,16 @@ class Label:
     :func:`visible_to` reads it, to keep such notes from delegates; it isn't in
     ``to_json`` and doesn't take part in equality, so published labels and the
     conformance corpus don't change.
+
+    ``delegate_source`` and ``delegate_scope`` are internal the same way (#550
+    V4b2). ``delegate_source``: the note holds an agent's text the owner
+    accepted but hasn't promoted (``source: delegate:…``, a note under
+    :data:`FROM_AGENTS` without ``promoted_from``, or frontmatter that can't be
+    read); no delegate sees it, its author included, and neither does the owner
+    elsewhere. ``delegate_scope``: the delegates a note is limited to (None: no
+    limit; empty: none, as a malformed value reads). ``delegate_author``: the
+    agent whose text it is (``source: delegate:<id>`` or ``promoted_from``),
+    for the ``[from-agent: …]`` mark ``kb`` prints, promoted or not.
     """
 
     path: str
@@ -324,6 +341,9 @@ class Label:
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
     shared_source: bool = field(default=False, compare=False)
+    delegate_source: bool = field(default=False, compare=False)
+    delegate_scope: tuple[str, ...] | None = field(default=None, compare=False)
+    delegate_author: str | None = field(default=None, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -878,6 +898,10 @@ class NoteFacts:
     lower-cased, or None. ``warnings`` are the text-only ones, in
     :func:`classify`'s order. ``shared_source``: a frontmatter ``source:`` value
     claims ``shared:…`` (the rule of :func:`scout.kb.shared_reads.is_shared_source`).
+    ``delegate_source``: a ``source:`` value claims ``delegate:…``. ``promoted``: a
+    ``promoted_from: delegate:<id>`` key. ``delegate_scope``: the ``delegate_scope``
+    ids (None when the key is absent; empty when it isn't a list of delegate ids).
+    ``delegate_author``: the id a ``delegate:<id>`` source or ``promoted_from`` names.
     """
 
     state: Literal["ok", "unparseable", "unreadable"] = "ok"
@@ -887,6 +911,10 @@ class NoteFacts:
     declared_present: bool = False
     kind: str | None = None
     shared_source: bool = False
+    delegate_source: bool = False
+    promoted: bool = False
+    delegate_scope: tuple[str, ...] | None = None
+    delegate_author: str | None = None
 
 
 def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
@@ -919,6 +947,12 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
     kind = fm.get("kind")
     source = fm.get("source")
     sources = [source] if isinstance(source, str) else source if isinstance(source, list) else []
+    promoted_from = fm.get("promoted_from")
+    promoted = isinstance(promoted_from, str) and _DELEGATE_REF_RE.match(promoted_from) is not None
+    refs: list[str] = [v for v in sources if isinstance(v, str)]
+    if promoted and isinstance(promoted_from, str):
+        refs.append(promoted_from)
+    author = next((m[1] for m in (_DELEGATE_REF_RE.match(v.strip()) for v in refs) if m), None)
     return NoteFacts(
         visibility=visibility,
         declared=declared,
@@ -926,12 +960,42 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
         declared_present="federation_scope" in fm,
         kind=(kind.strip().lower() or None) if isinstance(kind, str) else None,
         shared_source=any(isinstance(v, str) and v.strip().casefold().startswith("shared:") for v in sources),
+        delegate_source=any(isinstance(v, str) and v.strip().casefold().startswith("delegate:") for v in sources),
+        promoted=promoted,
+        delegate_scope=_parse_delegate_scope(fm["delegate_scope"]) if "delegate_scope" in fm else None,
+        delegate_author=author,
     )
+
+
+def _parse_delegate_scope(value: Any) -> tuple[str, ...]:
+    """A ``delegate_scope`` value: a list of delegate ids, first-seen order; anything else is empty (none)."""
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and is_delegate_id(v) for v in value):
+        return ()
+    return tuple(dict.fromkeys(value))
+
+
+def from_agent(label: Mapping[str, Any] | Label | None) -> str | None:
+    """The ``[from-agent: …] `` mark for a note holding an agent's text (#550 V4b2), else None.
+
+    A :class:`Label` names the agent (``delegate_author``); a published label (a dict) carries only its path, so a
+    note under ``from-agents/`` is marked without a name."""
+    if isinstance(label, Label):
+        if label.delegate_author is not None:
+            return f"[from-agent: delegate-{label.delegate_author}] "
+        return _FROM_AGENT if label.delegate_source or label.path.startswith(FROM_AGENTS) else None
+    path = label.get("path") if label else None
+    return _FROM_AGENT if isinstance(path, str) and path.startswith(FROM_AGENTS) else None
 
 
 def holds_shared(facts: NoteFacts) -> bool:
     """``Label.shared_source`` for these facts: a ``shared:`` source, or unreadable frontmatter (fail closed)."""
     return facts.shared_source or facts.state != "ok"
+
+
+def holds_delegate(rel_path: str, facts: NoteFacts) -> bool:
+    """``Label.delegate_source``: a ``delegate:`` source, a :data:`FROM_AGENTS` note not promoted, or unreadable
+    frontmatter (fail closed)."""
+    return facts.state != "ok" or facts.delegate_source or (rel_path.startswith(FROM_AGENTS) and not facts.promoted)
 
 
 def _level(level: CeilingLevel) -> int:
@@ -1008,6 +1072,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
             shared_file=shared_by_path,
             warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
             shared_source=True,
+            delegate_source=True,
         )
 
     visibility: Visibility
@@ -1029,7 +1094,9 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         warnings.append("privacy-contradiction")
 
     by_folder = folder_ceiling(policy, rel, facts.kind)
-    forced_none = visibility == "private" or local_only
+    by_delegate = holds_delegate(rel, facts)
+    # An agent's text the owner hasn't promoted is never shared, whatever its frontmatter or folder says (V4b2).
+    forced_none = visibility == "private" or local_only or by_delegate
     ceiling: CeilingLevel = "none" if forced_none else by_folder
     if not forced_none and cap_scope(declared, by_folder) != declared:
         warnings.append("federation-ceiling")
@@ -1047,6 +1114,9 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         shared_file=shared_by_path or declared != "none" or scope != "none",
         warnings=_dedup(warnings),
         shared_source=holds_shared(facts),
+        delegate_source=by_delegate,
+        delegate_scope=facts.delegate_scope,
+        delegate_author=facts.delegate_author,
     )
 
 
@@ -1197,15 +1267,23 @@ def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
 
     ``elsewhere`` (the owner outside the vault) sees what a listed delegate
     without ``include_private`` sees, with no policy needed.
+
+    An agent's accepted text not yet promoted (``Label.delegate_source``) is
+    seen by no delegate, its author included, and not elsewhere (#550 V4b2). A
+    note with a ``delegate_scope`` is seen only by the delegates it names.
     """
     if reader in FULL_READERS:
         return True
+    if label.delegate_source:
+        return False
     if reader == ELSEWHERE_READER:
         return not (label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path)) and (
             label.visibility == "normal"
         )
     rule = policy.delegate(reader) if policy is not None else None
     if rule is None or label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path):
+        return False
+    if label.delegate_scope is not None and delegate_id(reader) not in label.delegate_scope:
         return False
     return label.visibility == "normal" or rule.include_private
 

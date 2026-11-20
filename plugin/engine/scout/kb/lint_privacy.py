@@ -142,6 +142,9 @@ _MESSAGES = {
     "shared-source-reshared": "this note cites a note someone shared with you (source: shared:…), and this file is "
     "shared — your sharing must not pass on theirs; move it out of the shared file or the share",
     "shared-source-malformed": "source: shared: isn't shared:<owner-email>:<vault path>",
+    "delegate-source-private": "this note holds an agent's text (source: delegate:…, or a note in "
+    "knowledge-base/from-agents/ not promoted), so it stays visibility: private; to let agents read it, the owner "
+    "runs scoutctl inbox review promote",
     "visibility-value": "visibility isn't normal/private (the note counts as private), "
     "or federation_scope doesn't parse (it counts as none)",
     "privacy-contradiction": "visibility: private with a federation_scope other than none",
@@ -377,11 +380,18 @@ def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
 
 
 def _provenance_findings(ctx: _Ctx, rel: str, staged: str, facts: NoteFacts, label: Label) -> list[Finding]:
-    """A note built from someone's shared note stays private and out of the reader's own sharing (Agnes §7)."""
+    """A note built from someone's shared note stays private and out of the reader's own sharing (Agnes §7).
+
+    So does an agent's text the owner accepted and hasn't promoted (#550 V4b2): a run may never make it normal."""
+    out: list[Finding] = []
+    if _md(rel) and facts.state == "ok" and label.delegate_source and label.visibility != "private":
+        out.append(
+            Finding(rel, "delegate-source-private", ctx.scheduled or facts.visibility != "normal",
+                    _MESSAGES["delegate-source-private"])
+        )  # fmt: skip
     sources = shared_sources(_head_window(rel, staged))
     if not sources:
-        return []
-    out: list[Finding] = []
+        return out
 
     def finding(check: str, blocking: bool) -> None:
         out.append(Finding(rel, check, blocking, _MESSAGES[check]))
@@ -473,6 +483,14 @@ def _widening(
             and _path_default(rel, ctx.policy) == "private"
         ):
             block("remove the visibility: private line of a note — leave that to the owner")
+    if head is not None and head.delegate_source and not label.delegate_source:
+        block("promote an agent's note (its source: delegate:… or promoted_from) — leave that to the owner")
+    if (facts.promoted or facts.delegate_scope is not None) and (
+        head_facts is None or (head_facts.promoted, head_facts.delegate_scope) != (facts.promoted, facts.delegate_scope)
+    ):
+        block("set or change promoted_from or delegate_scope — leave that to the owner")
+    elif head_facts is not None and head_facts.delegate_scope is not None and facts.delegate_scope is None:
+        block("remove a note's delegate_scope — leave that to the owner")
     if _widens(head_declared, label.federation_scope_declared):
         block("set or widen federation_scope — leave that to the owner")
     elif head is not None and _widens(head.federation_scope, label.federation_scope):

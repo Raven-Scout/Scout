@@ -521,7 +521,7 @@ def test_cli_apply_and_revert_every_output(mirrored: Path, monkeypatch: pytest.M
     p = _op(mirrored, "mark-done")
     _take(mirrored, "observation", {"text": "The meeting moved"})
     r = runner.invoke(app, ["inbox", "apply", D])
-    assert r.exit_code == 0 and f"{D}: applied 1" in r.output and "wait for the review queue" in r.output
+    assert r.exit_code == 0 and f"{D}: applied 1" in r.output and "wait for your review" in r.output
     assert runner.invoke(app, ["inbox", "apply", D]).output.startswith(f"{D}: nothing new")
     r = runner.invoke(app, ["inbox", "revert", p.id, "--json"])
     assert r.exit_code == 0 and json.loads(r.output) == {"ok": True, "delegate": D, "reverted": p.id}

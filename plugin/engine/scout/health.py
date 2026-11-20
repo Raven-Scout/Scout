@@ -1399,9 +1399,10 @@ def delegate_state_unchecked(env: Mapping[str, str] | None = None) -> bool:
 def delegate_inbox_findings(
     vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
 ) -> list[Finding]:
-    """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, or whose copies
-    folder holds files no pull took (#550 V4b1). Nothing for a vault with no inbox, nor in a run that can't read
-    the state's key (:func:`delegate_state_unchecked`)."""
+    """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, whose copies
+    folder holds files no pull took (#550 V4b1), or whose proposals have waited a week for review (V4b2).
+    Nothing for a vault with no inbox, nor in a run that can't read the state's key
+    (:func:`delegate_state_unchecked`)."""
     if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists() or delegate_state_unchecked(env):
         return []
     from scout.delegate_inbox_sync import summary
@@ -1448,6 +1449,19 @@ def delegate_inbox_findings(
                     since=pulled,
                     summary=f"Delegate inbox {key} hasn't been pulled for over a day; is the schedule tick running?",
                     fix="Pull now with: scoutctl inbox sync (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+        reviewed = _parse_ts(box.get("oldest_review"))
+        if box.get("review") and reviewed is not None and now - reviewed > timedelta(days=7):
+            found.append(
+                Finding(
+                    id="delegate.inbox_waiting",
+                    severity="yellow",
+                    since=reviewed,
+                    summary=f"Delegate inbox {key}: {box['review']} proposal(s) have waited over a week for your "
+                    "review (observations and comments)",
+                    fix="Look at them with: scoutctl inbox review",
                     source="state",
                 )
             )

@@ -761,3 +761,13 @@ def test_the_prefilter_takes_any_space_before_an_inbox_command(vault: Path) -> N
     cmd = _payload("Bash", {"command": "scoutctl inbox\tsync"}, vault).getvalue()
     res = _sh(env, cmd, vault)
     assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command", ["scoutctl inbox review", "scoutctl inbox review accept 01JD5Z0000000000000000ABCD"]
+)
+def test_the_prefilter_sends_inbox_review_to_the_gate(vault: Path, command: str) -> None:
+    """#550 V4b2: the review prints agents' text, which never reaches a run."""
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    res = _sh(env, _payload("Bash", {"command": command}, vault).getvalue(), vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr

@@ -359,7 +359,7 @@ GIT_CONFIG_FORM = "GIT_CONFIG_*"
 DELEGATE_FORM = "scoutctl delegate"
 _DELEGATE_WRITES = {"link", "unlink", "key", "trust-state"}
 # And the agents' inboxes (#550 V4b): pulled, applied and reverted by the owner, or by the tick's own step.
-_INBOX_WRITES = {"pull", "apply", "revert", "sync"}
+_INBOX_WRITES = {"pull", "apply", "revert", "sync", "review"}  # review: it prints agents' text (V4b2)
 
 
 def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
@@ -388,8 +388,8 @@ def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
 
 
 def _delegate_write(name: str, args: list[str]) -> bool:
-    """``scoutctl delegate link|unlink|key|trust-state`` or ``scoutctl inbox pull|apply|revert|sync``, by any path
-    to scoutctl or as ``python -m scout``."""
+    """``scoutctl delegate link|unlink|key|trust-state`` or ``scoutctl inbox pull|apply|revert|sync|review``, by any
+    path to scoutctl or as ``python -m scout``."""
     if name == "scoutctl":
         rest = args
     elif name.startswith("python") and (module := _python_module(args)) is not None and module[0] == "scout":
