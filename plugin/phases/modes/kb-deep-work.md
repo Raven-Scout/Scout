@@ -20,7 +20,7 @@ Before doing anything else, read the caches that the runner script generated bef
 |---|---|---|
 | `.scout-cache/kb-filter.md` | Per-file staleness: which KB files are stale, fresh, or undated, with ages | Walking every KB file to check "Last updated" headers |
 | `.scout-cache/vault-freshness.md` | The same files ranked by their last git commit against their freshness budget, plus files whose claimed "Last verified" date disagrees with git | Walking the vault's history per file to see what actually changed |
-| `.scout-cache/session-context.json` | Recent vault commits (labelled rows, as `scripts/scoutctl kb delta` prints them), open PRs, PR review requests, KB file dates, open personal tasks (each labelled) | Running `scripts/scoutctl kb delta`, `gh pr list`, `gh search prs`, `scripts/scoutctl kb query` |
+| `.scout-cache/session-context.json` | Recent vault commits (labelled rows, as `scripts/scoutctl kb delta` prints them), open PRs, PR review requests, KB file dates, open personal tasks (each labelled), each active project's knowledge/ notes with `as_of` (`project_knowledge`), leave states and manager relations (`people_context`), the open research queue (`research_queue`) | Running `scripts/scoutctl kb delta`, `gh pr list`, `gh search prs`, `scripts/scoutctl kb query` |
 | `.scout-cache/cc-sessions.md` | Non-{{INSTANCE_NAME}} Claude Code sessions from the last 24h: project paths, first prompts, files touched | Manually discovering + parsing `~/.claude/projects/*/**.jsonl` |
 
 Prefer these caches over live tool calls during scoring. Fall back to live queries only when a cache is missing, obviously stale, or you need deeper detail (e.g., full PR diff, full session transcript).

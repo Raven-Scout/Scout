@@ -307,27 +307,34 @@ final class SessionLogService: ObservableObject {
         )
     }
 
-    /// Promote a `.running` run to `.orphaned` once its log has been quiet for
-    /// longer than the per-type `orphanAfter` threshold. All other statuses
-    /// pass through unchanged.
+    /// Promote a `.running` run to `.orphaned` once it has gone longer than
+    /// the per-type `orphanAfter` threshold without progress. All other
+    /// statuses pass through unchanged.
     ///
-    /// Quiet time counts from the run's last sign of life — the later of its
-    /// start and `lastActivityAt` (the log's modification time). On a vault
-    /// linked to Agnes, a live run keeps writing its log: the runner's lease
-    /// keepalive appends a line about every five minutes. Counting from the
-    /// start alone marked a healthy 23-minute consolidation "Didn't finish"
-    /// while it was still working, because consolidation's cutoff is 20
-    /// minutes. On an unlinked vault nothing writes the log while Claude works
-    /// (`claude -p` prints only when it exits), so a long run there can still
-    /// orphan, though never sooner than under the start-only rule.
+    /// `watcherStall` is the answer when there is one: the awake time without
+    /// progress that the run's progress watcher reports (`RunProgress`, the
+    /// same line and rule the engine's lock reaper and `scoutctl health` use).
+    /// The log is then ignored: on a vault linked to Agnes the lease keepalive
+    /// writes it every five minutes whether or not claude does anything, so a
+    /// hung claude behind a live shell stayed "running" (review of #701).
+    ///
+    /// Without one (a vault whose runners predate the watcher, or a watcher
+    /// that died), quiet time counts from the run's last sign of life: the
+    /// later of its start and `lastActivityAt` (the log's modification time),
+    /// as #701 had it. Counting from the start alone marked a healthy
+    /// 23-minute consolidation "Didn't finish" while it was still working.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
         lastActivityAt: Date? = nil,
+        watcherStall: TimeInterval? = nil,
         type: RunType,
         now: Date
     ) -> RunStatus {
         guard parsedStatus == .running else { return parsedStatus }
+        if let watcherStall {
+            return watcherStall > type.orphanAfter ? .orphaned : .running
+        }
         let lastSignOfLife = max(startedAt, lastActivityAt ?? startedAt)
         return now.timeIntervalSince(lastSignOfLife) > type.orphanAfter
             ? .orphaned
@@ -512,6 +519,7 @@ final class SessionLogService: ObservableObject {
             }
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
+        let progress = RunProgress.readFresh(logsDirectory: logsDirectory, now: nowSnapshot)
         let tz = timeZone
         let cacheURL = parseCacheURLOverride
             ?? Self.defaultParseCacheURL(scoutDirectory: logsDirectory.deletingLastPathComponent())
@@ -539,6 +547,7 @@ final class SessionLogService: ObservableObject {
                     parsedStatus: body.status,
                     startedAt: filename.startedAt,
                     lastActivityAt: meta.modifiedAt,
+                    watcherStall: progress?.stall(for: url),
                     type: filename.type,
                     now: nowSnapshot
                 )
@@ -635,10 +644,13 @@ final class SessionLogService: ObservableObject {
         // parseBody does blocking file IO plus several regex scans; run it off
         // the main actor so even a coalesced reconcile burst can't stall the UI
         // thread (issue #22). The result hops back to the main actor on return.
-        let parseTask = Task.detached(priority: .utility) {
-            try? Self.parseBody(at: url, filename: filename)
+        let logsDirectory = logsDirectory
+        let now = clock.now()
+        let parseTask = Task.detached(priority: .utility) { () -> (ParsedBody, TimeInterval?)? in
+            guard let body = try? Self.parseBody(at: url, filename: filename) else { return nil }
+            return (body, RunProgress.readFresh(logsDirectory: logsDirectory, now: now)?.stall(for: url))
         }
-        guard let body = await parseTask.value else { return }
+        guard let (body, watcherStall) = await parseTask.value else { return }
         // A skipped run spent nothing; a nearby cost row is another run's.
         let cost = body.status.isSkip ? nil : trackerService.cost(
             matching: filename.type.costTrackerKey,
@@ -649,8 +661,9 @@ final class SessionLogService: ObservableObject {
             parsedStatus: body.status,
             startedAt: filename.startedAt,
             lastActivityAt: Self.logModifiedAt(url),
+            watcherStall: watcherStall,
             type: filename.type,
-            now: clock.now()
+            now: now
         )
         // Commits left empty; resolved lazily via `commits(for:)` when the
         // detail pane opens. Keeps reconciliation cheap on every FS event.
@@ -691,15 +704,32 @@ final class SessionLogService: ObservableObject {
     /// the periodic sweep timer so a long-running app session still demotes
     /// `.running` → `.orphaned` as clock time crosses the per-type cutoff,
     /// even when no file event fires.
+    ///
+    /// It also brings back a `.orphaned` run that never wrote its last line
+    /// when the progress watcher's fresh line names it and shows it working
+    /// again: a run that stalled past its cutoff and then resumed writes
+    /// nothing to its log (`claude -p` doesn't), so no file event would.
+    /// The line is read without blocking and at most 4 KB (`RunProgress`).
     func sweepStaleStatuses() {
         let now = clock.now()
+        // Read once per sweep, and only when a run could change.
+        let progress = runs.contains(where: Self.mayChangeOnSweep)
+            ? RunProgress.readFresh(logsDirectory: logsDirectory, now: now) : nil
         let resweeped = runs.map { run -> Run in
-            // Only a running run can change, so only its log is stat'ed.
-            guard run.status == .running else { return run }
+            // Only a running run, or an unfinished one the watcher still names, can change.
+            let parsedStatus: RunStatus
+            if run.status == .running {
+                parsedStatus = .running
+            } else if Self.mayChangeOnSweep(run), progress?.names(run.logPath) == true {
+                parsedStatus = .running
+            } else {
+                return run
+            }
             let promoted = Self.promoteOrphan(
-                parsedStatus: run.status,
+                parsedStatus: parsedStatus,
                 startedAt: run.startedAt,
                 lastActivityAt: Self.logModifiedAt(run.logPath),
+                watcherStall: progress?.stall(for: run.logPath),
                 type: run.type,
                 now: now
             )
@@ -709,6 +739,11 @@ final class SessionLogService: ObservableObject {
         // Only republish if anything actually changed — avoids needless
         // SwiftUI re-renders on every tick.
         if resolved != runs { runs = resolved }
+    }
+
+    /// A run the sweep may move: running, or orphaned without ever writing its last line.
+    nonisolated static func mayChangeOnSweep(_ run: Run) -> Bool {
+        run.status == .running || (run.status == .orphaned && run.endedAt == nil && run.exitCode == nil)
     }
 
     private func startStaleSweep() {
@@ -734,26 +769,23 @@ extension RunType {
 }
 
 extension RunType {
-    /// How long a run with no terminal marker may go without writing its log
-    /// before it is promoted from `.running` to `.orphaned` (see
-    /// `promoteOrphan`, which counts from the later of the start and the log's
-    /// modification time). The old thresholds (6h briefings, 12h dreaming)
-    /// were way too loose and produced multi-hour false "running" badges in
-    /// the Now strip and Sessions list. CC-1/CC-5.
+    /// How long a run with no terminal marker may go without progress before
+    /// it is promoted from `.running` to `.orphaned` (see `promoteOrphan`).
+    /// The old thresholds (6h briefings, 12h dreaming) were way too loose and
+    /// produced multi-hour false "running" badges in the Now strip and
+    /// Sessions list. CC-1/CC-5.
     ///
-    /// On a vault linked to Agnes, the runner's lease keepalive writes a log
-    /// line about every five minutes, so a live run never comes near these.
-    /// The keepalive watches the runner shell, not `claude`, so a hung agent
-    /// behind a live shell stays "running" until the runner's own timeout
-    /// ends it. On an unlinked vault there is no keepalive and the log is
-    /// quiet for the whole agent phase; the cutoff then bounds silence since
-    /// the last line, which is never longer than the time since the start.
+    /// With the run's progress watcher (`RunProgress`) this bounds awake time
+    /// with no CPU burned and no tool started or ended, so a hung claude is
+    /// "Didn't finish" after it, however often the lease keepalive writes the
+    /// log, and a slow run that keeps working never is. Without one it bounds
+    /// silence in the log since the later of the start and its last line.
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
             return 30 * 60           // 30 min — briefing runs short
         case .consolidation:
-            return 20 * 60           // 20 min of silence — four missed keepalives on a linked vault
+            return 20 * 60           // 20 min without progress
         case .dreaming:
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:

@@ -2198,11 +2198,57 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
     return found
 
 
+def progress_findings(vault: Path, *, now: datetime, env: Mapping[str, str] | None = None) -> list[Finding]:
+    """``session.no_progress``: the live lock holder's watcher saw no progress past the reaper's ceiling.
+
+    The same line and the same ceiling (``SCOUT_LOCK_MAX_AGE_SECS``, awake time)
+    the lock reaper reads (``scout.run_progress``), so health calls a session
+    stuck exactly when the next run would reap it, and a run whose log only the
+    lease keepalive writes is not mistaken for one that works. Nothing without
+    a fresh line: no watcher (an older runner), a dead one, or no live holder.
+
+    The ceiling is ``SCOUT_LOCK_MAX_AGE_SECS`` from *this* process's environment
+    (default 7200 s). The reaper reads it from the runner's, i.e. the launchd
+    job's: set it in both places, or health and the reaper disagree on when.
+    """
+    from scout import run_progress
+
+    lock = vault / ".scout-logs" / run_progress.LOCK_NAME
+    beat = run_progress.read_fresh(run_progress.heartbeat_path(vault), now=now.timestamp())
+    if beat is None or not is_lock_held_by_live_pid(lock) or run_progress.lock_pid(lock) != beat.runner_pid:
+        return []
+    ceiling = run_progress.env_secs(
+        run_progress.MAX_AGE_SECS_ENV,
+        run_progress.DEFAULT_MAX_AGE_SECS,
+        os.environ if env is None else env,
+        allow_zero=True,
+    )
+    if beat.stalled_s <= ceiling:
+        return []
+    return [
+        Finding(
+            id="session.no_progress",
+            severity="yellow",
+            since=datetime.fromtimestamp(beat.progress_at, UTC),
+            summary=(
+                f"The run holding the vault lock (PID {beat.runner_pid}) has made no progress for "
+                f"{beat.stalled_s // 60} min of awake time: its agent burns no CPU and starts no tools."
+            ),
+            fix=(
+                "The next scheduled run reaps it. To end it now, stop that PID's process group; its log is " + beat.log
+            ),
+            source="state",
+            log=beat.log,
+        )
+    ]
+
+
 def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:
     """``home`` locates the stored Claude token and the engine pointer (default: the real home)."""
     now = now or datetime.now(UTC)
     rows = with_log_reset(read_outcomes(vault), vault)
     found = token_findings(ledger_findings(rows, vault=vault, now=now), vault=vault, home=home, now=now)
+    found += progress_findings(vault, now=now)
     loaded = _load_schedule(vault)
     fires = read_last_fires(vault)
     sched, slots = _schedule_findings(vault, loaded, rows, fires, now=now)
