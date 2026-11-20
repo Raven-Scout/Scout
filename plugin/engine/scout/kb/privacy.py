@@ -147,6 +147,8 @@ SurfaceClass = Literal["owner_only", "shared"]
 # Declared federation scope: "none", "org", or a tuple of principal strings.
 FederationScope = str | tuple[str, ...]
 CeilingLevel = Literal["none", "people", "org"]
+SharedEdits = Literal["checked", "refuse"]
+SHARED_EDITS: tuple[SharedEdits, ...] = ("checked", "refuse")
 CEILING_LEVELS: tuple[CeilingLevel, ...] = ("none", "people", "org")  # narrowest first
 FederationSource = Literal["frontmatter", "default", "ceiling", "disabled"]
 FEDERATION_SOURCES: tuple[FederationSource, ...] = ("frontmatter", "default", "ceiling", "disabled")
@@ -201,6 +203,19 @@ class ScopeDefault:
         return {"glob": self.glob, "scope": _scope_json(self.scope)}
 
 
+def scope_widens(head: FederationScope, staged: FederationScope) -> bool:
+    """Whether ``staged`` admits someone ``head`` didn't (``org`` admits every listed principal)."""
+    if staged == "none" or staged == head:
+        return False
+    if staged == "org":
+        return True
+    if head == "org":
+        return False
+    if head == "none":
+        return True
+    return bool(set(staged) - set(head))
+
+
 @dataclass(frozen=True)
 class DelegateRule:
     """One ``delegates`` entry: the agent ``delegate:<id>``, whether it sees private notes, and the globs of
@@ -232,6 +247,12 @@ class Policy:
     (possibly empty) of globs or plain paths when it does.
 
     ``delegates`` comes from the overlay alone, in its order.
+
+    ``shared_edits`` (overlay ``shared_edits: checked | refuse``, default
+    ``checked``) says what a scheduled run's commit may do to a note already
+    shared: ``checked`` lets it add or reword lines when those lines pass the
+    private-note checks (:mod:`scout.kb.lint_privacy`), ``refuse`` refuses any
+    added line (the freeze before 2026-11). A bad value counts as ``refuse``.
     """
 
     local_only_always: tuple[str, ...]
@@ -248,6 +269,7 @@ class Policy:
     warnings: tuple[str, ...] = ()
     sync_only: tuple[str, ...] | None = None
     delegates: tuple[DelegateRule, ...] = ()
+    shared_edits: SharedEdits = "checked"
 
     def delegate(self, reader: str) -> DelegateRule | None:
         """The listed delegate a ``delegate:<id>`` reader is, else None."""
@@ -263,6 +285,9 @@ class Policy:
         because a narrowing entry can't be folded into the engine's list.
         ``sync_only`` and ``delegates`` appear only when set, so the engine
         default's snapshot and every other vault's policy hash stay as they were.
+        ``shared_edits`` never does: it labels nothing, it only tells this
+        vault's commit hook what a scheduled run may commit, so the policy
+        Agnes indexes by is the same either way.
         """
         out: dict[str, Any] = {
             "local_only": {
@@ -555,7 +580,7 @@ def load_policy(vault: Path | None) -> Policy:
     ``visibility_defaults`` (placed before the engine's, so the owner's entry
     wins), ``shared_files_add``, ``surfaces: {owner_only, shared}``,
     ``federation: {enabled}``, ``federation_ceilings`` (narrowing only),
-    ``federation_defaults``, ``sync_only`` and ``delegates``. Other keys are ignored. See the
+    ``federation_defaults``, ``sync_only``, ``delegates`` and ``shared_edits``. Other keys are ignored. See the
     module docstring for the warnings it records on ``Policy.warnings``.
     """
     base = _engine_default()
@@ -614,7 +639,8 @@ def _narrowing_overlay(overlay: Any) -> Any:
     ``federation_ceilings`` can only lower a ceiling; ``sync_only`` only keeps
     paths home; a ``private`` default (or a bad value, kept as ``private``) only
     adds private notes; ``surfaces.shared`` moves a surface to the class that gets
-    checked. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
+    checked; ``shared_edits`` other than ``checked`` (``refuse``, or a bad value,
+    read as ``refuse``) only refuses more. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
     may go there), ``federation``, ``federation_defaults`` and ``delegates`` (a
     delegate is a reader that sees more). A wrong shape passes
     through, for its warning.
@@ -626,6 +652,8 @@ def _narrowing_overlay(overlay: Any) -> Any:
         for key in ("local_only_add", "shared_files_add", "federation_ceilings", "sync_only")
         if key in overlay
     }
+    if "shared_edits" in overlay and overlay["shared_edits"] != "checked":
+        kept["shared_edits"] = overlay["shared_edits"]
     if "visibility_defaults" in overlay:
         entries = overlay["visibility_defaults"]
         kept["visibility_defaults"] = (
@@ -763,6 +791,15 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: froz
         if bad:
             warnings.append("privacy-overlay-invalid")
 
+    shared_edits: SharedEdits = base.shared_edits
+    if "shared_edits" in overlay:
+        value = overlay["shared_edits"]
+        if value == "checked" or value == "refuse":
+            shared_edits = value
+        else:
+            warnings.append("privacy-overlay-invalid")
+            shared_edits = "refuse"  # fail closed: the freeze
+
     return Policy(
         local_only_always=base.local_only_always,
         local_only=local_only,
@@ -778,6 +815,7 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: froz
         warnings=_dedup(warnings),
         sync_only=sync_only,
         delegates=delegates,
+        shared_edits=shared_edits,
     )
 
 

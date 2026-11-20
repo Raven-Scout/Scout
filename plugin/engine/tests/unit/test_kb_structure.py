@@ -318,7 +318,9 @@ def test_history_is_read_in_one_git_call(kb_repo, monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(structure.subprocess, "run", spy)
     assert len(structure_rows(kb_repo.root)) == 3
-    assert sorted(c[1] for c in calls) == ["log", "ls-files"]
+    # Besides the history and the file list, only the committed and staged config (the shared_edits mode).
+    assert sorted(c[1] for c in calls if "cat-file" not in c) == ["log", "ls-files"]
+    assert [c[-1] for c in calls if "cat-file" in c] == ["HEAD:scout-config.yaml", ":scout-config.yaml"]
 
 
 # ----- order and --next ---------------------------------------------------------------
@@ -334,9 +336,12 @@ def test_rebuild_order_and_next(kb_repo) -> None:
     assert order == ["sprockets", "gadgets", "widgets", "doohickeys", "gizmos"]
 
     result = runner.invoke(cli.app, ["kb", "structure", "--next", "--repo", str(kb_repo.root)])
-    assert result.exit_code == 0 and result.output == "sprockets\n"
+    assert (
+        result.exit_code == 0 and result.output == f"sprockets\ncommit: nightly KB pass — {P}/sprockets/sprockets.md\n"
+    )
     result = runner.invoke(cli.app, ["kb", "structure", "--next", "--json", "--repo", str(kb_repo.root)])
-    assert json.loads(result.output) == {"project": "sprockets", "path": f"{P}/sprockets/sprockets.md"}
+    front = f"{P}/sprockets/sprockets.md"
+    assert json.loads(result.output) == {"project": "sprockets", "path": front, "commit": f"nightly KB pass — {front}"}
 
 
 def test_next_is_empty_when_everything_conforms(kb_repo) -> None:

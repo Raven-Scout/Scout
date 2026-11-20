@@ -90,7 +90,7 @@ def test_kb_lint_staged_and_kb_structure_finish_and_obey_the_glob(kb_repo, where
     scout = [sys.executable, "-m", "scout", "kb"]
     assert _run([*scout, "lint", "--staged"], kb_repo.root).returncode == 0
     structure = _run([*scout, "structure", "--next"], kb_repo.root)
-    assert structure.returncode == 0 and structure.stdout.strip() == "widget"
+    assert structure.returncode == 0 and structure.stdout.splitlines()[0] == "widget"
 
 
 def test_the_excluder_obeys_it_in_both_lists(kb_repo) -> None:

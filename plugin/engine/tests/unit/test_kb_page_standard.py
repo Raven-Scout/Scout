@@ -103,7 +103,9 @@ def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "`$SCOUT_MODE` is `dreaming-nightly`" in step
     assert "`scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit" in step
-    assert "with `nightly KB pass — <page>` as the commit summary" in step
+    # Every commit of the step carries the summary --next printed: the resume check reads it.
+    assert "with the printed `commit:` summary on every commit, the 5.2 moves included" in step
+    assert "`commit: nightly KB pass — <page>`, is the summary for every commit of this step" in step
 
 
 def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None:
@@ -138,6 +140,15 @@ def test_nightly_pass_only_cuts_a_shared_page(tmp_path: Path) -> None:
     assert "A line with a `%%privacy:allow%%` marker: cut it, never move it." in step
     # The once-a-night gate looks for this summary, and the trim skips step 5's lead.
     assert "Commit with `nightly KB pass — <page>` as the summary" in step
+
+
+def test_nightly_pass_rebuilds_a_shared_page_under_the_shared_note_rule(tmp_path: Path) -> None:
+    """``shared_edits: checked``: a shared page picked without trim-only is rebuilt, never into a wider note."""
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "A shared page picked without `trim-only` is rebuilt like any other" in step
+    assert "into a note shared more narrowly is fine, more widely never" in step
+    # The hook can't see a paraphrase, so the rule names where a shared page's facts may come from.
+    assert "use only facts from this note, notes shared with the same people, or sources those people were in" in step
 
 
 def test_a_trim_pick_is_read_before_the_size_and_refresh_rules(tmp_path: Path) -> None:
