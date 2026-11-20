@@ -1065,6 +1065,33 @@ def _check_action_items_size(*, vault: Path) -> list[str]:
     ]
 
 
+def _check_action_items_conflicts(*, vault: Path) -> list[str]:
+    """Tags the last ``fit`` left open twice with different text: a person has to merge them.
+
+    ``fit`` never guesses which wording stands; it keeps both copies (bringing the
+    first that is due back to the daily file) and names them in its report, which
+    otherwise only the CLI shows. Read from ``.scout-logs/action-items-fit.json``
+    when that report is from the last two days."""
+    import datetime as _dt
+
+    from scout.action_items.fit import read_report
+
+    report = read_report(vault)
+    if report is None or not isinstance(report.get("conflicts"), list) or not report["conflicts"]:
+        return []
+    try:
+        day = _dt.date.fromisoformat(str(report.get("day")))
+    except ValueError:
+        return []
+    if (_dt.date.today() - day).days > 2:
+        return []
+    tags = ", ".join(f"[#{t}]" for t in report["conflicts"])
+    return [
+        f"action items: {tags} open twice with different text (daily file and/or backlog.md, fit {day}); "
+        "merge each into one row by hand"
+    ]
+
+
 def _check_backlog_lint(*, vault: Path) -> list[str]:
     """A vault whose own kb_lint lists still budget ``action-items/backlog.md``.
 
@@ -1317,6 +1344,7 @@ def run_doctor(
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_action_items_size(vault=vault))
     warnings.extend(_check_backlog_lint(vault=vault))
+    warnings.extend(_check_action_items_conflicts(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:

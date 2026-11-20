@@ -598,12 +598,16 @@ def cli_check_size(
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         raise _cannot_check(name, e, json_out) from e
+    from scout.action_items.fit import report_conflicts
+
     settings = load_settings(vault)
     budget = settings.budget
     report = measure(text, budget)
+    conflicts = report_conflicts(vault, day=_dt.date.fromisoformat(day))
     level = report.level(budget)
     if json_out:
-        sys.stdout.write(_json.dumps({"day": day, **report.to_json(budget)}) + "\n")
+        payload = {"day": day, **report.to_json(budget), "conflicts": conflicts}
+        sys.stdout.write(_json.dumps(payload) + "\n")
     elif level == "ok":
         sys.stdout.write(f"{name}: within budget ({report.bytes / 1024:.1f} KB, {report.open_tasks} open tasks)\n")
     else:
@@ -619,6 +623,12 @@ def cli_check_size(
         sys.stdout.write(
             f"{first} anything this run wrote past the item format, and add `action items over budget: "
             "<these numbers>` to this run's 🪵 Run notes entry.\n"
+        )
+    if conflicts and not json_out:
+        sys.stdout.write(
+            f"{name}: open twice with different text (fit left both copies): "
+            + ", ".join(f"[#{t}]" for t in conflicts)
+            + ". Merge each into one row if this run has the news; otherwise note it in 🪵 Run notes.\n"
         )
     if level != "ok":
         raise typer.Exit(code=1)

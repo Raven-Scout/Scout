@@ -55,7 +55,7 @@ import datetime as _dt
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -350,12 +350,29 @@ def _set_backlog_line(lines: list[str], n: int) -> list[str]:
     return lines[:at] + ["", text] + lines[at:]
 
 
-def _dedupe_backlog(backlog: list[str], daily_blocks: dict[str, list[str]], result: FitResult) -> list[str]:
+def _moved_away(row: list[str], copy: list[str], note: str | None) -> bool:
+    """Whether ``copy`` is ``row`` before a trim: the same task line, and every line ``row``
+    lacks already in the tag's context note (where the trim put it)."""
+    if note is None or not row or row[0].rstrip() != copy[0].rstrip():
+        return False
+    have = {ln.rstrip() for ln in row}
+    noted = {ln.strip() for ln in note.splitlines()}
+    return all(ln.strip() in noted for ln in copy if ln.strip() and ln.rstrip() not in have)
+
+
+def _dedupe_backlog(
+    backlog: list[str],
+    daily_blocks: dict[str, list[str]],
+    result: FitResult,
+    notes: Callable[[str], str | None],
+) -> list[str]:
     """The backlog without copies that add nothing.
 
     A copy goes when the daily row of its tag, or the backlog's own first row of
-    it, already holds every line of it. A copy that differs is left alone and
-    named in ``result.conflicts``.
+    it, already holds every line of it, or when the daily row is that copy after
+    a trim whose lines are in the context note (a promotion whose last backlog
+    write failed). A copy that differs is left alone and named in
+    ``result.conflicts``.
     """
     blocks = stale.task_blocks(backlog)
     first: dict[str, stale.TaskBlock] = {}
@@ -363,7 +380,8 @@ def _dedupe_backlog(backlog: list[str], daily_blocks: dict[str, list[str]], resu
     for block in blocks:
         body = backlog[block.start : block.end]
         if block.tag in daily_blocks:
-            if _holds(daily_blocks[block.tag], body):
+            row = daily_blocks[block.tag]
+            if _holds(row, body) or _moved_away(row, body, notes(block.tag)):
                 drop.update(range(block.start, block.end))
                 result.deduped.append(block.tag)
             elif block.tag not in result.conflicts:
@@ -388,8 +406,12 @@ def plan_fit(
     today: _dt.date,
     settings: ActionItemsSettings,
     history: History,
+    notes: Callable[[str], str | None] | None = None,
 ) -> FitResult:
-    """What ``fit`` does to ``daily`` and ``backlog``, without touching disk."""
+    """What ``fit`` does to ``daily`` and ``backlog``, without touching disk.
+
+    ``notes`` reads a tag's context note (None when there is none); the default sees none."""
+    notes = notes or (lambda _tag: None)
     budget = settings.budget
     horizon = today + _dt.timedelta(days=settings.backlog_due_days)
     result = FitResult(daily=list(daily), backlog=list(backlog))
@@ -413,19 +435,21 @@ def plan_fit(
 
     # 2. Reconcile copies, then pick backlog tasks now due within the window, soonest first.
     # A row under ✅ is history, never a task's live copy: it can't stand in for a backlog copy.
-    daily_tags = {b.tag for b in stale.task_blocks(daily)}
+    # A tag that stays in the daily file (an open row under ✅ included) is never promoted beside it.
+    leaving_tags = {b.tag for _, b in _blocks_by_section(daily) if b.start in leaving}
+    staying_tags = {b.tag for b in stale.task_blocks(daily)} - leaving_tags
     daily_blocks: dict[str, list[str]] = {}
     for section, block in _blocks_by_section(daily):
         if section != DONE:
             daily_blocks.setdefault(block.tag, daily[block.start : block.end])
-    backlog = _dedupe_backlog(list(backlog), daily_blocks, result)
+    backlog = _dedupe_backlog(list(backlog), daily_blocks, result, notes)
     coming: list[tuple[_dt.date, str, stale.TaskBlock]] = []
     seen: set[str] = set()
     for section, block in _blocks_by_section(backlog):
-        if section not in (YELLOW, GREEN) or block.tag in daily_tags or block.tag in seen:
+        if section not in (YELLOW, GREEN) or block.tag in staying_tags or block.tag in seen:
             continue
-        if block.tag in result.conflicts:
-            continue  # two differing copies: a person merges them first
+        # One copy per tag: with two differing copies (a named conflict) the first that is due comes
+        # back, so a due task never drops out of view while a person merges them.
         seen.add(block.tag)
         due = _due(backlog[block.start : block.end], today)
         if due is not None and due <= horizon:
@@ -488,21 +512,24 @@ def plan_fit(
 
     # 6. Promotions join their section's rows; they leave the backlog only in the final copy, which
     # is written after the daily file (see ``fit``), so a failed write never loses one.
-    promoted_tags: set[str] = set()
+    promoted_rows: list[tuple[str, list[str]]] = []
     for _, section, block in promoted:
-        body = backlog[block.start : block.end]
-        body = _trim_and_record(result, body, block.tag, budget.prose_sub_bullets, today)
+        original = backlog[block.start : block.end]
+        body = _trim_and_record(result, original, block.tag, budget.prose_sub_bullets, today)
         new_daily = _insert_into_section(
             new_daily, section, DAILY_HEADINGS[section], body, before=_DAILY_AFTER[section]
         )
-        promoted_tags.add(block.tag)
+        promoted_rows.append((block.tag, original))
         result.moves.append(Move(block.tag, section, "daily", "due within the window"))
     new_backlog = staged
-    if promoted_tags:
+    if promoted_rows:
+        # Only the promoted block leaves, never another copy of the same tag.
         drop: set[int] = set()
-        for block in stale.task_blocks(staged):
-            if block.tag in promoted_tags:
-                drop.update(range(block.start, block.end))
+        for tag, original in promoted_rows:
+            for block in stale.task_blocks(staged):
+                if block.tag == tag and block.start not in drop and staged[block.start : block.end] == original:
+                    drop.update(range(block.start, block.end))
+                    break
         new_backlog = stale._drop_emptied_subheadings(staged, drop)
 
     new_daily, result.completed_dropped = _drop_old_completed(
@@ -603,6 +630,40 @@ def write_report(data_dir: Path, result: FitResult, *, day: _dt.date, mode: str,
         pass
 
 
+def _note_reader(vault: Path) -> Callable[[str], str | None]:
+    """A tag's context note, or None when it has none. Any other read error raises (before a write)."""
+    folder = paths.action_items_dir(vault) / "context"
+    cache: dict[str, str | None] = {}
+
+    def read(tag: str) -> str | None:
+        if tag not in cache:
+            try:
+                cache[tag] = (folder / f"{tag}.md").read_text(encoding="utf-8")
+            except FileNotFoundError:
+                cache[tag] = None
+        return cache[tag]
+
+    return read
+
+
+def read_report(data_dir: Path | None) -> dict[str, Any] | None:
+    """The last fit report, or None when there is none or it can't be read."""
+    try:
+        raw = json.loads(report_path(paths.data_dir(data_dir)).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def report_conflicts(data_dir: Path | None, *, day: _dt.date) -> list[str]:
+    """The tags the last fit for ``day`` left open twice with different text."""
+    report = read_report(data_dir)
+    if report is None or report.get("day") != day.isoformat():
+        return []
+    conflicts = report.get("conflicts")
+    return [str(t) for t in conflicts] if isinstance(conflicts, list) else []
+
+
 def write_error_report(data_dir: Path | None, *, day: _dt.date, error: BaseException) -> None:
     """A ``fit`` that failed, in the same report the owner reviews. Best-effort."""
     payload = {"day": day.isoformat(), "error": f"{type(error).__name__}: {error}"}
@@ -700,7 +761,10 @@ def apply_lock(vault: Path) -> Iterator[None]:
         if _started_by_the_run(vault, lock):
             yield
             return
-        raise ActionItemError("refused: a Scout session holds the vault's lock (a run is live); try again later") from e
+        raise ActionItemError(
+            "refused: a Scout session holds the vault's lock (a run is live), and this isn't that run's own call "
+            "(or the run's marker beside the lock is missing); try again later"
+        ) from e
     try:
         yield
     finally:
@@ -714,24 +778,36 @@ _LOCK_CLOCK_SLACK_S = 5
 def _started_by_the_run(vault: Path, lock: Path) -> bool:
     """Whether this process runs under the run that holds the lock.
 
-    All of: the lock names a holder, the run marker beside it names the same
-    PID, that PID is one of this process's ancestors, and it has been alive at
-    least as long as the lock file is old (so a PID reused after a crash isn't
-    taken for the run). When ``ps`` can't be read, the answer is no.
+    With ``ps``: the lock names a holder, the run marker beside it names the
+    same PID, that PID is one of this process's ancestors, and it has been alive
+    at least as long as the lock file is old (so a PID reused after a crash isn't
+    taken for the run).
+
+    Without ``ps`` (a sandboxed run can't start the setuid ``/bin/ps``): the
+    commit hook's no-ps rule (:func:`scout.kb.live_run.run_without_ps`: marker
+    and lock name the same live PID), and this process carries a run's
+    environment (:func:`scout.kb.reader.is_scheduled`: ``SCOUT_MODE``, or a
+    non-owner ``SCOUT_READER``, which the run's gate stops it from hiding). The
+    owner's own terminal has neither, so it is refused.
     """
     import subprocess
     import time
 
-    from scout.kb.live_run import _ancestry, _marker, lock_holder, process_table
+    from scout.kb.live_run import _ancestry, _marker, lock_holder, process_table, run_without_ps
+    from scout.kb.reader import is_scheduled
 
     holder = lock_holder(vault)
     if holder is None or _marker(vault)[0] != holder:
         return False
     try:
         table = process_table()
-        age = time.time() - lock.stat().st_mtime
     except (OSError, subprocess.SubprocessError, ValueError):
-        return False  # can't tell: refuse
+        held = run_without_ps(vault)
+        return held is not None and held[0] == holder and is_scheduled(os.environ)
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return False
     proc = table.get(holder)
     if proc is None or proc.elapsed + _LOCK_CLOCK_SLACK_S < age:
         return False
@@ -765,6 +841,7 @@ def fit(
         today=date,
         settings=settings,
         history=History(vault, overrides={date: raw.splitlines()}),
+        notes=_note_reader(vault),
     )
     do_apply = settings.fit == "apply" if apply is None else apply
     # The backlog line's count can change with nothing moved (the stale archive took backlog items).
