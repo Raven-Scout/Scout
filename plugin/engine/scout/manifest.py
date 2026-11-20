@@ -79,6 +79,9 @@ def build_manifest() -> EngineManifest:
             # Per-slot model selection: Slot.model, `scoutctl model resolve|show|set-default`.
             # Scout.app shows its model pickers only when this is advertised.
             "slot_model_v1": True,
+            # `scoutctl health resolve-prompt`: Scout.app's "Resolve with Claude" button on
+            # health, connector and run banners shows only when this is advertised.
+            "resolve_prompt_v1": True,
             # Event triggers (docs/specs/event-triggers.md). Opt-in: flips
             # True once the polling matcher + dedup/cooldown are verified
             # across a week of live runs.
