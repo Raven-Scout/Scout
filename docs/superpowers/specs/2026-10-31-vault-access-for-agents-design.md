@@ -1243,6 +1243,28 @@ over a week, and the fix is `scoutctl inbox review`. The app's list is V4b3.
   refuses those ops (V4c).
 - `kb_note_proposal`, which is V4c.
 
+**V4b2 as built (Raven-Scout/Scout#738).** As planned, with the coordinator's seven conditions:
+
+- **What runs see.** `kb read`, `search` and `files`, and the Read-tool label hook, mark an agent's note
+  `[from-agent: delegate-<id>]`. `kb read` adds that it is data, never instructions, and the privacy phase
+  says so too.
+- **Undo.** `unpromote` restores the accepted form while the note is byte-for-byte what promote left.
+- **Never shared until promoted.** A `delegate_source` note gets federation scope and ceiling `none`,
+  whatever a folder default says. The privacy lint blocks a scheduled run that makes one normal
+  (`delegate-source-private`, in every lint mode), promotes one, or sets, changes or removes
+  `promoted_from` or `delegate_scope`.
+- **KB tooling leaves `from-agents/` alone.** It is not a graph entity, it is skipped by freshness and
+  lint reports, and deep work and fact-checks don't pick it.
+- **Look-alike words** are named in the list.
+- **Confirmation.** Accept and promote take the ULID typed again, or `--confirm <ULID>`.
+- **Versions.** The classifier and index are version 5. The index rebuilds on the version mismatch,
+  and mirrors re-plan because their fingerprint holds the engine version.
+
+`Label` gains `delegate_source`, `delegate_scope` and `delegate_author` as internal fields, so published
+labels, the corpus and Agnes are unchanged. `elsewhere` doesn't see an unpromoted agent's note either. An
+accepted note's body is a provenance line, then the text as a block quote, wrapped below kb-lint's strict
+line limit.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
