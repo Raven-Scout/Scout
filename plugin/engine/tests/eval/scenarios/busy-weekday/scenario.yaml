@@ -3,7 +3,7 @@
 mode: morning-consolidation
 weekdays_only: true
 personas: [slack, linear, calendar]
-checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, title_budget, demotion]
+checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, title_budget, demotion, size_budget, backlog]
 
 # Tag (an item in yesterday's file) or ref: (an item this run should create) → allowed sections.
 expected_placement:
@@ -30,3 +30,8 @@ expected_demotion: {OVRD: step_down, LATE: hold, PARK: park}
 
 # Closed overnight in the tracker: may leave the open list.
 expected_closures: [LCHK]
+
+# The backlog rule (phases/core/action-items.md): BKLG sits in action-items/backlog.md with no news today, so it
+# stays there, open, and is not copied into the daily file (`fit` places tasks, the run doesn't).
+# size_budget also holds every task this run writes or changes to one prose sub-bullet.
+expected_backlog: [BKLG]

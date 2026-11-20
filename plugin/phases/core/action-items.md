@@ -70,13 +70,13 @@ The runner does the counting. `.scout-cache/session-context.json` → `past_due_
 
 - **`hold`** (under 7 quiet days; a recurring `[[recurring-tasks/…]]` task, its due day and the 2 days after): treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
 - **`step_down`:** 🟡 at most. The first time (`stepped_down` is null), rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `- YYYY-MM-DD: stepped down, past due with no news`.
-- **`park`** (14 days after that line, still with no news): move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
+- **`park`** (14 days after that line, still with no news): move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold, and `fit` later moves it to the backlog (*The Backlog and the Budget*).
 
 **New evidence restarts the count**: a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}. Record it as a dated line in the context note and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive. The count reads every dated note line as evidence except the step-down line, so never add a dated line that only says nothing happened. A task snoozed past today isn't listed: the snooze is {{USER_NAME}}'s decision.
 
 Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-demotion --data-dir {{SCOUT_DIR}}`. Exit 1 names each task off its branch: fix it and run it again. Exit 2 (it couldn't check): if the context file is missing or from another day, run `scripts/scoutctl pre-session data <run mode>` once and check again; otherwise add `demotion check could not run: <its message>` to this run's 🪵 Run notes entry and go on. Never edit `session-context.json` to make it pass.
 
-This is demotion within view: the task keeps its row and its `[#TAG]`, so the count-guard and the dropoff audit see no change. A parked task nobody touches leaves through the 60-day *Stale Items Auto-Archive*, never by being dropped.
+This is demotion within view: the task keeps its row and its `[#TAG]`, so the count-guard and the dropoff audit see no change. A parked task moves to `action-items/backlog.md` with `fit`; one nobody touches then leaves through the 60-day *Stale Items Auto-Archive*, never by being dropped.
 
 ## Action Items File Format
 
@@ -272,11 +272,20 @@ When the list grows long, achieve focus by **reprioritizing**, never by hiding i
 2. Demote lower-priority open items from 🔴 to 🟡 and reorder within 🟡 — {{USER_NAME}} can scan a long, ordered list and ignore the bottom; he cannot recover items that aren't rendered at all. Never demote {{USER_NAME}}'s own work into 🟢 Watching: that section means the next step is someone else's. The one way down to 🅿️ Parked is *Past-Due Tasks Step Down*.
 3. Mark an item `[unverified]` or drop it **only** when {{USER_NAME}} has explicitly said so (reply, reaction, or an inline `//==<<` directive).
 
-The one exception is the deterministic stale-item archive below — it is not an omission, and you must not undo it.
+The two exceptions are the deterministic stale-item archive and the backlog below. Neither is an omission, and you must not undo either.
+
+### Hard Rule — The Backlog and the Budget
+
+The daily file holds today's work: 🔴, 🐾 Personal, the side sections, and 🟡 and 🟢 tasks due within 14 days (overdue counts as due). Every other open task lives in `action-items/backlog.md`, same item format, under `## 🟡 To Do (soon)`, `## 🟢 Watching (no action yet)` and `## 🅿️ Parked`; the line `🗂️ Backlog: [[backlog]] (N items)` under `## 🟡 To Do` points there. Budget: 50 KB and 80 open tasks, hard limit 60 KB and 100 (`action_items.budget`). `scripts/scoutctl action-items fit` keeps that shape deterministically, and `materialize` runs it daily (with `action_items.fit: report` it only reports).
+
+- **Never move tasks between the two files by hand**, least of all to shrink the file: write new tasks in the daily file and `fit` places them. Exceptions: new evidence on a backlog task, or {{USER_NAME}} naming or re-tiering it 🔴, moves its block verbatim into today's file; closing one marks it `- [x]` in today's ✅ Recently Completed.
+- **A backlog task is carried, not dropped**: the count-guard and dropoff audit below count it.
+- **After `fit` writes, re-read both files** before editing either, and **commit** `backlog.md` and any `action-items/context/` notes it changed with the daily file (the count-guard reads the committed backlog).
+- **Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-size --data-dir {{SCOUT_DIR}}`.** Exit 1 (over target or hard limit): do what it prints, shorten what this run wrote past the item format below, and add `action items over budget: <its numbers>` to this run's 🪵 Run notes entry. It is a warning: never hide, merge or drop items to pass it. Exit 2: add `size check could not run: <its message>` there and go on.
 
 ### Hard Rule — Stale Items Auto-Archive
 
-An open item whose block (the task line plus its indented sub-bullets) has not changed for **60 days** is moved, verbatim, out of the daily file into `action-items/archive/stale-items-YYYY-MM.md`, under a dated heading and with an `_auto-archived YYYY-MM-DD · unchanged since YYYY-MM-DD_` note. `scoutctl action-items materialize` does this when it creates the day's file; nothing is deleted. Moving an item between sections does not count as touching it — only a change to its text does (a comment, a snooze, a status note, a rewrite), and not a change to its dates, times or ages alone. Items snoozed past today are never archived.
+An open item whose block (the task line plus its indented sub-bullets) has not changed for **60 days** is moved, verbatim, out of the daily file or `action-items/backlog.md` (at most 25 backlog items a day, oldest first) into `action-items/archive/stale-items-YYYY-MM.md`, under a dated heading and with an `_auto-archived YYYY-MM-DD · unchanged since YYYY-MM-DD_` note. `scoutctl action-items materialize` does this when it creates the day's file; nothing is deleted. Moving an item between sections does not count as touching it — only a change to its text does (a comment, a snooze, a status note, a rewrite), and not a change to its dates, times or ages alone. Items snoozed past today are never archived.
 
 - **Do not re-add an auto-archived item** to keep the list "complete". It left on purpose, and the count-guard and dropoff audit below account for it.
 - **Restore it when it comes back to life.** If this run finds new activity on an archived item (a reply, a PR update, a meeting mention), or {{USER_NAME}} names it, copy its block back from the stale-items file into the right section of today's file, update it with what's new, and remove the `_auto-archived …_` note. The edit restarts its 60-day clock.
@@ -287,30 +296,36 @@ To apply the rule to a file that already exists (e.g. after a manual cleanup), r
 
 **Every open carried item MUST be rendered as its own `- [ ]` checkbox row in exactly one section.** Summary lines like "…plus the standing backlog (#A, #B, … etc.) — carried unchanged" are **FORBIDDEN** as a substitute for rendering individual items. An `etc.` that hides open items reads as a drop from {{USER_NAME}}'s perspective even when the IDs technically persist inside the prose string.
 
-**Compose-time count-guard (run before commit):** count the rendered open rows (`- [ ]` lines plus 🟢 Watching bullets) in today's file. That count MUST be ≥ the prior day's open-item count minus any items closed this run (`- [x]`), auto-archived as stale today, or dropped on an explicit {{USER_NAME}} directive. If today's count is lower, items were collapsed/omitted — expand them back into individual rows before committing.
+**Compose-time count-guard (run before commit):** count the unique open `[#XXXX]` tags in today's file and the working `backlog.md`. That count MUST be ≥ the unique open tags in the prior day's file and the committed backlog (`git show HEAD:action-items/backlog.md`), minus any items closed this run (`- [x]`), auto-archived as stale today, or dropped on an explicit {{USER_NAME}} directive. If today's count is lower, items were collapsed/omitted — expand them back into individual rows before committing.
 
 ```bash
 # Compose-time count-guard
 PREV=$(ls -t {{SCOUT_DIR}}/action-items/action-items-*.md | sed -n 2p)
 TODAY=$(basename "$DAILY_FILE" .md | sed 's/^action-items-//')
-prev_open=$(grep -cE '^\s*- \[ \] ' "$PREV" 2>/dev/null || echo 0)
-today_open=$(grep -cE '^\s*- \[ \] ' "$DAILY_FILE")
+# Unique open tags; the backlog counts on both sides (*The Backlog and the Budget*).
+open_tags() { grep -oE '^[[:space:]]*- \[ \] \[#[A-Z0-9]{2,8}\]' | sed -E 's/.*\[#([A-Z0-9]+)\]$/\1/' | sort -u; }
+prev_tags=$({ cat "$PREV"; git -C {{SCOUT_DIR}} show HEAD:action-items/backlog.md 2>/dev/null; } | open_tags)
+today_tags=$({ cat "$DAILY_FILE"; cat {{SCOUT_DIR}}/action-items/backlog.md 2>/dev/null; } | open_tags)
+prev_open=$(printf '%s\n' "$prev_tags" | grep -c .)
+today_open=$(printf '%s\n' "$today_tags" | grep -c .)
 closed_today=$(grep -cE '^\s*- \[x\] ' "$DAILY_FILE")
 # Open rows (nested ones included) under today's heading in the stale-items archive.
 archived_today=$(cat {{SCOUT_DIR}}/action-items/archive/stale-items-*.md 2>/dev/null | \
     awk -v d="## $TODAY " 'index($0, d) == 1 { on = 1; next } /^## / { on = 0 } on && /^[ \t]*- \[ \] / { n++ } END { print n + 0 }')
 [ "$today_open" -lt $((prev_open - closed_today - archived_today)) ] && \
     echo "ERROR: open-row count dropped ($prev_open→$today_open, only $closed_today closed + $archived_today auto-archived) — items were collapsed; expand them before commit" >&2
+# The ids the dropoff audit below must account for:
+comm -23 <(printf '%s\n' "$prev_tags") <(printf '%s\n' "$today_tags")
 ```
 
 ### Hard Rule — Continuity-Dropoff Audit (ID-level, pre-commit)
 
-The count-guard catches *how many* dropped; this catches *which*. Before committing, diff today's open `[#XXXX]` ids against the prior day's. For every id open in N-1 but absent in N:
+The count-guard catches *how many* dropped; this catches *which*. Before committing, diff today's open `[#XXXX]` ids (today's file and the working `backlog.md`) against the prior day's (its file and the committed backlog); the count-guard's last line lists the difference. An id that moved between the two files is in both sets, so it is carried. For every id open in N-1 but absent in N:
 
 1. It has a ✅ Recently Completed entry in today's file → confirmed closure, OK.
 2. It has an explicit `//==<<` drop directive since N-1 → confirmed drop, OK.
 3. It appears in `action-items/archive/stale-items-*.md` with an `_auto-archived <today>` note → stale auto-archive, OK. Do not re-add it (see *Stale Items Auto-Archive*).
-4. **Otherwise → silent dropoff.** Re-add it to today's file with a `[carried-via-audit]` annotation, surface `🚨 N items silently dropped from yesterday — please verify` in the notification, and write a `review-queue.md` entry. Never let an open item vanish without one of (1)/(2).
+4. **Otherwise → silent dropoff.** Re-add it to today's file with a `[carried-via-audit]` annotation, surface `🚨 N items silently dropped from yesterday — please verify` in the notification, and write a `review-queue.md` entry. Never let an open item vanish without one of (1)–(3).
 
 ### Hard Rule — Review Requests Never Drop (pre-commit)
 
@@ -523,9 +538,9 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 
 After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
 
-## Item line format (pre-commit lint limits: 60 KB file, 500-char lines)
+## Item line format (budget: 50 KB and 80 open tasks, 60 KB hard limit; 500-char lines)
 
-Each item is **one line of up to 500 characters**, plus **at most one sub-bullet** of up to 500 characters (the blocker, or {{USER_NAME}}'s comment thread):
+Each item is **one line of up to 300 characters**, plus **at most one prose sub-bullet** of up to 300 characters (the blocker). Comments, `- Refs:`, board fields and plan markers don't count against it; the 500-character line limit still holds for them:
 
 `- [ ] [#XXXX] **Title** — next step · due YYYY-MM-DD · → [[<project, topic or source note>]]`
 
@@ -533,7 +548,7 @@ A 🟢 Watching line says whom it waits on instead: `— waiting on <who> since 
 
 **Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. List notes with `scripts/scoutctl kb files --glob 'action-items/context/*.md'` and read one with `scripts/scoutctl kb read <path>`, never `ls` or `cat`. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`mv`, naming both paths to `scripts/git-safe-commit.sh`), one of the write protocol's two exceptions to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
-**Fixed sections, in order:** `## 💡 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
+**Fixed sections, in order:** `## 💡 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` (due within 14 days; the rest is in the backlog) · `## 🅿️ Parked` (until `fit` moves it to the backlog) · `## 📅 Meetings` · `## ✅ Recently Completed` (3 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 
 **A tier change moves the line.** Never write "Demoted by…", "Re-tiered by…", "Relocated from…" or "From this run…" sections. Git records why.
 

@@ -1038,6 +1038,90 @@ def _check_kb_lint_config(*, vault: Path) -> list[str]:
         return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
 
 
+def _check_action_items_size(*, vault: Path) -> list[str]:
+    """The newest daily action-items file past its hard limit (``action_items.budget``).
+
+    Runs only warn about it (``check-size``, a Run notes line), and a file this
+    size is hard to read, so the owner hears about it here too. Never an error."""
+    from scout import paths
+    from scout.action_items.budget import load_settings, measure
+
+    folder = paths.action_items_dir(vault)
+    try:
+        newest = max(folder.glob("action-items-????-??-??.md"), default=None)
+        if newest is None:
+            return []
+        text = newest.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    budget = load_settings(vault).budget
+    report = measure(text, budget)
+    if report.level(budget) != "hard":
+        return []
+    return [
+        f"action items: {newest.name} is past its hard limit — " + "; ".join(report.problems(budget)) + ". "
+        "Run `scoutctl action-items fit --dry-run` to see what would move, and set `action_items.fit: apply` "
+        "in scout-config.yaml to let materialize keep it to its budget"
+    ]
+
+
+def _check_action_items_conflicts(*, vault: Path) -> list[str]:
+    """Tags the last ``fit`` left open twice with different text: a person has to merge them.
+
+    ``fit`` never guesses which wording stands; it keeps both copies (bringing the
+    first that is due back to the daily file) and names them in its report, which
+    otherwise only the CLI shows. Read from ``.scout-logs/action-items-fit.json``
+    when that report is from the last two days."""
+    import datetime as _dt
+
+    from scout.action_items.fit import read_report
+
+    report = read_report(vault)
+    if report is None or not isinstance(report.get("conflicts"), list) or not report["conflicts"]:
+        return []
+    try:
+        day = _dt.date.fromisoformat(str(report.get("day")))
+    except ValueError:
+        return []
+    if (_dt.date.today() - day).days > 2:
+        return []
+    tags = ", ".join(f"[#{t}]" for t in report["conflicts"])
+    return [
+        f"action items: {tags} open twice with different text (daily file and/or backlog.md, fit {day}); "
+        "merge each into one row by hand"
+    ]
+
+
+def _check_backlog_lint(*, vault: Path) -> list[str]:
+    """A vault whose own kb_lint lists still budget ``action-items/backlog.md``.
+
+    The packaged defaults give the backlog no size budget and keep it out of the
+    shrink pass, but a vault that overrides ``kb_lint.budgets`` (lists replace the
+    defaults) or sets ``kb_budgets`` can bring one back: then a growing backlog is
+    a size finding, and in block mode a refused commit a run might "fix" by
+    dropping tasks."""
+    from scout.kb.lint_config import load_lint_config
+
+    rel = "action-items/backlog.md"
+    try:
+        cfg = load_lint_config(vault)
+    except Exception:  # noqa: BLE001 - _check_kb_lint_config reports an unreadable config
+        return []
+    out: list[str] = []
+    budget = cfg.budget_for(rel)
+    if budget is not None:
+        out.append(
+            f"kb-lint: {rel} has a {budget // 1024} KB size budget (your kb_lint.budgets or kb_budgets): a backlog "
+            f'grows with your open tasks; add {{glob: "{rel}", bytes: null}} before any action-items/** budget'
+        )
+    if not cfg.report_excluded(rel):
+        out.append(
+            f"kb-lint: {rel} is missing from your kb_lint.report_exclude_globs, so the dreaming shrink pass may "
+            f'rank it: add "{rel}" to that list'
+        )
+    return out
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -1312,6 +1396,9 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_action_items_size(vault=vault))
+    warnings.extend(_check_backlog_lint(vault=vault))
+    warnings.extend(_check_action_items_conflicts(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:
