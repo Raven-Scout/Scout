@@ -1265,6 +1265,13 @@ labels, the corpus and Agnes are unchanged. `elsewhere` doesn't see an unpromote
 accepted note's body is a provenance line, then the text as a block quote, wrapped below kb-lint's strict
 line limit.
 
+**Parked follow-ups (the coordinator, 2026-11-19).**
+
+- **The outbound excerpt check could cover `delegate:` notes too.** `shared_reads.source_note_records`
+  feeds it the private notes with a `shared:` source, so a Slack message that quotes or paraphrases one is
+  caught. An accepted agent's note is private, so naming or linking it is already caught, but its text
+  isn't. Not needed for V4b2.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
