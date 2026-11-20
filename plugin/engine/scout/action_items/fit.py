@@ -74,9 +74,14 @@ _BACKLOG_LINE_RE = re.compile(r"^🗂️ Backlog: \[\[backlog\]\]")
 _H2 = re.compile(r"^##\s")
 _H3 = re.compile(r"^###\s")
 _ISO = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
-_CLOSED_ON = re.compile(r"(?:closed|done|completed|finished|✅)\D{0,12}(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+# "closed 2026-11-12", "✅ 2026-11-12": a close date. Never one that a "due" stands in front of.
+_CLOSED_ON = re.compile(
+    r"(?:closed|done|completed|finished|✅)(?:(?!\bdue\b)\D){0,12}(\d{4}-\d{2}-\d{2})", re.IGNORECASE
+)
 _TOP_BULLET = re.compile(r"^[-*]\s")
-_DONE_ENTRY = re.compile(r"^[-*]\s+\[[xX]\]|~~")
+# A completed entry: a ticked row, or a row struck through from its start.
+_DONE_ENTRY = re.compile(r"^[-*]\s+(?:\[[xX]\]|~~)")
+_OPEN_LINE = re.compile(r"^\s*[-*]\s+\[ \]")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 YELLOW, GREEN, PARKED, DONE = "🟡", "🟢", "🅿️", "✅"
@@ -126,6 +131,9 @@ class FitResult:
     # Tags open twice with differing text: left alone for a person to merge.
     conflicts: list[str] = field(default_factory=list)
     rewrites: list[stale.Rewrite] = field(default_factory=list)
+    # The backlog with today's leavers added and promotions still in it: written before the daily file.
+    backlog_staged: list[str] = field(default_factory=list)
+    applied: bool = False
     bytes_before: int = 0
     bytes_after: int = 0
     open_before: int = 0
@@ -251,7 +259,9 @@ def _trim(block: list[str], keep: int) -> tuple[list[str], list[str]]:
 
 
 def _merge(primary: list[str], other: list[str]) -> list[str]:
-    """``primary`` plus every line of ``other`` it lacks, in ``other``'s order: nothing is lost."""
+    """``primary`` plus every line of ``other`` it lacks, in ``other``'s order: nothing is lost.
+
+    Callers merge only copies with the same task line (``other[0]``), so it is never dropped."""
     have = {ln.rstrip() for ln in primary}
     extra = [ln for ln in other[1:] if ln.strip() and ln.rstrip() not in have]
     return [*primary, *extra]
@@ -273,8 +283,9 @@ def _completed_day(entry: list[str], heading_day: _dt.date | None, history: Hist
 
 
 def _drop_old_completed(lines: list[str], *, today: _dt.date, days: int, history: History) -> tuple[list[str], int]:
-    """Delete completed entries older than ``days`` from ✅ Recently Completed. An open
-    task sitting there (or any entry that isn't ``- [x]`` or struck through) stays."""
+    """Delete completed entries older than ``days`` from ✅ Recently Completed. An entry
+    holding any open ``- [ ]`` row, or one that isn't ``- [x]`` or struck through from
+    its start, stays."""
     span = _section_span(lines, DONE)
     if span is None:
         return lines, 0
@@ -298,7 +309,9 @@ def _drop_old_completed(lines: list[str], *, today: _dt.date, days: int, history
         while j < end and lines[j][:1] in (" ", "\t") and lines[j].strip():
             j += 1
         entry = lines[i:j]
-        if _DONE_ENTRY.search(entry[0]) and _completed_day(entry, heading_day, history, today) < cutoff:
+        # An open task (the entry's own row or a nested one) is never pruned, whatever it says.
+        done = _DONE_ENTRY.match(entry[0]) and not any(_OPEN_LINE.match(ln) for ln in entry)
+        if done and _completed_day(entry, heading_day, history, today) < cutoff:
             remove.update(range(i, j))
             dropped += 1
         i = j
@@ -399,12 +412,21 @@ def plan_fit(
                 yellow_kept.append(block)
 
     # 2. Reconcile copies, then pick backlog tasks now due within the window, soonest first.
-    daily_blocks = {b.tag: daily[b.start : b.end] for b in stale.task_blocks(daily)}
+    # A row under ✅ is history, never a task's live copy: it can't stand in for a backlog copy.
+    daily_tags = {b.tag for b in stale.task_blocks(daily)}
+    daily_blocks: dict[str, list[str]] = {}
+    for section, block in _blocks_by_section(daily):
+        if section != DONE:
+            daily_blocks.setdefault(block.tag, daily[block.start : block.end])
     backlog = _dedupe_backlog(list(backlog), daily_blocks, result)
     coming: list[tuple[_dt.date, str, stale.TaskBlock]] = []
+    seen: set[str] = set()
     for section, block in _blocks_by_section(backlog):
-        if section not in (YELLOW, GREEN) or block.tag in daily_blocks:
+        if section not in (YELLOW, GREEN) or block.tag in daily_tags or block.tag in seen:
             continue
+        if block.tag in result.conflicts:
+            continue  # two differing copies: a person merges them first
+        seen.add(block.tag)
         due = _due(backlog[block.start : block.end], today)
         if due is not None and due <= horizon:
             coming.append((due, section, block))
@@ -447,34 +469,41 @@ def plan_fit(
         i = here.end
     new_daily = out
 
-    # 5. Promotions leave the backlog and join their section's rows.
-    new_backlog = backlog
-    if promoted:
-        drop: set[int] = set()
-        for _, section, block in promoted:
-            body = backlog[block.start : block.end]
-            body = _trim_and_record(result, body, block.tag, budget.prose_sub_bullets, today)
-            new_daily = _insert_into_section(
-                new_daily, section, DAILY_HEADINGS[section], body, before=_DAILY_AFTER[section]
-            )
-            drop.update(range(block.start, block.end))
-            result.moves.append(Move(block.tag, section, "daily", "due within the window"))
-        new_backlog = stale._drop_emptied_subheadings(new_backlog, drop)
-
-    # 6. Leavers join the backlog; a tag already open there is merged in place, never appended twice.
-    if to_backlog and not new_backlog:
-        new_backlog = list(_BACKLOG_HEADER)
+    # 5. Leavers join the backlog first. A tag already open there with the same task line is
+    # merged in place; with a different task line both copies stay and the conflict is named.
+    staged = list(backlog)
+    if to_backlog and not staged:
+        staged = list(_BACKLOG_HEADER)
     for section, tag, body in to_backlog:
-        existing = {b.tag: b for b in stale.task_blocks(new_backlog)}.get(tag)
-        if existing is not None:
-            merged = _merge(body, new_backlog[existing.start : existing.end])
-            new_backlog = new_backlog[: existing.start] + merged + new_backlog[existing.end :]
+        existing = next((b for b in stale.task_blocks(staged) if b.tag == tag), None)
+        if existing is not None and staged[existing.start].rstrip() == body[0].rstrip():
+            merged = _merge(body, staged[existing.start : existing.end])
+            staged = staged[: existing.start] + merged + staged[existing.end :]
             if tag in result.conflicts:
-                result.conflicts.remove(tag)  # merged: no line of either copy is lost
+                result.conflicts.remove(tag)  # same task line: every line of both copies is kept
             continue
-        new_backlog = _insert_into_section(
-            new_backlog, section, BACKLOG_SECTIONS[section], body, before=_backlog_after(section)
+        if existing is not None and tag not in result.conflicts:
+            result.conflicts.append(tag)
+        staged = _insert_into_section(staged, section, BACKLOG_SECTIONS[section], body, before=_backlog_after(section))
+
+    # 6. Promotions join their section's rows; they leave the backlog only in the final copy, which
+    # is written after the daily file (see ``fit``), so a failed write never loses one.
+    promoted_tags: set[str] = set()
+    for _, section, block in promoted:
+        body = backlog[block.start : block.end]
+        body = _trim_and_record(result, body, block.tag, budget.prose_sub_bullets, today)
+        new_daily = _insert_into_section(
+            new_daily, section, DAILY_HEADINGS[section], body, before=_DAILY_AFTER[section]
         )
+        promoted_tags.add(block.tag)
+        result.moves.append(Move(block.tag, section, "daily", "due within the window"))
+    new_backlog = staged
+    if promoted_tags:
+        drop: set[int] = set()
+        for block in stale.task_blocks(staged):
+            if block.tag in promoted_tags:
+                drop.update(range(block.start, block.end))
+        new_backlog = stale._drop_emptied_subheadings(staged, drop)
 
     new_daily, result.completed_dropped = _drop_old_completed(
         new_daily, today=today, days=settings.recently_completed_days, history=history
@@ -482,6 +511,7 @@ def plan_fit(
     new_daily = _set_backlog_line(new_daily, count_open(new_backlog))
     result.daily = new_daily
     result.backlog = new_backlog
+    result.backlog_staged = staged
     result.bytes_after = len("\n".join(new_daily).encode("utf-8")) + (1 if new_daily else 0)
     result.open_after = count_open(new_daily)
     return result
@@ -573,18 +603,25 @@ def write_report(data_dir: Path, result: FitResult, *, day: _dt.date, mode: str,
         pass
 
 
+def write_error_report(data_dir: Path | None, *, day: _dt.date, error: BaseException) -> None:
+    """A ``fit`` that failed, in the same report the owner reviews. Best-effort."""
+    payload = {"day": day.isoformat(), "error": f"{type(error).__name__}: {error}"}
+    try:
+        _write_text(report_path(paths.data_dir(data_dir)), json.dumps(payload, indent=1, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
 @dataclass
 class _Writes:
-    backlog: tuple[Path, str | None, list[str]] | None
     notes: list[tuple[Path, str]]
     rewrites: str
+    # (target, its raw text or None when new, the backlog with promotions still in it, the final backlog)
+    backlog: tuple[Path, str | None, list[str], list[str]]
 
 
 def _prepare(vault: Path, result: FitResult, *, day: _dt.date, raw_backlog: str | None) -> _Writes:
     """Read everything the writes depend on. Any read error but a missing note raises, before a write."""
-    backlog = None
-    if result.backlog != (raw_backlog.splitlines() if raw_backlog is not None else []):
-        backlog = (stale.backlog_path(vault), raw_backlog, result.backlog)
     notes: list[tuple[Path, str]] = []
     folder = paths.action_items_dir(vault) / "context"
     for tag, moved in result.to_notes.items():
@@ -605,21 +642,44 @@ def _prepare(vault: Path, result: FitResult, *, day: _dt.date, raw_backlog: str 
         if prior and not prior.endswith("\n"):
             records = "\n" + records
         records = prior + records
-    return _Writes(backlog=backlog, notes=notes, rewrites=records)
+    staged = result.backlog_staged or result.backlog
+    return _Writes(
+        notes=notes, rewrites=records, backlog=(stale.backlog_path(vault), raw_backlog, staged, result.backlog)
+    )
 
 
-def _write(vault: Path, writes: _Writes) -> None:
-    """Backlog, notes, rewrite records: before the daily file, each atomic."""
-    if writes.backlog is not None:
-        target, raw, lines = writes.backlog
-        if raw is None:
-            _write_text(target, "\n".join(lines) + ("\n" if lines else ""))
-        else:
-            stale.write_lines_like(target, raw, lines)
+def _write_backlog(target: Path, raw: str | None, lines: list[str]) -> None:
+    if raw is None:
+        _write_text(target, "\n".join(lines) + ("\n" if lines else ""))
+    else:
+        stale.write_lines_like(target, raw, lines)
+
+
+def _write(vault: Path, writes: _Writes, *, daily: Path, raw_daily: str, daily_lines: list[str]) -> None:
+    """Write in an order where an interruption anywhere leaves every open task in at least one file.
+
+    1. The additive files: context notes, then the rewrite records.
+    2. The backlog with today's leavers added and promotions still in it.
+    3. The daily file (leavers out, promotions in).
+    4. The backlog with the promotions taken out.
+
+    Each write is atomic. A failure after 2 leaves leavers in both files and
+    after 3 leaves promotions in both, which the next ``fit`` reconciles; no
+    step removes a task from a file before it exists in the other.
+    """
     for path, text in writes.notes:
         _write_text(path, text)
     if writes.rewrites:
         _write_text(stale.rewrites_path(vault), writes.rewrites)
+    target, raw, staged, final = writes.backlog
+    current = raw.splitlines() if raw is not None else []
+    if staged != current:
+        _write_backlog(target, raw, staged)
+        raw = "\n".join(staged) + "\n" if raw is None else raw
+    if daily_lines != raw_daily.splitlines():
+        stale.write_lines_like(daily, raw_daily, daily_lines)
+    if final != staged:
+        _write_backlog(target, raw, final)
 
 
 @contextmanager
@@ -627,10 +687,9 @@ def apply_lock(vault: Path) -> Iterator[None]:
     """Hold the vault's session lock for a manual apply, as ``retitle`` does.
 
     A run holds that lock for its whole session, so a ``fit`` the run itself
-    starts (the lock holder is one of its ancestors) goes ahead; anyone else is
-    refused while a run is live, rather than racing its edits.
+    starts goes ahead: see :func:`_started_by_the_run`. Anyone else is refused
+    while a run is live, rather than racing its edits.
     """
-    from scout.kb.live_run import _ancestry, lock_holder, process_table
     from scout.scripts.bootstrap_lock import LockBusyError, acquire_lock_with_wait, release_lock
 
     lock = vault / SESSION_LOCK
@@ -638,8 +697,7 @@ def apply_lock(vault: Path) -> Iterator[None]:
     try:
         acquire_lock_with_wait(lock, timeout_s=0)
     except LockBusyError as e:
-        holder = lock_holder(vault)
-        if holder is not None and holder in _ancestry(process_table(), os.getpid()):
+        if _started_by_the_run(vault, lock):
             yield
             return
         raise ActionItemError("refused: a Scout session holds the vault's lock (a run is live); try again later") from e
@@ -647,6 +705,37 @@ def apply_lock(vault: Path) -> Iterator[None]:
         yield
     finally:
         release_lock(lock)
+
+
+# A holder whose process started up to this long after its lock file was written still counts.
+_LOCK_CLOCK_SLACK_S = 5
+
+
+def _started_by_the_run(vault: Path, lock: Path) -> bool:
+    """Whether this process runs under the run that holds the lock.
+
+    All of: the lock names a holder, the run marker beside it names the same
+    PID, that PID is one of this process's ancestors, and it has been alive at
+    least as long as the lock file is old (so a PID reused after a crash isn't
+    taken for the run). When ``ps`` can't be read, the answer is no.
+    """
+    import subprocess
+    import time
+
+    from scout.kb.live_run import _ancestry, _marker, lock_holder, process_table
+
+    holder = lock_holder(vault)
+    if holder is None or _marker(vault)[0] != holder:
+        return False
+    try:
+        table = process_table()
+        age = time.time() - lock.stat().st_mtime
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False  # can't tell: refuse
+    proc = table.get(holder)
+    if proc is None or proc.elapsed + _LOCK_CLOCK_SLACK_S < age:
+        return False
+    return holder in _ancestry(table, os.getpid())
 
 
 def fit(
@@ -682,7 +771,7 @@ def fit(
     writes = result.changed or result.daily != raw.splitlines()
     if do_apply and writes:
         planned = _prepare(vault, result, day=date, raw_backlog=raw_backlog)
-        _write(vault, planned)
-        stale.write_lines_like(target, raw, result.daily)
-    write_report(vault, result, day=date, mode=settings.fit, applied=do_apply and writes)
+        _write(vault, planned, daily=target, raw_daily=raw, daily_lines=result.daily)
+        result.applied = True
+    write_report(vault, result, day=date, mode=settings.fit, applied=result.applied)
     return result

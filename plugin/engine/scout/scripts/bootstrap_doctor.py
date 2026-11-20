@@ -1065,6 +1065,36 @@ def _check_action_items_size(*, vault: Path) -> list[str]:
     ]
 
 
+def _check_backlog_lint(*, vault: Path) -> list[str]:
+    """A vault whose own kb_lint lists still budget ``action-items/backlog.md``.
+
+    The packaged defaults give the backlog no size budget and keep it out of the
+    shrink pass, but a vault that overrides ``kb_lint.budgets`` (lists replace the
+    defaults) or sets ``kb_budgets`` can bring one back: then a growing backlog is
+    a size finding, and in block mode a refused commit a run might "fix" by
+    dropping tasks."""
+    from scout.kb.lint_config import load_lint_config
+
+    rel = "action-items/backlog.md"
+    try:
+        cfg = load_lint_config(vault)
+    except Exception:  # noqa: BLE001 - _check_kb_lint_config reports an unreadable config
+        return []
+    out: list[str] = []
+    budget = cfg.budget_for(rel)
+    if budget is not None:
+        out.append(
+            f"kb-lint: {rel} has a {budget // 1024} KB size budget (your kb_lint.budgets or kb_budgets): a backlog "
+            f'grows with your open tasks; add {{glob: "{rel}", bytes: null}} before any action-items/** budget'
+        )
+    if not cfg.report_excluded(rel):
+        out.append(
+            f"kb-lint: {rel} is missing from your kb_lint.report_exclude_globs, so the dreaming shrink pass may "
+            f'rank it: add "{rel}" to that list'
+        )
+    return out
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -1286,6 +1316,7 @@ def run_doctor(
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_action_items_size(vault=vault))
+    warnings.extend(_check_backlog_lint(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:

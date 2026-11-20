@@ -677,9 +677,7 @@ def test_rewrite_records_append_after_a_missing_trailing_newline(tmp_path: Path)
     assert lines[0] == prior and len(lines) == 2 and json.loads(lines[1])["tag"] == "KEEP"
 
 
-def test_apply_lock_refuses_a_live_run_unless_it_is_ours(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import os
-
+def test_apply_lock_takes_a_free_lock_and_refuses_a_busy_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import scout.kb.live_run as live_run
     import scout.scripts.bootstrap_lock as bootstrap_lock
     from scout.action_items.fit import apply_lock
@@ -695,10 +693,7 @@ def test_apply_lock_refuses_a_live_run_unless_it_is_ours(tmp_path: Path, monkeyp
     monkeypatch.setattr(bootstrap_lock, "acquire_lock_with_wait", busy)
     monkeypatch.setattr(live_run, "lock_holder", lambda _vault: 999_999)
     with pytest.raises(ActionItemError, match="refused"), apply_lock(vault):
-        pass
-    monkeypatch.setattr(live_run, "lock_holder", lambda _vault: os.getpid())
-    with apply_lock(vault):
-        pass  # the run itself started this fit
+        pass  # the run's own fit is in test_action_items_fit_safety.py
 
 
 def test_cli_apply_takes_the_lock_and_prints_conflicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

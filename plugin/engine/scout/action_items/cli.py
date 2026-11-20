@@ -477,7 +477,10 @@ def cli_archive_stale(
     verbatim to `action-items/archive/stale-items-YYYY-MM.md` — nothing is
     deleted.
     """
+    from contextlib import nullcontext
+
     from scout import paths
+    from scout.action_items.fit import apply_lock
     from scout.action_items.stale import STALE_AFTER_DAYS, archive_stale
     from scout.config import today
 
@@ -489,7 +492,9 @@ def cli_archive_stale(
             day = _dt.date.fromisoformat(date)
         except ValueError as e:
             raise ActionItemError(f"--date: invalid date {date!r}") from e
-    archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
+    # It rewrites the daily file and the backlog: like fit, never race a live run (the run's own call goes ahead).
+    with nullcontext() if dry_run else apply_lock(vault):
+        archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
     if not archived:
         sys.stdout.write("archive-stale: nothing untouched long enough to archive\n")
         return
@@ -546,7 +551,7 @@ def cli_fit(
         result = fit(data_dir=vault, date=day, apply=False, settings=settings)
     if result is None:
         raise ActionItemError(f"no daily file for {day.isoformat()}")
-    applied = writing and result.changed
+    applied = result.applied
     if json_out:
         sys.stdout.write(_json.dumps({"applied": applied, "mode": settings.fit, **result.to_json()}) + "\n")
         return

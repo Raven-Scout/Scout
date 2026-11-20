@@ -285,13 +285,19 @@ def _drop_dismissed(data_dir: Path | None, body: str) -> str:
 
 def _fit(data_dir: Path | None, day: _dt.date) -> None:
     """Keep the new file to its budget (or only report, per ``action_items.fit``).
-    Best-effort, like the archive: the file already exists complete."""
-    from scout.action_items.fit import fit
+    Best-effort, like the archive: the file already exists complete. A failure
+    is said on stderr (the run log) and recorded in the fit report, never swallowed."""
+    import sys
+
+    from scout.action_items import fit as fit_module
 
     try:
-        fit(data_dir=data_dir, date=day)
-    except Exception:  # noqa: BLE001 — housekeeping must never block the copy
-        return
+        fit_module.fit(data_dir=data_dir, date=day)
+    except Exception as e:  # noqa: BLE001 — housekeeping must never block the copy
+        sys.stderr.write(
+            f"materialize: action-items fit failed ({type(e).__name__}: {e}); the day's file is complete\n"
+        )
+        fit_module.write_error_report(data_dir, day=day, error=e)
 
 
 def materialize(

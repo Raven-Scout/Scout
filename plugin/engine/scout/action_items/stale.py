@@ -340,9 +340,21 @@ class ActivityLedger:
         self.path = path
         self._items = items
         self.seen_through = seen_through
-        self.rewrites: Rewrites = rewrites or {}
         self._last_seen: set[str] = set()
-        self._rewrite_index: tuple[int, dict[str, set[tuple[str, str]]]] | None = None
+        self.rewrites = rewrites or {}
+
+    @property
+    def rewrites(self) -> Rewrites:
+        return self._rewrites
+
+    @rewrites.setter
+    def rewrites(self, value: Rewrites) -> None:
+        """Replacing the records rebuilds the by-tag index ``_rewritten_any`` reads."""
+        self._rewrites = value
+        index: dict[str, set[tuple[str, str]]] = {}
+        for (tag, _), pairs in value.items():
+            index.setdefault(tag, set()).update(pairs)
+        self._rewrites_by_tag = index
 
     @staticmethod
     def path_for(data_dir: Path) -> Path:
@@ -429,12 +441,7 @@ class ActivityLedger:
         """A recorded rewrite of ``tag`` from exactly ``before`` to exactly ``after``, on any day.
 
         The backlog has no dated history to replay, so the day can't be matched."""
-        if self._rewrite_index is None or self._rewrite_index[0] != id(self.rewrites):
-            index: dict[str, set[tuple[str, str]]] = {}
-            for (t, _), pairs in self.rewrites.items():
-                index.setdefault(t, set()).update(pairs)
-            self._rewrite_index = (id(self.rewrites), index)
-        return (before, after) in self._rewrite_index[1].get(tag, set())
+        return (before, after) in self._rewrites_by_tag.get(tag, set())
 
     def catch_up(self, data_dir: Path, before: _dt.date) -> None:
         """Replay every daily file dated after `seen_through` and before `before`.

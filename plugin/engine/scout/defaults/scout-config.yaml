@@ -194,6 +194,8 @@ kb_lint:
     - "action-items/topics.md"
     - "action-items/topic-names.md"
     - "action-items/dismissed.md"
+    # The backlog is a task list: a shrink pass would have to drop tasks.
+    - "action-items/backlog.md"
   log_globs:
     - "knowledge-base/session-log.md"
     - "knowledge-base/session-log/**"
@@ -216,6 +218,10 @@ kb_lint:
     - {glob: "action-items/topics.md", bytes: null}
     - {glob: "action-items/topic-names.md", bytes: null}
     - {glob: "action-items/dismissed.md", bytes: null}
+    # The backlog holds every open task that isn't today's, so it grows with the
+    # list; a budget would push a run to drop tasks to commit. `fit` and the
+    # stale archive keep it in check instead.
+    - {glob: "action-items/backlog.md", bytes: null}
     - {glob: "action-items/**", bytes: 15360}
     # The legacy session-log index has no budget: an un-migrated vault's
     # multi-MB log would otherwise block every run. Rows go to the monthly
