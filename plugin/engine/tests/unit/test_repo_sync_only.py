@@ -169,7 +169,7 @@ def test_labels_do_not_depend_on_the_key() -> None:
     text = "---\nvisibility: normal\n---\nBody.\n"
     plain, scoped = policy_from_overlay({}), policy_from_overlay({"sync_only": ["notes/**"]})
     assert classify(HOME, text, plain) == classify(HOME, text, scoped)
-    assert CLASSIFIER_VERSION == 5  # sync_only never bumped it; 5 is #550 V4b2's delegate_source/delegate_scope
+    assert CLASSIFIER_VERSION == 6  # sync_only never bumped it; 6: a shared: source caps federation at none
 
 
 # ----- link: what goes up ------------------------------------------------------------------

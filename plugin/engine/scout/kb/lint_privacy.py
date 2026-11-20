@@ -86,7 +86,8 @@ this vault's own sharing switch says. ``shared-source-private`` blocks one that
 isn't private; an explicit ``visibility: normal`` is the owner's call (a warning)
 and blocks only in a scheduled run. ``shared-source-reshared`` (**block**, always)
 refuses one in a shared file. ``shared-source-malformed`` warns. Other ``source:``
-values are left alone. The classifier never reads ``source:``, so labels don't change.
+values are left alone. Both blocking checks block in every lint mode (``PRIVACY_BLOCKING``). The classifier
+reads ``source:`` for one thing: such a note's federation ceiling is ``none``, so no folder default shares it.
 
 No message names a private note, its title or a matched term: findings carry
 the staged file, a line number and the rule id. The hook runs
