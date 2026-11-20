@@ -6308,6 +6308,166 @@ def _register_inbox() -> None:
         typer.echo(f'{{"ok": true, "delegate": "{delegate}", "reverted": "{ulid}"}}' if as_json else
                    f"reverted {delegate}'s {ulid}")  # fmt: skip
 
+    # ----- inbox review (#550 V4b2): the owner reads, accepts, rejects and promotes agents' text -----------------
+
+    review_app = typer.Typer(
+        help="What agents proposed that waits for you: observations and held comments (the owner only).",
+        invoke_without_command=True,
+    )
+    inbox_app.add_typer(review_app, name="review")
+
+    def _show_item(item: object) -> None:
+        from scout.delegate_review import Item
+
+        assert isinstance(item, Item)
+        what = item.kind if item.op is None else f"{item.kind} {item.op} [#{item.tag}] {item.date}"
+        when = f"{item.status}, proposed {item.proposed}"
+        typer.echo(f"{item.ulid}  FROM AGENT delegate-{item.delegate}  {what}  ({when})")
+        if item.about:
+            typer.echo(f"  about: {item.about}")
+        if item.source:
+            typer.echo(f"  source: {item.source}")
+        if item.look_alikes:
+            typer.echo(f"  LOOK-ALIKE WORDS (mixed or other scripts): {', '.join(item.look_alikes)}")
+        for line in item.text.split("\n"):
+            typer.echo(f"  | {line}")
+
+    def _typed(ulid: str, confirm: str | None, what: str) -> str | None:
+        """--confirm, or the ULID typed at a terminal; never a bare flag."""
+        import sys
+
+        if confirm is not None or not sys.stdin.isatty():
+            return confirm
+        return typer.prompt(f"To {what} it, type its ULID", default="", show_default=False)
+
+    @review_app.callback()
+    def cli_inbox_review(
+        ctx: typer.Context,
+        delegate: str | None = typer.Option(None, "--delegate", help="One delegate's items only."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """List what waits for your review, with hidden characters shown as \\u{...}."""
+        import json as _json
+
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if ctx.invoked_subcommand is not None:
+            return
+        try:
+            items = delegate_review.review(_paths.data_dir(), delegate=delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps([i.to_json() for i in items], indent=2, sort_keys=True))
+            return
+        if not items:
+            typer.echo("Nothing waits for review.")
+            return
+        for item in items:
+            _show_item(item)
+            typer.echo("")
+        typer.echo("Accept: scoutctl inbox review accept <ULID>. Reject: scoutctl inbox review reject <ULID>.")
+
+    @review_app.command("accept")
+    def cli_inbox_review_accept(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Write an observation into knowledge-base/from-agents/, or a held comment into today's file.
+
+        Runs read it from then on. An observation stays private and hidden from every delegate until you promote it.
+        """
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if not as_json and confirm is None:
+                for item in delegate_review.review(vault):
+                    if item.ulid == ulid:
+                        _show_item(item)
+            decision = delegate_review.accept(vault, ulid, confirm=_typed(ulid, confirm, "accept"))
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    def _decided(decision: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_review import Decision
+
+        assert isinstance(decision, Decision)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **decision.to_json()}, indent=2, sort_keys=True))
+            return
+        where = f" ({decision.note})" if decision.note else ""
+        typer.echo(f"{decision.outcome}: delegate-{decision.delegate}'s {decision.ulid}{where}")
+        for note in decision.notes:
+            typer.echo(note)
+
+    @review_app.command("reject")
+    def cli_inbox_review_reject(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Record it as rejected and delete the local copy. Nothing reaches the vault."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            decision = delegate_review.reject(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    @review_app.command("promote")
+    def cli_inbox_review_promote(
+        ulid: str = typer.Argument(..., help="An accepted observation's ULID."),
+        to: str | None = typer.Option(
+            None, "--to", help="Only these delegates, comma-separated; 'author' is its author. Default: every delegate."
+        ),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Let delegates' agents read an accepted observation (it becomes a normal note, promoted_from its agent)."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        targets = [t.strip() for t in to.split(",") if t.strip()] if to is not None else None
+        try:
+            preview = delegate_review.preview_promote(vault, ulid)  # shown with --confirm too: what goes out
+            if not as_json:
+                _show_item(preview)
+            decision = delegate_review.promote(
+                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=preview.sha256, to=targets
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    @review_app.command("unpromote")
+    def cli_inbox_review_unpromote(
+        ulid: str = typer.Argument(..., help="A promoted observation's ULID."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Make a promoted note private again and hide it from every delegate, if it is unchanged since."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            decision = delegate_review.unpromote(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
 
 _register_inbox()
 

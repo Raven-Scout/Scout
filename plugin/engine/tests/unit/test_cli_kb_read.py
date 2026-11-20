@@ -602,6 +602,10 @@ def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, mon
         "declared_present": False,
         "kind": None,
         "shared_source": False,
+        "delegate_source": False,
+        "promoted": False,
+        "delegate_scope": None,
+        "delegate_author": None,
     }
     stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
     for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
@@ -911,6 +915,10 @@ _GOOD_FACTS: dict[str, object] = {
     "declared_present": True,
     "kind": "meeting",
     "shared_source": False,
+    "delegate_source": False,
+    "promoted": True,
+    "delegate_scope": ["helper"],
+    "delegate_author": "helper",
 }
 
 
@@ -930,6 +938,11 @@ def test_facts_round_trip_through_the_index() -> None:
         {"declared_present": "yes"},
         {"kind": 3},
         {"shared_source": "no"},
+        {"delegate_source": "no"},
+        {"promoted": 1},
+        {"delegate_scope": "helper"},
+        {"delegate_scope": [3]},
+        {"delegate_author": 3},
         {"declared": 3},
         {"declared": [3]},
     ],

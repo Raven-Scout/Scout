@@ -1391,6 +1391,8 @@ def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
         ("scoutctl inbox apply grok-personal", True),
         ("python3 -Pm scout inbox revert 01JD5Z0000000000000000ABCD", True),
         ("scoutctl inbox sync", True),
+        ("scoutctl inbox review", True),  # V4b2: it prints agents' text, which never reaches a run
+        ("scoutctl inbox review accept 01JD5Z0000000000000000ABCD --confirm 01JD5Z0000000000000000ABCD", True),
         ("scoutctl inbox propose observation --text x", False),  # the agent's side: not on the owner's runs
         ("python3 -Im scout delegate sync", False),
         ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
