@@ -6,17 +6,20 @@ asked for (``undo:<id>``) or an auto-rollback mode would make once calibration h
 be rolled back (``blocked``), the governance changes the owner approved or rejected, and the suspects no wrap has
 announced yet. It never raises; a broken input reads as nothing to do.
 
-``rollback`` reverse-applies, in the working tree only, the change's own diff over its own paths (brain files,
-``scripts/``, ``docs/wishlist/``, both sides of a ``knowledge-base/`` rename), so later edits elsewhere in those files
-stay. ``apply_governance`` patches the working tree with an approved ``governance-pending/`` diff. Neither stages or
-commits anything: the run commits the returned paths through ``scripts/git-safe-commit.sh``. Every git call goes
-through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``, a timeout)."""
+``rollback`` undoes a change in the working tree only, over its own paths (brain files, ``scripts/``,
+``docs/wishlist/``, both sides of a ``knowledge-base/`` rename): a positional 3-way merge of each file (``git
+merge-file``), so later edits elsewhere in those files stay and an identical block elsewhere is never taken for the
+change's own lines. ``apply_governance`` patches the working tree with an approved ``governance-pending/`` diff.
+Neither stages or commits anything: the run commits the returned paths through ``scripts/git-safe-commit.sh``. Every
+git call goes through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``, a timeout)."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -41,7 +44,10 @@ _HISTORY_LIMIT = 1_000_000
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 # Modes a rollback can restore (a regular file, executable or not) or remove (those, or a symlink).
 _RESTORABLE_MODES = frozenset({"100644", "100755"})
-_REMOVABLE_MODES = _RESTORABLE_MODES | {"120000"}
+_LINK_MODE = "120000"
+_REMOVABLE_MODES = _RESTORABLE_MODES | {_LINK_MODE}
+# git's own binary test (what `git merge-file` refuses to merge): a NUL in the first this-many bytes.
+_BINARY_PROBE = 8000
 _AUTO_KEYS = {"targeted": "targeted", "one-at-a-time": "one_at_a_time"}
 
 
@@ -101,11 +107,42 @@ def mark_announced(vault: Path, ids: Sequence[str], *, blocked: bool = False) ->
 
 
 @dataclass(frozen=True)
+class _Side:
+    """One side of an own path in the change: its git mode and blob."""
+
+    mode: str
+    blob: str
+
+
+@dataclass(frozen=True)
+class _Step:
+    """Undoing one file. ``read`` is where the change left it (a rename's new side), ``write`` where the undo puts
+    the version before it (a rename's old side; otherwise the same path). ``before`` is the parent's side (None: the
+    change added the file), ``after`` the commit's (None: the change deleted it)."""
+
+    read: str
+    write: str
+    before: _Side | None
+    after: _Side | None
+
+
+@dataclass(frozen=True)
 class _Plan:
-    """How to undo a change: reverse-apply ``diff`` (the commit's own diff over ``paths``) to the working tree."""
+    """How to undo a change: one step per file, both sides of a rename being one step. It holds no file content:
+    the undo is worked out against the working tree each time it is checked or done (:func:`_undo`)."""
 
     paths: tuple[str, ...]  # the change's own paths (scout.changes.scan.own_paths), both sides of a rename
-    diff: bytes
+    steps: tuple[_Step, ...]
+
+
+@dataclass(frozen=True)
+class _Op:
+    """One write of a worked-out undo: ``data`` with permission bits ``mode`` at ``path``, or (``data`` None) remove
+    ``path``."""
+
+    path: str
+    data: bytes | None
+    mode: int = 0o644
 
 
 def _at_top(vault: Path) -> bool:
@@ -114,15 +151,21 @@ def _at_top(vault: Path) -> bool:
     return prefix is not None and not prefix.strip()
 
 
-def _modes_ok(vault: Path, parent: str, commit: str, paths: Sequence[str]) -> bool:
-    """Every own path is a regular file on both sides, except that the commit may have added or changed a symlink
-    (undoing that removes or replaces it). A symlink or submodule in the parent would be written back: refused."""
+def _sides(
+    vault: Path, parent: str, commit: str, paths: Sequence[str]
+) -> tuple[dict[str, _Side], dict[str, _Side]] | None:
+    """Each own path's side in the parent and in the commit (``before``, ``after``), from git's raw diff without
+    rename detection (a rename is a delete plus an add here). None, refused, when git failed, the output doesn't
+    parse, or a path isn't a regular file on both sides, except that the commit may have added or changed a symlink
+    (undoing that removes or replaces it): a symlink or submodule in the parent would be written back."""
     raw = _git_bytes(
         vault, "--literal-pathspecs", "diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", parent, commit, "--",
         *paths,
     )  # fmt: skip
     if raw is None:
-        return False
+        return None
+    before: dict[str, _Side] = {}
+    after: dict[str, _Side] = {}
     fields = os.fsdecode(raw).split("\0")
     i = 0
     while i < len(fields):
@@ -132,17 +175,22 @@ def _modes_ok(vault: Path, parent: str, commit: str, paths: Sequence[str]) -> bo
             continue
         cols = meta[1:].split(" ") if meta.startswith(":") else []
         if len(cols) != 5 or i + 1 >= len(fields) or not fields[i + 1]:
-            return False
-        old_mode, new_mode, _, _, status = cols
+            return None
+        old_mode, new_mode, old_blob, new_blob, status = cols
+        path = fields[i + 1]
         status = status[:1]
         i += 2
         if status not in ("A", "D", "M", "T"):
-            return False
-        if status != "A" and old_mode not in _RESTORABLE_MODES:
-            return False
-        if status != "D" and new_mode not in _REMOVABLE_MODES:
-            return False
-    return True
+            return None
+        if status != "A":
+            if old_mode not in _RESTORABLE_MODES:
+                return None
+            before[path] = _Side(old_mode, old_blob)
+        if status != "D":
+            if new_mode not in _REMOVABLE_MODES:
+                return None
+            after[path] = _Side(new_mode, new_blob)
+    return before, after
 
 
 def _plan(vault: Path, commit: str) -> _Plan | str:
@@ -159,32 +207,173 @@ def _plan(vault: Path, commit: str) -> _Plan | str:
     parent = shas[1]
     if _git(vault, "merge-base", "--is-ancestor", commit, "HEAD") is None:
         return "git-unreadable"
-    entries = name_status(vault, commit)
-    paths = own_paths(entries or [])
-    if not paths or not _modes_ok(vault, parent, commit, paths):
+    entries = name_status(vault, commit) or []
+    paths = own_paths(entries)
+    sides = _sides(vault, parent, commit, paths) if paths else None
+    if sides is None:
         return "git-unreadable"
-    # Plumbing, with explicit prefixes: a user's diff.noprefix, colour or external-diff settings never reach it.
-    diff = _git_bytes(
-        vault, "--literal-pathspecs", "diff-tree", "-p", "--binary", "-M", "--no-commit-id", "--no-color",
-        "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", parent, commit, "--", *paths,
-    )  # fmt: skip
-    if not diff or not diff.strip():
+    before, after = sides
+    # name_status detects renames against the same first parent; own_paths holds both sides of each.
+    renamed = {sides_[0]: sides_[1] for status, sides_ in entries if status[:1] == "R" and sides_[0] in paths}
+    steps = [_Step(new, old, before.get(old), after.get(new)) for old, new in renamed.items()]
+    paired = {*renamed, *renamed.values()}
+    steps += [_Step(p, p, before.get(p), after.get(p)) for p in paths if p not in paired]
+    # A file needs a side to undo from, a rename both: a path git's raw diff didn't list is unreadable.
+    if any(sum(s is not None for s in (st.before, st.after)) < (2 if st.read != st.write else 1) for st in steps):
         return "git-unreadable"
-    return _Plan(tuple(paths), diff)
+    return _Plan(tuple(paths), tuple(steps))
 
 
-def _reverse_apply(vault: Path, plan: _Plan, *, check: bool) -> bool:
-    """``git apply -R`` of the plan's diff to the working tree (never the index); all or nothing."""
-    args = ["apply", "-R", "--whitespace=nowarn"] + (["--check"] if check else [])
-    return _git_bytes(vault, *args, stdin=plan.diff) is not None
+def _blob(vault: Path, side: _Side | None) -> bytes | None:
+    """A side's bytes as git stores them (no filters), b"" for no side, None when git can't read it."""
+    return b"" if side is None else _git_bytes(vault, "cat-file", "blob", side.blob)
+
+
+def _current(path: Path) -> tuple[str, bytes]:
+    """What stands at ``path`` now, never followed: ``("file", bytes)``, ``("link", target)``, ``("absent", b"")``,
+    or ``("other", b"")`` (a folder, anything else, or unreadable)."""
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            return "link", os.readlink(os.fsencode(path))
+        if stat.S_ISREG(st.st_mode):
+            return "file", path.read_bytes()
+    except FileNotFoundError:
+        return "absent", b""
+    except OSError:
+        pass
+    return "other", b""
+
+
+def _binary(data: bytes) -> bool:
+    return b"\0" in data[:_BINARY_PROBE]
+
+
+def _merge(vault: Path, current: bytes, base: bytes, other: bytes) -> bytes | str:
+    """``git merge-file -p <current> <base> <other>``, git's default resolution (never ours/theirs/union): the merged
+    bytes, ``edited-since`` on a conflict or a merge-file error (the runner can't tell them apart, and both mean
+    the undo can't be worked out from the file as it is), or ``git-unreadable`` when the temp files can't be
+    written. They are made outside the vault (the system temp folder) and always removed."""
+    names: list[str] = []
+    try:
+        for data in (current, base, other):
+            fd, name = tempfile.mkstemp(prefix="scout-undo.")
+            names.append(name)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        merged = _git_bytes(vault, "merge-file", "-p", "--", *names)
+    except OSError:
+        return "git-unreadable"
+    finally:
+        for name in names:
+            with contextlib.suppress(OSError):
+                os.unlink(name)
+    return "edited-since" if merged is None else merged
+
+
+def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
+    before = _blob(vault, step.before)
+    after = _blob(vault, step.after)
+    if before is None or after is None:
+        return "git-unreadable"
+    kind, now = _current(vault / step.read)
+    if step.after is None:  # the change deleted it: put it back, unless something stands there now
+        if kind != "absent" or step.before is None:
+            return "edited-since"
+        return [_Op(step.write, before, _file_mode(step.before))]
+    if kind != ("link" if step.after.mode == _LINK_MODE else "file"):
+        return "edited-since"
+    if step.before is None:  # the change added it (a symlink: its target): remove it, unless edited since
+        return [_Op(step.read, None)] if now == after else "edited-since"
+    if step.read != step.write and os.path.lexists(vault / step.write):
+        return "edited-since"  # a rename whose old path was made again since
+    if step.after.mode == _LINK_MODE or any(_binary(b) for b in (before, after, now)):
+        if now != after:  # a changed symlink or a binary file: only exactly as the change left it
+            return "edited-since"
+        result: bytes = before
+    else:
+        merged = _merge(vault, now, after, before)
+        if isinstance(merged, str):
+            return merged
+        if merged == now and before != after and step.read == step.write:
+            # Every line the change made is already back as it was (undone by hand, or by a commit the report
+            # doesn't count as its rollback): an undo would write nothing and stay due forever.
+            return "edited-since"
+        result = merged
+    ops = [_Op(step.write, result, _file_mode(step.before))]
+    if step.read != step.write:
+        ops.append(_Op(step.read, None))
+    return ops
+
+
+def _file_mode(side: _Side) -> int:
+    return 0o755 if side.mode == "100755" else 0o644
+
+
+def _undo(vault: Path, plan: _Plan) -> list[_Op] | str:
+    """Every write that undoes ``plan`` in the working tree as it is now, or why not (``edited-since``,
+    ``git-unreadable``). Writes nothing. Per file, with ``P`` the parent's version, ``C`` the commit's and ``W`` the
+    working tree's:
+
+    - a text file the change modified: ``git merge-file`` of ``W`` (current), ``C`` (base), ``P`` (other). Positional:
+      only the change's own lines are taken back, and a conflict (a later edit touched them) refuses, as does a
+      merge that would change nothing (every line the change made is already back as it was);
+    - a binary file, or a symlink the change made of a file: undone only when ``W`` is exactly ``C``;
+    - a file the change added: removed only when ``W`` is exactly ``C`` (a symlink: the same target);
+    - a file it deleted: restored only when nothing stands at that path now;
+    - a rename: merged as modified (``W`` read at the new path), written at the old path (refused if something stands
+      there now), the new path removed.
+
+    Restored and merged files get ``P``'s mode (the executable bit)."""
+    # Uncommitted work on these paths (a run mid-edit, a rollback not yet committed) would be mixed into the undo.
+    dirty = _git_bytes(vault, "--literal-pathspecs", "status", "--porcelain", "-z", "--", *plan.paths)
+    if dirty is None:
+        return "git-unreadable"
+    if dirty.strip(b"\0"):
+        return "edited-since"
+    ops: list[_Op] = []
+    for step in plan.steps:
+        got = _undo_step(vault, step)
+        if isinstance(got, str):
+            return got
+        ops += got
+    return ops
+
+
+def _write(vault: Path, ops: Sequence[_Op]) -> None:
+    """Write an undo worked out in full: every file first, then the removals (so a rename's old side is back before
+    its new side goes). A symlink at a target is replaced, never written through."""
+    from scout.safe_write import atomic_write_bytes
+
+    for op in ops:
+        if op.data is not None:
+            target = vault / op.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(target, op.data, mode=op.mode)
+    for op in ops:
+        if op.data is None:
+            target = vault / op.path
+            target.unlink()
+            # As git does when it deletes a file: folders left empty go too, never the vault itself.
+            folder = target.parent
+            while folder != vault:
+                try:
+                    folder.rmdir()
+                except OSError:
+                    break
+                folder = folder.parent
 
 
 def rollback_problem(vault: Path, change: Change, test: Mapping[str, Any]) -> str | None:
     """None when ``change`` can be rolled back, else why not: ``governance``, ``not-a-run-change`` (its test state is
-    ``not-tested``), ``root-commit``, ``edited-since`` (its own diff no longer reverses cleanly: a later edit changed
-    the same lines, or its own paths have uncommitted edits) or ``git-unreadable``.
+    ``not-tested``), ``root-commit``, ``edited-since`` (a later edit changed the change's own lines, so the 3-way
+    merge conflicts; a file it added, a binary or a symlink is no longer exactly as it left it; something stands
+    where a file it deleted or renamed away would go back; or its own paths have uncommitted edits) or
+    ``git-unreadable``.
 
-    Hunk-level: a later commit that changed other lines of the same file does not block."""
+    Positional: a later commit that changed other lines of the same file does not block, and an identical block
+    elsewhere in the file is never mistaken for the change's own lines. Works the undo out in full and writes
+    nothing."""
     if change.governance:
         return "governance"
     if test.get("state") == "not-tested":
@@ -192,15 +381,8 @@ def rollback_problem(vault: Path, change: Change, test: Mapping[str, Any]) -> st
     plan = _plan(vault, change.commit)
     if isinstance(plan, str):
         return plan
-    # Uncommitted work on these paths (a run mid-edit, a rollback not yet committed) would be mixed into the undo.
-    dirty = _git_bytes(vault, "--literal-pathspecs", "status", "--porcelain", "-z", "--", *plan.paths)
-    if dirty is None:
-        return "git-unreadable"
-    if dirty.strip(b"\0"):
-        return "edited-since"
-    if not _reverse_apply(vault, plan, check=True):
-        return "edited-since"
-    return None
+    ops = _undo(vault, plan)
+    return ops if isinstance(ops, str) else None
 
 
 # --- due ------------------------------------------------------------------------------------------------------------
@@ -371,13 +553,15 @@ def rollback(
     tz: ZoneInfo,
     owner_vault: Path | None = None,
 ) -> list[str]:
-    """Undo ``change_id`` in the working tree: reverse-apply the change's own diff (its brain files, ``scripts/``,
-    ``docs/wishlist/`` and both sides of a ``knowledge-base/`` rename; never session logs or audit rows) with
-    ``git apply -R``. Later edits to other lines of those files stay. Returns the sorted vault-relative paths for the
-    run to commit through ``git-safe-commit.sh``.
+    """Undo ``change_id`` in the working tree (never the index) over the change's own paths (its brain files,
+    ``scripts/``, ``docs/wishlist/`` and both sides of a ``knowledge-base/`` rename; never session logs or audit
+    rows): each text file is a positional 3-way merge (``git merge-file``; see :func:`_undo`), so later edits to other
+    lines of those files stay and an identical block elsewhere is never rewritten. Returns the sorted vault-relative
+    paths for the run to commit through ``git-safe-commit.sh``.
 
-    Raises :class:`ActionRefused` unless the id is in ``due(...)["rollbacks"]``. All or nothing: ``git apply`` checks
-    every hunk before it writes, so a hunk that no longer applies (``edited-since``) writes nothing."""
+    Raises :class:`ActionRefused` unless the id is in ``due(...)["rollbacks"]``, and works the undo out again (the
+    tree may have changed since ``due``). All or nothing: every file is worked out and every path checked before
+    anything is written, so a refusal (``edited-since``, ...) writes nothing."""
     doc, changes = _safe_compute(vault, env, now=now, tz=tz, owner_vault=owner_vault)
     if change_id not in {r["id"] for r in doc["rollbacks"]}:
         why = next((b["why_blocked"] for b in doc["blocked"] if b["id"] == change_id), "not-due")
@@ -387,8 +571,10 @@ def rollback(
         raise ActionRefused(plan)
     if not all(_inside(vault, p) for p in plan.paths):
         raise ActionRefused("path outside the vault")
-    if not _reverse_apply(vault, plan, check=False):
-        raise ActionRefused("edited-since")
+    ops = _undo(vault, plan)
+    if isinstance(ops, str):
+        raise ActionRefused(ops)
+    _write(vault, ops)
     return list(plan.paths)
 
 

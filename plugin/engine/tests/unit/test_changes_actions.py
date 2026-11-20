@@ -175,9 +175,12 @@ def test_a_real_rollback_commit_clears_the_undo(repo, env):
     _undo(repo, env, cid)
     paths = rollback(repo, env, cid, now=NOW, tz=TZ)
     _git(repo, "add", "--", *paths)
-    _git(repo, "commit", "-q", "-m", f"dreaming [22:30]: roll back {cid}\n\nScout-Change-Reverts: {cid}")
+    # Dated `NOW`, the report's clock: a commit after it is not seen yet (the test once passed only because the
+    # already-undone tree no longer reversed cleanly).
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:30]: roll back {cid}\n\nScout-Change-Reverts: {cid}", date=NOW)
     scan(repo, since=None)
-    assert _due(repo, env)["rollbacks"] == []
+    doc = _due(repo, env)
+    assert doc["rollbacks"] == [] and doc["blocked"] == []
 
 
 def _two_hurt_changes(repo: Path) -> tuple[str, str]:
@@ -329,6 +332,255 @@ def test_a_later_edit_to_the_same_hunk_blocks_and_writes_nothing(repo, env):
     with pytest.raises(ActionRefused) as exc:
         rollback(repo, env, cid, now=NOW, tz=TZ)
     assert exc.value.reason == "edited-since" and _tree(repo) == before
+
+
+_TWIN = "".join(f"boilerplate {i}\n" for i in range(1, 8))  # 7 lines: a hunk's ±3 lines of context fit inside
+_TIGHT = _TWIN.replace("boilerplate 4\n", "boilerplate 4, tightened\n")
+
+
+def _twin_skill(first: str, second: str) -> str:
+    return f"# Skill\n\nintro\n\n{first}\nmiddle 1\nmiddle 2\nmiddle 3\nmiddle 4\n\n{second}\nend\n"
+
+
+def _twin_change(repo: Path) -> str:
+    """SKILL.md where the run change makes the first block byte-identical to the second (the boilerplate a brain
+    file repeats). Returns the change id."""
+    _commit(
+        repo,
+        "scout: a SKILL.md with a repeated block",
+        {"SKILL.md": _twin_skill(_TWIN, _TIGHT)},
+        date=NOW - timedelta(days=30),
+    )
+    return _cid(_brain_edit(repo, days_ago=3, content=_twin_skill(_TIGHT, _TIGHT)))
+
+
+def test_an_undo_never_lands_on_an_identical_twin_block(repo, env):
+    """R-a: the change's own line was edited again since, and an identical block (same lines, same context) stands
+    elsewhere in the file. The undo must refuse, not rewrite the other copy."""
+    cid = _twin_change(repo)
+    reworded = _TWIN.replace("boilerplate 4\n", "boilerplate 4, reworded\n")
+    _commit(repo, "scout: reword the first block again", {"SKILL.md": _twin_skill(reworded, _TIGHT)})
+    _undo(repo, env, cid)
+    from scout.changes import actions
+
+    change = Change.from_row(next(r for r in _changes_rows(repo, env) if r["id"] == cid))
+    assert actions.rollback_problem(repo, change, {"state": "testing"}) == "edited-since"
+    before = (repo / "SKILL.md").read_bytes()
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since"
+    assert (repo / "SKILL.md").read_bytes() == before
+
+
+def test_an_undo_beside_an_edited_twin_block_restores_the_first_and_keeps_the_edit(repo, env):
+    cid = _twin_change(repo)
+    second = _TIGHT.replace("boilerplate 6\n", "boilerplate 6, by hand\n")
+    _commit(repo, "scout: edit the second block", {"SKILL.md": _twin_skill(_TIGHT, second)})
+    _undo(repo, env, cid)
+    assert [r["id"] for r in _due(repo, env)["rollbacks"]] == [cid]
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+    assert (repo / "SKILL.md").read_text() == _twin_skill(_TWIN, second)
+
+
+def _changes_rows(repo: Path, env: dict[str, str]) -> list[dict]:
+    from scout.changes.report import changes_report
+
+    return changes_report(repo, now=NOW, since=NOW - timedelta(days=60), env=env, tz=TZ)["changes"]
+
+
+def _problem(repo: Path, env: dict[str, str], cid: str) -> str | None:
+    from scout.changes import actions
+
+    change = Change.from_row(next(r for r in _changes_rows(repo, env) if r["id"] == cid))
+    return actions.rollback_problem(repo, change, {"state": "testing"})
+
+
+def _refused(repo: Path, env: dict[str, str], cid: str) -> str:
+    """The undo is refused, as `due` says and as `rollback` does, and nothing in the tree changed."""
+    _undo(repo, env, cid)
+    problem = _problem(repo, env, cid)
+    assert problem is not None and [b["why_blocked"] for b in _due(repo, env)["blocked"]] == [problem]
+    before = _tree(repo)
+    links = {p: os.readlink(p) for p in repo.rglob("*") if p.is_symlink()}
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == problem
+    assert _tree(repo) == before and {p: os.readlink(p) for p in repo.rglob("*") if p.is_symlink()} == links
+    return problem
+
+
+def test_an_added_file_edited_since_is_not_removed(repo, env):
+    cid = _cid(_commit(repo, "dreaming [22:12]: a new driver", {"scripts/new.py": "v1\n"}, date=NOW - timedelta(3)))
+    _commit(repo, "scout: improve the driver by hand", {"scripts/new.py": "v2\n"})
+    scan(repo, since=None)
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def _deleting_change(repo: Path) -> str:
+    (repo / "scripts").mkdir()
+    (repo / "scripts/old.sh").write_text("echo old\n")
+    (repo / "scripts/old.sh").chmod(0o755)
+    _commit(repo, "seed a script", {}, date=NOW - timedelta(days=30))
+    sha = _commit(
+        repo,
+        "dreaming [22:12]: SKILL.md self-edit — drop the old driver",
+        {"SKILL.md": "skill v2\n", "scripts/old.sh": None},
+        date=NOW - timedelta(days=3),
+    )
+    (repo / "scripts").rmdir()  # git leaves no empty folder behind; the undo makes it again
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_a_deleted_file_is_restored_with_its_mode_and_folder(repo, env):
+    cid = _deleting_change(repo)
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md", "scripts/old.sh"]
+    assert (repo / "scripts/old.sh").read_text() == "echo old\n" and os.access(repo / "scripts/old.sh", os.X_OK)
+    assert (repo / "SKILL.md").read_text() == "skill v1\n"
+
+
+@pytest.mark.parametrize("what", ["a file, committed", "an empty folder", "a file where its folder was"])
+def test_a_deleted_file_made_again_since_is_not_overwritten(repo, env, what):
+    cid = _deleting_change(repo)
+    if what == "a file, committed":
+        _commit(repo, "scout: a new old.sh", {"scripts/old.sh": "echo new\n"})
+    elif what == "an empty folder":
+        (repo / "scripts/old.sh").mkdir(parents=True)  # git doesn't see an empty folder: status stays clean
+    else:
+        (repo / "scripts").write_text("not a folder\n")  # lstat of scripts/old.sh: not a directory
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def _renaming_change(repo: Path) -> str:
+    _commit(repo, "scout: a longer note", {"knowledge-base/a.md": _LONG}, date=NOW - timedelta(days=30))
+    (repo / "knowledge-base/b").mkdir()
+    _git(repo, "mv", "knowledge-base/a.md", "knowledge-base/b/a.md")
+    edited = _LONG.replace("line 3\n", "line 3, moved\n")
+    sha = _commit(
+        repo,
+        "dreaming [22:12]: SKILL.md self-edit — file the note",
+        {"SKILL.md": "skill v2\n", "knowledge-base/b/a.md": edited},
+        date=NOW - timedelta(days=3),
+    )
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_a_rename_whose_old_path_was_made_again_is_refused(repo, env):
+    cid = _renaming_change(repo)
+    _commit(repo, "scout: a new a.md", {"knowledge-base/a.md": "a fresh note\n"})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def test_a_rename_merges_later_edits_at_the_new_path_back_to_the_old_one(repo, env):
+    cid = _renaming_change(repo)
+    moved = (repo / "knowledge-base/b/a.md").read_text()
+    _commit(
+        repo, "scout: edit the filed note", {"knowledge-base/b/a.md": moved.replace("line 28\n", "line 28, later\n")}
+    )
+    _undo(repo, env, cid)
+    rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert (repo / "knowledge-base/a.md").read_text() == _LONG.replace("line 28\n", "line 28, later\n")
+    assert not (repo / "knowledge-base/b").exists()
+
+
+def _binary_change(repo: Path) -> str:
+    (repo / "scripts").mkdir()
+    (repo / "scripts/blob.bin").write_bytes(b"\0v1\n" + _LONG.encode())
+    _commit(repo, "seed a binary", {}, date=NOW - timedelta(days=30))
+    (repo / "scripts/blob.bin").write_bytes(b"\0v1\n" + _LONG.replace("line 3\n", "line 3!\n").encode())
+    sha = _commit(repo, "dreaming [22:12]: driver data", {}, date=NOW - timedelta(days=3))
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_a_binary_file_is_restored_only_exactly_as_the_change_left_it(repo, env):
+    cid = _binary_change(repo)
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["scripts/blob.bin"]
+    assert (repo / "scripts/blob.bin").read_bytes() == b"\0v1\n" + _LONG.encode()
+
+
+def test_a_binary_file_changed_since_is_refused_even_on_other_lines(repo, env):
+    cid = _binary_change(repo)
+    later = (repo / "scripts/blob.bin").read_bytes().replace(b"line 28\n", b"line 28!\n")
+    (repo / "scripts/blob.bin").write_bytes(later)
+    _commit(repo, "scout: more driver data", {})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def test_a_change_already_put_back_by_hand_is_edited_since(repo, env):
+    """Every line the change made is back as it was (a commit not counted as its rollback): an undo would write
+    nothing and the request would stay due every run."""
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    _commit(repo, "scout: put SKILL.md back by hand", {"SKILL.md": "skill v1\n"})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def _link(repo: Path, rel: str, target: str) -> None:
+    path = repo / rel
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+
+
+def test_an_added_symlink_is_removed_only_while_it_points_where_the_change_left_it(repo, env):
+    _link(repo, "scripts/tool", "../README.md")
+    cid = _cid(_commit(repo, "dreaming [22:12]: a tool link", {}, date=NOW - timedelta(days=3)))
+    scan(repo, since=None)
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["scripts/tool"]
+    assert not (repo / "scripts/tool").is_symlink() and not (repo / "scripts").exists()
+
+
+def test_an_added_symlink_pointed_elsewhere_since_is_refused(repo, env):
+    _link(repo, "scripts/tool", "../README.md")
+    cid = _cid(_commit(repo, "dreaming [22:12]: a tool link", {}, date=NOW - timedelta(days=3)))
+    _link(repo, "scripts/tool", "../SKILL.md")
+    _commit(repo, "scout: point the tool elsewhere", {})
+    scan(repo, since=None)
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def _file_to_link_change(repo: Path) -> str:
+    (repo / "scripts").mkdir()
+    (repo / "scripts/tool.sh").write_text("echo tool\n")
+    (repo / "scripts/tool.sh").chmod(0o755)
+    _commit(repo, "seed a tool", {}, date=NOW - timedelta(days=30))
+    _link(repo, "scripts/tool.sh", "../README.md")
+    sha = _commit(repo, "dreaming [22:12]: SKILL.md self-edit — link the tool", {"SKILL.md": "skill v2\n"})
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_a_file_the_change_made_a_symlink_comes_back_as_a_file(repo, env):
+    cid = _file_to_link_change(repo)
+    _undo(repo, env, cid)
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md", "scripts/tool.sh"]
+    tool = repo / "scripts/tool.sh"
+    assert not tool.is_symlink() and tool.read_text() == "echo tool\n" and os.access(tool, os.X_OK)
+    assert (repo / "README.md").read_text() == "readme\n"  # never written through the link
+
+
+@pytest.mark.parametrize("since", ["retargeted", "made a file again"])
+def test_a_symlink_the_change_made_and_someone_changed_since_is_refused(repo, env, since):
+    cid = _file_to_link_change(repo)
+    if since == "retargeted":
+        _link(repo, "scripts/tool.sh", "../SKILL.md")
+        _commit(repo, "scout: point the tool elsewhere", {})
+    else:
+        (repo / "scripts/tool.sh").unlink()
+        _commit(repo, "scout: a real tool again", {"scripts/tool.sh": "echo tool\n"})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def test_a_file_the_change_edited_and_someone_made_a_symlink_since_is_refused(repo, env):
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    _link(repo, "SKILL.md", "README.md")
+    _commit(repo, "scout: SKILL.md is a link now", {})
+    assert _refused(repo, env, cid) == "edited-since"
 
 
 def test_rollback_restores_only_the_changes_own_paths(repo, env):
@@ -779,7 +1031,7 @@ def test_modes_refuse_what_cannot_be_written_back(repo, monkeypatch, raw):
     from scout.changes import actions
 
     monkeypatch.setattr(actions, "_git_bytes", lambda *a, **k: raw)
-    assert actions._modes_ok(repo, "p" * 40, "c" * 40, ["SKILL.md"]) is False
+    assert actions._sides(repo, "p" * 40, "c" * 40, ["SKILL.md"]) is None
 
 
 def test_a_change_that_turned_a_symlink_into_a_file_is_unreadable(repo, env):
@@ -809,15 +1061,88 @@ def test_plan_refusals(repo, monkeypatch):
     assert actions._plan(repo, side) == "git-unreadable"
     # A vault that is a subfolder of its repository: git's paths aren't vault-relative.
     assert actions._plan(repo / "knowledge-base", readme_only) == "git-unreadable"
-    # The diff can't be read.
+    # A rename (or any path) git's raw diff doesn't list: no side to undo from.
     sha = _brain_edit(repo)
+    real = actions.name_status
+    monkeypatch.setattr(actions, "name_status", lambda v, s: [*real(v, s), ("R100", ("scripts/a.py", "scripts/b.py"))])
+    assert actions._plan(repo, sha) == "git-unreadable"
+    monkeypatch.setattr(actions, "name_status", lambda v, s: [*real(v, s), ("A", ("scripts/ghost.py",))])
+    assert actions._plan(repo, sha) == "git-unreadable"
+
+
+@pytest.fixture
+def tmpdir_for_merges(tmp_path, monkeypatch) -> Path:
+    """The system temp folder `merge-file`'s inputs go to, watched: it must be empty after every undo."""
+    import tempfile
+
+    folder = tmp_path / "system-tmp"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
+
+
+def test_merge_temp_files_live_outside_the_vault_and_are_always_removed(repo, env, tmpdir_for_merges, monkeypatch):
+    from scout.changes import actions
+
+    seen: list[str] = []
     real = actions._git_bytes
 
-    def no_patch(vault, *args, **kw):
-        return None if "-p" in args else real(vault, *args, **kw)
+    def spy(vault, *args, **kw):
+        if "merge-file" in args:
+            seen.extend(a for a in args if a.startswith(str(tmpdir_for_merges)))
+            assert len(list(tmpdir_for_merges.iterdir())) == 3  # current, base, other: all outside the vault
+        return real(vault, *args, **kw)
 
-    monkeypatch.setattr(actions, "_git_bytes", no_patch)
-    assert actions._plan(repo, sha) == "git-unreadable"
+    monkeypatch.setattr(actions, "_git_bytes", spy)
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    _undo(repo, env, cid)
+    assert _problem(repo, env, cid) is None  # a clean merge
+    assert rollback(repo, env, cid, now=NOW, tz=TZ) == ["SKILL.md"]
+    _commit(repo, "scout: rewrite SKILL.md", {"SKILL.md": "skill v3\n"})
+    assert _problem(repo, env, cid) == "edited-since"  # a conflict
+    assert len(seen) >= 9 and not any(s.startswith(str(repo)) for s in seen)
+    assert list(tmpdir_for_merges.iterdir()) == [] and not list(repo.glob("**/scout-undo.*"))
+
+
+def test_a_merge_file_error_is_edited_since(repo, env, tmpdir_for_merges, monkeypatch):
+    """The shared runner can't tell a conflict (exit > 0) from an error (exit 255): both refuse as edited-since."""
+    from scout.changes import actions
+
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    real = actions._git_bytes
+    monkeypatch.setattr(actions, "_git_bytes", lambda v, *a, **k: None if "merge-file" in a else real(v, *a, **k))
+    assert _refused(repo, env, cid) == "edited-since"
+    assert list(tmpdir_for_merges.iterdir()) == []
+
+
+@pytest.mark.parametrize("fails_on", [1, 3])
+def test_temp_files_that_cannot_be_made_are_git_unreadable_and_leave_nothing(
+    repo, env, tmpdir_for_merges, monkeypatch, fails_on
+):
+    import tempfile
+
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    real = tempfile.mkstemp
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] % 3 == fails_on % 3:
+            raise OSError(28, "No space left on device")
+        return real(*a, **k)
+
+    monkeypatch.setattr(tempfile, "mkstemp", flaky)
+    assert _refused(repo, env, cid) == "git-unreadable"
+    assert list(tmpdir_for_merges.iterdir()) == []
+
+
+def test_a_blob_git_cannot_read_is_git_unreadable(repo, env, monkeypatch):
+    from scout.changes import actions
+
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    real = actions._git_bytes
+    monkeypatch.setattr(actions, "_git_bytes", lambda v, *a, **k: None if "cat-file" in a else real(v, *a, **k))
+    assert _refused(repo, env, cid) == "git-unreadable"
 
 
 def test_rollback_problem_when_git_status_fails(repo, monkeypatch):
