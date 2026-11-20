@@ -3,9 +3,10 @@
   1 AM run the ledger records as `overnight-research` used to read "Morning briefing", because its log is a
   plain `scout-…` file and the hour alone made it a briefing. The log-name guess is still used when a run has
   no ledger row, for example while it is still going. The run list, the run detail, the menu-bar panel,
-  status lines and notifications all use the new name. Health and Control Center now name hand-started runs
-  the same way ("Dreaming (manual)", not "Dreaming manual"), and the "manual" badge is left off a run whose
-  name already says so.
+  status lines, notifications and Health's skip messages all use the new name, and searching the run list
+  matches the run's schedule, not the old guess. Health and Control Center now name hand-started runs the
+  same way ("Dreaming (manual)", not "Dreaming manual"; a hand-run `/scout-consolidation` at 2 PM reads
+  "Consolidation (manual)"), and the "manual" badge is left off a run whose name already says so.
 - **The run list is headed "Runs".** It was headed "Sessions", the name of the Agent Sessions page. Its
   search field, empty state, the page subtitle and the heatmap count ("238 runs · 1 mo") now say runs too.
 - **The run list drops its commits and cost columns.** Both only ever showed dashes: commits load only when

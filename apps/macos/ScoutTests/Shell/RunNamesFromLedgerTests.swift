@@ -31,13 +31,61 @@ struct RunNamesFromLedgerTests {
         #expect(DisplayName.ledgerRun(slot: nil, mode: nil) == nil)
     }
 
+    /// A local wall-clock time, since a bare `manual` run is named by the
+    /// day and hour it started where the app runs.
+    private func local(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int = 0) -> Date {
+        Calendar(identifier: .gregorian).date(from: DateComponents(
+            timeZone: .current, year: y, month: m, day: d, hour: h, minute: min))!
+    }
+
     @Test("a hand-started run says so once, named by its runner")
     func manualRuns() {
-        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "scout") == "Briefing (manual)")
         #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "dreaming") == "Dreaming (manual)")
-        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: nil) == "Briefing (manual)")
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "research") == "Research (manual)")
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "something-new") == "Manual run")
         #expect(DisplayName.ledgerRun(slot: "dreaming-manual", mode: "dreaming-manual") == "Dreaming (manual)")
         #expect(DisplayName.ledgerRun(slot: "research-manual", mode: "research-manual") == "Research (manual)")
+    }
+
+    @Test("a bare manual run-scout.sh run is a briefing or a consolidation by its day and hour, as the session decides")
+    func bareManualByStartTime() {
+        // 17 Nov 2026 is a Tuesday, 21 Nov a Saturday.
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "scout",
+                                      startedAt: local(2026, 11, 17, 14)) == "Consolidation (manual)")
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: nil,
+                                      startedAt: local(2026, 11, 17, 8, 30)) == "Morning briefing (manual)")
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "scout",
+                                      startedAt: local(2026, 11, 21, 9)) == "Weekend briefing (manual)")
+        // Without a start time there is nothing to tell them apart by.
+        #expect(DisplayName.ledgerRun(slot: "manual", mode: "manual", runner: "scout") == "Manual run")
+        // Health names the row the same way.
+        let row = RunLedgerEntry(slot: "manual", mode: "manual", runner: "scout", trigger: "manual",
+                                 startedAt: local(2026, 11, 17, 14), finishedAt: local(2026, 11, 17, 14, 20),
+                                 outcome: "ok", log: "scout-2026-11-17_14-00.log")
+        #expect(HealthPanelModel.line(row).title == "Consolidation (manual)")
+    }
+
+    @Test("a slot or mode not shaped like an engine key is not named from")
+    func forgedKeysIgnored() {
+        #expect(DisplayName.isLedgerKey("overnight-research"))
+        #expect(DisplayName.isLedgerKey("slot_2.v1"))
+        #expect(!DisplayName.isLedgerKey("-leading-dash"))
+        #expect(!DisplayName.isLedgerKey("has space"))
+        #expect(!DisplayName.isLedgerKey("new\nline"))
+        #expect(!DisplayName.isLedgerKey("caf\u{e9}"))
+        #expect(!DisplayName.isLedgerKey(String(repeating: "a", count: 82)))
+        #expect(DisplayName.isLedgerKey(String(repeating: "a", count: 81)))
+        #expect(DisplayName.ledgerRun(slot: "Click <here>", mode: "weekly-research") == "Weekly research")
+        #expect(DisplayName.ledgerRun(slot: "Click <here>", mode: "also bad") == nil)
+    }
+
+    @Test("a skipped hand-started run's problem names it the way its title does")
+    func skipProblemName() throws {
+        let row = RunLedgerEntry(slot: "dreaming-manual", mode: "dreaming-manual", runner: "dreaming",
+                                 trigger: "manual", startedAt: t0, finishedAt: t0 + 5,
+                                 outcome: "skipped_gates", failureClass: nil, log: "dreaming-b.log")
+        let title = try #require(row.problem?.title)
+        #expect(title.hasPrefix("Dreaming (manual): "))
     }
 
     // MARK: Run.displayName
@@ -79,12 +127,29 @@ struct RunNamesFromLedgerTests {
         _ = try await svc.loadInitial()
         #expect(svc.runs.first?.displayName == "Morning briefing")
 
+        let before = try #require(svc.runs.first)
+        #expect(NotificationService.title(for: before).hasPrefix("Morning briefing "))
+
+        // Newest first: a retry's row for the same log wins, and a row with no
+        // log (a run that never opened one) names nothing.
         let row = RunLedgerEntry(slot: "overnight-research", mode: "overnight-research", runner: "scout",
                                  startedAt: t0, finishedAt: t0 + 2_220, outcome: "ok", log: logName)
-        svc.applyLedger([logName: row])
-        #expect(svc.runs.first?.displayName == "Overnight research")
+        let older = RunLedgerEntry(slot: "morning-briefing", mode: "morning-briefing", runner: "scout",
+                                   startedAt: t0 - 60, finishedAt: t0 - 30, outcome: "ok", log: logName)
+        let logless = RunLedgerEntry(slot: "evening-consolidation", mode: "evening-consolidation", runner: "scout",
+                                     startedAt: t0 - 120, finishedAt: t0 - 90, outcome: "skipped_lock")
+        let ledger = RunLedger(runs: [row, older, logless], health: nil)
+        #expect(ledger.entriesByLog.count == 1)
+        svc.applyLedger(ledger.entriesByLog)
+        let after = try #require(svc.runs.first)
+        #expect(svc.runs.count == 1)
+        #expect(after.displayName == "Overnight research")
+        #expect(NotificationService.title(for: after).hasPrefix("Overnight research "))
         // Health names the same row the same way.
         #expect(HealthPanelModel.line(row).title == "Overnight research")
+        // Search finds it by its own slot, not by the log-name guess.
+        #expect(SessionsListView.matches(after, "overnight-research"))
+        #expect(!SessionsListView.matches(after, "morning"))
     }
 
     @Test("Health and Control Center agree on hand-started runs")

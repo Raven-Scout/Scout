@@ -112,11 +112,15 @@ struct SessionsListView: View {
     static let emptyText = "No runs match the current filters."
 
     /// Search matches what the row shows ("morning briefing", "didn't
-    /// finish", "Nov 12"), the engine name (`morningBriefing`) and commit
-    /// subjects.
+    /// finish", "Nov 12"), the engine name (the ledger's slot key, such as
+    /// `overnight-research`, or the log-guessed `morningBriefing` for a run
+    /// without a ledger row) and commit subjects. A run the ledger names
+    /// doesn't also match its log-name guess, so "morning" doesn't find an
+    /// overnight run (T2).
     static func matches(_ run: Run, _ search: String) -> Bool {
+        let engineName = run.ledgerName == nil ? run.type.rawValue : (run.slotKey ?? "")
         let hay = [
-            run.displayName, run.type.rawValue, run.status.displayName,
+            run.displayName, engineName, run.status.displayName,
             run.startedAt.formatted(date: .abbreviated, time: .omitted),
         ] + ProtectionBadge.kinds(for: run).map(\.title) + run.commits.map(\.subject)
         return hay.joined(separator: " ").localizedCaseInsensitiveContains(search)

@@ -417,7 +417,7 @@ final class SessionLogService: ObservableObject {
         ledgerSlots = entries.mapValues(\.slot)
         ledgerTriggers = entries.compactMapValues(\.trigger)
         ledgerFailureClasses = entries.compactMapValues(\.failureClass)
-        ledgerNames = entries.compactMapValues { DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner) }
+        ledgerNames = entries.compactMapValues { DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner, startedAt: $0.startedAt) }
         ledgerProtection = entries.compactMapValues { e in
             guard e.sandbox != nil || e.integrity != nil else { return nil }
             return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity,
