@@ -1,9 +1,0 @@
-- **Delegate inboxes run by themselves** (#550 V4b1, spec §7.1b; `engine/scout/delegate_inbox_sync.py`, `engine/scout/scripts/schedule_tick.py`). The schedule tick starts `scoutctl inbox sync` between runs, as the owner.
-  - **What the sync does:** it pulls every inbox, commits each delegate's `taken.ledger`, and applies what was taken, one commit per change.
-  - **It never holds up a run.** The pull runs without the vault's session lock. Committing and applying hold it, and start no new work after 60 seconds; a run that fires meanwhile waits for it, never skips. The tick starts a sync at most every 15 minutes, never within 5 minutes of a slot's time.
-  - **A live run, or an Agnes-linked vault.** A live run makes the commits wait for the next tick. In a vault that syncs with Agnes, the sync pulls but commits and applies nothing yet.
-  - **Agent text never reaches a run.** The copies of what agents proposed (`.scout-inbox/agents/`) are never committed (a `.gitignore` there) and are local-only. A run can't read or write them: the read gate and the write gate deny them, and on macOS so does the run's sandbox. A run can't pull, apply, revert or sync an inbox either.
-  - **What runs do see:** `pre-session data` gains `delegate_changes`: what agents changed in today's file, by id, op, tag and commit, read from Scout's signed record. The action-items phase credits a `[x]` there to the agent, never to you.
-  - **`inbox apply` changes only today's daily file.** A proposal for another day is `stale`.
-  - **Telemetry:** each applied change leaves an event, `source: delegate:<id>`, with ids only.
-  - **Health and doctor** show an inbox that failed, wasn't pulled for a day, or holds files no pull took.
