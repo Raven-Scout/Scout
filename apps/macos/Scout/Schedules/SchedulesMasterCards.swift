@@ -34,6 +34,7 @@ struct SchedulesMasterCards: View {
             .focusable()
             .focused($cardsFocused)
             .focusEffectDisabled()
+            .dsFocusContainer(cardsFocused)
             .keyboardListNavigation(
                 ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
                 selection: $selectedSlotKey

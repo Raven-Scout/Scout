@@ -37,6 +37,7 @@ struct KBTreeView: View {
             .focusable()
             .focused($treeFocused)
             .focusEffectDisabled()
+            .dsFocusContainer(treeFocused)
             .onKeyPress(phases: [.down, .repeat]) { press in
                 guard let key = KBTreeKeyboard.Key(press.key, modifiers: press.modifiers) else { return .ignored }
                 let out = KBTreeKeyboard.handle(key, cursor: cursor ?? selectedPath, nodes: nodes, expanded: expanded)

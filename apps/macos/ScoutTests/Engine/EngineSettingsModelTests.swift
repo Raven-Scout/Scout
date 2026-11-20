@@ -37,7 +37,8 @@ struct EngineSettingsModelTests {
         let m2 = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
                                      doctor: DoctorReport(severity: .red, errors: ["launchd: com.scout.heartbeat not registered"], warnings: ["w"]),
                                      lastError: nil, bundledVersion: nil)
-        #expect(m2.healthLabel == "Needs attention")
+        #expect(m2.healthLabel == "Needs fixing")
+        #expect(m2.healthTone == .err)
         #expect(m2.messages == ["launchd: com.scout.heartbeat not registered", "w"])
     }
 
@@ -207,6 +208,7 @@ struct EngineSettingsModelTests {
         let red = RunHealth.Finding(id: "auth.expired", severity: "red", since: nil, summary: "Your Claude login expired.", fix: "f", source: "ledger")
         let m = model(runHealth(.red, findings: [note, red]))
         #expect(m.runsLabel == "Failing")
+        #expect(m.runsTone == .err)   // red, as the Health page paints it (UI audit T4)
         #expect(m.runsHelp == "Your Claude login expired.")
         #expect(!m.runsIsOK)
     }
@@ -384,8 +386,31 @@ struct EngineSettingsModelTests {
                                 doctor: DoctorReport(severity: .green, errors: [], warnings: [], runHealth: rh),
                                 lastError: nil, bundledVersion: nil).healthLabel
         }
-        #expect(label(red) == "Needs attention")
-        #expect(label(yellow) == "Healthy, with warnings")
+        #expect(label(red) == "Needs fixing")
+        #expect(label(yellow) == "Needs a look")
+    }
+
+    /// UI audit T4: "1 problem · 3 warnings" read "Healthy, with warnings" because the install's
+    /// yellow was checked before the run's red. The worse verdict wins, in its own colour.
+    @Test func aYellowInstallWithAFailingRunNeedsFixingInRed() {
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w1", "w2", "w3"], runHealth: red),
+                                    lastError: nil, bundledVersion: nil)
+        #expect(m.findingCountsLabel == "1 problem · 3 warnings")
+        #expect(m.healthLabel == "Needs fixing")
+        #expect(m.healthTone == .err)
+        #expect(!m.healthIsOK)
+        #expect(m.runsLabel == "Failing")
+        #expect(m.runsTone == .err)
+        // Warnings alone are amber; nothing at all is green.
+        let warn = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                       doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), lastError: nil, bundledVersion: nil)
+        #expect(warn.healthTone == .warn && warn.healthLabel == "Needs a look")
+        #expect(model(runHealth(.green)).healthTone == .ok)
+        #expect(model(runHealth(.green)).healthLabel == "Healthy")
     }
 
     @Test func groupedWarningsAreOneItemWithTheirFiles() {

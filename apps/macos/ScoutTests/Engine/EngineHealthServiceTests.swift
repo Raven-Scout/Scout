@@ -54,7 +54,7 @@ struct EngineHealthServiceTests {
         #expect(svc.needsAttention)
         // …and the stderr reason reaches Settings ▸ Engine, not just the service.
         let model = EngineSettingsModel(state: svc.state, doctor: svc.doctor, lastError: svc.lastError, bundledVersion: nil)
-        #expect(model.healthLabel == "Needs attention")
+        #expect(model.healthLabel == "Needs fixing")
         #expect(model.messages.first == "vault directory missing: /x")
     }
 

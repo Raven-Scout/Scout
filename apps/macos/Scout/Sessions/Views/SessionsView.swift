@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The Sessions page (spec §6): every local Claude Code session by project and
-/// state. Master (header + board or table) beside a 380 pt detail pane, as on
-/// the Schedules page. Watching runs only while this page is on screen.
+/// state. Master (header + board or table), with a 380 pt detail pane beside it
+/// once a session is picked. Watching runs only while this page is on screen.
 struct SessionsView: View {
     @EnvironmentObject var service: SessionIndexService
     @Environment(\.openSettings) private var openSettings
@@ -19,7 +19,7 @@ struct SessionsView: View {
 
     var body: some View {
         let now = Date()
-        let pane = DetailPane.layout(pageWidth: pageWidth, hasSelection: selected != nil)
+        let pane = DetailPane.layout(pageWidth: pageWidth, hasSelection: selected != nil, hidesWhenEmpty: true)
         HStack(spacing: 0) {
             master(now: now)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -35,7 +35,7 @@ struct SessionsView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        // Esc closes only the compact pane; at full width the pane stays.
+        // Esc closes the pane; with nothing selected it steps aside (T4).
         .onExitCommand { if case .shown(_, closable: true) = pane { selectedID = nil } }
         .background(DS.Paper.base)
         .onAppear {

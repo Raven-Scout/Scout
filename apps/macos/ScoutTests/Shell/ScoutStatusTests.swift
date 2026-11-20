@@ -68,6 +68,7 @@ struct ScoutStatusTests {
                        doctor: DoctorReport(severity: .red, errors: ["a", "b"], warnings: []), run: run(.success))
         #expect(s.kind == .needsAttention)
         #expect(s.detail == "2 problems with the engine")
+        #expect(s.fix == .openHealth)
     }
 
     @Test("red run health shows its first finding's summary")
@@ -78,6 +79,7 @@ struct ScoutStatusTests {
         let s = derive(.managed(install, vaultBootstrapped: true), doctor: doctor, run: run(.success))
         #expect(s.kind == .needsAttention)
         #expect(s.detail == "Morning briefing ran but did nothing")
+        #expect(s.fix == .openHealth)
     }
 
     @Test("a usage-limit pause reads as paused")
@@ -88,6 +90,7 @@ struct ScoutStatusTests {
         let s = derive(.external(install, .devCheckout), doctor: doctor)
         #expect(s.kind == .paused)
         #expect(s.detail.hasPrefix("Claude usage limit · resumes"))
+        #expect(s.fix == .openHealth)
     }
 
     @Test("warnings keep Ready but drop the green")
@@ -98,7 +101,7 @@ struct ScoutStatusTests {
         #expect(s.tone == .warn)
         #expect(s.title == "Ready · 1 warning")
         #expect(s.detail == "w")   // the reason, not a bare count
-        #expect(s.fix == .openSettings)
+        #expect(s.fix == .openHealth)
     }
 
     @Test("a run that failed today makes Ready amber and names it, after a later run of another schedule finished")
@@ -124,6 +127,16 @@ struct ScoutStatusTests {
         #expect(s.detail == "34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels")
     }
 
+    /// UI audit T4: the panel's problem button said "Open Settings" where Control Center
+    /// says "Open Health". A problem Health explains opens Health; only what Settings
+    /// alone can fix opens Settings.
+    @Test("problems open Health; repairs open Settings")
+    func fixTitles() {
+        #expect(ScoutStatus.Fix.openHealth.title == "Open Health")
+        #expect(ScoutStatus.Fix.openSettings.title == "Open Settings")
+        #expect(ScoutStatus.Fix.setUp.title == "Set up Scout…")
+    }
+
     // MARK: - Then the latest run
 
     @Test("a healthy engine lets the latest run speak")
@@ -136,6 +149,7 @@ struct ScoutStatusTests {
             let s = derive(engine, doctor: green, run: run(status))
             #expect(s.kind == .lastFailed, "\(status)")
             #expect(!s.detail.contains(status.rawValue), "raw status leaked for \(status)")
+            #expect(s.fix == .openHealth, "\(status)")
         }
     }
 
@@ -150,7 +164,7 @@ struct ScoutStatusTests {
             #expect(s.detail.contains(status.skipReason!), "\(status)")
         }
         #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).tone == .err)
-        #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).fix == .openSettings)
+        #expect(derive(engine, doctor: green, run: run(.skippedSandbox)).fix == .openHealth)
         #expect(derive(engine, doctor: green, run: run(.skippedBudget)).tone == .warn)
         #expect(derive(engine, doctor: green, run: run(.skippedBudget)).fix == nil)
     }

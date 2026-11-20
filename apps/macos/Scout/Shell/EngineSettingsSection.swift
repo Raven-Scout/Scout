@@ -55,7 +55,7 @@ struct EngineSettingsSection: View {
                 HStack(spacing: 10) {
                     Text(model.healthLabel)
                         .font(DS.font(.label, weight: .medium))
-                        .foregroundStyle(model.healthIsOK && !model.healthHasWarnings ? DS.Status.ok : DS.Status.warn)
+                        .foregroundStyle(model.healthTone.color)
                     if isChecking {
                         ProgressView().controlSize(.small)
                             .accessibilityLabel("Checking the engine")
@@ -71,7 +71,7 @@ struct EngineSettingsSection: View {
                 SettingsRow(title: "Runs", help: model.runsHelp) {
                     Text(model.runsLabel)
                         .font(DS.font(.label, weight: .medium))
-                        .foregroundStyle(model.runsIsOK ? DS.Status.ok : model.runsIsPaused ? DS.Ink.p2 : DS.Status.warn)
+                        .foregroundStyle(model.runsIsPaused ? DS.Ink.p2 : model.runsTone.color)
                 }
             }
             if !model.findingGroups.isEmpty {

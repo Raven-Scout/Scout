@@ -196,6 +196,7 @@ private struct DSChipBody: View {
     let selected: Bool
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
     @State private var hovering = false
 
     var body: some View {
@@ -222,7 +223,7 @@ private struct DSChipBody: View {
             }
             .contentShape(Capsule())
             .onHover { hovering = $0 }
-            .dsFocusRing(isFocused, cornerRadius: DS.chipHeight / 2)
+            .dsFocusRing(isFocused && !containerHasFocus, cornerRadius: DS.chipHeight / 2)
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

@@ -114,6 +114,32 @@ nonisolated struct HealthSummary: Equatable, Sendable {
 
     var severity: DoctorReport.Severity { problemCount > 0 ? .red : warningCount > 0 ? .yellow : .green }
 
+    /// The verdict a health surface words and colours itself by (UI audit T4): the worse of the
+    /// engine's own severity and the issues'. Settings and the Doctor window used to check the
+    /// install's first, so a yellow install beside a failing run read "Healthy, with warnings".
+    func overall(doctor: DoctorReport.Severity?) -> DoctorReport.Severity {
+        guard let doctor else { return severity }
+        return doctor.rank >= severity.rank ? doctor : severity
+    }
+
+    /// The words for a verdict, the Health page's: a problem needs fixing, never "healthy".
+    static func verdictLabel(_ severity: DoctorReport.Severity) -> String {
+        switch severity {
+        case .red: "Needs fixing"
+        case .yellow: "Needs a look"
+        case .green: "Healthy"
+        }
+    }
+
+    /// The colour for a verdict, the same red / amber / green every surface uses.
+    static func tone(_ severity: DoctorReport.Severity) -> ScoutStatus.Tone {
+        switch severity {
+        case .red: .err
+        case .yellow: .warn
+        case .green: .ok
+        }
+    }
+
     /// The one sentence saying why: the worst issue's title.
     var reason: String? { issues.first { $0.severity != .note }?.title }
 
@@ -157,5 +183,16 @@ nonisolated struct HealthSummary: Equatable, Sendable {
             fix = nil
         }
         return Issue(id: id, severity: .warning, source: .install, title: title, fix: fix, items: items)
+    }
+}
+
+extension DoctorReport.Severity {
+    /// green < yellow < red, so two verdicts can be compared.
+    nonisolated var rank: Int {
+        switch self {
+        case .green: 0
+        case .yellow: 1
+        case .red: 2
+        }
     }
 }

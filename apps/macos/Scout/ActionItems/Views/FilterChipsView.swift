@@ -14,7 +14,7 @@ struct ActionItemsFilter: Equatable {
 /// Right: flat chip filters for section kinds, each with a kind marker
 /// and a small count badge.
 ///
-/// The full row (status segments plus nine chips) needs about 1,000 pt, more
+/// The full row (status segments plus eight chips) needs about 1,000 pt, more
 /// than the page gets below a ~1,500 pt window (UI audit C6: at 1280 pt it
 /// ran off the left edge, at 1100 pt it clipped on both sides). So it steps
 /// down: first the chips fold into a "Sections" menu, then the status
@@ -23,6 +23,9 @@ struct ActionItemsFilter: Equatable {
 struct FilterChipsView: View {
     @Binding var filter: ActionItemsFilter
 
+    /// No "Done" chip: the status filter's Done already shows the completed
+    /// list (every finished task is gathered into the Done section), so the
+    /// same word named two different controls side by side (UI audit T4).
     static let kindOptions: [(kind: ActionSection.Kind, label: String)] = [
         (.urgent,   "Urgent"),
         (.todo,     "To Do"),
@@ -30,7 +33,6 @@ struct FilterChipsView: View {
         (.personal, "Personal"),
         (.focus,    "Focus"),
         (.meetings, "Meetings"),
-        (.done,     "Done"),
         (.digest,   "Digest"),
     ]
 

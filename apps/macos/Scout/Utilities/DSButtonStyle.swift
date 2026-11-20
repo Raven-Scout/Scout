@@ -101,8 +101,9 @@ private struct DSButtonBody: View {
     let role: DS.ButtonRole
     let size: DS.ButtonSize
     @Environment(\.isEnabled) private var isEnabled
-    /// Inside a button style this is the button's own focus.
+    /// The nearest focusable ancestor's focus: the button's own, or its list's (`dsFocusContainer`).
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
     @State private var isHovering = false
 
     var body: some View {
@@ -140,7 +141,7 @@ private struct DSButtonBody: View {
             .opacity(!chromed && configuration.isPressed ? 0.7 : 1)
             .contentShape(shape)
             .onHover { hovering in if role == .quiet { isHovering = hovering } }
-            .dsFocusRing(isFocused, cornerRadius: DS.buttonCornerRadius)
+            .dsFocusRing(isFocused && !containerHasFocus, cornerRadius: DS.buttonCornerRadius)
     }
 }
 
@@ -163,7 +164,25 @@ extension ButtonStyle where Self == DSButtonStyle {
 
 // MARK: - Focus ring
 
+extension EnvironmentValues {
+    /// A focusable container around this view (a list that takes the arrow
+    /// keys) has the keyboard focus. See `dsFocusContainer(_:)`.
+    @Entry var dsFocusContainerHasFocus: Bool = false
+}
+
 extension View {
+    /// Marks a `.focusable()` container whose buttons draw their own ring.
+    ///
+    /// `isFocused` is the nearest focusable ancestor's focus, not the
+    /// button's: without Full Keyboard Access a button can't take focus, so
+    /// while the list has it, every button inside read "focused" and drew a
+    /// ring (after Done handed the keys back to Action Items, UI audit T4).
+    /// While `hasFocus`, the controls inside draw none; a control that takes
+    /// focus itself takes it from the container, so its ring still shows.
+    func dsFocusContainer(_ hasFocus: Bool) -> some View {
+        environment(\.dsFocusContainerHasFocus, hasFocus)
+    }
+
     /// The keyboard focus ring custom-styled controls draw for themselves
     /// (they get no system focus indicator). Shared by `.plainHit` and the DS
     /// button styles so focus looks the same on every control.

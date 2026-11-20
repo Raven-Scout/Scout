@@ -146,10 +146,15 @@ struct MenuBarExtraContent: View {
     }
 
     /// Setup happens in the main window (it shows the setup flow while the
-    /// engine isn't set up); everything else is fixed from Settings ▸ Engine.
+    /// engine isn't set up); a problem the Health page explains opens Health,
+    /// as Control Center's button does (UI audit T4); the rest is fixed from
+    /// Settings ▸ Engine.
     private func perform(_ fix: ScoutStatus.Fix) {
         switch fix {
         case .setUp: openMainWindow()
+        case .openHealth:
+            state.requestedSidebar = .health
+            openMainWindow()
         case .openSettings: openScoutSettings(at: SettingsAnchor.engine)
         }
     }

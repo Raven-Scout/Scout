@@ -42,6 +42,25 @@ struct SessionsBoardSmokeTests {
         }
     }
 
+    /// UI audit T4: lanes wrap whole cards rather than scroll sideways and cut the last one off.
+    /// A wrapping board fits the page it is given, at every window width the audit used.
+    @Test("the board's lanes wrap within the page at every window width")
+    func boardWrapsWithinThePage() throws {
+        let index = try SessionsFixture.index()
+        var everything = SessionsFilter()
+        everything.showScoutRuns = true
+        everything.showRecentlyDone = true
+        let board = SessionsBoardView(index: index, filter: everything, now: now, selectedID: .constant(nil))
+        for window in LayoutSize.windowWidths {
+            let page = LayoutSize.pageWidth(window: window)
+            ViewHost.render(board, size: CGSize(width: page, height: 1200))
+            let laidOut = LayoutHarness.size(of: board, proposing: CGSize(width: page, height: 4000))
+            #expect(laidOut.width <= page + 0.5, "board is \(laidOut.width) pt on a \(page) pt page")
+        }
+        // A lane offers each card at least its minimum, so the narrowest page still fits one whole card.
+        #expect(SessionsLane.minCardWidth + 2 * 24 <= LayoutSize.pageWidth(window: MainWindowSize.minWidth) - DetailPaneLayout.regularWidth)
+    }
+
     @Test("the table renders every row")
     func tableRenders() throws {
         let index = try SessionsFixture.index()

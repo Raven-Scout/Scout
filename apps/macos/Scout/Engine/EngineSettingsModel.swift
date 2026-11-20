@@ -99,23 +99,24 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     var bundledVersionLabel: String? { bundledVersion }
     var rootPath: String? { state.install?.root.path }
 
-    var healthIsOK: Bool {
-        guard !state.gatesTabs, case .some(let d) = doctor else { return false }
-        return d.severity != .red
+    /// The worse of the install's verdict and the runs': the one the Health page shows (R1, T4).
+    /// nil while the tabs are gated or there is no report.
+    private var verdict: DoctorReport.Severity? {
+        guard !state.gatesTabs, let doctor else { return nil }
+        return summary.overall(doctor: doctor.severity)
     }
+    var healthIsOK: Bool { verdict.map { $0 != .red } ?? false }
     var healthLabel: String {
         if case .notInstalled = state { return "Not installed" }
         if case .broken = state { return "Broken" }
         if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Scout folder not set up" }
         if doctorFailed { return "Could not run doctor" }
-        guard let doctor else { return "Unknown" }
-        // The install's verdict, then the runs': "Healthy" never sits beside a run that needs fixing (R1).
-        switch (doctor.severity, summary.severity) {
-        case (.red, _), (.green, .red): return "Needs attention"
-        case (.yellow, _), (.green, .yellow): return "Healthy, with warnings"
-        case (.green, .green): return "Healthy"
-        }
+        guard let verdict else { return "Unknown" }
+        // "1 problem · 3 warnings" once read "Healthy, with warnings": a problem never reads as healthy (T4).
+        return HealthSummary.verdictLabel(verdict)
     }
+    /// The Health row's colour: red for a problem, amber for warnings, amber for anything unknown.
+    var healthTone: ScoutStatus.Tone { verdict.map(HealthSummary.tone) ?? .warn }
 
     /// The "Runs" row (spec §4.3) appears only when the engine reported run health.
     var showsRuns: Bool { doctor?.runHealth != nil }
@@ -130,6 +131,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         case .yellow: return "Warnings"
         case .red: return "Failing"
         }
+    }
+    /// "Failing" is red, as the Health page paints a run that needs fixing (T4); a pause is grey.
+    var runsTone: ScoutStatus.Tone {
+        guard let rh = doctor?.runHealth else { return .neutral }
+        return runsIsPaused ? .neutral : HealthSummary.tone(rh.severity)
     }
     var runsHelp: String {
         guard let rh = doctor?.runHealth else { return "" }

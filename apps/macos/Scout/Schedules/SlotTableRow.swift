@@ -11,16 +11,20 @@ struct SlotTableRow: View {
     let nameWidth: CGFloat
     /// Run-health warnings about this schedule, shown on a line under the row.
     var warnings: [RunOutcomeDisplay.SlotWarning] = []
+    /// The table's column widths at the current Text size (UI audit T4).
+    var columns = SchedulesColumns()
+    /// `.dots` drops the "weekdays" word beside the day dots; it stays the tooltip.
+    var mode: SchedulesColumns.Mode = .full
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: SchedulesColumns.spacing) {
                 nameCell.frame(width: nameWidth, alignment: .leading)
-                typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
-                timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
-                daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
-                onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
-                cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
+                typeCell.frame(width: columns.type, alignment: .leading)
+                timeCell.frame(width: columns.time, alignment: .leading)
+                daysCell.frame(width: columns.days(mode), alignment: .leading)
+                onMissCell.frame(width: columns.onMiss, alignment: .leading)
+                cooldownCell.frame(width: columns.cooldown, alignment: .leading)
             }
             SlotWarningLines(warnings: warnings)
         }
@@ -70,16 +74,22 @@ struct SlotTableRow: View {
     }
 
     private var daysCell: some View {
-        HStack(spacing: 10) {
+        let label = WeekdaysFormatter.label(for: slot.weekdays)
+        return HStack(spacing: SchedulesColumns.dotsGap) {
             DayCircleStrip(
                 activeDays: Set(slot.weekdays),
                 typeColor: DS.SlotType.color(for: slot.type),
                 diameter: 16
             )
-            Text(WeekdaysFormatter.label(for: slot.weekdays))
-                .font(DS.font(.caption))
-                .foregroundStyle(DS.Ink.p3)
+            if mode == .full {
+                // One line: "weekdays" wrapped to "weekda / ys" at Largest text (T4).
+                Text(label)
+                    .font(DS.font(.caption))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(1)
+            }
         }
+        .help(label)
     }
 
     private var onMissCell: some View {
@@ -91,6 +101,7 @@ struct SlotTableRow: View {
             Text("\(slot.cooldownMinutes)m")
                 .font(DS.font(.body, .mono))
                 .foregroundStyle(DS.Ink.p2)
+                .lineLimit(1)
             Image(systemName: "bolt.fill")
                 .font(DS.font(.micro))
                 .foregroundStyle(DS.Ink.p4)
