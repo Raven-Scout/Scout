@@ -67,10 +67,10 @@ struct RunNameFollowupsTests {
     func defaultAndManualKeys() {
         let midday = Run.make(type: .morningBriefing, startedAt: t0, ledgerKey: "midday-consolidation")
         #expect(midday.listType() == .consolidation)
-        let dreaming = Run.make(type: .manual, startedAt: t0, runnerScript: "run-dreaming.sh",
+        let dreaming = Run.make(type: .dreaming, startedAt: t0, runnerScript: "run-dreaming.sh",
                                 ledgerKey: "dreaming-manual")
         #expect(dreaming.listType() == .dreaming)
-        let research = Run.make(type: .manual, startedAt: t0, runnerScript: "run-research.sh",
+        let research = Run.make(type: .research, startedAt: t0, runnerScript: "run-research.sh",
                                 ledgerKey: "research-manual")
         #expect(research.listType() == .research)
         // A bare `manual` on run-scout.sh keeps the runner's own guess by the hour.
@@ -78,6 +78,26 @@ struct RunNameFollowupsTests {
         #expect(scout.listType() == .consolidation)
         // No ledger row: the log's type.
         #expect(Run.make(type: .dreaming, startedAt: t0).listType() == .dreaming)
+    }
+
+    @Test("a row that names nothing leaves the log's type and the old badge rule")
+    func unknownRowKeepsTheLogGuess() {
+        let key = DisplayName.ledgerRunKey(slot: "unknown", mode: "unknown")
+        #expect(key == nil)
+        let run = Run.make(type: .consolidation, startedAt: t0, slotKey: "unknown", trigger: "schedule",
+                           ledgerKey: key)
+        #expect(run.listType(scheduleTypes: ["unknown": .research]) == .consolidation)
+        #expect(!run.showsManualBadge)
+    }
+
+    @Test("an owner's schedule shaped like a hand-run key is filed as that schedule")
+    func handRunShapedScheduleKey() {
+        // SlotDraft allows `weekly-manual`; its slot_type is research.
+        let run = Run.make(type: .consolidation, startedAt: t0, runnerScript: "run-scout.sh",
+                           slotKey: "weekly-manual", ledgerKey: "weekly-manual", ledgerKeyIsSchedule: true)
+        #expect(run.listType(scheduleTypes: ["weekly-manual": .research]) == .research)
+        // Not in the schedule: a hand-run key, by its runner (run-scout.sh keeps the hour's guess).
+        #expect(run.listType() == .consolidation)
     }
 
     @Test("the full schedule's slot_type wins over the upcoming list's")
@@ -104,7 +124,7 @@ struct RunNameFollowupsTests {
 
     // MARK: 3. Started by you
 
-    @Test("a ledger row with trigger manual marks a log-built run as started by you")
+    @Test("a Run now of a schedule (fire-now's row) marks a log-built run as started by you")
     func ledgerTriggerShowsBadge() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("t2-followups-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -120,7 +140,8 @@ struct RunNameFollowupsTests {
         #expect(before.source == .launchdScheduled)
         #expect(!before.showsManualBadge)
 
-        // Someone pressed Run now on the evening schedule.
+        // Someone pressed Run now on the evening schedule: `scoutctl schedule fire-now` sets
+        // SCOUT_FORCE_MODE (so slot and mode are the schedule's key) and SCOUT_TRIGGER=manual.
         let row = RunLedgerEntry(slot: "evening-consolidation", mode: "evening-consolidation", runner: "scout",
                                  trigger: "manual", startedAt: t0, finishedAt: t0 + 1_020, outcome: "ok", log: logName)
         svc.applyLedger([logName: row])
@@ -129,11 +150,40 @@ struct RunNameFollowupsTests {
         #expect(after.ledgerKey == "evening-consolidation")
         #expect(after.showsManualBadge)
 
-        // The schedule itself started it: no badge.
-        let scheduled = RunLedgerEntry(slot: "evening-consolidation", mode: "evening-consolidation", runner: "scout",
-                                       trigger: "schedule", startedAt: t0, finishedAt: t0 + 1_020, outcome: "ok", log: logName)
-        svc.applyLedger([logName: scheduled])
-        #expect(try #require(svc.runs.first).showsManualBadge == false)
+        // The tick, the heartbeat or a connector event started it: no badge.
+        for trigger in ["schedule", "heartbeat", "event"] {
+            let other = RunLedgerEntry(slot: "evening-consolidation", mode: "evening-consolidation", runner: "scout",
+                                       trigger: trigger, startedAt: t0, finishedAt: t0 + 1_020, outcome: "ok", log: logName)
+            svc.applyLedger([logName: other])
+            #expect(try #require(svc.runs.first).showsManualBadge == false, "\(trigger)")
+        }
+    }
+
+    @Test("a schedule named weekly-manual reads as Upcoming names it, and its Run now shows the badge")
+    func scheduleKeysRenameHandRunShapedSchedules() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("t2-weekly-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logName = "scout-2027-01-12_19-03.log"
+        try "=== Scout run starting at Tue Jan 12 19:03:00 UTC 2027 ===\n=== Scout run finished at Tue Jan 12 19:20:00 UTC 2027 (exit 0) ===\n"
+            .write(to: dir.appendingPathComponent(logName), atomically: true, encoding: .utf8)
+        let tracker = UsageTrackerService(trackerURL: dir.appendingPathComponent("usage.jsonl"), fileEvents: NoopFS())
+        let svc = SessionLogService(logsDirectory: dir, trackerService: tracker, fileEvents: NoopFS(),
+                                    parseCacheURL: dir.appendingPathComponent("cache.json"))
+        _ = try await svc.loadInitial()
+        let row = RunLedgerEntry(slot: "weekly-manual", mode: "weekly-manual", runner: "scout",
+                                 trigger: "manual", startedAt: t0, finishedAt: t0 + 1_020, outcome: "ok", log: logName)
+        svc.applyLedger([logName: row])
+        // Not known as a schedule yet: a hand-run key, whose name says so.
+        #expect(svc.runs.first?.displayName == "Weekly (manual)")
+        #expect(svc.runs.first?.showsManualBadge == false)
+
+        svc.applyScheduleKeys(["weekly-manual", "evening-consolidation"])
+        let run = try #require(svc.runs.first)
+        #expect(run.displayName == "Weekly manual")
+        #expect(run.displayName == upcoming("weekly-manual", "research").displayName)
+        #expect(run.ledgerKeyIsSchedule)
+        #expect(run.showsManualBadge)
     }
 
     @Test("the badge and the name read the same slot-or-mode key")

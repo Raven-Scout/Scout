@@ -639,9 +639,11 @@ def open_failures_today(
 
     "Today" is the vault's day (``user.timezone``, else the host's zone), the same day the usage
     summary counts. A scheduled slot recovers when it next finishes a run: a success of another
-    slot doesn't count, which is the case the trailing streak misses. A run no schedule runs
-    (trigger ``manual``, or a slot the schedule doesn't name, such as a trigger's skill) has no
-    next scheduled run, so any later finished run clears it; one that nothing has followed is in
+    slot doesn't count, which is the case the trailing streak misses. A schedule someone started
+    with Run now (``fire-now``: trigger ``manual``, the schedule's slot) is still that schedule's
+    run, so its failure waits for that slot's next run too. A run no schedule runs (a slot the
+    schedule doesn't name: a hand-started ``manual`` or ``dreaming-manual`` run, a trigger's
+    skill) has no next scheduled run, so any later finished run clears it; one that nothing has followed is in
     the trailing streak, which runs.failing, auth.expired or runs.paused already report, so this
     never names one. Skips clear nothing.
     """
@@ -650,7 +652,11 @@ def open_failures_today(
     loaded = _load_schedule(vault)
 
     def is_scheduled(r: OutcomeRow) -> bool:
-        return r.trigger != "manual" and (loaded is None or r.slot in loaded[0])
+        # The slot decides, not the trigger: fire-now records `manual` for a real schedule.
+        # Without a readable schedule, only a hand-run trigger is known not to be one.
+        if loaded is None:
+            return r.trigger != "manual"
+        return r.slot in loaded[0]
 
     in_streak = {r.slot for r in _trailing_failures(rows)}
     open_: dict[str, list[OutcomeRow]] = {}

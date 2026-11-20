@@ -104,8 +104,15 @@ nonisolated enum DisplayName {
     /// "Manual run" without one. nil when the row names nothing, so the caller
     /// falls back to its own guess. Control Center and the Health page both
     /// name runs with this (card T2).
-    static func ledgerRun(slot: String?, mode: String?, runner: String? = nil, startedAt: Date? = nil) -> String? {
+    ///
+    /// `schedules` holds the schedule's slot keys: a key in it is named as
+    /// its schedule is everywhere else (`slotKey`), even when the owner gave
+    /// it a hand-run shape (`weekly-manual` reads "Weekly manual", as in the
+    /// Upcoming strip, not "Weekly (manual)").
+    static func ledgerRun(slot: String?, mode: String?, runner: String? = nil, startedAt: Date? = nil,
+                          schedules: Set<String> = []) -> String? {
         guard let key = ledgerRunKey(slot: slot, mode: mode) else { return nil }
+        if schedules.contains(key) { return slotKey(key) }
         if key == "manual" {
             switch runner {
             case "dreaming": return "Dreaming (manual)"
