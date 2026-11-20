@@ -2398,5 +2398,152 @@
         }
       ]
     }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/from-a-shared-note-list.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: From a list\nvisibility: normal\nsource:\n- slack\n- shared:priya@example.com:knowledge-base/topics/plan.md\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/from-a-shared-note-list.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/from-a-shared-note-upper.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Upper\nvisibility: normal\nsource: SHARED:priya@example.com:knowledge-base/topics/plan.md\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/from-a-shared-note-upper.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:sam@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/from-a-shared-note-declared.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Declared\nvisibility: normal\nsource: shared:priya@example.com:knowledge-base/topics/plan.md\nfederation_scope:\n- person:sam@example.com\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/from-a-shared-note-declared.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/from-agents/helper/bad-promotion.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntitle: Bad\npromoted_from: delegate:Bad!\nvisibility: normal\n---\n\nBody text.\n",
+    "path": "knowledge-base/from-agents/helper/bad-promotion.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/from-an-agent.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Widget note from an agent\nvisibility: normal\nsource: delegate:helper\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/from-an-agent.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
   }
 ]
