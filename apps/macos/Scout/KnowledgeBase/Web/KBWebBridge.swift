@@ -54,7 +54,25 @@ final class KBWebBridge: NSObject, ObservableObject {
         load()
     }
 
+    /// Reload the page if it hasn't said `ready` within `timeout` of being
+    /// shown: a page that never came up would otherwise leave its pane blank
+    /// for good (UI audit T1). Messages sent meanwhile stay queued for it.
+    func reloadIfNotReady(after timeout: Duration = .seconds(4)) {
+        let started = loads
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard let self, !self.isReady, self.loads == started, self.webView.window != nil else { return }
+            NSLog("[KBWeb \(self.page)] not ready after \(timeout); reloading")
+            self.load()
+        }
+    }
+
+    /// How many times the page has been loaded; a reload already under way
+    /// isn't started again.
+    private var loads = 0
+
     private func load() {
+        loads += 1
         guard let url = Bundle.main.url(forResource: page, withExtension: "html") else {
             assertionFailure("Missing bundled page \(page).html")
             return

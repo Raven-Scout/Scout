@@ -508,6 +508,10 @@ final class AppState: ObservableObject {
         // so a rendered view can't reach the filesystem or the network.
         guard configuration.startsBackgroundWork else { return }
 
+        // The knowledge map reopens on its last settled layout after a
+        // relaunch (UI audit T1). Tests keep it in memory only.
+        KBMapLayoutCache.file = KBMapLayoutCache.defaultFile(scoutDirectory: scoutDirectory)
+
         // Loads the last index from disk, then keeps it current: the sidebar
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
