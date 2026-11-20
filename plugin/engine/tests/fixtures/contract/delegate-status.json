@@ -4,6 +4,7 @@
       "agent_config_left_out": 2,
       "behind": false,
       "can_preview": true,
+      "can_review": true,
       "can_sync": true,
       "counts": {
         "agent_config": 2,
@@ -14,6 +15,15 @@
       },
       "deploy_key": true,
       "id": "grok-personal",
+      "inbox": {
+        "last_pull": "2026-11-19T11:45:00Z",
+        "linked_at": "2026-11-10T09:05:00Z",
+        "oldest_review": "2026-11-19T09:00:00Z",
+        "refusal": null,
+        "review": 2,
+        "untaken": 1,
+        "waiting": 2
+      },
       "last_attempt": "2026-11-19T11:45:00Z",
       "last_result": "ok",
       "last_sync": "2026-11-19T11:45:00Z",
@@ -32,6 +42,7 @@
       "agent_config_left_out": 0,
       "behind": true,
       "can_preview": true,
+      "can_review": true,
       "can_sync": true,
       "counts": {
         "agent_config": 0,
@@ -42,6 +53,19 @@
       },
       "deploy_key": false,
       "id": "duet",
+      "inbox": {
+        "last_pull": "2026-11-18T22:00:00Z",
+        "linked_at": "2026-11-12T15:35:00Z",
+        "oldest_review": null,
+        "refusal": {
+          "at": "2026-11-19T11:30:00Z",
+          "code": "inbox_rewritten",
+          "reason": "The inbox repository's history was rewritten since the last pull."
+        },
+        "review": 0,
+        "untaken": 0,
+        "waiting": 0
+      },
       "last_attempt": "2026-11-19T11:00:00Z",
       "last_result": "failed",
       "last_sync": "2026-11-18T22:00:00Z",
@@ -65,10 +89,12 @@
       "agent_config_left_out": null,
       "behind": null,
       "can_preview": true,
+      "can_review": false,
       "can_sync": false,
       "counts": null,
       "deploy_key": null,
       "id": "research-bot",
+      "inbox": null,
       "last_attempt": null,
       "last_result": "never",
       "last_sync": null,
@@ -82,6 +108,7 @@
     }
   ],
   "generator": "scoutctl delegate status",
+  "inbox_state": "ok",
   "owner": true,
   "schema_version": 1,
   "skipped": 0,

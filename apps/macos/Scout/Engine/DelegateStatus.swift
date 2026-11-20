@@ -40,6 +40,32 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         }
     }
 
+    /// The agent's inbox (V4b3): ids, counts and times from the signed inbox state, never the agent's text.
+    nonisolated struct Inbox: Equatable, Sendable, Decodable {
+        nonisolated struct Refusal: Equatable, Sendable, Decodable {
+            let code: String
+            /// A fixed sentence for the code.
+            let reason: String
+            let at: String?
+        }
+
+        let linkedAt: String?
+        let lastPull: String?
+        let refusal: Refusal?
+        /// Proposals that wait for the owner: observations to accept and held comments.
+        let review: Int?
+        let oldestReview: String?
+        /// Taken, not settled yet (for the owner, or a retry).
+        let waiting: Int?
+        /// Proposal files in the inbox folder no pull took: something else put them there.
+        let untaken: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case refusal, review, waiting, untaken
+            case linkedAt = "linked_at", lastPull = "last_pull", oldestReview = "oldest_review"
+        }
+    }
+
     nonisolated struct Delegate: Equatable, Sendable, Decodable, Identifiable {
         let id: String
         /// Has a mirror on this Mac (`scoutctl delegate link`).
@@ -67,13 +93,17 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         let canSync: Bool
         /// The CLI's `delegate preview <id>` may run for it now (owner at the keyboard, listed).
         let canPreview: Bool
+        /// Its inbox, or nil (none linked, an engine before V4b3, or an inbox state that can't be trusted).
+        let inbox: Inbox?
+        /// The CLI's inbox review may run for it now (owner at the keyboard, a trusted inbox); nil before V4b3.
+        let canReview: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case id, linked, listed, remote, refusal, behind, counts
             case stateUnverified = "state_unverified", linkedAt = "linked_at", lastSync = "last_sync"
             case lastAttempt = "last_attempt", lastResult = "last_result", deployKey = "deploy_key"
             case oldKeysLive = "old_keys_live", agentConfigLeftOut = "agent_config_left_out"
-            case canSync = "can_sync", canPreview = "can_preview"
+            case canSync = "can_sync", canPreview = "can_preview", inbox, canReview = "can_review"
         }
     }
 
@@ -85,9 +115,11 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
     /// Entries in the state the engine dropped because their id was malformed.
     let skipped: Int
     let delegates: [Delegate]
+    /// ok | none | unverified | unsafe | unreadable — the inbox state as a whole; nil before V4b3.
+    var inboxState: String? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case state, owner, skipped, delegates, schemaVersion = "schema_version"
+        case state, owner, skipped, delegates, schemaVersion = "schema_version", inboxState = "inbox_state"
     }
 
     /// The schema this build reads; a newer one is refused rather than half-read.
@@ -99,9 +131,9 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         return status
     }
 
-    /// A delegate id as the engine accepts one (`is_delegate_id`, matched whole: no trailing newline). The app
-    /// passes only these to scoutctl.
-    static func isDelegateID(_ id: String) -> Bool { wholeMatch(id, #"[a-z0-9][a-z0-9-]{0,39}"#) }
+    /// A delegate id as the engine accepts one (`is_delegate_id`, matched whole: no trailing newline, and not the
+    /// reserved `author`, which `--to` reads as the note's author). The app passes only these to scoutctl.
+    static func isDelegateID(_ id: String) -> Bool { id != "author" && wholeMatch(id, #"[a-z0-9][a-z0-9-]{0,39}"#) }
 
     /// A refusal code as the engine writes one, matched whole.
     static func isRefusalCode(_ code: String) -> Bool { wholeMatch(code, #"[a-z][a-z_]{0,47}"#) }

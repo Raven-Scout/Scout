@@ -77,6 +77,7 @@ final class AppState: ObservableObject {
     /// Settings ▸ Agent copies (#550): `scoutctl delegate status --json`, and the CLI's own
     /// Preview and Sync now for a delegate mirror. Nothing else about delegates runs from the app.
     let delegateStatus: DelegateStatusService
+    let inboxReview: InboxReviewService
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
@@ -397,6 +398,16 @@ final class AppState: ObservableObject {
         self.engineHealth = engineHealth
         self.runProtection = runProtection
         self.delegateStatus = delegateStatus
+        // Settings ▸ Agent copies ▸ Review (#550 V4b3): the same engine, the same way.
+        self.inboxReview = InboxReviewService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: { [weak engineHealth] in
+                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+                if case .broken = state { return nil }
+                return state.scoutctl
+            }
+        )
         self.runLedgerService = runLedger
         self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
