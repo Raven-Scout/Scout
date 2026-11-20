@@ -78,14 +78,12 @@ def _epoch(value: object) -> datetime | None:
     return datetime.fromtimestamp(value, UTC)
 
 
-def _str_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
 # The shapes the updater writes, so a hand-edited or forged row can't carry free text into health or a prompt.
 DETAIL_MAX = 300
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
 _LOG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+# `managed_by` (install.sh, claude-code, scout-app, dev, unknown) and the doctor severity are short names.
+_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,40}")
 
 
 def _token_or_none(value: object, pattern: re.Pattern[str]) -> str | None:
@@ -97,10 +95,11 @@ def _parse(obj: object) -> UpdateOutcome | None:
         return None
     at = _epoch(obj.get("at"))
     result, step = obj.get("result"), obj.get("step")
-    from_version, managed_by = obj.get("from"), obj.get("managed_by")
+    from_version = _token_or_none(obj.get("from"), _VERSION_RE)
+    managed_by = _token_or_none(obj.get("managed_by"), _NAME_RE)
     if at is None or result not in RESULTS or step not in STEPS:
         return None
-    if not isinstance(from_version, str) or not isinstance(managed_by, str):
+    if from_version is None or managed_by is None:
         return None
     sidecars = obj.get("sidecars")
     return UpdateOutcome(
@@ -110,7 +109,7 @@ def _parse(obj: object) -> UpdateOutcome | None:
         managed_by=managed_by,
         result=result,
         step=step,
-        doctor=_str_or_none(obj.get("doctor")),
+        doctor=_token_or_none(obj.get("doctor"), _NAME_RE),
         sidecars=tuple(s for s in sidecars if isinstance(s, str)) if isinstance(sidecars, list) else (),
         detail=one_line(obj.get("detail"), limit=DETAIL_MAX),
         log=_token_or_none(obj.get("log"), _LOG_RE),
