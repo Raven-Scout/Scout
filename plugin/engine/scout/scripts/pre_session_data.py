@@ -78,6 +78,17 @@ _LAST_UPDATED_RE = re.compile(
 class SessionContext:
     generated_at: str
     session_type: str
+    # These three come first so a plain Read of the file reaches them before the long kb_file_dates.
+    # Each active project's Go deeper map and its knowledge/ notes with their as_of: read the ones a
+    # front page edit touches first (scout.scripts.session_context_kb.project_knowledge).
+    # {"projects": [...], "total", "truncated"}.
+    project_knowledge: dict[str, Any] = field(default_factory=dict)
+    # Leave states, and role and manager relations for the people today's items name, plus the
+    # owner's managers (session_context_kb.people_context): the leave and leadership-ping rules.
+    people_context: dict[str, Any] = field(default_factory=dict)
+    # The research queue's open entries (id, status, priority, title) and counts by status
+    # (session_context_kb.research_queue): no need to read every entry to filter by status.
+    research_queue: dict[str, Any] = field(default_factory=dict)
     # The vault's commits since DEFAULT_GIT_LOG_LOOKBACK, newest first, labelled (see get_git_recent).
     git_recent: list[dict[str, Any]] = field(default_factory=list)
     # {path: {"last_updated": ..., "visibility": "normal" | "private"}}
@@ -447,6 +458,7 @@ def gather(
     reader = resolve_reader(None, os.environ)
     full = reader in FULL_READERS
     kb_dates: dict[str, dict[str, str]] = {}
+    labels: dict[str, str] = {}
     if reads_any(reader):
         dates = gather_kb_file_dates(
             target / "knowledge-base",
@@ -475,6 +487,7 @@ def gather(
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
+    project_rows, people, queue = get_kb_sections(target, reader, labels, graph, now_dt.date())
 
     return SessionContext(
         generated_at=generated_at,
@@ -494,7 +507,48 @@ def gather(
         linear_report_before=linear_report_before,
         past_due_tasks=past_due,
         past_due_source=past_due_source,
+        project_knowledge=project_rows,
+        people_context=people,
+        research_queue=queue,
     )
+
+
+def _owner_keys(scout_dir: Path) -> list[str]:
+    """The vault owner's configured name, display name and email: how their person note is found."""
+    try:
+        user = scout_config.load_config(scout_dir).get("user") or {}
+    except Exception:
+        return []
+    return [str(user.get(k) or "") for k in ("name", "display_name", "email")] if isinstance(user, dict) else []
+
+
+def get_kb_sections(
+    scout_dir: Path, reader: str, labels: dict[str, str], graph: Any | None, day: date
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """``(project_knowledge, people_context, research_queue)``; each empty when it can't be built.
+
+    A reader that sees nothing gets all three empty. Only a full reader's people
+    context looks at the daily file (it mixes in lines about private notes).
+    """
+    from scout.scripts import session_context_kb as kbs
+
+    if not reads_any(reader):
+        return {}, {}, {}
+    full = reader in FULL_READERS
+    try:
+        projects = kbs.project_knowledge(scout_dir, labels, full=full)
+    except Exception:
+        projects = {}
+    try:
+        items = kbs.items_text_for(scout_dir, day) if full else ""
+        people = kbs.people_context(graph, day, items_text=items, owner_keys=_owner_keys(scout_dir))
+    except Exception:
+        people = {}
+    try:
+        queue = kbs.research_queue(scout_dir, labels, full=full)
+    except Exception:
+        queue = {}
+    return projects, people, queue
 
 
 def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, Any]] | None]:
@@ -515,10 +569,12 @@ def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
 
 
 def write_context(ctx: SessionContext, output_path: Path) -> None:
-    """Atomically write the gathered context as JSON."""
+    """Atomically write the gathered context as JSON, within the size budget (``session_context_kb.fit_budget``)."""
+    from scout.scripts.session_context_kb import fit_budget
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
-        safe_write.atomic_write_text(output_path, json.dumps(asdict(ctx), indent=2, default=str))
+        safe_write.atomic_write_text(output_path, json.dumps(fit_budget(asdict(ctx)), indent=2, default=str))
 
 
 def run(session_type: str = "unknown", *, data_dir: Path | None = None) -> Path:
@@ -553,6 +609,7 @@ __all__ = [
     "gather_kb_file_dates",
     "get_daily_before",
     "get_git_recent",
+    "get_kb_sections",
     "get_linear_own_activity",
     "get_past_due_tasks",
     "get_personal_tasks",

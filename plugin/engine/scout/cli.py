@@ -661,6 +661,14 @@ def hook_kb_read_label() -> None:
     raise typer.Exit(kb_read_label_main())
 
 
+@hook_app.command("front-page-reads")
+def hook_front_page_reads() -> None:
+    """PostToolUse hook: warn a run that edits a front page without reading its project's knowledge/ notes."""
+    from scout.hooks.front_page_reads import main as front_page_reads_main
+
+    raise typer.Exit(front_page_reads_main())
+
+
 @hook_app.command("shared-read-record")
 def hook_shared_read_record() -> None:
     """PostToolUse hook: record what an Agnes shared-notes tool showed, so check-outbound recognises it."""
