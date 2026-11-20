@@ -380,6 +380,58 @@ def test_promote_to_its_author_only(mirrored: Path) -> None:
     assert e.value.code == "already_promoted"
 
 
+def test_the_previews_name_who_would_see_it_and_write_nothing(mirrored: Path) -> None:
+    v = mirrored
+    ulid, rel = _accepted(v)
+    before = (v / rel).read_bytes()
+    everyone = dr.preview_promote(v, ulid)
+    assert everyone.audience is not None and D in everyone.audience
+    assert len(everyone.audience) > 1  # the vault lists more than its author
+    only = dr.preview_promote(v, ulid, to=["author"])
+    assert only.audience == [D] and only.sha256 == everyone.sha256
+    with pytest.raises(RepoSyncError) as e:
+        dr.preview_promote(v, ulid, to=["nobody-here"])
+    assert e.value.code == "unknown_delegate"
+    assert (v / rel).read_bytes() == before and git(v, "status", "--porcelain", "--", "knowledge-base").strip() == ""
+    assert [(a.ulid, a.promoted) for a in dr.accepted(v)] == [(ulid, False)]
+    dr.promote(v, ulid, confirm=ulid, previewed=only.sha256, to=only.audience)
+    assert [(a.promoted, a.promoted_to) for a in dr.accepted(v)] == [(True, [D])]
+    back = dr.preview_unpromote(v, ulid)
+    assert back.audience == [D] and back.status == "promoted" and "The supplier said" in back.text
+    with pytest.raises(RepoSyncError) as e:
+        dr.unpromote(v, ulid, previewed="0" * 64)
+    assert e.value.code == "note_changed"
+    assert dr.unpromote(v, ulid, previewed=back.sha256).outcome == "unpromoted"
+    with pytest.raises(RepoSyncError) as e:
+        dr.preview_unpromote(v, ulid)
+    assert e.value.code == "not_promoted"
+    da.revert(v, ulid)
+    assert dr.accepted(v) == []  # a reverted note is no longer there to promote
+
+
+def test_an_unpromote_preview_refuses_a_note_changed_since(mirrored: Path) -> None:
+    v = mirrored
+    ulid, rel = _accepted(v)
+    _promote(v, ulid, confirm=ulid)
+    (v / rel).write_text((v / rel).read_text(encoding="utf-8") + "\nAn edit.\n", encoding="utf-8")
+    git(v, "commit", "-qam", "owner edit")
+    with pytest.raises(RepoSyncError) as e:
+        dr.preview_unpromote(v, ulid)
+    assert e.value.code == "note_changed"
+
+
+def test_the_previews_and_the_list_are_the_owners_only(mirrored: Path) -> None:
+    ulid, _rel = _accepted(mirrored)
+    for call in (
+        lambda env: dr.preview_promote(mirrored, ulid, env=env),
+        lambda env: dr.preview_unpromote(mirrored, ulid, env=env),
+        lambda env: dr.accepted(mirrored, env=env),
+    ):
+        with pytest.raises(RepoSyncError) as e:
+            call({"SCOUT_MODE": "briefing"})
+        assert e.value.code == "headless_refused"
+
+
 def test_promote_refuses_an_unknown_delegate_and_an_edited_note(mirrored: Path) -> None:
     v = mirrored
     ulid, rel = _accepted(v)

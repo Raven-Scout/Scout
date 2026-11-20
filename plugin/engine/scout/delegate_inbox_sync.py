@@ -363,6 +363,7 @@ def summary(vault: Path, *, now: dt.datetime | None = None) -> dict[str, dict[st
             "linked_at": link.linked_at,
             "last_pull": link.last_pull,
             "last_error": (link.last_error or {}).get("code"),
+            "last_error_at": (link.last_error or {}).get("at"),
             "outcomes": dict(sorted(outcomes.items())),
             "waiting": len(waiting),
             "oldest_waiting": oldest,

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from scout import delegate_inbox as di
 from scout import delegate_mirror as dm
 from scout import delegate_status as ds
 from scout.cli import app
@@ -190,3 +191,61 @@ def test_the_text_form_shows_the_remote_as_the_json_does_and_only_to_the_owner(
     r = runner.invoke(app, ["delegate", "status"])
     assert "example-user" not in r.stdout and "remote hidden" in r.stdout
     assert ds.remote_text("https://user:tok@github.com/x/y.git", _owner()).startswith("remote not shown")
+
+
+# ----- the inbox (V4b3) --------------------------------------------------------------------------------
+
+
+def _inbox(vault: Path, **kw: object) -> None:
+    link = di.InboxLink(id="grok-personal", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2", **kw)  # type: ignore[arg-type]  # fmt: skip
+    di.save_state(vault, di.InboxState(inboxes={"grok-personal": link}))
+
+
+def test_no_inbox_state_shows_no_inbox(vault: Path) -> None:
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "none"
+    assert all(d["inbox"] is None and d["can_review"] is False for d in doc["delegates"])
+
+
+def test_an_inbox_shows_its_counts_and_a_refusal_in_fixed_words(vault: Path) -> None:
+    _inbox(vault, last_error={"code": "inbox_rewritten", "at": "2026-11-19T11:00:00Z"})
+    doc = ds.report(vault, env=_owner())
+    grok = doc["delegates"][0]
+    assert doc["inbox_state"] == "ok" and grok["can_review"] is True
+    assert grok["inbox"]["review"] == 0 and grok["inbox"]["refusal"]["reason"] == ds.INBOX_REASONS["inbox_rewritten"]
+    assert doc["delegates"][1]["inbox"] is None  # duet has none
+
+
+def test_an_inbox_refusal_code_is_shape_checked(vault: Path) -> None:
+    _inbox(vault, last_error={"code": "Sam's notes/[[sam]]", "at": "yesterday"})
+    grok = ds.report(vault, env=_owner())["delegates"][0]
+    assert grok["inbox"]["refusal"] == {"code": "unknown", "reason": ds.GENERIC_INBOX_REASON, "at": None}
+    _inbox(vault, last_error={"code": "remote_public", "at": "2026-11-19T11:00:00Z"})
+    grok = ds.report(vault, env=_owner())["delegates"][0]
+    assert grok["inbox"]["refusal"]["reason"] == ds.REASONS["remote_public"]  # a code shared with the mirrors
+
+
+def test_an_inbox_state_that_doesnt_verify_shows_no_inbox(vault: Path) -> None:
+    _inbox(vault)
+    path = di.state_path(vault)
+    path.write_text(path.read_text(encoding="utf-8").replace("example-user", "other-user"), encoding="utf-8")
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "unverified"
+    assert all(d["inbox"] is None and not d["can_review"] for d in doc["delegates"])
+    path.write_text("{not json", encoding="utf-8")
+    assert ds.report(vault, env=_owner())["inbox_state"] == "unreadable"
+
+
+def test_an_inbox_for_a_delegate_no_longer_listed_still_shows(vault: Path) -> None:
+    link = di.InboxLink(id="old-bot", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2")  # fmt: skip
+    di.save_state(vault, di.InboxState(inboxes={"old-bot": link}))
+    old = next(d for d in ds.report(vault, env=_owner())["delegates"] if d["id"] == "old-bot")
+    assert old["listed"] is False and old["linked"] is False and old["inbox"] is not None and old["can_review"]
+
+
+def test_a_scheduled_run_may_not_review(vault: Path) -> None:
+    _inbox(vault)
+    grok = ds.report(vault, env={**_owner(), "SCOUT_MODE": "briefing"})["delegates"][0]
+    assert grok["inbox"] is not None and grok["can_review"] is False
