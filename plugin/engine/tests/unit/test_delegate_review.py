@@ -253,6 +253,7 @@ def test_revert_leaves_an_edited_note_alone(mirrored: Path) -> None:
     with pytest.raises(RepoSyncError) as e:
         da.revert(v, ulid)
     assert e.value.code == "revert_conflict" and (v / rel).exists()
+    assert dr.EDITED in e.value.message  # the owner learns the edit rules promote out too
 
 
 def test_a_failed_commit_puts_the_note_back(mirrored: Path) -> None:
@@ -393,7 +394,12 @@ def test_promote_refuses_an_unknown_delegate_and_an_edited_note(mirrored: Path) 
         with pytest.raises(RepoSyncError) as e:
             call()
         assert e.value.code == "note_changed"  # promote publishes only the bytes the owner accepted
+        accepted_at = di.load_state(v).applied[D][ulid]["commit"]
+        assert f"git restore --source {accepted_at} -- {rel}" in e.value.message  # not revert, which refuses it too
     assert _label(v, rel).visibility == "private"
+    git(v, "restore", "--source", accepted_at, "--", rel)  # the way back the refusal names
+    git(v, "commit", "-qam", "put the accepted text back")
+    assert dr.preview_promote(v, ulid).sha256 == preview.sha256
 
 
 def test_promote_publishes_only_what_the_preview_showed(mirrored: Path) -> None:
@@ -571,12 +577,14 @@ def test_the_cli_lists_accepts_and_refuses_without_confirmation(
     listed = runner.invoke(app, ["inbox", "review"])
     assert listed.exit_code == 0 and f"FROM AGENT delegate-{D}" in listed.output
     assert "Look\\u{00A0}here" in listed.output
+    assert dr.EDITED in listed.output  # said up front for an observation
     as_json = json.loads(runner.invoke(app, ["inbox", "review", "--json"]).output)
     assert [i["ulid"] for i in as_json] == [ulid]
     refused = runner.invoke(app, ["inbox", "review", "accept", ulid])  # no terminal, no --confirm
     assert refused.exit_code == 2 and "type its ULID again" in refused.output
     done = runner.invoke(app, ["inbox", "review", "accept", ulid, "--confirm", ulid, "--json"])
     assert done.exit_code == 0 and json.loads(done.output)["outcome"] == "accepted"
+    assert dr.EDITED in json.loads(done.output)["notes"]  # said when it is accepted, before any edit
     promoted = runner.invoke(app, ["inbox", "review", "promote", ulid, "--to", "author", "--confirm", ulid])
     assert promoted.exit_code == 0 and f"Visible to {D}" in promoted.output
     assert (

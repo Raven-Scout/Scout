@@ -381,7 +381,8 @@ def _accept_observation(
         note=rel,
         notes=[
             "It stays private: no delegate sees it, its author included. Runs read it from now on. To let agents "
-            f"read it, run: scoutctl inbox review promote {proposal.id}"
+            f"read it, run: scoutctl inbox review promote {proposal.id}",
+            EDITED,
         ],
     )
 
@@ -492,14 +493,27 @@ def _accepted_note(vault: Path, state: di.InboxState, ulid: str) -> tuple[str, d
     return delegate, entry, rel, (vault / rel).read_bytes()
 
 
+EDITED = (
+    "An accepted note you edit by hand can't be promoted or reverted any more: promote publishes only the text you "
+    "accepted."
+)
+
+
+def _accepted_commit(entry: Mapping[str, Any]) -> str:
+    """The commit that last wrote the note's accepted bytes: unpromote's, or else accept's."""
+    unpromoted = entry.get("unpromoted")
+    return str((unpromoted or {}).get("commit") or entry.get("commit") or "HEAD")
+
+
 def _as_accepted(entry: Mapping[str, Any], rel: str, data: bytes) -> None:
     """Refuse a note that isn't byte for byte what the owner accepted (or what unpromote put back): promote
     publishes exactly the reviewed text, never something added since (Raven-Scout/Scout#738 review, H1)."""
     if not hmac.compare_digest(_sha(data), str(entry.get("sha256"))):
         raise RepoSyncError(
             "note_changed",
-            f"refused: {rel} changed since you accepted it, and promote only publishes what you accepted. Revert "
-            "it (scoutctl inbox revert) and have the agent propose it again, or keep it private",
+            f"refused: {rel} changed since you accepted it, and promote only publishes what you accepted. To "
+            f"promote it, put the accepted text back (git restore --source {_accepted_commit(entry)} -- {rel}, then "
+            "commit), or keep it private",
         )
 
 
@@ -669,7 +683,10 @@ def revert_observation(
     if not da._clean(vault, rel):
         raise RepoSyncError("revert_dirty", f"refused: {rel} has edits not committed yet; commit or discard them")
     if not hmac.compare_digest(_sha((vault / rel).read_bytes()), str(entry.get("sha256"))):
-        raise RepoSyncError("revert_conflict", f"refused: {rel} changed since it was accepted; remove it by hand")
+        raise RepoSyncError(
+            "revert_conflict",
+            f"refused: {rel} changed since it was accepted, so revert leaves it alone; remove it by hand. {EDITED}",
+        )
     saved = da._snapshot(vault, [rel])
     (vault / rel).unlink()
     sha = da._commit_change(vault, f"inbox: revert delegate-{delegate}'s observation ({ulid})", saved, commit)

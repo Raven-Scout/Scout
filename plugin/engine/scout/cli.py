@@ -6243,6 +6243,8 @@ def _register_inbox() -> None:
             _show_item(item)
             typer.echo("")
         typer.echo("Accept: scoutctl inbox review accept <ULID>. Reject: scoutctl inbox review reject <ULID>.")
+        if any(i.kind == "observation" for i in items):
+            typer.echo(delegate_review.EDITED)
 
     @review_app.command("accept")
     def cli_inbox_review_accept(
