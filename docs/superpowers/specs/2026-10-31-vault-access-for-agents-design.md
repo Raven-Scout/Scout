@@ -1294,6 +1294,68 @@ line limit.
   caught. An accepted agent's note is private, so naming or linking it is already caught, but its text
   isn't. Not needed for V4b2.
 
+#### V4b3 plan: the review in the app (2026-11-20, for the coordinator's review)
+
+Two PRs. The first is small and engine-only; the second is one cross-cutting commit, because it changes a contract the app
+reads (the root `CLAUDE.md`'s rule).
+
+**PR 1: the nits from #738's verification** (engine only).
+
+- `inbox review` lists, and `accept`'s output says, that an accepted note must not be edited by hand if you
+  mean to promote it: promote publishes only the accepted bytes.
+- `revert`'s refusal for an edited note points at the same rule.
+- No contract changes.
+
+**PR 2: V4b3** (engine, fixtures and app in one commit).
+
+- **`delegate status --json` gains `inbox` per delegate.** It is ids, counts and times only, never agent text, read from the
+  signed inbox state through `delegate_inbox_sync.summary`:
+  - `linked`, `last_pull`, `refusal` (a code and a fixed sentence, as for mirrors), `review` (items waiting for the owner),
+    `oldest_review`, `waiting` (taken, not settled) and `untaken`;
+  - `null` when the delegate has no inbox. When the state doesn't verify, `state_unverified` is set and nothing in it is
+    trusted.
+
+  The field is additive and optional, so `schema_version` stays 1: an older app build ignores it and a newer one decodes it as
+  optional. The contract fixture `delegate-status.json` is regenerated with `SCOUT_REGEN_CONTRACT=1` from its builder, which
+  gains an inbox with two items waiting, one with a failed pull, and a delegate with none. The fixture's app byte copy and the
+  pins in `DelegateStatusTests.swift` change in the same commit.
+- **`inbox review --json` becomes a contract too.**
+  - The canonical copy is `tests/fixtures/contract/inbox-review.json`, generated from a builder vault: an observation with a
+    hidden character and a look-alike word, a held comment, and a limited op. All text is generic (stand-in names only).
+  - The app keeps a byte copy, and `contract.yml` gains the byte-compare step, written like the `delegate-status.json` one.
+  - Every item already carries `shown` text, look-alikes and the delegate id.
+- **The app.** Settings ▸ Agent copies gets, per delegate, an inbox line ("2 proposals wait for your review", a failed pull's
+  fixed sentence, or nothing) and a **Review** button. The button opens a sheet listing the items:
+  - **What each item shows:**
+    - a header, `FROM AGENT delegate-<id>`, with the kind, op, `[#TAG]` and date, and the proposal time;
+    - the engine's `shown` text in a monospaced `Text(verbatim:)`, never Markdown, never link-detected, never selectable into
+      a send;
+    - the look-alike words named in a warning colour.
+  - **Accept and Reject per item.**
+    - Accept opens a confirmation that repeats the delegate id and the full text, with a button labelled `Accept from
+      delegate-<id>`. It then runs `scoutctl inbox review accept <ULID> --confirm <ULID> --json`.
+    - Reject runs `scoutctl inbox review reject <ULID> --json`.
+    - The sheet then refreshes both the list and the status.
+  - **One allow-list.** A new `InboxReviewService` runs every `scoutctl inbox` command in the app through one `Command` enum
+    (`review`, `accept`, `reject`). A test fails on the quoted word `inbox` anywhere else in the app, as `DelegateStatusTests`
+    does for `delegate`. The app never runs `pull`, `apply`, `revert`, `sync`, `promote` or `unpromote`.
+  - **After accepting an observation,** the sheet says it stays private and names the Terminal command to promote it.
+- **Tests.**
+  - Engine: the builders and both contract tests, the `inbox` field's shape checks (a bad state, no inbox, a refused pull)
+    and the counts.
+  - App: decoding both fixtures, the model's plain-language lines, the confirmation's wording, and the allow-list scan.
+  - The app's affected suites are derived from the touched symbols, with the source-scan guard suites added.
+
+**Open for the coordinator (each with a recommendation).**
+
+1. **Confirming in the app.** Recommended: the confirmation shows the delegate id and the full text, its button names the
+   delegate, and the app passes `--confirm <ULID>`. The `--confirm` rule is there so that no script accepts by accident; a
+   person pressing a button that names the agent, under its full text, is the deliberate act it stands for. The alternative
+   is to make the owner type the ULID's last four characters.
+2. **Promote in the app: not in V4b3** (recommended). It stays the deliberate Terminal step, with its byte-bound preview.
+   An app button needs a `--preview --json` that returns the previewed hash and a `--previewed <sha>` the app passes back, and
+   that can come later if wanted.
+
 ### 7.2 Why not let delegates write `main`
 
 - **The lease.** The Repository Writer Lease exists on Agnes only. GitHub has
