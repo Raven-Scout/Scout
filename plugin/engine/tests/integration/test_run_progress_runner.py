@@ -56,7 +56,9 @@ case "$1 $2" in
             esac
         done
         exec "$bin" --permission-mode auto "${{args[@]}}" ;;
-    "progress watch") exec "{sys.executable}" -m scout "$@" ;;
+    "progress watch")
+        [ -z "${{FAKE_WATCH_LOCKSTEP:-}}" ] || exec "{sys.executable}" "${{0%/*}}/lockstep-watch" "$@"
+        exec "{sys.executable}" -m scout "$@" ;;
 esac
 case "$1 $2 $3" in
     "repo lease acquire") exit 0 ;;
@@ -67,14 +69,68 @@ esac
 exit 0
 """
 
-# FAKE_CLAUDE: hung (sleeps, does nothing) | working (starts a tool every half second).
+# FAKE_CLAUDE: hung (sleeps, does nothing) | working (starts a tool every half second) | stepping (moves for
+# LOCKSTEP_WATCH: each move starts a new child before it ends the last, so one is always alive, then counts the
+# move in claude-moves).
 FAKE_CLAUDE = """#!/bin/bash
 echo "$$" >> "{vault}/claude-pids"
 case "${{FAKE_CLAUDE:-hung}}" in
     working) end=$(( $(date +%s) + ${{FAKE_CLAUDE_HOLD_S:-0}} ))
              while [ "$(date +%s)" -lt "$end" ]; do /bin/sleep 0.5; done ;;
+    stepping) end=$(( $(date +%s) + ${{FAKE_CLAUDE_HOLD_S:-0}} )); moves=0; prev=""
+              while [ "$(date +%s)" -lt "$end" ]; do
+                  /bin/sleep 300 & cur=$!
+                  if [ -n "$prev" ]; then kill "$prev" 2>/dev/null; wait "$prev" 2>/dev/null; fi
+                  prev=$cur; moves=$((moves + 1))
+                  echo "$moves" > "{vault}/claude-moves.tmp" && mv -f "{vault}/claude-moves.tmp" "{vault}/claude-moves"
+                  /bin/sleep 0.2
+              done
+              [ -z "$prev" ] || kill "$prev" 2>/dev/null ;;
     *) exec /bin/sleep "${{FAKE_CLAUDE_HOLD_S:-0}}" ;;
 esac
+"""
+
+# The real `scoutctl progress watch` (the CLI, the real ps, the real clocks) with one change: each sample waits,
+# after its sleep, until the stepping claude has moved twice since the last sample. The move that ends the wait
+# started its child after that sample, and a child that new is alive at this one, so every sample sees a new
+# process list whatever the host's load. Without it a loaded runner could starve the fake for a few seconds while
+# the watcher still sampled, and the watcher rightly reported a stall of 3 s against a 3 s ceiling.
+LOCKSTEP_WATCH = """
+import sys
+import time
+from pathlib import Path
+
+from scout import cli, run_progress
+
+args = sys.argv[1:]
+opts = dict(zip(args[2::2], args[3::2], strict=False))  # progress watch --vault V --runner-pid P --log L
+moves_file = Path(opts["--vault"]) / "claude-moves"
+runner = int(opts["--runner-pid"])
+real_watch = run_progress.watch
+
+
+def moves() -> int:
+    try:
+        return int(moves_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+
+
+def gated_sleep(secs: float) -> None:
+    seen = moves()
+    time.sleep(secs)
+    deadline = time.monotonic() + 60  # a fake that stopped moving fails the test on its stall, never hangs it
+    while moves() < seen + 2 and run_progress._pid_alive(runner) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def watch(*a, **kw):
+    return real_watch(*a, **kw, sleep=gated_sleep)
+
+
+run_progress.watch = watch
+sys.argv = ["scoutctl", *args]
+cli.main()
 """
 
 
@@ -83,6 +139,7 @@ def vault(tmp_path: Path) -> Path:
     base_vault = make_vault(tmp_path)
     _script(base_vault / "bin" / "scoutctl", STUB)
     _script(base_vault / "bin" / "claude", FAKE_CLAUDE.format(vault=base_vault))
+    _script(base_vault / "bin" / "lockstep-watch", LOCKSTEP_WATCH)
     state = base_vault / ".scout-state"
     state.mkdir(exist_ok=True)
     (state / "repo-sync.json").write_text("{}\n", encoding="utf-8")  # linked: the keepalive runs
@@ -138,13 +195,23 @@ def test_a_hung_claude_whose_log_keeps_moving_is_reaped(vault: Path, holders: li
 
 
 def test_a_slow_but_alive_claude_is_not_reaped(vault: Path, holders: list[int]) -> None:
-    holder = _holder(vault, FAKE_CLAUDE="working", FAKE_CLAUDE_HOLD_S="60")
+    """A claude whose process list changes between every two samples is never stalled, and a waiter takes the
+    watcher's word for it although the lock is older than its ceiling and the holder's own CPU barely moves.
+
+    Nothing here depends on how fast the runner is: the watcher samples in lock-step with the fake
+    (LOCKSTEP_WATCH), so its stall is exactly 0, not "small", on a loaded runner too."""
+    holder = _holder(vault, FAKE_CLAUDE="stepping", FAKE_CLAUDE_HOLD_S="120", FAKE_WATCH_LOCKSTEP="1")
     holders.append(holder)
     _run_log(vault, holder)
-    _wait_for(lambda: (vault / "claude-pids").exists(), "the holder's claude")
-    time.sleep(4)  # longer than the ceiling below
+    _wait_for(lambda: (vault / "claude-moves").exists(), "the holder's claude to move")
+    first = _beat(vault)
+    assert first is not None
+    # The watcher has judged the claude's moves as progress (the mark moved on), and the lock's wall-clock age is
+    # past the waiter's ceiling, so a waiter that judged by age would reap.
+    _wait_for(lambda: (_beat(vault) or first).progress_at > first.progress_at, "the watcher to see progress", 30)
+    _wait_for(lambda: time.time() - _lock(vault).stat().st_mtime > 4, "the lock to be older than the ceiling")
     beat = _beat(vault)
-    assert beat is not None and beat.stalled_s <= 2, beat
+    assert beat is not None and beat.stalled_s == 0, beat
 
     result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="3", SCOUT_LOCK_WAIT_SECS="6")
 
@@ -152,6 +219,9 @@ def test_a_slow_but_alive_claude_is_not_reaped(vault: Path, holders: list[int]) 
     assert _group_alive(holder)
     assert "Reaped" not in _failures(vault)
     assert _lock(vault).read_text(encoding="utf-8").strip() == str(holder)
+    assert not (vault / ".scout-logs" / ".scout-session.lock.progress").exists(), "the waiter read the watcher's line"
+    beat = _beat(vault)
+    assert beat is not None and beat.stalled_s == 0, beat
     assert health.progress_findings(vault, now=datetime.now(UTC), env={"SCOUT_LOCK_MAX_AGE_SECS": "3"}) == []
 
 
