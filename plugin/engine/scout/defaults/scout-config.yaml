@@ -114,6 +114,26 @@ agent_sessions:
   desktop_support_dir: null
   claude_home: null
 
+# The daily action-items file's shape. MUST equal ActionItemsSettings()'s
+# defaults in scout/action_items/budget.py (tests/unit/test_action_items_fit.py).
+# `fit` (scoutctl action-items fit, run by materialize once a day) moves
+# Parked, Watching and 🟡 tasks not due within `backlog_due_days` to
+# action-items/backlog.md, spills 🟡 past `budget.target_open`, moves extra
+# prose sub-bullets to context notes and deletes completed ✅ entries older
+# than `recently_completed_days` (git keeps them). `report` only writes .scout-logs/action-items-fit.json; `apply`
+# writes. `check-size` and the doctor warn past the target and the hard limit;
+# neither ever fails a run.
+action_items:
+  fit: report
+  backlog_due_days: 14
+  recently_completed_days: 3
+  budget:
+    target_bytes: 51200
+    target_open: 80
+    hard_bytes: 61440
+    hard_open: 100
+    prose_sub_bullets: 1
+
 # KB lint — `scoutctl kb lint`, run by the vault's git pre-commit hook.
 # Budgets: the first matching glob wins; `bytes: null` = no size budget.
 # Per-vault extra budgets go in a top-level `kb_budgets: {glob: bytes}` map,
@@ -174,6 +194,8 @@ kb_lint:
     - "action-items/topics.md"
     - "action-items/topic-names.md"
     - "action-items/dismissed.md"
+    # The backlog is a task list: a shrink pass would have to drop tasks.
+    - "action-items/backlog.md"
   log_globs:
     - "knowledge-base/session-log.md"
     - "knowledge-base/session-log/**"
@@ -196,6 +218,10 @@ kb_lint:
     - {glob: "action-items/topics.md", bytes: null}
     - {glob: "action-items/topic-names.md", bytes: null}
     - {glob: "action-items/dismissed.md", bytes: null}
+    # The backlog holds every open task that isn't today's, so it grows with the
+    # list; a budget would push a run to drop tasks to commit. `fit` and the
+    # stale archive keep it in check instead.
+    - {glob: "action-items/backlog.md", bytes: null}
     - {glob: "action-items/**", bytes: 15360}
     # The legacy session-log index has no budget: an un-migrated vault's
     # multi-MB log would otherwise block every run. Rows go to the monthly

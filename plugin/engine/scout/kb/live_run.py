@@ -303,12 +303,25 @@ def commit_source_now(vault: Path) -> CommitSource | None:
     try:
         table = process_table()
     except (OSError, subprocess.SubprocessError, ValueError):
-        held = lock_holder(vault)
-        marker_pid, marker_mode = _marker(vault)
-        if held is None or marker_pid != held or not _alive(held):
+        held = run_without_ps(vault)
+        if held is None:
             return None
-        return CommitSource(True, marker_mode or UNKNOWN_MODE, "no-ps")
+        return CommitSource(True, held[1] or UNKNOWN_MODE, "no-ps")
     return commit_source(vault, table, start=os.getpid())
+
+
+def run_without_ps(vault: Path) -> tuple[int, str | None] | None:
+    """The live run, judged without ``ps`` (a sandboxed run can't start the setuid ``/bin/ps``).
+
+    ``(holder PID, mode)`` when the lock names a holder, the run marker names
+    the same PID, and that PID is alive; None otherwise. The one rule for every
+    caller that must decide "is a run live" with no process table.
+    """
+    held = lock_holder(vault)
+    marker_pid, marker_mode = _marker(vault)
+    if held is None or marker_pid != held or not _alive(held):
+        return None
+    return held, marker_mode
 
 
 def _alive(pid: int) -> bool:

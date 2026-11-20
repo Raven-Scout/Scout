@@ -477,7 +477,10 @@ def cli_archive_stale(
     verbatim to `action-items/archive/stale-items-YYYY-MM.md` — nothing is
     deleted.
     """
+    from contextlib import nullcontext
+
     from scout import paths
+    from scout.action_items.fit import apply_lock
     from scout.action_items.stale import STALE_AFTER_DAYS, archive_stale
     from scout.config import today
 
@@ -489,7 +492,9 @@ def cli_archive_stale(
             day = _dt.date.fromisoformat(date)
         except ValueError as e:
             raise ActionItemError(f"--date: invalid date {date!r}") from e
-    archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
+    # It rewrites the daily file and the backlog: like fit, never race a live run (the run's own call goes ahead).
+    with nullcontext() if dry_run else apply_lock(vault):
+        archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
     if not archived:
         sys.stdout.write("archive-stale: nothing untouched long enough to archive\n")
         return
@@ -498,6 +503,135 @@ def cli_archive_stale(
     sys.stdout.write(f"archive-stale: {verb} {len(archived)} {noun}:\n")
     for item in archived:
         sys.stdout.write(f"  [#{item.tag}] unchanged since {item.last_changed.isoformat()}\n")
+
+
+@app.command("fit")
+def cli_fit(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to fit, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    apply: bool | None = typer.Option(
+        None,
+        "--apply/--dry-run",
+        help="Write the changes, or only report them (default: action_items.fit in scout-config.yaml).",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Keep today's daily file to its budget: backlog, open-task cap, context notes, Recently Completed.
+
+    Moves 🅿️ Parked, 🟢 Watching and 🟡 tasks not due within 14 days to
+    `action-items/backlog.md` (and backlog 🟡 tasks that came due back), spills
+    the bottom of 🟡 past the open-task cap, moves extra prose sub-bullets to
+    each task's context note and deletes completed Recently Completed entries
+    past 3 days (git keeps them). No open task is deleted. `materialize` runs it once a day; with
+    `action_items.fit: report` (the default) it only reports, to
+    `.scout-logs/action-items-fit.json`.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings
+    from scout.action_items.fit import apply_lock, fit
+    from scout.config import today
+
+    vault = data_dir or paths.data_dir()
+    if date is None:
+        day = today(vault)
+    else:
+        try:
+            day = _dt.date.fromisoformat(date)
+        except ValueError as e:
+            raise ActionItemError(f"--date: invalid date {date!r}") from e
+    settings = load_settings(vault)
+    writing = settings.fit == "apply" if apply is None else apply
+    if writing:
+        # Like retitle: never race a live run's edits (a fit the run starts itself goes ahead).
+        with apply_lock(vault):
+            result = fit(data_dir=vault, date=day, apply=True, settings=settings)
+    else:
+        result = fit(data_dir=vault, date=day, apply=False, settings=settings)
+    if result is None:
+        raise ActionItemError(f"no daily file for {day.isoformat()}")
+    applied = result.applied
+    if json_out:
+        sys.stdout.write(_json.dumps({"applied": applied, "mode": settings.fit, **result.to_json()}) + "\n")
+        return
+    if not result.changed:
+        sys.stdout.write("fit: nothing to move — the daily file already fits\n")
+    else:
+        verb = "fitted" if applied else "would fit (dry run; `--apply` or action_items.fit: apply writes)"
+        sys.stdout.write(f"fit: {verb}: {result.summary()}\n")
+        for move in result.moves:
+            sys.stdout.write(f"  [#{move.tag}] {move.section} → {move.to} ({move.reason})\n")
+    if result.conflicts:
+        sys.stdout.write(
+            "fit: open in both files with different text, left alone (merge by hand): "
+            + ", ".join(f"[#{t}]" for t in result.conflicts)
+            + "\n"
+        )
+    if applied:
+        sys.stdout.write("fit: re-read the daily file and backlog.md before editing either\n")
+
+
+@app.command("check-size")
+def cli_check_size(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Check today's daily file against its budget (`action_items.budget` in scout-config.yaml).
+
+    Measures the file's size, its open tasks and the tasks carrying more prose
+    sub-bullets than allowed. Exit codes: 0 = within the target, 1 = over the
+    target or the hard limit (a warning: follow what it prints, then note it in
+    this run's 🪵 Run notes), 2 = cannot check.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings, measure
+
+    name = "check-size"
+    day = _check_day(name, date, data_dir)
+    vault = data_dir or paths.data_dir()
+    target = paths.action_items_daily_path(vault, date=_dt.date.fromisoformat(day))
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise _cannot_check(name, e, json_out) from e
+    from scout.action_items.fit import report_conflicts
+
+    settings = load_settings(vault)
+    budget = settings.budget
+    report = measure(text, budget)
+    conflicts = report_conflicts(vault, day=_dt.date.fromisoformat(day))
+    level = report.level(budget)
+    if json_out:
+        payload = {"day": day, **report.to_json(budget), "conflicts": conflicts}
+        sys.stdout.write(_json.dumps(payload) + "\n")
+    elif level == "ok":
+        sys.stdout.write(f"{name}: within budget ({report.bytes / 1024:.1f} KB, {report.open_tasks} open tasks)\n")
+    else:
+        label = "over the hard limit" if level == "hard" else "over the target"
+        sys.stdout.write(f"{name}: {label}:\n")
+        for problem in report.problems(budget):
+            sys.stdout.write(f"  {problem}\n")
+        first = (
+            "Run `scoutctl action-items fit`, re-read the daily file and backlog.md, then shorten"
+            if settings.fit == "apply"
+            else "`fit` is in report mode, so don't run it; shorten"
+        )
+        sys.stdout.write(
+            f"{first} anything this run wrote past the item format, and add `action items over budget: "
+            "<these numbers>` to this run's 🪵 Run notes entry.\n"
+        )
+    if conflicts and not json_out:
+        sys.stdout.write(
+            f"{name}: open twice with different text (fit left both copies): "
+            + ", ".join(f"[#{t}]" for t in conflicts)
+            + ". Merge each into one row if this run has the news; otherwise note it in 🪵 Run notes.\n"
+        )
+    if level != "ok":
+        raise typer.Exit(code=1)
 
 
 @app.command("check-review-requests")
