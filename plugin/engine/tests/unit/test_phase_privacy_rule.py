@@ -99,8 +99,16 @@ def test_every_brain_file_carries_the_privacy_rule(kind: str, connectors: set[st
         "`<owner>'s shared note <path>`",
         "`source: shared:<owner-email>:<path>`",
         "Never copy a note whole",
+        # A shared note is kept current under the hook's checked-add rule (2026-11-19), not frozen.
+        "Keep a note already shared with other people",
+        "leave a line with a `%%privacy:allow%%` marker as it is",
+        "sets or changes `federation_scope` (narrower too)",
+        "`privacy.shared_edits: refuse`",
+        "can't see a paraphrase or anything from email, Slack or meetings",
+        "write only what came from this note, notes shared with the same people, or sources those people were in",
     ):
         assert needle in rule, needle
+    assert "Never add to a note already shared" not in rule
 
 
 CONTEXT_NOTES_LIST = "scripts/scoutctl kb files --glob 'action-items/context/*.md'"

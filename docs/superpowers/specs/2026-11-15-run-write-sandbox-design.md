@@ -480,6 +480,33 @@ All of Q1–Q8 were answered with the recommendation.
   - A commit the session pushes reaches the remote before the check restores it. The
     restoring commit sits on top of the local branch, so the remote holds the change until
     the branch is pushed again, and a clone or pull elsewhere in between gets it.
+  - Linked worktrees share the vault's branches, so a branch an interactive session in a
+    vault worktree commits to during the run moves too (found 2026-11-19: a session's commit
+    of `.claude/settings.local.json` on its own branch was "restored" onto that live branch).
+    Jordan chose (2026-11-19) to attribute by evidence a run can't forge: a moved branch is
+    left alone, with a log line and no finding, when a linked worktree that existed at the
+    snapshot (`<common>/worktrees/*/HEAD`, read outside the sandbox) still has it checked
+    out and that worktree's own index holds exactly the tip's entry for every changed
+    protected path. The profile carves out only the vault's own git dirs, so a run can move
+    any branch (`commit-tree` + `update-ref`) but can't write another worktree's HEAD or
+    index, or create a worktree: nothing carves `<common>/worktrees/<name>/` back out of the
+    `.git` deny (`GIT_REDENY` is about the vault's own files, not these). A planted change
+    on a session's branch fails the index test and is restored. The worktree is read through
+    its admin dir, never its folder's `.git` file. Only under an enforced sandbox
+    (`SCOUT_SANDBOX_STATUS=enforced`, which the runner exports before claude starts and the
+    run can't change): off, unavailable or conflict (Linux included), the run could write
+    that worktree's HEAD and index itself, so no branch is left alone. Not trusted, so still
+    restored: the vault's own branch (at the snapshot or now), even when a linked worktree
+    has it checked out too; a worktree made after the snapshot (the trusted set is what the
+    snapshot saw outside the sandbox, and an enforced run can't create one anyway); a
+    prunable worktree, whose folder is gone; a worktree now on another branch; and a session
+    whose index no longer matches its tip for a changed path. Accepted (security review of
+    #737, LOW): a run can commit onto a session's branch exactly the protected entries that
+    session has already staged, and pass, since the index can't say who committed them. It
+    gains no content the session didn't stage. Requiring the session's index to match its
+    branch at the snapshot was not added: it would flag a session that staged before the run
+    and committed during it (the false positive this fixes), and still miss staging during
+    the run.
   - Tests: `tests/unit/test_run_integrity.py` (a committed, staged, new-branch, detached,
     mid-merge and tag case on real git; an ordinary run adds no commit) and the runner
     wiring in `tests/integration/test_runner_skip_outcomes.py`.
