@@ -661,6 +661,14 @@ def hook_kb_read_label() -> None:
     raise typer.Exit(kb_read_label_main())
 
 
+@hook_app.command("front-page-reads")
+def hook_front_page_reads() -> None:
+    """PostToolUse hook: warn a run that edits a front page without reading its project's knowledge/ notes."""
+    from scout.hooks.front_page_reads import main as front_page_reads_main
+
+    raise typer.Exit(front_page_reads_main())
+
+
 @hook_app.command("shared-read-record")
 def hook_shared_read_record() -> None:
     """PostToolUse hook: record what an Agnes shared-notes tool showed, so check-outbound recognises it."""
@@ -1313,15 +1321,42 @@ def kb_search(
 @kb_app.command("read")
 def kb_read(
     path: str = typer.Argument(..., help="A vault file (any spelling)."),
+    lines: str | None = typer.Option(
+        None,
+        "--lines",
+        help="Only these lines, 1-based and inclusive: A:B, A: (to the end), :B (the first B), -N: (the last N). "
+        "In place of sed -n, head and tail.",
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file."""
-    args = _kb_args("read", dict(locals()))
+    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file or a bad --lines."""
+    params = dict(locals())
+    if lines is None:
+        del params["lines"]  # a whole-file read's audit arguments stay as they were
+    args = _kb_args("read", params)
     from scout.kb.read import cmd_read
 
-    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path, lines))
+
+
+@kb_app.command("stat")
+def kb_stat(
+    paths: list[str] | None = typer.Argument(None, help="Vault files (any spelling)."),
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Each file's size, labelled: bytes, lines, words. In place of wc, ls -l and stat.
+
+    Exit 3 = a named file is not visible to the reader (its row has no counts); 2 = not a vault file.
+    """
+    args = _kb_args("stat", dict(locals()))
+    from scout.kb.read import cmd_stat
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_stat(vault, who, paths or (), glob or ()))
 
 
 @kb_app.command("delta")
@@ -1609,6 +1644,105 @@ def kb_structure(
     _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
 
 
+@kb_app.command("check-fact-check")
+def kb_check_fact_check(
+    date: str | None = typer.Option(
+        None, "--date", help="The run's day, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    skipped: str | None = typer.Option(
+        None, "--skipped", help="Why no live source could be reached this run; accepts the run as it stands."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check a deep-work run re-verified the KB notes the runner pre-fetched for its fact-check pass.
+
+    The runner lists the KB notes changed in the last 3 days that no run has
+    re-verified since (`fact_check_targets`, most consequential first). At least
+    2 of them (all, if fewer) must now carry `last_verified:` of today and a
+    `verified_against:`. A target moved, archived or shared since counts as done;
+    a shared note is never a target. `--skipped "<reason>"` accepts a run that
+    could not reach a live source, and prints the line for its session-log row.
+    Run it before committing a dreaming deep-work run. Exit codes: 0 = done,
+    1 = not done, 2 = cannot check (or no reason given). Prints paths only,
+    private ones marked `[private]`.
+    """
+    import datetime as dt
+    import json as _json
+
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.config import today as _today
+    from scout.kb.fact_check import SKIP_MARK, check_fact_check
+
+    name = "check-fact-check"
+    if date is not None:
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            typer.echo(f"{name}: --date: invalid date {date!r}")
+            raise typer.Exit(2) from None
+    day = date or _today(data_dir).isoformat()
+    try:
+        result = check_fact_check(data_dir=data_dir, today=day, context=context, skipped=skipped)
+    except PrefetchCheckError as e:
+        typer.echo(_json.dumps({"error": str(e)}) if as_json else f"{name}: cannot check — {e}")
+        raise typer.Exit(2) from e
+
+    def mark(visibility: str) -> str:
+        return "[private] " if visibility != "normal" else ""
+
+    if result.skipped is not None:
+        import os
+
+        from scout import paths as _paths
+        from scout.kb.fact_check import record_skip
+
+        try:
+            record_skip(_paths.data_dir(data_dir), day, len(result.targets), os.environ.get("SCOUT_MODE"))
+        except OSError:
+            pass  # the skip stands; `scoutctl doctor` just won't count it
+
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "targets": [t.to_json() for t in result.targets],
+                    "verified": result.verified,
+                    "required": result.required,
+                    "skipped": result.skipped is not None,
+                    "settled": result.settled,
+                    "passed": result.passed,
+                }
+            )
+        )
+    elif not result.targets:
+        typer.echo(f"{name}: no KB note changed in the last days is waiting to be re-verified")
+    elif result.passed and result.skipped is None:
+        typer.echo(f"{name}: {len(result.verified)} of {len(result.targets)} recent note(s) re-verified today")
+    elif result.passed:
+        typer.echo(
+            f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
+        )
+    else:
+        typer.echo(
+            f"{name}: {len(result.verified)} of the {result.required} required recent note(s) re-verified today. "
+            "Re-check the highest-stakes claims in these against a freshly read primary source, correct or mark "
+            "what doesn't hold, and set `last_verified:` (today) and `verified_against:` in each one you check:"
+        )
+        done = set(result.verified)
+        for t in result.targets:
+            typer.echo(f"  {'✓' if t.path in done else '·'} {mark(t.visibility)}{t.path} (changed {t.changed})")
+        typer.echo(
+            'If no live source could be reached this run, run this again with `--skipped "<why>"`, '
+            "and put the line it prints in this run's session-log row."
+        )
+    if not result.passed:
+        raise typer.Exit(1)
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -1816,6 +1950,43 @@ def budget_set_cmd(
     typer.echo(f"wrote {payload['config_path']}")
     typer.echo(f"window:  {payload['window_hours']}h → ${payload['window_budget_usd']:.2f}")
     typer.echo(f"skip at: {payload['skip_at_pct']:.0f}% → ${payload['skip_threshold_usd']:.2f}")
+
+
+progress_app = typer.Typer(help="Is the run holding the vault lock making progress? (scout.run_progress)")
+app.add_typer(progress_app, name="progress")
+
+
+@progress_app.command("watch")
+def cli_progress_watch(
+    runner_pid: int = typer.Option(..., "--runner-pid", help="The runner holding the session lock."),
+    log: str = typer.Option(..., "--log", help="The run's log, named in the progress line."),
+    vault: str = typer.Option(..., "--vault", help="The vault whose session lock the runner holds."),
+) -> None:
+    """Sample the runner's session and keep .scout-logs/.scout-session.lock.alive current while it holds the lock.
+
+    Started by scripts/scout-lock.sh beside every scheduled run. The lock
+    reaper, `scoutctl health` and the app read the line it writes; see
+    scout/run_progress.py. Exits when the runner exits or loses the lock.
+    """
+    import signal
+
+    from scout import run_progress
+
+    def _stop(_signum: int, _frame: object) -> NoReturn:
+        raise SystemExit(0)  # ends the sample's sleep at once; watch() removes its line on the way out
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    run_progress.watch(
+        Path(vault),
+        runner_pid=runner_pid,
+        log=log,
+        sample_s=run_progress.env_secs(run_progress.SAMPLE_SECS_ENV, run_progress.DEFAULT_SAMPLE_SECS),
+        cpu_threshold_cs=run_progress.env_secs(
+            run_progress.CPU_SECS_ENV, run_progress.DEFAULT_CPU_SECS, allow_zero=True
+        )
+        * 100,
+    )
 
 
 # `scoutctl session index` builds .scout-cache/sessions-index.json from
@@ -6058,6 +6229,37 @@ def _register_inbox() -> None:
         if failed:
             raise typer.Exit(2)
 
+    @inbox_app.command("sync")
+    def cli_inbox_sync(as_json: bool = json_opt) -> None:
+        """Pull every inbox, commit the ledgers, then apply what was taken (the schedule tick starts this).
+
+        The owner's, outside any run. The session lock is held only to commit and apply, for about a minute at
+        most; a live run makes it wait for the next tick.
+        """
+        import json as _json
+
+        from scout import delegate_inbox_sync
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = delegate_inbox_sync.sync(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except Exception as e:  # never a traceback from the tick's own step
+            _fail(RepoSyncError("sync_failed", f"refused: the inbox sync failed ({type(e).__name__}: {e})"), as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        for row in result.pulled + result.applied:
+            typer.echo(_json.dumps(row, sort_keys=True))
+        if result.ledger_commit:
+            typer.echo(f"committed the ledgers: {result.ledger_commit}")
+        if result.skipped:
+            typer.echo(f"commits and applies waited: {result.skipped}")
+        for note in result.notes:
+            typer.echo(note)
+
     @inbox_app.command("apply")
     def cli_inbox_apply(
         delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
@@ -6133,6 +6335,168 @@ def _register_inbox() -> None:
         typer.echo(f'{{"ok": true, "delegate": "{delegate}", "reverted": "{ulid}"}}' if as_json else
                    f"reverted {delegate}'s {ulid}")  # fmt: skip
 
+    # ----- inbox review (#550 V4b2): the owner reads, accepts, rejects and promotes agents' text -----------------
+
+    review_app = typer.Typer(
+        help="What agents proposed that waits for you: observations and held comments (the owner only).",
+        invoke_without_command=True,
+    )
+    inbox_app.add_typer(review_app, name="review")
+
+    def _show_item(item: object) -> None:
+        from scout.delegate_review import Item
+
+        assert isinstance(item, Item)
+        what = item.kind if item.op is None else f"{item.kind} {item.op} [#{item.tag}] {item.date}"
+        when = f"{item.status}, proposed {item.proposed}"
+        typer.echo(f"{item.ulid}  FROM AGENT delegate-{item.delegate}  {what}  ({when})")
+        if item.about:
+            typer.echo(f"  about: {item.about}")
+        if item.source:
+            typer.echo(f"  source: {item.source}")
+        if item.look_alikes:
+            typer.echo(f"  LOOK-ALIKE WORDS (mixed or other scripts): {', '.join(item.look_alikes)}")
+        for line in item.text.split("\n"):
+            typer.echo(f"  | {line}")
+
+    def _typed(ulid: str, confirm: str | None, what: str) -> str | None:
+        """--confirm, or the ULID typed at a terminal; never a bare flag."""
+        import sys
+
+        if confirm is not None or not sys.stdin.isatty():
+            return confirm
+        return typer.prompt(f"To {what} it, type its ULID", default="", show_default=False)
+
+    @review_app.callback()
+    def cli_inbox_review(
+        ctx: typer.Context,
+        delegate: str | None = typer.Option(None, "--delegate", help="One delegate's items only."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """List what waits for your review, with hidden characters shown as \\u{...}."""
+        import json as _json
+
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if ctx.invoked_subcommand is not None:
+            return
+        try:
+            items = delegate_review.review(_paths.data_dir(), delegate=delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps([i.to_json() for i in items], indent=2, sort_keys=True))
+            return
+        if not items:
+            typer.echo("Nothing waits for review.")
+            return
+        for item in items:
+            _show_item(item)
+            typer.echo("")
+        typer.echo("Accept: scoutctl inbox review accept <ULID>. Reject: scoutctl inbox review reject <ULID>.")
+        if any(i.kind == "observation" for i in items):
+            typer.echo(delegate_review.EDITED)
+
+    @review_app.command("accept")
+    def cli_inbox_review_accept(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Write an observation into knowledge-base/from-agents/, or a held comment into today's file.
+
+        Runs read it from then on. An observation stays private and hidden from every delegate until you promote it.
+        """
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if not as_json and confirm is None:
+                for item in delegate_review.review(vault):
+                    if item.ulid == ulid:
+                        _show_item(item)
+            decision = delegate_review.accept(vault, ulid, confirm=_typed(ulid, confirm, "accept"))
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    def _decided(decision: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_review import Decision
+
+        assert isinstance(decision, Decision)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **decision.to_json()}, indent=2, sort_keys=True))
+            return
+        where = f" ({decision.note})" if decision.note else ""
+        typer.echo(f"{decision.outcome}: delegate-{decision.delegate}'s {decision.ulid}{where}")
+        for note in decision.notes:
+            typer.echo(note)
+
+    @review_app.command("reject")
+    def cli_inbox_review_reject(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Record it as rejected and delete the local copy. Nothing reaches the vault."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            decision = delegate_review.reject(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    @review_app.command("promote")
+    def cli_inbox_review_promote(
+        ulid: str = typer.Argument(..., help="An accepted observation's ULID."),
+        to: str | None = typer.Option(
+            None, "--to", help="Only these delegates, comma-separated; 'author' is its author. Default: every delegate."
+        ),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Let delegates' agents read an accepted observation (it becomes a normal note, promoted_from its agent)."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        targets = [t.strip() for t in to.split(",") if t.strip()] if to is not None else None
+        try:
+            preview = delegate_review.preview_promote(vault, ulid)  # shown with --confirm too: what goes out
+            if not as_json:
+                _show_item(preview)
+            decision = delegate_review.promote(
+                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=preview.sha256, to=targets
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    @review_app.command("unpromote")
+    def cli_inbox_review_unpromote(
+        ulid: str = typer.Argument(..., help="A promoted observation's ULID."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Make a promoted note private again and hide it from every delegate, if it is unchanged since."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            decision = delegate_review.unpromote(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
 
 _register_inbox()
 
@@ -6151,6 +6515,7 @@ _DELEGATE_COMMANDS = frozenset(
                 "files",
                 "search",
                 "read",
+                "stat",
                 "resolve",
                 "query",
                 "related",

@@ -41,6 +41,7 @@ TASKS = (
 
 
 REAL_DEFAULT_COMMIT = da._default_commit  # before the autouse stand-in below replaces it
+REAL_TODAY = da._today
 
 
 def _git_commit(v: Path, message: str, rels: list[str]) -> str:
@@ -53,6 +54,7 @@ def _git_commit(v: Path, message: str, rels: list[str]) -> str:
 @pytest.fixture(autouse=True)
 def _commits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(da, "_default_commit", _git_commit)
+    monkeypatch.setattr(da, "_today", lambda v: DATE)  # the fixture's daily file is "today" (V4b1: only today's)
 
 
 @pytest.fixture
@@ -519,7 +521,7 @@ def test_cli_apply_and_revert_every_output(mirrored: Path, monkeypatch: pytest.M
     p = _op(mirrored, "mark-done")
     _take(mirrored, "observation", {"text": "The meeting moved"})
     r = runner.invoke(app, ["inbox", "apply", D])
-    assert r.exit_code == 0 and f"{D}: applied 1" in r.output and "wait for the review queue" in r.output
+    assert r.exit_code == 0 and f"{D}: applied 1" in r.output and "wait for your review" in r.output
     assert runner.invoke(app, ["inbox", "apply", D]).output.startswith(f"{D}: nothing new")
     r = runner.invoke(app, ["inbox", "revert", p.id, "--json"])
     assert r.exit_code == 0 and json.loads(r.output) == {"ok": True, "delegate": D, "reverted": p.id}
@@ -602,3 +604,42 @@ def test_cli_single_apply_reports_any_failure(mirrored: Path, monkeypatch: pytes
     monkeypatch.setattr(da, "apply", broken)
     r = runner.invoke(app, ["inbox", "apply", D, "--json"])
     assert r.exit_code == 2 and json.loads(r.output)["code"] == "apply_failed"
+
+
+# ----- V4b1: today's file only, a time budget, events ------------------------------------------
+
+
+def test_only_todays_daily_file_is_changed(mirrored: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _op(mirrored, "mark-done")
+    monkeypatch.setattr(da, "_today", lambda v: "2026-11-20")  # the proposal names another day's file
+    assert da.apply(mirrored, D).outcomes == {p.id: "stale"}
+    assert di.load_state(mirrored).applied[D][p.id]["why"] == "not_today"
+    assert _daily(mirrored) == TASKS
+
+
+def test_the_real_today_is_the_vaults_configured_day(mirrored: Path) -> None:
+    from scout import paths
+
+    assert REAL_TODAY(mirrored) == paths._today(mirrored).isoformat()
+
+
+def test_no_new_copy_is_started_past_the_deadline(mirrored: Path) -> None:
+    p = _op(mirrored, "mark-done")
+    r = da.apply(mirrored, D, deadline=0.0)  # long past
+    assert r.outcomes == {} and "out of time" in r.notes[-1]
+    assert da.apply(mirrored, D).outcomes == {p.id: "applied"}
+
+
+def test_an_applied_change_leaves_an_event_with_ids_only(mirrored: Path) -> None:
+    from scout import paths
+
+    p = _op(mirrored, "mark-done")
+    da.apply(mirrored, D)
+    rows = [
+        json.loads(line)
+        for f in sorted(paths.logs_dir(mirrored).glob("schedule-events-*.jsonl"))
+        for line in f.read_text(encoding="utf-8").splitlines()
+    ]
+    mine = [r for r in rows if r["kind"] == "delegate_inbox.applied"]
+    assert len(mine) == 1 and mine[0]["source"] == f"delegate:{D}"
+    assert set(mine[0]["payload"]) == {"ulid", "op", "tag", "date", "commit"} and mine[0]["payload"]["ulid"] == p.id

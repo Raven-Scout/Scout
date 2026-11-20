@@ -60,7 +60,7 @@ REVIEW_REQUEST_LIMIT = 50
 KB_HEAD_SCAN_LINES = 5
 
 # Match the bash find filter: skip */ontology/* and *archive*.
-_SKIP_PATH_FRAGMENTS = ("/ontology/", "archive")
+_SKIP_PATH_FRAGMENTS = ("/ontology/", "archive", "/from-agents/")  # from-agents: agents' accepted text (#550 V4b2)
 
 # Mirrors the *intent* of the bash's ``grep -i 'last updated\|last verified'``
 # followed by ``sed 's/.*: *//'``. The bash sed is greedy on the LAST colon,
@@ -78,6 +78,17 @@ _LAST_UPDATED_RE = re.compile(
 class SessionContext:
     generated_at: str
     session_type: str
+    # These three come first so a plain Read of the file reaches them before the long kb_file_dates.
+    # Each active project's Go deeper map and its knowledge/ notes with their as_of: read the ones a
+    # front page edit touches first (scout.scripts.session_context_kb.project_knowledge).
+    # {"projects": [...], "total", "truncated"}.
+    project_knowledge: dict[str, Any] = field(default_factory=dict)
+    # Leave states, and role and manager relations for the people today's items name, plus the
+    # owner's managers (session_context_kb.people_context): the leave and leadership-ping rules.
+    people_context: dict[str, Any] = field(default_factory=dict)
+    # The research queue's open entries (id, status, priority, title) and counts by status
+    # (session_context_kb.research_queue): no need to read every entry to filter by status.
+    research_queue: dict[str, Any] = field(default_factory=dict)
     # The vault's commits since DEFAULT_GIT_LOG_LOOKBACK, newest first, labelled (see get_git_recent).
     git_recent: list[dict[str, Any]] = field(default_factory=list)
     # {path: {"last_updated": ..., "visibility": "normal" | "private"}}
@@ -110,6 +121,14 @@ class SessionContext:
     # scout.action_items.past_due. None when it couldn't be computed; `action-items check-demotion`.
     past_due_tasks: list[dict[str, Any]] | None = field(default_factory=list)
     past_due_source: str = ""  # the date of the daily file they were read from
+    # The KB notes changed in the last few days that no run has re-verified since, most consequential
+    # first, each labelled: the dreaming fact-check pass's work list (scout.kb.fact_check). None when it
+    # couldn't be computed; `kb check-fact-check` holds a deep-work run to it before it commits.
+    fact_check_targets: list[dict[str, Any]] | None = field(default_factory=list)
+    # What the owner's agents changed in today's file (#550 V4b, spec §7.1b), read from the signed inbox state,
+    # never from git messages a run could forge: {"delegate", "op", "tag", "date", "commit", "ulid", "at"}.
+    # Ids only: agent text never reaches a run. `phases/core/action-items.md` credits these, never the owner.
+    delegate_changes: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -447,6 +466,7 @@ def gather(
     reader = resolve_reader(None, os.environ)
     full = reader in FULL_READERS
     kb_dates: dict[str, dict[str, str]] = {}
+    labels: dict[str, str] = {}
     if reads_any(reader):
         dates = gather_kb_file_dates(
             target / "knowledge-base",
@@ -475,6 +495,9 @@ def gather(
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
     past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
+    project_rows, people, queue = get_kb_sections(target, reader, labels, graph, now_dt.date())
+    fact_check = fact_check_for(session_type, target, now_dt.date(), reader)
+    delegate_changes = get_delegate_changes(target, now_dt.date()) if full else []
 
     return SessionContext(
         generated_at=generated_at,
@@ -494,7 +517,78 @@ def gather(
         linear_report_before=linear_report_before,
         past_due_tasks=past_due,
         past_due_source=past_due_source,
+        project_knowledge=project_rows,
+        people_context=people,
+        research_queue=queue,
+        fact_check_targets=fact_check,
+        delegate_changes=delegate_changes,
     )
+
+
+def _owner_keys(scout_dir: Path) -> list[str]:
+    """The vault owner's configured name, display name and email: how their person note is found."""
+    try:
+        user = scout_config.load_config(scout_dir).get("user") or {}
+    except Exception:
+        return []
+    return [str(user.get(k) or "") for k in ("name", "display_name", "email")] if isinstance(user, dict) else []
+
+
+def get_kb_sections(
+    scout_dir: Path, reader: str, labels: dict[str, str], graph: Any | None, day: date
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """``(project_knowledge, people_context, research_queue)``; each empty when it can't be built.
+
+    A reader that sees nothing gets all three empty. Only a full reader's people
+    context looks at the daily file (it mixes in lines about private notes).
+    """
+    from scout.scripts import session_context_kb as kbs
+
+    if not reads_any(reader):
+        return {}, {}, {}
+    full = reader in FULL_READERS
+    try:
+        projects = kbs.project_knowledge(scout_dir, labels, full=full)
+    except Exception:
+        projects = {}
+    try:
+        items = kbs.items_text_for(scout_dir, day) if full else ""
+        people = kbs.people_context(graph, day, items_text=items, owner_keys=_owner_keys(scout_dir))
+    except Exception:
+        people = {}
+    try:
+        queue = kbs.research_queue(scout_dir, labels, full=full)
+    except Exception:
+        queue = {}
+    return projects, people, queue
+
+
+def get_delegate_changes(scout_dir: Path, day: date) -> list[dict[str, Any]]:
+    """Each change an agent's proposal made to ``day``'s daily file that still stands (applied, not reverted),
+    from the signed inbox state. Empty with no inbox, or a state that doesn't verify: never a guess."""
+    from scout import delegate_inbox
+
+    try:
+        state = delegate_inbox.load_state(scout_dir)
+    except Exception:  # noqa: BLE001 - no trusted state, no rows
+        return []
+    rows: list[dict[str, Any]] = []
+    for delegate, applied in sorted(state.applied.items()):
+        for ulid, entry in sorted(applied.items()):
+            if entry.get("outcome") != "applied" or entry.get("date") != day.isoformat():
+                continue
+            rows.append(
+                {
+                    "delegate": delegate,
+                    "op": entry.get("op"),
+                    "tag": entry.get("tag"),
+                    "date": entry.get("date"),
+                    "commit": entry.get("commit"),
+                    "ulid": ulid,
+                    "at": entry.get("at"),
+                }
+            )
+    return rows
 
 
 def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, Any]] | None]:
@@ -509,16 +603,34 @@ def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, 
     return source or "", [t.to_json() for t in tasks]
 
 
+def fact_check_for(session_type: str, scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """Only the dreaming run fact-checks: every other mode skips the history walk and the labels."""
+    return get_fact_check_targets(scout_dir, day, reader) if "dreaming" in session_type else []
+
+
+def get_fact_check_targets(scout_dir: Path, day: date, reader: str) -> list[dict[str, Any]] | None:
+    """The dreaming fact-check pass's targets; see :mod:`scout.kb.fact_check`.
+    None when it fails, so `kb check-fact-check` says it couldn't check."""
+    from scout.kb.fact_check import fact_check_targets
+
+    try:
+        return [t.to_json() for t in fact_check_targets(scout_dir, day, reader)]
+    except Exception:
+        return None
+
+
 def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
     """The user's own Linear actions since the last run; see :mod:`scout.linear_activity`."""
     return fetch_own_activity(scout_dir, now=now)
 
 
 def write_context(ctx: SessionContext, output_path: Path) -> None:
-    """Atomically write the gathered context as JSON."""
+    """Atomically write the gathered context as JSON, within the size budget (``session_context_kb.fit_budget``)."""
+    from scout.scripts.session_context_kb import fit_budget
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
-        safe_write.atomic_write_text(output_path, json.dumps(asdict(ctx), indent=2, default=str))
+        safe_write.atomic_write_text(output_path, json.dumps(fit_budget(asdict(ctx)), indent=2, default=str))
 
 
 def run(session_type: str = "unknown", *, data_dir: Path | None = None) -> Path:
@@ -552,7 +664,10 @@ __all__ = [
     "gather",
     "gather_kb_file_dates",
     "get_daily_before",
+    "fact_check_for",
+    "get_fact_check_targets",
     "get_git_recent",
+    "get_kb_sections",
     "get_linear_own_activity",
     "get_past_due_tasks",
     "get_personal_tasks",

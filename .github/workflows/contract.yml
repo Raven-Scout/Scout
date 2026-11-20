@@ -463,7 +463,47 @@ jobs:
           done <<< "$tracked"
           exit $status
 
-      # 11. The investigation prompts (`scoutctl health resolve-prompt <kind>
+      # 11. The progress watcher's line (`.scout-logs/.scout-session.lock.alive`,
+      #     engine scout/run_progress.py) the app's SessionLogService reads to
+      #     tell a working run from a hung one: same rule as the doctor fixture.
+      - name: Run progress fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/run-progress.alive
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/run-progress.alive; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::run-progress.alive is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_run_progress.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of run-progress.alive found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*run-progress.alive')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked run-progress.alive copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 12. The investigation prompts (`scoutctl health resolve-prompt <kind>
       #     <key> --json`) behind the app's "Resolve with Claude" button: same
       #     rule as the doctor fixture.
       - name: Resolve prompt fixture is byte-identical across clients

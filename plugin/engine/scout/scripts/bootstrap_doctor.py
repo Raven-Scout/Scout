@@ -1038,6 +1038,130 @@ def _check_kb_lint_config(*, vault: Path) -> list[str]:
         return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
 
 
+def _check_kb_interactive(*, vault: Path) -> list[str]:
+    """Front pages the nightly KB pass left for an interactive session (a full rebuild over
+    ``kb_structure.nightly_max_bytes``) and how long each has waited: no run will do them.
+    A note, not a warning; nothing when there are none or the check can't run."""
+    from scout.config import today
+    from scout.kb.structure import interactive_waits, load_structure_config, structure_rows
+
+    try:
+        if not (vault / load_structure_config(vault).projects_dir).is_dir():
+            return []
+        waiting = interactive_waits(structure_rows(vault), today(vault))
+    except Exception:  # noqa: BLE001 - informational: `kb structure` reports its own errors
+        return []
+    if not waiting:
+        return []
+    listed = ", ".join(f"{path} ({'?' if days is None else days} d)" for path, days in waiting[:5])
+    more = f" and {len(waiting) - 5} more" if len(waiting) > 5 else ""
+    return [
+        f"kb: {len(waiting)} project page(s) wait for an interactive rebuild, too big for the nightly pass: "
+        f"{listed}{more}. Rebuild them in a session (`scoutctl kb structure` marks them [interactive])."
+    ]
+
+
+def _check_fact_check_skips(*, vault: Path, now: datetime | None) -> list[str]:
+    """The dreaming fact-check pass skipped (``kb check-fact-check --skipped``) again and again:
+    a connector the pass needs is probably down. A note, not a warning."""
+    from scout.kb.fact_check import SKIP_NOTE_AT, SKIP_WINDOW_DAYS, recent_skips
+
+    try:
+        skips = recent_skips(vault, now or datetime.now(UTC))
+    except Exception:  # noqa: BLE001 - informational
+        return []
+    if skips < SKIP_NOTE_AT:
+        return []
+    return [
+        f"kb: the dreaming fact-check pass was skipped {skips} time(s) in the last {SKIP_WINDOW_DAYS} days "
+        "(no live source reached): check the connectors it verifies against"
+    ]
+
+
+def _check_action_items_size(*, vault: Path) -> list[str]:
+    """The newest daily action-items file past its hard limit (``action_items.budget``).
+
+    Runs only warn about it (``check-size``, a Run notes line), and a file this
+    size is hard to read, so the owner hears about it here too. Never an error."""
+    from scout import paths
+    from scout.action_items.budget import load_settings, measure
+
+    folder = paths.action_items_dir(vault)
+    try:
+        newest = max(folder.glob("action-items-????-??-??.md"), default=None)
+        if newest is None:
+            return []
+        text = newest.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    budget = load_settings(vault).budget
+    report = measure(text, budget)
+    if report.level(budget) != "hard":
+        return []
+    return [
+        f"action items: {newest.name} is past its hard limit — " + "; ".join(report.problems(budget)) + ". "
+        "Run `scoutctl action-items fit --dry-run` to see what would move, and set `action_items.fit: apply` "
+        "in scout-config.yaml to let materialize keep it to its budget"
+    ]
+
+
+def _check_action_items_conflicts(*, vault: Path) -> list[str]:
+    """Tags the last ``fit`` left open twice with different text: a person has to merge them.
+
+    ``fit`` never guesses which wording stands; it keeps both copies (bringing the
+    first that is due back to the daily file) and names them in its report, which
+    otherwise only the CLI shows. Read from ``.scout-logs/action-items-fit.json``
+    when that report is from the last two days."""
+    import datetime as _dt
+
+    from scout.action_items.fit import read_report
+
+    report = read_report(vault)
+    if report is None or not isinstance(report.get("conflicts"), list) or not report["conflicts"]:
+        return []
+    try:
+        day = _dt.date.fromisoformat(str(report.get("day")))
+    except ValueError:
+        return []
+    if (_dt.date.today() - day).days > 2:
+        return []
+    tags = ", ".join(f"[#{t}]" for t in report["conflicts"])
+    return [
+        f"action items: {tags} open twice with different text (daily file and/or backlog.md, fit {day}); "
+        "merge each into one row by hand"
+    ]
+
+
+def _check_backlog_lint(*, vault: Path) -> list[str]:
+    """A vault whose own kb_lint lists still budget ``action-items/backlog.md``.
+
+    The packaged defaults give the backlog no size budget and keep it out of the
+    shrink pass, but a vault that overrides ``kb_lint.budgets`` (lists replace the
+    defaults) or sets ``kb_budgets`` can bring one back: then a growing backlog is
+    a size finding, and in block mode a refused commit a run might "fix" by
+    dropping tasks."""
+    from scout.kb.lint_config import load_lint_config
+
+    rel = "action-items/backlog.md"
+    try:
+        cfg = load_lint_config(vault)
+    except Exception:  # noqa: BLE001 - _check_kb_lint_config reports an unreadable config
+        return []
+    out: list[str] = []
+    budget = cfg.budget_for(rel)
+    if budget is not None:
+        out.append(
+            f"kb-lint: {rel} has a {budget // 1024} KB size budget (your kb_lint.budgets or kb_budgets): a backlog "
+            f'grows with your open tasks; add {{glob: "{rel}", bytes: null}} before any action-items/** budget'
+        )
+    if not cfg.report_excluded(rel):
+        out.append(
+            f"kb-lint: {rel} is missing from your kb_lint.report_exclude_globs, so the dreaming shrink pass may "
+            f'rank it: add "{rel}" to that list'
+        )
+    return out
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -1099,6 +1223,10 @@ def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[
     """
     if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
         return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate mirrors: checked outside runs (a run can't read the state's signing key)"]
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError, git
 
@@ -1138,6 +1266,56 @@ def _check_delegate_mirrors(*, vault: Path, now: datetime | None) -> tuple[list[
                     f"delegate mirror {key}: behind HEAD, and no sync has tried for over an hour; is the schedule "
                     "tick running? (scoutctl delegate sync --all syncs now)"
                 )
+    return warnings, notes
+
+
+def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[str], list[str]]:
+    """Each delegate inbox at a glance, as (warnings, notes) (#550 V4b1). Nothing for a vault with no inbox."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists():
+        return [], []
+    from scout.health import delegate_state_unchecked
+
+    if delegate_state_unchecked():
+        return [], ["delegate inboxes: checked outside runs (a run can't read the state's signing key)"]
+    from scout.delegate_inbox_sync import summary
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        inboxes = summary(vault, now=now)
+    except RepoSyncError as e:
+        return [f"delegate inboxes: {e.message}"], []
+    now = now or datetime.now(UTC)
+    warnings: list[str] = []
+    notes: list[str] = []
+    for key, box in inboxes.items():
+        pulled = box["last_pull"]
+        when = datetime.fromisoformat(pulled.replace("Z", "+00:00")) if pulled else None
+        counts = ", ".join(f"{k} {v}" for k, v in box["outcomes"].items()) or "nothing applied yet"
+        notes.append(
+            f"delegate inbox {key}: last pulled {_age(now - when)} ago; {box['waiting']} wait; {counts}"
+            if when
+            else f"delegate inbox {key}: never pulled; {box['waiting']} wait"
+        )
+        if box["last_error"]:
+            warnings.append(f"delegate inbox {key}: the last pull failed ({box['last_error']}); see why with: "
+                            f"scoutctl inbox pull {key}")  # fmt: skip
+        elif when is not None and now - when > timedelta(days=1):
+            warnings.append(f"delegate inbox {key}: not pulled for over a day; is the schedule tick running? "
+                            "(scoutctl inbox sync pulls now)")  # fmt: skip
+        if box["untaken"]:
+            warnings.append(f"delegate inbox {key}: {box['untaken']} file(s) in its copies folder were never taken "
+                            "by a pull; they are ignored")  # fmt: skip
+    from scout.repo_sync import git
+
+    tracked = git(vault, "ls-files", "--", ".scout-inbox/agents", check=False).stdout.split()
+    stray = [t for t in tracked if t != ".scout-inbox/agents/.gitignore" and not t.endswith("/taken.ledger")]
+    if stray:
+        warnings.append(
+            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b), "
+            "and stay in the vault's git history even once untracked; untrack them, keeping the files: "
+            "git rm -r -q --cached .scout-inbox/agents && git add .scout-inbox/agents && "
+            "git commit -m 'inbox: untrack the copies'"
+        )
     return warnings, notes
 
 
@@ -1258,6 +1436,9 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_action_items_size(vault=vault))
+    warnings.extend(_check_backlog_lint(vault=vault))
+    warnings.extend(_check_action_items_conflicts(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:
@@ -1272,9 +1453,14 @@ def run_doctor(
         # A lint config that can't be read blocks nothing: a run could break it on purpose (#717 review).
         warnings.extend(protection([line]) if "can't be read" in line else [line])
     warnings.extend(protection(_check_repo_sync_host_cache(vault=vault, now=now)))
+    notes.extend(_check_kb_interactive(vault=vault))
+    notes.extend(_check_fact_check_skips(vault=vault, now=now))
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)
+    inbox_warnings, inbox_notes = _check_delegate_inboxes(vault=vault, now=now)
+    warnings.extend(inbox_warnings)
+    notes.extend(inbox_notes)
     timeout_warnings, timeout_notes = _check_run_timeouts(vault=vault, now=now)
     warnings.extend(timeout_warnings)
     notes.extend(timeout_notes)

@@ -24,7 +24,7 @@ def test_default_scoutctl_prefers_the_one_beside_this_python(tmp_path, monkeypat
 @pytest.mark.parametrize(("on_path", "expected"), [("/opt/bin/scoutctl", "/opt/bin/scoutctl"), (None, "scoutctl")])
 def test_default_scoutctl_falls_back_to_the_path(tmp_path, monkeypatch, on_path: str | None, expected: str) -> None:
     monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
-    monkeypatch.setattr(shutil, "which", lambda _name: on_path)
+    monkeypatch.setattr(shutil, "which", lambda _name, path=None: on_path)
     assert default_scoutctl() == expected
 
 

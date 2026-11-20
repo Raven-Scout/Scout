@@ -15,6 +15,7 @@ import platform
 import re
 import subprocess
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from itertools import takewhile
@@ -1377,7 +1378,111 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return None
 
 
-def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Finding]:
+def delegate_state_unchecked(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the delegate state can't be checked here: a scheduled run (#517's rule) that can't read the state's
+    signing key (the run's sandbox denies ~/.scout-secrets). Such a check would report every signed state as
+    forged on every run; the owner's terminal, the doctor and the app check it instead."""
+    from scout.delegate_mirror import STATE_KEY, secrets_dir
+    from scout.kb.reader import is_scheduled
+
+    if not is_scheduled(os.environ if env is None else env):
+        return False
+    try:
+        (secrets_dir() / STATE_KEY).read_bytes()
+    except FileNotFoundError:
+        return False  # gone, not hidden: that is reported, wherever the check runs
+    except OSError:
+        return True  # denied (the run's sandbox): this place can't check it
+    return False
+
+
+def delegate_inbox_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
+    """Yellow for a delegate inbox whose last pull failed, that no pull has reached for a day, whose copies
+    folder holds files no pull took (#550 V4b1), or whose proposals have waited a week for review (V4b2).
+    Nothing for a vault with no inbox, nor in a run that can't read the state's key
+    (:func:`delegate_state_unchecked`)."""
+    if not (vault / ".scout-state" / "delegate-inbox" / "state.json").exists() or delegate_state_unchecked(env):
+        return []
+    from scout.delegate_inbox_sync import summary
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        inboxes = summary(vault, now=now)
+    except RepoSyncError as e:
+        return [
+            Finding(
+                id="delegate.inbox_state",
+                severity="yellow",
+                since=None,
+                summary=f"The delegate inbox state can't be trusted ({e.code}), so no agent's proposals are taken "
+                "or applied",
+                fix="Check it from a terminal with: scoutctl bootstrap doctor. Don't move or delete "
+                ".scout-state/delegate-inbox/: its signed records are what inbox revert needs, and if the state key "
+                "(~/.scout-secrets/delegate-mirrors/state.key) went missing, restore it from a backup",
+                source="state",
+            )
+        ]
+    now = now or datetime.now(UTC)
+    found = []
+    for key, box in inboxes.items():
+        if box["last_error"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_failed",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: the last pull failed ({box['last_error']}); its agent's "
+                    "proposals wait",
+                    fix=f"See why with: scoutctl inbox pull {key}",
+                    source="state",
+                )
+            )
+            continue
+        pulled = _parse_ts(box["last_pull"]) or _parse_ts(box["linked_at"])
+        if pulled is not None and now - pulled > timedelta(days=1):
+            found.append(
+                Finding(
+                    id="delegate.inbox_stalled",
+                    severity="yellow",
+                    since=pulled,
+                    summary=f"Delegate inbox {key} hasn't been pulled for over a day; is the schedule tick running?",
+                    fix="Pull now with: scoutctl inbox sync (and check scoutctl bootstrap doctor)",
+                    source="state",
+                )
+            )
+        reviewed = _parse_ts(box.get("oldest_review"))
+        if box.get("review") and reviewed is not None and now - reviewed > timedelta(days=7):
+            found.append(
+                Finding(
+                    id="delegate.inbox_waiting",
+                    severity="yellow",
+                    since=reviewed,
+                    summary=f"Delegate inbox {key}: {box['review']} proposal(s) have waited over a week for your "
+                    "review (observations and comments)",
+                    fix="Look at them with: scoutctl inbox review",
+                    source="state",
+                )
+            )
+        if box["untaken"]:
+            found.append(
+                Finding(
+                    id="delegate.inbox_untaken",
+                    severity="yellow",
+                    since=None,
+                    summary=f"Delegate inbox {key}: {box['untaken']} file(s) in .scout-inbox/agents/{key}/ were "
+                    "never taken by a pull (something else put them there); they are ignored",
+                    fix=f"Look at them, then delete them: .scout-inbox/agents/{key}/",
+                    source="state",
+                )
+            )
+    return found
+
+
+def delegate_findings(
+    vault: Path, *, now: datetime | None = None, env: Mapping[str, str] | None = None
+) -> list[Finding]:
     """Yellow for a delegate mirror whose last sync failed, or that is behind and no sync has tried for an hour
     (#550 V2c): its agent reads an older copy until one works.
 
@@ -1385,8 +1490,8 @@ def delegate_findings(vault: Path, *, now: datetime | None = None) -> list[Findi
     this is where it shows. "No sync tried" covers what records nothing itself: a tick
     that stopped, a sync that couldn't start, or one that died before it began.
     """
-    if not (vault / ".scout-state" / "delegate-mirrors.json").exists():
-        return []
+    if not (vault / ".scout-state" / "delegate-mirrors.json").exists() or delegate_state_unchecked(env):
+        return []  # nothing to check, or a run that can't read the signing key: checked outside runs
     from scout.delegate_mirror import load_links
     from scout.repo_sync import RepoSyncError
 
@@ -2115,11 +2220,57 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
     return found
 
 
+def progress_findings(vault: Path, *, now: datetime, env: Mapping[str, str] | None = None) -> list[Finding]:
+    """``session.no_progress``: the live lock holder's watcher saw no progress past the reaper's ceiling.
+
+    The same line and the same ceiling (``SCOUT_LOCK_MAX_AGE_SECS``, awake time)
+    the lock reaper reads (``scout.run_progress``), so health calls a session
+    stuck exactly when the next run would reap it, and a run whose log only the
+    lease keepalive writes is not mistaken for one that works. Nothing without
+    a fresh line: no watcher (an older runner), a dead one, or no live holder.
+
+    The ceiling is ``SCOUT_LOCK_MAX_AGE_SECS`` from *this* process's environment
+    (default 7200 s). The reaper reads it from the runner's, i.e. the launchd
+    job's: set it in both places, or health and the reaper disagree on when.
+    """
+    from scout import run_progress
+
+    lock = vault / ".scout-logs" / run_progress.LOCK_NAME
+    beat = run_progress.read_fresh(run_progress.heartbeat_path(vault), now=now.timestamp())
+    if beat is None or not is_lock_held_by_live_pid(lock) or run_progress.lock_pid(lock) != beat.runner_pid:
+        return []
+    ceiling = run_progress.env_secs(
+        run_progress.MAX_AGE_SECS_ENV,
+        run_progress.DEFAULT_MAX_AGE_SECS,
+        os.environ if env is None else env,
+        allow_zero=True,
+    )
+    if beat.stalled_s <= ceiling:
+        return []
+    return [
+        Finding(
+            id="session.no_progress",
+            severity="yellow",
+            since=datetime.fromtimestamp(beat.progress_at, UTC),
+            summary=(
+                f"The run holding the vault lock (PID {beat.runner_pid}) has made no progress for "
+                f"{beat.stalled_s // 60} min of awake time: its agent burns no CPU and starts no tools."
+            ),
+            fix=(
+                "The next scheduled run reaps it. To end it now, stop that PID's process group; its log is " + beat.log
+            ),
+            source="state",
+            log=beat.log,
+        )
+    ]
+
+
 def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:
     """``home`` locates the stored Claude token and the engine pointer (default: the real home)."""
     now = now or datetime.now(UTC)
     rows = with_log_reset(read_outcomes(vault), vault)
     found = token_findings(ledger_findings(rows, vault=vault, now=now), vault=vault, home=home, now=now)
+    found += progress_findings(vault, now=now)
     loaded = _load_schedule(vault)
     fires = read_last_fires(vault)
     sched, slots = _schedule_findings(vault, loaded, rows, fires, now=now)
@@ -2130,7 +2281,7 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
     config = config_findings(vault)
-    delegates = delegate_findings(vault)
+    delegates = delegate_findings(vault) + delegate_inbox_findings(vault)
     return build_report(
         found + sched + lanes + updates + engine + config + delegates,
         now=now,

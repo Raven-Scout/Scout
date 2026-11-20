@@ -304,7 +304,7 @@ def test_sync_mirrors_each_new_commit_and_never_a_local_only_path(vault: Path, h
     assert TRADING not in files and "TRADING/Notes.md" not in files
     for rev in _bare_git(host.bare, "rev-list", "main").split():
         doc = mirror_policy(host.bare, rev)
-        assert doc["labels"] and doc["policy"]["local_only"]["default"] == ["trading/**"]
+        assert doc["labels"] and doc["policy"]["local_only"]["default"] == [".scout-inbox/agents/**", "trading/**"]
     subjects = _bare_git(host.bare, "log", "--format=%s", "main").splitlines()
     assert subjects[:2] == ["personal", "people: priya"]
     assert rs.sync(vault, host).pushed == []

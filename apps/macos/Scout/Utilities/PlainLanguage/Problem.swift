@@ -138,7 +138,9 @@ extension Problem {
             fix = nil
         case "orphaned":
             severity = .warning
-            fix = "Open the run's log to see how far it got."
+            // The app gives up on a run at its type's cutoff (20 min to 2 h); the engine
+            // waits 2 h without progress before stopping one, so say both.
+            fix = "Open the run's log to see how far it got. If it is stuck, the next scheduled run stops it once it has gone 2 hours without progress."
         default:
             severity = .error
             fix = "Open the run's log for details, or run it again."
