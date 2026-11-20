@@ -93,9 +93,10 @@ scoutctl health resolve-prompt run <log-name> [--json]
     or lane name: `[a-z][a-z0-9_.]{0,63}(:[A-Za-z0-9][A-Za-z0-9._-]{0,80})?`.
     `slot.stale:<key>` and `lane.dark:<lane>` are real ids. A red lane finding
     can be the banner's worst finding. *(Builder-check call.)*
-  - A connector is its canonical registry key, such as `mcp:<server>` or
-    `notify:<channel>`. The pattern is `[a-z]+:[A-Za-z0-9_.-]{1,80}`. The
-    engine maps legacy keys the way `ConnectorKeyAlias` does. *(Call.)*
+  - A connector is the `connector_key` exactly as `connector-alerts.json`
+    holds it, such as `mcp:<server>` or `notify:<channel>`. The app passes
+    the raw key it read, so the engine needs no alias table. The pattern is
+    `[a-z][a-z0-9_-]{0,31}(:[A-Za-z0-9_.-]{1,80})?`. *(Call.)*
   - A log name is a bare `*.log` basename (the run ledger's `_LOG_RE`), never a
     path.
 - How each kind is resolved:
@@ -283,7 +284,11 @@ Failed runs get the run playbook, keyed by the row's outcome and then its
   - the connector rows in `ConnectorAlertBanner`;
   - the problem in `RunDetailView`.
 
-  Each passes the vault folder and a binding for the launch error.
+  None of them change. `ProblemView` reads the prompt service from a SwiftUI
+  environment value, which `ScoutApp` sets from `AppState`. The vault folder
+  comes from the service. `ProblemView` keeps its own launch-error text.
+  Previews, and any view without the environment value, show no button.
+  *(Call.)*
 
 ### Contract and tests
 
