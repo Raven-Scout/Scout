@@ -272,8 +272,9 @@ def _default_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
 
 
 @contextlib.contextmanager
-def _session(vault: Path) -> Iterator[None]:
-    """Hold the vault's session lock, refusing at once (``busy``) while a run is live."""
+def _session(vault: Path, what: str = "inbox apply and revert") -> Iterator[None]:
+    """Hold the vault's session lock, refusing at once (``busy``) while a run is live. ``what`` names the
+    refused step in the refusal."""
     from scout.action_items import retitle
 
     lock = retitle.session_lock(vault)
@@ -281,7 +282,7 @@ def _session(vault: Path) -> Iterator[None]:
         lock.__enter__()
     except retitle.RetitleError as e:
         raise RepoSyncError(
-            "busy", "refused: a Scout run of this vault is live; inbox apply and revert wait until it has finished"
+            "busy", f"refused: a Scout run of this vault is live; {what} waits until it has finished"
         ) from e
     try:
         yield

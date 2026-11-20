@@ -121,6 +121,7 @@ class Item:
     source: str | None = None
     look_alikes: list[str] = field(default_factory=list)
     sha256: str | None = None  # promote's preview: the note's bytes it shows, which promote must still find
+    audience: list[str] | None = None  # a promote or unpromote preview: the delegates that would (or now) see it
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -280,7 +281,7 @@ def accept(
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review accept"), di.locked(vault):
         state = di.load_state(vault)
         delegate = _owner_of(state, ulid)
         applied = state.applied.setdefault(delegate, {})
@@ -518,12 +519,79 @@ def _as_accepted(entry: Mapping[str, Any], rel: str, data: bytes) -> None:
         )
 
 
-def preview_promote(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None) -> Item:
-    """The accepted note's text as promote would publish it, with its hash (``Item.sha256``) for :func:`promote`.
+def _scope(vault: Path, delegate: str, to: Sequence[str] | None) -> list[str] | None:
+    """``--to`` as delegate ids (``author`` is the note's author), each one this vault lists; None for no ``--to``."""
+    from scout.kb.privacy import load_policy
 
-    Refused when the note changed since it was accepted (``note_changed``) or fails the text rules (``bad_text``)."""
+    if to is None:
+        return None
+    scope = list(dict.fromkeys(delegate if t == "author" else t for t in to))
+    policy = load_policy(vault)
+    unknown = [t for t in scope if not is_delegate_id(t) or policy.delegate(f"delegate:{t}") is None]
+    if not scope or unknown:
+        raise RepoSyncError(
+            "unknown_delegate",
+            f"refused: --to names no delegate this vault lists ({', '.join(unknown) or 'none'}); "
+            "see privacy.delegates in scout-config.yaml",
+        )
+    return scope
+
+
+def _promoted(data: bytes, delegate: str, rel: str, scope: list[str] | None, at: str) -> bytes:
+    """The note as promote writes it: ``promoted_from`` its agent, visibility normal, scoped when ``scope``."""
+    fm, body = _split(data.decode("utf-8"))
+    if fm.get("source") != f"delegate:{delegate}":
+        raise RepoSyncError("note_changed", f"refused: {rel}'s source isn't delegate:{delegate} any more")
+    fm.pop("source")
+    fm["promoted_from"] = f"delegate:{delegate}"
+    fm["visibility"] = "normal"
+    fm["promoted_at"] = at
+    if scope is not None:
+        fm["delegate_scope"] = scope
+    return f"---\n{_dump(fm)}---\n{body}".encode()
+
+
+def audience(vault: Path, rel: str, data: bytes) -> list[str]:
+    """The listed delegates the classifier lets see ``data`` at ``rel``, in the config's order: who a promote
+    preview names, and who an unpromote preview says stops seeing it. The mirror may still withhold it for
+    another reason (a link it redacts, say); it never shows it to anyone not named here."""
+    from scout.kb.privacy import classify, load_policy, visible_to
+
+    policy = load_policy(vault)
+    label = classify(rel, data.decode("utf-8"), policy)
+    return [d.id for d in policy.delegates if is_delegate_id(d.id) and visible_to(label, f"delegate:{d.id}", policy)]
+
+
+def _previewed(delegate: str, ulid: str, status: str, data: bytes, body: str) -> Item:
+    """A preview of the note's bytes: its body, and the agent's ``about`` and ``source`` as the note carries them
+    (``title`` and ``agent_source``), each shown and checked for look-alikes, as promote publishes all three."""
+    fm, _body = _split(data.decode("utf-8"))
+    about = fm.get("title") if isinstance(fm.get("title"), str) else None
+    source = fm.get("agent_source") if isinstance(fm.get("agent_source"), str) else None
+    item = Item(delegate=delegate, ulid=ulid, kind="observation", status=status,
+                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(body), sha256=_sha(data),
+                about=shown(about) if about is not None else None,
+                source=shown(source) if source is not None else None)  # fmt: skip
+    item.look_alikes = look_alikes(" ".join(v for v in (body, about, source) if v))
+    return item
+
+
+def preview_promote(
+    vault: Path,
+    ulid: str,
+    *,
+    to: Sequence[str] | None = None,
+    now: dt.datetime | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Item:
+    """The accepted note's text as promote would publish it, with its hash (``Item.sha256``) for :func:`promote`,
+    and the delegates who would see it (``Item.audience``). Writes nothing.
+
+    Refused when the note changed since it was accepted (``note_changed``), fails the text rules (``bad_text``),
+    or ``to`` names a delegate the vault doesn't list (``unknown_delegate``)."""
     headless_gate(os.environ if env is None else env, "Promoting an agent's note")
     vault = vault.resolve()
+    when = now or dt.datetime.now(dt.UTC)
     with di.locked(vault):
         state = di.load_state(vault)
         delegate, entry, rel, data = _accepted_note(vault, state, ulid)
@@ -531,9 +599,9 @@ def preview_promote(vault: Path, ulid: str, *, env: Mapping[str, str] | None = N
         raise RepoSyncError("already_promoted", f"refused: {ulid} is promoted already")
     _as_accepted(entry, rel, data)
     text = _checked_body(data)
-    item = Item(delegate=delegate, ulid=ulid, kind="observation", status="accepted",
-                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(text), sha256=_sha(data))  # fmt: skip
-    item.look_alikes = look_alikes(text)
+    scope = _scope(vault, delegate, to)
+    item = _previewed(delegate, ulid, "accepted", data, text)
+    item.audience = audience(vault, rel, _promoted(data, delegate, rel, scope, di._stamp(when)))
     return item
 
 
@@ -566,54 +634,32 @@ def promote(
     ``to`` (delegate ids, ``author`` for its author) limits it to those delegates (``delegate_scope``).
     ``previewed`` is :func:`preview_promote`'s ``sha256``: the note must still be exactly what the owner was shown,
     and exactly what they accepted."""
-    from scout.kb.privacy import load_policy
-
     env = os.environ if env is None else env
     headless_gate(env, "Promoting an agent's note")
     _confirmed(ulid, confirm, "promote")
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review promote"), di.locked(vault):
         state = di.load_state(vault)
         delegate, entry, rel, data = _accepted_note(vault, state, ulid)
         if entry.get("promoted"):
             raise RepoSyncError("already_promoted", f"refused: {ulid} is promoted already")
-        scope: list[str] | None = None
-        if to is not None:
-            scope = list(dict.fromkeys(delegate if t == "author" else t for t in to))
-            policy = load_policy(vault)
-            unknown = [t for t in scope if not is_delegate_id(t) or policy.delegate(f"delegate:{t}") is None]
-            if not scope or unknown:
-                raise RepoSyncError(
-                    "unknown_delegate",
-                    f"refused: --to names no delegate this vault lists ({', '.join(unknown) or 'none'}); "
-                    "see privacy.delegates in scout-config.yaml",
-                )
+        scope = _scope(vault, delegate, to)
         _as_accepted(entry, rel, data)
         if previewed is None or not hmac.compare_digest(_sha(data), previewed):
             raise RepoSyncError(
                 "note_changed", f"refused: {rel} isn't what the preview showed; run promote again to see it"
             )
         _checked_body(data)
-        fm, body = _split(data.decode("utf-8"))
-        if fm.get("source") != f"delegate:{delegate}":
-            raise RepoSyncError("note_changed", f"refused: {rel}'s source isn't delegate:{delegate} any more")
-        before_sha = _sha(data)
-        fm.pop("source")
-        fm["promoted_from"] = f"delegate:{delegate}"
-        fm["visibility"] = "normal"
-        fm["promoted_at"] = di._stamp(when)
-        if scope is not None:
-            fm["delegate_scope"] = scope
-        new = f"---\n{_dump(fm)}---\n{body}".encode()
+        new = _promoted(data, delegate, rel, scope, di._stamp(when))
         saved = da._snapshot(vault, [rel])
         da._write_bytes(vault / rel, new)
         who = ", ".join(scope) if scope else "every delegate"
         sha = da._commit_change(vault, f"inbox: promote delegate-{delegate}'s observation ({ulid}) to {who}, by "
                                 "the owner", saved, commit)  # fmt: skip
         entry["promoted"] = {"to": scope, "at": di._stamp(when), "commit": sha, "sha256": _sha(new),
-                             "before_sha256": before_sha}  # fmt: skip
+                             "before_sha256": _sha(data)}  # fmt: skip
         di.save_state(vault, state)
     return Decision(
         delegate=delegate,
@@ -630,29 +676,57 @@ def promote(
     )
 
 
+def _promoted_note(vault: Path, state: di.InboxState, ulid: str) -> tuple[str, dict[str, Any], str, bytes]:
+    """A promoted note that is byte for byte what promote wrote, or refuse."""
+    delegate, entry, rel, data = _accepted_note(vault, state, ulid)
+    promoted = entry.get("promoted")
+    if not promoted:
+        raise RepoSyncError("not_promoted", f"refused: {ulid} isn't promoted")
+    if not hmac.compare_digest(_sha(data), str(promoted.get("sha256"))):
+        raise RepoSyncError(
+            "note_changed", f"refused: {rel} changed since the promotion, so it was left alone; change it by hand"
+        )
+    return delegate, entry, rel, data
+
+
+def preview_unpromote(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None) -> Item:
+    """What unpromote puts back: the note's text, who sees it now (``Item.audience``, who stops seeing it), and
+    its hash (``Item.sha256``) for :func:`unpromote`'s ``previewed``. Writes nothing."""
+    headless_gate(os.environ if env is None else env, "Unpromoting an agent's note")
+    vault = vault.resolve()
+    with di.locked(vault):
+        state = di.load_state(vault)
+        delegate, _entry, rel, data = _promoted_note(vault, state, ulid)
+    _fm, body = _split(data.decode("utf-8"))  # the bytes promote wrote (the hash matched): UTF-8
+    item = _previewed(delegate, ulid, "promoted", data, body)
+    item.audience = audience(vault, rel, data)
+    return item
+
+
 def unpromote(
     vault: Path,
     ulid: str,
     *,
+    previewed: str | None = None,
     now: dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
     commit: da.Committer | None = None,
 ) -> Decision:
-    """Put a promoted note back as accepted (private, ``source: delegate:<id>``), only while it is unchanged."""
+    """Put a promoted note back as accepted (private, ``source: delegate:<id>``), only while it is unchanged.
+
+    No ``--confirm``: it only narrows who sees the note. ``previewed`` (:func:`preview_unpromote`'s ``sha256``),
+    when given, must still match the note."""
     env = os.environ if env is None else env
     headless_gate(env, "Unpromoting an agent's note")
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review unpromote"), di.locked(vault):
         state = di.load_state(vault)
-        delegate, entry, rel, data = _accepted_note(vault, state, ulid)
-        promoted = entry.get("promoted")
-        if not promoted:
-            raise RepoSyncError("not_promoted", f"refused: {ulid} isn't promoted")
-        if not hmac.compare_digest(_sha(data), str(promoted.get("sha256"))):
+        delegate, entry, rel, data = _promoted_note(vault, state, ulid)
+        if previewed is not None and not hmac.compare_digest(_sha(data), previewed):
             raise RepoSyncError(
-                "note_changed", f"refused: {rel} changed since the promotion, so it was left alone; change it by hand"
+                "note_changed", f"refused: {rel} isn't what the preview showed; run unpromote again to see it"
             )
         fm, body = _split(data.decode("utf-8"))
         for key in ("promoted_from", "promoted_at", "delegate_scope"):
@@ -669,6 +743,50 @@ def unpromote(
         entry["unpromoted"] = {"at": di._stamp(when), "commit": sha}
         di.save_state(vault, state)
     return Decision(delegate=delegate, ulid=ulid, outcome="unpromoted", commit=sha, note=rel)
+
+
+@dataclass
+class Accepted:
+    """An accepted observation, from the signed state: ids and times only, never its text."""
+
+    delegate: str
+    ulid: str
+    note: str
+    accepted_at: str | None
+    promoted_to: list[str] | None  # None: every delegate that can see it (or not promoted)
+    promoted_at: str | None
+    promoted: bool
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def accepted(vault: Path, *, delegate: str | None = None, env: Mapping[str, str] | None = None) -> list[Accepted]:
+    """The accepted observations still in the vault (not reverted), oldest first: what promote and unpromote
+    act on."""
+    headless_gate(os.environ if env is None else env, "Reviewing what agents proposed")
+    vault = vault.resolve()
+    with di.locked(vault):
+        state = di.load_state(vault)
+    out: list[Accepted] = []
+    for who in sorted(state.applied):
+        if delegate is not None and who != delegate:
+            continue
+        for ulid, entry in sorted(state.applied[who].items()):
+            if entry.get("kind") != "observation" or entry.get("outcome") != "accepted":
+                continue
+            promoted = entry.get("promoted") or None
+            to = promoted.get("to") if promoted else None
+            out.append(Accepted(
+                delegate=who,
+                ulid=ulid,
+                note=str(entry.get("note")),
+                accepted_at=entry.get("at") if isinstance(entry.get("at"), str) else None,
+                promoted_to=[str(t) for t in to] if isinstance(to, list) else None,
+                promoted_at=promoted.get("at") if promoted else None,
+                promoted=promoted is not None,
+            ))  # fmt: skip
+    return sorted(out, key=lambda a: a.ulid)
 
 
 def revert_observation(

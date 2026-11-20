@@ -6,11 +6,19 @@ import SwiftUI
 /// Preview (`delegate preview`, writes nothing) and Sync now (`delegate sync`, what the schedule
 /// tick runs anyway). Linking, unlinking, keys and re-signing stay in Terminal.
 ///
+/// Each agent with an inbox also gets its inbox in a line and, when the engine offers it, a Review button that
+/// opens `InboxReviewSheet` (V4b3), which runs the inbox review through `InboxReviewService`.
+///
 /// Hidden until the engine reports a delegate: most vaults link no agent.
 struct AgentCopiesSection: View {
     @ObservedObject var service: DelegateStatusService
+    /// The inbox review; nil hides the Review button.
+    var review: InboxReviewService? = nil
     /// Testing seam: what "now" means for "synced 15 minutes ago".
     var now: () -> Date = Date.init
+
+    private struct Reviewing: Identifiable { let id: String }
+    @State private var reviewing: Reviewing?
 
     var body: some View {
         // A VStack, not a Group: a Group with nothing in it hands `.task` to no view, so the first read never ran.
@@ -30,6 +38,11 @@ struct AgentCopiesSection: View {
         }
         // On its own the card only reads.
         .task { if service.status == nil && service.work == nil { await service.refresh() } }
+        .sheet(item: $reviewing, onDismiss: { Task { await service.refresh() } }) { target in
+            if let review {
+                InboxReviewSheet(service: review, delegate: target.id, onClose: { reviewing = nil })
+            }
+        }
     }
 
     @ViewBuilder
@@ -38,6 +51,7 @@ struct AgentCopiesSection: View {
             SettingsCard {
                 SettingsRow(title: "Agent copies", help: service.lastError ?? AgentCopiesModel.intro) { refreshButton }
                 if let problem = model.stateProblem { problemRow(problem.summary, problem.fix) }
+                if let problem = model.inboxProblem { problemRow(problem.summary, problem.fix) }
                 ForEach(model.rows) { row in delegateRow(row) }
             }
         }
@@ -62,12 +76,19 @@ struct AgentCopiesSection: View {
     }
 
     private func delegateRow(_ row: AgentCopiesModel.Row) -> some View {
-        SettingsRow(title: row.id, help: row.help) {
+        SettingsRow(title: row.id, help: [row.help, row.inbox].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: " ")) {
             HStack(spacing: 10) {
                 Text(row.value)
                     .font(DS.font(.label, weight: .medium))
                     .foregroundStyle(Self.color(row.tone))
                     .multilineTextAlignment(.trailing)
+                if row.offersReview, review != nil {
+                    Button("Review") { reviewing = Reviewing(id: row.id) }
+                        .buttonStyle(.ds(row.inboxTone == .warn ? .primary : .secondary, size: .small))
+                        .disabled(service.work != nil || service.stale)
+                        .accessibilityHint("Shows what \(row.id) proposed. Nothing is written until you confirm.")
+                }
                 if row.offersPreview {
                     Button(service.work == .previewing(row.id) ? "Previewing…" : "Preview") {
                         Task { await service.preview(row.id) }

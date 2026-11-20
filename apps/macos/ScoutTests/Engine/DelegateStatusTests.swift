@@ -47,6 +47,53 @@ struct DelegateStatusTests {
         #expect(duet.deployKey == false && duet.oldKeysLive == 0)   // a local mirror has no deploy key
         #expect(!bot.linked && bot.listed && bot.remote == nil && bot.counts == nil)
         #expect(bot.canPreview && !bot.canSync)
+        // The inboxes (V4b3).
+        #expect(s.inboxState == "ok")
+        #expect(grok.inbox == .init(linkedAt: "2026-11-10T09:05:00Z", lastPull: "2026-11-19T11:45:00Z", refusal: nil,
+                                    review: 2, oldestReview: "2026-11-19T09:00:00Z", waiting: 2, untaken: 1))
+        #expect(duet.inbox?.refusal?.code == "inbox_rewritten" && duet.inbox?.refusal?.at == "2026-11-19T11:30:00Z")
+        #expect(bot.inbox == nil)
+        #expect(grok.canReview == true && duet.canReview == true && bot.canReview == false)
+    }
+
+    @Test func anEngineBeforeTheInboxStillDecodes() throws {
+        var obj = try #require(try JSONSerialization.jsonObject(with: try Self.sharedFixture()) as? [String: Any])
+        obj["inbox_state"] = nil
+        var delegates = try #require(obj["delegates"] as? [[String: Any]])
+        for i in delegates.indices { delegates[i]["inbox"] = nil; delegates[i]["can_review"] = nil }
+        obj["delegates"] = delegates
+        let s = try #require(DelegateStatus.parse(try JSONSerialization.data(withJSONObject: obj)))
+        #expect(s.inboxState == nil && s.delegates.allSatisfy { $0.inbox == nil && $0.canReview == nil })
+        let m = AgentCopiesModel(status: s, now: now)
+        #expect(m.inboxProblem == nil && m.rows.allSatisfy { $0.inbox == nil && !$0.offersReview })
+    }
+
+    @Test func theInboxReadsInPlainWords() throws {
+        let m = AgentCopiesModel(status: try Self.fixtureStatus(), now: now)
+        let rows = Dictionary(uniqueKeysWithValues: m.rows.map { ($0.id, $0) })
+        let grok = try #require(rows["grok-personal"]), duet = try #require(rows["duet"])
+        #expect(grok.inbox == "Inbox: 2 proposals wait for your review. 1 file in its inbox folder no pull took; "
+                + "check them in Terminal.")
+        #expect(grok.inboxTone == .warn && grok.offersReview)
+        #expect(duet.inbox?.hasPrefix("Inbox: the last pull was refused. The inbox repository's history was rewritten") == true)
+        #expect(duet.inboxTone == .bad && duet.offersReview)
+        #expect(rows["research-bot"]?.inbox == nil && rows["research-bot"]?.offersReview == false)
+        #expect(m.inboxProblem == nil)
+    }
+
+    @Test func anInboxStateThatCantBeTrustedSaysSoAndOffersNoReview() throws {
+        for (state, words) in [("unverified", "wasn't signed by Scout"), ("unsafe", "isn't yours alone"),
+                               ("unreadable", "can't be read")] {
+            var obj = try #require(try JSONSerialization.jsonObject(with: try Self.sharedFixture()) as? [String: Any])
+            obj["inbox_state"] = state
+            var delegates = try #require(obj["delegates"] as? [[String: Any]])
+            for i in delegates.indices { delegates[i]["inbox"] = NSNull(); delegates[i]["can_review"] = false }
+            obj["delegates"] = delegates
+            let m = AgentCopiesModel(status: try #require(DelegateStatus.parse(try JSONSerialization.data(withJSONObject: obj))),
+                                     now: now)
+            #expect(m.inboxProblem?.summary.contains(words) == true, "\(state)")
+            #expect(m.rows.allSatisfy { !$0.offersReview && $0.inbox == nil })
+        }
     }
 
     @Test func aNewerSchemaIsRefusedNotHalfRead() throws {

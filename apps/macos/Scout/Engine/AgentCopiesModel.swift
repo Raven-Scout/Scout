@@ -13,6 +13,11 @@ nonisolated struct AgentCopiesModel: Equatable, Sendable {
         let tone: Tone
         let offersSync: Bool
         let offersPreview: Bool
+        /// The agent's inbox in a line ("2 proposals wait for your review."), or nil when it has none.
+        var inbox: String? = nil
+        var inboxTone: Tone = .neutral
+        /// The inbox review sheet may open for it (the engine's `can_review`).
+        var offersReview: Bool = false
     }
 
     let status: DelegateStatus
@@ -44,7 +49,43 @@ nonisolated struct AgentCopiesModel: Equatable, Sendable {
         }
     }
 
+    /// A problem with the inbox state as a whole, or nil. While it holds, no inbox is shown or reviewed.
+    var inboxProblem: (summary: String, fix: String)? {
+        switch status.inboxState {
+        case "unverified":
+            return ("The agents' inbox state wasn't signed by Scout on this Mac, so nothing in it is trusted and "
+                        + "no proposal can be reviewed.",
+                    "Move .scout-state/delegate-inbox/state.json aside and link each inbox again in Terminal: "
+                        + "scoutctl delegate inbox <id>")
+        case "unsafe":
+            return ("The agents' inbox state folder isn't yours alone, so it isn't read.",
+                    "Make .scout-state/delegate-inbox/ yours with mode 700 in Terminal: chmod 700 .scout-state/delegate-inbox")
+        case "unreadable":
+            return ("The agents' inbox state can't be read, so no proposal can be reviewed.",
+                    "Run scoutctl inbox review in Terminal to see why.")
+        default:
+            return nil
+        }
+    }
+
     var rows: [Row] { status.delegates.map(row) }
+
+    /// The inbox in one line and its tone, or nil for no inbox.
+    static func inboxText(_ inbox: DelegateStatus.Inbox?) -> (String, Tone)? {
+        guard let inbox else { return nil }
+        if let refusal = inbox.refusal { return ("Inbox: the last pull was refused. \(refusal.reason)", .bad) }
+        var parts: [String] = []
+        let tone: Tone
+        switch inbox.review ?? 0 {
+        case 0: parts.append("Inbox: nothing waits for your review."); tone = .neutral
+        case 1: parts.append("Inbox: 1 proposal waits for your review."); tone = .warn
+        case let n: parts.append("Inbox: \(n) proposals wait for your review."); tone = .warn
+        }
+        if let n = inbox.untaken, n > 0 {
+            parts.append("\(n) file\(n == 1 ? "" : "s") in its inbox folder no pull took; check them in Terminal.")
+        }
+        return (parts.joined(separator: " "), tone)
+    }
 
     func row(_ d: DelegateStatus.Delegate) -> Row {
         var help: [String] = []
@@ -69,9 +110,12 @@ nonisolated struct AgentCopiesModel: Equatable, Sendable {
         }
         if d.stateUnverified { help.append("Not trusted until you run scoutctl delegate trust-state in Terminal.") }
         if let outcome = results[d.id] { help.append(Self.outcomeText(outcome)) }
+        let inbox = Self.inboxText(d.inbox)
         return Row(id: d.id, value: value, help: help.joined(separator: " "), tone: tone,
                    offersSync: d.canSync && DelegateStatus.isDelegateID(d.id),
-                   offersPreview: d.canPreview && DelegateStatus.isDelegateID(d.id))
+                   offersPreview: d.canPreview && DelegateStatus.isDelegateID(d.id),
+                   inbox: inbox?.0, inboxTone: inbox?.1 ?? .neutral,
+                   offersReview: d.canReview == true && d.inbox != nil && DelegateStatus.isDelegateID(d.id))
     }
 
     private func headline(_ d: DelegateStatus.Delegate) -> (String, Tone) {

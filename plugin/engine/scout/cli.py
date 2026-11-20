@@ -6344,6 +6344,9 @@ def _register_inbox() -> None:
     def cli_inbox_review(
         ctx: typer.Context,
         delegate: str | None = typer.Option(None, "--delegate", help="One delegate's items only."),
+        accepted: bool = typer.Option(
+            False, "--accepted", help="List the accepted observations instead (ids and times; promote acts on them)."
+        ),
         as_json: bool = json_opt,
     ) -> None:
         """List what waits for your review, with hidden characters shown as \\u{...}."""
@@ -6354,6 +6357,21 @@ def _register_inbox() -> None:
         from scout.repo_sync import RepoSyncError
 
         if ctx.invoked_subcommand is not None:
+            return
+        if accepted:
+            try:
+                notes = delegate_review.accepted(_paths.data_dir(), delegate=delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            if as_json:
+                typer.echo(_json.dumps([a.to_json() for a in notes], indent=2, sort_keys=True))
+                return
+            for a in notes:
+                where = (f"promoted to {', '.join(a.promoted_to)}" if a.promoted_to else "promoted") if a.promoted \
+                    else "private"  # fmt: skip
+                typer.echo(f"{a.ulid}  FROM AGENT delegate-{a.delegate}  {a.note}  ({where})")
+            if not notes:
+                typer.echo("No accepted observations.")
             return
         try:
             items = delegate_review.review(_paths.data_dir(), delegate=delegate)
@@ -6434,6 +6452,12 @@ def _register_inbox() -> None:
             None, "--to", help="Only these delegates, comma-separated; 'author' is its author. Default: every delegate."
         ),
         confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        preview_only: bool = typer.Option(
+            False, "--preview", help="Show the text and who would see it, with its sha256; write nothing."
+        ),
+        previewed: str | None = typer.Option(
+            None, "--previewed", help="A --preview's sha256: promote only if the note is still exactly that."
+        ),
         as_json: bool = json_opt,
     ) -> None:
         """Let delegates' agents read an accepted observation (it becomes a normal note, promoted_from its agent)."""
@@ -6444,19 +6468,43 @@ def _register_inbox() -> None:
         vault = _paths.data_dir()
         targets = [t.strip() for t in to.split(",") if t.strip()] if to is not None else None
         try:
-            preview = delegate_review.preview_promote(vault, ulid)  # shown with --confirm too: what goes out
-            if not as_json:
-                _show_item(preview)
+            if preview_only or previewed is None:
+                preview = delegate_review.preview_promote(vault, ulid, to=targets)  # shown with --confirm too
+                if preview_only:
+                    _previewed(preview, as_json, "Would be visible to")
+                    return
+                if not as_json:
+                    _show_item(preview)
+                previewed = preview.sha256
             decision = delegate_review.promote(
-                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=preview.sha256, to=targets
+                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=previewed, to=targets
             )
         except RepoSyncError as e:
             _fail(e, as_json)
         _decided(decision, as_json)
 
+    def _previewed(item: object, as_json: bool, who: str) -> None:
+        import json as _json
+
+        from scout.delegate_review import Item
+
+        assert isinstance(item, Item)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **item.to_json()}, indent=2, sort_keys=True))
+            return
+        _show_item(item)
+        typer.echo(f"{who}: {', '.join(f'delegate-{d}' for d in item.audience or []) or 'no delegate'}")
+        typer.echo(f"sha256: {item.sha256}")
+
     @review_app.command("unpromote")
     def cli_inbox_review_unpromote(
         ulid: str = typer.Argument(..., help="A promoted observation's ULID."),
+        preview_only: bool = typer.Option(
+            False, "--preview", help="Show the text and who sees it now, with its sha256; write nothing."
+        ),
+        previewed: str | None = typer.Option(
+            None, "--previewed", help="A --preview's sha256: unpromote only if the note is still exactly that."
+        ),
         as_json: bool = json_opt,
     ) -> None:
         """Make a promoted note private again and hide it from every delegate, if it is unchanged since."""
@@ -6465,7 +6513,10 @@ def _register_inbox() -> None:
         from scout.repo_sync import RepoSyncError
 
         try:
-            decision = delegate_review.unpromote(_paths.data_dir(), ulid)
+            if preview_only:
+                _previewed(delegate_review.preview_unpromote(_paths.data_dir(), ulid), as_json, "Seen now by")
+                return
+            decision = delegate_review.unpromote(_paths.data_dir(), ulid, previewed=previewed)
         except RepoSyncError as e:
             _fail(e, as_json)
         _decided(decision, as_json)
