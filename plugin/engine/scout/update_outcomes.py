@@ -9,11 +9,13 @@ breaks an evaluation.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from scout import events, safe_write
+from scout.plain_text import one_line
 
 LEDGER = ".scout-logs/update-outcomes.jsonl"
 RESULTS = (
@@ -80,6 +82,16 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+# The shapes the updater writes, so a hand-edited or forged row can't carry free text into health or a prompt.
+DETAIL_MAX = 300
+_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
+_LOG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+
+
+def _token_or_none(value: object, pattern: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+
 def _parse(obj: object) -> UpdateOutcome | None:
     if not isinstance(obj, dict):
         return None
@@ -94,14 +106,14 @@ def _parse(obj: object) -> UpdateOutcome | None:
     return UpdateOutcome(
         at=at,
         from_version=from_version,
-        target=_str_or_none(obj.get("target")),
+        target=_token_or_none(obj.get("target"), _VERSION_RE),
         managed_by=managed_by,
         result=result,
         step=step,
         doctor=_str_or_none(obj.get("doctor")),
         sidecars=tuple(s for s in sidecars if isinstance(s, str)) if isinstance(sidecars, list) else (),
-        detail=_str_or_none(obj.get("detail")) or "",
-        log=_str_or_none(obj.get("log")),
+        detail=one_line(obj.get("detail"), limit=DETAIL_MAX),
+        log=_token_or_none(obj.get("log"), _LOG_RE),
         release_published_at=_epoch(obj.get("release_published_at")),
     )
 

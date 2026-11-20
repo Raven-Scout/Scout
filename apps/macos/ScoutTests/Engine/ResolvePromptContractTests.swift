@@ -33,7 +33,7 @@ struct ResolvePromptContractTests {
     @Test func parsesEachKind() throws {
         let titles = [
             "finding": "Investigate: a scheduled run changed a protected file",
-            "connector": "Investigate: the Example tracker connector is failing",
+            "connector": "Investigate: connector mcp:example_tracker is failing",
             "run": "Investigate: a morning-briefing run failed",
         ]
         for (kind, subject) in Self.subjects {

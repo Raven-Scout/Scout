@@ -43,6 +43,10 @@ struct ResolvePromptServiceTests {
         .finding(""),
         .finding("Run.X"),
         .connector("mcp: x"),
+        // `$` would match before a final newline; the patterns anchor at the very end.
+        .run(logName: "x.log\n"),
+        .finding("runs.failing\n"),
+        .connector("mcp:example_tracker\n"),
     ])
     func rejectsUnsafeKeys(_ subject: ResolveSubject) async {
         let runner = RuleBasedRunner()
