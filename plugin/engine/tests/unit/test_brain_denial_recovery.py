@@ -29,6 +29,10 @@ def test_every_brain_says_a_denial_covers_one_call(brains, kind):
     assert text.count(RECOVERY) == 1
     line = next(ln for ln in text.splitlines() if RECOVERY in ln)
     assert "$(…)" in line and "Read/Edit" in line and "carry on" in line
+    # A gate's deny is no invitation to get the same thing by another route (#742 review: after a kb-read-gate
+    # deny of `cat`, a python or sort read passes the gate), and only a shell command is redone as plainer ones.
+    assert "never get the same thing another way" in line
+    assert line.index("never get the same thing another way") < line.index("otherwise redo a shell command")
     # Before any section after Step 0: it must already hold when a run's first shell call is refused.
     assert text.index(RECOVERY) < text.index("## Using Git History")
 

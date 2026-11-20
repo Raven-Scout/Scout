@@ -20,7 +20,7 @@ fi
 
 Do not mention git setup in your output unless something goes wrong.
 
-**A denied tool call denies that call only, never Bash or the run.** Do what its message says, or redo it as plain single commands (no `$(…)`, `$VAR` or loops) or with Read/Edit, and carry on.
+**A denied tool call denies that call only, never Bash or the run.** If its message says what to do instead (a `[scout:…]` gate's does), do that and never get the same thing another way; otherwise redo a shell command as plain single commands (no `$(…)`, `$VAR` or loops) or with Read/Edit, and carry on.
 
 ## Using Git History
 
@@ -69,9 +69,9 @@ Commit there, `git push -u origin scout/$NAME`, then `gh pr create --draft`. Nev
 
 The sandbox/server clock may run in UTC. You **must** use the run's display zone for all time checks and timestamp generation throughout the run: the computer's own timezone (the clock the scheduler fires on), unless `scout-config.yaml` sets a `timezone:` override. Never use bare `date`: run `scripts/scout-tz.sh date '+FMT'`, which resolves it. Never hardcode a zone name: the user travels, and the resolver follows them.
 
-**Convert ingested connector timestamps at write time.** Connector payloads frequently carry timestamps in UTC (a trailing `Z`, or `+00:00`) — never copy one verbatim into the KB, an action item, or a DM as if it were already in the display zone. A value ending in `Z` is UTC; rendered in the display zone it can shift by several hours and even across a calendar-day boundary, so writing it through unconverted silently drifts every downstream surface. At write time, parse the source's zone and convert to the display zone (a tz-aware datetime, e.g. `TZ="$(scripts/scout-tz.sh)" python3 -I -c 'import sys, datetime as d; print(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z"))' <iso>`), then label the result. If a connector timestamp's zone is ambiguous, resolve it before writing — don't assume it matches the display zone.
+**Convert ingested connector timestamps at write time.** Connector payloads frequently carry timestamps in UTC (a trailing `Z`, or `+00:00`) — never copy one verbatim into the KB, an action item, or a DM as if it were already in the display zone. Unconverted, it is hours or even a day off on every surface downstream. At write time, parse the source's zone and convert to the display zone (a tz-aware datetime, e.g. `TZ="$(scripts/scout-tz.sh)" python3 -I -c 'import sys, datetime as d; print(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z"))' <iso>`), then label the result. If a connector timestamp's zone is ambiguous, resolve it before writing — don't assume it matches the display zone.
 
-**Sanity-check cited times at compose time.** When citing a timestamp described as "this morning" / "earlier today," cross-check it against `scripts/scout-tz.sh date '+%H:%M'` — if the cited hour doesn't fit the narrative (an event described as pre-8 AM carrying an afternoon time), that's a UTC-copied-as-local smell; re-derive from the source string. **One event, one time:** a single event must never appear with two different times across surfaces in the same run (e.g. the raw UTC value in one line and the converted local time in another) — pick the display zone, convert once, and use it everywhere.
+**Sanity-check cited times at compose time.** When citing a timestamp described as "this morning" / "earlier today," cross-check it against `scripts/scout-tz.sh date '+%H:%M'` — if the cited hour doesn't fit the narrative (a pre-8 AM event at an afternoon time), that's a UTC-copied-as-local smell; re-derive from the source string. **One event, one time:** a single event must never appear with two different times across surfaces in the same run (raw UTC in one line, local in another) — pick the display zone, convert once, and use it everywhere.
 
 ### Hard Rule — Weekday Derivation
 

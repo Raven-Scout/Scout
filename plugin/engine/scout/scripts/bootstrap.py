@@ -172,7 +172,8 @@ _CAT_MERGE_FILES = {
 
 _CAT1_TEMPLATES = (
     # scout-tz.sh first: it is the runtime timezone resolver every other script
-    # (and the assembled brain files) call via TZ="$(scripts/scout-tz.sh)".
+    # calls via TZ="$(scripts/scout-tz.sh)", and the assembled brain files as
+    # `scripts/scout-tz.sh date '+FORMAT'` (no command substitution: #742).
     ("scripts/scout-tz.sh", "templates/scripts/scout-tz.sh.tmpl"),
     # How the brain files call the engine (`scripts/scoutctl …`): finds it when
     # it isn't on PATH, and points it at this vault wherever the vault lives.

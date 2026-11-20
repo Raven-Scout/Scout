@@ -98,14 +98,56 @@ def test_scout_tz_date_runs_date_in_the_resolved_zone(installed_vault, tmp_path)
     assert zone in ("CET", "CEST") and year.isdigit()
 
 
-def test_scout_tz_runs_no_command_but_date(installed_vault, tmp_path):
-    """An allowlist admits every `scripts/*` call, so the helper must not run whatever it is handed."""
+_SECRET = "SCOUT-TZ-CANARY-7f3a"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("date", "-f", "{f}"),  # GNU date echoes every line of FILE: a read no KB gate sees
+        ("date", "-r", "{f}"),  # FILE's mtime
+        ("date", "-j", "-f", "%Y", "2026"),  # BSD parse mode
+        ("date", "-s", "2026-01-01"),  # sets the clock
+        ("date", "+%A", "+%b"),  # two operands
+        ("date", "+%A", "%b"),  # an unquoted '+%A %b' arrives as two words
+        ("date",),  # no format
+        ("date", "%A"),  # a format without its +
+        ("touch", "{f}.ran"),  # any other command
+        ("Europe/Prague",),  # any argument at all on the zone-name path
+    ],
+    ids=["-f", "-r", "-j-f", "-s", "two-operands", "unquoted-format", "no-format", "no-plus", "touch", "stray-arg"],
+)
+def test_scout_tz_refuses_everything_but_one_format(installed_vault, tmp_path, args):
+    """An allowlist admits every `scripts/*` call, so the helper runs `date +FORMAT` and nothing else: no
+    option of date's (which read files or set the clock), no other command. A refusal exits 2 with an empty
+    stdout, so a caller can't mistake it for a date or a zone."""
     script = installed_vault / "scripts" / "scout-tz.sh"
-    marker = tmp_path / "ran"
-    result = _run(script, "touch", str(marker), env_overrides={"SCOUT_CONFIG": _write_prague_config(tmp_path)})
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "Europe/Prague"
-    assert not marker.exists()
+    secret = tmp_path / "secret.txt"
+    secret.write_text(f"{_SECRET}\n", encoding="utf-8")
+    argv = [a.replace("{f}", str(secret)) for a in args]
+    result = _run(script, *argv, env_overrides={"SCOUT_CONFIG": _write_prague_config(tmp_path)})
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert _SECRET not in result.stderr
+    assert "usage: scout-tz.sh" in result.stderr
+    assert not (tmp_path / "secret.txt.ran").exists()
+
+
+def test_doctor_is_quiet_about_the_installed_scout_tz(installed_vault):
+    from scout.scripts.bootstrap_doctor import _check_scout_tz
+
+    assert _check_scout_tz(vault=installed_vault) == []
+
+
+def test_doctor_flags_a_scout_tz_that_prints_a_zone_for_date(installed_vault):
+    """An older script ignores its arguments and prints the zone, with exit 0: every date a run wrote through
+    `scripts/scout-tz.sh date …` would be a zone name. Only the doctor can say so."""
+    from scout.scripts.bootstrap_doctor import _check_scout_tz
+
+    script = installed_vault / "scripts" / "scout-tz.sh"
+    script.write_text("#!/bin/bash\necho Europe/Prague\n", encoding="utf-8")
+    (warning,) = _check_scout_tz(vault=installed_vault)
+    assert "printed 'Europe/Prague', not a year" in warning and "/scout-update" in warning
 
 
 def test_scout_tz_self_test_passes_in_installed_vault(installed_vault):
