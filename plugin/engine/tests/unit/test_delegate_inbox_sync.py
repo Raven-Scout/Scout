@@ -291,9 +291,15 @@ def test_the_tick_starts_a_sync_as_the_owner(linked: tuple[Path, Path], monkeypa
     from scout.scripts import schedule_tick as st
 
     v, _clone = linked
+
+    class Far:  # the vault's schedule had a 17:00 weekday slot: a run in the 5 minutes before it started nothing
+        def target_today(self, *, now: dt.datetime) -> dt.datetime:
+            return now + dt.timedelta(hours=6)
+
+    monkeypatch.setattr(st, "_load_or_default", lambda w: {"consolidation": Far()})
     log_dir = v / ".scout-logs"
     started: list[Path] = []
-    now = dt.datetime.now(dt.UTC)
+    now = dt.datetime.now(dt.UTC)  # real time: mark_started stamps a real mtime, which the interval reads
     st._sync_inboxes(vault=v, log_dir=log_dir, now=now, spawn=lambda w, logs: started.append(w) or 4242)
     assert started == [v]
     st._sync_inboxes(vault=v, log_dir=log_dir, now=now, spawn=lambda w, logs: started.append(w) or 1)
