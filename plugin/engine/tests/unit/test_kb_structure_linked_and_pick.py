@@ -1,6 +1,6 @@
 """`kb structure`: staleness counts source and topic notes that link to a project, and the nightly
 pick goes by priority × staleness and leaves pages over `nightly_max_bytes` for an interactive
-session (KB re-audit 2026-11: five nights went to one 13 KB page, two to small skill pages)."""
+session, so one big page can't take night after night."""
 
 from __future__ import annotations
 
@@ -312,3 +312,15 @@ def test_the_linked_walk_stops_at_the_window(kb_repo, monkeypatch) -> None:
     structure_rows(kb_repo.root)
     [linked] = [c for c in calls if "knowledge-base/sources" in c]
     assert f"--since={today(kb_repo.root) - dt.timedelta(days=LINKED_WINDOW_DAYS)}" in linked
+
+
+def test_an_over_budget_page_mid_shrink_keeps_its_nights(kb_repo) -> None:
+    """All sections present, over budget, an archive copy from three nights ago: a multi-night shrink
+    under way finishes instead of going [interactive] on its second night."""
+    day = today(kb_repo.root)
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", extra="x" * 17000))
+    kb_repo.write(f"{P}/widgets/archive/widgets-{day - dt.timedelta(days=3)}-pre-restructure.md", "old\n")
+    r = rows(kb_repo)["widgets"]
+    assert r["over_budget"] and r["missing_count"] == 0
+    assert not r["interactive"] and r["rebuild_target"] and not r["resume"]
+    assert picked(kb_repo) == "widgets"

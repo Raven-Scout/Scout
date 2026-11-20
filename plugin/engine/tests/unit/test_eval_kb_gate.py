@@ -159,7 +159,7 @@ def test_a_front_page_that_keeps_every_detail_fails_on_growth_and_bullet_count(t
     results = {c.name: c for c in score_kb(vault, spec_for(scenario))}
     assert {n: c.passed for n, c in results.items()} == {
         **dict.fromkeys(KB_CHECKS, True), "front_page_growth": False, "front_page_bullets": False,
-        "kb_structure": False,  # `kb structure` holds "Where it stands" to 6 bullets too (KB re-audit 2026-11)
+        "kb_structure": False,  # `kb structure` holds "Where it stands" to 6 bullets too (#734)
     }  # fmt: skip
     assert results["front_page_bullets"].details == ("'Where it stands' has 7 bullets (the standard's cap is 6)",)
 
@@ -215,7 +215,7 @@ def test_a_bullet_over_the_page_bullet_cap_fails(tmp_path: Path, scenario) -> No
     """Review finding 2: one "Where it stands" bullet rewritten in place, past #597's 300 chars,
     within the byte budget, so only the bullet check catches it."""
     failing = _only_failing(_snapshot(tmp_path, "good", "long-bullet"), scenario)
-    # `kb structure` fails an entry over 300 chars too (KB re-audit 2026-11).
+    # `kb structure` fails an entry over 300 chars too (#734).
     assert sorted(failing) == ["front_page_bullets", "kb_structure"]
     assert re.fullmatch(
         r"line \d+: a new 3\d\d-char entry \(limit 300\): - The nightly PDF.*…", failing["front_page_bullets"][0]

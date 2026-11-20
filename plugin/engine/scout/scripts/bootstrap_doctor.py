@@ -1061,6 +1061,23 @@ def _check_kb_interactive(*, vault: Path) -> list[str]:
     ]
 
 
+def _check_fact_check_skips(*, vault: Path, now: datetime | None) -> list[str]:
+    """The dreaming fact-check pass skipped (``kb check-fact-check --skipped``) again and again:
+    a connector the pass needs is probably down. A note, not a warning."""
+    from scout.kb.fact_check import SKIP_NOTE_AT, SKIP_WINDOW_DAYS, recent_skips
+
+    try:
+        skips = recent_skips(vault, now or datetime.now(UTC))
+    except Exception:  # noqa: BLE001 - informational
+        return []
+    if skips < SKIP_NOTE_AT:
+        return []
+    return [
+        f"kb: the dreaming fact-check pass was skipped {skips} time(s) in the last {SKIP_WINDOW_DAYS} days "
+        "(no live source reached): check the connectors it verifies against"
+    ]
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -1296,6 +1313,7 @@ def run_doctor(
         warnings.extend(protection([line]) if "can't be read" in line else [line])
     warnings.extend(protection(_check_repo_sync_host_cache(vault=vault, now=now)))
     notes.extend(_check_kb_interactive(vault=vault))
+    notes.extend(_check_fact_check_skips(vault=vault, now=now))
     delegate_warnings, delegate_notes = _check_delegate_mirrors(vault=vault, now=now)
     warnings.extend(delegate_warnings)
     notes.extend(delegate_notes)

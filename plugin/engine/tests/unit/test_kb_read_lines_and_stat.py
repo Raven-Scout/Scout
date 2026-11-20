@@ -1,5 +1,5 @@
 """`scoutctl kb read --lines` and `scoutctl kb stat`: the labelled replacements for `sed -n`, `head`,
-`tail` and `wc` that the raw-read gate now points a run to (KB usage audit 2026-11-19)."""
+`tail` and `wc` that the raw-read gate now points a run to."""
 
 from __future__ import annotations
 

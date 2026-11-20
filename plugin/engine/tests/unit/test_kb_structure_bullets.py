@@ -1,5 +1,5 @@
 """`kb structure` holds "Where it stands" to the standard: at most `max_bullets` entries of at most
-`max_bullet_chars` each (KB re-audit 2026-11: pages passed with 12 bullets, and with 5 of 6 over 300)."""
+`max_bullet_chars` each. Before, the check passed a page however many or long its bullets were."""
 
 from __future__ import annotations
 
@@ -45,12 +45,12 @@ def test_six_short_bullets_conform(kb_repo) -> None:
     )
 
 
-def test_twelve_bullets_fail_the_count(kb_repo) -> None:
-    kb_repo.write(FRONT, page([SHORT] * 12))
+def test_too_many_bullets_fail_the_count(kb_repo) -> None:
+    kb_repo.write(FRONT, page([SHORT] * 9))
     r = row(kb_repo)
     assert not r["conforms"]
-    assert r["problems"] == ["12 bullets in Where it stands (limit 6)"]
-    assert r["bullets_over"] == 12 and r["rebuild_target"]
+    assert r["problems"] == ["9 bullets in Where it stands (limit 6)"]
+    assert r["bullets_over"] == 9 and r["rebuild_target"]
 
 
 def test_five_of_six_bullets_over_the_length_fail(kb_repo) -> None:

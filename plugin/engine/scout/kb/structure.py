@@ -731,13 +731,14 @@ def check_folder(
     # A page with its sections and a current date only needs shrinking, so it waits behind the
     # pages a reader can't follow. Odd subfolders and pinned files don't count: no night clears them.
     in_shape = not (missing or as_of is None or stale or len(folder.loose) > pinned_loose)
-    half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
+    under_way = _rebuild_under_way(vault, folder, day)  # an archive copy from the last weeks
+    half_rebuilt = bool(missing) and under_way
     # Cutting lines fixes size, narration and a section with too many bullets only. It ranks after
     # every page that only needs shrinking: a trim may find nothing it can cut, and must not hold
     # the pick night after night.
     trim_only = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration) or bool(too_many))
-    # A full rebuild of a page this big took a week of nights and still wasn't done (KB audit
-    # 2026-11): it goes to an interactive session, where the owner can rebuild it in one sitting.
+    # A full rebuild of a page this big can take several nights and still not be done: it goes
+    # to an interactive session, where the owner can rebuild it in one sitting.
     # A page that only needs a refresh keeps its nightly refresh, a rebuild already under way
     # finishes, and a trim only cuts lines.
     pinned = _pinned(label)
@@ -746,7 +747,7 @@ def check_folder(
         actionable
         and not pinned
         and not trim_only
-        and not half_rebuilt
+        and not under_way  # a rebuild or shrink already started finishes, sections or not
         and needs_rebuild
         and size > cfg.nightly_max_bytes
     )

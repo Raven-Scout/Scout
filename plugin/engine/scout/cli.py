@@ -1694,6 +1694,17 @@ def kb_check_fact_check(
     def mark(visibility: str) -> str:
         return "[private] " if visibility != "normal" else ""
 
+    if result.skipped is not None:
+        import os
+
+        from scout import paths as _paths
+        from scout.kb.fact_check import record_skip
+
+        try:
+            record_skip(_paths.data_dir(data_dir), day, len(result.targets), os.environ.get("SCOUT_MODE"))
+        except OSError:
+            pass  # the skip stands; `scoutctl doctor` just won't count it
+
     if as_json:
         typer.echo(
             _json.dumps(

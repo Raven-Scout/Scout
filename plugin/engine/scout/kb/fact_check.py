@@ -2,8 +2,8 @@
 
 The pass (``phases/core/kb-management.md``, *Fact-Check Pass*) re-verifies what
 recent runs wrote into the KB against a freshly read primary source. Left to the
-phase text ("``scoutctl kb delta --since 3d --diff`` finds it"), it ran in 3 of 50
-dreaming sessions (KB usage audit, 2026-11-19).
+phase text ("``scoutctl kb delta --since 3d --diff`` finds it"), most dreaming runs
+skipped it.
 
 So the runner computes it, as it does for *Past-Due Tasks Step Down*
 (:mod:`scout.action_items.past_due`): :func:`fact_check_targets` lists the KB notes
@@ -117,8 +117,8 @@ def fact_check_targets(vault: Path, day: dt.date, reader: str) -> list[Target]:
         if text is None:
             continue  # gone since: nothing left to verify
         last, _ = verified_on(text)
-        if last is not None and last >= when:
-            continue  # already re-verified after its newest change
+        if last is not None and when <= last <= day:
+            continue  # already re-verified after its newest change (a date in the future proves nothing)
         candidates.append((rel, when))
     if not candidates:
         return []
@@ -174,7 +174,7 @@ def judge(
     verified = []
     for t in live:
         last, against = verified_on(notes[t.path] or "")
-        if last is not None and last >= today and against:
+        if last == today and against:  # a future date is refused: it would hide the note from every later check
             verified.append(t.path)
     return FactCheck(list(targets), verified, min(REQUIRED, len(live)), settled=sorted(gone))
 
@@ -199,3 +199,45 @@ def check_fact_check(
     if not result.passed and skipped is not None:
         result.skipped = skipped.strip()
     return result
+
+
+# ----- the skip's trace -----------------------------------------------------------------------
+
+SKIP_EVENT = "kb.fact_check_skipped"
+# A doctor note when the pass was skipped this often in the last week: one dreaming run a night.
+SKIP_NOTE_AT = 3
+SKIP_WINDOW_DAYS = 7
+
+
+def record_skip(vault: Path, day: str, targets: int, mode: str | None) -> None:
+    """One event row per accepted ``--skipped``; never the reason's text, which can name a note."""
+    from scout.events import append_event
+
+    append_event(
+        paths.logs_dir(vault),
+        kind=SKIP_EVENT,
+        source="cli:kb check-fact-check",
+        payload={"date": day, "targets": targets, "mode": mode},
+    )
+
+
+def recent_skips(vault: Path, now: dt.datetime) -> int:
+    """Accepted skips in the last :data:`SKIP_WINDOW_DAYS` days, from the event logs."""
+    import json
+
+    from scout.events import EVENT_LOG_PREFIX
+
+    logs = paths.logs_dir(vault)
+    count = 0
+    for back in range(SKIP_WINDOW_DAYS):
+        day = (now - dt.timedelta(days=back)).date().isoformat()
+        try:
+            lines = (logs / f"{EVENT_LOG_PREFIX}{day}.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                count += json.loads(line).get("kind") == SKIP_EVENT
+            except (ValueError, AttributeError):
+                continue
+    return count

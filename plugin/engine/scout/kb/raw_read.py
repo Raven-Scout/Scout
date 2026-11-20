@@ -12,8 +12,10 @@ it.
 
 from __future__ import annotations
 
+import fnmatch
 import posixpath
 import re
+import shlex
 from collections.abc import Mapping
 from typing import Any
 
@@ -104,8 +106,8 @@ def _strip(words: list[str]) -> _Stripped:
     while words:
         word = words[0]
         if word in _PREFIX_WORDS:
-            if word == "command" and len(words) > 1 and words[1] in ("-v", "-V"):
-                return _Stripped([], fed, chdir)  # a lookup: nothing runs
+            if word == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
+                return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
             prefix = word
             fed = fed or word in ("xargs", "parallel")
             pending = _PREFIX_POSITIONAL.get(word, 0)
@@ -360,7 +362,8 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
         globs += [a.split("=", 1)[1] for a in args if a.startswith(("--glob=", "--iglob="))]
         filters = [g for g in globs if not g.strip("\"'").startswith("!")]
         depth = _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"}))
-        return _filtered(_Recursive(roots, True, depth, _exclusions(args)), filters)
+        types = _flag_values(args, {"-t", "--type"}) + [a.split("=", 1)[1] for a in args if a.startswith("--type=")]
+        return _filtered(_Recursive(roots, True, depth, _exclusions(args)), filters, types)
     if name == "find":
         roots = []
         for a in args:
@@ -387,8 +390,12 @@ def _pattern_flag(args: list[str]) -> bool:
     return any(a in ("-e", "-f", "--regexp", "--file") or a.startswith(("--regexp=", "--file=")) for a in args)
 
 
-def _filtered(rec: _Recursive, filters: list[str]) -> _Recursive | None:
-    if not rec.roots and filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS for f in filters):
+def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
+    """None when a file filter keeps the search out of the KB, root or no root, as the Grep tool's
+    ``filter_reaches_kb`` has it: ``--include=*.py``, ``-g '*.py'``, ``rg -t py``."""
+    if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS for f in filters):
+        return None
+    if types and not any(t.strip("\"'") in ("md", "markdown", "all") for t in types):
         return None
     return rec
 
@@ -447,11 +454,15 @@ def _cd(
 ) -> str | None:
     """The shell's folder after ``cd target`` from ``cwd``; None when the gate can't tell."""
     target = _expand(target, env or {}, local or {})
-    if target == _UNKNOWN or not target or target == "-":
+    if target == _UNKNOWN or not target or target == "-" or "\x01" in target:  # \x01: a substitution's output
         return None
     if target.startswith("/"):
         return posixpath.normpath(target)
     return None if cwd is None else posixpath.normpath(posixpath.join(cwd, target))
+
+
+def _spelling(name: str) -> str:
+    return name.replace("_", "-")
 
 
 def _reaches_kb(folder: str, vault: str, rec: _Recursive) -> bool:
@@ -462,7 +473,9 @@ def _reaches_kb(folder: str, vault: str, rec: _Recursive) -> bool:
     folder = posixpath.normpath(folder)
     for kb_dir in KB_DIRS:
         target = posixpath.join(vault, kb_dir)
-        if any(ex and (ex.rstrip("/*") in (kb_dir, posixpath.basename(kb_dir))) for ex in rec.excluded):
+        # `knowledge-base` and `knowledge_base` are two spellings of one folder: excluding either excludes both.
+        names = {_spelling(kb_dir), _spelling(posixpath.basename(kb_dir))}
+        if any(ex and _spelling(ex.rstrip("/*")) in names for ex in rec.excluded):
             continue
         if folder == target or folder.startswith(target + "/"):
             return rec.depth is None or rec.depth >= 1
@@ -533,32 +546,21 @@ def raw_kb_read(
     quoted commit messages never count.
     """
     command = _MESSAGE_ARG.sub(r"\1 ''", command)
-    judged = _judge(command, in_kb, cwd, vault, env or {})
+    env = env or {}
+    if _judge(command, in_kb, cwd, vault, env):
+        return True
     expanded = _with_kb_paths(command)
-    return judged or (expanded != command and _judge(expanded, in_kb, cwd, vault, env or {}))
+    if expanded != command and _judge(expanded, in_kb, cwd, vault, env):
+        return True
+    return _judge_recursive(command, in_kb, cwd, vault, env)
 
 
 def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str]) -> bool:
+    """Every rule but the recursive-read one, on main's split (which also splits inside quotes, so
+    every command main denied is still denied)."""
     tainted = _kb_variables(command)
     local = _local_values(command)
     here = posixpath.normpath(cwd) if cwd else None
-
-    def reaches(rec: _Recursive, where: str | None) -> bool:
-        if vault is None:
-            return False
-        for root in rec.roots or ["."]:
-            word = _expand(root, env, local)
-            folder = None if word == _UNKNOWN else _root_folder(word)
-            if folder is not None and not folder.startswith("/"):
-                folder = None if where is None else posixpath.join(where, folder)
-            if folder is None:
-                if rec.content:
-                    return True  # a content search the gate can't place: it may well be the vault
-                continue
-            if _reaches_kb(folder, vault, rec):
-                return True
-        return False
-
     for statement in _STATEMENTS.split(command):
         upstream_kb = False
         for piece in _PIPE.split(statement):
@@ -572,43 +574,256 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
                 words = stripped.words
                 if not words:
                     continue
-                # A quoted program (`bash -c 'cat …'`, `eval "cat …"`) starts with a quote the shell removes.
-                name, args = words[0].strip("\"'").rsplit("/", 1)[-1], words[1:]
+                name, args = _command_name(words[0]), words[1:]
                 rest = " ".join(args)
                 if name == "scoutctl":
                     continue
-                seg_in_kb, where = in_kb, here
-                if stripped.chdir is not None:
-                    seg_in_kb = _names_kb(stripped.chdir)
-                    where = _cd(here, stripped.chdir, env, local)
+                seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
                 if name in ("cd", "pushd"):
                     in_kb = _names_kb(rest)
                     here = _cd(here, args[0], env, local) if args else None
                 elif name in _READ_COMMANDS:
+                    if name == "du" and _du_summary(args):
+                        continue  # one total per folder named: no note's name or text
                     if seg_in_kb or _names_kb(rest) or _uses_operand(name, args, tainted):
+                        return True
+                    if any(_glob_names_kb(a) for a in _operands(name, args)):
                         return True
                     if stripped.fed and upstream_kb:
                         return True
-                    rec = _recursive(name, args)
-                    if rec is not None and reaches(rec, where):
-                        return True
                 elif name == "git":
-                    sub, sub_args, chdirs = _git(args)
+                    sub, sub_args, _chdirs = _git(args)
                     names_kb = _names_kb(rest) or _uses(rest, tainted)
                     if names_kb and (_GIT_READ.search(rest) or _GIT_READ.search(_unquoted(rest))):
                         return True
                     if names_kb and _git_reads(sub, sub_args):
                         return True
-                    if sub == "grep":
-                        git_where = where
-                        for c in chdirs:
-                            git_where = _cd(git_where, c, env, local)
-                        _flags, plain = _split_args(_operands("grep", sub_args))
-                        pattern_given = any(a in ("-e", "-f") for a in sub_args)
-                        paths = plain if pattern_given else plain[1:]
-                        if reaches(_Recursive(paths, True), git_where):
-                            return True
             upstream_kb = upstream_kb or bool(_KB_SOURCE.search(piece))
+    return False
+
+
+def _command_name(word: str) -> str:
+    """A command word's program: quotes a shell removes (`bash -c 'cat …'`) and a leading backslash
+    (`\rg`, which only skips an alias) gone, and its folder (`/usr/bin/grep`) dropped."""
+    return word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+
+
+def _du_summary(args: list[str]) -> bool:
+    flags = _split_args(args)[0]
+    return any(re.match(r"^-[A-Za-z]*s", f) or f == "--summarize" for f in flags) and not any(
+        re.match(r"^-[A-Za-z]*a", f) or f == "--all" for f in flags
+    )
+
+
+_GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+def _glob_names_kb(word: str) -> bool:
+    """A glob that spells a KB folder (``know*/people.md``, ``knowledge-bas?/x``): a component with
+    at least three plain letters that matches a KB folder's name. ``*/x`` names nothing in particular."""
+    parts = _unquoted(word).split("/")
+    for kb in (*KB_DIRS, "knowledge-base.md"):
+        want = kb.split("/")
+        for i in range(len(parts) - len(want) + 1):
+            got = parts[i : i + len(want)]
+            if not any(_GLOB_CHARS.search(g) for g in got):
+                continue
+            literal = sum(len(_GLOB_CHARS.sub("", g)) for g in got)
+            if literal >= 3 and all(fnmatch.fnmatchcase(w, g) for g, w in zip(got, want, strict=True)):
+                return True
+    return False
+
+
+# ----- the recursive-read rule, on a split that keeps quotes whole ---------------------------------
+
+_SUBST = "\x01"  # stands for a command substitution's output: files the gate can't see
+
+
+def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
+    """``(statements, substitutions)``: each statement a list of pipe pieces, split only where the
+    shell splits (``rg -n "TODO|FIXME" scripts/`` is one piece). Each outermost ``$(…)`` or
+    backtick, outside single quotes, is cut out and stands as :data:`_SUBST` in its piece."""
+    statements: list[list[str]] = [[]]
+    substitutions: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i, n = 0, len(command)
+
+    def piece() -> None:
+        statements[-1].append("".join(buf))
+        buf.clear()
+
+    def statement() -> None:
+        piece()
+        statements.append([])
+
+    while i < n:
+        c = command[i]
+        if quote == "'":
+            buf.append(c)
+            quote = None if c == "'" else quote
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            buf.append(command[i : i + 2])
+            i += 2
+            continue
+        if command.startswith("$(", i) or c == "`":
+            end = _substitution_end(command, i)
+            substitutions.append(command[i + (1 if c == "`" else 2) : end - 1])
+            buf.append(_SUBST)
+            i = end
+            continue
+        if quote == '"':
+            buf.append(c)
+            quote = None if c == '"' else quote
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            buf.append(c)
+        elif command.startswith(("&&", "||"), i):
+            statement()
+            i += 1
+        elif c in ";\n()":
+            statement()
+        elif c == "&" and not (buf and buf[-1].endswith((">", "<"))) and not command.startswith((">", "&"), i + 1):
+            statement()
+        elif c == "|":
+            piece()
+        else:
+            buf.append(c)
+        i += 1
+    piece()
+    return [[p for p in s if p.strip()] for s in statements if any(p.strip() for p in s)], substitutions
+
+
+def _substitution_end(command: str, start: int) -> int:
+    """The index just past the ``$(…)`` or backtick that starts at ``start``."""
+    if command[start] == "`":
+        end = command.find("`", start + 1)
+        return len(command) if end < 0 else end + 1
+    depth, j, quote = 1, start + 2, None
+    while j < len(command) and depth:
+        c = command[j]
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif command.startswith("$(", j):
+            depth += 1
+            j += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        j += 1
+    return j
+
+
+_REDIRECT = re.compile(r"^\d*(?:>>?|<|&>>?|>&|<&)")
+
+
+def _shell_words(piece: str) -> list[str]:
+    """A piece's words as the shell reads them, quotes removed, redirections dropped."""
+    try:
+        words = shlex.split(piece, posix=True)
+    except ValueError:
+        words = piece.split()
+    out: list[str] = []
+    skip = False
+    for w in words:
+        if skip:
+            skip = False
+        elif _REDIRECT.match(w):
+            skip = _REDIRECT.sub("", w) == ""  # a bare `>`: its target is the next word
+        else:
+            out.append(w)
+    return out
+
+
+def _loop_words(command: str) -> dict[str, list[str]]:
+    """Each ``for x in …`` loop variable and the words it takes (``for f in scripts/*.py``)."""
+    out: dict[str, list[str]] = {}
+    for m in _FOR.finditer(command):
+        out[m.group(1)] = _shell_words(m.group(2).split(";")[0])
+    return out
+
+
+_LONE_VAR = re.compile(r"^\$\{?([A-Za-z_]\w*)\}?$")
+
+
+def _judge_recursive(
+    command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str], depth: int = 0
+) -> bool:
+    """The recursive-read rule: a search that gets to a KB note from the folder it starts in."""
+    if vault is None or depth > 4:
+        return False
+    statements, substitutions = _shell_split(command)
+    local = _local_values(command)
+    loops = _loop_words(command)
+    here = posixpath.normpath(cwd) if cwd else None
+    if any(_judge_recursive(s, in_kb, here, vault, env, depth + 1) for s in substitutions):
+        return True
+
+    def reaches(rec: _Recursive, where: str | None) -> bool:
+        roots = rec.roots or ["."]
+        for root in roots:
+            loop = _LONE_VAR.match(root)
+            if loop and loop.group(1) in loops:
+                if reaches(_Recursive(loops[loop.group(1)] or ["."], rec.content, rec.depth, rec.excluded), where):
+                    return True
+                continue
+            if _SUBST in root:
+                continue  # files a command prints: the gate can't see them, and they aren't a folder to walk
+            word = _expand(root, env, local)
+            if word == _UNKNOWN:
+                if rec.content:
+                    return True  # a content search the gate can't place: it may well be the vault
+                continue
+            folder = _root_folder(word)
+            if not folder.startswith("/"):
+                if where is None:
+                    # Run from a folder the gate can't tell: only the folder itself (or its parent) may be the vault.
+                    if rec.content and folder.rstrip("/") in ("", ".", ".."):
+                        return True
+                    continue
+                folder = posixpath.join(where, folder)
+            if _reaches_kb(folder, vault, rec):
+                return True
+        return False
+
+    for pieces in statements:
+        for piece in pieces:
+            stripped = _strip(_shell_words(piece))
+            words = stripped.words
+            if not words:
+                continue
+            if any(c.isspace() for c in words[0]):  # a program a shell prefix runs: `bash -c 'rg x'`
+                if _judge_recursive(" ".join(words), in_kb, here, vault, env, depth + 1):
+                    return True
+                continue
+            name, args = _command_name(words[0]), words[1:]
+            where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
+            if name in ("cd", "pushd"):
+                here = _cd(here, args[0], env, local) if args else None
+                continue
+            if name in _READ_COMMANDS:
+                rec = _recursive(name, args)
+                if rec is None or (stripped.fed and not rec.roots):
+                    continue  # not recursive, or xargs hands it the files to read
+                if reaches(rec, where):
+                    return True
+            elif name == "git":
+                sub, sub_args, chdirs = _git(args)
+                if sub != "grep":
+                    continue
+                for c in chdirs:
+                    where = _cd(where, c, env, local)
+                _flags, plain = _split_args(_operands("grep", sub_args))
+                paths = plain if any(a in ("-e", "-f") for a in sub_args) else plain[1:]
+                if not (stripped.fed and not paths) and reaches(_Recursive(paths, True), where):
+                    return True
     return False
 
 

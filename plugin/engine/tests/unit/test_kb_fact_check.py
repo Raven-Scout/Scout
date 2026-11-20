@@ -271,3 +271,44 @@ def test_check_fact_check_reads_the_notes_as_they_stand(kb_repo) -> None:
     _context(kb_repo, ROWS[:1])
     result = check_fact_check(data_dir=kb_repo.root, today="2026-10-10")
     assert result.passed and result.verified == [FRONT] and result.required == 1
+
+
+def test_a_future_last_verified_is_refused() -> None:
+    future = note(verified="2026-10-11")
+    assert not judge(targets("a"), {"a": future}, DAY).passed
+
+
+def test_a_future_last_verified_does_not_hide_a_note_from_the_targets(kb_repo, monkeypatch) -> None:
+    kb_repo.write(FRONT, note(verified="2030-01-01"))
+    commit_at(kb_repo, "2026-10-09", monkeypatch)
+    assert paths(fact_check_targets(kb_repo.root, DAY, "owner")) == [FRONT]
+
+
+def test_an_accepted_skip_is_recorded_and_doctor_notes_repeats(kb_repo, monkeypatch) -> None:
+    import datetime as _dt
+
+    from scout.kb.fact_check import SKIP_EVENT, recent_skips
+    from scout.scripts.bootstrap_doctor import _check_fact_check_skips
+
+    kb_repo.write(FRONT, note())
+    kb_repo.write(TOPIC, note())
+    _context(kb_repo, ROWS)
+    now = _dt.datetime.now(_dt.UTC)
+    assert _check_fact_check_skips(vault=kb_repo.root, now=now) == []
+    for _ in range(3):
+        assert _cli(kb_repo, "--skipped", "the tracker was unreachable all run").exit_code == 0
+    assert recent_skips(kb_repo.root, now) == 3
+    logged = "".join(p.read_text() for p in (kb_repo.root / ".scout-logs").glob("schedule-events-*.jsonl"))
+    assert SKIP_EVENT in logged and "unreachable" not in logged  # never the reason's text
+    [doctor_note] = _check_fact_check_skips(vault=kb_repo.root, now=now)
+    assert "skipped 3 time(s)" in doctor_note
+
+
+def test_a_refused_skip_is_not_recorded(kb_repo) -> None:
+    from scout.kb.fact_check import recent_skips
+
+    _context(kb_repo, ROWS)
+    assert _cli(kb_repo, "--skipped", "x").exit_code == 2
+    import datetime as _dt
+
+    assert recent_skips(kb_repo.root, _dt.datetime.now(_dt.UTC)) == 0

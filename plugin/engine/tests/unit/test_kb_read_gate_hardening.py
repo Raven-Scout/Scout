@@ -1,6 +1,6 @@
-"""kb-read-gate, widened after the KB usage audit of 2026-11-19: 131 of 302 raw shell reads into
-knowledge-base/ got past it (sed 35, wc 26, grep 25, tail 19, ls 12), mostly through a variable or
-loop holding a KB path. Only what is denied widens: every case in test_hooks_kb_read_gate.py stands."""
+"""kb-read-gate, widened after an audit found raw shell reads into knowledge-base/ getting past it,
+mostly through a variable or loop holding a KB path. Only what is denied widens: every case in
+test_hooks_kb_read_gate.py stands."""
 
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def test_an_exclusion_main_already_denied_stays_denied() -> None:
 
 
 def test_a_content_search_the_gate_cant_place_is_denied() -> None:
-    assert judged('rg x "$(git rev-parse --show-toplevel)"')
+    assert judged('rg x "$UNSET_DIR"') and judged('cd "$(pwd)" && rg x')
     assert not judged('ls -R "$UNSET_DIR"')  # a name listing it can't place stays allowed
 
 
@@ -313,3 +313,93 @@ def test_the_shell_and_python_deny_them_together(vault, command: str) -> None:  
 def test_the_deny_message_says_how_to_search_elsewhere(vault) -> None:  # noqa: F811
     reason = _denied(_decision(vault, "Bash", {"command": "rg salary"}))
     assert "name one outside the KB" in reason and "rg x scripts/" in reason
+
+
+# ----- #734 round 2: false denies from quoted metacharacters, filters and unknown roots ----------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # a quoted | ; ( ) belongs to the pattern, not the shell
+        'rg -n "TODO|FIXME" scripts/',
+        'grep -rE "foo|bar" docs/',
+        'git grep -n "foo|bar" -- scripts',
+        'rg -n "a;b" scripts',
+        'grep -rn "salary (base)" docs/',
+        # a file filter keeps the search out of the KB, root or no root
+        "grep -rn foo --include=*.py .",
+        "grep -r x --include='*.py' .",
+        "rg foo -g '*.py' .",
+        "rg -t py foo",
+        # roots the gate can read off the command
+        'for f in scripts/*.py; do rg -n TODO "$f"; done',
+        "rg TODO $(git ls-files scripts)",
+        'cd "$(git rev-parse --show-toplevel)" && rg TODO scripts',
+        "git diff --name-only | xargs rg TODO",
+        "git ls-files scripts | xargs rg TODO",
+        # both KB spellings excluded, and action-items/context too
+        "rg x -g '!knowledge-base/**' -g '!action-items/context/**'",
+        "du -sh knowledge-base",
+        "rg x scripts 2>/dev/null",
+        "cat */README.md",
+        "ls -d */",
+    ],
+)
+def test_round_two_false_denies_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg -t md foo",
+        "grep -r x --include=*.md .",
+        'for d in . scripts; do rg x "$d"; done',
+        "echo $(rg salary)",
+        "bash -c 'rg salary'",
+        "du -a knowledge-base",
+        "/opt/homebrew/bin/rg Priya",
+        "/usr/bin/grep -r Priya .",
+        "\\rg Priya",
+        "command -v cat knowledge-base/people.md",  # main denies it: keep it
+        "cat know*/people.md",
+        "head action-items/con*/today.md",
+    ],
+)
+def test_round_two_denies_stand(command: str) -> None:
+    assert judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/opt/homebrew/bin/rg Priya",
+        "/usr/bin/grep -r Priya .",
+        "/usr/bin/find . -name '*.md'",
+        "/bin/ls -R",
+        "\\rg Priya",
+    ],
+)
+def test_an_absolute_path_reader_reaches_python_and_is_denied(vault, command: str) -> None:  # noqa: F811
+    import json
+
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'rg -n "TODO|FIXME" scripts/',
+        'grep -rE "foo|bar" docs/',
+        "rg foo -g '*.py' .",
+        "git ls-files scripts | xargs rg TODO",
+    ],
+)
+def test_a_scoped_search_is_allowed_through_the_real_cli(vault, command: str) -> None:  # noqa: F811
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", (command, res.stdout, res.stderr)

@@ -153,7 +153,7 @@ def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
     assert "It resumes a half-rebuilt page" in step
     # A partial night is a finished night, and the archive copy is made once.
     assert "**A page too big for one session** takes several nights" in step
-    # A full rebuild too big for a night waits for an interactive session (KB audit 2026-11); the size is config.
+    # A full rebuild too big for a night waits for an interactive session; the size is config.
     assert "`kb_structure.nightly_max_bytes`" in step and "needs an interactive rebuild" in step
     assert "12 KB" not in step
     assert "once, on its first night" in step
