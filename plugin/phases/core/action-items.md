@@ -422,7 +422,7 @@ During consolidation, also check for completion signals:
 Recurring commitments are **cadence-driven, not event-driven** — a "quiet delta" consolidation must still surface them. This is the load-bearing fix for missed standing commitments (e.g. a weekly Friday status update). If the KB has any `recurring_task` entities, run the cadence computer at compose time:
 
 ```bash
-cd {{SCOUT_DIR}} && python3 scripts/recurring-task-status.py --date "$(TZ="$(scripts/scout-tz.sh)" date '+%Y-%m-%d')"
+cd {{SCOUT_DIR}} && python3 scripts/recurring-task-status.py --date <today>  # scripts/scout-tz.sh date '+%Y-%m-%d'
 ```
 
 **If it exits non-zero, the cadence check did not run — never read that as "no recurring tasks due".** Add a 🔴 action item quoting its one-line `error:` message (it says how to fix it, e.g. a Python without PyYAML), and still surface any `recurring_task` entity whose `cadence` plainly falls today.

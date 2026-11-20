@@ -28,9 +28,14 @@
 # note on stderr, so a bad edit can never make a run timezone-blind.
 #
 # Usage:
-#   TZ=$(scripts/scout-tz.sh) date '+%H:%M %Z'      # the intended call site
+#   scripts/scout-tz.sh date '+%H:%M %Z'             # the intended call site: `date` in the resolved zone
 #   scripts/scout-tz.sh                              # prints the resolved tz name
 #   scripts/scout-tz.sh --self-test                  # assertions, exit 0 = pass
+#
+# The `date` form is what the brain files prescribe. `TZ="$(scripts/scout-tz.sh)" date …`
+# does the same, but a command substitution is one call an allowlisted session
+# (Claude Code's dontAsk mode) can never be granted, and a run that sees one call
+# denied can wrongly stop. It only ever runs `date`.
 #
 # Connector-free, deterministic, no network. Safe to call from any run.
 
@@ -213,6 +218,7 @@ self_test() {
 
 case "${1:-}" in
     --self-test) self_test ;;
-    -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}" ;;
+    -h|--help)   sed -n '2,40p' "${BASH_SOURCE[0]}" ;;
+    date)        shift; TZ="$(resolve_tz)" exec date "$@" ;;
     *)           resolve_tz ;;
 esac

@@ -1,7 +1,8 @@
 """Unit tests for the scout-tz.sh resolver template (cat-1 install + runtime behavior).
 
-scout-tz.sh is the runtime timezone resolver the assembled brain files and the
-other cat-1 scripts call via ``TZ="$(scripts/scout-tz.sh)"``. These tests cover
+scout-tz.sh is the runtime timezone resolver the assembled brain files call as
+``scripts/scout-tz.sh date FMT`` and the other cat-1 scripts call via
+``TZ="$(scripts/scout-tz.sh)"``. These tests cover
 both halves: bootstrap writes it (executable, fully rendered), and the installed
 script actually resolves/validates/falls back the way its contract says.
 """
@@ -84,6 +85,27 @@ def test_scout_tz_falls_back_on_invalid_zone(installed_vault, tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "America/New_York"
     assert "falling back" in result.stderr
+
+
+def test_scout_tz_date_runs_date_in_the_resolved_zone(installed_vault, tmp_path):
+    """`scripts/scout-tz.sh date FMT` is the brain's call site: no command substitution, which a
+    session run on an allowlist (dontAsk) is always denied, whatever its rules say."""
+    script = installed_vault / "scripts" / "scout-tz.sh"
+    cfg = _write_prague_config(tmp_path)
+    result = _run(script, "date", "+%Z|%Y", env_overrides={"SCOUT_CONFIG": cfg, "TZ": "UTC"})
+    assert result.returncode == 0, result.stderr
+    zone, year = result.stdout.strip().split("|")
+    assert zone in ("CET", "CEST") and year.isdigit()
+
+
+def test_scout_tz_runs_no_command_but_date(installed_vault, tmp_path):
+    """An allowlist admits every `scripts/*` call, so the helper must not run whatever it is handed."""
+    script = installed_vault / "scripts" / "scout-tz.sh"
+    marker = tmp_path / "ran"
+    result = _run(script, "touch", str(marker), env_overrides={"SCOUT_CONFIG": _write_prague_config(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Europe/Prague"
+    assert not marker.exists()
 
 
 def test_scout_tz_self_test_passes_in_installed_vault(installed_vault):

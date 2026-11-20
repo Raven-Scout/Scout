@@ -18,7 +18,7 @@ Explicit paths through the helper, **never `git add -A`**: a concurrent session 
 
 Exit 4: nothing changed. Exit 3 or 5: report it in the notification; never fall back to `-A`.
 
-Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
+Use `scripts/scout-tz.sh date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
 
 ## Step 4b: Session Entry
 
