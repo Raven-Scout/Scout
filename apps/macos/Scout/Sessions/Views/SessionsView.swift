@@ -35,6 +35,9 @@ struct SessionsView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        // A picked session that drops out of the index (archived, deleted) takes the
+        // pane with it, rather than leaving it open on nothing (T4 review).
+        .onChange(of: selected?.id) { _, id in if id == nil { selectedID = nil } }
         // Esc closes the pane; with nothing selected it steps aside (T4).
         .onExitCommand { if case .shown(_, closable: true) = pane { selectedID = nil } }
         .background(DS.Paper.base)

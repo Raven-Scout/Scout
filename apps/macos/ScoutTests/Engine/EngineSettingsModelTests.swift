@@ -210,16 +210,15 @@ struct EngineSettingsModelTests {
         #expect(m.runsLabel == "Failing")
         #expect(m.runsTone == .err)   // red, as the Health page paints it (UI audit T4)
         #expect(m.runsHelp == "Your Claude login expired.")
-        #expect(!m.runsIsOK)
     }
 
     @Test func runsRowYellowAndGreen() {
         let y = model(runHealth(.yellow))
         #expect(y.runsLabel == "Warnings")
-        #expect(!y.runsIsOK)
+        #expect(y.runsTone == .warn)
         let g = model(runHealth(.green, lastOkAt: "2026-10-11T11:00:00Z"))
         #expect(g.runsLabel == "Healthy")
-        #expect(g.runsIsOK)
+        #expect(g.runsTone == .ok)
         #expect(g.runsHelp.hasPrefix("Last successful run "))
         #expect(g.runsHelp != "Last successful run 2026-10-11T11:00:00Z")   // rendered relative, not raw
     }
@@ -243,7 +242,7 @@ struct EngineSettingsModelTests {
         let m = model(runHealth(.yellow, findings: [paused(until: "2026-10-15T12:00:00Z")]))
         #expect(m.runsLabel == "Paused")
         #expect(m.runsIsPaused)
-        #expect(!m.runsIsOK)
+        #expect(m.runsTone == .neutral)   // a pause lifts by itself: grey, not amber
         #expect(m.runsHelp.hasPrefix("Claude usage limit: Scout resumes "))
         #expect(!m.runsHelp.contains("2026-10-15T12:00:00Z"))   // a local date and time, not ISO-Z
         #expect(m.runsDetail == limitLine)
@@ -322,7 +321,7 @@ struct EngineSettingsModelTests {
     @Test func runsRowAbsentWithoutRunHealth() {
         let m = model(nil)
         #expect(m.runsLabel == "Unknown")
-        #expect(!m.runsIsOK)
+        #expect(m.runsTone == .neutral)
         #expect(!m.showsRuns)
         #expect(model(runHealth(.green)).showsRuns)
     }
@@ -368,8 +367,29 @@ struct EngineSettingsModelTests {
         let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
                                     doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), lastError: nil, bundledVersion: nil)
         #expect(m.healthIsOK)
-        #expect(m.healthHasWarnings)
-        #expect(!model(runHealth(.green)).healthHasWarnings)
+        #expect(m.healthTone == .warn)
+        #expect(model(runHealth(.green)).healthTone == .ok)
+    }
+
+    /// T4 review: Settings colours a state as the status bar does (`ScoutStatus`), so a broken
+    /// engine or a doctor that couldn't run is red in both, and unfinished setup amber in both.
+    @Test func healthToneMatchesTheStatusBar() {
+        func tone(_ state: EngineState, error: String? = nil) -> ScoutStatus.Tone {
+            EngineSettingsModel(state: state, doctor: nil, lastError: error, bundledVersion: nil).healthTone
+        }
+        func bar(_ state: EngineState, error: String? = nil) -> ScoutStatus.Tone {
+            ScoutStatus.derive(engine: state, doctor: nil, doctorError: error, latestRun: nil).tone
+        }
+        let set = EngineState.managed(install, vaultBootstrapped: true)
+        let cases: [(EngineState, String?)] = [(.notInstalled, nil), (.managed(install, vaultBootstrapped: false), nil),
+                                               (.broken(install, reason: "gone"), nil), (set, "could not run scoutctl"), (set, nil)]
+        for (state, error) in cases {
+            #expect(tone(state, error: error) == bar(state, error: error), "\(state)")
+        }
+        #expect(tone(.broken(install, reason: "gone")) == .err)
+        #expect(tone(set, error: "could not run scoutctl") == .err)
+        #expect(tone(.notInstalled) == .warn)
+        #expect(tone(set) == .neutral)   // the first check is still out
     }
 
     // MARK: one story with every other health surface (UI audit R1)

@@ -35,7 +35,8 @@ struct SchedulesMasterTable: View {
             let mode = columns.mode(forAvailable: available)
             if mode == .stacked {
                 SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
-                                     selectedSlotKey: $selectedSlotKey, warnings: warnings)
+                                     selectedSlotKey: $selectedSlotKey, warnings: warnings,
+                                     twentyFourHour: true)
             } else {
                 table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode))
             }

@@ -135,6 +135,12 @@ struct ScoutStatusTests {
         #expect(ScoutStatus.Fix.openHealth.title == "Open Health")
         #expect(ScoutStatus.Fix.openSettings.title == "Open Settings")
         #expect(ScoutStatus.Fix.setUp.title == "Set up Scout…")
+        // The status bar routes each fix the way the panel does (T4 review).
+        #expect(StatusBarView.destination(for: .openHealth) == .health)
+        #expect(StatusBarView.destination(for: .openSettings) == .engineSettings)
+        // Setup already fills the main window above the bar: no second destination.
+        #expect(StatusBarView.destination(for: .setUp) == nil)
+        #expect(StatusBarView.destination(for: nil) == nil)
     }
 
     // MARK: - Then the latest run

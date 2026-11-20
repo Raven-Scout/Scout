@@ -8,6 +8,8 @@ struct SchedulesMasterCards: View {
     @Binding var selectedSlotKey: String?
     /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
+    /// Set when the Table view stacks into cards: keep its 24-hour times.
+    var twentyFourHour = false
 
     /// Keyboard focus, set by a click on a card (see `SchedulesMasterTable`).
     @FocusState private var cardsFocused: Bool
@@ -51,7 +53,8 @@ struct SchedulesMasterCards: View {
             selectedSlotKey = slot.key
             cardsFocused = true
         } label: {
-            SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [])
+            SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [],
+                     twentyFourHour: twentyFourHour)
         }
         .buttonStyle(.dsCard(cornerRadius: 10))
         .accessibilitySelected(isSelected)

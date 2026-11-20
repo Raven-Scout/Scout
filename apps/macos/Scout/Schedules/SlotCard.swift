@@ -8,6 +8,9 @@ struct SlotCard: View {
     let isSelected: Bool
     /// Run-health warnings about this schedule, shown at the foot of the card.
     var warnings: [RunOutcomeDisplay.SlotWarning] = []
+    /// The table's 24-hour "08:05", for a table stacked into cards at large text
+    /// (UI audit T4), so the times don't change form with the layout.
+    var twentyFourHour = false
 
     private var typeColor: Color { DS.SlotType.color(for: slot.type) }
 
@@ -18,6 +21,7 @@ struct SlotCard: View {
                 Text(slot.displayName)
                     .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p2)
+                    .help(slot.key)
                 if let model = slot.model {
                     SlotModelTag(model: model)
                 }
@@ -38,12 +42,14 @@ struct SlotCard: View {
 
     private var topRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(formattedTime)
+            Text(twentyFourHour ? slot.firesAtLocal : formattedTime)
                 .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
-            Text(amPm)
-                .font(DS.font(.caption))
-                .foregroundStyle(DS.Ink.p3)
+            if !twentyFourHour {
+                Text(amPm)
+                    .font(DS.font(.caption))
+                    .foregroundStyle(DS.Ink.p3)
+            }
             Spacer()
             TypePill(type: slot.type)
         }

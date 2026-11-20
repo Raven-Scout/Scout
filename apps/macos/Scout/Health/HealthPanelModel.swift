@@ -75,10 +75,16 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
     }
 
     /// The runs' verdict, then the count every health surface shows: "Scheduled runs need a look · 2 warnings".
-    /// Healthy runs beside engine warnings say both, never a bare "healthy" (R1).
+    /// Healthy runs beside engine warnings say both, never a bare "healthy" (R1). When the engine's
+    /// own problem makes the overall verdict worse than the runs' (`HealthSummary.overall`), the
+    /// headline names the engine, as Settings and the Doctor window do: never "Scheduled runs are
+    /// healthy · 1 problem" beside Settings' "Needs fixing" (T4 review).
     static func headline(runs: DoctorReport.Severity?, shared: HealthSummary) -> String {
-        guard runs != nil else { return RunOutcomeDisplay.overall(nil) }
+        guard let runs else { return RunOutcomeDisplay.overall(nil) }
         let count = shared.attentionLabel.map { " · \($0)" } ?? ""
+        if shared.overall(doctor: runs) == .red, runs != .red {
+            return "Scout's engine needs fixing" + count
+        }
         return RunOutcomeDisplay.overall(runs) + count
     }
 

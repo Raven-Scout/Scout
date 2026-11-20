@@ -60,9 +60,11 @@ struct SessionsBoardView: View {
                 // names its project.
                 if !strip.isEmpty {
                     lane(title: "Now", counts: nil, chips: { EmptyView() }) {
-                        ForEach(strip) {
-                            card($0, titles: titles,
-                                 projectName: projectNames[$0.projectKey] ?? SessionsLayout.basename($0.projectKey))
+                        grid {
+                            ForEach(strip) {
+                                card($0, titles: titles,
+                                     projectName: projectNames[$0.projectKey] ?? SessionsLayout.basename($0.projectKey))
+                            }
                         }
                     }
                 }
@@ -71,9 +73,19 @@ struct SessionsBoardView: View {
                         toggle("Stale", count: row.stale.count, rowID: row.id, expanded: $expandedStale)
                         toggle("Done", count: row.done.count, rowID: row.id, expanded: $expandedDone)
                     }) {
-                        ForEach(row.active) { card($0, titles: titles) }
-                        if expandedStale.contains(row.id) { ForEach(row.stale) { card($0, titles: titles) } }
-                        if expandedDone.contains(row.id) { ForEach(row.done) { card($0, titles: titles) } }
+                        if !row.active.isEmpty {
+                            grid { ForEach(row.active) { card($0, titles: titles) } }
+                        }
+                        // Opened stale or done cards start under a quiet rule, so they
+                        // don't read as more of the lane's active work (T4 review).
+                        if expandedStale.contains(row.id), !row.stale.isEmpty {
+                            groupRule("Stale")
+                            grid { ForEach(row.stale) { card($0, titles: titles) } }
+                        }
+                        if expandedDone.contains(row.id), !row.done.isEmpty {
+                            groupRule("Done")
+                            grid { ForEach(row.done) { card($0, titles: titles) } }
+                        }
                     }
                 }
                 if rows.isEmpty && strip.isEmpty,
@@ -87,9 +99,9 @@ struct SessionsBoardView: View {
         }
     }
 
-    private func lane<Chips: View, Cards: View>(
+    private func lane<Chips: View, Content: View>(
         title: String, counts: [AgentSessionState: Int]?,
-        @ViewBuilder chips: () -> Chips, @ViewBuilder cards: () -> Cards
+        @ViewBuilder chips: () -> Chips, @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
@@ -104,9 +116,28 @@ struct SessionsBoardView: View {
                 }
                 chips()
             }
-            LazyVGrid(columns: SessionsLane.columns, alignment: .leading, spacing: SessionsLane.spacing) { cards() }
-                .padding(.vertical, 2)
+            content()
         }
+    }
+
+    /// Whole cards, as many to a row as fit (`SessionsLane`).
+    private func grid<Cards: View>(@ViewBuilder _ cards: () -> Cards) -> some View {
+        LazyVGrid(columns: SessionsLane.columns, alignment: .leading, spacing: SessionsLane.spacing) { cards() }
+            .padding(.vertical, 2)
+    }
+
+    /// A quiet labelled rule above a lane's opened stale or done cards.
+    private func groupRule(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label.uppercased())
+                .font(DS.font(.caption2, weight: .medium))
+                .tracking(1)
+                .foregroundStyle(DS.Ink.p4)
+            EditorialRule(color: DS.Rule.soft)
+        }
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     /// One tiny pill per state present in the lane, in severity order (spec §6.2).

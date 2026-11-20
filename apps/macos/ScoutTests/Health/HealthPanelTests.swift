@@ -19,6 +19,22 @@ struct HealthPanelModelTests {
         #expect(model.everythingElse.last == "write protection is on")
     }
 
+    /// T4 review: healthy runs beside an engine problem named the runs healthy next to
+    /// Settings' "Needs fixing". The engine's problem leads; engine warnings keep R1's wording.
+    @Test func anEngineProblemBesideHealthyRunsNamesTheEngine() {
+        let green = RunHealth(severity: .green, evaluatedAt: "x", lastOkAt: nil, findings: [], slots: [])
+        let problem = HealthSummary(doctor: DoctorReport(severity: .red, errors: ["launchd job missing"], warnings: []),
+                                    runHealth: .some(green))
+        #expect(HealthPanelModel.headline(runs: .green, shared: problem) == "Scout's engine needs fixing · 1 problem")
+        let warning = HealthSummary(doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), runHealth: .some(green))
+        #expect(HealthPanelModel.headline(runs: .green, shared: warning) == "Scheduled runs are healthy · 1 warning")
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let both = HealthSummary(doctor: DoctorReport(severity: .red, errors: ["e"], warnings: []), runHealth: .some(red))
+        #expect(HealthPanelModel.headline(runs: .red, shared: both) == "Scheduled runs need fixing · 2 problems")
+    }
+
     @Test func summarisesTheRuns() throws {
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture())
         #expect(model.summary == "16 runs in the last two weeks: 4 finished, 4 failed, 8 skipped.")

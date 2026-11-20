@@ -25,6 +25,11 @@ struct EngineSettingsSection: View {
     /// click doesn't revert early.
     @State private var copiedReset: Task<Void, Never>?
 
+    /// A tone's colour for a status word: neutral (a pause, a check still out) stays readable grey text.
+    private static func textColor(_ tone: ScoutStatus.Tone) -> Color {
+        tone == .neutral ? DS.Ink.p2 : tone.color
+    }
+
     private var model: EngineSettingsModel {
         EngineSettingsModel(state: health.state, doctor: health.doctor, lastError: health.lastError, bundledVersion: bundledVersion,
                             unfinishedSwitch: unfinishedSwitch)
@@ -55,7 +60,7 @@ struct EngineSettingsSection: View {
                 HStack(spacing: 10) {
                     Text(model.healthLabel)
                         .font(DS.font(.label, weight: .medium))
-                        .foregroundStyle(model.healthTone.color)
+                        .foregroundStyle(Self.textColor(model.healthTone))
                     if isChecking {
                         ProgressView().controlSize(.small)
                             .accessibilityLabel("Checking the engine")
@@ -71,7 +76,7 @@ struct EngineSettingsSection: View {
                 SettingsRow(title: "Runs", help: model.runsHelp) {
                     Text(model.runsLabel)
                         .font(DS.font(.label, weight: .medium))
-                        .foregroundStyle(model.runsIsPaused ? DS.Ink.p2 : model.runsTone.color)
+                        .foregroundStyle(Self.textColor(model.runsTone))
                 }
             }
             if !model.findingGroups.isEmpty {
