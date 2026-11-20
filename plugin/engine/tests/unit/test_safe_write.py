@@ -550,6 +550,7 @@ _RELEASE = "release tooling: writes this repo's checkout at a maintainer's comma
 REVIEWED: dict[str, str] = {
     "scout/agent_runtimes/gate_probe.py::_fixture_vault::write_text": _TMP,
     "scout/agent_runtimes/gate_probe.py::probe::open": _TMP,
+    "scout/changes/actions.py::_merge_in::open": _TMP,
     "scout/kb/paths.py::_packaged_schema_path::write_bytes": _TMP,
     "scout/repo_sync.py::_merge3::write_bytes": _TMP,
     "scout/scripts/three_way_merge.py::three_way_merge::write_text": _TMP,
