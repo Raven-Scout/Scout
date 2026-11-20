@@ -34,17 +34,22 @@ nonisolated struct Problem: Equatable, Hashable, Sendable, Identifiable {
     /// The engine's own words: stderr, a log path, a command. Shown only
     /// behind "Details" and copied by "Copy details".
     var details: String?
+    /// What "Resolve with Claude" can investigate, when this problem has one: set only by
+    /// `init(finding:)`, `init(connectorAlert:)` and, at `.error` or `.warning`, `init?(run:)`.
+    /// Not part of `id`.
+    var resolveSubject: ResolveSubject?
 
     var id: String { "\(severity.rawValue)|\(title)|\(details ?? "")" }
 
     init(severity: Severity, title: String, impact: String? = nil,
-         fix: String? = nil, details: String? = nil) {
+         fix: String? = nil, details: String? = nil, resolveSubject: ResolveSubject? = nil) {
         self.severity = severity
         self.title = title
         self.impact = impact
         self.fix = fix
         let trimmed = details?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.details = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        self.resolveSubject = resolveSubject
     }
 
     /// The text "Copy details" puts on the pasteboard: every field, so a
@@ -86,7 +91,8 @@ extension Problem {
         self.init(severity: alert.level == .critical ? .error : .warning,
                   title: alert.level == .critical ? "\(name) isn't working" : "\(name) has a problem",
                   impact: alert.reason.replacingOccurrences(of: "`", with: ""),
-                  fix: fix.fix, details: detail)
+                  fix: fix.fix, details: detail,
+                  resolveSubject: .connector(alert.connectorKey ?? alert.connector))
     }
 
     /// The app couldn't read the engine's connector roster and fell back to
@@ -105,6 +111,7 @@ extension Problem {
     init?(run: Run) {
         let details = "Log: \(run.logPath.path)" + (run.exitCode.map { "\nExit code: \($0)" } ?? "")
         self.init(runStatus: run.status.rawValue, runName: run.displayName, details: details)
+        if severity >= .warning { resolveSubject = .run(logName: run.logPath.lastPathComponent) }
     }
 
     /// Same as `init?(run:)` from a raw status or run-ledger outcome, so a
@@ -150,7 +157,8 @@ extension Problem {
         let detail = [finding.detail, finding.log.map { "Log: \($0)" }, "Finding: \(finding.id)"]
             .compactMap { $0 }.joined(separator: "\n")
         self.init(severity: severity, title: finding.summary,
-                  fix: finding.fix.isEmpty ? nil : finding.fix, details: detail)
+                  fix: finding.fix.isEmpty ? nil : finding.fix, details: detail,
+                  resolveSubject: .finding(finding.id))
     }
 
     /// The app couldn't run the engine, or couldn't read what it said.
