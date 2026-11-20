@@ -60,6 +60,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,11 +84,32 @@ APPLIED_KEPT = dt.timedelta(days=90)  # how long the signed record keeps what an
 Committer = Callable[[Path, str, list[str]], str]  # (vault, message, paths) -> the new HEAD
 
 
+def _today(vault: Path) -> str:
+    """Today in the vault's configured zone, as its daily files name it (``paths._today``, as retitle uses)."""
+    from scout import paths
+
+    return paths._today(vault).isoformat()
+
+
+def _event(vault: Path, payload: dict[str, Any], delegate: str) -> None:
+    """A telemetry row for an applied change (ids only). ``.scout-logs`` is run-writable, so it proves nothing;
+    the signed state and the commit do. Best effort."""
+    try:
+        from scout import paths
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(vault), kind="delegate_inbox.applied", source=f"delegate:{delegate}", payload=payload
+        )
+    except Exception:  # pragma: no cover - an event log that can't be written never stops an apply
+        pass
+
+
 @dataclass
 class ApplyResult:
     delegate: str
     outcomes: dict[str, str] = field(default_factory=dict)  # ULID -> outcome, for what this apply decided
-    waiting: int = 0  # observations: V4b
+    waiting: int = 0  # observations: for the owner's review (inbox review, V4b2)
     untaken: int = 0  # copies with no record at all: skipped, nothing recorded
     notes: list[str] = field(default_factory=list)
 
@@ -250,8 +272,9 @@ def _default_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
 
 
 @contextlib.contextmanager
-def _session(vault: Path) -> Iterator[None]:
-    """Hold the vault's session lock, refusing at once (``busy``) while a run is live."""
+def _session(vault: Path, what: str = "inbox apply and revert") -> Iterator[None]:
+    """Hold the vault's session lock, refusing at once (``busy``) while a run is live. ``what`` names the
+    refused step in the refusal."""
     from scout.action_items import retitle
 
     lock = retitle.session_lock(vault)
@@ -259,7 +282,7 @@ def _session(vault: Path) -> Iterator[None]:
         lock.__enter__()
     except retitle.RetitleError as e:
         raise RepoSyncError(
-            "busy", "refused: a Scout run of this vault is live; inbox apply and revert wait until it has finished"
+            "busy", f"refused: a Scout run of this vault is live; {what} waits until it has finished"
         ) from e
     try:
         yield
@@ -387,8 +410,12 @@ def apply(
     now: dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
     commit: Committer | None = None,
+    deadline: float | None = None,
 ) -> ApplyResult:
     """Apply ``delegate``'s taken action-item proposals, each at most once, in ULID order, one commit each.
+
+    With ``deadline`` (a ``time.monotonic()`` value), no new copy is started after it: the rest wait for the next
+    apply, so the session lock is never held long (``inbox sync``).
 
     The owner's, between runs: refused in a scheduled run or as another reader, and while a run holds the
     vault's session lock. The runner's V4b step must run it outside any run, without SCOUT_MODE, as the owner.
@@ -421,6 +448,9 @@ def apply(
             names = sorted(n for n in os.listdir(dir_fd) if n.endswith(".json") and dp.ULID_RE.match(n[:-5]))
             changed = False
             for name in names:
+                if deadline is not None and time.monotonic() >= deadline:
+                    result.notes.append("out of time for this apply; the rest wait for the next one")
+                    break
                 ulid = name[:-5]
                 if ulid not in taken:  # never taken: counted, nothing recorded (a run can plant any number)
                     result.untaken += 1
@@ -437,7 +467,10 @@ def apply(
                 outcome, entry = decided
                 applying = outcome == "applying"
                 if applying:
+                    # The op's own arguments go with it (dates, times, minutes: never free text), so a sync can
+                    # tell later whether an uncommitted change is exactly this op's (delegate_inbox_sync.settle).
                     applied[ulid] = {k: v for k, v in entry.items() if k != "body"} | {
+                        "args": entry["body"]["args"],
                         "outcome": "interrupted",
                         "at": at,
                     }
@@ -454,7 +487,7 @@ def apply(
         finally:
             os.close(dir_fd)
     if result.waiting:
-        result.notes.append(f"{result.waiting} observation(s) wait for the review queue (V4b)")
+        result.notes.append(f"{result.waiting} observation(s) wait for your review: scoutctl inbox review")
     if result.untaken:
         result.notes.append(f"{result.untaken} cop(ies) in the copies folder were never taken by a pull; ignored")
     return result
@@ -487,6 +520,10 @@ def _decide(
     entry: dict[str, Any] = {"op": body["op"], "tag": body["tag"], "date": body["date"]}
     if when - dp.ulid_time(ulid) > STALE_AFTER:
         return "stale", entry
+    if body["date"] != _today(vault):
+        # Only today's daily file: consolidation carries open items forward into it, so a change to an older
+        # file would be lost, or applied twice once the item is carried.
+        return "stale", {**entry, "why": "not_today"}
     if not seen.commits:
         return "no_mirror", entry
     if not seen.in_mirror(body["date"], body["tag"]):
@@ -553,6 +590,7 @@ def _apply_one(
             applied.pop(ulid, None)
             di.save_state(vault, state)
         raise
+    _event(vault, {"ulid": ulid, "op": body["op"], "tag": body["tag"], "date": body["date"], "commit": sha}, delegate)
     return "applied", {**entry, "after": after, "commit": sha}
 
 
@@ -560,7 +598,10 @@ def _apply_one(
 
 
 def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None, commit: Committer | None = None) -> str:
-    """Put an applied op's task back as it was, in a commit of its own. The owner only. Returns the delegate."""
+    """Put an applied op's task back as it was, in a commit of its own. The owner only. Returns the delegate.
+
+    It also undoes what the owner accepted in ``inbox review`` (V4b2): a comment, the same way, and an
+    observation, by removing its note while it is unchanged and not promoted."""
     env = os.environ if env is None else env
     vault = vault.resolve()
     headless_gate(env, "Reverting a delegate's change")
@@ -574,9 +615,14 @@ def revert(vault: Path, ulid: str, *, env: Mapping[str, str] | None = None, comm
             raise RepoSyncError(
                 "ambiguous", f"refused: {ulid} is on record for {len(found)} delegates; fix the state by hand"
             )
-        if not found or found[0][1].get("outcome") != "applied":
+        if not found or found[0][1].get("outcome") not in ("applied", "accepted"):
             raise RepoSyncError("not_applied", f"refused: {ulid} wasn't applied, so there is nothing to revert")
         delegate, entry = found[0]
+        if entry.get("kind") == "observation":
+            from scout.delegate_review import revert_observation
+
+            revert_observation(vault, delegate, ulid, entry, state, commit)
+            return delegate
         rel = _daily_rel(entry["date"])
         path = vault / rel
         if not _plain(vault, rel):
@@ -617,13 +663,14 @@ def apply_all(
     now: dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
     commit: Committer | None = None,
+    deadline: float | None = None,
 ) -> list[ApplyResult | RepoSyncError]:
     """Apply every delegate's proposals; one failing, however it fails, doesn't stop the rest."""
     out: list[ApplyResult | RepoSyncError] = []
     state = di.load_state(vault.resolve())
     for delegate in sorted(set(state.taken) | set(state.inboxes)):
         try:
-            out.append(apply(vault, delegate, now=now, env=env, commit=commit))
+            out.append(apply(vault, delegate, now=now, env=env, commit=commit, deadline=deadline))
         except RepoSyncError as e:
             e.detail.setdefault("delegate", delegate)
             out.append(e)

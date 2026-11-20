@@ -8,7 +8,9 @@ the app copy and update the pins in ``apps/macos/ScoutTests/Engine/DelegateStatu
 The vault lists three delegates: ``grok-personal`` synced cleanly to a GitHub mirror under the owner's own user
 (the engine refuses an organisation's), with two files left out as agent config and an old deploy key still live;
 ``duet``'s last sync to a local mirror (which has no deploy key) was refused; and ``research-bot`` is listed but
-not linked yet. A new field or state goes into the builder, never the JSON.
+not linked yet. Their inboxes (V4b3): ``grok-personal``'s has two proposals waiting for review (one taken from
+an observation, one held comment) and one file no pull took; ``duet``'s last pull was refused; ``research-bot``
+has none. A new field or state goes into the builder, never the JSON.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import delegate_inbox as di
 from scout import delegate_mirror as dm
 from scout import delegate_status
 
@@ -94,6 +97,47 @@ def build_vault(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
         ),
     }
     dm.save_links(vault, links)
+    waiting, held, planted = "01JD5Z0000000000000000ABCD", "01JD5Z0000000000000000ABCE", "01JD5Z0000000000000000ABCF"
+    inbox = di.InboxState(
+        inboxes={
+            "grok-personal": di.InboxLink(
+                id="grok-personal",
+                remote="https://github.com/example-user/grok-inbox.git",
+                linked_at="2026-11-10T09:05:00Z",
+                bound_to="github:1:2",
+                last_pull="2026-11-19T11:45:00Z",
+            ),
+            "duet": di.InboxLink(
+                id="duet",
+                remote=str(home / "inboxes" / "duet.git"),
+                linked_at="2026-11-12T15:35:00Z",
+                bound_to="local:1:2",
+                last_pull="2026-11-18T22:00:00Z",
+                last_error={"code": "inbox_rewritten", "at": "2026-11-19T11:30:00Z"},
+            ),
+        },
+        taken={
+            "grok-personal": {
+                waiting: {"mac": "0" * 64, "at": "2026-11-19T09:00:00Z"},
+                held: {"mac": "0" * 64, "at": "2026-11-19T11:45:00Z"},
+            }
+        },  # fmt: skip
+        applied={
+            "grok-personal": {
+                held: {
+                    "op": "add-comment",
+                    "tag": "AB12",
+                    "date": "2026-11-19",
+                    "outcome": "held",
+                    "at": "2026-11-19T11:46:00Z",
+                }
+            }
+        },  # fmt: skip
+    )
+    di.save_state(vault, inbox)
+    folder = vault.joinpath(*di.INBOX_DIR, "grok-personal")
+    folder.mkdir(parents=True)
+    (folder / f"{planted}.json").write_text("{}", encoding="utf-8")  # no pull took it: something else put it there
     return vault, {"HOME": str(home)}
 
 
@@ -137,6 +181,23 @@ def test_the_fixture_exercises_every_state(doc: dict) -> None:
     assert duet["remote"] == {"kind": "local", "display": "~/mirrors/duet.git"}
     assert duet["deploy_key"] is False and duet["old_keys_live"] == 0
     assert bot["linked"] is False and bot["listed"] is True and bot["can_preview"] and not bot["can_sync"]
+    assert doc["inbox_state"] == "ok"
+    assert grok["inbox"] == {
+        "linked_at": "2026-11-10T09:05:00Z",
+        "last_pull": "2026-11-19T11:45:00Z",
+        "refusal": None,
+        "review": 2,
+        "oldest_review": "2026-11-19T09:00:00Z",
+        "waiting": 2,
+        "untaken": 1,
+    }
+    assert grok["can_review"] and duet["can_review"] and not bot["can_review"]
+    assert duet["inbox"]["refusal"] == {
+        "code": "inbox_rewritten",
+        "reason": delegate_status.INBOX_REASONS["inbox_rewritten"],
+        "at": "2026-11-19T11:30:00Z",
+    }
+    assert duet["inbox"]["review"] == 0 and bot["inbox"] is None
     for d in doc["delegates"]:
         assert d["state_unverified"] is False
         assert set(d) == set(doc["delegates"][0])
@@ -145,5 +206,6 @@ def test_the_fixture_exercises_every_state(doc: dict) -> None:
 def test_no_secret_path_or_commit_reaches_the_fixture(doc: dict, tmp_path: Path) -> None:
     text = json.dumps(doc)
     assert str(tmp_path) not in text
-    for leaked in ("scout-secrets", "a" * 40, "b" * 40, "d" * 40, "f" * 64, "0" * 64, "key_file", "inputs"):
+    for leaked in ("scout-secrets", "a" * 40, "b" * 40, "d" * 40, "f" * 64, "0" * 64, "key_file", "inputs",
+                   "grok-inbox", "inboxes", "bound_to", "ABCD"):  # fmt: skip
         assert leaked not in text

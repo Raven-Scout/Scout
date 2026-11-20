@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from scout import delegate_inbox as di
 from scout import delegate_mirror as dm
 from scout import delegate_status as ds
 from scout.cli import app
@@ -190,3 +191,122 @@ def test_the_text_form_shows_the_remote_as_the_json_does_and_only_to_the_owner(
     r = runner.invoke(app, ["delegate", "status"])
     assert "example-user" not in r.stdout and "remote hidden" in r.stdout
     assert ds.remote_text("https://user:tok@github.com/x/y.git", _owner()).startswith("remote not shown")
+
+
+# ----- the inbox (V4b3) --------------------------------------------------------------------------------
+
+
+def _inbox(vault: Path, **kw: object) -> None:
+    link = di.InboxLink(id="grok-personal", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2", **kw)  # type: ignore[arg-type]  # fmt: skip
+    di.save_state(vault, di.InboxState(inboxes={"grok-personal": link}))
+
+
+def test_no_inbox_state_shows_no_inbox(vault: Path) -> None:
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "none"
+    assert all(d["inbox"] is None and d["can_review"] is False for d in doc["delegates"])
+
+
+def test_an_inbox_shows_its_counts_and_a_refusal_in_fixed_words(vault: Path) -> None:
+    _inbox(vault, last_error={"code": "inbox_rewritten", "at": "2026-11-19T11:00:00Z"})
+    doc = ds.report(vault, env=_owner())
+    grok = doc["delegates"][0]
+    assert doc["inbox_state"] == "ok" and grok["can_review"] is True
+    assert grok["inbox"]["review"] == 0 and grok["inbox"]["refusal"]["reason"] == ds.INBOX_REASONS["inbox_rewritten"]
+    assert doc["delegates"][1]["inbox"] is None  # duet has none
+
+
+def test_an_inbox_refusal_code_is_shape_checked(vault: Path) -> None:
+    _inbox(vault, last_error={"code": "Sam's notes/[[sam]]", "at": "yesterday"})
+    grok = ds.report(vault, env=_owner())["delegates"][0]
+    assert grok["inbox"]["refusal"] == {"code": "unknown", "reason": ds.GENERIC_INBOX_REASON, "at": None}
+    _inbox(vault, last_error={"code": "remote_public", "at": "2026-11-19T11:00:00Z"})
+    grok = ds.report(vault, env=_owner())["delegates"][0]
+    assert grok["inbox"]["refusal"]["reason"] == ds.REASONS["remote_public"]  # a code shared with the mirrors
+
+
+def test_an_inbox_state_that_doesnt_verify_shows_no_inbox(vault: Path) -> None:
+    _inbox(vault)
+    path = di.state_path(vault)
+    path.write_text(path.read_text(encoding="utf-8").replace("example-user", "other-user"), encoding="utf-8")
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "unverified"
+    assert all(d["inbox"] is None and not d["can_review"] for d in doc["delegates"])
+    path.write_text("{not json", encoding="utf-8")
+    assert ds.report(vault, env=_owner())["inbox_state"] == "unreadable"
+
+
+def test_an_inbox_for_a_delegate_no_longer_listed_still_shows(vault: Path) -> None:
+    link = di.InboxLink(id="old-bot", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2")  # fmt: skip
+    di.save_state(vault, di.InboxState(inboxes={"old-bot": link}))
+    old = next(d for d in ds.report(vault, env=_owner())["delegates"] if d["id"] == "old-bot")
+    assert old["listed"] is False and old["linked"] is False and old["inbox"] is not None and old["can_review"]
+
+
+def test_a_scheduled_run_may_not_review(vault: Path) -> None:
+    _inbox(vault)
+    grok = ds.report(vault, env={**_owner(), "SCOUT_MODE": "briefing"})["delegates"][0]
+    assert grok["inbox"] is not None and grok["can_review"] is False
+
+
+def test_an_inbox_summary_that_fails_unexpectedly_reads_as_unreadable(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout import delegate_inbox_sync
+
+    _inbox(vault)
+
+    def boom(*_a: object, **_k: object) -> dict:
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(delegate_inbox_sync, "summary", boom)
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "unreadable" and all(d["inbox"] is None for d in doc["delegates"])
+
+
+def test_an_inbox_under_a_bad_id_is_dropped(vault: Path) -> None:
+    links = {
+        key: di.InboxLink(
+            id=key,
+            remote="https://github.com/example-user/inbox.git",
+            linked_at="2026-11-10T09:00:00Z",
+            bound_to="github:1:2",
+        )  # fmt: skip
+        for key in ("Bad Id", "author", "grok-personal")
+    }
+    di.save_state(vault, di.InboxState(inboxes=links))
+    doc = ds.report(vault, env=_owner())
+    assert {d["id"] for d in doc["delegates"]} == {"grok-personal", "duet"}
+    assert doc["delegates"][0]["inbox"] is not None
+
+
+def test_the_review_count_holds_what_the_sheet_lists(vault: Path) -> None:
+    """Waiting, held, and an op over the day's limit while it could still apply: inbox review lists all three."""
+    import datetime as dt
+
+    from scout import delegate_proposals as dp
+
+    now = dt.datetime(2026, 11, 19, 12, 0, tzinfo=dt.UTC)
+
+    def ulid(days: int, tail: str) -> str:
+        ms = int((now - dt.timedelta(days=days)).timestamp() * 1000)
+        head = ""
+        for _ in range(10):
+            head = dp._CROCKFORD[ms % 32] + head
+            ms //= 32
+        return head + tail
+
+    fresh, old, waiting = ulid(1, "000000000000000A"), ulid(9, "000000000000000B"), ulid(1, "000000000000000C")
+    link = di.InboxLink(id="grok-personal", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2")  # fmt: skip
+    rec = {"mac": "0" * 64, "at": "2026-11-18T12:00:00Z"}
+    state = di.InboxState(
+        inboxes={"grok-personal": link},
+        taken={"grok-personal": {fresh: rec, old: rec, waiting: rec}},
+        applied={"grok-personal": {fresh: {"outcome": "limited"}, old: {"outcome": "limited"}}},
+    )
+    di.save_state(vault, state)
+    grok = ds.report(vault, env=_owner(), now=now)["delegates"][0]
+    assert grok["inbox"]["review"] == 2  # the waiting one and the fresh limited op; the old op is past its window

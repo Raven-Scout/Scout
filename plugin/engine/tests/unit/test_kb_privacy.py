@@ -617,8 +617,9 @@ def test_engine_default_policy_matches_spec(policy: Policy) -> None:
         ".mcp.json",
         ".env*",
         ".scout-state/**",
+        ".scout-inbox/agents/**",
     )
-    assert policy.local_only == ()
+    assert policy.local_only == (".scout-inbox/agents/**",)  # also in `default`, so Agnes is told (#550 V4b1)
     assert policy.sync_allow == (
         ".scout-state/schedule.yaml",
         ".scout-state/id-map.json",
@@ -669,7 +670,7 @@ def test_label_to_json_shape_matches_spec(policy: Policy) -> None:
 def test_policy_to_json_round_trips_yaml_shape(policy: Policy) -> None:
     data = policy.to_json()
     assert data["local_only"]["always"][0] == ".scout-logs/**"
-    assert data["local_only"]["default"] == []
+    assert data["local_only"]["default"] == [".scout-inbox/agents/**"]
     assert data["visibility_defaults"][0] == {"glob": "knowledge-base/personal/**", "visibility": "private"}
     assert data["surfaces"]["shared"] == sorted(policy.shared_surfaces)
     assert data["shared_files"] == ["drafts/**"]

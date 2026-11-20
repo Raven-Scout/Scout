@@ -85,4 +85,4 @@ differs from the canonical one — so you cannot edit just one copy. On any chan
    guards fail the moment the corpus changes without them), and merge the
    scout-iOS-app PR alongside it.
 
-`ScoutTests/Fixtures/doctor-run-health.json`, `ScoutTests/Fixtures/connector-alerts.json`, `ScoutTests/Fixtures/usage-summary.json`, `ScoutTests/Fixtures/protection-status.json` and `ScoutTests/Fixtures/delegate-status.json` are likewise byte copies of generated plugin fixtures — never edit them here; see the root `CLAUDE.md` for how to regenerate and copy them.
+`ScoutTests/Fixtures/doctor-run-health.json`, `ScoutTests/Fixtures/connector-alerts.json`, `ScoutTests/Fixtures/usage-summary.json`, `ScoutTests/Fixtures/protection-status.json`, `ScoutTests/Fixtures/delegate-status.json`, `ScoutTests/Fixtures/inbox-review.json` and `ScoutTests/Fixtures/run-progress.alive` are likewise byte copies of generated plugin fixtures — never edit them here; see the root `CLAUDE.md` for how to regenerate and copy them.

@@ -17,6 +17,14 @@ dropped and counted in ``skipped``). What a sync was refused for is shown as its
 code and a fixed sentence for that code, never the refusal's message, which can
 name vault paths.
 
+**Each delegate's inbox** (V4b3) comes from the signed inbox state through
+:func:`scout.delegate_inbox_sync.summary`: when it was linked and last pulled, a
+failed pull's code and a fixed sentence (:data:`INBOX_REASONS`), and counts of
+what waits for review, what is taken but unsettled, and what no pull took.
+``inbox_state`` is ``ok``, ``none``, ``unverified``, ``unsafe`` or
+``unreadable``; only ``ok`` shows any inbox. The fields are additive, so
+:data:`SCHEMA_VERSION` stays 1.
+
 **What it never holds:** note content or names, vault paths, the key file's
 path, fingerprints, commit ids, or anything from the config but the delegate
 ids it lists. The mirror's remote is shown only to the owner at the keyboard
@@ -74,6 +82,30 @@ REASONS: dict[str, str] = {
     "trading_paths_not_local_only": "Paths that look like trading data aren't local-only yet.",
 }
 GENERIC_REASON = "The sync was refused; run it in a terminal to see why."
+
+# What each refusal an inbox pull records means, in fixed words. A code shared with the mirrors reads as there.
+INBOX_REASONS: dict[str, str] = {
+    "inbox_actions_on": "GitHub Actions is on for the inbox repository, so a workflow the agent pushes would run.",
+    "inbox_fetch_failed": "Fetching the inbox repository failed.",
+    "inbox_folder_unsafe": "The folder the pulled proposals go in isn't safe to write.",
+    "inbox_git_failed": "A git command on the inbox failed.",
+    "inbox_gitignore_unsafe": "The vault's .gitignore can't be read safely.",
+    "inbox_other_key": "The inbox repository has a deploy key Scout didn't make for it.",
+    "inbox_pages_on": "The inbox repository has GitHub Pages on, which would publish what the agent writes.",
+    "inbox_push_failed": "Removing the taken proposals from the inbox repository failed.",
+    "inbox_rebound": "The inbox repository isn't the one this inbox was linked to.",
+    "inbox_rewritten": "The inbox repository's history was rewritten since the last pull.",
+    "inbox_state_unsafe": "The inbox state folder isn't yours alone.",
+    "inbox_taken": "The inbox repository is another delegate's inbox or mirror too.",
+    "key_not_writable": "GitHub recorded the inbox key as read-only.",
+    "no_key": "The inbox key is missing.",
+    "pull_failed": "The pull failed unexpectedly.",
+    **{k: v for k, v in REASONS.items() if k.startswith("remote_") or k in ("busy", "git_failed", "internal")},
+}
+GENERIC_INBOX_REASON = "The pull was refused; run scoutctl inbox pull in a terminal to see why."
+
+# The inbox state as a whole: the error codes ``load_state`` raises, read as a word.
+_INBOX_STATES = {"inbox_state_unverified": "unverified", "inbox_state_unsafe": "unsafe"}
 
 
 def _stamp(value: Any) -> str | None:
@@ -199,6 +231,46 @@ def _unlinked(key: str) -> dict[str, Any]:
     }
 
 
+def _inboxes(vault: Path, now: datetime | None) -> tuple[str, dict[str, dict[str, Any]]]:
+    """``inbox_state`` and each linked inbox at a glance, shape-checked: ids, counts and times, never agent text.
+
+    The signed inbox state is all or nothing: when it doesn't verify, no inbox is shown and ``inbox_state`` says
+    why. Reading it takes no lock and writes nothing."""
+    from scout import delegate_inbox_sync
+    from scout.kb.privacy import is_delegate_id
+    from scout.repo_sync import RepoSyncError
+
+    try:
+        raw = delegate_inbox_sync.summary(vault, now=now)
+    except RepoSyncError as e:
+        return _INBOX_STATES.get(e.code, "unreadable"), {}
+    except Exception:  # noqa: BLE001 - a state that can't be read is "unreadable"; doctor says why
+        return "unreadable", {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, box in raw.items():
+        if not is_delegate_id(key) or not isinstance(box, dict):
+            continue
+        code = box.get("last_error")
+        refusal = None
+        if code is not None:
+            code = code if isinstance(code, str) and _CODE.fullmatch(code) else "unknown"
+            refusal = {
+                "code": code,
+                "reason": INBOX_REASONS.get(code, GENERIC_INBOX_REASON),
+                "at": _stamp(box.get("last_error_at")),
+            }
+        out[key] = {
+            "linked_at": _stamp(box.get("linked_at")),
+            "last_pull": _stamp(box.get("last_pull")),
+            "refusal": refusal,
+            "review": _count(box.get("review")),
+            "oldest_review": _stamp(box.get("oldest_review")),
+            "waiting": _count(box.get("waiting")),
+            "untaken": _count(box.get("untaken")),
+        }
+    return ("ok" if out else "none"), out
+
+
 def _listed(vault: Path) -> list[str]:
     """The delegate ids ``scout-config.yaml → privacy.delegates`` lists, in its order; [] when it can't be read."""
     from scout.kb.privacy import is_delegate_id, load_policy
@@ -248,18 +320,25 @@ def report(vault: Path, *, env: Mapping[str, str], now: datetime | None = None) 
                 entries[key]["behind"] = key in behind
         except Exception:  # noqa: BLE001 - "behind" is a hint; a link it can't judge shows null
             pass
+    inbox_state, inboxes = _inboxes(vault, now)
+    for key in inboxes:
+        if key not in entries:
+            entries[key] = {**_unlinked(key), "listed": False}  # an inbox, no mirror
     listed = _listed(vault)
     for key in listed:
         entries.setdefault(key, _unlinked(key))["listed"] = True
     for e in entries.values():
         e["can_preview"] = owner and e["listed"]
         e["can_sync"] = owner and state == "ok" and e["linked"] and e["listed"]
+        e["inbox"] = inboxes.get(e["id"])
+        e["can_review"] = owner and e["inbox"] is not None
     order = {k: i for i, k in enumerate(listed)}
     delegates = sorted(entries.values(), key=lambda e: (order.get(e["id"], len(order)), e["id"]))
     return {
         "schema_version": SCHEMA_VERSION,
         "generator": GENERATOR,
         "state": state,
+        "inbox_state": inbox_state,
         "owner": owner,
         "skipped": skipped,
         "delegates": delegates,

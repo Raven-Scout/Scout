@@ -122,7 +122,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 4  # 4: NoteFacts.shared_source, for delegates (#550); 3: Stage 2 (Agnes #6090 §4)
+CLASSIFIER_VERSION = 6  # 6: a shared: source caps federation at none; 5: delegate_source/delegate_scope (V4b2)
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -147,6 +147,8 @@ SurfaceClass = Literal["owner_only", "shared"]
 # Declared federation scope: "none", "org", or a tuple of principal strings.
 FederationScope = str | tuple[str, ...]
 CeilingLevel = Literal["none", "people", "org"]
+SharedEdits = Literal["checked", "refuse"]
+SHARED_EDITS: tuple[SharedEdits, ...] = ("checked", "refuse")
 CEILING_LEVELS: tuple[CeilingLevel, ...] = ("none", "people", "org")  # narrowest first
 FederationSource = Literal["frontmatter", "default", "ceiling", "disabled"]
 FEDERATION_SOURCES: tuple[FederationSource, ...] = ("frontmatter", "default", "ceiling", "disabled")
@@ -157,6 +159,13 @@ FULL_READERS = frozenset({"owner", "autonomous"})
 # inbox. Notes that cite someone's shared note (``source: shared:…``) are kept from delegates
 # by ``Label.shared_source`` instead.
 DELEGATE_NEVER = (".scout-inbox/**",)
+
+# Where an accepted agent observation lands (#550 V4b2): ``from-agents/<delegate>/<ULID>.md``. A note
+# here counts as an agent's text (``Label.delegate_source``) unless its frontmatter records the
+# owner's promotion (``promoted_from: delegate:<id>``): a hand-made or broken note here fails closed.
+FROM_AGENTS = "knowledge-base/from-agents/"
+_FROM_AGENT = "[from-agent] "
+_DELEGATE_REF_RE = re.compile(r"^delegate:([a-z0-9][a-z0-9-]{0,39})\Z")
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
@@ -201,6 +210,19 @@ class ScopeDefault:
         return {"glob": self.glob, "scope": _scope_json(self.scope)}
 
 
+def scope_widens(head: FederationScope, staged: FederationScope) -> bool:
+    """Whether ``staged`` admits someone ``head`` didn't (``org`` admits every listed principal)."""
+    if staged == "none" or staged == head:
+        return False
+    if staged == "org":
+        return True
+    if head == "org":
+        return False
+    if head == "none":
+        return True
+    return bool(set(staged) - set(head))
+
+
 @dataclass(frozen=True)
 class DelegateRule:
     """One ``delegates`` entry: the agent ``delegate:<id>``, whether it sees private notes, and the globs of
@@ -232,6 +254,12 @@ class Policy:
     (possibly empty) of globs or plain paths when it does.
 
     ``delegates`` comes from the overlay alone, in its order.
+
+    ``shared_edits`` (overlay ``shared_edits: checked | refuse``, default
+    ``checked``) says what a scheduled run's commit may do to a note already
+    shared: ``checked`` lets it add or reword lines when those lines pass the
+    private-note checks (:mod:`scout.kb.lint_privacy`), ``refuse`` refuses any
+    added line (the freeze before 2026-11). A bad value counts as ``refuse``.
     """
 
     local_only_always: tuple[str, ...]
@@ -248,6 +276,7 @@ class Policy:
     warnings: tuple[str, ...] = ()
     sync_only: tuple[str, ...] | None = None
     delegates: tuple[DelegateRule, ...] = ()
+    shared_edits: SharedEdits = "checked"
 
     def delegate(self, reader: str) -> DelegateRule | None:
         """The listed delegate a ``delegate:<id>`` reader is, else None."""
@@ -263,6 +292,9 @@ class Policy:
         because a narrowing entry can't be folded into the engine's list.
         ``sync_only`` and ``delegates`` appear only when set, so the engine
         default's snapshot and every other vault's policy hash stay as they were.
+        ``shared_edits`` never does: it labels nothing, it only tells this
+        vault's commit hook what a scheduled run may commit, so the policy
+        Agnes indexes by is the same either way.
         """
         out: dict[str, Any] = {
             "local_only": {
@@ -311,6 +343,16 @@ class Label:
     :func:`visible_to` reads it, to keep such notes from delegates; it isn't in
     ``to_json`` and doesn't take part in equality, so published labels and the
     conformance corpus don't change.
+
+    ``delegate_source`` and ``delegate_scope`` are internal the same way (#550
+    V4b2). ``delegate_source``: the note holds an agent's text the owner
+    accepted but hasn't promoted (``source: delegate:…``, a note under
+    :data:`FROM_AGENTS` without ``promoted_from``, or frontmatter that can't be
+    read); no delegate sees it, its author included, and neither does the owner
+    elsewhere. ``delegate_scope``: the delegates a note is limited to (None: no
+    limit; empty: none, as a malformed value reads). ``delegate_author``: the
+    agent whose text it is (``source: delegate:<id>`` or ``promoted_from``),
+    for the ``[from-agent: …]`` mark ``kb`` prints, promoted or not.
     """
 
     path: str
@@ -324,6 +366,9 @@ class Label:
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
     shared_source: bool = field(default=False, compare=False)
+    delegate_source: bool = field(default=False, compare=False)
+    delegate_scope: tuple[str, ...] | None = field(default=None, compare=False)
+    delegate_author: str | None = field(default=None, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -555,7 +600,7 @@ def load_policy(vault: Path | None) -> Policy:
     ``visibility_defaults`` (placed before the engine's, so the owner's entry
     wins), ``shared_files_add``, ``surfaces: {owner_only, shared}``,
     ``federation: {enabled}``, ``federation_ceilings`` (narrowing only),
-    ``federation_defaults``, ``sync_only`` and ``delegates``. Other keys are ignored. See the
+    ``federation_defaults``, ``sync_only``, ``delegates`` and ``shared_edits``. Other keys are ignored. See the
     module docstring for the warnings it records on ``Policy.warnings``.
     """
     base = _engine_default()
@@ -614,7 +659,8 @@ def _narrowing_overlay(overlay: Any) -> Any:
     ``federation_ceilings`` can only lower a ceiling; ``sync_only`` only keeps
     paths home; a ``private`` default (or a bad value, kept as ``private``) only
     adds private notes; ``surfaces.shared`` moves a surface to the class that gets
-    checked. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
+    checked; ``shared_edits`` other than ``checked`` (``refuse``, or a bad value,
+    read as ``refuse``) only refuses more. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
     may go there), ``federation``, ``federation_defaults`` and ``delegates`` (a
     delegate is a reader that sees more). A wrong shape passes
     through, for its warning.
@@ -626,6 +672,8 @@ def _narrowing_overlay(overlay: Any) -> Any:
         for key in ("local_only_add", "shared_files_add", "federation_ceilings", "sync_only")
         if key in overlay
     }
+    if "shared_edits" in overlay and overlay["shared_edits"] != "checked":
+        kept["shared_edits"] = overlay["shared_edits"]
     if "visibility_defaults" in overlay:
         entries = overlay["visibility_defaults"]
         kept["visibility_defaults"] = (
@@ -763,6 +811,15 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: froz
         if bad:
             warnings.append("privacy-overlay-invalid")
 
+    shared_edits: SharedEdits = base.shared_edits
+    if "shared_edits" in overlay:
+        value = overlay["shared_edits"]
+        if value == "checked" or value == "refuse":
+            shared_edits = value
+        else:
+            warnings.append("privacy-overlay-invalid")
+            shared_edits = "refuse"  # fail closed: the freeze
+
     return Policy(
         local_only_always=base.local_only_always,
         local_only=local_only,
@@ -778,6 +835,7 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: froz
         warnings=_dedup(warnings),
         sync_only=sync_only,
         delegates=delegates,
+        shared_edits=shared_edits,
     )
 
 
@@ -878,6 +936,10 @@ class NoteFacts:
     lower-cased, or None. ``warnings`` are the text-only ones, in
     :func:`classify`'s order. ``shared_source``: a frontmatter ``source:`` value
     claims ``shared:…`` (the rule of :func:`scout.kb.shared_reads.is_shared_source`).
+    ``delegate_source``: a ``source:`` value claims ``delegate:…``. ``promoted``: a
+    ``promoted_from: delegate:<id>`` key. ``delegate_scope``: the ``delegate_scope``
+    ids (None when the key is absent; empty when it isn't a list of delegate ids).
+    ``delegate_author``: the id a ``delegate:<id>`` source or ``promoted_from`` names.
     """
 
     state: Literal["ok", "unparseable", "unreadable"] = "ok"
@@ -887,6 +949,10 @@ class NoteFacts:
     declared_present: bool = False
     kind: str | None = None
     shared_source: bool = False
+    delegate_source: bool = False
+    promoted: bool = False
+    delegate_scope: tuple[str, ...] | None = None
+    delegate_author: str | None = None
 
 
 def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
@@ -919,6 +985,12 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
     kind = fm.get("kind")
     source = fm.get("source")
     sources = [source] if isinstance(source, str) else source if isinstance(source, list) else []
+    promoted_from = fm.get("promoted_from")
+    promoted = isinstance(promoted_from, str) and _DELEGATE_REF_RE.match(promoted_from) is not None
+    refs: list[str] = [v for v in sources if isinstance(v, str)]
+    if promoted and isinstance(promoted_from, str):
+        refs.append(promoted_from)
+    author = next((m[1] for m in (_DELEGATE_REF_RE.match(v.strip()) for v in refs) if m), None)
     return NoteFacts(
         visibility=visibility,
         declared=declared,
@@ -926,12 +998,42 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
         declared_present="federation_scope" in fm,
         kind=(kind.strip().lower() or None) if isinstance(kind, str) else None,
         shared_source=any(isinstance(v, str) and v.strip().casefold().startswith("shared:") for v in sources),
+        delegate_source=any(isinstance(v, str) and v.strip().casefold().startswith("delegate:") for v in sources),
+        promoted=promoted,
+        delegate_scope=_parse_delegate_scope(fm["delegate_scope"]) if "delegate_scope" in fm else None,
+        delegate_author=author,
     )
+
+
+def _parse_delegate_scope(value: Any) -> tuple[str, ...]:
+    """A ``delegate_scope`` value: a list of delegate ids, first-seen order; anything else is empty (none)."""
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and is_delegate_id(v) for v in value):
+        return ()
+    return tuple(dict.fromkeys(value))
+
+
+def from_agent(label: Mapping[str, Any] | Label | None) -> str | None:
+    """The ``[from-agent: …] `` mark for a note holding an agent's text (#550 V4b2), else None.
+
+    A :class:`Label` names the agent (``delegate_author``); a published label (a dict) carries only its path, so a
+    note under ``from-agents/`` is marked without a name."""
+    if isinstance(label, Label):
+        if label.delegate_author is not None:
+            return f"[from-agent: delegate-{label.delegate_author}] "
+        return _FROM_AGENT if label.delegate_source or label.path.startswith(FROM_AGENTS) else None
+    path = label.get("path") if label else None
+    return _FROM_AGENT if isinstance(path, str) and path.startswith(FROM_AGENTS) else None
 
 
 def holds_shared(facts: NoteFacts) -> bool:
     """``Label.shared_source`` for these facts: a ``shared:`` source, or unreadable frontmatter (fail closed)."""
     return facts.shared_source or facts.state != "ok"
+
+
+def holds_delegate(rel_path: str, facts: NoteFacts) -> bool:
+    """``Label.delegate_source``: a ``delegate:`` source, a :data:`FROM_AGENTS` note not promoted, or unreadable
+    frontmatter (fail closed)."""
+    return facts.state != "ok" or facts.delegate_source or (rel_path.startswith(FROM_AGENTS) and not facts.promoted)
 
 
 def _level(level: CeilingLevel) -> int:
@@ -1008,6 +1110,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
             shared_file=shared_by_path,
             warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
             shared_source=True,
+            delegate_source=True,
         )
 
     visibility: Visibility
@@ -1029,7 +1132,11 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         warnings.append("privacy-contradiction")
 
     by_folder = folder_ceiling(policy, rel, facts.kind)
-    forced_none = visibility == "private" or local_only
+    by_delegate = holds_delegate(rel, facts)
+    # Never shared, whatever the frontmatter or folder default says: an agent's text the owner hasn't promoted
+    # (#550 V4b2), and a note built from someone's shared note (``source: shared:…``): your sharing must not
+    # pass on theirs (Agnes #6090 §7).
+    forced_none = visibility == "private" or local_only or by_delegate or facts.shared_source
     ceiling: CeilingLevel = "none" if forced_none else by_folder
     if not forced_none and cap_scope(declared, by_folder) != declared:
         warnings.append("federation-ceiling")
@@ -1047,6 +1154,9 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
         shared_file=shared_by_path or declared != "none" or scope != "none",
         warnings=_dedup(warnings),
         shared_source=holds_shared(facts),
+        delegate_source=by_delegate,
+        delegate_scope=facts.delegate_scope,
+        delegate_author=facts.delegate_author,
     )
 
 
@@ -1197,15 +1307,23 @@ def visible_to(label: Label, reader: str, policy: Policy | None = None) -> bool:
 
     ``elsewhere`` (the owner outside the vault) sees what a listed delegate
     without ``include_private`` sees, with no policy needed.
+
+    An agent's accepted text not yet promoted (``Label.delegate_source``) is
+    seen by no delegate, its author included, and not elsewhere (#550 V4b2). A
+    note with a ``delegate_scope`` is seen only by the delegates it names.
     """
     if reader in FULL_READERS:
         return True
+    if label.delegate_source:
+        return False
     if reader == ELSEWHERE_READER:
         return not (label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path)) and (
             label.visibility == "normal"
         )
     rule = policy.delegate(reader) if policy is not None else None
     if rule is None or label.local_only or label.shared_source or _any(DELEGATE_NEVER, label.path):
+        return False
+    if label.delegate_scope is not None and delegate_id(reader) not in label.delegate_scope:
         return False
     return label.visibility == "normal" or rule.include_private
 

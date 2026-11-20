@@ -156,6 +156,7 @@ SUCCESS
 # --- Seed tags ---
 ALRT
 BILL
+BKLG
 CACHE
 DEPR
 DOCS

@@ -74,6 +74,7 @@ ENTITY_DIRS = ("people", "personal", "ontology/entities")
 ENTITY_HOURS = 720
 
 ARCHIVE_DIRS = {"archive", "archived"}
+AGENT_DIRS = {"from-agents"}  # agents' accepted observations (#550 V4b2): an agent's text, never refreshed
 ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 # The frontmatter `priority:` key, then a prose marker in the head. Both are
 # anchored at line start so a comment or value naming the key never wins.
@@ -220,9 +221,9 @@ def _priority_hours(value: str) -> int:
 
 
 def is_ranked(rel_parts: tuple[str, ...]) -> bool:
-    """False for archives and dated records, which are old by design."""
+    """False for archives and dated records, which are old by design, and for agents' observations."""
     for part in rel_parts:
-        if part.lower() in ARCHIVE_DIRS or ISO_DATE_RE.search(part):
+        if part.lower() in ARCHIVE_DIRS or part.lower() in AGENT_DIRS or ISO_DATE_RE.search(part):
             return False
     return "-archive" not in rel_parts[-1].lower()
 

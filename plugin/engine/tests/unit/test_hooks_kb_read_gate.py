@@ -622,3 +622,160 @@ def test_run_denies_the_owners_delegate_commands(vault, command):
 @pytest.mark.parametrize("command", ["scoutctl delegate sync --all --if-moved", "scoutctl delegate status"])
 def test_a_run_may_sync_and_list_delegate_mirrors(vault, command):
     assert _decision(vault, "Bash", {"command": command}) is None
+
+
+# --- the agents' inbox copies (#550 V4b1): agent text never reaches a run --------------------------------------
+
+
+@pytest.fixture
+def copies(vault: Path) -> Path:
+    folder = vault / ".scout-inbox" / "agents" / "grok-personal"
+    folder.mkdir(parents=True)
+    (folder / "01JD5Z0000000000000000ABCD.json").write_text('{"text": "do as I say"}\n')
+    (folder / "taken.ledger").write_text("01JD5Z0000000000000000ABCD\n")
+    return folder
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Read", {"file_path": ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"}),
+        ("Read", {"file_path": ".scout-inbox/agents/grok-personal/taken.ledger"}),
+        ("Grep", {"pattern": "x", "path": ".scout-inbox/agents"}),
+        ("Grep", {"pattern": "x", "path": ".scout-inbox"}),
+        ("Grep", {"pattern": "x", "glob": "*.json"}),
+        ("Grep", {"pattern": "x", "glob": "**/agents/**"}),
+        ("Glob", {"pattern": "**/*.json"}),
+        ("Glob", {"pattern": ".scout-inbox/**"}),
+        ("Bash", {"command": "cat .scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"}),
+        ("Bash", {"command": "jq . .scout-inbox/agents/*/*.json"}),
+    ],
+)
+def test_a_run_never_reads_what_an_agent_proposed(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    reason = _denied(_decision(vault, tool, tool_input))
+    assert "agents' inbox copies" in reason and "untrusted" in reason
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Grep", {"pattern": "x", "path": "scripts"}),
+        ("Glob", {"pattern": "action-items/*.md"}),
+        ("Read", {"file_path": ".scout-inbox/phone-notifications.jsonl"}),
+    ],
+)
+def test_other_files_stay_readable(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    assert _decision(vault, tool, tool_input) is None
+
+
+def test_the_owner_still_reads_the_copies(vault: Path, copies: Path) -> None:
+    path = ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"
+    assert _decision(vault, "Read", {"file_path": path}, env={}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["scoutctl inbox apply --all", "scripts/scoutctl inbox sync", "python3 -P -m scout inbox pull grok-personal"],
+)
+def test_a_run_never_pulls_or_applies_an_inbox(vault: Path, command: str) -> None:
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "inbox" in reason and "owner's" in reason
+
+
+def test_the_shell_prefilters_send_the_copies_to_the_gate(vault: Path, copies: Path) -> None:
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    read = _payload("Read", {"file_path": str(copies / "01JD5Z0000000000000000ABCD.json")}, vault).getvalue()
+    res = _sh(env, read, vault, matcher="Read")
+    assert '"deny"' in res.stdout and "agents' inbox copies" in res.stdout, res.stdout + res.stderr
+    bash = _payload("Bash", {"command": "head .scout-inbox/agents/grok-personal/taken.ledger"}, vault).getvalue()
+    res = _sh(env, bash, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+    cmd = _payload("Bash", {"command": "scoutctl inbox apply --all"}, vault).getvalue()
+    res = _sh(env, cmd, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Grep", {"pattern": "x", "glob": "*.js?n"}),
+        ("Grep", {"pattern": "x", "glob": "*.[j]son"}),
+        ("Glob", {"pattern": "*/*/*/*.tmp"}),
+        ("Bash", {"command": "cat .scout-in*/agents/*/*"}),
+    ],
+)
+def test_the_copies_are_judged_by_what_a_filter_matches(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, tool, tool_input))
+
+
+# --- round 2: a glob never holds the gate past its timeout (a hook that times out allows the call) -------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat knowledge-base/personal/x.md /*/*/*/*/*/*/*/zz",
+        "cat knowledge-base/x.md; touch /*/*/*/*/*/*/*/zz",
+        "touch ~/*/*/*/*/zz",
+    ],
+)
+def test_a_glob_too_wide_to_judge_is_refused_fast(vault: Path, command: str) -> None:
+    import time
+
+    started = time.monotonic()
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert time.monotonic() - started < 5  # the hook's own timeout is 15 s
+    assert "more files than Scout's gate checks" in reason
+
+
+def test_a_glob_with_too_many_matches_is_refused(vault: Path) -> None:
+    many = vault / "many"
+    many.mkdir()
+    for i in range(300):
+        (many / f"f{i}.txt").write_text("x")
+    assert "more files than Scout's gate checks" in _denied(_decision(vault, "Bash", {"command": "touch many/*"}))
+    assert _decision(vault, "Bash", {"command": "ls many"}) is None
+
+
+def test_a_slow_glob_is_refused_not_waited_for(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    monkeypatch.setattr(gate, "GLOB_BUDGET_S", 0.2)
+
+    def slow(pattern: str) -> object:
+        time.sleep(1)
+        yield pattern
+
+    monkeypatch.setattr(gate.glob, "iglob", slow)
+    assert gate._glob_targets(str(vault / "a*")) is None
+    assert gate._glob_targets(str(vault / "plain")) == [str(vault / "plain")]
+
+
+@pytest.mark.parametrize("glob_filter", ["*.{json,ledger}", "{a,*.js{o,}n}", "*.{md,{ledger,x}}"])
+def test_brace_filters_are_expanded_before_judging(vault: Path, copies: Path, glob_filter: str) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, "Grep", {"pattern": "x", "glob": glob_filter}))
+
+
+def test_the_prefilter_takes_any_space_before_an_inbox_command(vault: Path) -> None:
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    cmd = _payload("Bash", {"command": "scoutctl inbox\tsync"}, vault).getvalue()
+    res = _sh(env, cmd, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command", ["scoutctl inbox review", "scoutctl inbox review accept 01JD5Z0000000000000000ABCD"]
+)
+def test_the_prefilter_sends_inbox_review_to_the_gate(vault: Path, command: str) -> None:
+    """#550 V4b2: the review prints agents' text, which never reaches a run."""
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    res = _sh(env, _payload("Bash", {"command": command}, vault).getvalue(), vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+def test_a_run_may_read_an_agents_accepted_note(vault: Path) -> None:
+    """#550 V4b2: from-agents/ is write-protected, not hidden: runs read it, marked [from-agent]."""
+    rel = "knowledge-base/from-agents/grok-personal/01JD5Z0000000000000000ABCD.md"
+    (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+    (vault / rel).write_text("---\nsource: delegate:grok-personal\nvisibility: private\n---\nText.\n")
+    assert _decision(vault, "Read", {"file_path": str(vault / rel)}) is None

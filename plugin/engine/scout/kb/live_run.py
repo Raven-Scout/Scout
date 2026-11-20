@@ -303,12 +303,25 @@ def commit_source_now(vault: Path) -> CommitSource | None:
     try:
         table = process_table()
     except (OSError, subprocess.SubprocessError, ValueError):
-        held = lock_holder(vault)
-        marker_pid, marker_mode = _marker(vault)
-        if held is None or marker_pid != held or not _alive(held):
+        held = run_without_ps(vault)
+        if held is None:
             return None
-        return CommitSource(True, marker_mode or UNKNOWN_MODE, "no-ps")
+        return CommitSource(True, held[1] or UNKNOWN_MODE, "no-ps")
     return commit_source(vault, table, start=os.getpid())
+
+
+def run_without_ps(vault: Path) -> tuple[int, str | None] | None:
+    """The live run, judged without ``ps`` (a sandboxed run can't start the setuid ``/bin/ps``).
+
+    ``(holder PID, mode)`` when the lock names a holder, the run marker names
+    the same PID, and that PID is alive; None otherwise. The one rule for every
+    caller that must decide "is a run live" with no process table.
+    """
+    held = lock_holder(vault)
+    marker_pid, marker_mode = _marker(vault)
+    if held is None or marker_pid != held or not _alive(held):
+        return None
+    return held, marker_mode
 
 
 def _alive(pid: int) -> bool:
@@ -358,6 +371,8 @@ GIT_CONFIG_FORM = "GIT_CONFIG_*"
 # are the owner's, at the keyboard (#550; each command also refuses a scheduled run itself).
 DELEGATE_FORM = "scoutctl delegate"
 _DELEGATE_WRITES = {"link", "unlink", "key", "trust-state"}
+# And the agents' inboxes (#550 V4b): pulled, applied and reverted by the owner, or by the tick's own step.
+_INBOX_WRITES = {"pull", "apply", "revert", "sync", "review"}  # review: it prints agents' text (V4b2)
 
 
 def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
@@ -386,7 +401,8 @@ def _python_module(args: list[str]) -> tuple[str, list[str]] | None:
 
 
 def _delegate_write(name: str, args: list[str]) -> bool:
-    """``scoutctl delegate link|unlink|key|trust-state``, by any path to scoutctl or as ``python -m scout``."""
+    """``scoutctl delegate link|unlink|key|trust-state`` or ``scoutctl inbox pull|apply|revert|sync|review``, by any
+    path to scoutctl or as ``python -m scout``."""
     if name == "scoutctl":
         rest = args
     elif name.startswith("python") and (module := _python_module(args)) is not None and module[0] == "scout":
@@ -394,7 +410,11 @@ def _delegate_write(name: str, args: list[str]) -> bool:
     else:
         return False
     words = [a for a in rest if not a.startswith("-")]
-    return words[:1] == ["delegate"] and len(words) > 1 and words[1] in _DELEGATE_WRITES
+    if len(words) < 2:
+        return False
+    return (words[0] == "delegate" and words[1] in _DELEGATE_WRITES) or (
+        words[0] == "inbox" and words[1] in _INBOX_WRITES
+    )
 
 
 _GIT_CONFIG_VAR = re.compile(r"^GIT_CONFIG(?!_NOSYSTEM=)[A-Z0-9_]*=")

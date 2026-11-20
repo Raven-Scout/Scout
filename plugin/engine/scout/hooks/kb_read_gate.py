@@ -6,7 +6,8 @@ reads. A shell ``cat``/``grep``/``ls``/``find`` into ``knowledge-base/`` skips
 all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
 (hard-rule audit 2026-10, row 2). This gate makes it mechanical:
 
-  - **Bash**: a command :func:`raw_kb_read` flags is denied. ``scoutctl``
+  - **Bash**: a command :func:`raw_kb_read` flags is denied, judged with the session's cwd and
+    vault so a recursive read rooted at the vault (``rg x``, ``grep -r x .``) counts. ``scoutctl``
     segments (so ``scripts/scoutctl kb …``), the engine's scripts, ``git
     add``/``commit`` and quoted commit messages are never flagged. So is one
     that sets, unsets or blanks ``SCOUT_MODE``/``SCOUT_READER`` or clears the
@@ -72,6 +73,8 @@ WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _REPLACEMENT = (
     "Read the KB through `scripts/scoutctl kb` instead: `kb search <words>`, `kb files [dir]`, "
     "`kb read <path>`, `kb resolve <name>`, `kb name-lookup <name>`, `kb delta` (in place of git log/diff). "
+    "`kb read <path> --lines A:B` (or `:B`, `A:`, `-N:`) in place of sed -n, head and tail; "
+    "`kb stat <path>…` or `kb stat --glob '<glob>'` (bytes, lines, words) in place of wc, ls -l and stat. "
     "`.scout-cache/session-context.json` already lists personal tasks and KB file dates."
 )
 
@@ -122,8 +125,10 @@ def _target(raw: str, cwd: Path) -> Path:
 def _deny_bash() -> str:
     return (
         f"{MARK} Scheduled runs don't read knowledge-base/ or action-items/context/ with shell commands "
-        f"(cat, grep, ls, find, head, git show …): that skips the privacy labels. {_REPLACEMENT} "
-        "To change a note, Read it and Edit it."
+        f"(cat, grep, ls, find, head, tail, sed, awk, wc, git show …), directly or through a variable, a loop, "
+        f"xargs or a recursive search from the vault: that skips the privacy labels. {_REPLACEMENT} "
+        "To change a note, Read it and Edit it. To search other folders, name one outside the KB "
+        "(e.g. `rg x scripts/`)."
     )
 
 
@@ -153,9 +158,11 @@ def _deny_detach() -> str:
 
 def _deny_delegate_write() -> str:
     return (
-        f"{MARK} A scheduled run doesn't link, unlink or re-trust the owner's agents' mirrors, or change their deploy "
-        "keys (`scoutctl delegate link|unlink|key|trust-state`): those are the owner's, at the keyboard. "
-        "`scoutctl delegate sync` and `status` are fine. If a mirror needs one of these, say so in the run notes."
+        f"{MARK} A scheduled run doesn't link, unlink or re-trust the owner's agents' mirrors, change their deploy "
+        "keys (`scoutctl delegate link|unlink|key|trust-state`), or pull, apply, revert or review their "
+        "inboxes (`scoutctl inbox pull|apply|revert|sync|review`): those are the owner's, or the schedule "
+        "tick's own step between runs. `scoutctl delegate sync` and `status` are fine. If one of these is "
+        "needed, say so in the run notes."
     )
 
 
@@ -243,6 +250,22 @@ def _deny_delegate_state(form: str) -> str:
     )
 
 
+def _deny_agent_text(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't read or change {form} (.scout-inbox/agents/): what the owner's agents "
+        "proposed is untrusted text, which only the owner reviews (`scoutctl inbox review`). What they changed "
+        "is in pre-session data's `delegate_changes`."
+    )
+
+
+def _deny_agent_notes(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't create, change or move {form} (knowledge-base/from-agents/): they hold "
+        "the owner's agents' text exactly as the owner accepted it, and only `scoutctl inbox review` writes them. "
+        "Read them (they are marked [from-agent]); put anything new in another note."
+    )
+
+
 def _deny_title_rewrites(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't change {form} (.scout-state/title-rewrites.jsonl): they decide which "
@@ -260,6 +283,8 @@ def _deny_skip_form(form: str) -> str:
         hp.SECRETS: _deny_secrets,
         hp.DELEGATE_STATE: _deny_delegate_state,
         hp.TITLE_REWRITES: _deny_title_rewrites,
+        hp.AGENT_TEXT: _deny_agent_text,
+        hp.AGENT_NOTES: _deny_agent_notes,
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
@@ -351,7 +376,9 @@ def decide(
                 return hook_paths.UNRESOLVED  # round 3, must-fix 1: a run writes only paths the gate can read
             check = hook_paths.removes_protected if removes else hook_paths.protected_write
             # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
-            targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
+            targets = _glob_targets(target)
+            if targets is None:
+                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
             for one in targets:
                 found = check(one, vault, env)
                 if found is not None:
@@ -360,7 +387,17 @@ def decide(
 
         def secret(raw: str) -> str | None:
             target = resolve(raw)
-            return None if target is None else hook_paths.secret_read(target, env)
+            if target is None:
+                return None
+            # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
+            targets = _glob_targets(target)
+            if targets is None:
+                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
+            for one in targets:
+                found = hook_paths.secret_read(one, env) or hook_paths.agent_text_read(one, vault, env)
+                if found is not None:
+                    return found
+            return None
 
         escape = run_escape(command, protect=protect, secret=secret)
         if escape == "env":
@@ -372,17 +409,21 @@ def decide(
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
-        return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
+        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
+        return _deny_bash() if flagged else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd
         if _in_kb(root, vault) or (_covers_kb(root, vault) and filter_reaches_kb(tool, tool_input)):
-            return _deny_search(tool)
-        return None
+            return _deny_search(tool)  # the KB's own rule speaks first: it covers the copies too
+        return _deny_agent_text_read(tool, tool_input, cwd, vault, env, mode)
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
     target = _target(raw, cwd)
+    agent_deny = _deny_agent_text_read(tool, tool_input, cwd, vault, env, mode)
+    if agent_deny is not None:
+        return agent_deny
     from scout.kb.reader import delegate_id
 
     if delegate_id(reader) is not None:
@@ -393,6 +434,40 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+GLOB_BUDGET_S = 2.0  # how long a glob in a command may take to expand; the hook itself times out at 15 s
+GLOB_CAP = 256  # matches judged per glob; more refuses the call
+GLOB_WILD_PARTS = 3  # wildcard path components a glob may have before it is refused unexpanded
+
+
+def _glob_targets(target: str) -> list[str] | None:
+    """The literal spelling and every match of ``target``, or None when it can't be judged in time: more than
+    :data:`GLOB_WILD_PARTS` wildcard components (``/*/*/*/*/*/zz`` walks the whole disk without matching), more
+    than :data:`GLOB_CAP` matches, or longer than :data:`GLOB_BUDGET_S` to expand. None is a refusal: a hook that
+    runs past its timeout lets the call through, so the gate must never wait that long."""
+    if not glob.has_magic(target):
+        return [target]
+    if sum(1 for part in target.split("/") if glob.has_magic(part)) > GLOB_WILD_PARTS:
+        return None
+    import itertools
+    import threading
+
+    found: list[str] = []
+    over = threading.Event()
+
+    def expand() -> None:
+        for match in itertools.islice(glob.iglob(target), GLOB_CAP + 1):
+            found.append(match)
+        if len(found) > GLOB_CAP:
+            over.set()
+
+    worker = threading.Thread(target=expand, daemon=True)  # a walk that never yields can't hold the hook
+    worker.start()
+    worker.join(GLOB_BUDGET_S)
+    if worker.is_alive() or over.is_set():
+        return None
+    return [target, *sorted(found)]
 
 
 def _env_value(m: re.Match[str], env: Mapping[str, str]) -> str:
@@ -419,6 +494,84 @@ def _secret_tool_read(tool: str, tool_input: Mapping[str, Any], cwd: Path, env: 
     filters = " ".join(str(tool_input.get(k) or "") for k in ("glob", "pattern"))
     if hook_paths.holds_secrets(root, env) and "scout-secrets" in filters.casefold():
         return hook_paths.SECRETS
+    return None
+
+
+# What a Grep/Glob filter must not be able to match: a copy, its crash-temp, or a ledger, as paths under the
+# searched folder would read. A filter is judged by matching these, never by spelling (``*.js?n`` is ``*.json``).
+_AGENT_TEXT_SAMPLES = (
+    ".scout-inbox/agents/d/01JD5Z0000000000000000ABCD.json",
+    ".scout-inbox/agents/d/.01JD5Z0000000000000000ABCD.json.1.tmp",
+    ".scout-inbox/agents/d/taken.ledger",
+    "agents/d/01JD5Z0000000000000000ABCD.json",
+    "d/01JD5Z0000000000000000ABCD.json",
+    "01JD5Z0000000000000000ABCD.json",
+    "taken.ledger",
+)
+
+
+def _filter_reaches_copies(pattern: str) -> bool:
+    import fnmatch
+
+    from scout.kb.lint_config import glob_match
+
+    if re.search(r"inbox|agents", pattern, re.IGNORECASE):
+        return True
+    for one in _braces(pattern):  # `*.{json,ledger}`: Claude Code's Glob expands braces
+        for sample in _AGENT_TEXT_SAMPLES:
+            name = sample.rsplit("/", 1)[-1]
+            if fnmatch.fnmatch(sample, one) or fnmatch.fnmatch(name, one) or glob_match(one, sample):
+                return True
+    return False
+
+
+def _braces(pattern: str, limit: int = 64) -> list[str]:
+    """``a{b,c}d`` as ``abd`` and ``acd``, nested braces included, at most ``limit`` alternatives (the rest are
+    dropped: a filter with more than that is judged by what fits, the first ones)."""
+    m = re.search(r"\{([^{}]*)\}", pattern)
+    if m is None:
+        return [pattern]
+    out: list[str] = []
+    for alt in m[1].split(","):
+        out += _braces(pattern[: m.start()] + alt + pattern[m.end() :], limit)
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def _deny_agent_text_read(
+    tool: str, tool_input: Mapping[str, Any], cwd: Path, vault: Path, env: Mapping[str, str], mode: str | None
+) -> str | None:
+    form = _agent_text_tool_read(tool, tool_input, cwd, vault, env)
+    if form is None:
+        return None
+    _record_hook_skip(vault, form, mode)
+    return _deny_skip_form(form)
+
+
+def _agent_text_tool_read(
+    tool: str, tool_input: Mapping[str, Any], cwd: Path, vault: Path, env: Mapping[str, str]
+) -> str | None:
+    """A run's Read of an agent's copy, or a Grep/Glob that searches the copies (spec §7.1b: agent text never
+    reaches a run). A search from a folder above them counts when it has no filter or one that could reach them."""
+    from scout.kb import hook_paths
+
+    def full(raw: str) -> str:
+        expanded = hook_paths._expand(raw, env)
+        return expanded if os.path.isabs(expanded) else str(cwd / expanded)
+
+    if tool == "Read":
+        raw = tool_input.get("file_path")
+        return hook_paths.agent_text_read(full(raw), vault, env) if isinstance(raw, str) and raw else None
+    raw = tool_input.get("path")
+    root = full(raw) if isinstance(raw, str) and raw else str(cwd)
+    if hook_paths.agent_text_read(root, vault, env) is not None:
+        return hook_paths.AGENT_TEXT
+    if not hook_paths.holds_agent_text(root, vault, env):
+        return None
+    pattern = str(tool_input.get("pattern" if tool == "Glob" else "glob") or "").strip()
+    if (tool == "Grep" and not pattern) or _filter_reaches_copies(pattern):
+        return hook_paths.AGENT_TEXT
     return None
 
 
