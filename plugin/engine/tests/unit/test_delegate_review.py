@@ -402,6 +402,12 @@ def test_promote_refuses_an_unknown_delegate_and_an_edited_note(mirrored: Path) 
     assert dr.preview_promote(v, ulid).sha256 == preview.sha256
 
 
+def test_the_way_back_never_names_head() -> None:
+    assert dr._accepted_commit({"commit": "abc123"}) == "abc123"
+    assert dr._accepted_commit({"commit": "abc123", "unpromoted": {"commit": "def456"}}) == "def456"
+    assert dr._accepted_commit({}) == "<the commit that accepted it>"  # never HEAD: that is the edited version
+
+
 def test_promote_publishes_only_what_the_preview_showed(mirrored: Path) -> None:
     v = mirrored
     ulid, rel = _accepted(v)
