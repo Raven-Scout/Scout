@@ -1332,6 +1332,8 @@ def test_pull_keeps_the_copies_out_of_commits(vault: Path, inbox: Path, clone: P
         ["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/.{p.id}.json.42.tmp"], check=False
     )
     gi_kept = subprocess.run(["git", "-C", str(vault), "check-ignore", "-q", ".scout-inbox/agents/.gitignore"])
+    nested = subprocess.run(["git", "-C", str(vault), "check-ignore", "-q", f".scout-inbox/agents/{D}/.gitignore"])
+    assert nested.returncode == 0  # only the folder's own .gitignore is kept: an agent's copy can't un-ignore
     assert ignored.returncode == 0 and temp.returncode == 0 and kept.returncode == 1 and gi_kept.returncode == 1
     q = _propose(clone)
     di.pull(vault, D)  # the file is right already: left as it is

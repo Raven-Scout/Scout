@@ -231,6 +231,29 @@ def sync(
     return result
 
 
+def _op_result(vault: Path, entry: Mapping[str, Any], head_text: str) -> list[str] | None:
+    """The task's lines after re-running ``entry``'s op on HEAD's daily file, in a scratch folder (with the vault's
+    config and id map, which the op reads); None when the op can't be re-run."""
+    import shutil
+    import tempfile
+
+    rel = da._daily_rel(entry["date"])
+    with tempfile.TemporaryDirectory(prefix="scout-inbox-settle-") as tmp:
+        scratch = Path(tmp)
+        (scratch / "action-items").mkdir()
+        (scratch / rel).write_text(head_text, encoding="utf-8")
+        for extra in ("scout-config.yaml", da.ID_MAP_REL):
+            if da._plain(vault, extra):
+                (scratch / extra).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(vault / extra, scratch / extra)
+        body = {"op": entry["op"], "tag": entry["tag"], "date": entry["date"], "args": entry["args"]}
+        try:
+            da._run_op(scratch, body)
+        except Exception:  # noqa: BLE001 - an op that can't be re-run here settles nothing
+            return None
+        return da._task_lines(scratch / rel, entry["tag"])
+
+
 def settle_interrupted(vault: Path, commit: da.Committer) -> tuple[list[str], list[str]]:
     """Commit, under its delegate's name, a change an apply made but a crash kept from committing; (ULIDs settled,
     notes for the rest). Only when today's daily file differs from HEAD in that task's block alone: the next run's
@@ -251,13 +274,20 @@ def settle_interrupted(vault: Path, commit: da.Committer) -> tuple[list[str], li
             after = da._task_lines(vault / rel, entry["tag"])
             head_item = da._task(shown.stdout, entry["tag"]) if shown.returncode == 0 else None
             only_this = False
-            if after is not None and head_item is not None and after != entry["before"]:
+            if after is not None and head_item is not None and "args" in entry:
                 lines = shown.stdout.splitlines()
                 start, end = da._block(lines, head_item.line_number)
-                lines[start:end] = after
-                only_this = "\n".join(lines) == "\n".join(work.splitlines())
+                # Exactly the op's own change: HEAD still holds the task as the op found it, the working file holds
+                # what the op makes of it (re-run on a scratch copy), and nothing else in the file differs. An edit
+                # the owner or a run made since is never committed in a delegate's name.
+                if lines[start:end] == entry["before"] and after == _op_result(vault, entry, shown.stdout):
+                    lines[start:end] = after
+                    only_this = "\n".join(lines) == "\n".join(work.splitlines())
             if not only_this:
-                notes.append(f"an interrupted change by {delegate} to {rel} is uncommitted among other edits; check it")
+                notes.append(
+                    f"an interrupted change by {delegate} to {rel} is uncommitted, and the file isn't just that "
+                    "change; check it"
+                )
                 continue
             message = f"inbox: {entry['op']} [#{entry['tag']}] from delegate-{delegate} ({ulid}), after an interruption"
             before = da._head(vault)

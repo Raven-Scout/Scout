@@ -706,3 +706,58 @@ def test_the_shell_prefilters_send_the_copies_to_the_gate(vault: Path, copies: P
 )
 def test_the_copies_are_judged_by_what_a_filter_matches(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
     assert "agents' inbox copies" in _denied(_decision(vault, tool, tool_input))
+
+
+# --- round 2: a glob never holds the gate past its timeout (a hook that times out allows the call) -------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat knowledge-base/personal/x.md /*/*/*/*/*/*/*/zz",
+        "cat knowledge-base/x.md; touch /*/*/*/*/*/*/*/zz",
+        "touch ~/*/*/*/*/zz",
+    ],
+)
+def test_a_glob_too_wide_to_judge_is_refused_fast(vault: Path, command: str) -> None:
+    import time
+
+    started = time.monotonic()
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert time.monotonic() - started < 5  # the hook's own timeout is 15 s
+    assert "more files than Scout's gate checks" in reason
+
+
+def test_a_glob_with_too_many_matches_is_refused(vault: Path) -> None:
+    many = vault / "many"
+    many.mkdir()
+    for i in range(300):
+        (many / f"f{i}.txt").write_text("x")
+    assert "more files than Scout's gate checks" in _denied(_decision(vault, "Bash", {"command": "touch many/*"}))
+    assert _decision(vault, "Bash", {"command": "ls many"}) is None
+
+
+def test_a_slow_glob_is_refused_not_waited_for(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    monkeypatch.setattr(gate, "GLOB_BUDGET_S", 0.2)
+
+    def slow(pattern: str) -> object:
+        time.sleep(1)
+        yield pattern
+
+    monkeypatch.setattr(gate.glob, "iglob", slow)
+    assert gate._glob_targets(str(vault / "a*")) is None
+    assert gate._glob_targets(str(vault / "plain")) == [str(vault / "plain")]
+
+
+@pytest.mark.parametrize("glob_filter", ["*.{json,ledger}", "{a,*.js{o,}n}", "*.{md,{ledger,x}}"])
+def test_brace_filters_are_expanded_before_judging(vault: Path, copies: Path, glob_filter: str) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, "Grep", {"pattern": "x", "glob": glob_filter}))
+
+
+def test_the_prefilter_takes_any_space_before_an_inbox_command(vault: Path) -> None:
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    cmd = _payload("Bash", {"command": "scoutctl inbox\tsync"}, vault).getvalue()
+    res = _sh(env, cmd, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr

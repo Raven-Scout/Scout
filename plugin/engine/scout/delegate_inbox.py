@@ -85,7 +85,7 @@ COPIES_IGNORE_TEXT = (
     "# Copies of what agents wrote (#550): kept on this computer, never committed, temporary files included.\n"
     "# Only this file and each delegate's taken.ledger are committed.\n"
     "*\n"
-    "!.gitignore\n"
+    "!/.gitignore\n"
     "!*/\n"
     "!*/taken.ledger\n"
 )

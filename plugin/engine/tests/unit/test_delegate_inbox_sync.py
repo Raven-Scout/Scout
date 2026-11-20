@@ -464,7 +464,8 @@ def test_a_run_that_cant_read_the_key_never_reports_the_state_forged(
     from scout.scripts import bootstrap_doctor as bd
 
     v, _clone = linked
-    monkeypatch.setattr(dm, "_state_key", lambda create: None)  # unreadable, as in a run's sandbox
+    key = dm.secrets_dir() / dm.STATE_KEY
+    os.chmod(key, 0o000)  # unreadable, as in a run's sandbox
     monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
     monkeypatch.setenv("SCOUT_READER", "autonomous")
     assert health.delegate_inbox_findings(v) == [] and health.delegate_findings(v) == []
@@ -475,9 +476,14 @@ def test_a_run_that_cant_read_the_key_never_reports_the_state_forged(
     assert bd._check_delegate_mirrors(vault=v, now=None)[1][0].startswith("delegate mirrors: checked outside runs")
     monkeypatch.delenv("SCOUT_MODE")
     monkeypatch.delenv("SCOUT_READER")
-    found = health.delegate_inbox_findings(v)  # the owner, with the key really gone: said, and safely
+    found = health.delegate_inbox_findings(v)  # the owner, who can't read it either: said, and safely
     assert [f.id for f in found] == ["delegate.inbox_state"]
     assert "Don't move or delete" in found[0].fix and "Move .scout-state" not in found[0].fix
+    os.chmod(key, 0o600)
+    key.unlink()  # gone, not hidden: reported even in a scheduled context (run-outcome.sh's health notify)
+    monkeypatch.setenv("SCOUT_MODE", "morning-briefing")
+    assert not health.delegate_state_unchecked()
+    assert [f.id for f in health.delegate_inbox_findings(v)] == ["delegate.inbox_state"]
 
 
 def test_a_tick_inside_a_run_starts_no_owner_step(linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -573,7 +579,7 @@ def test_an_interrupted_change_among_other_edits_is_left_for_the_owner(
     monkeypatch.setattr(da, "_commit_change", real)  # not undo(): that would drop the fixture's HOME too
     (v / DAILY).write_text((v / DAILY).read_text(encoding="utf-8") + "- [ ] [#ZZ44] the owner's own edit\n", "utf-8")
     r = dis.sync(v, commit=_git_commit)
-    assert r.settled == [] and any("among other edits" in n for n in r.notes)
+    assert r.settled == [] and any("isn't just that change" in n for n in r.notes)
     assert di.load_state(v).applied[D][ulid]["outcome"] == "interrupted"
 
 
@@ -617,3 +623,67 @@ def test_settling_a_commit_that_fails_unstages_and_a_clean_file_is_left(
     git(v, "checkout", "--", DAILY)  # the owner put the file back: nothing left to settle
     assert dis.settle_interrupted(v, _git_commit) == ([], [])
     assert di.load_state(v).applied[D][ulid]["outcome"] == "interrupted"
+
+
+# ----- round 2: settle commits only the delegate's own change ------------------------------------
+
+
+def _interrupt(v: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Killed(BaseException):
+        pass
+
+    def killed(*a: object, **k: object) -> object:
+        raise Killed
+
+    real = da._commit_change
+    monkeypatch.setattr(da, "_commit_change", killed)
+    with pytest.raises(Killed):
+        dis.sync(v, commit=_git_commit)
+    monkeypatch.setattr(da, "_commit_change", real)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda text: text.replace("Send the draft", "Send the final draft"),  # the owner, in Obsidian
+        lambda text: text.replace("[#AB12] 🔴 Send the draft", "[#AB12] 🔴 Send the draft\n  - scout: noted"),  # a run
+    ],
+)
+def test_an_edit_made_after_the_interruption_is_never_committed_as_the_delegates(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, edit: object
+) -> None:
+    v, clone = linked
+    ulid = _propose(clone)
+    _interrupt(v, monkeypatch)
+    (v / DAILY).write_text(edit((v / DAILY).read_text(encoding="utf-8")), encoding="utf-8")  # type: ignore[operator]
+    head = git(v, "rev-parse", "HEAD").strip()
+    r = dis.sync(v, commit=_git_commit)
+    assert r.settled == [] and any("isn't just that change" in n for n in r.notes)
+    assert git(v, "rev-parse", "HEAD").strip() == head or _subject(v) == dis.LEDGER_MESSAGE
+    assert di.load_state(v).applied[D][ulid]["outcome"] == "interrupted"
+
+
+def test_an_entry_from_before_args_were_kept_is_left_for_the_owner(
+    linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v, clone = linked
+    ulid = _propose(clone)
+    _interrupt(v, monkeypatch)
+    state = di.load_state(v)
+    del state.applied[D][ulid]["args"]
+    di.save_state(v, state)
+    settled, notes = dis.settle_interrupted(v, _git_commit)
+    assert settled == [] and notes
+
+
+def test_an_op_that_cant_be_rerun_settles_nothing(linked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    v, clone = linked
+    _propose(clone)
+    _interrupt(v, monkeypatch)
+
+    def broken(w: object, body: object) -> None:
+        raise RuntimeError("can't")
+
+    monkeypatch.setattr(da, "_run_op", broken)
+    settled, notes = dis.settle_interrupted(v, _git_commit)
+    assert settled == [] and notes

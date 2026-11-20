@@ -1382,10 +1382,18 @@ def delegate_state_unchecked(env: Mapping[str, str] | None = None) -> bool:
     """Whether the delegate state can't be checked here: a scheduled run (#517's rule) that can't read the state's
     signing key (the run's sandbox denies ~/.scout-secrets). Such a check would report every signed state as
     forged on every run; the owner's terminal, the doctor and the app check it instead."""
-    from scout.delegate_mirror import _state_key
+    from scout.delegate_mirror import STATE_KEY, secrets_dir
     from scout.kb.reader import is_scheduled
 
-    return is_scheduled(os.environ if env is None else env) and _state_key(create=False) is None
+    if not is_scheduled(os.environ if env is None else env):
+        return False
+    try:
+        (secrets_dir() / STATE_KEY).read_bytes()
+    except FileNotFoundError:
+        return False  # gone, not hidden: that is reported, wherever the check runs
+    except OSError:
+        return True  # denied (the run's sandbox): this place can't check it
+    return False
 
 
 def delegate_inbox_findings(

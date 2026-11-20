@@ -361,7 +361,9 @@ def decide(
                 return hook_paths.UNRESOLVED  # round 3, must-fix 1: a run writes only paths the gate can read
             check = hook_paths.removes_protected if removes else hook_paths.protected_write
             # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
-            targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
+            targets = _glob_targets(target)
+            if targets is None:
+                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
             for one in targets:
                 found = check(one, vault, env)
                 if found is not None:
@@ -373,7 +375,9 @@ def decide(
             if target is None:
                 return None
             # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
-            targets = [target, *sorted(glob.glob(target))[:256]] if glob.has_magic(target) else [target]
+            targets = _glob_targets(target)
+            if targets is None:
+                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
             for one in targets:
                 found = hook_paths.secret_read(one, env) or hook_paths.agent_text_read(one, vault, env)
                 if found is not None:
@@ -414,6 +418,40 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+GLOB_BUDGET_S = 2.0  # how long a glob in a command may take to expand; the hook itself times out at 15 s
+GLOB_CAP = 256  # matches judged per glob; more refuses the call
+GLOB_WILD_PARTS = 3  # wildcard path components a glob may have before it is refused unexpanded
+
+
+def _glob_targets(target: str) -> list[str] | None:
+    """The literal spelling and every match of ``target``, or None when it can't be judged in time: more than
+    :data:`GLOB_WILD_PARTS` wildcard components (``/*/*/*/*/*/zz`` walks the whole disk without matching), more
+    than :data:`GLOB_CAP` matches, or longer than :data:`GLOB_BUDGET_S` to expand. None is a refusal: a hook that
+    runs past its timeout lets the call through, so the gate must never wait that long."""
+    if not glob.has_magic(target):
+        return [target]
+    if sum(1 for part in target.split("/") if glob.has_magic(part)) > GLOB_WILD_PARTS:
+        return None
+    import itertools
+    import threading
+
+    found: list[str] = []
+    over = threading.Event()
+
+    def expand() -> None:
+        for match in itertools.islice(glob.iglob(target), GLOB_CAP + 1):
+            found.append(match)
+        if len(found) > GLOB_CAP:
+            over.set()
+
+    worker = threading.Thread(target=expand, daemon=True)  # a walk that never yields can't hold the hook
+    worker.start()
+    worker.join(GLOB_BUDGET_S)
+    if worker.is_alive() or over.is_set():
+        return None
+    return [target, *sorted(found)]
 
 
 def _env_value(m: re.Match[str], env: Mapping[str, str]) -> str:
@@ -463,11 +501,26 @@ def _filter_reaches_copies(pattern: str) -> bool:
 
     if re.search(r"inbox|agents", pattern, re.IGNORECASE):
         return True
-    for sample in _AGENT_TEXT_SAMPLES:
-        name = sample.rsplit("/", 1)[-1]
-        if fnmatch.fnmatch(sample, pattern) or fnmatch.fnmatch(name, pattern) or glob_match(pattern, sample):
-            return True
+    for one in _braces(pattern):  # `*.{json,ledger}`: Claude Code's Glob expands braces
+        for sample in _AGENT_TEXT_SAMPLES:
+            name = sample.rsplit("/", 1)[-1]
+            if fnmatch.fnmatch(sample, one) or fnmatch.fnmatch(name, one) or glob_match(one, sample):
+                return True
     return False
+
+
+def _braces(pattern: str, limit: int = 64) -> list[str]:
+    """``a{b,c}d`` as ``abd`` and ``acd``, nested braces included, at most ``limit`` alternatives (the rest are
+    dropped: a filter with more than that is judged by what fits, the first ones)."""
+    m = re.search(r"\{([^{}]*)\}", pattern)
+    if m is None:
+        return [pattern]
+    out: list[str] = []
+    for alt in m[1].split(","):
+        out += _braces(pattern[: m.start()] + alt + pattern[m.end() :], limit)
+        if len(out) >= limit:
+            break
+    return out[:limit]
 
 
 def _deny_agent_text_read(

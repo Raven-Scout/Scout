@@ -466,7 +466,10 @@ def apply(
                 outcome, entry = decided
                 applying = outcome == "applying"
                 if applying:
+                    # The op's own arguments go with it (dates, times, minutes: never free text), so a sync can
+                    # tell later whether an uncommitted change is exactly this op's (delegate_inbox_sync.settle).
                     applied[ulid] = {k: v for k, v in entry.items() if k != "body"} | {
+                        "args": entry["body"]["args"],
                         "outcome": "interrupted",
                         "at": at,
                     }

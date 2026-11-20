@@ -1187,9 +1187,10 @@ def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[
     stray = [t for t in tracked if t != ".scout-inbox/agents/.gitignore" and not t.endswith("/taken.ledger")]
     if stray:
         warnings.append(
-            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b); "
-            "untrack them, keeping the files: git rm -r -q --cached .scout-inbox/agents && git add "
-            ".scout-inbox/agents && git commit -m 'inbox: untrack the copies'"
+            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b), "
+            "and stay in the vault's git history even once untracked; untrack them, keeping the files: "
+            "git rm -r -q --cached .scout-inbox/agents && git add .scout-inbox/agents && "
+            "git commit -m 'inbox: untrack the copies'"
         )
     return warnings, notes
 
