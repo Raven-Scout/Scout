@@ -6202,6 +6202,37 @@ def _register_inbox() -> None:
         if failed:
             raise typer.Exit(2)
 
+    @inbox_app.command("sync")
+    def cli_inbox_sync(as_json: bool = json_opt) -> None:
+        """Pull every inbox, commit the ledgers, then apply what was taken (the schedule tick starts this).
+
+        The owner's, outside any run. The session lock is held only to commit and apply, for about a minute at
+        most; a live run makes it wait for the next tick.
+        """
+        import json as _json
+
+        from scout import delegate_inbox_sync
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = delegate_inbox_sync.sync(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except Exception as e:  # never a traceback from the tick's own step
+            _fail(RepoSyncError("sync_failed", f"refused: the inbox sync failed ({type(e).__name__}: {e})"), as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        for row in result.pulled + result.applied:
+            typer.echo(_json.dumps(row, sort_keys=True))
+        if result.ledger_commit:
+            typer.echo(f"committed the ledgers: {result.ledger_commit}")
+        if result.skipped:
+            typer.echo(f"commits and applies waited: {result.skipped}")
+        for note in result.notes:
+            typer.echo(note)
+
     @inbox_app.command("apply")
     def cli_inbox_apply(
         delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),

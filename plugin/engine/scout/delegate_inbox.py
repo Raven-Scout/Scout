@@ -80,6 +80,15 @@ STATE_REL = "/".join((*STATE_DIR, STATE_NAME))
 LOCK_REL = "/".join((*STATE_DIR, LOCK_NAME))
 INBOX_DIR = (".scout-inbox", "agents")  # then <delegate>/<ULID>.json and <delegate>/taken.ledger
 LEDGER = "taken.ledger"
+COPIES_IGNORE = ".gitignore"  # in .scout-inbox/agents/: the copies stay on this computer, never committed (V4b)
+COPIES_IGNORE_TEXT = (
+    "# Copies of what agents wrote (#550): kept on this computer, never committed, temporary files included.\n"
+    "# Only this file and each delegate's taken.ledger are committed.\n"
+    "*\n"
+    "!/.gitignore\n"
+    "!*/\n"
+    "!*/taken.ledger\n"
+)
 SIGN_KIND = "inbox"
 REMOTE_MAIN = "refs/heads/main"
 FETCHED = "refs/scout-inbox/main"  # in the throwaway repository
@@ -1208,6 +1217,29 @@ def _append_ledger(dir_fd: int, ulids: Sequence[str]) -> None:
         fh.write("".join(f"{u}\n" for u in ulids))
 
 
+def _ensure_copies_ignored(vault: Path) -> None:
+    """Keep ``.scout-inbox/agents/.gitignore`` as :data:`COPIES_IGNORE_TEXT`, written through the verified folder
+    (never through a symlink), before any copy lands, so no commit can take a copy of what an agent wrote."""
+    fd = _open_folder(vault, INBOX_DIR)
+    try:
+        try:
+            cur = os.open(COPIES_IGNORE, os.O_RDONLY | _NOFOLLOW, dir_fd=fd)
+        except OSError:
+            have = b""
+        else:
+            st = os.fstat(cur)
+            if stat.S_ISREG(st.st_mode):
+                with os.fdopen(cur, "rb") as fh:
+                    have = fh.read(4096)
+            else:
+                os.close(cur)
+                have = b""
+        if have != COPIES_IGNORE_TEXT.encode():
+            _write_new(fd, COPIES_IGNORE, COPIES_IGNORE_TEXT.encode())
+    finally:
+        os.close(fd)
+
+
 def ledger(vault: Path, delegate: str) -> set[str]:
     """The ULIDs the committed ledger says were taken (on any computer). Used to skip, never to apply."""
     path = vault.joinpath(*INBOX_DIR, delegate, LEDGER)
@@ -1403,6 +1435,8 @@ def _pull_once(vault: Path, state: InboxState, delegate: str, when: dt.datetime)
             proposal, data = verdict
             new.append((proposal.id, data))
         # The copies' folder is opened first: if it isn't safe, nothing is recorded, so nothing is lost.
+        if new or recopy:
+            _ensure_copies_ignored(vault)
         fd = _open_folder(vault, (*INBOX_DIR, delegate)) if new or recopy else None
         try:
             if fd is not None:

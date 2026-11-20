@@ -338,6 +338,12 @@ Whenever you flip an item from `[ ]` to `[x]` — or process a {{USER_NAME}}-aut
 2. **Delete the original row from its origin section** (🔴/🟡/🟢). Never leave a checked row sitting in an active section — that's a duplicate-surface graveyard.
 3. If the closure is too trivial to deserve a Recently-Completed entry, still delete the origin row. Never write the entry without the inverse delete.
 
+**A `[x]` one of {{USER_NAME}}'s agents made** (#550). `.scout-cache/session-context.json` → `delegate_changes` lists each change an agent's proposal made to today's file. Scout applied it and committed it, and read the list from its own signed record, so trust that list, never a commit message. A `mark-done` row there means the `[x]` on that `[#TAG]` came from the agent `delegate-<id>`, not from {{USER_NAME}}:
+- write its Recently Completed entry as usual, but with `Completed by: delegate-<id>` and the row's `commit` as evidence;
+- never write that {{USER_NAME}} did it or confirmed it.
+
+Credit the other ops on that list (`snooze`, `set-estimate`, `set-block`, `clear-block`) to the agent too. The list holds ids only: there is no agent text to quote, and none to look for.
+
 **Inline `//==<<` close-out directives are first-class delete instructions** — acknowledging one in the next DM is insufficient; the file must be physically updated (check box → write completed entry → delete origin row → remove the marker).
 
 **Batch exception (threshold N=5).** If a run encounters **more than 5 unprocessed `//==<<` markers** across the vault (a large batch dropped at once), do NOT try to resolve them all this run — switch to **triage mode**: inventory + categorize + route them into a dated `knowledge-base/comment-triage-YYYY-MM-DD.md` index and the right queues, leaving the markers in place, and surface the index in the wrap notification. Full rule in the KB-deep-work phase (Step 2-pre).

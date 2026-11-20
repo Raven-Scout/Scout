@@ -248,6 +248,14 @@ def test_an_ordinary_vault_keeps_its_whole_policy_document(vault: Path, host: Fa
     assert "trading/" in doc["host_local_only_paths"]
 
 
+def test_agnes_is_told_the_agents_inbox_copies_are_local_only(vault: Path, host: FakeHost) -> None:
+    """#550 V4b1: what agents proposed never syncs. It is in local_only.always (plumbing) and local_only.default,
+    which is what Agnes is told (host_local_only_paths) and enforces for every clone."""
+    _link(vault, host)
+    assert ".scout-inbox/agents/" in mirror_policy(host.bare)["host_local_only_paths"]
+    assert ".scout-inbox/agents/" in host.local_only
+
+
 def test_link_refuses_a_bad_allowlist(vault: Path, host: FakeHost) -> None:
     _set_privacy(vault, sync_only="knowledge-base/projects/**")
     with pytest.raises(rs.RepoSyncError) as e:
