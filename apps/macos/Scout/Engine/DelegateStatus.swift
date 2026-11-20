@@ -131,9 +131,9 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         return status
     }
 
-    /// A delegate id as the engine accepts one (`is_delegate_id`, matched whole: no trailing newline). The app
-    /// passes only these to scoutctl.
-    static func isDelegateID(_ id: String) -> Bool { wholeMatch(id, #"[a-z0-9][a-z0-9-]{0,39}"#) }
+    /// A delegate id as the engine accepts one (`is_delegate_id`, matched whole: no trailing newline, and not the
+    /// reserved `author`, which `--to` reads as the note's author). The app passes only these to scoutctl.
+    static func isDelegateID(_ id: String) -> Bool { id != "author" && wholeMatch(id, #"[a-z0-9][a-z0-9-]{0,39}"#) }
 
     /// A refusal code as the engine writes one, matched whole.
     static func isRefusalCode(_ code: String) -> Bool { wholeMatch(code, #"[a-z][a-z_]{0,47}"#) }

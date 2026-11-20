@@ -409,6 +409,84 @@ def test_the_previews_name_who_would_see_it_and_write_nothing(mirrored: Path) ->
     assert dr.accepted(v) == []  # a reverted note is no longer there to promote
 
 
+def test_the_previews_show_and_check_the_about_and_source_promote_publishes(mirrored: Path) -> None:
+    v = mirrored
+    about, source = "P\u0430yroll note", "https://ex\u0430mple.com/x"  # Cyrillic a in both
+    ulid, rel = _accepted(v, about=about, source=source)
+    fm = yaml.safe_load((v / rel).read_text(encoding="utf-8").split("---\n")[1])
+    assert fm["title"] == about and fm["agent_source"] == source  # what promote publishes
+    for preview in (dr.preview_promote(v, ulid),):
+        assert preview.about == about and preview.source == source
+        assert "P\u0430yroll" in preview.look_alikes and any("ex\u0430mple" in w for w in preview.look_alikes)
+    _promote(v, ulid, confirm=ulid)
+    back = dr.preview_unpromote(v, ulid)
+    assert back.about == about and back.source == source and "P\u0430yroll" in back.look_alikes
+    plain_ulid, _ = _accepted(v)
+    plain = dr.preview_promote(v, plain_ulid)
+    assert plain.about == f"Observation from {D}" and plain.source is None  # the title promote writes
+
+
+def test_a_delegate_added_after_the_preview_never_sees_the_note(mirrored: Path) -> None:
+    v = mirrored
+    ulid, rel = _accepted(v)
+    preview = dr.preview_promote(v, ulid)
+    dr.promote(v, ulid, confirm=ulid, previewed=preview.sha256, to=preview.audience)  # as the app does
+    config = v / "scout-config.yaml"
+    text = config.read_text(encoding="utf-8")
+    assert "    duet:\n" in text
+    config.write_text(text.replace("    duet:\n", "    late-bot: {}\n    duet:\n", 1), encoding="utf-8")
+    policy = load_policy(v)
+    assert policy.delegate("delegate:late-bot") is not None
+    label = _label(v, rel)
+    assert not visible_to(label, "delegate:late-bot", policy)
+    assert all(visible_to(label, f"delegate:{d}", policy) for d in preview.audience or [])
+
+
+def test_an_empty_to_is_refused(mirrored: Path) -> None:
+    v = mirrored
+    ulid, _rel = _accepted(v)
+    for call in (lambda: dr.preview_promote(v, ulid, to=[]), lambda: _promote(v, ulid, confirm=ulid, to=[])):
+        with pytest.raises(RepoSyncError) as e:
+            call()
+        assert e.value.code == "unknown_delegate"
+
+
+def test_author_is_never_a_delegate_id() -> None:
+    from scout.kb.reader import is_delegate_id
+
+    assert not is_delegate_id("author") and is_delegate_id("authors") and is_delegate_id("co-author")
+    policy = policy_from_overlay({"delegates": {"author": {}, D: {}}})
+    assert [d.id for d in policy.delegates] == [D]  # a config naming it is skipped, as any bad id is
+    assert policy.delegate("delegate:author") is None
+
+
+def test_accepted_lists_one_delegates_notes_with_delegate(mirrored: Path) -> None:
+    v = mirrored
+    mine, _ = _accepted(v)
+    theirs = _take(v, "observation", {"text": "From the other agent."}, delegate=OTHER).id
+    dr.accept(v, theirs, confirm=theirs)
+    assert [a.ulid for a in dr.accepted(v)] == sorted([mine, theirs])
+    assert [a.ulid for a in dr.accepted(v, delegate=D)] == [mine]
+    assert [(a.ulid, a.delegate) for a in dr.accepted(v, delegate=OTHER)] == [(theirs, OTHER)]
+
+
+def test_a_live_run_names_the_refused_step(mirrored: Path) -> None:
+    from scout.action_items import retitle
+
+    v = mirrored
+    ulid = _obs(v)
+    with retitle.session_lock(v):
+        with pytest.raises(RepoSyncError) as e:
+            dr.accept(v, ulid, confirm=ulid)
+    assert e.value.code == "busy" and "inbox review accept waits" in e.value.message
+    ulid, _ = _accepted(v)
+    preview = dr.preview_promote(v, ulid)
+    with retitle.session_lock(v):
+        with pytest.raises(RepoSyncError) as e:
+            dr.promote(v, ulid, confirm=ulid, previewed=preview.sha256)
+    assert "inbox review promote waits" in e.value.message
+
+
 def test_an_unpromote_preview_refuses_a_note_changed_since(mirrored: Path) -> None:
     v = mirrored
     ulid, rel = _accepted(v)

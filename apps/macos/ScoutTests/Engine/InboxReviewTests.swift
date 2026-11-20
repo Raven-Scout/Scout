@@ -58,6 +58,7 @@ struct InboxReviewTests {
         #expect(preview.audience == ["grok-personal", "duet", "research-bot"])
         #expect(preview.sha256 == "5b1dac7154ace241fba063394ab879dce343a4c69498ed74a7fa93669c5020dd")
         #expect(preview.text.contains("> The team meeting moved to Thursdays."))
+        #expect(preview.about == "Observation from grok-personal" && preview.source == nil)   // the title it publishes
 
         #expect(try #require(InboxReview.decision(try Self.part("promote"))).outcome == "promoted")
         let back = try #require(InboxReview.preview(try Self.part("unpromote_preview")))
@@ -231,6 +232,19 @@ struct InboxReviewTests {
         await svc.accept(item)
         await svc.reject(item)
         #expect(runner.calls(to: "scoutctl") == Self.reads)
+    }
+
+    @Test func aPreviewThatNamesNoOneIsRefusedWithAMessage() async throws {
+        let runner = try runner()
+        let svc = service(runner)
+        await svc.open("grok-personal")
+        var obj = try #require(try Self.fixture()["promote_preview"] as? [String: Any])
+        obj["audience"] = ["author"]   // reserved: never a delegate id
+        let preview = try JSONDecoder().decode(InboxReview.Item.self, from: JSONSerialization.data(withJSONObject: obj))
+        await svc.promote(preview)
+        #expect(runner.calls(to: "scoutctl") == Self.reads)
+        #expect(svc.failed && svc.message?.hasPrefix("Nothing was promoted") == true)
+        #expect(!DelegateStatus.isDelegateID("author") && DelegateStatus.isDelegateID("co-author"))
     }
 
     @Test func noEngineRunsNothing() async {

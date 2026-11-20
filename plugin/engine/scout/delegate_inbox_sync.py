@@ -209,7 +209,7 @@ def sync(
     try:
         deadline = time.monotonic() + budget
         try:
-            with da._session(vault), di.locked(vault):
+            with da._session(vault, "the inbox sync"), di.locked(vault):
                 result.ledger_commit = commit_ledgers(vault, commit or da._default_commit)
                 result.settled, unsettled = settle_interrupted(vault, commit or da._default_commit)
                 result.notes += unsettled
@@ -346,7 +346,10 @@ WAITING = (None, "held", "limited", "dirty", "no_mirror", "not_taken")  # taken,
 def summary(vault: Path, *, now: dt.datetime | None = None) -> dict[str, dict[str, Any]]:
     """Each linked inbox at a glance, from the signed state: ids, counts and times only, never agent text.
     Raises :class:`RepoSyncError` when the state doesn't verify (health and the doctor say so)."""
+    from scout import delegate_proposals as dp
+
     state = di.load_state(vault)
+    when = now or dt.datetime.now(dt.UTC)
     out: dict[str, dict[str, Any]] = {}
     for delegate, link in sorted(state.inboxes.items()):
         taken = state.taken.get(delegate, {})
@@ -357,7 +360,13 @@ def summary(vault: Path, *, now: dt.datetime | None = None) -> dict[str, dict[st
             outcomes[key] = outcomes.get(key, 0) + 1
         waiting = [u for u in taken if applied.get(u, {}).get("outcome") in WAITING]
         oldest = min((str(taken[u].get("at", "")) for u in waiting), default=None)
-        review = [u for u in taken if applied.get(u, {}).get("outcome") in (None, "held")]  # inbox review's
+        review = [  # what inbox review lists: waiting, held, and an op over the day's limit while it could apply
+            u
+            for u in taken
+            if applied.get(u, {}).get("outcome") in (None, "held")
+            or (applied.get(u, {}).get("outcome") == "limited" and dp.ULID_RE.match(u)
+                and when - dp.ulid_time(u) <= da.STALE_AFTER)
+        ]  # fmt: skip
         oldest_review = min((str(taken[u].get("at", "")) for u in review), default=None)
         out[delegate] = {
             "linked_at": link.linked_at,

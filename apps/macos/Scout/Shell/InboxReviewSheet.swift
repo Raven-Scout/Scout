@@ -72,6 +72,7 @@ struct InboxReviewSheet: View {
                 Button("Done") { onClose() }
                     .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.cancelAction)
+                    .disabled(service.work != nil)   // a step's result lands in this delegate's sheet
             }
         }
         .padding(20)

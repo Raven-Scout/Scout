@@ -249,3 +249,64 @@ def test_a_scheduled_run_may_not_review(vault: Path) -> None:
     _inbox(vault)
     grok = ds.report(vault, env={**_owner(), "SCOUT_MODE": "briefing"})["delegates"][0]
     assert grok["inbox"] is not None and grok["can_review"] is False
+
+
+def test_an_inbox_summary_that_fails_unexpectedly_reads_as_unreadable(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout import delegate_inbox_sync
+
+    _inbox(vault)
+
+    def boom(*_a: object, **_k: object) -> dict:
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(delegate_inbox_sync, "summary", boom)
+    doc = ds.report(vault, env=_owner())
+    assert doc["inbox_state"] == "unreadable" and all(d["inbox"] is None for d in doc["delegates"])
+
+
+def test_an_inbox_under_a_bad_id_is_dropped(vault: Path) -> None:
+    links = {
+        key: di.InboxLink(
+            id=key,
+            remote="https://github.com/example-user/inbox.git",
+            linked_at="2026-11-10T09:00:00Z",
+            bound_to="github:1:2",
+        )  # fmt: skip
+        for key in ("Bad Id", "author", "grok-personal")
+    }
+    di.save_state(vault, di.InboxState(inboxes=links))
+    doc = ds.report(vault, env=_owner())
+    assert {d["id"] for d in doc["delegates"]} == {"grok-personal", "duet"}
+    assert doc["delegates"][0]["inbox"] is not None
+
+
+def test_the_review_count_holds_what_the_sheet_lists(vault: Path) -> None:
+    """Waiting, held, and an op over the day's limit while it could still apply: inbox review lists all three."""
+    import datetime as dt
+
+    from scout import delegate_proposals as dp
+
+    now = dt.datetime(2026, 11, 19, 12, 0, tzinfo=dt.UTC)
+
+    def ulid(days: int, tail: str) -> str:
+        ms = int((now - dt.timedelta(days=days)).timestamp() * 1000)
+        head = ""
+        for _ in range(10):
+            head = dp._CROCKFORD[ms % 32] + head
+            ms //= 32
+        return head + tail
+
+    fresh, old, waiting = ulid(1, "000000000000000A"), ulid(9, "000000000000000B"), ulid(1, "000000000000000C")
+    link = di.InboxLink(id="grok-personal", remote="https://github.com/example-user/inbox.git",
+                        linked_at="2026-11-10T09:00:00Z", bound_to="github:1:2")  # fmt: skip
+    rec = {"mac": "0" * 64, "at": "2026-11-18T12:00:00Z"}
+    state = di.InboxState(
+        inboxes={"grok-personal": link},
+        taken={"grok-personal": {fresh: rec, old: rec, waiting: rec}},
+        applied={"grok-personal": {fresh: {"outcome": "limited"}, old: {"outcome": "limited"}}},
+    )
+    di.save_state(vault, state)
+    grok = ds.report(vault, env=_owner(), now=now)["delegates"][0]
+    assert grok["inbox"]["review"] == 2  # the waiting one and the fresh limited op; the old op is past its window

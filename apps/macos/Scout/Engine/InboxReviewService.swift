@@ -54,7 +54,7 @@ final class InboxReviewService: ObservableObject {
 
     /// Open `id`'s inbox: read what waits and what was accepted. Read-only.
     func open(_ id: String) async {
-        guard DelegateStatus.isDelegateID(id) else { return }
+        guard DelegateStatus.isDelegateID(id), work == nil else { return }
         if delegate != id { items = []; accepted = []; message = nil; failed = false }
         delegate = id
         await perform(.loading) { _ in }
@@ -64,7 +64,7 @@ final class InboxReviewService: ObservableObject {
     func accept(_ item: InboxReview.Item) async {
         guard item.canAccept, InboxReview.isULID(item.ulid), items.contains(item) else { return }
         await perform(.accepting(item.ulid)) { [self] exe in
-            let decided = try await decide(try await runInbox(.accept, [item.ulid, "--confirm", item.ulid], exe))
+            let decided = try decide(try await runInbox(.accept, [item.ulid, "--confirm", item.ulid], exe))
             var notes = decided.notes
             if item.kind == "observation" { notes.append(InboxReview.acceptedObservationNote) }
             say(notes.joined(separator: " "))
@@ -74,7 +74,7 @@ final class InboxReviewService: ObservableObject {
     func reject(_ item: InboxReview.Item) async {
         guard InboxReview.isULID(item.ulid), items.contains(item) else { return }
         await perform(.rejecting(item.ulid)) { [self] exe in
-            _ = try await decide(try await runInbox(.reject, [item.ulid], exe))
+            _ = try decide(try await runInbox(.reject, [item.ulid], exe))
             say("Rejected delegate-\(item.delegate)'s proposal. Nothing reached the vault.")
         }
     }
@@ -93,19 +93,21 @@ final class InboxReviewService: ObservableObject {
     func promote(_ preview: InboxReview.Item) async {
         guard let sha = preview.sha256, InboxReview.isSHA256(sha), InboxReview.isULID(preview.ulid),
               let audience = preview.audience, !audience.isEmpty, audience.allSatisfy(DelegateStatus.isDelegateID)
-        else { return }
+        else { return refuse("Nothing was promoted: the preview didn't name a note and the agents to show it to.") }
         await perform(.promoting(preview.ulid)) { [self] exe in
             let args = [preview.ulid, "--to", audience.joined(separator: ","), "--previewed", sha,
                         "--confirm", preview.ulid]
-            say(try await decide(try await runInbox(.promote, args, exe)).notes.joined(separator: " "))
+            say(try decide(try await runInbox(.promote, args, exe)).notes.joined(separator: " "))
         }
     }
 
     /// Make the note private again, while it is exactly what `preview` showed.
     func unpromote(_ preview: InboxReview.Item) async {
-        guard let sha = preview.sha256, InboxReview.isSHA256(sha), InboxReview.isULID(preview.ulid) else { return }
+        guard let sha = preview.sha256, InboxReview.isSHA256(sha), InboxReview.isULID(preview.ulid) else {
+            return refuse("Nothing changed: the preview didn't name a note.")
+        }
         await perform(.unpromoting(preview.ulid)) { [self] exe in
-            _ = try await decide(try await runInbox(.unpromote, [preview.ulid, "--previewed", sha], exe))
+            _ = try decide(try await runInbox(.unpromote, [preview.ulid, "--previewed", sha], exe))
             say("Private again: no agent sees delegate-\(preview.delegate)'s note now, from the next mirror sync.")
         }
     }
@@ -115,6 +117,7 @@ final class InboxReviewService: ObservableObject {
     private struct Failure: Error { let message: String; init(_ m: String) { message = m } }
 
     private func say(_ text: String) { message = text; failed = false }
+    private func refuse(_ text: String) { message = text; failed = true }
 
     private func preview(_ command: Command, _ note: InboxReview.Accepted) async -> InboxReview.Item? {
         guard InboxReview.isULID(note.ulid), accepted.contains(note) else { return nil }
@@ -158,6 +161,7 @@ final class InboxReviewService: ObservableObject {
             failed = true
             return
         }
+        let started = delegate   // what this step's result belongs to; `open` can't switch while it runs
         work = kind
         defer { work = nil }
         do { try await action(exe) } catch let f as Failure {
@@ -167,7 +171,7 @@ final class InboxReviewService: ObservableObject {
             message = "Couldn't run scoutctl: \(String(describing: error).prefix(160))"
             failed = true
         }
-        guard reload, let id = delegate else { return }
+        guard reload, let id = started, id == delegate else { return }
         do {
             let listed = try await runInbox(.review, ["--delegate", id], exe)
             let kept = try await runInbox(.review, ["--accepted", "--delegate", id], exe)

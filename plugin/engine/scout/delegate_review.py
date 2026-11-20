@@ -281,7 +281,7 @@ def accept(
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review accept"), di.locked(vault):
         state = di.load_state(vault)
         delegate = _owner_of(state, ulid)
         applied = state.applied.setdefault(delegate, {})
@@ -562,6 +562,20 @@ def audience(vault: Path, rel: str, data: bytes) -> list[str]:
     return [d.id for d in policy.delegates if is_delegate_id(d.id) and visible_to(label, f"delegate:{d.id}", policy)]
 
 
+def _previewed(delegate: str, ulid: str, status: str, data: bytes, body: str) -> Item:
+    """A preview of the note's bytes: its body, and the agent's ``about`` and ``source`` as the note carries them
+    (``title`` and ``agent_source``), each shown and checked for look-alikes, as promote publishes all three."""
+    fm, _body = _split(data.decode("utf-8"))
+    about = fm.get("title") if isinstance(fm.get("title"), str) else None
+    source = fm.get("agent_source") if isinstance(fm.get("agent_source"), str) else None
+    item = Item(delegate=delegate, ulid=ulid, kind="observation", status=status,
+                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(body), sha256=_sha(data),
+                about=shown(about) if about is not None else None,
+                source=shown(source) if source is not None else None)  # fmt: skip
+    item.look_alikes = look_alikes(" ".join(v for v in (body, about, source) if v))
+    return item
+
+
 def preview_promote(
     vault: Path,
     ulid: str,
@@ -586,9 +600,7 @@ def preview_promote(
     _as_accepted(entry, rel, data)
     text = _checked_body(data)
     scope = _scope(vault, delegate, to)
-    item = Item(delegate=delegate, ulid=ulid, kind="observation", status="accepted",
-                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(text), sha256=_sha(data))  # fmt: skip
-    item.look_alikes = look_alikes(text)
+    item = _previewed(delegate, ulid, "accepted", data, text)
     item.audience = audience(vault, rel, _promoted(data, delegate, rel, scope, di._stamp(when)))
     return item
 
@@ -628,7 +640,7 @@ def promote(
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review promote"), di.locked(vault):
         state = di.load_state(vault)
         delegate, entry, rel, data = _accepted_note(vault, state, ulid)
         if entry.get("promoted"):
@@ -685,13 +697,8 @@ def preview_unpromote(vault: Path, ulid: str, *, env: Mapping[str, str] | None =
     with di.locked(vault):
         state = di.load_state(vault)
         delegate, _entry, rel, data = _promoted_note(vault, state, ulid)
-    try:
-        _fm, body = _split(data.decode("utf-8"))
-    except UnicodeDecodeError as e:
-        raise RepoSyncError("note_changed", "refused: the note isn't UTF-8 text any more") from e
-    item = Item(delegate=delegate, ulid=ulid, kind="observation", status="promoted",
-                proposed=di._stamp(dp.ulid_time(ulid)), made_at="", text=shown(body), sha256=_sha(data))  # fmt: skip
-    item.look_alikes = look_alikes(body)
+    _fm, body = _split(data.decode("utf-8"))  # the bytes promote wrote (the hash matched): UTF-8
+    item = _previewed(delegate, ulid, "promoted", data, body)
     item.audience = audience(vault, rel, data)
     return item
 
@@ -714,7 +721,7 @@ def unpromote(
     commit = commit or da._default_commit
     vault = vault.resolve()
     when = now or dt.datetime.now(dt.UTC)
-    with da._session(vault), di.locked(vault):
+    with da._session(vault, "inbox review unpromote"), di.locked(vault):
         state = di.load_state(vault)
         delegate, entry, rel, data = _promoted_note(vault, state, ulid)
         if previewed is not None and not hmac.compare_digest(_sha(data), previewed):

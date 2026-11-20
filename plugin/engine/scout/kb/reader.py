@@ -46,9 +46,13 @@ _DELEGATE_PREFIX = "delegate:"
 DELEGATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 
 
+# Words a delegate id can't be: ``inbox review promote --to author`` means the note's own author.
+RESERVED_DELEGATE_IDS = frozenset({"author"})
+
+
 def is_delegate_id(value: str) -> bool:
-    """Whether ``value`` is a delegate id: ASCII, matched whole (no trailing newline)."""
-    return value.isascii() and DELEGATE_ID_RE.fullmatch(value) is not None
+    """Whether ``value`` is a delegate id: ASCII, matched whole (no trailing newline), and not reserved."""
+    return value.isascii() and DELEGATE_ID_RE.fullmatch(value) is not None and value not in RESERVED_DELEGATE_IDS
 
 
 def _canonical(reader: str) -> str | None:

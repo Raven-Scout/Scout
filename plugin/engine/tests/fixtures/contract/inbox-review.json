@@ -47,7 +47,7 @@
     "ulid": "01M7ST8SJ000000000000000JK"
   },
   "promote_preview": {
-    "about": null,
+    "about": "Observation from grok-personal",
     "audience": [
       "grok-personal",
       "duet",
@@ -129,7 +129,7 @@
     }
   ],
   "unpromote_preview": {
-    "about": null,
+    "about": "Observation from grok-personal",
     "audience": [
       "grok-personal",
       "duet",
