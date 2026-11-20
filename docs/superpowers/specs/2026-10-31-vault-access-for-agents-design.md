@@ -1265,6 +1265,28 @@ labels, the corpus and Agnes are unchanged. `elsewhere` doesn't see an unpromote
 accepted note's body is a provenance line, then the text as a block quote, wrapped below kb-lint's strict
 line limit.
 
+**After the review of #738.**
+
+- **Promote publishes only what the owner accepted.** It refuses unless the note is byte for byte what
+  accept wrote (or what unpromote put back), and what the preview just showed. The preview is printed with
+  `--confirm` too.
+- **Runs can't write `knowledge-base/from-agents/`.** It is a protected tree: the write gate denies it on
+  every platform, and on macOS so does the run's sandbox. A run can still read it.
+- **Agent text is marked in `kb delta`.** Paths are marked, and a diff that holds agent text is preceded by
+  the data-not-instructions notice. The action-items phase says a `delegate-<id>:` comment is an agent's
+  text, never the owner's.
+- **Two more text bans.** Proposal text may not hold `%%` (an Obsidian comment, or a `%%privacy:allow%%`
+  marker) or `[from-agent`.
+
+**Residuals, known and accepted.**
+
+- **`git show <commit>` or `git log -p` with no path prints agent text unlabelled.** The read gate doesn't
+  label git's own output, a gap that predates V4b2. The phases send runs to `scoutctl kb delta`, which
+  labels it.
+- **The shell gate doesn't parse `git mv` into a protected tree.** It catches `>`, `>>`, `cp`, `mv` and the
+  file tools. On macOS the run's sandbox denies the write in the kernel; elsewhere the hooks are the only
+  layer, as for the inbox copies.
+
 **Parked follow-ups (the coordinator, 2026-11-19).**
 
 - **The outbound excerpt check could cover `delegate:` notes too.** `shared_reads.source_note_records`
