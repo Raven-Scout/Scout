@@ -92,6 +92,33 @@ nonisolated enum DisplayName {
 
     private static let defaultSlotNames = Set(slotKeys.values)
 
+    /// A run's name from its run-ledger row (`scoutctl runs --json`): its
+    /// schedule's name from `slot` (`overnight-research` → "Overnight
+    /// research"), or from `mode` when the slot is missing or `unknown`. A run
+    /// started by hand (`manual`, `dreaming-manual`, `research-manual`) reads
+    /// "Dreaming (manual)", with a bare `manual` named by its `runner`
+    /// (scout → "Briefing (manual)", as the log-name guess has it). nil when
+    /// the row names nothing, so the caller falls back to its own guess.
+    /// Control Center and the Health page both name runs with this (card T2).
+    static func ledgerRun(slot: String?, mode: String?, runner: String? = nil) -> String? {
+        let key = [slot, mode]
+            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && $0 != "unknown" }
+        guard let key else { return nil }
+        if key == "manual" {
+            switch runner {
+            case "dreaming": return "Dreaming (manual)"
+            case "research": return "Research (manual)"
+            default:         return "Briefing (manual)"
+            }
+        }
+        if key.hasSuffix("-manual") {
+            let family = String(key.dropLast("-manual".count))
+            return family.isEmpty ? "Manual run" : "\(humanize(family)) (manual)"
+        }
+        return slotKey(key)
+    }
+
     private static let slotKeys: [String: String] = [
         "morningbriefing":        "Morning briefing",
         "weekendbriefing":        "Weekend briefing",

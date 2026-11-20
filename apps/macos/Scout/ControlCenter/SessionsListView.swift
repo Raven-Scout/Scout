@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Sessions table — editorial card with search + type filter and a flat row
-/// layout (status icon · name/when · status · commits · cost).
+/// The run list, headed "Runs" (card T2: "Sessions" is the Agent Sessions
+/// page's word) — editorial card with search + type filter and a flat row
+/// layout (status icon · name/when · status).
 ///
 /// CC-8: previously used `NavigationLink` to push detail into a stack,
 /// which buried the sessions list. Now exposes a tap callback so the
@@ -75,7 +76,7 @@ struct SessionsListView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Sessions".uppercased())
+            Text(Self.heading.uppercased())
                 .font(DS.font(.caption, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
@@ -91,7 +92,7 @@ struct SessionsListView: View {
             Image(systemName: "magnifyingglass")
                 .font(DS.font(.caption2))
                 .foregroundStyle(DS.Ink.p4)
-            TextField("Search sessions", text: $search)
+            TextField(Self.searchPrompt, text: $search)
                 .textFieldStyle(.plain)
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p1)
@@ -104,6 +105,11 @@ struct SessionsListView: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
         )
     }
+
+    /// The list's words: it lists runs, and Sessions is another page.
+    static let heading = "Runs"
+    static let searchPrompt = "Search runs"
+    static let emptyText = "No runs match the current filters."
 
     /// Search matches what the row shows ("morning briefing", "didn't
     /// finish", "Nov 12"), the engine name (`morningBriefing`) and commit
@@ -136,7 +142,7 @@ struct SessionsListView: View {
     }
 
     private var emptyState: some View {
-        Text("No sessions match the current filters.")
+        Text(Self.emptyText)
             .dsFont(.body, .serif)
             .foregroundStyle(DS.Ink.p3)
             .italic()

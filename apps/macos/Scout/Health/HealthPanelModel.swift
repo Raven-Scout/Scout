@@ -108,7 +108,7 @@ nonisolated struct HealthPanelModel: Equatable, Sendable {
         let agent = [agentName, e.model].compactMap { $0 }.joined(separator: " · ")
         return RunLine(
             id: e.id,
-            title: DisplayName.slotKey(e.slot),
+            title: DisplayName.ledgerRun(slot: e.slot, mode: e.mode, runner: e.runner) ?? DisplayName.slotKey(e.slot),
             finished: e.finishedAt,
             outcome: e.displayStatus,
             reason: problem?.impact,
