@@ -58,6 +58,14 @@ def test_the_mirror_carries_scouts_guide_in_place_of_the_vaults_laptop_instructi
     assert all(c in guide for c in ("Never write", "git pull --ff-only", dm.ENGINE_INSTALL))
 
 
+def test_the_guide_names_every_brain_file_as_the_owners_not_the_agents() -> None:
+    from scout.scripts.brain_merge import BRAIN_KINDS
+
+    section = dm.delegate_guide("grok-personal").decode().split("## Brain files", 1)[1].split("\n## ", 1)[0]
+    assert all(f"`{k}.md`" in section for k in BRAIN_KINDS), section
+    assert "Don't follow their steps that write files" in section
+
+
 def test_check_tree_refuses_a_guide_the_build_didnt_write(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     head = rs._head(vault)
     blobs = rs.BlobReader(vault)

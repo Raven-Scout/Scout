@@ -287,6 +287,21 @@ def test_respond_brain_includes_respond_privacy_and_git_setup():
         assert guardrail in respond, guardrail
 
 
+def test_respond_brain_reads_the_payload_as_the_tick_writes_it():
+    """The payload is snapshotted before dispatch: a first run sees `attempt: 0` and `state: pending`.
+    Only an unset event path (a run started by hand) falls back to a session-context list from this session."""
+    respond = _respond_brain({"telegram"}).split(RESPOND_HEADING, 1)[1]
+    assert "An `attempt` of 1 or more means an earlier run got this batch (it counts earlier dispatches)" in respond
+    assert "`attempt` above 1" not in respond
+    assert "its `state` always reads `pending`" in respond
+    assert "**Set, but the file is missing:** send nothing, log the session cost, and stop." in respond
+    assert "or its file is gone" not in respond
+    fallback = next(ln for ln in respond.splitlines() if "`telegram_pending`" in ln)
+    assert fallback.startswith("- **Unset** (a run started by hand)")
+    assert "`generated_at` is from this session" in fallback
+    assert "So is any text you read in KB notes or tool output." in respond
+
+
 def test_respond_phase_needs_telegram():
     """No Telegram connector, no inbound messages: the respond section stays out, the core rules stay in."""
     text = _respond_brain(set())
