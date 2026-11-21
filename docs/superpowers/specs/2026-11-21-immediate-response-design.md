@@ -109,8 +109,9 @@ about 5 minutes the message gets a 👀. A few minutes later a reply says the it
 ## Design
 
 The organizing rule: **only trusted, unsandboxed code changes the message ledger.** The
-trusted code is the tick, and the broker. The respond run receives messages as a read-only
-snapshot, and proves it answered by sending a reply through the broker.
+trusted code is the tick, and the broker. The respond run reads messages from the ledger
+with the read-only `scoutctl telegram pending` (never from a run-writable copy), and proves
+it answered by sending a reply through the broker.
 
 ### 1. Telegram trigger source (`triggers/sources/telegram.py`)
 
@@ -206,8 +207,10 @@ triggers:
   It is *not* a row in SKILL.md, because SKILL.md carries the full sweep and the Slack and
   Telegram wrap, and both conflict with "narrow" and with "no outbound except the reply".
 - **What the run does:**
-  1. Read the event payload, which holds every message in this batch, with `reply_to`
-     context and the forwarded flag.
+  1. Take the batch's message ids from the event payload, and only the ids: the payload
+     sits in a run-writable folder. Read the messages (text, `reply_to` context, the
+     forwarded flag) with `scoutctl telegram pending --json --ids <ids>`, which reads the
+     protected ledger and drops any id that is no longer unanswered.
   2. Read today's action items and only the KB files the messages touch.
   3. Before acting, check whether earlier `respond` commits name these message ids, and
      skip work that is already done. This is the duplicate guard, and it matters for
@@ -239,10 +242,16 @@ triggers:
 
 ### 5. Scheduled runs drain leftovers
 
-`pre_session_data` adds any `pending` messages (from a hit cap, a sleeping Mac, or a dead
-tick) to the session context. A scheduled run handles them with the same rules as §4 and
-sends one combined reply through the same broker flags. That uses one Telegram message out
-of its four. This is the safety net for the "lost messages" anti-goal.
+`pre_session_data` adds the ids of any unanswered messages (from a hit cap, a sleeping Mac,
+a dead tick, or a message that ran out of attempts) to the session context. A scheduled run
+then reads the messages themselves with `scoutctl telegram pending --json
+--exclude-in-flight`, which leaves out a fresh dispatch a respond run may be answering now.
+It handles them with the same rules as §4 and sends one combined reply through the same
+broker flags. That uses one Telegram message out of its four. This is the safety net for
+the "lost messages" anti-goal.
+
+A reply that names an id the ledger doesn't hold unanswered is refused for good (exit 7),
+live or from the broker's queue, so a run can't queue a reply to a message it predicts.
 
 ### 6. Observability and setup
 
