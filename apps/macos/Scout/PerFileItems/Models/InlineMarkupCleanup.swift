@@ -55,12 +55,74 @@ nonisolated enum InlineMarkupCleanup {
     /// Pandoc's rule, so prices stay: the opening `$` is followed by a
     /// non-space, the closing `$` follows a non-space and isn't followed by a
     /// digit ("$5 (p \ge 0.1) or $10" is not math).
-    private static let mathRes: [(NSRegularExpression, requiresCommand: Bool)] = [
-        (try! NSRegularExpression(pattern: #"\$\$(.+?)\$\$"#), false),
-        (try! NSRegularExpression(pattern: #"\\\((.+?)\\\)"#), true),
-        (try! NSRegularExpression(pattern: #"\\\[(.+?)\\\]"#), true),
-        (try! NSRegularExpression(pattern: #"(?<![\\$])\$(?=[^\s$])([^$\n]*?[^\s$\\])\$(?!\d)"#), true),
+    ///
+    /// The three bracketed forms are found by `delimitedSpans`, in linear
+    /// time. They used to be the regexes `\$\$(.+?)\$\$`, `\\\((.+?)\\\)` and
+    /// `\\\[(.+?)\\\]`, which scanned to the end of the line from every
+    /// opener that never closed: 5,000 unclosed `\(` took a third of a second
+    /// in a release build, longer on non-ASCII text. `$…$` stays a regex: its
+    /// body can't cross a `$`, so each attempt stops at the next one.
+    private static let mathForms: [(MathForm, requiresCommand: Bool)] = [
+        (.delimited(open: "$$", close: "$$"), false),
+        (.delimited(open: #"\("#, close: #"\)"#), true),
+        (.delimited(open: #"\["#, close: #"\]"#), true),
+        (.regex(try! NSRegularExpression(pattern: #"(?<![\\$])\$(?=[^\s$])([^$\n]*?[^\s$\\])\$(?!\d)"#)), true),
     ]
+
+    private enum MathForm {
+        /// A two-character opener, at least one character on the same line,
+        /// and the first two-character closer after it.
+        case delimited(open: String, close: String)
+        /// Group 1 is the content.
+        case regex(NSRegularExpression)
+    }
+
+    /// The spans the regex `open(.+?)close` finds, for a two-character `open`
+    /// and `close`, in one pass: each opener, then the first closer that
+    /// starts at least one character after it, if no line break comes first.
+    /// A failed opener costs O(1), because the next closer and the next line
+    /// break from every position are worked out once, from the right.
+    /// `whole` includes the delimiters; `content` is what's between them.
+    static func delimitedSpans(in text: String, open: String, close: String) -> [(whole: NSRange, content: NSRange)] {
+        let o = Array(open.utf16), c = Array(close.utf16)
+        precondition(o.count == 2 && c.count == 2, "two-character delimiters only")
+        let u = Array(text.utf16)
+        let n = u.count
+        guard n >= 5 else { return [] }
+
+        // nextClose[i]: the first index >= i where `close` starts, or n.
+        // nextBreak[i]: the first index >= i holding a line break, or n.
+        var nextClose = [Int](repeating: n, count: n + 1)
+        var nextBreak = [Int](repeating: n, count: n + 1)
+        var i = n - 1
+        while i >= 0 {
+            nextClose[i] = i + 1 < n && u[i] == c[0] && u[i + 1] == c[1] ? i : nextClose[i + 1]
+            nextBreak[i] = isLineBreak(u[i]) ? i : nextBreak[i + 1]
+            i -= 1
+        }
+
+        var out: [(whole: NSRange, content: NSRange)] = []
+        var p = 0
+        while p + 4 < n {
+            guard u[p] == o[0], u[p + 1] == o[1] else { p += 1; continue }
+            // The content is at least one character, so a closer starts at p + 3 or later.
+            let q = nextClose[p + 3]
+            guard q < n, nextBreak[p + 2] >= q else { p += 1; continue }
+            out.append((NSRange(location: p, length: q + 2 - p), NSRange(location: p + 2, length: q - p - 2)))
+            p = q + 2
+        }
+        return out
+    }
+
+    /// The characters a regex `.` doesn't match (ICU's line terminators), as
+    /// in `CodeSpanScanner`.
+    private static func isLineBreak(_ c: UInt16) -> Bool {
+        switch c {
+        case 0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029: return true
+        default: return false
+        }
+    }
+
     private static let commandRe = try! NSRegularExpression(pattern: #"\\[A-Za-z]+"#)
 
     /// Symbol commands, by name. Used inside math and, bare, in prose.
@@ -79,12 +141,20 @@ nonisolated enum InlineMarkupCleanup {
         pattern: #"\\("# + symbols.keys.sorted { $0.count > $1.count }.joined(separator: "|") + #")(?![A-Za-z])"#
     )
 
-    private static func plainMath(_ text: String) -> String {
+    /// Each math form in turn, then bare symbols. Internal so tests can pin
+    /// it against the regexes it replaced.
+    static func plainMath(_ text: String) -> String {
         var s = text
-        for (re, requiresCommand) in mathRes {
-            s = replace(re, in: s) { content in
+        for (form, requiresCommand) in mathForms {
+            let transform: (String) -> String? = { content in
                 if requiresCommand && !matches(commandRe, content) { return nil }
                 return mathAsText(content)
+            }
+            switch form {
+            case let .delimited(open, close):
+                s = replace(delimitedSpans(in: s, open: open, close: close), in: s, transform)
+            case let .regex(re):
+                s = replace(re, in: s, transform)
             }
         }
         return replace(bareSymbolRe, in: s) { name in symbols[name] }
@@ -245,24 +315,44 @@ nonisolated enum InlineMarkupCleanup {
     /// when the pattern has no group)`; a nil result keeps the match as is.
     private static func replace(_ re: NSRegularExpression, in s: String,
                                 _ transform: (String) -> String?) -> String {
-        let ns = s as NSString
-        var out = s as NSString
-        for m in re.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
-            let group = m.numberOfRanges > 1 ? m.range(at: 1) : m.range
-            guard let replacement = transform(ns.substring(with: group)) else { continue }
-            out = out.replacingCharacters(in: m.range, with: replacement) as NSString
+        let spans = re.matches(in: s, range: NSRange(location: 0, length: (s as NSString).length)).map {
+            (whole: $0.range, content: $0.numberOfRanges > 1 ? $0.range(at: 1) : $0.range)
         }
-        return out as String
+        return replace(spans, in: s, transform)
     }
 
     private static func replace(_ re: NSRegularExpression, in s: String, groups: Int,
                                 _ transform: ([String]) -> String) -> String {
         let ns = s as NSString
-        var out = s as NSString
-        for m in re.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
-            let values = (1...groups).map { ns.substring(with: m.range(at: $0)) }
-            out = out.replacingCharacters(in: m.range, with: transform(values)) as NSString
+        return rebuild(s, re.matches(in: s, range: NSRange(location: 0, length: ns.length)).map { m in
+            (m.range, transform((1...groups).map { ns.substring(with: m.range(at: $0)) }))
+        })
+    }
+
+    /// Replace each span with `transform(its content)`; a nil result keeps it as is.
+    private static func replace(_ spans: [(whole: NSRange, content: NSRange)], in s: String,
+                                _ transform: (String) -> String?) -> String {
+        let ns = s as NSString
+        return rebuild(s, spans.compactMap { span in
+            transform(ns.substring(with: span.content)).map { (span.whole, $0) }
+        })
+    }
+
+    /// `s` with each range, in order and not overlapping, swapped for its
+    /// text, built front to back in one pass. (Splicing each one into the
+    /// whole string, last first, copied the string once per match.)
+    private static func rebuild(_ s: String, _ edits: [(NSRange, String)]) -> String {
+        guard !edits.isEmpty else { return s }
+        let ns = s as NSString
+        var out = ""
+        out.reserveCapacity(ns.length)
+        var cursor = 0
+        for (range, text) in edits {
+            out += ns.substring(with: NSRange(location: cursor, length: range.location - cursor))
+            out += text
+            cursor = range.location + range.length
         }
-        return out as String
+        out += ns.substring(from: cursor)
+        return out
     }
 }

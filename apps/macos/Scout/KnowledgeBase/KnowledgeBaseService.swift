@@ -259,14 +259,14 @@ final class KnowledgeBaseService: ObservableObject {
     /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
     /// `|`), de-duplicated, preserving original case and first-seen order.
     /// The alias separator may be escaped as `\|` — the form the KB writes
-    /// inside table cells so the pipe isn't taken as a column break.
+    /// inside table cells so the pipe isn't taken as a column break. What
+    /// counts is `Wikilink`'s rule, the one `InlineMarkdownText` renders as
+    /// links, so every link and backlink counted here shows as one.
     nonisolated static func extractWikilinks(_ text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]"#) else { return [] }
-        let ns = text as NSString
         var seen = Set<String>()
         var result: [String] = []
-        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            let raw = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+        for m in Wikilink.matches(in: text) {
+            let raw = m.target.trimmingCharacters(in: .whitespaces)
             if !raw.isEmpty, seen.insert(raw.lowercased()).inserted { result.append(raw) }
         }
         return result

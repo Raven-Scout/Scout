@@ -19,8 +19,10 @@ nonisolated enum KBLinkRewrite {
 
     /// A `[[target]]`, `[[target|alias]]` or `[[target\|alias]]`. Group 1 is
     /// the target as written, group 2 the alias part (with its separator).
-    /// Same grammar as `KnowledgeBaseService.extractWikilinks`.
-    static let linkPattern = #"\[\[([^\]|]+?)((?:\\?\|[^\]]+)?)\]\]"#
+    /// `Wikilink`'s rule, which `KnowledgeBaseService.extractWikilinks` counts
+    /// links by, so a rename rewrites exactly the links it counted.
+    static let linkPattern = #"\[\["# + "(\(Wikilink.targetCharacter)+?)((?:\(Wikilink.separator)\(Wikilink.aliasCharacter)+)?)"
+        + #"\]\]"#
 
     /// A note that links to the one being renamed.
     struct Inbound: Equatable, Sendable {

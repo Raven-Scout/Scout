@@ -49,11 +49,8 @@ enum TaskBodyParser {
     // MARK: - Trailing links
 
     private static func splitTrailingLinks(_ body: String) -> (prose: String, targets: [String]) {
-        guard let re = try? NSRegularExpression(pattern: #"((?:\s*\[\[[^\]]+\]\])+)\s*$"#) else {
-            return (body, [])
-        }
         let ns = body as NSString
-        guard let m = re.firstMatch(in: body, range: NSRange(location: 0, length: ns.length)) else {
+        guard let m = trailingLinksRe.firstMatch(in: body, range: NSRange(location: 0, length: ns.length)) else {
             return (body, [])
         }
         let cluster = ns.substring(with: m.range(at: 1))
@@ -65,12 +62,14 @@ enum TaskBodyParser {
         return (prose, targets)
     }
 
+    /// The final run of wikilinks, by `Wikilink`'s rule, separated only by
+    /// whitespace. A chip is made only for what renders as a link inline.
+    private static let trailingLinksRe = try! NSRegularExpression(
+        pattern: #"((?:\s*"# + Wikilink.ungroupedPattern + #")+)\s*$"#
+    )
+
     private static func wikilinkTargets(in s: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]"#) else { return [] }
-        let ns = s as NSString
-        return re.matches(in: s, range: NSRange(location: 0, length: ns.length)).map {
-            ns.substring(with: $0.range(at: 1))
-        }
+        Wikilink.matches(in: s).map(\.target)
     }
 
     // MARK: - Labeled segments
