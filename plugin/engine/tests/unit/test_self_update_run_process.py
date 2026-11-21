@@ -137,3 +137,23 @@ def test_network_failures_never_count_toward_a_targets_backoff(tmp_path):
             ),
         )
     assert sur.run_update(deps, scheduled=True).row.result == "applied"
+
+
+def test_a_network_failure_with_an_empty_message_still_reads_as_network(tmp_path):
+    # The ledger cleans `detail` to one line, which drops the space after the prefix when the error is empty.
+    deps, _, _ = make_deps(tmp_path)
+    for days in (5, 4, 3):
+        uo.append(
+            deps.vault,
+            uo.UpdateOutcome(
+                at=NOW - timedelta(days=days),
+                from_version="0.16.0",
+                target="0.17.0",
+                managed_by="install.sh",
+                result="failed",
+                step="check",
+                detail=sur.NETWORK_PREFIX,
+            ),
+        )
+    assert [r.detail for r in uo.read(deps.vault)] == ["network:"] * 3
+    assert sur.run_update(deps, scheduled=True).row.result == "applied"

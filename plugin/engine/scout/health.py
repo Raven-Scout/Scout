@@ -322,11 +322,11 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         started_at=started,
         finished_at=finished,
         exit_code=exit_code,
-        failure_class=str(obj.get("failure_class") or ""),
+        failure_class=_failure_class(obj.get("failure_class")),
         outcome=outcome,
-        log=str(log) if log else None,
+        log=_log_name(log),
         commits_in_window=_opt_int(obj.get("commits_in_window")),
-        newest_commit=str(commit) if commit else None,
+        newest_commit=_opt_token(commit, _COMMIT_RE),
         resets_at=_opt_epoch(obj.get("resets_at")),
         sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
         sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
@@ -345,6 +345,29 @@ _RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
 _RUNNERS = frozenset({"scout", "dreaming", "research"})
 _TRIGGERS = frozenset({"schedule", "heartbeat", "manual", "event"})
+# A failure class is a snake_case code; a run log is a bare file name under .scout-logs/; a commit is hex.
+_FAILURE_CLASS_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_LOG_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+_COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
+
+
+# A failure class that isn't a code (a forged or hand-edited row): never free text, and never a class the code acts
+# on. run_ledger's and diagnostics' own allow-lists both read it as odd (null / "<other>").
+OTHER_FAILURE_CLASS = "<other>"
+
+
+def _failure_class(value: object) -> str:
+    """The row's failure class; "" when it has none, ``OTHER_FAILURE_CLASS`` when it isn't a code."""
+    if value is None or value == "":
+        return ""
+    return value if isinstance(value, str) and _FAILURE_CLASS_RE.fullmatch(value) else OTHER_FAILURE_CLASS
+
+
+def _log_name(value: object) -> str | None:
+    """The row's run log as a bare file name under .scout-logs/ (the runner writes its basename), or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    return _opt_token(Path(value).name, _LOG_NAME_RE)
 
 
 def _opt_nonneg(value: object) -> int | None:

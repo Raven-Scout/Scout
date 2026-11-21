@@ -7,10 +7,15 @@ import SwiftUI
 struct LaunchClaudeMenu: View {
     enum Style { case split, icon }
 
-    /// Built only when a launch happens, not on every render.
-    let prompt: () -> String
+    /// Built only when a launch happens, not on every render. May fetch it (the
+    /// engine builds "Resolve with Claude" prompts); a throw launches nothing and
+    /// goes to `launchError`.
+    let prompt: @MainActor () async throws -> String
     let scoutDirectory: URL
     var style: Style = .split
+    /// The split button's label.
+    var title: String = "Launch Claude Code"
+    var helpText: String = "Launch this action item in Claude Code or Claude Desktop"
     /// The item's own Claude session (`- Session:`): a `claude.ai` link opens,
     /// a local session id resumes in the terminal.
     var session: String?
@@ -18,10 +23,20 @@ struct LaunchClaudeMenu: View {
     @Binding var launchError: String?
 
     init(prompt: @escaping () -> String, scoutDirectory: URL, style: Style = .split, session: String? = nil, launchError: Binding<String?>) {
-        self.prompt = prompt
+        self.prompt = { prompt() }
         self.scoutDirectory = scoutDirectory
         self.style = style
         self.session = session
+        _launchError = launchError
+    }
+
+    /// A launcher whose prompt is fetched at click time, under its own title.
+    init(title: String, help: String, asyncPrompt: @escaping @MainActor () async throws -> String,
+         scoutDirectory: URL, launchError: Binding<String?>) {
+        self.prompt = asyncPrompt
+        self.scoutDirectory = scoutDirectory
+        self.title = title
+        self.helpText = help
         _launchError = launchError
     }
 
@@ -67,7 +82,7 @@ struct LaunchClaudeMenu: View {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkles")
                         .font(DS.font(.caption2))
-                    Text("Launch Claude Code")
+                    Text(title)
                         .font(DS.font(.caption, weight: .medium))
                 }
                 .foregroundStyle(DS.Ink.p3)
@@ -93,7 +108,8 @@ struct LaunchClaudeMenu: View {
             .fixedSize()
             .accessibilityLabel("More ways to launch in Claude")
         }
-        .help("Launch this action item in Claude Code or Claude Desktop")
+        .disabled(isLaunching)
+        .help(helpText)
         .keyWindowPointingHand()
     }
 
@@ -110,7 +126,7 @@ struct LaunchClaudeMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Launch this action item in Claude Code or Claude Desktop")
+        .help(helpText)
         .accessibilityLabel("Launch in Claude")
         .keyWindowPointingHand()
     }
@@ -199,10 +215,20 @@ struct LaunchClaudeMenu: View {
         }
     }
 
+    /// The prompt is built (or fetched) inside `run`, so `isLaunching` covers it.
     private func launch(_ target: ClaudeLauncher.Target) {
         guard !isLaunching else { return }
-        let text = prompt()
-        run { try await ClaudeLauncher.launch(target: target, prompt: text) }
+        let make = prompt
+        run {
+            let text = try await make()
+            try await ClaudeLauncher.launch(target: target, prompt: text)
+        }
+    }
+
+    /// What the host's inline text says for a launch that failed for a reason other
+    /// than a missing permission (a prompt the engine couldn't build, among others).
+    static func launchErrorText(for error: Error) -> String {
+        LaunchFailure(error).message
     }
 
     /// One launch at a time. A permission refusal gets the alert with its
@@ -221,7 +247,7 @@ struct LaunchClaudeMenu: View {
                     launchError = nil
                     permissionFailure = failure
                 } else {
-                    launchError = failure.message
+                    launchError = Self.launchErrorText(for: error)
                 }
             }
         }
