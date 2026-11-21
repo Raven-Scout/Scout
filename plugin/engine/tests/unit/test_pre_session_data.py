@@ -501,13 +501,13 @@ def test_gather_includes_telegram_pending_for_full_reader(tmp_path: Path) -> Non
     (scout_dir / "knowledge-base").mkdir(parents=True)
     _ledger_with_every_state(scout_dir)
     ctx = gather("midday-consolidation", scout_dir=scout_dir)
-    rows = ctx.telegram_pending
-    assert [r["message_id"] for r in rows] == [9, 10, 12]  # pending and dispatched, oldest first
-    assert [(r["state"], r["attempt"]) for r in rows] == [("pending", 0), ("dispatched", 1), ("pending", 0)]
-    assert rows[2]["forwarded"] is True and rows[0]["text"] == "msg 9" and "reply_to_text" in rows[0]
+    # Ids only, oldest first: a run-writable file never carries the owner's words (the run reads them
+    # with `scoutctl telegram pending`, from the protected ledger).
+    assert ctx.telegram_pending == [9, 10, 12]
     out = tmp_path / "session-context.json"
     write_context(ctx, out)
-    assert [r["message_id"] for r in json.loads(out.read_text())["telegram_pending"]] == [9, 10, 12]
+    assert json.loads(out.read_text())["telegram_pending"] == [9, 10, 12]
+    assert "msg 9" not in out.read_text()
 
 
 @pytest.mark.parametrize("reader", ["agent:person:priya@example.com", "delegate:helper"])
@@ -535,10 +535,10 @@ def test_get_telegram_pending_returns_empty_on_corrupt_ledger(tmp_path: Path, mo
     assert get_telegram_pending(tmp_path) == []
     assert messages.read_text(encoding="utf-8") == "{not json"  # an unlocked read never quarantines it
 
-    def unreadable(self: Ledger) -> set[int]:
+    def unreadable(self: Ledger, **_kw: object) -> list[object]:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(Ledger, "unanswered_ids", unreadable)
+    monkeypatch.setattr(Ledger, "unanswered", unreadable)
     assert get_telegram_pending(tmp_path) == []
 
 
@@ -566,7 +566,7 @@ def test_get_telegram_pending_skips_rows_dispatched_within_timeout(tmp_path: Pat
 
     _dispatched(tmp_path, "2026-04-15T12:00:00+00:00")
     now = dt.datetime(2026, 4, 15, 12, 59, tzinfo=dt.UTC)
-    assert [r["message_id"] for r in get_telegram_pending(tmp_path, now=now)] == [1]
+    assert get_telegram_pending(tmp_path, now=now) == [1]
 
 
 def test_get_telegram_pending_returns_rows_dispatched_past_timeout(tmp_path: Path) -> None:
@@ -577,10 +577,21 @@ def test_get_telegram_pending_returns_rows_dispatched_past_timeout(tmp_path: Pat
 
     _dispatched(tmp_path, "2026-04-15T12:00:00+00:00")
     now = dt.datetime(2026, 4, 15, 13, 0, tzinfo=dt.UTC)  # exactly the 60-minute timeout: stale
-    rows = get_telegram_pending(tmp_path, now=now)
-    assert [(r["message_id"], r["state"], r["attempt"]) for r in rows] == [(1, "pending", 0), (2, "dispatched", 1)]
+    assert get_telegram_pending(tmp_path, now=now) == [1, 2]
 
     led = Ledger(tmp_path)  # an unreadable dispatch time counts as stale too
     with led.locked():
         led._update([2], lambda m: setattr(m, "dispatched_at", "not a time"))
-    assert [r["message_id"] for r in get_telegram_pending(tmp_path, now=now)] == [1, 2]
+    assert get_telegram_pending(tmp_path, now=now) == [1, 2]
+
+
+def test_get_telegram_pending_includes_failed_messages(tmp_path: Path) -> None:
+    """Out of respond attempts is not lost: the next scheduled run answers it (spec §5)."""
+    from scout.scripts.pre_session_data import get_telegram_pending
+    from scout.telegram_inbound.ledger import FAILED, Ledger
+
+    _dispatched(tmp_path, "2026-04-15T12:00:00+00:00")
+    led = Ledger(tmp_path)
+    with led.locked():
+        led.mark_skipped([2], FAILED)
+    assert get_telegram_pending(tmp_path) == [1, 2]

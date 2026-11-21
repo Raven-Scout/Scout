@@ -3843,8 +3843,9 @@ _register_notify()
 
 
 def _register_telegram() -> None:
-    """scoutctl telegram {find-chat-id, inbound-status} — setup and observability for inbound Telegram."""
-    telegram_app = typer.Typer(help="Inbound Telegram: find your chat id, check the poller.")
+    """scoutctl telegram {find-chat-id, inbound-status, pending} — setup, observability and the unanswered
+    messages for inbound Telegram."""
+    telegram_app = typer.Typer(help="Inbound Telegram: find your chat id, check the poller, list unanswered messages.")
     app.add_typer(telegram_app, name="telegram")
 
     @telegram_app.command("find-chat-id")
@@ -3912,6 +3913,48 @@ def _register_telegram() -> None:
         typer.echo("messages: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
         typer.echo(f"last poll: {last_poll_at or 'never'}")
         typer.echo(f"last error: {last_error or 'none'}")
+
+    @telegram_app.command("pending")
+    def cli_telegram_pending(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+        ids: str | None = typer.Option(
+            None, "--ids", help="Comma-separated message ids: only these, and only those still unanswered."
+        ),
+        exclude_in_flight: bool = typer.Option(
+            False,
+            "--exclude-in-flight",
+            help="Leave out messages a respond run was given within the dispatch timeout (a scheduled run's drain).",
+        ),
+    ) -> None:
+        """Print the owner's unanswered Telegram messages (pending, dispatched, failed), oldest first.
+
+        The only place a run reads their text: the inbound ledger, which only trusted code writes.
+        Read-only: it never writes, locks or quarantines the ledger.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        wanted: set[int] | None = None
+        if ids is not None:
+            parts = [p.strip() for p in ids.split(",") if p.strip()]
+            if not all(p.isascii() and p.isdigit() and int(p) > 0 for p in parts):
+                typer.echo("scoutctl telegram pending: --ids takes comma-separated message ids", err=True)
+                raise typer.Exit(code=1)
+            wanted = {int(p) for p in parts}
+        try:
+            rows = Ledger(_paths.data_dir()).unanswered(exclude_in_flight=exclude_in_flight)
+        except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
+            typer.echo(f"scoutctl telegram pending: couldn't read the inbound ledger ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        keys = ("message_id", "date", "text", "reply_to_text", "forwarded", "kind", "state", "attempt")
+        out = [{k: getattr(m, k) for k in keys} for m in rows if wanted is None or m.message_id in wanted]
+        if as_json:
+            typer.echo(_json.dumps({"messages": out}, ensure_ascii=False))
+            return
+        for m in out:
+            typer.echo(f"{m['message_id']}\t{m['state']}\t{_json.dumps(m['text'], ensure_ascii=False)}")
 
 
 _register_telegram()

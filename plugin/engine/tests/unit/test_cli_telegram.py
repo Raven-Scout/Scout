@@ -113,3 +113,114 @@ def test_find_chat_id_lists_groups_as_outbound_only(monkeypatch: pytest.MonkeyPa
     assert "-555" not in result.output
     assert calls[0]["offset"] == 0
     assert "TOKEN-123" not in result.output
+
+
+# ----- scoutctl telegram pending: message text only from the protected ledger -----
+
+
+def _seed(vault: Path) -> None:
+    import datetime as dt
+
+    from scout.telegram_inbound.ledger import FAILED, SKIPPED_CHEAP, InboundMessage
+
+    ledger = Ledger(vault)
+    now = dt.datetime.now(dt.UTC)
+    with ledger.locked():
+        for i in (5, 6, 7, 8, 9, 10):
+            ledger.add(
+                InboundMessage(
+                    message_id=i,
+                    date=1_776_250_000 + i,
+                    text=f"real text {i}",
+                    reply_to_text="your question" if i == 6 else None,
+                    forwarded=i == 7,
+                    kind="text",
+                )
+            )
+        ledger.mark_dispatched([6], now=now)  # in flight: a respond run has it
+        ledger.mark_skipped([8], SKIPPED_CHEAP)
+        ledger.record_reply(reply_to=9, covers=[9], at=now)
+        ledger.mark_skipped([10], FAILED)
+
+
+def _pending(*args: str) -> Any:
+    return CliRunner().invoke(app, ["telegram", "pending", *args])
+
+
+def test_pending_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    _seed(tmp_path)
+    result = _pending("--json")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert set(data) == {"messages"}
+    rows = data["messages"]
+    # Unanswered only (pending, dispatched, failed), oldest first; cheap and answered ones never show.
+    assert [r["message_id"] for r in rows] == [5, 6, 7, 10]
+    fields = {"message_id", "date", "text", "reply_to_text", "forwarded", "kind", "state", "attempt"}
+    assert all(set(r) == fields for r in rows)
+    assert rows[1] == {
+        "message_id": 6,
+        "date": 1_776_250_006,
+        "text": "real text 6",
+        "reply_to_text": "your question",
+        "forwarded": False,
+        "kind": "text",
+        "state": "dispatched",
+        "attempt": 1,
+    }
+    assert rows[2]["forwarded"] is True and rows[3]["state"] == "failed"
+
+
+def test_pending_ids_returns_only_those_still_unanswered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A respond run takes ids from its trigger payload and text from here: an id the ledger doesn't
+    hold unanswered (unknown, answered, skipped) is dropped, whatever the payload said."""
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    _seed(tmp_path)
+    result = _pending("--json", "--ids", "6,8,9,99, 10")
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)["messages"]
+    assert [r["message_id"] for r in rows] == [6, 10]
+    assert rows[0]["text"] == "real text 6"  # the ledger's words, never a payload's
+
+
+def test_pending_can_leave_out_in_flight_dispatches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scheduled drain leaves a fresh dispatch to its respond run (ruling 17)."""
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    _seed(tmp_path)
+    result = _pending("--json", "--exclude-in-flight")
+    assert result.exit_code == 0, result.output
+    assert [r["message_id"] for r in json.loads(result.output)["messages"]] == [5, 7, 10]
+
+
+@pytest.mark.parametrize("ids", ["x", "5,-1", "0", "5;6"])
+def test_pending_refuses_ids_that_are_not_message_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ids: str
+) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    result = _pending("--json", "--ids", ids)
+    assert result.exit_code == 1
+    assert "message ids" in result.output
+
+
+def test_pending_never_writes_the_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.telegram_inbound.ledger import ledger_dir
+
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    assert json.loads(_pending("--json").output) == {"messages": []}
+    assert not ledger_dir(tmp_path).exists()  # no ledger: nothing created, not even the lock
+    messages = ledger_dir(tmp_path) / "messages.json"
+    messages.parent.mkdir(parents=True)
+    messages.write_text("{not json", encoding="utf-8")
+    result = _pending("--json")
+    assert result.exit_code == 0 and json.loads(result.output) == {"messages": []}
+    assert sorted(p.name for p in ledger_dir(tmp_path).iterdir()) == ["messages.json"]  # never quarantined
+    assert messages.read_text(encoding="utf-8") == "{not json"
+
+
+def test_pending_plain_text_lists_one_line_per_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    _seed(tmp_path)
+    result = _pending()
+    assert result.exit_code == 0, result.output
+    assert [ln.split("\t")[0] for ln in result.output.splitlines()] == ["5", "6", "7", "10"]

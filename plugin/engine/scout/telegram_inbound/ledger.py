@@ -1,6 +1,7 @@
 """On-disk ledger of inbound Telegram messages under ``<vault>/.scout-state/telegram-inbound/``.
 
-States: pending -> dispatched -> answered, with skipped_cheap / skipped_unsupported / failed as exits.
+States: pending -> dispatched -> answered, with skipped_cheap / skipped_unsupported as exits. failed (out of
+respond attempts) is still answerable: no respond run fires for it, but a scheduled run's reply answers it.
 Every mutating method must run inside :meth:`Ledger.locked`.
 """
 
@@ -34,6 +35,8 @@ SKIPPED_CHEAP = "skipped_cheap"
 SKIPPED_UNSUPPORTED = "skipped_unsupported"
 FAILED = "failed"
 STATES = (PENDING, DISPATCHED, ANSWERED, SKIPPED_CHEAP, SKIPPED_UNSUPPORTED, FAILED)
+# What a reply may still answer. Only PENDING fires a respond run; a FAILED message waits for a scheduled run.
+UNANSWERED = (PENDING, DISPATCHED, FAILED)
 
 
 def ledger_dir(vault: Path) -> Path:
@@ -124,8 +127,23 @@ class Ledger:
             if m.dispatched_at and now - dt.datetime.fromisoformat(m.dispatched_at) < DISPATCH_TIMEOUT
         ]
 
+    def unanswered(self, *, now: dt.datetime | None = None, exclude_in_flight: bool = False) -> list[InboundMessage]:
+        """Every message a reply may still answer, ascending by id: pending, dispatched, and failed (out of
+        respond attempts, left for a scheduled run). ``exclude_in_flight`` leaves out a dispatch younger than
+        ``DISPATCH_TIMEOUT``, whose respond run may be answering it now; an unreadable dispatch time is stale."""
+        at = now or dt.datetime.now(dt.UTC)
+
+        def in_flight(m: InboundMessage) -> bool:
+            try:
+                return at - dt.datetime.fromisoformat(m.dispatched_at or "") < DISPATCH_TIMEOUT
+            except (ValueError, TypeError):  # unreadable or naive time
+                return False
+
+        rows = self._in_state(*UNANSWERED)
+        return [m for m in rows if not (exclude_in_flight and m.state == DISPATCHED and in_flight(m))]
+
     def unanswered_ids(self) -> set[int]:
-        return {m.message_id for m in self._in_state(PENDING, DISPATCHED)}
+        return {m.message_id for m in self._in_state(*UNANSWERED)}
 
     def counts(self) -> dict[str, int]:
         out = dict.fromkeys(STATES, 0)

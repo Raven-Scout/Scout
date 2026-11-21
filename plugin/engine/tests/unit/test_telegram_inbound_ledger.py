@@ -122,17 +122,33 @@ def test_record_reply_answers_a_message_that_was_reverted_to_pending(led: L.Ledg
     assert led.get(1).state == L.ANSWERED
 
 
-def test_unanswered_ids_is_pending_plus_dispatched(led: L.Ledger) -> None:
+def test_unanswered_ids_is_pending_dispatched_and_failed(led: L.Ledger) -> None:
+    """A failed message (out of respond attempts) stays answerable: a scheduled run picks it up."""
     with led.locked():
-        for i in range(1, 6):
+        for i in range(1, 7):
             led.add(msg(i))
         led.mark_dispatched([2], now=NOW)
         led.mark_skipped([3], L.SKIPPED_CHEAP)
         led.mark_skipped([4], L.SKIPPED_UNSUPPORTED)
         led.record_reply(reply_to=5, covers=[], at=NOW)
-    assert led.unanswered_ids() == {1, 2}
-    assert [m.message_id for m in led.pending()] == [1]
+        led.mark_skipped([6], L.FAILED)
+    assert led.unanswered_ids() == {1, 2, 6}
+    assert [m.message_id for m in led.unanswered()] == [1, 2, 6]
+    assert [m.message_id for m in led.pending()] == [1]  # what fires a respond run: never a failed one
     assert led.counts()[L.SKIPPED_CHEAP] == 1
+
+
+def test_unanswered_can_leave_out_fresh_dispatches(led: L.Ledger) -> None:
+    """A dispatch inside the timeout belongs to a respond run that may be answering it right now."""
+    with led.locked():
+        for i in (1, 2, 3, 4):
+            led.add(msg(i))
+        led.mark_dispatched([2], now=NOW - dt.timedelta(minutes=59))
+        led.mark_dispatched([3], now=NOW - dt.timedelta(minutes=60))
+        led.mark_dispatched([4], now=NOW)
+        led._update([4], lambda m: setattr(m, "dispatched_at", "not a time"))  # unreadable: stale
+    assert [m.message_id for m in led.unanswered(now=NOW, exclude_in_flight=True)] == [1, 3, 4]
+    assert [m.message_id for m in led.unanswered(now=NOW)] == [1, 2, 3, 4]
 
 
 def test_mark_acked(led: L.Ledger) -> None:
