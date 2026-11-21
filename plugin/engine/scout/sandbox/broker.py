@@ -367,6 +367,29 @@ def _vetoed_in_history(vault: Path, slug: str, prefix: str) -> str | None:
     return None
 
 
+# What `lab experiment start` writes into a note (R25): a change to these alone isn't a change to the plan.
+_LIFECYCLE_KEYS = ("status", "started")
+_LIFECYCLE_LINE = re.compile(rf"^(?:{'|'.join(_LIFECYCLE_KEYS)})\s*:")
+
+
+def _same_plan(a: str, b: str) -> bool:
+    """Whether two copies of an experiment note differ at most in their top-level ``status``/``started``
+    frontmatter fields. Text without a frontmatter block must match exactly."""
+
+    def plan(text: str) -> list[str] | None:
+        lines = text.split("\n")
+        if not lines or lines[0].rstrip("\r") != "---":
+            return None
+        end = next((i for i in range(1, len(lines)) if lines[i].rstrip("\r") == "---"), None)
+        if end is None:
+            return None
+        head = [line for line in lines[1:end] if not _LIFECYCLE_LINE.match(line)]
+        return ["---", *head, *lines[end:]]
+
+    pa, pb = plan(a), plan(b)
+    return a == b if pa is None or pb is None else pa == pb
+
+
 def _uncommitted(vault: Path, rels: Sequence[str]) -> list[str] | None:
     """Vault-relative paths under ``rels`` that differ from HEAD: modified, staged, untracked or ignored files.
     None when git can't say."""
@@ -451,15 +474,34 @@ def validate_experiment(
         inner = path[len(exp_rel) + 1 :] if path.startswith(exp_rel + "/") else None
         return path == rel or (inner is not None and not lab_runner.runner_owned(inner))
 
+    try:
+        worktree_text = note.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise Refused(EXIT_REFUSED, f"cannot read {note.name}") from None
+    worktree_status = parse_experiment(slug, worktree_text).status
+    if worktree_status not in ("planned", "running"):
+        raise Refused(
+            EXIT_REFUSED, f"{eid} is {worktree_status or 'without a status'}; only a planned or running one runs"
+        )
     dirty = _uncommitted(vault, [rel, exp_rel])
     if dirty is None:
         raise Refused(EXIT_REFUSED, f"git status failed in the vault; can't tell whether {eid} is committed")
-    dirty = [p for p in dirty if counts(p)]
+    # R25: `lab experiment start` writes only the lifecycle fields; that edit isn't a change to the plan.
+    dirty = [p for p in dirty if counts(p) and not (p == rel and _same_plan(worktree_text, committed))]
     if dirty:
         shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
         raise Refused(EXIT_REFUSED, f"{eid} has uncommitted changes ({shown}); commit them and wait out the notice")
-    log = _vault_git(vault, *_GIT_LOG, "--format=@%ct", "--name-only", "--", rel, exp_rel)
-    newest = max((int(stamp) for stamp, path in _log_entries(log or "") if stamp.isdigit() and counts(path)), default=0)
+    log = _vault_git(vault, *_GIT_LOG, "--format=@%ct %H", "--name-only", "--", rel, exp_rel)
+    newest = 0
+    for stamp_sha, path in _log_entries(log or ""):
+        stamp, _, sha = stamp_sha.partition(" ")
+        if not stamp.isdigit() or not counts(path) or int(stamp) <= newest:
+            continue
+        if path == rel:
+            before, after = _vault_git(vault, "show", f"{sha}^:./{rel}"), _vault_git(vault, "show", f"{sha}:./{rel}")
+            if before is not None and after is not None and _same_plan(before, after):
+                continue  # only status/started changed (R25)
+        newest = int(stamp)
     if not newest:
         raise Refused(EXIT_REFUSED, f"no commit holds {note.name}; the notice can't be counted")
     last = datetime.fromtimestamp(newest, UTC)

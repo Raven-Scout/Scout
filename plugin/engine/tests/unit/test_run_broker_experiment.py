@@ -226,6 +226,75 @@ def test_the_runners_own_files_are_neither_uncommitted_nor_a_new_notice(vault: P
     assert len(fake_run.calls) == 1
 
 
+# -- R25: what `lab experiment start` writes isn't a change to the plan --------------------------------------------
+
+
+def test_a_start_left_uncommitted_still_runs(vault: Path, fake_run: FakeRun) -> None:
+    from scout.lab import experiments, ops
+
+    _set(vault, "not_before", "2026-11-20T16:00")
+    ops.reply(vault, SLUG, "Q3", 2, "Will add the plain judge baseline.")  # Alex's comment holds E2 until answered
+    _commit(vault, T, "lab: E2 runs after 16:00")
+    experiments.start(vault, SLUG, EID, now=AFTER_NOTICE)
+    note = _note(vault).read_text(encoding="utf-8")
+    assert "status: running" in note and "started: " in note
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == 0, reply.stderr
+    assert len(fake_run.calls) == 1
+
+
+def test_a_commit_changing_only_status_and_started_keeps_the_notice(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "status", "running")
+    note = _note(vault)
+    note.write_text(note.read_text(encoding="utf-8").replace("status: running\n", "status: running\nstarted: "
+                    "2026-11-20T15:00\n", 1), encoding="utf-8")  # fmt: skip
+    _commit(vault, T + timedelta(hours=5), "lab: start E2")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == 0, reply.stderr
+    assert len(fake_run.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["cap", "method", "cap with status"])
+def test_a_commit_changing_the_plan_restarts_the_notice(vault: Path, fake_run: FakeRun, change: str) -> None:
+    if change in ("cap", "cap with status"):
+        _set(vault, "cost_cap_usd", "0.90")
+    if change == "cap with status":
+        _set(vault, "status", "running")
+    if change == "method":
+        note = _note(vault)
+        note.write_text(note.read_text(encoding="utf-8").replace("## Method\n", "## Method\nAlso fetch URLs.\n", 1))
+    _commit(vault, T + timedelta(hours=5), "lab: E2 edit")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "notice" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_an_uncommitted_lifecycle_edit_with_any_other_change_is_refused(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "status", "running")
+    _set(vault, "cost_cap_usd", "0.90")
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "uncommitted" in reply.stderr
+    assert fake_run.calls == []
+
+
+@pytest.mark.parametrize("status", ["done", "abandoned", "vetoed-ish"])
+def test_the_worktree_note_must_be_planned_or_running(vault: Path, fake_run: FakeRun, status: str) -> None:
+    _set(vault, "status", status)  # a lifecycle-only edit: not "uncommitted", but not a runnable status either
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "only a planned or running one runs" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_same_plan_compares_only_outside_status_and_started() -> None:
+    base = "---\nid: E2\nstatus: planned\ncost_cap_usd: 1.00\n---\n## Method\nstatus: x\n"
+    assert broker._same_plan(base, base.replace("status: planned", "status: running\nstarted: 2026-11-20T15:00"))
+    assert not broker._same_plan(base, base.replace("cost_cap_usd: 1.00", "cost_cap_usd: 2.00"))
+    assert not broker._same_plan(base, base.replace("## Method\nstatus: x", "## Method\nstatus: y"))  # body
+    assert not broker._same_plan(base, base.replace("id: E2\n", "id: E2\n  status: nested\n"))
+    assert broker._same_plan("no frontmatter", "no frontmatter")
+    assert not broker._same_plan("no frontmatter", "no frontmatter!")
+
+
 @pytest.mark.parametrize(
     ("rel", "owned"),
     [
