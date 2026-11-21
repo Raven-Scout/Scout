@@ -10,7 +10,7 @@ import pytest
 
 from scout.errors import LabError
 from scout.lab import ops, paths, writer
-from scout.lab.model import TimelineEntry
+from scout.lab.model import Thread, TimelineEntry
 from scout.lab.parser import parse_front_page, parse_timeline
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
@@ -217,3 +217,212 @@ def test_concurrent_writers_both_land(tmp_path: Path) -> None:
     assert t.problems == []
     assert len([c for c in t.comments if c.text.startswith("one ")]) == N
     assert len([e for e in t.evidence if e.target.startswith("note-")]) == N
+
+
+# --- proposals, run verbs, index --------------------------------------------------------
+
+
+def _propose(vault: Path, slug: str = "probe-drift") -> Thread:
+    return ops.propose(
+        vault,
+        slug,
+        "Probe drift",
+        "Do linear probes drift across checkpoints?",
+        ["Does drift track data mix?"],
+        [("probe-notes", "background")],
+        now=NOW,
+    )
+
+
+def test_propose_creates_three_files_and_index(tmp_path: Path) -> None:
+    assert _propose(tmp_path).status == "proposed"
+    t = parse_front_page("probe-drift", paths.front_page(tmp_path, "probe-drift").read_text(encoding="utf-8"))
+    assert t.status == "proposed"
+    assert t.problems == []
+    assert [q.qid for q in t.open] == ["Q1"]
+    entries = parse_timeline(paths.timeline_path(tmp_path, "probe-drift").read_text(encoding="utf-8"))
+    assert entries[0].tag == "proposal"
+    assert entries[0].bullets == ["**Proposed:** Do linear probes drift across checkpoints?"]
+    index = paths.index_path(tmp_path).read_text(encoding="utf-8")
+    needs = index.split("## Needs you")[1].split("## Active")[0]
+    assert "- [[probe-drift]] — Do linear probes drift across checkpoints?" in needs
+
+
+def test_propose_refuses_sixth_open_proposal(tmp_path: Path) -> None:
+    for i in range(5):
+        _propose(tmp_path, f"idea-{i}")
+    with pytest.raises(LabError, match="open proposals"):
+        _propose(tmp_path, "idea-5")
+    assert not paths.thread_dir(tmp_path, "idea-5").exists()
+    ops.owner_verb(tmp_path, "idea-0", "approve", "alex", now=NOW)
+    _propose(tmp_path, "idea-5")  # an approved thread no longer counts
+
+
+def test_propose_refuses_bad_or_existing_slug(tmp_path: Path) -> None:
+    with pytest.raises(LabError, match="slug"):
+        _propose(tmp_path, "Bad Slug")
+    _propose(tmp_path)
+    before = paths.front_page(tmp_path, "probe-drift").read_bytes()
+    with pytest.raises(LabError, match="already exists"):
+        _propose(tmp_path)
+    assert paths.front_page(tmp_path, "probe-drift").read_bytes() == before
+
+
+def test_propose_failure_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = ops.atomic_write_text
+
+    def flaky(path: Path | str, text: str, **kw: object) -> None:
+        if Path(path) == paths.index_path(tmp_path):
+            raise OSError("disk full")
+        real(path, text)
+
+    monkeypatch.setattr(ops, "atomic_write_text", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        _propose(tmp_path)
+    assert not paths.thread_dir(tmp_path, "probe-drift").exists()
+
+
+def test_research_write_refused_on_paused(tmp_path: Path) -> None:
+    vault = _vault(tmp_path, "paused")
+    before = _front(vault)
+    with pytest.raises(LabError, match="paused"):
+        ops.question_add(vault, "monitors", "Is this allowed?", now=NOW)
+    assert _front(vault) == before
+    ops.reply(vault, "monitors", "thread", 1, "ok", now=NOW)
+    assert "scout (2026-11-22 09:30): ok" in _front(vault)
+
+
+def test_run_verbs_refuse_damaged_headings(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    front = paths.front_page(vault, "monitors")
+    front.write_text(_front(vault).replace("## Evidence", "## Evidnce"), encoding="utf-8")
+    before = front.read_bytes()
+    with pytest.raises(LabError, match="damaged"):
+        ops.understanding_set(vault, "monitors", "new")
+    with pytest.raises(LabError, match="damaged"):
+        ops.timeline_add(vault, "monitors", "research run", "d", "f", "q", now=NOW)
+    assert front.read_bytes() == before
+
+
+def test_question_add_answer_drop(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    assert ops.question_add(vault, "monitors", "What about  new\nlines?", by="scout", now=NOW) == "Q8"
+    t = parse_front_page("monitors", _front(vault))
+    assert t.frontmatter["next_q"] == 9
+    assert [q.qid for q in t.open][-1] == "Q8"
+    ops.question_answer(vault, "monitors", "Q5", "no, it does not", now=NOW)
+    ops.question_drop(vault, "monitors", "Q8", "out of scope", now=NOW)
+    t = parse_front_page("monitors", _front(vault))
+    status = {q.qid: q.status for q in t.answered}
+    assert (status["Q5"], status["Q8"]) == ("answered", "dropped")
+    assert t.problems == []
+
+
+def test_question_add_refuses_duplicate_id(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    front = paths.front_page(vault, "monitors")
+    front.write_text(_front(vault).replace("next_q: 8", "next_q: 5"), encoding="utf-8")
+    before = front.read_bytes()
+    with pytest.raises(LabError, match="Q5"):
+        ops.question_add(vault, "monitors", "dup?", now=NOW)
+    assert front.read_bytes() == before
+
+
+def test_understanding_and_evidence(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    ops.understanding_set(vault, "monitors", "Short and new.")
+    ops.evidence_add(vault, "monitors", "fresh-note", "because")
+    t = parse_front_page("monitors", _front(vault))
+    assert t.understanding == "Short and new."
+    assert "fresh-note" in [e.target for e in t.evidence]
+
+
+def test_timeline_research_run_sets_last_run(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    ops.timeline_add(
+        vault,
+        "monitors",
+        "research run",
+        "read two papers",
+        "nothing new",
+        "Q3 still open",
+        steers="alex on Q3 -> replied",
+        evidence="[[fresh-note]]",
+        now=NOW,
+    )
+    entries = parse_timeline(paths.timeline_path(vault, "monitors").read_text(encoding="utf-8"))
+    assert (entries[0].stamp, entries[0].tag) == ("2026-11-22 09:30", "research run")
+    assert entries[0].bullets == [
+        "**Did:** read two papers",
+        "**Found:** nothing new",
+        "**Questions:** Q3 still open",
+        "**Steers handled:** alex on Q3 -> replied",
+        "Evidence: [[fresh-note]]",
+    ]
+    assert "last_run: 2026-11-22T09:30\n" in _front(vault)
+    assert parse_front_page("monitors", _front(vault)).problems == []
+
+
+def test_timeline_non_research_leaves_last_run(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    ops.timeline_add(vault, "monitors", "experiment", "ran E1", "ok", "none", now=NOW)
+    assert "last_run: 2026-11-21T01:11\n" in _front(vault)
+
+
+def test_timeline_add_front_failure_restores_timeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = _vault(tmp_path)
+    front, tl = paths.front_page(vault, "monitors"), paths.timeline_path(vault, "monitors")
+    real = ops.atomic_write_text
+
+    def flaky(path: Path | str, text: str, **kw: object) -> None:
+        if Path(path) == front:
+            raise OSError("disk full")
+        real(path, text)
+
+    before = (front.read_bytes(), tl.read_bytes())
+    monkeypatch.setattr(ops, "atomic_write_text", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        ops.timeline_add(vault, "monitors", "research run", "d", "f", "q", now=NOW)
+    assert (front.read_bytes(), tl.read_bytes()) == before
+
+
+def _extra_thread(vault: Path, slug: str, status: str) -> None:
+    shutil.copytree(paths.thread_dir(vault, "monitors"), paths.thread_dir(vault, slug))
+    folder = paths.thread_dir(vault, slug)
+    for old in ("monitors.md", "monitors-timeline.md"):
+        (folder / old).rename(folder / old.replace("monitors", slug, 1))
+    front = paths.front_page(vault, slug)
+    text = front.read_text(encoding="utf-8").replace("status: active", f"status: {status}", 1)
+    front.write_text(text, encoding="utf-8")
+
+
+def test_write_index_sections_and_keeps_before_the_lab(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _propose(vault)
+    _extra_thread(vault, "slow-one", "paused")
+    _extra_thread(vault, "done-one", "closed")
+    _extra_thread(vault, "nope", "rejected")
+    paths.thread_dir(vault, "no-front-page").mkdir()
+    paths.index_path(vault).write_text(
+        "# Lab\n\n## Active\n- stale\n\n## Before the lab\nOld notes, [[kept]].\n\n- one\n  - two\n\n## Other\nx\n",
+        encoding="utf-8",
+    )
+    ops.write_index(vault)
+    text = paths.index_path(vault).read_text(encoding="utf-8")
+    sections = {s.split("\n", 1)[0].strip(): s for s in text.split("## ")[1:]}
+    assert list(sections) == ["Needs you", "Active", "Paused", "Closed", "Before the lab"]
+    assert "[[probe-drift]]" in sections["Needs you"]
+    assert "[[monitors]] — Do behaviour monitors" in sections["Active"]
+    assert "stale" not in text and "[[lab]]" not in text and "no-front-page" not in text
+    assert "[[slow-one]]" in sections["Paused"]
+    assert "[[done-one]]" in sections["Closed"] and "[[nope]]" in sections["Closed"]
+    assert sections["Before the lab"] == "Before the lab\nOld notes, [[kept]].\n\n- one\n  - two\n"
+    ops.write_index(vault)
+    assert paths.index_path(vault).read_text(encoding="utf-8") == text
+
+
+def test_owner_verb_updates_index(tmp_path: Path) -> None:
+    vault = _vault(tmp_path, "proposed")
+    ops.owner_verb(vault, "monitors", "approve", "alex", now=NOW)
+    text = paths.index_path(vault).read_text(encoding="utf-8")
+    assert "[[monitors]]" in text.split("## Active")[1].split("## Paused")[0]
