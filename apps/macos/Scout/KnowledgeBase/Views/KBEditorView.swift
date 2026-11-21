@@ -305,12 +305,17 @@ struct KBEditorView: View {
         DS.scaledSize(minTitleDesignWidth, factor: factor)
     }
 
+    /// The gap between the breadcrumb's pieces (root, "/", folders, "/",
+    /// name). `titleFloorScalesWithTextSize` subtracts it from the floor.
+    nonisolated static let breadcrumbSpacing: CGFloat = 4
+
     nonisolated static func minFolderCrumbWidth(factor: CGFloat) -> CGFloat {
         DS.scaledSize(minFolderCrumbDesignWidth, factor: factor)
     }
 
     /// The floors at the user's text size. Read in `body`, so changing the
-    /// setting re-lays out the header.
+    /// setting re-lays out the header; a caller outside `body` gets the
+    /// value once and doesn't follow later Text size changes.
     static var minTitleWidth: CGFloat { minTitleWidth(factor: TextScale.shared.factor) }
     static var minFolderCrumbWidth: CGFloat { minFolderCrumbWidth(factor: TextScale.shared.factor) }
 
@@ -414,7 +419,7 @@ struct KBEditorView: View {
     private var breadcrumb: some View {
         let root = node.relativePath.components(separatedBy: "/").first ?? ""
         let tail = Self.breadcrumbTail(node.relativePath)
-        return HStack(spacing: 4) {
+        return HStack(spacing: Self.breadcrumbSpacing) {
             // Root crumb navigates back to the overview.
             Button(action: onOverview) {
                 Text(root).lineLimit(1)

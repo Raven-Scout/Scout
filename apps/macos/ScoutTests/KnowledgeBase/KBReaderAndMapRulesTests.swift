@@ -201,7 +201,8 @@ struct KBReaderAndMapRulesTests {
 
     @Test("a squeezed folders crumb truncates to an ellipsis, never a clipped glyph")
     func folderCrumbFloor() {
-        let floor = KBEditorView.minFolderCrumbWidth
+        // At Standard, so the host's saved Text size doesn't matter.
+        let floor = KBEditorView.minFolderCrumbWidth(factor: 1)
         func crumb(_ s: String) -> some View {
             KBCrumbFloorLayout(floor: floor) { Text(s).lineLimit(1).truncationMode(.middle) }
         }
@@ -228,13 +229,15 @@ struct KBReaderAndMapRulesTests {
             return NSAttributedString(string: s, attributes: [.font: font]).size().width
         }
         /// What the floor leaves for the note's name after the root crumb,
-        /// the folders crumb at its own floor and the two separators.
+        /// the folders crumb at its own floor and the two separators. Mirrors
+        /// `KBEditorView.breadcrumb` (its pieces, fonts and spacing): a
+        /// change to that view's layout belongs here too.
         func nameRoom(factor: CGFloat) -> CGFloat {
             KBEditorView.minTitleWidth(factor: factor)
                 - width("knowledge-base", factor: factor, weight: .medium)
                 - 2 * width("/", factor: factor, weight: .regular)
                 - KBEditorView.minFolderCrumbWidth(factor: factor)
-                - 4 * 4   // HStack spacing between the five crumb pieces
+                - 4 * KBEditorView.breadcrumbSpacing   // between the five crumb pieces
         }
         func letters(factor: CGFloat) -> CGFloat {
             let sample = "rollout-checklist-launch"
