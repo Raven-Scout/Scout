@@ -30,7 +30,9 @@ struct KBReaderAndMapRulesTests {
     /// about 410 pt wide, and the header wrapped one letter per line, which
     /// made the page taller than the window.
     /// From `KnowledgeBaseView.minEditorWidth` (the narrowest the page lets
-    /// the editor get) up.
+    /// the editor get) up. Since `KBNoteColumnLayout` caps the column's
+    /// height at the one offered, the width check is the one that bites; an
+    /// overgrown header now shows as clipped content, not a taller window.
     @Test("the editor fits a narrow reader column without growing taller than the window",
           arguments: [Double(KnowledgeBaseView.minEditorWidth), 410.0, 520.0, 800.0])
     func editorFitsNarrowColumn(width: Double) async throws {
@@ -82,6 +84,76 @@ struct KBReaderAndMapRulesTests {
         #expect(!KBEditorView.showsDraftBanner(restored: true, isDirty: false, dismissed: false))
         #expect(!KBEditorView.showsDraftBanner(restored: true, isDirty: true, dismissed: true))
         #expect(!KBEditorView.showsDraftBanner(restored: false, isDirty: true, dismissed: false))
+    }
+
+    /// A banner above the note jumped the whole window's content up under
+    /// the title bar (hand check of #750): the window measures its minimum
+    /// size at a near-zero width, where a banner's text wraps a word per line
+    /// and asked for 1,500-2,300 pt. The note column caps its height at the
+    /// one offered, so a banner never makes the window taller.
+    @Test("a reader banner never makes the note column ask for more height than offered",
+          arguments: ["draft", "disk"])
+    func bannerDoesNotGrowTheWindow(kind: String) {
+        @ViewBuilder func banner() -> some View {
+            if kind == "draft" {
+                KBEditorView.draftBanner(save: {}, discard: {}, dismiss: {})
+            } else {
+                KBEditorView.changedOnDiskBanner(name: "a-long-note-name-about-the-quarterly-plan",
+                                                 saveMine: {}, reload: {})
+            }
+        }
+        func stack() -> some View {
+            VStack(spacing: 0) {
+                Text("header").lineLimit(1)
+                banner()
+                Color.clear
+            }
+        }
+        // Why the cap is needed: unwrapped, the zero-size probe is taller than any window.
+        let unwrapped = LayoutHarness.size(of: stack(), proposing: .zero)
+        #expect(unwrapped.height > LayoutSize.minimumPageHeight,
+                "the banner asked for only \(unwrapped.height) pt at zero width")
+
+        let column = KBNoteColumnLayout { stack() }
+        #expect(LayoutHarness.size(of: column, proposing: .zero).height == 0)
+        // At a real size it takes exactly what it's offered.
+        let width = Double(KnowledgeBaseView.minEditorWidth)
+        let real = LayoutHarness.size(of: column, proposing: CGSize(width: width, height: 600))
+        #expect(real.height == 600)
+        #expect(real.width <= width + 0.5, "the column asked for \(real.width) pt at \(width) pt wide")
+    }
+
+    @Test("the note editor's column is the capped one")
+    func editorUsesTheCappedColumn() async throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        let svc = vault.state.knowledgeBaseService
+        svc.load()
+        await svc.reparseAndWait()
+        let node = try #require(svc.tree.flatMap(\.allFiles).first)
+        let editor = KBEditorView(
+            node: node, service: svc, writer: vault.state.knowledgeBaseWriterBox.writer,
+            onDeleted: {}, onRenamed: { _ in }, onRenameProblem: { _ in }, onOverview: {},
+            linksPanelShown: true, onToggleLinksPanel: {})
+            .environmentObject(vault.state.vaultUndo)
+        // Without the cap the header alone answers the zero-size probe with its height.
+        #expect(LayoutHarness.size(of: editor, proposing: .zero).height == 0)
+    }
+
+    @Test("a squeezed folders crumb truncates to an ellipsis, never a clipped glyph")
+    func folderCrumbFloor() {
+        let floor = KBEditorView.minFolderCrumbWidth
+        func crumb(_ s: String) -> some View {
+            KBCrumbFloorLayout(floor: floor) { Text(s).lineLimit(1).truncationMode(.middle) }
+        }
+        let squeezed = LayoutHarness.size(of: crumb("people / team / projects"), proposing: CGSize(width: 4, height: 20))
+        #expect(squeezed.width >= floor - 8 && squeezed.width <= floor,
+                "a squeezed crumb took \(squeezed.width) pt")
+        // A short folder keeps its own width at any proposal: no padding after it.
+        let natural = LayoutHarness.size(of: Text("ops"), proposing: CGSize(width: 200, height: 20)).width
+        #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 4, height: 20)).width == natural)
+        #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 200, height: 20)).width == natural)
+        // The one-row header leaves the path and name room for more than a stub.
+        #expect(KBEditorView.minTitleWidth >= 280)
     }
 
     @Test("the draft store publishes when a file gains or loses a draft, not on every keystroke")
