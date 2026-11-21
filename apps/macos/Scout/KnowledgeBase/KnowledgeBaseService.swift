@@ -529,6 +529,12 @@ final class KnowledgeBaseService: ObservableObject {
     /// text — no disk reads), returning a snippet for the first matching line.
     /// Capped at 30 hits.
     func searchContent(_ query: String) -> [KBSearchHit] {
+        Self.searchContent(query, tree: tree, index: index)
+    }
+
+    /// `searchContent` over a snapshot of the tree and index, so the sidebar
+    /// search can run it off the main actor.
+    nonisolated static func searchContent(_ query: String, tree: [KBNode], index: KBIndex) -> [KBSearchHit] {
         let q = query.lowercased()
         guard q.count >= 2 else { return [] }
 

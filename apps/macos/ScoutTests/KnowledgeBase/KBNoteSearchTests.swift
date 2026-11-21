@@ -87,6 +87,59 @@ struct KBNoteSearchTests {
         #expect(search.hits.map(\.path) == [Self.deepPath])
     }
 
+    /// A debounce the test ends by hand: each sleep waits until `releaseAll`,
+    /// and ignores cancellation, so a superseded search wakes up too and has to
+    /// drop itself. No wall-clock time is involved.
+    actor Gate {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        var count: Int { waiting.count }
+        func sleep() async { await withCheckedContinuation { waiting.append($0) } }
+        /// Wake the sleepers, newest first, so a stale search finishes last.
+        func releaseAll() { waiting.reversed().forEach { $0.resume() }; waiting = [] }
+        func waitForSleepers(_ n: Int) async { while waiting.count < n { await Task.yield() } }
+    }
+
+    @Test("fast typing and a burst of rescans run one search, and a superseded query never lands")
+    func sidebar_debounceCollapsesBursts_andDropsStaleQueries() async throws {
+        let root = try makeKB([
+            "people/alex.md": "# Alex\n",
+            deepRel: "# Checklist\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
+        await svc.reparseAndWait()
+        let gate = Gate()
+        let search = KBNoteSearch(debounce: .milliseconds(200), sleep: { _ in await gate.sleep() })
+        search.attach(svc)
+
+        search.query = "alex"      // would hit people/alex.md if it landed
+        search.query = "rol"
+        search.query = "rollout"
+        await svc.reparseAndWait()  // two rescans while the query waits
+        await svc.reparseAndWait()
+        await gate.waitForSleepers(5)
+
+        await gate.releaseAll()
+        await search.settle()
+        #expect(search.searchesRun == 1)
+        #expect(search.hits.map(\.path) == [Self.deepPath])
+    }
+
+    @Test("a rescan with no query runs no search")
+    func sidebar_rescanWithoutQuery_runsNoSearch() async throws {
+        let root = try makeKB([deepRel: "# Checklist\n"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
+        let search = KBNoteSearch(debounce: .zero)
+        search.attach(svc)
+
+        await svc.reparseAndWait()
+        await svc.reparseAndWait()
+        await search.settle()
+        #expect(search.searchesRun == 0)
+        #expect(search.hits.isEmpty)
+    }
+
     @Test("a short or cleared query shows nothing, and a rescan doesn't bring hits back")
     func sidebar_clearedQuery_staysEmptyAcrossRescans() async throws {
         let root = try makeKB([deepRel: "# Checklist\n"])
