@@ -943,6 +943,14 @@ def test_a_run_cant_write_the_telegram_inbound_ledger(vault: Path, rel: str) -> 
     assert "Telegram inbound ledger" in _denied(_bash(vault, "rm -rf .scout-state/telegram-inbound"))
 
 
+def test_the_telegram_inbound_deny_names_who_writes_it(vault: Path) -> None:
+    """There is no listener: the tick and Scout's Telegram send write it, both trusted code outside a run."""
+    reason = _denied(_bash(vault, "echo x > .scout-state/telegram-inbound/messages.json"))
+    assert "listener" not in reason
+    assert "the 5-minute tick and Scout's Telegram send (trusted code)" in reason
+    assert "scoutctl telegram pending" in reason
+
+
 def test_the_protected_ledger_folder_name_matches_the_ledger() -> None:
     from scout.kb import hook_paths
     from scout.telegram_inbound import ledger

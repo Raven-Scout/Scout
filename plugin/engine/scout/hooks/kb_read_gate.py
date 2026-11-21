@@ -253,7 +253,9 @@ def _deny_delegate_state(form: str) -> str:
 def _deny_telegram_inbound(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't change {form} (.scout-state/telegram-inbound/): it records which of the "
-        "owner's Telegram messages arrived and which were answered, and only Scout's listener writes it, outside a run."
+        "owner's Telegram messages arrived and which were answered, and only the 5-minute tick and Scout's Telegram "
+        "send (trusted code) write it, outside a run. Read the messages with `scoutctl telegram pending --json`; a "
+        "reply sent with `scoutctl notify telegram --reply-to` marks them answered."
     )
 
 
