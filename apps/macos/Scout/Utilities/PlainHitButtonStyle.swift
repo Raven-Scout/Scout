@@ -27,14 +27,14 @@ struct PlainHitButtonStyle: ButtonStyle {
 
 private struct PlainHitButtonBody: View {
     let configuration: ButtonStyleConfiguration
-    /// Inside a button style this is the button's own focus.
+    /// The nearest focusable ancestor's focus: the button's own, or its list's (`dsFocusContainer`).
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         configuration.label
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.75 : 1)
-            .dsFocusRing(isFocused)
+            .dsControlFocusRing(isFocused)
     }
 }
 

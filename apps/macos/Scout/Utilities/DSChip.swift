@@ -222,7 +222,7 @@ private struct DSChipBody: View {
             }
             .contentShape(Capsule())
             .onHover { hovering = $0 }
-            .dsFocusRing(isFocused, cornerRadius: DS.chipHeight / 2)
+            .dsControlFocusRing(isFocused, cornerRadius: DS.chipHeight / 2)
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

@@ -9,6 +9,9 @@ import SwiftUI
 struct ActionItemsKeyboardContext: Equatable {
     /// The keyboard-current card.
     var cursorID: UUID?
+    /// The card the focus ring marks while the list has the keys: the current
+    /// one, else the first, where ↓ starts (`KeyboardListNavigation.ringed`).
+    var ringID: UUID?
     /// False while a comment editor has focus (⌘↵ is then its Send or Save,
     /// so Done doesn't bind it too) or the search field does.
     var commitKeyFree = true
@@ -36,8 +39,11 @@ struct ActionItemsKeyboardContext: Equatable {
     /// may act. Only while the list itself has focus: the handlers sit on an
     /// ancestor of every comment editor and button, and Return or Space typed
     /// into a comment would otherwise collapse its card and lose the draft.
-    static func listOwnsKeys(listFocused: Bool, commentEditorFocused: Bool) -> Bool {
-        listFocused && !commentEditorFocused
+    /// `listFocused` stays true while a control inside holds the focus (with
+    /// Keyboard navigation on), so `controlFocused` (`DSOwnFocusKey`) is taken
+    /// off too: the arrows never move a cursor whose ring isn't drawn (T4 review).
+    static func listOwnsKeys(listFocused: Bool, commentEditorFocused: Bool, controlFocused: Bool = false) -> Bool {
+        listFocused && !commentEditorFocused && !controlFocused
     }
 
     /// A card the arrow keys walk, with what identifies its task across a

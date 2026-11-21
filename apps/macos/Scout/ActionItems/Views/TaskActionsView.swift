@@ -107,6 +107,7 @@ struct TaskActionsView: View {
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .dsReportsOwnFocus()
             .accessibilityLabel("Copy format")
             .menuIndicator(.hidden)
             .fixedSize()

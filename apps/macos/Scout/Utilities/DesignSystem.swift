@@ -553,7 +553,7 @@ private struct DSCardButtonBody: View {
             .environment(\.dsCardPressed, configuration.isPressed)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
             .onHover { hovering = $0 }
-            .dsFocusRing(isFocused, cornerRadius: cornerRadius)
+            .dsControlFocusRing(isFocused, cornerRadius: cornerRadius)
     }
 }
 

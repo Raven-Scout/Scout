@@ -28,10 +28,12 @@ struct WindowSummaryRow: View {
                         .font(DS.font(.caption, weight: .medium))
                 }
                 .buttonStyle(.borderless)
+                .dsReportsOwnFocus()
                 if let showAll, window.canShowAll(in: tasks) {
                     Button("Show all", action: showAll)
                         .font(DS.font(.caption, weight: .medium))
                         .buttonStyle(.borderless)
+                        .dsReportsOwnFocus()
                 }
                 Spacer(minLength: 0)
             }

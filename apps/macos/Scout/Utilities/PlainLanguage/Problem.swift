@@ -119,10 +119,10 @@ extension Problem {
         switch key {
         case "skippedgates", "skippedsandbox":
             severity = .error
-            fix = "Open Settings ▸ Engine to see what needs fixing."
+            fix = "Open Settings ▸ Engine to see what needs attention."
         case "skippedruntime", "skippedlease":
             severity = .warning
-            fix = "Open Settings ▸ Engine to see what needs fixing."
+            fix = "Open Settings ▸ Engine to see what needs attention."
         case let k where k.hasPrefix("skipped"):
             severity = .info
             fix = nil

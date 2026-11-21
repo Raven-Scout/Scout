@@ -25,6 +25,7 @@ struct HoldGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .dsReportsOwnFocus()
             .glossaryHelp(.onHold)
 
             if expanded {

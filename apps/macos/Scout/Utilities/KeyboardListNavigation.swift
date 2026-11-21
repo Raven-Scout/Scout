@@ -9,6 +9,14 @@ nonisolated enum KeyboardListNavigation {
     /// The item after a move. From nothing, ↓ and Home pick the first item and
     /// ↑ and End the last; at either end the current item stays. An item that
     /// is no longer in the list moves as from nothing.
+    /// The item a focused list rings (`dsCursorRing`): the current one while
+    /// it's still listed, else the first, the one ↓ picks from nothing (UI
+    /// audit T4: a list with nothing current was a silent Tab stop).
+    static func ringed<ID: Equatable>(_ current: ID?, in ids: [ID]) -> ID? {
+        if let current, ids.contains(current) { return current }
+        return ids.first
+    }
+
     static func target<ID: Equatable>(from current: ID?, in ids: [ID], move: Move) -> ID? {
         guard !ids.isEmpty else { return nil }
         let index = current.flatMap { ids.firstIndex(of: $0) }
