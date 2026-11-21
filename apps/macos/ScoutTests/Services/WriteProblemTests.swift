@@ -18,6 +18,10 @@ struct WriteProblemTests {
         let p = WriteProblem.from(VaultWriteError.undoStale(file: "schedule.yaml"), action: "undo edit slot")
         #expect(p.kind == .undoStale)
         #expect(p.message.contains("Scout left the file as it is"))
+        // The change may have been made by hand or in another app; Scout
+        // can't tell, so the message doesn't guess who made it.
+        #expect(p.message.contains("schedule.yaml has changed since your edit"))
+        #expect(!p.message.contains("scheduled run"))
     }
 
     @Test func engineOutputGoesToDetailsNotTheMessage() {

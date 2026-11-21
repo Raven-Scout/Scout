@@ -259,10 +259,11 @@ struct KBEditorView: View {
     /// a narrow reader (sidebar, tree and Links panel open at 1280 pt) never
     /// wraps a word a letter per line (UI audit T1).
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
+        let minTitleWidth = Self.minTitleWidth
+        return ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 titleColumn
-                    .frame(minWidth: Self.minTitleWidth, idealWidth: Self.minTitleWidth,
+                    .frame(minWidth: minTitleWidth, idealWidth: minTitleWidth,
                            maxWidth: .infinity, alignment: .leading)
                 controls(compact: false)
             }
@@ -287,13 +288,31 @@ struct KBEditorView: View {
         [(label: "Read", value: .read), (label: "Rich", value: .rich), (label: "Source", value: .source)]
 
     /// The narrowest the path and name get beside the controls before the
-    /// controls move to their own row. At 160 pt the root crumb took half of
-    /// it and the note's name was cut to about 8 characters.
-    static let minTitleWidth: CGFloat = 280
+    /// controls move to their own row, at the Standard text size. At 160 pt
+    /// the root crumb took half of it and the note's name was cut to about 8
+    /// characters.
+    nonisolated static let minTitleDesignWidth: CGFloat = 280
 
-    /// The narrowest the folders crumb gets: room for an ellipsis and a
-    /// letter either side, never a clipped glyph.
-    static let minFolderCrumbWidth: CGFloat = 32
+    /// The narrowest the folders crumb gets at the Standard text size: room
+    /// for an ellipsis and a letter either side, never a clipped glyph.
+    nonisolated static let minFolderCrumbDesignWidth: CGFloat = 32
+
+    /// `minTitleDesignWidth` at a text-size `factor`. The crumbs and the
+    /// name grow with Settings ▸ General ▸ Text size, so a fixed floor held
+    /// fewer letters at every step up: at Largest the folders shrank to a
+    /// bare "…" and the name to about 9 characters before the controls moved.
+    nonisolated static func minTitleWidth(factor: CGFloat) -> CGFloat {
+        DS.scaledSize(minTitleDesignWidth, factor: factor)
+    }
+
+    nonisolated static func minFolderCrumbWidth(factor: CGFloat) -> CGFloat {
+        DS.scaledSize(minFolderCrumbDesignWidth, factor: factor)
+    }
+
+    /// The floors at the user's text size. Read in `body`, so changing the
+    /// setting re-lays out the header.
+    static var minTitleWidth: CGFloat { minTitleWidth(factor: TextScale.shared.factor) }
+    static var minFolderCrumbWidth: CGFloat { minFolderCrumbWidth(factor: TextScale.shared.factor) }
 
     private var titleColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
