@@ -456,6 +456,29 @@ def cli_experiment_abandon(
     _ok(slug, f"abandon {eid}")
 
 
+@experiment_app.command("run")
+def cli_experiment_run(
+    ctx: typer.Context,
+    slug: str = typer.Argument(...),
+    eid: str = typer.Argument(..., metavar="EID"),
+    command: list[str] = typer.Argument(..., metavar="-- CMD...", help="The script to run, after '--'."),
+) -> None:
+    """Run a running experiment's script in the experiment sandbox.
+
+    In a scheduled run the run's broker runs it (at most the owner's number a run, never queued); in the
+    owner's own session this process does. Both hold it to the owner's notice, veto and cost cap. Exits
+    with the script's exit; 2 refused; 4 not run (no broker answered); 5 this run's experiments are used.
+    """
+    import os
+
+    from scout.sandbox import broker
+
+    env = {**os.environ, "SCOUT_DATA_DIR": str(_vault(ctx))}
+    code = broker.client_experiment(slug, eid, list(command), env=env)
+    if code:
+        raise typer.Exit(code)
+
+
 @experiment_app.command("call")
 def cli_experiment_call(
     model: str | None = typer.Option(None, "--model", help="Model name passed to claude."),

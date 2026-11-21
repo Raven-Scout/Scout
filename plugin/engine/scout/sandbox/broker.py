@@ -16,6 +16,10 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
   :func:`scout.scripts.notify_telegram.send`, which reads the recipient from the owner's files.
 - When the broker doesn't answer, the client writes the request to a queue in the vault (:func:`enqueue`) and
   :func:`drain` applies it after the session, validated exactly like a live request.
+- ``scoutctl lab experiment run`` hands over to :func:`client_experiment`: the broker checks the experiment's
+  committed note (:func:`validate_experiment`: notice, veto, the owner's cap) and runs its script with
+  :func:`scout.lab.runner.run_experiment`, since ``sandbox-exec`` can't nest inside the run's own sandbox. An
+  experiment request is never queued.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import errno
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -48,7 +53,9 @@ ENV_SOCKET = "SCOUT_RUN_BROKER"
 SOCKET_NAME = "b.sock"
 QUEUE_DIR = Path(".scout-state") / "broker-queue"
 FAILED_DIR = "failed"
-VERBS = ("commit", "telegram")
+VERBS = ("commit", "telegram", "experiment")
+# What a client may queue for the drain. An experiment is never queued: it runs live or not at all.
+QUEUE_VERBS = ("commit", "telegram")
 # Where the wrapper and `broker profile` say whether this run's brokers are on, next to .claude-sign-in.json.
 STATUS_FILE = ".run-broker.json"
 # What `broker profile` looks for in the vault's helper: a helper without its client mode would commit directly,
@@ -189,6 +196,45 @@ def load_limits(env: Mapping[str, str]) -> Limits:
     return Limits(pick("max_per_run"), pick("max_per_hour"), pick("max_chars"))
 
 
+@dataclass(frozen=True)
+class LabLimits:
+    """Experiment limits (lab spec §6.3): the owner's, never the run's."""
+
+    experiments_per_run: int = 1
+    max_cost_cap_usd: float = 1.0
+    notice_hours: float = 6
+    timeout_s: float = 1800
+
+
+def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
+    """The owner's experiment limits from ``config.json``'s ``"lab"`` block, read like :func:`load_limits`: a
+    missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
+    integer; the others are finite positive numbers, except ``notice_hours``, which may be 0."""
+    defaults = LabLimits()
+    try:
+        data = json.loads((owner_dir(env) / CONFIG_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return defaults
+    block = data.get("lab") if isinstance(data, dict) else None
+    if not isinstance(block, dict):
+        return defaults
+
+    def number(name: str, *, integer: bool = False, zero: bool = False) -> Any:
+        value = block.get(name)
+        if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+            return getattr(defaults, name)
+        if math.isfinite(value) and (0 <= value if zero else 0 < value) and value <= 1_000_000:
+            return value
+        return getattr(defaults, name)
+
+    return LabLimits(
+        number("experiments_per_run", integer=True),
+        float(number("max_cost_cap_usd")),
+        float(number("notice_hours", zero=True)),
+        float(number("timeout_s")),
+    )
+
+
 # -- validation ----------------------------------------------------------------------------------------------------
 
 
@@ -268,6 +314,88 @@ def validate_telegram(req: Mapping[str, Any], limits: Limits) -> dict[str, Any]:
     if not all(isinstance(v, bool) for v in flags.values()):
         raise Refused(1, "allow_duplicate and dry_run are true or false")
     return {"tier": tier, "parse_mode": parse_mode, "body": body, **flags}
+
+
+MAX_EXPERIMENT_ARGS = 64
+MAX_EXPERIMENT_ARG_CHARS = 4096
+EXPERIMENT_GIT_TIMEOUT_S = 30.0
+
+
+def _vault_git(vault: Path, *args: str) -> str | None:
+    """``git`` in the vault with the broker's PATH and HOME only (no GIT_* from anywhere); None when it fails."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if os.environ.get(k)}
+    env.setdefault("PATH", _DEFAULT_PATH)
+    env.update({"GIT_LITERAL_PATHSPECS": "1", "GIT_PAGER": "cat"})
+    try:
+        proc = subprocess.run(
+            ["git", *args], cwd=str(vault), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=EXPERIMENT_GIT_TIMEOUT_S, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _shown(vault: Path, moment: datetime) -> str:
+    from scout import config
+
+    return moment.astimezone(config.resolve_timezone(vault)).strftime("%Y-%m-%d %H:%M %Z")
+
+
+def validate_experiment(
+    req: Mapping[str, Any], vault: Path, limits: LabLimits, now: datetime
+) -> tuple[str, str, list[str], float]:
+    """(slug, EID, argv, cap) for an experiment request, or :class:`Refused` (exit 2).
+
+    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that): a note
+    that isn't at HEAD, or is ``vetoed`` there, doesn't run, and neither does one whose first commit is more recent
+    than the owner's notice. The cap is the committed note's, clamped to the owner's maximum.
+    """
+    from scout.lab import paths as lab_paths
+    from scout.lab.model import EID_RE, SLUG_RE
+    from scout.lab.parser import parse_experiment
+
+    slug, eid, argv = req.get("slug"), req.get("eid"), req.get("argv")
+    if not isinstance(slug, str) or not re.match(SLUG_RE, slug):
+        raise Refused(EXIT_REFUSED, f"bad thread slug {slug!r}")
+    if not isinstance(eid, str) or not re.fullmatch(EID_RE, eid):
+        raise Refused(EXIT_REFUSED, f"{eid!r} is not an experiment ID (E<n>)")
+    if (
+        not isinstance(argv, list)
+        or not 1 <= len(argv) <= MAX_EXPERIMENT_ARGS
+        or not all(isinstance(a, str) and len(a) <= MAX_EXPERIMENT_ARG_CHARS and not _control(a) for a in argv)
+    ):
+        raise Refused(
+            EXIT_REFUSED,
+            f"the command must be 1 to {MAX_EXPERIMENT_ARGS} arguments of at most {MAX_EXPERIMENT_ARG_CHARS} "
+            "characters each, without control characters",
+        )
+    note = lab_paths.experiment_note(vault, slug, eid)
+    if note is None:
+        raise Refused(EXIT_REFUSED, f"{slug}: no experiment note for {eid}")
+    rel = note.relative_to(vault).as_posix()
+    committed = _vault_git(vault, "show", f"HEAD:./{rel}")
+    if committed is None:
+        raise Refused(EXIT_REFUSED, f"{note.name} isn't at HEAD; an experiment runs only once its plan is committed")
+    head = parse_experiment(slug, committed)
+    if head.status == "vetoed":
+        raise Refused(EXIT_REFUSED, f"{eid} is vetoed at HEAD; it doesn't run")
+    added = _vault_git(vault, "log", "--diff-filter=A", "--format=%ct", "--", rel) or ""
+    stamps = [int(s) for s in added.split() if s.isdigit()]
+    if not stamps:
+        raise Refused(EXIT_REFUSED, f"no commit adds {note.name}; the notice can't be counted from it")
+    first = datetime.fromtimestamp(min(stamps), UTC)
+    runs_from = first + timedelta(hours=limits.notice_hours)
+    if runs_from > now:
+        raise Refused(
+            EXIT_REFUSED,
+            f"{eid} is within the owner's {limits.notice_hours:g} h notice: its plan was first committed "
+            f"{_shown(vault, first)}, so it may run from {_shown(vault, runs_from)}",
+        )
+    raw = head.frontmatter.get("cost_cap_usd")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw) or raw <= 0:
+        raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
+    return slug, eid, list(argv), min(float(raw), limits.max_cost_cap_usd)
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -515,11 +643,13 @@ class Broker:
     sender: Callable[[Mapping[str, Any]], Reply] = send_telegram
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     run_id: str | None = None
+    lab_limits: LabLimits = field(default_factory=LabLimits)
+    experiments_run: int = 0
 
     @classmethod
     def for_vault(cls, vault: Path, env: Mapping[str, str] | None = None, **kw: Any) -> Broker:
         env = dict(os.environ if env is None else env)
-        return cls(vault=vault, env=env, limits=load_limits(env), **kw)
+        return cls(vault=vault, env=env, limits=load_limits(env), lab_limits=load_lab_limits(env), **kw)
 
     def handle(self, req: Any) -> Reply:
         if not isinstance(req, dict) or req.get("v") != PROTOCOL:
@@ -531,7 +661,32 @@ class Broker:
             return self.commit(req)
         if verb == "telegram":
             return self.telegram(req)
+        if verb == "experiment":
+            return self.experiment(req)
         return Reply(EXIT_REFUSED, "broker: unknown verb\n", kind=REFUSED)
+
+    def experiment(self, req: Mapping[str, Any]) -> Reply:
+        """Run one experiment for this run, outside its sandbox, under the experiment sandbox (lab Task 10)."""
+        from scout.errors import LabError
+        from scout.lab import runner
+
+        allowed = self.lab_limits.experiments_per_run
+        if self.experiments_run >= allowed:
+            return Reply(EXIT_LIMIT, f"scoutctl lab: this run has run its {allowed} experiment(s)\n", kind=RUN_LIMIT)
+        try:
+            slug, eid, argv, cap = validate_experiment(req, self.vault, self.lab_limits, self.clock())
+        except Refused as r:
+            return Reply(r.exit_code, f"scoutctl lab: {r.reason}\n", kind=REFUSED)
+        # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
+        # (a survivor of the kill sweep) still ran.
+        self.experiments_run += 1
+        try:
+            outcome = runner.run_experiment(
+                self.vault, slug, eid, argv, cap_usd=cap, timeout_s=self.lab_limits.timeout_s, env=self.env
+            )
+        except LabError as e:
+            return Reply(e.exit_code, f"scoutctl lab: {e}\n")
+        return _outcome_reply(outcome)
 
     def commit(self, req: Mapping[str, Any]) -> Reply:
         try:
@@ -842,6 +997,54 @@ def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = N
     return 0
 
 
+EXPERIMENT_CLIENT_SLACK_S = 60.0
+EXIT_NOT_RUN = 4  # scoutctl lab experiment run: no broker to run it
+
+
+def _outcome_reply(outcome: Any) -> Reply:
+    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails."""
+    return Reply(outcome.exit, outcome.stderr_tail, outcome.stdout_tail)
+
+
+def client_experiment(slug: str, eid: str, argv: Sequence[str], env: Mapping[str, str] | None = None) -> int:
+    """``scoutctl lab experiment run``: the run's broker runs it, or, in the owner's own session, this process.
+
+    Never queued: a scheduled run without an answering broker gets exit 4 and nothing runs. Without a broker or a
+    scheduled run (an interactive owner session, unsandboxed) the request is checked as the broker would check it
+    and run here, under the owner's limits.
+    """
+    env = os.environ if env is None else env
+    limits = load_lab_limits(env)
+    sock = env.get(ENV_SOCKET, "")
+    if sock:
+        req = {"v": PROTOCOL, "verb": "experiment", "slug": slug, "eid": eid, "argv": list(argv)}
+        try:
+            return _emit(call(sock, req, timeout=limits.timeout_s + EXPERIMENT_CLIENT_SLACK_S))
+        except Unreachable:
+            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            return EXIT_NOT_RUN
+    if env.get("SCOUT_MODE"):
+        print("experiment not run: experiments need the run broker", file=sys.stderr)
+        return EXIT_NOT_RUN
+    from scout.errors import LabError
+    from scout.lab import runner
+
+    vault = _vault(env)
+    try:
+        slug, eid, args, cap = validate_experiment(
+            {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC)
+        )
+    except Refused as r:
+        print(f"scoutctl lab: {r.reason}", file=sys.stderr)
+        return r.exit_code
+    try:
+        outcome = runner.run_experiment(vault, slug, eid, args, cap_usd=cap, timeout_s=limits.timeout_s, env=env)
+    except LabError as e:
+        print(f"scoutctl lab: {e}", file=sys.stderr)
+        return e.exit_code
+    return _emit(_outcome_reply(outcome))
+
+
 # -- the queue -----------------------------------------------------------------------------------------------------
 #
 # The queue is in the vault, which a run can write, and the drain runs outside the sandbox. So the drain never
@@ -910,7 +1113,7 @@ def _queue_dirs(vault: Path, *names: str, create: bool = False) -> Iterator[dict
 def queue_problem(vault: Path) -> str | None:
     """Why the queue can't be drained safely, or None (also when there is no queue)."""
     try:
-        with _queue_dirs(vault, *VERBS, FAILED_DIR):
+        with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR):
             return None
     except QueueUnsafe as e:
         return str(e)
@@ -968,7 +1171,7 @@ def enqueue(vault: Path, verb: str, req: Mapping[str, Any], *, now: datetime | N
     """Write ``req`` to the queue atomically (a temp file, then a rename), mode 0600. Returns its id (a ULID)."""
     from scout.ids import new_ulid
 
-    if verb not in VERBS:
+    if verb not in QUEUE_VERBS:
         raise ValueError(verb)
     qid = new_ulid()
     entry = {k: v for k, v in req.items() if k not in ("v", "verb")}
@@ -993,8 +1196,8 @@ def _queued(vault: Path, verb: str) -> list[dict[str, Any]]:
 def pending(vault: Path) -> int:
     """How many entries wait in the queue (failed ones not counted); 0 when the queue isn't safe to read."""
     try:
-        with _queue_dirs(vault, *VERBS, FAILED_DIR) as dirs:  # failed/ too: an unsafe queue waits for the owner
-            return sum(len(_names(dirs[v])) for v in VERBS)
+        with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR) as dirs:  # failed/ too: an unsafe queue waits for the owner
+            return sum(len(_names(dirs[v])) for v in QUEUE_VERBS)
     except (QueueUnsafe, OSError):
         return 0
 
@@ -1069,8 +1272,8 @@ def _drain(vault: Path, *, env: dict[str, str], broker: Broker | None, deadline_
         broker = broker or Broker.for_vault(vault, env)
         now = broker.clock()
         try:
-            with _queue_dirs(vault, *VERBS, FAILED_DIR, create=True) as dirs:
-                for verb in VERBS:
+            with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR, create=True) as dirs:
+                for verb in QUEUE_VERBS:
                     for name in _names(dirs[verb]):
                         if time.monotonic() >= stop_at:
                             result.kept += 1
