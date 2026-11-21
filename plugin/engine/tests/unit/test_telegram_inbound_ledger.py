@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,48 @@ def test_poll_state_round_trips(led: L.Ledger) -> None:
     with led.locked():
         led.set_poll_state(offset=42, last_poll_at="2026-11-21T12:00:00+00:00", last_error=None)
     assert led.get_poll_state() == {"offset": 42, "last_poll_at": "2026-11-21T12:00:00+00:00", "last_error": None}
+
+
+def _write_raw(led: L.Ledger, text: str) -> Path:
+    d = L.ledger_dir(led.vault)
+    d.mkdir(parents=True)
+    (d / "messages.json").write_text(text)
+    return d
+
+
+def test_unlocked_read_of_corrupt_file_leaves_it_in_place(led: L.Ledger) -> None:
+    d = _write_raw(led, "{not json")
+    assert led.get(1) is None
+    assert led.pending() == [] and led.counts()[L.PENDING] == 0
+    assert (d / "messages.json").read_text() == "{not json"
+    assert not list(d.glob("messages.json.corrupt-*"))
+
+
+def test_unknown_field_in_row_is_ignored(led: L.Ledger) -> None:
+    row = {"message_id": 1, "date": 1, "text": "x", "reply_to_text": None, "forwarded": False,
+           "kind": "text", "future_field": 7}
+    d = _write_raw(led, json.dumps({"1": row}))
+    assert led.get(1).text == "x"
+    assert not list(d.glob("messages.json.corrupt-*"))
+
+
+def test_wrong_shape_json_is_quarantined_under_lock(led: L.Ledger) -> None:
+    d = _write_raw(led, "[1, 2]")
+    with led.locked():
+        assert led.add(msg(1)) is True
+    assert list(d.glob("messages.json.corrupt-*"))
+
+
+def test_non_filenotfound_oserror_propagates(led: L.Ledger) -> None:
+    d = _write_raw(led, "{}")
+    (d / "messages.json").chmod(0)
+    try:
+        if os.access(d / "messages.json", os.R_OK):
+            pytest.skip("running as a user that ignores file modes")
+        with pytest.raises(PermissionError):
+            led.get(1)
+    finally:
+        (d / "messages.json").chmod(0o600)
 
 
 def test_ledger_survives_corrupt_messages_json(led: L.Ledger) -> None:

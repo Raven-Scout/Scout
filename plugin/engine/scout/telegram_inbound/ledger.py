@@ -83,16 +83,22 @@ class Ledger:
 
     # -- storage ---------------------------------------------------------
     def _load(self) -> dict[str, InboundMessage]:
+        """Read messages.json. Structural corruption (bad JSON, wrong shape) reads as empty; the file is
+        quarantined only while the lock is held, so an unlocked reader never destroys a file a writer is
+        replacing. Other OSErrors propagate."""
         try:
-            raw = json.loads(self._messages.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("messages.json is not an object")
-            return {k: InboundMessage(**v) for k, v in raw.items()}
+            text = self._messages.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
-        except (ValueError, TypeError, OSError):
-            stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
-            with contextlib.suppress(OSError):
+        known = {f.name for f in dataclasses.fields(InboundMessage)}
+        try:
+            raw = json.loads(text)
+            if not isinstance(raw, dict):
+                raise ValueError("messages.json is not an object")
+            return {k: InboundMessage(**{f: x for f, x in v.items() if f in known}) for k, v in raw.items()}
+        except (ValueError, TypeError, AttributeError):
+            if self._held:
+                stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
                 os.replace(self._messages, self._messages.with_name(f"{self._messages.name}.corrupt-{stamp}"))
             return {}
 
