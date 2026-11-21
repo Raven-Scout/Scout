@@ -785,6 +785,11 @@ def test_the_vault_gitignore_ignores_the_notifier_state(tmp_path, monkeypatch):
         health_notify.LOCK_FILE,
         ".scout-state/telegram-sent.jsonl",
         ".scout-state/telegram-sent.jsonl.tmp",
+        # The inbound Telegram ledger: the owner's own messages and this host's poll offset, never committed.
+        ".scout-state/telegram-inbound/messages.json",
+        ".scout-state/telegram-inbound/replies.jsonl",
+        ".scout-state/telegram-inbound/offset.json",
+        ".scout-state/telegram-inbound/.lock",
     ]
     proc = subprocess.run(
         ["git", "-C", str(tmp_path), "check-ignore", "--no-index", *paths], capture_output=True, text=True
