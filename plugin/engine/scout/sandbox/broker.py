@@ -328,12 +328,67 @@ def _vault_git(vault: Path, *args: str) -> str | None:
     env.update({"GIT_LITERAL_PATHSPECS": "1", "GIT_PAGER": "cat"})
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=str(vault), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=EXPERIMENT_GIT_TIMEOUT_S, check=False,
+            ["git", "-c", "core.quotePath=false", *args], cwd=str(vault), env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=EXPERIMENT_GIT_TIMEOUT_S, check=False,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     return proc.stdout if proc.returncode == 0 else None
+
+
+# Every commit that touched the paths, side branches too, with names relative to the vault.
+_GIT_LOG = ("log", "--full-history", "--relative")
+
+
+def _log_entries(log: str) -> Iterator[tuple[str, str]]:
+    """(the commit's ``@`` field, a path it touched) from ``git log --format=@<field> --name-only``."""
+    field_value = ""
+    for line in log.splitlines():
+        if line.startswith("@"):
+            field_value = line[1:]
+        elif line and field_value:
+            yield field_value, line
+
+
+def _vetoed_in_history(vault: Path, slug: str, prefix: str) -> str | None:
+    """The first commit (newest first) whose copy of a note named ``<prefix>*.md`` says ``status: vetoed`` in its
+    frontmatter; any name, so a rename doesn't shed the veto. Fails closed: an unreadable history is a veto."""
+    from scout.lab.parser import parse_experiment
+
+    log = _vault_git(vault, *_GIT_LOG, "--format=@%H", "--name-only", "--", prefix.rsplit("/", 1)[0])
+    if log is None:
+        return "(history unreadable)"
+    for sha, path in _log_entries(log):
+        if not (path.startswith(prefix) and path.endswith(".md") and "/" not in path[len(prefix) :]):
+            continue
+        text = _vault_git(vault, "show", f"{sha}:./{path}")  # None where the commit deleted it
+        if text is not None and parse_experiment(slug, text).status == "vetoed":
+            return sha
+    return None
+
+
+def _uncommitted(vault: Path, rels: Sequence[str]) -> list[str] | None:
+    """Vault-relative paths under ``rels`` that differ from HEAD: modified, staged, untracked or ignored files.
+    None when git can't say."""
+    prefix = _vault_git(vault, "rev-parse", "--show-prefix")
+    out = _vault_git(
+        vault, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching", "--", *rels
+    )
+    if prefix is None or out is None:
+        return None
+    prefix = prefix.strip()
+    entries = out.split("\0")
+    paths: list[str] = []
+    i = 0
+    while i < len(entries):
+        entry, i = entries[i], i + 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # a rename or copy: the next field is where it came from
+            paths.append(entries[i] if i < len(entries) else "")
+            i += 1
+        paths.append(entry[3:])
+    return [p[len(prefix) :].rstrip("/") if p.startswith(prefix) else p.rstrip("/") for p in paths if p]
 
 
 def _shown(vault: Path, moment: datetime) -> str:
@@ -347,11 +402,17 @@ def validate_experiment(
 ) -> tuple[str, str, list[str], float]:
     """(slug, EID, argv, cap) for an experiment request, or :class:`Refused` (exit 2).
 
-    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that): a note
-    that isn't at HEAD, or is ``vetoed`` there, doesn't run, and neither does one whose first commit is more recent
-    than the owner's notice. The cap is the committed note's, clamped to the owner's maximum.
+    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that). It
+    doesn't run when:
+
+    - the note isn't at HEAD, or is ``vetoed`` there or in any earlier commit (a veto is final: ruling R22)
+    - the note or its experiment folder has uncommitted changes, other than the runner's own files (R23)
+    - the newest commit touching the note or the folder's files is more recent than the owner's notice (R23)
+
+    The cap is the committed note's, clamped to the owner's maximum.
     """
     from scout.lab import paths as lab_paths
+    from scout.lab import runner as lab_runner
     from scout.lab.model import EID_RE, SLUG_RE
     from scout.lab.parser import parse_experiment
 
@@ -380,17 +441,34 @@ def validate_experiment(
     head = parse_experiment(slug, committed)
     if head.status == "vetoed":
         raise Refused(EXIT_REFUSED, f"{eid} is vetoed at HEAD; it doesn't run")
-    added = _vault_git(vault, "log", "--diff-filter=A", "--format=%ct", "--", rel) or ""
-    stamps = [int(s) for s in added.split() if s.isdigit()]
-    if not stamps:
-        raise Refused(EXIT_REFUSED, f"no commit adds {note.name}; the notice can't be counted from it")
-    first = datetime.fromtimestamp(min(stamps), UTC)
-    runs_from = first + timedelta(hours=limits.notice_hours)
+    folder = (lab_paths.thread_dir(vault, slug) / "experiments").relative_to(vault).as_posix()
+    vetoed_in = _vetoed_in_history(vault, slug, f"{folder}/{slug}-{eid}-")
+    if vetoed_in:
+        raise Refused(EXIT_REFUSED, f"{eid} was vetoed in commit {vetoed_in[:12]}; a veto is final, it doesn't run")
+    exp_rel = lab_paths.experiment_dir(note).relative_to(vault).as_posix()
+
+    def counts(path: str) -> bool:  # the note, or a file of the experiment's that the runner doesn't write
+        inner = path[len(exp_rel) + 1 :] if path.startswith(exp_rel + "/") else None
+        return path == rel or (inner is not None and not lab_runner.runner_owned(inner))
+
+    dirty = _uncommitted(vault, [rel, exp_rel])
+    if dirty is None:
+        raise Refused(EXIT_REFUSED, f"git status failed in the vault; can't tell whether {eid} is committed")
+    dirty = [p for p in dirty if counts(p)]
+    if dirty:
+        shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
+        raise Refused(EXIT_REFUSED, f"{eid} has uncommitted changes ({shown}); commit them and wait out the notice")
+    log = _vault_git(vault, *_GIT_LOG, "--format=@%ct", "--name-only", "--", rel, exp_rel)
+    newest = max((int(stamp) for stamp, path in _log_entries(log or "") if stamp.isdigit() and counts(path)), default=0)
+    if not newest:
+        raise Refused(EXIT_REFUSED, f"no commit holds {note.name}; the notice can't be counted")
+    last = datetime.fromtimestamp(newest, UTC)
+    runs_from = last + timedelta(hours=limits.notice_hours)
     if runs_from > now:
         raise Refused(
             EXIT_REFUSED,
-            f"{eid} is within the owner's {limits.notice_hours:g} h notice: its plan was first committed "
-            f"{_shown(vault, first)}, so it may run from {_shown(vault, runs_from)}",
+            f"{eid} is within the owner's {limits.notice_hours:g} h notice: its plan or files last changed in a "
+            f"commit at {_shown(vault, last)}, so it may run from {_shown(vault, runs_from)}",
         )
     raw = head.frontmatter.get("cost_cap_usd")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw) or raw <= 0:

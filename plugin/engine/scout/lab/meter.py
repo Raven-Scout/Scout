@@ -35,6 +35,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
+
 ENV_METER = "SCOUT_LAB_METER"
 MAX_PROMPT_CHARS = 200_000
 MAX_REQUEST_BYTES = 1 << 20
@@ -178,7 +180,7 @@ class MeterServer:
     def _record(self, cost: float, ok: bool) -> None:
         row = {"at": self._now().strftime("%Y-%m-%d %H:%M:%S"), "cost_usd": cost, "ok": ok}
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
-        with self.ledger.open("a", encoding="utf-8") as fh:
+        with safe_write.open_append(self.ledger, mode=0o600) as fh:  # never through a planted link
             fh.write(json.dumps(row) + "\n")
             fh.flush()
             os.fsync(fh.fileno())

@@ -56,8 +56,9 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
-from scout import config
+from scout import config, safe_write
 from scout import paths as vault_paths
 from scout.errors import LabError
 from scout.kb import hook_paths
@@ -413,6 +414,11 @@ def _positive_control(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe
     return False
 
 
+def _new_file(path: str) -> IO[bytes]:
+    """A new file in the runner's own temp dir, opened to write: never through a name already there."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
+
+
 def _tail(path: str) -> str:
     try:
         with open(path, "rb") as fh:
@@ -425,6 +431,16 @@ def _tail(path: str) -> str:
 
 
 # --- the run log -----------------------------------------------------------------------
+
+
+_RUN_LOG_RE = re.compile(r"run-\d{8}-\d{4}(?:-\d{1,2})?\.log\Z")
+
+
+def runner_owned(rel: str) -> bool:
+    """Whether ``rel`` (a path inside the experiment folder) is the runner's own: its scratch dir, or a run log
+    :func:`_write_log` names. The run broker leaves these out when it asks whether the experiment is committed."""
+    parts = rel.split("/")
+    return parts[0] == TMP_NAME or (len(parts) == 1 and bool(_RUN_LOG_RE.match(parts[0])))
 
 
 def _write_log(fd: int, started: _dt.datetime, body: str) -> str | None:
@@ -558,8 +574,7 @@ def _run(
         ):
             raise LabError("the experiment folder changed while the sandbox was being built; not run")
         profile_file = os.path.join(private_dir, "experiment.sb")
-        with open(profile_file, "w", encoding="utf-8") as fh:  # a file, not -p: thousands of denies outgrow argv
-            fh.write(text)
+        safe_write.atomic_write_text(profile_file, text)  # a file, not -p: thousands of denies outgrow argv
 
         # The folder of experiment notes: the experiment may not write it; the run itself may, so a run's
         # own processes never match the sweep.
@@ -593,7 +608,7 @@ def _run(
         started = config.now(vault)
         timed_out = False
         clean = False
-        with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+        with _new_file(out_path) as out_f, _new_file(err_path) as err_f:
             gate_r, gate_w = os.pipe()
             try:
                 proc = subprocess.Popen(

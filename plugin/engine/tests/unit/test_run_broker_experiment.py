@@ -126,11 +126,14 @@ def test_runs_once_the_notice_has_passed(vault: Path, fake_run: FakeRun) -> None
     assert fake_run.calls[0]["vault"] == vault and fake_run.calls[0]["timeout_s"] == 1800
 
 
-def test_notice_counts_from_the_notes_first_commit(vault: Path, fake_run: FakeRun) -> None:
+def test_a_later_commit_to_the_note_restarts_the_notice(vault: Path, fake_run: FakeRun) -> None:
     _set(vault, "cost_cap_usd", "0.50")
-    _commit(vault, T + timedelta(hours=6, minutes=30), "lab: E2 cap")  # a later edit doesn't restart the notice
-    assert _broker(vault, now=AFTER_NOTICE).handle(dict(REQ)).exit == 0
-    assert fake_run.calls[0]["cap_usd"] == pytest.approx(0.5)
+    edited = T + timedelta(hours=6, minutes=30)
+    _commit(vault, edited, "lab: E2 cap")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "notice" in reply.stderr
+    assert _broker(vault, now=edited + timedelta(hours=6, minutes=1)).handle(dict(REQ)).exit == 0
+    assert len(fake_run.calls) == 1 and fake_run.calls[0]["cap_usd"] == pytest.approx(0.5)
 
 
 def test_refuses_vetoed_at_head_even_if_worktree_says_planned(vault: Path, fake_run: FakeRun) -> None:
@@ -140,6 +143,104 @@ def test_refuses_vetoed_at_head_even_if_worktree_says_planned(vault: Path, fake_
     reply = _broker(vault).handle(dict(REQ))
     assert reply.exit == broker.EXIT_REFUSED and "vetoed" in reply.stderr
     assert fake_run.calls == []
+
+
+def test_a_veto_is_sticky_even_when_planned_is_committed_on_top(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "status", "vetoed")
+    _commit(vault, T + timedelta(minutes=5), "lab: veto E2")
+    _set(vault, "status", "planned")
+    _commit(vault, T + timedelta(minutes=10), "lab: E2 planned again")
+    reply = _broker(vault, now=T + timedelta(days=2)).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "vetoed" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_a_veto_survives_renaming_the_note(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "status", "vetoed")
+    _commit(vault, T + timedelta(minutes=5), "lab: veto E2")
+    old = _note(vault)
+    _git(vault, "mv", str(old.relative_to(vault)), str(old.with_name(f"{SLUG}-{EID}-again.md").relative_to(vault)))
+    _set(vault, "status", "planned")
+    _commit(vault, T + timedelta(minutes=10), "lab: E2 again")
+    assert _note(vault).name == f"{SLUG}-{EID}-again.md"
+    reply = _broker(vault, now=T + timedelta(days=2)).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "vetoed" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_vetoed_in_the_notes_prose_is_not_a_veto(vault: Path, fake_run: FakeRun) -> None:
+    note = _note(vault)
+    text = note.read_text(encoding="utf-8").replace(
+        "## Data\n", "## Data\nstatus: vetoed\nAn earlier run like this one was vetoed by Alex.\n", 1
+    )
+    note.write_text(text, encoding="utf-8")
+    _commit(vault, T, "lab: E2 data")
+    assert _broker(vault).handle(dict(REQ)).exit == 0, fake_run.calls
+
+
+def test_a_script_committed_after_the_note_restarts_the_notice(vault: Path, fake_run: FakeRun) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    folder.mkdir()
+    (folder / "run.sh").write_text("echo hi\n", encoding="utf-8")
+    script_at = T + timedelta(hours=5)
+    _commit(vault, script_at, "lab: E2 script")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "notice" in reply.stderr
+    assert fake_run.calls == []
+    assert _broker(vault, now=script_at + timedelta(hours=6, minutes=1)).handle(dict(REQ)).exit == 0
+
+
+@pytest.mark.parametrize("change", ["edit script", "new file", "edit note", "ignored file", "staged only"])
+def test_uncommitted_changes_to_the_experiment_are_refused(vault: Path, fake_run: FakeRun, change: str) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    folder.mkdir()
+    (folder / "run.sh").write_text("echo hi\n", encoding="utf-8")
+    (vault / ".gitignore").write_text("*.bin\n", encoding="utf-8")
+    _commit(vault, T, "lab: E2 script")
+    if change == "edit script":
+        (folder / "run.sh").write_text("curl example.com\n", encoding="utf-8")
+    elif change == "new file":
+        (folder / "helper.py").write_text("print(1)\n", encoding="utf-8")
+    elif change == "edit note":
+        _note(vault).write_text(_note(vault).read_text(encoding="utf-8") + "\nmore method\n", encoding="utf-8")
+    elif change == "ignored file":
+        (folder / "payload.bin").write_bytes(b"\x00")
+    else:
+        (folder / "run.sh").write_text("echo staged\n", encoding="utf-8")
+        _git(vault, "add", str((folder / "run.sh").relative_to(vault)))
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "uncommitted" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_the_runners_own_files_are_neither_uncommitted_nor_a_new_notice(vault: Path, fake_run: FakeRun) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    (folder / ".tmp").mkdir(parents=True)
+    (folder / ".tmp" / "scratch").write_text("x", encoding="utf-8")
+    (folder / "run-20261120-1500.log").write_text("exit: 0\n", encoding="utf-8")
+    _commit(vault, T + timedelta(hours=6, minutes=30), "lab: E2 run log")  # committed after the notice began
+    (folder / "run-20261120-1700.log").write_text("exit: 0\n", encoding="utf-8")
+    (folder / "run-20261120-1700-2.log").write_text("exit: 1\n", encoding="utf-8")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == 0, reply.stderr
+    assert len(fake_run.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("rel", "owned"),
+    [
+        (".tmp", True),
+        (".tmp/a/b", True),
+        ("run-20261120-1700.log", True),
+        ("run-20261120-1700-12.log", True),
+        ("run-latest.log", False),
+        ("sub/run-20261120-1700.log", False),
+        ("run.sh", False),
+        (".tmpfile", False),
+    ],
+)
+def test_what_the_runner_owns(rel: str, owned: bool) -> None:
+    assert runner.runner_owned(rel) is owned
 
 
 def test_refuses_a_note_that_isnt_committed(vault: Path, fake_run: FakeRun) -> None:
@@ -198,11 +299,12 @@ def test_cap_clamped_to_owner_max(vault: Path, fake_run: FakeRun, note_cap: str,
     assert fake_run.calls[0]["cap_usd"] == pytest.approx(expected)
 
 
-def test_the_cap_is_the_committed_one_not_the_worktrees(vault: Path, fake_run: FakeRun) -> None:
+def test_a_cap_raised_in_the_worktree_is_refused_as_uncommitted(vault: Path, fake_run: FakeRun) -> None:
     _owner_config({"lab": {"max_cost_cap_usd": 10.0}})
     _set(vault, "cost_cap_usd", "8.00")  # raised in the worktree, never committed
-    assert _broker(vault).handle(dict(REQ)).exit == 0
-    assert fake_run.calls[0]["cap_usd"] == pytest.approx(1.0)  # the fixture's committed 1.00
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "uncommitted" in reply.stderr
+    assert fake_run.calls == []
 
 
 def test_a_committed_note_without_a_usable_cap_is_refused(vault: Path, fake_run: FakeRun) -> None:
