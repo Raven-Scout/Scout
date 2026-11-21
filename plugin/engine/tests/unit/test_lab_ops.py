@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import multiprocessing
+import multiprocessing.synchronize
 import shutil
 from pathlib import Path
 
@@ -22,9 +23,6 @@ def _vault(tmp_path: Path, status: str = "active") -> Path:
     front = paths.front_page(tmp_path, "monitors")
     text = front.read_text(encoding="utf-8").replace("status: active", f"status: {status}", 1)
     front.write_text(text, encoding="utf-8")
-    paths.timeline_path(tmp_path, "monitors").write_text(
-        writer.new_timeline("monitors", "Monitors under adaptive attack"), encoding="utf-8"
-    )
     return tmp_path
 
 
@@ -146,18 +144,58 @@ def test_timeline_entry_type_used() -> None:
     assert TimelineEntry("2026-11-22 09:30", "owner", ["x"]).tag == "owner"
 
 
+def test_owner_verb_on_fixture_timeline(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    ops.owner_verb(vault, "monitors", "pause", "alex", now=NOW)
+    text = paths.timeline_path(vault, "monitors").read_text(encoding="utf-8")
+    assert text.startswith("# Monitors under adaptive attack \u2014 timeline\n")
+    entries = parse_timeline(text)
+    assert [e.stamp for e in entries] == ["2026-11-22 09:30", "2026-11-21 01:11", "2026-11-20 13:05"]
+
+
+def test_owner_verb_front_write_failure_restores_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = _vault(tmp_path)
+    front, tl = paths.front_page(vault, "monitors"), paths.timeline_path(vault, "monitors")
+    real = ops.atomic_write_text
+
+    def flaky(path: Path | str, text: str, **kw: object) -> None:
+        if Path(path) == front:
+            raise OSError("disk full")
+        real(path, text)
+
+    before = (front.read_bytes(), tl.read_bytes())
+    monkeypatch.setattr(ops, "atomic_write_text", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        ops.owner_verb(vault, "monitors", "pause", "alex", now=NOW)
+    assert (front.read_bytes(), tl.read_bytes()) == before
+
+    tl.unlink()
+    with pytest.raises(OSError, match="disk full"):
+        ops.owner_verb(vault, "monitors", "pause", "alex", now=NOW)
+    assert not tl.exists()
+
+
+def test_owner_verb_bad_timeline_names_file(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    paths.timeline_path(vault, "monitors").write_text("no heading here\n", encoding="utf-8")
+    with pytest.raises(LabError, match="monitors: cannot update monitors-timeline.md"):
+        ops.owner_verb(vault, "monitors", "pause", "alex", now=NOW)
+
+
 # --- concurrency -----------------------------------------------------------------------
 
-N = 20
+N = 150
 
 
-def _comment_worker(vault: str) -> None:
+def _comment_worker(vault: str, barrier: multiprocessing.synchronize.Barrier) -> None:
+    barrier.wait(60)
     for i in range(N):
         ops.comment(Path(vault), "monitors", "thread", "alex", f"one {i}", now=NOW)
 
 
-def _evidence_worker(vault: str) -> None:
+def _evidence_worker(vault: str, barrier: multiprocessing.synchronize.Barrier) -> None:
     front = paths.front_page(Path(vault), "monitors")
+    barrier.wait(60)
     for i in range(N):
         ops.mutate(Path(vault), front, lambda t, i=i: writer.add_evidence(t, f"note-{i}", "why"))
 
@@ -165,14 +203,15 @@ def _evidence_worker(vault: str) -> None:
 def test_concurrent_writers_both_land(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
     procs = [
-        ctx.Process(target=_comment_worker, args=(str(vault),)),
-        ctx.Process(target=_evidence_worker, args=(str(vault),)),
+        ctx.Process(target=_comment_worker, args=(str(vault), barrier)),
+        ctx.Process(target=_evidence_worker, args=(str(vault), barrier)),
     ]
     for p in procs:
         p.start()
     for p in procs:
-        p.join(120)
+        p.join(240)
         assert p.exitcode == 0
     t = parse_front_page("monitors", _front(vault))
     assert t.problems == []

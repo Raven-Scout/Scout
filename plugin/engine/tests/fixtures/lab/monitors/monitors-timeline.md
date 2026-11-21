@@ -1,3 +1,5 @@
+# Monitors under adaptive attack — timeline
+
 ### 2026-11-21 01:11 · research run
 - **Did:** read 3 papers on cascade monitors; planned E2.
 - **Found:** cascades match judge recall at ~30–50× lower cost on static sets; no adaptive tests yet.

@@ -145,9 +145,21 @@ def owner_verb(
             old_timeline = timeline.read_text(encoding="utf-8")
         else:
             old_timeline = writer.new_timeline(slug, thread.title or slug)
-        new_timeline = writer.prepend_timeline(old_timeline, TimelineEntry(when, "owner", [bullet]))
-        atomic_write_text(front, new_front)
+        try:
+            new_timeline = writer.prepend_timeline(old_timeline, TimelineEntry(when, "owner", [bullet]))
+        except LabError as exc:
+            raise LabError(f"{slug}: cannot update {timeline.name}: {exc}") from exc
+        # Timeline first: a failure after it leaves an audit entry with no status change, never the reverse.
+        existed = timeline.is_file()
         atomic_write_text(timeline, new_timeline)
+        try:
+            atomic_write_text(front, new_front)
+        except BaseException:
+            if existed:
+                atomic_write_text(timeline, old_timeline)
+            else:
+                timeline.unlink(missing_ok=True)
+            raise
         return parse_front_page(slug, new_front)
 
 
