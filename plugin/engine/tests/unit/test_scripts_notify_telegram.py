@@ -641,7 +641,9 @@ def test_covers_unknown_id_refuses_without_sending(guarded: Path, fake_data_dir:
         no_thread = _cli_send(fake_data_dir, covers=[6])
     assert post.call_count == 0
     for code, err in (unknown, answered):
-        assert code == 1 and "unknown or already answered message ids" in err[-1]
+        # Its own exit code, outside the broker's transient ones: a queued reply never waits for the id to appear.
+        assert code == notify_telegram.EXIT_UNANSWERABLE == 7
+        assert "unknown or already answered message ids" in err[-1]
     assert no_thread[0] == 1
     assert Ledger(fake_data_dir).unanswered_ids() == {6}
 

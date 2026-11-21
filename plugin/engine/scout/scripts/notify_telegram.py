@@ -70,7 +70,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -113,6 +113,11 @@ class OutboundBlockedError(ScoutError):
     """The target is a group or channel and the message may not go there (#453, spec §8.4)."""
 
     exit_code = 4
+
+
+# A reply names an inbound message that isn't waiting for one (unknown, or already answered). Not one of the
+# broker's transient codes, so a queued reply fails at once rather than waiting for that id to appear.
+EXIT_UNANSWERABLE = 7
 
 
 # Output classes (spec §4.2): a private chat with the owner is owner-only, a
@@ -821,12 +826,12 @@ def cli_send(
     broker (scout.sandbox.broker), so a run sees the same output and codes either way.
 
     0 sent (``id=<ulid>`` first on stderr, the Event JSON on stdout), 1 a bad request, 2 HTTP failed,
-    3 duplicate, 4 outbound blocked, 10 not set up.
+    3 duplicate, 4 outbound blocked, 7 a reply naming a message that isn't waiting, 10 not set up.
 
     A reply (``reply_to``, plus any other messages it ``covers``) answers inbound messages in ``vault``'s ledger
-    (default :func:`scout.paths.data_dir`). Every id must be unanswered there, or nothing is sent (exit 1). After a
-    real send this function, never the run, records the reply, which marks them answered; a record that fails is
-    a warning, not a resend.
+    (default :func:`scout.paths.data_dir`). Every id must be unanswered there, or nothing is sent (exit 7; see
+    :func:`unanswerable`). After a real send this function, never the run, records the reply, which marks them
+    answered; a record that fails is a warning, not a resend.
     """
     from dataclasses import asdict
 
@@ -839,20 +844,10 @@ def cli_send(
         if not all(_is_message_id(i) for i in answers):
             echo_err("scoutctl notify telegram: message ids are positive integers")
             return 1
-        from scout.telegram_inbound.ledger import Ledger
-
         reply = (vault if vault is not None else paths.data_dir(), reply_to, answers)
-        try:
-            unknown = set(answers) - Ledger(reply[0]).unanswered_ids()
-        except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
-            echo_err(f"scoutctl notify telegram: couldn't read the inbound ledger ({e})")
-            return 1
-        if unknown:
-            echo_err(
-                "scoutctl notify telegram: refused — unknown or already answered message ids: "
-                + ", ".join(map(str, sorted(unknown)))
-            )
-            return 1
+        if (problem := unanswerable(reply[0], answers)) is not None:
+            echo_err(f"scoutctl notify telegram: {problem[1]}")
+            return problem[0]
 
     try:
         ev = send(
@@ -909,6 +904,28 @@ def cli_send(
     # send(), so this stdout is always pure JSON for tests and scripts.
     echo_out(json.dumps(asdict(ev), indent=2))
     return 0
+
+
+def unanswerable(vault: Path, ids: Iterable[int]) -> tuple[int, str] | None:
+    """Why a reply answering ``ids`` may not be sent, as (exit code, reason), or None when every id is unanswered
+    in ``vault``'s inbound ledger. The one check both :func:`cli_send` and the run's broker
+    (:meth:`scout.sandbox.broker.Broker.telegram`) use.
+
+    :data:`EXIT_UNANSWERABLE` (an id unknown or already answered) is final: a reply to a message id a run
+    predicted must never wait in the queue for that message to arrive. A ledger that can't be read is exit 1,
+    which a queued reply retries.
+    """
+    from scout.telegram_inbound.ledger import Ledger
+
+    try:
+        unknown = set(ids) - Ledger(vault).unanswered_ids()
+    except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
+        return 1, f"couldn't read the inbound ledger ({e})"
+    if unknown:
+        return EXIT_UNANSWERABLE, "refused — unknown or already answered message ids: " + ", ".join(
+            map(str, sorted(unknown))
+        )
+    return None
 
 
 def _record_reply(vault: Path, reply_to: int, covers: list[int], echo_err: Callable[[str], None]) -> None:

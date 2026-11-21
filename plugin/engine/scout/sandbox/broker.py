@@ -268,7 +268,7 @@ def validate_telegram(req: Mapping[str, Any], limits: Limits) -> dict[str, Any]:
     flags = {k: req.get(k, False) for k in ("allow_duplicate", "dry_run")}
     if not all(isinstance(v, bool) for v in flags.values()):
         raise Refused(1, "allow_duplicate and dry_run are true or false")
-    # Which inbound messages the reply answers: only their shape here; cli_send checks them against the ledger.
+    # Which inbound messages the reply answers: only their shape here; Broker.telegram checks them against the ledger.
     reply_to, covers = req.get("reply_to"), req.get("covers")
     covers = [] if covers is None else covers
     if reply_to is not None and not _is_message_id(reply_to):
@@ -562,6 +562,18 @@ class Broker:
             fields = validate_telegram(req, self.limits)
         except Refused as r:
             return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n", kind=REFUSED)
+        if fields["reply_to"] is not None:
+            # Before any limit: a reply to a message that isn't waiting (unknown, or already answered) is refused
+            # for good, live or drained, so a queued reply can't wait out a full hour for a predicted id to arrive.
+            # The same check cli_send makes again as it sends.
+            from scout.scripts.notify_telegram import EXIT_UNANSWERABLE, unanswerable
+
+            problem = unanswerable(self.vault, [fields["reply_to"], *fields["covers"]])
+            if problem is not None:
+                code, reason = problem
+                return Reply(
+                    code, f"scoutctl notify telegram: {reason}\n", kind=REFUSED if code == EXIT_UNANSWERABLE else ""
+                )
         if fields["dry_run"]:
             return self._send(fields)
         rid = req["rid"] if isinstance(req.get("rid"), str) and _REQUEST_ID.match(req["rid"]) else ""
