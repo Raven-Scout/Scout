@@ -509,8 +509,12 @@ final class AppState: ObservableObject {
         guard configuration.startsBackgroundWork else { return }
 
         // The knowledge map reopens on its last settled layout after a
-        // relaunch (UI audit T1). Tests keep it in memory only.
-        KBMapLayoutCache.file = KBMapLayoutCache.defaultFile(scoutDirectory: scoutDirectory)
+        // relaunch (UI audit T1). Only production names a file: a test graph
+        // with background work on must not point the shared cache at the
+        // real caches folder for every test after it.
+        if let mapLayoutCacheURL = configuration.mapLayoutCacheURL {
+            KBMapLayoutCache.file = mapLayoutCacheURL
+        }
 
         // Loads the last index from disk, then keeps it current: the sidebar
         // badge needs it before the Sessions page is ever opened.
@@ -912,6 +916,11 @@ final class AppState: ObservableObject {
         /// Where run notifications go; nil is `NotificationService`, the
         /// real Notification Center. Tests pass a fake.
         var notifications: (any RunNotificationPosting)? = nil
+        /// Where the knowledge map keeps its last settled layout
+        /// (`~/Library/Caches/Scout/kb-map/<bundle id>/<vault key>.json` in
+        /// production). nil keeps it in memory only, the default for every
+        /// test graph, for the same reason as `parseCacheURL`.
+        var mapLayoutCacheURL: URL? = nil
 
         static func production() -> Configuration {
             let layout = EngineLayout.live
@@ -931,7 +940,7 @@ final class AppState: ObservableObject {
             #else
             let sessionsFile: FileSessionIndexSource? = nil
             #endif
-            return Configuration(
+            var configuration = Configuration(
                 scoutDirectory: vault,
                 // Every scoutctl/git call must see the vault the app is
                 // looking at (the engine defaults to ~/Scout otherwise) —
@@ -961,6 +970,8 @@ final class AppState: ObservableObject {
                 resolveClaude: PrerequisiteChecker.defaultResolveClaude,
                 fileDownloader: URLSessionDownloader()
             )
+            configuration.mapLayoutCacheURL = KBMapLayoutCache.defaultFile(scoutDirectory: vault)
+            return configuration
         }
 
         /// What `ScoutApp` boots with. Under `xcodebuild test` this process is

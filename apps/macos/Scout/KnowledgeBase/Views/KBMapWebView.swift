@@ -62,16 +62,23 @@ nonisolated struct KBMapPanels: Codable, Equatable {
         return positions
     }
 
+    /// One write at a time, in the order stored, so an older layout can't
+    /// land after a newer one.
+    nonisolated private static let writes = DispatchQueue(label: "scout.kb-map-layout", qos: .utility)
+
     static func store(_ new: [String: [Double]]) {
         positions = new
         guard let file else { return }
         let data = encode(new)
-        Task.detached(priority: .utility) {
+        writes.async {
             try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try? data?.write(to: file, options: .atomic)
         }
     }
+
+    /// Blocks until every stored layout is on disk (tests).
+    nonisolated static func waitForWrites() { writes.sync {} }
 
     /// Finite numbers only: a NaN would make the whole load unencodable and
     /// leave the map blank.

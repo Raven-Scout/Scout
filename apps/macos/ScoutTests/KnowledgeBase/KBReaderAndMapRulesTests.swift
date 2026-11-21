@@ -159,4 +159,72 @@ struct KBReaderAndMapRulesTests {
         let two = KBMapLayoutCache.defaultFile(scoutDirectory: URL(fileURLWithPath: "/tmp/vault-two"))
         #expect(one != nil && one != two)
     }
+
+    @Test("a corrupt or wrongly shaped cache file opens an empty map instead of failing")
+    func layoutCacheCorruptFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("kb-map-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let garbage = dir.appendingPathComponent("garbage.json")
+        try Data([0xff, 0x00, 0x7b, 0x22]).write(to: garbage)
+        let shape = dir.appendingPathComponent("shape.json")
+        try Data(#"{"a":[1,2],"b":"not a point"}"#.utf8).write(to: shape)
+        let truncated = dir.appendingPathComponent("truncated.json")
+        try Data(#"{"a":[1,"#.utf8).write(to: truncated)
+        #expect(KBMapLayoutCache.read(garbage).isEmpty)
+        #expect(KBMapLayoutCache.read(shape).isEmpty)
+        #expect(KBMapLayoutCache.read(truncated).isEmpty)
+
+        // Through the cache itself: the map opens empty, then a settled
+        // layout replaces the bad file.
+        let saved = (KBMapLayoutCache.file, KBMapLayoutCache.positions)
+        defer { (KBMapLayoutCache.file, KBMapLayoutCache.positions) = saved }
+        KBMapLayoutCache.file = garbage
+        KBMapLayoutCache.positions = [:]
+        #expect(KBMapLayoutCache.current().isEmpty)
+        KBMapLayoutCache.store(["a": [1, 2]])
+        KBMapLayoutCache.waitForWrites()
+        #expect(KBMapLayoutCache.read(garbage) == ["a": [1, 2]])
+    }
+
+    @Test("layouts reach the disk in the order they were stored")
+    func layoutCacheWritesInOrder() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("kb-map-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("nested/layout.json")
+        let saved = (KBMapLayoutCache.file, KBMapLayoutCache.positions)
+        defer { (KBMapLayoutCache.file, KBMapLayoutCache.positions) = saved }
+        KBMapLayoutCache.file = file
+        for i in 0..<50 { KBMapLayoutCache.store(["n": [Double(i), 0]]) }
+        KBMapLayoutCache.waitForWrites()
+        #expect(KBMapLayoutCache.read(file) == ["n": [49, 0]])
+    }
+
+    // MARK: - Web bridge
+
+    @Test("a page saying ready gets what it last showed first, then the queue, without repeats")
+    func bridgeMessagesOnReady() {
+        typealias B = KBWebBridge
+        // First load: the queued load is the latest one; it isn't sent twice.
+        #expect(B.messagesOnReady(queue: [("load", "L1"), ("shown", "S")], latest: ["load": "L1"])
+                == ["L1", "S"])
+        // A reload that raced the old page's ready: the queue is empty, the
+        // new page still gets the map back.
+        #expect(B.messagesOnReady(queue: [], latest: ["load": "L1"]) == ["L1"])
+        // A newer load waiting in the queue wins over replaying the old one.
+        #expect(B.messagesOnReady(queue: [("load", "L2")], latest: ["load": "L2"]) == ["L2"])
+        #expect(B.messagesOnReady(queue: [("focus", "F")], latest: ["load": "L1"]) == ["L1", "F"])
+    }
+
+    @Test("folder dots follow the tree: a draft whose note left it marks nothing")
+    func draftMarksFollowTree() throws {
+        func node(_ kind: KBNode.Kind, _ rel: String, _ children: [KBNode] = []) -> KBNode {
+            KBNode(kind: kind, url: URL(fileURLWithPath: "/tmp/vault/\(rel)"), relativePath: rel,
+                   name: (rel as NSString).lastPathComponent, ext: kind == .file ? "md" : "", children: children)
+        }
+        let folder = node(.directory, "knowledge-base/people", [node(.file, "knowledge-base/people/alex.md")])
+        let drafted: Set<String> = ["knowledge-base/people/alex.md", "knowledge-base/people/priya.md"]
+        #expect(KBDraftStore.shownDraftPaths(drafted, tree: [folder]) == ["knowledge-base/people/alex.md"])
+        #expect(KBDraftStore.shownDraftPaths(drafted, tree: []).isEmpty)
+    }
 }

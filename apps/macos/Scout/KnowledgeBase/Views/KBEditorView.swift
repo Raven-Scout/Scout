@@ -588,6 +588,9 @@ struct KBEditorView: View {
     /// Overwrite despite a detected conflict — re-baseline to what's on disk
     /// right now so the guard passes, then save.
     private func forceSave() {
+        // A second click mid-save would re-baseline against the file this
+        // save is writing and report a false change on disk.
+        guard !isSaving else { return }
         performSave(baseline: service.readFile(node.url))
     }
 
@@ -672,6 +675,8 @@ struct KBEditorView: View {
         baselineContents = contents
         baselineDate = GuardedFileWrite.fsModificationDate(node.url)
         externallyChanged = false
+        // Saved: new edits are new, not the draft from before.
+        restoredDraft = false
         isSaving = false
     }
 

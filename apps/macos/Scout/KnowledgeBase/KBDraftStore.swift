@@ -84,6 +84,13 @@ final class KBDraftStore: ObservableObject {
         })
     }
 
+    /// The drafted paths the tree still has a file for, so a note moved or
+    /// deleted outside the app can't leave a dot on a folder it left.
+    static func shownDraftPaths(_ drafted: Set<String>, tree: [KBNode]) -> Set<String> {
+        guard !drafted.isEmpty else { return [] }
+        return drafted.intersection(tree.flatMap(\.allFiles).map(\.relativePath))
+    }
+
     /// Whether any of `paths` (relative) lies inside `folder` (relative).
     nonisolated static func containsDraft(under folder: String, in paths: Set<String>) -> Bool {
         let prefix = folder + "/"

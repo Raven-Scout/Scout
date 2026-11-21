@@ -359,7 +359,8 @@ struct KnowledgeBaseView: View {
     }
 
     private var tree: some View {
-        KBDraftMarks(drafts: service.drafts, scoutDirectory: service.scoutDirectory) { draftPaths in
+        KBDraftMarks(drafts: service.drafts, scoutDirectory: service.scoutDirectory,
+                     tree: service.tree) { draftPaths in
             if let privacy {
                 KBBadgedTreeView(service: service, privacy: privacy, draftPaths: draftPaths,
                                  selectedPath: $selectedPath, expanded: $expanded)
@@ -569,13 +570,18 @@ private struct KBBadgedTreeView: View {
 }
 
 /// Hands its content the notes with unsaved drafts (tree ids), redrawn when
-/// a note gains or loses one.
+/// a note gains or loses one. Only notes the tree still has: a note renamed
+/// or deleted outside the app keeps its draft (the quit prompt still lists
+/// it), but no longer marks a folder it has left.
 private struct KBDraftMarks<Content: View>: View {
     @ObservedObject var drafts: KBDraftStore
     let scoutDirectory: URL
+    let tree: [KBNode]
     @ViewBuilder let content: (Set<String>) -> Content
 
-    var body: some View { content(drafts.relativePaths(in: scoutDirectory)) }
+    var body: some View {
+        content(KBDraftStore.shownDraftPaths(drafts.relativePaths(in: scoutDirectory), tree: tree))
+    }
 }
 
 /// Sheet for creating a new note: name + target folder.
