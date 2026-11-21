@@ -123,12 +123,13 @@ class TelegramSource:
             pending = ledger.pending()
             if not pending or ledger.in_flight(now) or self._lock_held():
                 return []
-            newest = max(m.message_id for m in pending)
-            attempt = max(m.attempt for m in pending) + 1
+            # The newest message's own next attempt: each dispatch of it bumps its attempt, so
+            # the id never repeats, even after a partial answer left older messages behind.
+            newest = max(pending, key=lambda m: m.message_id)
             return [
                 ConnectorEvent(
                     source=self.name,
-                    source_event_id=f"{newest}:{attempt}",
+                    source_event_id=f"{newest.message_id}:{newest.attempt + 1}",
                     ts=_iso_z(now),
                     raw_payload={"messages": [dataclasses.asdict(m) for m in pending]},
                     normalized_match_fields={"type": "message"},
@@ -161,14 +162,19 @@ class TelegramSource:
 
     # -- engine hook -------------------------------------------------------------
     def on_fired(self, event: ConnectorEvent, outcome: FireOutcome) -> None:
-        """Mark the event's message snapshot dispatched once its run was spawned."""
-        if outcome.status != "ok":
+        """Mark the event's message snapshot dispatched once a run_skill run was spawned.
+
+        Only ids still pending are marked, re-read under the lock: a fast run may already
+        have answered some, and an answered message must never go back to dispatched."""
+        if outcome.status != "ok" or outcome.action_kind != "run_skill":
             return
-        ids = [int(m["message_id"]) for m in event.raw_payload.get("messages", [])]
+        ids = {int(m["message_id"]) for m in event.raw_payload.get("messages", [])}
         if not ids:
             return
         with self._ledger.locked():
-            self._ledger.mark_dispatched(ids, now=self._clock())
+            still_pending = [m.message_id for m in self._ledger.pending() if m.message_id in ids]
+            if still_pending:
+                self._ledger.mark_dispatched(still_pending, now=self._clock())
 
     # -- health ------------------------------------------------------------------
     def health_check(self) -> tuple[bool, str]:

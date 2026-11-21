@@ -332,6 +332,73 @@ def test_on_fired_ignores_a_failed_dispatch(fake_data_dir: Path):
     assert _state(fake_data_dir, 5) == ledger_mod.PENDING
 
 
+@pytest.mark.parametrize("kind", ["notify", "interactive"])
+def test_on_fired_ignores_non_run_skill_actions(fake_data_dir: Path, kind: str):
+    """Only a run_skill fire starts a run that will answer; a notify must not mark dispatched."""
+    bot = FakeBot()
+    src = _source(fake_data_dir, bot)
+    bot.push(100, 5)
+    [ev] = src.scan_since("ignored")
+    src.on_fired(ev, FireOutcome(trigger_id="t", event_id=ev.source_event_id, action_kind=kind, status="ok"))
+    msg = Ledger(fake_data_dir).get(5)
+    assert msg is not None and msg.state == ledger_mod.PENDING and msg.attempt == 0
+
+
+def test_on_fired_does_not_overwrite_answered(fake_data_dir: Path):
+    """A fast run can reply before on_fired runs; the answered message stays answered."""
+    bot = FakeBot()
+    clock = Clock()
+    src = _source(fake_data_dir, bot, clock=clock)
+    bot.push(100, 5)
+    bot.push(101, 6)
+    [ev] = src.scan_since("ignored")
+
+    ledger = Ledger(fake_data_dir)
+    with ledger.locked():
+        ledger.record_reply(reply_to=5, covers=[5], at=clock())
+    src.on_fired(ev, _ok(ev.source_event_id))
+
+    answered = Ledger(fake_data_dir).get(5)
+    assert answered is not None and answered.state == ledger_mod.ANSWERED and answered.attempt == 0
+    dispatched = Ledger(fake_data_dir).get(6)
+    assert dispatched is not None and dispatched.state == ledger_mod.DISPATCHED and dispatched.attempt == 1
+
+
+def test_event_id_is_fresh_after_partial_answer(fake_data_dir: Path):
+    """t0: 5 fires and its run dies. t1: 6 arrives, [5, 6] fire, only 5 is answered.
+    t2: 6 times out back to pending; its retry must be a new id that dedup accepts."""
+    from scout.triggers.dedup import DedupStore
+
+    dedup = DedupStore(fake_data_dir / ".scout-cache" / "trigger-fires.json")
+    bot = FakeBot()
+    clock = Clock()
+    src = _source(fake_data_dir, bot, clock=clock)
+
+    def fire() -> str:
+        [ev] = src.scan_since("ignored")
+        assert dedup.is_new("telegram-respond", ev.source_event_id), ev.source_event_id
+        dedup.record_fire("telegram-respond", ev.source_event_id, clock())
+        src.on_fired(ev, _ok(ev.source_event_id))
+        return ev.source_event_id
+
+    bot.push(100, 5)
+    t0 = fire()
+
+    clock.advance(minutes=61)
+    bot.push(101, 6)
+    t1 = fire()
+    ledger = Ledger(fake_data_dir)
+    with ledger.locked():
+        ledger.record_reply(reply_to=5, covers=[5], at=clock())
+
+    clock.advance(minutes=61)
+    t2 = fire()
+
+    assert len({t0, t1, t2}) == 3
+    assert (t0, t1, t2) == ("5:1", "6:1", "6:2")
+    assert _state(fake_data_dir, 6) == ledger_mod.DISPATCHED
+
+
 def test_failed_message_sends_one_notice(fake_data_dir: Path):
     clock = Clock()
     ledger = Ledger(fake_data_dir)
