@@ -201,7 +201,8 @@ struct KBReaderAndMapRulesTests {
 
     @Test("a squeezed folders crumb truncates to an ellipsis, never a clipped glyph")
     func folderCrumbFloor() {
-        let floor = KBEditorView.minFolderCrumbWidth
+        // At Standard, so the host's saved Text size doesn't matter.
+        let floor = KBEditorView.minFolderCrumbWidth(factor: 1)
         func crumb(_ s: String) -> some View {
             KBCrumbFloorLayout(floor: floor) { Text(s).lineLimit(1).truncationMode(.middle) }
         }
@@ -212,6 +213,43 @@ struct KBReaderAndMapRulesTests {
         let natural = LayoutHarness.size(of: Text("ops"), proposing: CGSize(width: 200, height: 20)).width
         #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 4, height: 20)).width == natural)
         #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 200, height: 20)).width == natural)
+    }
+
+    /// At Largest a fixed 280 pt floor kept the header on one row with the
+    /// folders crumb at a bare "…" and the note's name cut to about 9
+    /// characters. Measured with the header's own fonts (caption, medium for
+    /// the root crumb button and semibold for the name) at each text size,
+    /// without touching the app-wide `TextScale.shared`.
+    @Test("the header's one-row floor leaves the note's name as many letters at every text size",
+          arguments: TextScale.Size.allCases)
+    func titleFloorScalesWithTextSize(_ size: TextScale.Size) {
+        func width(_ s: String, factor: CGFloat, weight: NSFont.Weight) -> CGFloat {
+            let font = NSFont.systemFont(ofSize: DS.scaledSize(DS.TextStyle.caption.pointSize, factor: factor),
+                                         weight: weight)
+            return NSAttributedString(string: s, attributes: [.font: font]).size().width
+        }
+        /// What the floor leaves for the note's name after the root crumb,
+        /// the folders crumb at its own floor and the two separators. Mirrors
+        /// `KBEditorView.breadcrumb` (its pieces, fonts and spacing): a
+        /// change to that view's layout belongs here too.
+        func nameRoom(factor: CGFloat) -> CGFloat {
+            KBEditorView.minTitleWidth(factor: factor)
+                - width("knowledge-base", factor: factor, weight: .medium)
+                - 2 * width("/", factor: factor, weight: .regular)
+                - KBEditorView.minFolderCrumbWidth(factor: factor)
+                - 4 * KBEditorView.breadcrumbSpacing   // between the five crumb pieces
+        }
+        func letters(factor: CGFloat) -> CGFloat {
+            let sample = "rollout-checklist-launch"
+            return nameRoom(factor: factor) / (width(sample, factor: factor, weight: .semibold) / CGFloat(sample.count))
+        }
+        let standard = letters(factor: TextScale.Size.standard.factor)
+        let here = letters(factor: size.factor)
+        #expect(standard >= 18, "at Standard the name keeps \(standard) letters")
+        #expect(here >= standard - 1, "at \(size.title) the name keeps \(here) letters, \(standard) at Standard")
+        #expect(KBEditorView.minFolderCrumbWidth(factor: size.factor)
+                >= width("a…b", factor: size.factor, weight: .regular),
+                "at \(size.title) the folders crumb's floor can't hold an ellipsis and a letter either side")
     }
 
     @Test("the draft store publishes when a file gains or loses a draft, not on every keystroke")
