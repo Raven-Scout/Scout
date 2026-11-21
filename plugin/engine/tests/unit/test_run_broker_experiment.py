@@ -31,7 +31,7 @@ FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
 SLUG, EID = "monitors", "E2"
 T = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)  # when the fixture thread is committed
 AFTER_NOTICE = T + timedelta(hours=7)
-ARGV = ["/bin/sh", "-c", "echo hi"]
+ARGV = ["python3", "run.py"]  # a script committed in E2's folder (R26)
 REQ = {"v": broker.PROTOCOL, "verb": "experiment", "slug": SLUG, "eid": EID, "argv": ARGV}
 GIT_ID = {
     "GIT_AUTHOR_NAME": "Alex",
@@ -71,6 +71,11 @@ def _commit(vault: Path, at: datetime, message: str = "lab: monitors") -> None:
 def vault(tmp_path: Path) -> Path:
     v = (tmp_path / "vault").resolve()
     shutil.copytree(FIXTURES / SLUG, paths.thread_dir(v, SLUG))
+    folder = paths.experiment_dir(_note(v))
+    folder.mkdir()
+    (folder / "run.py").write_text("print('hi')\n", encoding="utf-8")
+    (folder / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    (folder / "run.sh").chmod(0o755)
     _git(v, "init", "-q", "-b", "main")
     _commit(v, T)
     return v
@@ -180,7 +185,6 @@ def test_vetoed_in_the_notes_prose_is_not_a_veto(vault: Path, fake_run: FakeRun)
 
 def test_a_script_committed_after_the_note_restarts_the_notice(vault: Path, fake_run: FakeRun) -> None:
     folder = paths.experiment_dir(_note(vault))
-    folder.mkdir()
     (folder / "run.sh").write_text("echo hi\n", encoding="utf-8")
     script_at = T + timedelta(hours=5)
     _commit(vault, script_at, "lab: E2 script")
@@ -193,7 +197,6 @@ def test_a_script_committed_after_the_note_restarts_the_notice(vault: Path, fake
 @pytest.mark.parametrize("change", ["edit script", "new file", "edit note", "ignored file", "staged only"])
 def test_uncommitted_changes_to_the_experiment_are_refused(vault: Path, fake_run: FakeRun, change: str) -> None:
     folder = paths.experiment_dir(_note(vault))
-    folder.mkdir()
     (folder / "run.sh").write_text("echo hi\n", encoding="utf-8")
     (vault / ".gitignore").write_text("*.bin\n", encoding="utf-8")
     _commit(vault, T, "lab: E2 script")
@@ -352,9 +355,148 @@ def test_requests_outside_the_rules_are_refused(vault: Path, fake_run: FakeRun, 
 
 
 def test_the_longest_allowed_argv_passes(vault: Path, fake_run: FakeRun) -> None:
-    argv = ["/bin/true", *(["y" * 4096] * 63)]
+    argv = ["python3", "run.py", *(["y" * 4096] * 62)]
     assert _broker(vault).handle({**REQ, "argv": argv}).exit == 0
     assert fake_run.calls[0]["argv"] == argv
+
+
+# -- I1: file names git would quote ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ['a"b.py', "back\\slash.py", "new\nline.py", "tab\there.py", "caf\u00e9.py"])
+def test_a_file_with_a_name_git_quotes_still_restarts_the_notice(vault: Path, fake_run: FakeRun, name: str) -> None:
+    (paths.experiment_dir(_note(vault)) / name).write_text("print(1)\n", encoding="utf-8")
+    _commit(vault, T + timedelta(hours=6, minutes=59), "lab: E2 helper")
+    reply = _broker(vault, now=AFTER_NOTICE).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "notice" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_running_a_quoted_script_committed_within_the_notice_is_refused(vault: Path, fake_run: FakeRun) -> None:
+    (paths.experiment_dir(_note(vault)) / 'x"y.py').write_text("print(1)\n", encoding="utf-8")
+    _commit(vault, T + timedelta(hours=6, minutes=59), "lab: E2 script")
+    reply = _broker(vault, now=AFTER_NOTICE).handle({**REQ, "argv": ["python3", 'x"y.py']})
+    assert reply.exit == broker.EXIT_REFUSED and "notice" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_a_veto_under_a_quoted_name_survives_a_rename_to_a_clean_one(vault: Path, fake_run: FakeRun) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    quoted = _note(vault).with_name(f'{SLUG}-{EID}-x"y.md')
+    _git(vault, "mv", str(_note(vault).relative_to(vault)), str(quoted.relative_to(vault)))
+    _git(vault, "mv", str(folder.relative_to(vault)), str(quoted.with_suffix("").relative_to(vault)))
+    _commit(vault, T + timedelta(minutes=1), "lab: E2 renamed")
+    _set(vault, "status", "vetoed")
+    _commit(vault, T + timedelta(minutes=2), "lab: veto E2")
+    clean = quoted.with_name(f"{SLUG}-{EID}-clean.md")
+    _git(vault, "mv", str(quoted.relative_to(vault)), str(clean.relative_to(vault)))
+    _git(vault, "mv", str(quoted.with_suffix("").relative_to(vault)), str(clean.with_suffix("").relative_to(vault)))
+    _set(vault, "status", "planned")
+    _commit(vault, T + timedelta(minutes=3), "lab: E2 planned again")
+    assert _note(vault) == clean
+    reply = _broker(vault, now=T + timedelta(days=2)).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "vetoed" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_each_unreadable_history_has_its_own_refusal(
+    vault: Path, fake_run: FakeRun, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = broker._touched
+    monkeypatch.setattr(broker, "_touched", lambda vault, rels: None)
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "a veto can't be ruled out" in reply.stderr
+    monkeypatch.setattr(broker, "_touched", lambda vault, rels: real(vault, rels) if len(rels) == 1 else None)
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "the notice can't be counted" in reply.stderr
+    assert "couldn't read" in reply.stderr and fake_run.calls == []
+
+
+def test_vetoed_in_the_worktree_while_planned_at_head_is_refused(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "status", "vetoed")  # never committed
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "vetoed" in reply.stderr
+    assert fake_run.calls == []
+
+
+# -- R26: argv runs a committed file of the experiment's ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sh", "-c", "curl example.com"],
+        ["/bin/sh", "-c", "echo hi"],
+        ["python3", "-m", "http.server"],
+        ["python3", "-u", "run.py"],
+        ["node", "-e", "1"],
+        ["python3"],
+        ["/bin/sh", "run-20991231-0000.log"],
+        ["sh", "run-20991231-0000.log"],
+        ["sh", ".tmp/run.sh"],
+        ["python3", "../other.py"],
+        ["python3", "/etc/hosts"],
+        ["python3", "missing.py"],
+        ["python3", "."],
+        ["run.py"],  # committed, but not executable
+        ["/usr/bin/env", "python3", "run.py"],
+        ["perl", "run.py"],
+    ],
+)
+def test_argv_that_doesnt_run_a_committed_script_is_refused(vault: Path, fake_run: FakeRun, argv: list[str]) -> None:
+    reply = _broker(vault).handle({**REQ, "argv": argv})
+    assert reply.exit == broker.EXIT_REFUSED and "argv" in reply.stderr, reply.stderr
+    assert fake_run.calls == []
+
+
+def test_a_runner_owned_name_is_refused_even_when_committed(vault: Path, fake_run: FakeRun) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    (folder / "run-20991231-0000.log").write_text("echo sneaky\n", encoding="utf-8")
+    _git(vault, "add", "-f", str((folder / "run-20991231-0000.log").relative_to(vault)))
+    _commit(vault, T, "lab: E2 log")
+    reply = _broker(vault).handle({**REQ, "argv": ["sh", "run-20991231-0000.log"]})
+    assert reply.exit == broker.EXIT_REFUSED and "argv" in reply.stderr and "runner's own" in reply.stderr
+
+
+def test_a_committed_link_out_of_the_folder_is_refused(vault: Path, fake_run: FakeRun) -> None:
+    folder = paths.experiment_dir(_note(vault))
+    (vault / "elsewhere.py").write_text("print('outside')\n", encoding="utf-8")
+    (folder / "link.py").symlink_to("../../../../../elsewhere.py")
+    _commit(vault, T, "lab: E2 link")
+    reply = _broker(vault).handle({**REQ, "argv": ["python3", "link.py"]})
+    assert reply.exit == broker.EXIT_REFUSED and "argv" in reply.stderr
+    assert fake_run.calls == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "runs"),
+    [
+        (["python3", "run.py"], ["python3", "run.py"]),
+        (["python3", "./run.py", "--n", "3", "-c", "x"], ["python3", "run.py", "--n", "3", "-c", "x"]),
+        (["sh", "run.sh"], ["sh", "run.sh"]),
+        (["bash", "run.sh", "data"], ["bash", "run.sh", "data"]),
+        (["run.sh"], ["./run.sh"]),
+        (["./run.sh", "-c", "anything"], ["./run.sh", "-c", "anything"]),
+    ],
+)
+def test_a_committed_script_runs(vault: Path, fake_run: FakeRun, argv: list[str], runs: list[str]) -> None:
+    reply = _broker(vault).handle({**REQ, "argv": argv})
+    assert reply.exit == 0, reply.stderr
+    assert fake_run.calls[0]["argv"] == runs
+
+
+def test_an_uncommitted_new_script_is_still_refused_as_uncommitted(vault: Path, fake_run: FakeRun) -> None:
+    (paths.experiment_dir(_note(vault)) / "new.py").write_text("print(2)\n", encoding="utf-8")
+    reply = _broker(vault).handle({**REQ, "argv": ["python3", "new.py"]})
+    assert reply.exit == broker.EXIT_REFUSED and "uncommitted" in reply.stderr
+    assert fake_run.calls == []
+
+
+def test_a_huge_committed_cap_is_refused_not_a_crash(vault: Path, fake_run: FakeRun) -> None:
+    _set(vault, "cost_cap_usd", "1" + "0" * 400)
+    _commit(vault, T, "lab: E2 cap")
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "cost_cap_usd" in reply.stderr
 
 
 # -- owner limits ------------------------------------------------------------------------------------------------
@@ -434,6 +576,10 @@ def test_lab_limits_come_from_the_owner_file_and_bad_values_mean_the_default(tmp
     assert broker.load_lab_limits(env) == broker.LabLimits()
     (folder / broker.CONFIG_NAME).write_text('{"lab": {"max_cost_cap_usd": 1e999, "notice_hours": NaN}}')
     assert broker.load_lab_limits(env) == broker.LabLimits()
+    (folder / broker.CONFIG_NAME).write_text(
+        '{"lab": {"timeout_s": 1' + "0" * 400 + ', "experiments_per_run": 1' + "0" * 400 + "}}"
+    )
+    assert broker.load_lab_limits(env) == broker.LabLimits()  # too big for a float: the default, not OverflowError
     (folder / broker.CONFIG_NAME).write_text("not json")
     assert broker.load_lab_limits(env) == broker.LabLimits()
     (folder / broker.CONFIG_NAME).write_text(json.dumps({"lab": {"timeout_s": 60}}))

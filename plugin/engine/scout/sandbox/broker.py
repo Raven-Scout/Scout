@@ -206,6 +206,14 @@ class LabLimits:
     timeout_s: float = 1800
 
 
+def _finite(value: float) -> bool:
+    """``math.isfinite``, false (not OverflowError) for an integer too large for a float."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
     """The owner's experiment limits from ``config.json``'s ``"lab"`` block, read like :func:`load_limits`: a
     missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
@@ -223,7 +231,7 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
         value = block.get(name)
         if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
             return getattr(defaults, name)
-        if math.isfinite(value) and (0 <= value if zero else 0 < value) and value <= 1_000_000:
+        if _finite(value) and (0 <= value if zero else 0 < value) and value <= 1_000_000:
             return value
         return getattr(defaults, name)
 
@@ -340,30 +348,49 @@ def _vault_git(vault: Path, *args: str) -> str | None:
 _GIT_LOG = ("log", "--full-history", "--relative")
 
 
-def _log_entries(log: str) -> Iterator[tuple[str, str]]:
-    """(the commit's ``@`` field, a path it touched) from ``git log --format=@<field> --name-only``."""
-    field_value = ""
+_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+
+def _touched(vault: Path, rels: Sequence[str]) -> list[tuple[int, str, list[str]]] | None:
+    """(commit time, sha, the vault-relative paths it changed under ``rels``) for every commit touching ``rels``,
+    newest first. None when git fails or answers something unexpected (callers fail closed).
+
+    The log names commits only (a time and a hash, nothing a file name can forge); each commit's paths come from
+    ``git diff-tree -z``, NUL-separated and never quoted, so no name with a quote, backslash or newline can hide.
+    """
+    log = _vault_git(vault, *_GIT_LOG, "--format=%ct %H", "--", *rels)
+    if log is None:
+        return None
+    out: list[tuple[int, str, list[str]]] = []
     for line in log.splitlines():
-        if line.startswith("@"):
-            field_value = line[1:]
-        elif line and field_value:
-            yield field_value, line
+        stamp, _, sha = line.partition(" ")
+        if not stamp.isdigit() or not _SHA_RE.match(sha):
+            return None
+        names = _vault_git(
+            vault, "diff-tree", "-z", "-r", "-m", "--root", "--no-commit-id", "--name-only", "--relative", sha,
+            "--", *rels,
+        )  # fmt: skip
+        if names is None:
+            return None
+        out.append((int(stamp), sha, [n for n in names.split("\0") if n]))
+    return out
 
 
 def _vetoed_in_history(vault: Path, slug: str, prefix: str) -> str | None:
     """The first commit (newest first) whose copy of a note named ``<prefix>*.md`` says ``status: vetoed`` in its
-    frontmatter; any name, so a rename doesn't shed the veto. Fails closed: an unreadable history is a veto."""
+    frontmatter; any name, so a rename doesn't shed the veto. :class:`Refused` when the history can't be read."""
     from scout.lab.parser import parse_experiment
 
-    log = _vault_git(vault, *_GIT_LOG, "--format=@%H", "--name-only", "--", prefix.rsplit("/", 1)[0])
-    if log is None:
-        return "(history unreadable)"
-    for sha, path in _log_entries(log):
-        if not (path.startswith(prefix) and path.endswith(".md") and "/" not in path[len(prefix) :]):
-            continue
-        text = _vault_git(vault, "show", f"{sha}:./{path}")  # None where the commit deleted it
-        if text is not None and parse_experiment(slug, text).status == "vetoed":
-            return sha
+    commits = _touched(vault, [prefix.rsplit("/", 1)[0]])
+    if commits is None:
+        raise Refused(EXIT_REFUSED, "git couldn't read the experiment notes' history; a veto can't be ruled out")
+    for _, sha, names in commits:
+        for path in names:
+            if not (path.startswith(prefix) and path.endswith(".md") and "/" not in path[len(prefix) :]):
+                continue
+            text = _vault_git(vault, "show", f"{sha}:./{path}")  # None where the commit deleted it
+            if text is not None and parse_experiment(slug, text).status == "vetoed":
+                return sha
     return None
 
 
@@ -414,6 +441,47 @@ def _uncommitted(vault: Path, rels: Sequence[str]) -> list[str] | None:
     return [p[len(prefix) :].rstrip("/") if p.startswith(prefix) else p.rstrip("/") for p in paths if p]
 
 
+# R26: what may start an experiment's script. Anything else as argv[0] must be the script itself.
+EXPERIMENT_INTERPRETERS = frozenset({"python3", "python", "sh", "bash", "node"})
+
+
+def _committed_command(
+    vault: Path, exp_rel: str, argv: list[str], runner_owned: Callable[[str], bool]
+) -> list[str]:  # fmt: skip
+    """``argv`` when it runs a committed file of the experiment's own folder, else :class:`Refused` (``argv``).
+
+    ``argv[0]`` is an executable file committed in the folder, or one of :data:`EXPERIMENT_INTERPRETERS` with such
+    a file (any mode) as ``argv[1]``: no interpreter options first, so ``-c``, ``-e`` and ``-m`` are out. The rest is
+    data. A file path is relative, stays in the folder (no ``..``, no link out of it) and is never one of the
+    runner's own (its scratch dir, its run logs). A script run directly comes back as ``./<path>``, so the shell
+    finds it in the folder and not on PATH.
+    """
+    direct = argv[0] not in EXPERIMENT_INTERPRETERS
+    if not direct and len(argv) < 2:
+        raise Refused(EXIT_REFUSED, f"argv: {argv[0]} needs the experiment's script as its first argument")
+    given = argv[0] if direct else argv[1]
+    parts = [p for p in given.split("/") if p not in ("", ".")]
+    if not parts or given.startswith(("/", "-")) or ".." in parts:
+        raise Refused(
+            EXIT_REFUSED,
+            f"argv: {given!r} isn't a file of the experiment's; run a committed script in its folder "
+            f"(itself, or with one of {', '.join(sorted(EXPERIMENT_INTERPRETERS))})",
+        )
+    inner = "/".join(parts)
+    if runner_owned(inner):
+        raise Refused(EXIT_REFUSED, f"argv: {inner} is the runner's own file, not the experiment's script")
+    listing = _vault_git(vault, "ls-tree", "-z", "HEAD", "--", f"./{exp_rel}/{inner}") or ""
+    mode = listing.split(" ", 1)[0] if listing.endswith(f"\t{exp_rel}/{inner}\0") else ""
+    if mode not in ("100644", "100755") or (direct and mode != "100755"):
+        why = "isn't a committed executable file" if direct else "isn't a committed file"
+        raise Refused(EXIT_REFUSED, f"argv: {inner} {why} in the experiment's folder")
+    folder = os.path.realpath(vault / exp_rel)
+    real = os.path.realpath(vault / exp_rel / inner)
+    if not real.startswith(folder + os.sep) or not os.path.isfile(real):
+        raise Refused(EXIT_REFUSED, f"argv: {inner} leads out of the experiment's folder")
+    return [f"./{inner}", *argv[1:]] if direct else [argv[0], inner, *argv[2:]]
+
+
 def _shown(vault: Path, moment: datetime) -> str:
     from scout import config
 
@@ -431,8 +499,10 @@ def validate_experiment(
     - the note isn't at HEAD, or is ``vetoed`` there or in any earlier commit (a veto is final: ruling R22)
     - the note or its experiment folder has uncommitted changes, other than the runner's own files (R23)
     - the newest commit touching the note or the folder's files is more recent than the owner's notice (R23)
+    - ``argv`` doesn't run a committed file of the experiment's folder (:func:`_committed_command`, R26)
 
-    The cap is the committed note's, clamped to the owner's maximum.
+    The argv returned is the one to run (a script run directly as ``./<path>``). The cap is the committed note's,
+    clamped to the owner's maximum.
     """
     from scout.lab import paths as lab_paths
     from scout.lab import runner as lab_runner
@@ -491,17 +561,24 @@ def validate_experiment(
     if dirty:
         shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
         raise Refused(EXIT_REFUSED, f"{eid} has uncommitted changes ({shown}); commit them and wait out the notice")
-    log = _vault_git(vault, *_GIT_LOG, "--format=@%ct %H", "--name-only", "--", rel, exp_rel)
+    argv = _committed_command(vault, exp_rel, list(argv), lab_runner.runner_owned)
+    commits = _touched(vault, [rel, exp_rel])
+    if commits is None:
+        raise Refused(EXIT_REFUSED, f"git couldn't read {eid}'s history; the notice can't be counted")
     newest = 0
-    for stamp_sha, path in _log_entries(log or ""):
-        stamp, _, sha = stamp_sha.partition(" ")
-        if not stamp.isdigit() or not counts(path) or int(stamp) <= newest:
+    for stamp, sha, names in commits:
+        if stamp <= newest:
             continue
-        if path == rel:
-            before, after = _vault_git(vault, "show", f"{sha}^:./{rel}"), _vault_git(vault, "show", f"{sha}:./{rel}")
-            if before is not None and after is not None and _same_plan(before, after):
-                continue  # only status/started changed (R25)
-        newest = int(stamp)
+        for path in names:
+            if not counts(path):
+                continue
+            if path == rel:
+                before = _vault_git(vault, "show", f"{sha}^:./{rel}")
+                after = _vault_git(vault, "show", f"{sha}:./{rel}")
+                if before is not None and after is not None and _same_plan(before, after):
+                    continue  # only status/started changed (R25)
+            newest = stamp
+            break
     if not newest:
         raise Refused(EXIT_REFUSED, f"no commit holds {note.name}; the notice can't be counted")
     last = datetime.fromtimestamp(newest, UTC)
@@ -513,9 +590,9 @@ def validate_experiment(
             f"commit at {_shown(vault, last)}, so it may run from {_shown(vault, runs_from)}",
         )
     raw = head.frontmatter.get("cost_cap_usd")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw) or raw <= 0:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
         raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
-    return slug, eid, list(argv), min(float(raw), limits.max_cost_cap_usd)
+    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd)
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
