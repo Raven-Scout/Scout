@@ -168,17 +168,23 @@ struct KBEditorView: View {
     private var showsReader: Bool { isMarkdown && !isUnreadable && mode == .read }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            EditorialRule()
-            if externallyChanged {
-                changedOnDiskBanner
-            } else if Self.showsDraftBanner(restored: restoredDraft, isDirty: isDirty,
-                                            dismissed: draftBannerDismissed) {
-                draftBanner
+        // The column never asks for more height than it's offered: measured
+        // for the split view's minimum size (a near-zero width), a banner
+        // wrapped a word per line and asked for 1500-2300 pt, which pushed
+        // the whole window's content up under the title bar.
+        KBNoteColumnLayout {
+            VStack(spacing: 0) {
+                header
+                EditorialRule()
+                if externallyChanged {
+                    changedOnDiskBanner
+                } else if Self.showsDraftBanner(restored: restoredDraft, isDirty: isDirty,
+                                                dismissed: draftBannerDismissed) {
+                    draftBanner
+                }
+                if find.readerBarVisible && showsReader { KBReaderFindBar(controller: find) }
+                content
             }
-            if find.readerBarVisible && showsReader { KBReaderFindBar(controller: find) }
-            content
         }
         .background {
             Button("Find in Note") { find.show(inReader: showsReader) }
@@ -281,8 +287,13 @@ struct KBEditorView: View {
         [(label: "Read", value: .read), (label: "Rich", value: .rich), (label: "Source", value: .source)]
 
     /// The narrowest the path and name get beside the controls before the
-    /// controls move to their own row.
-    static let minTitleWidth: CGFloat = 160
+    /// controls move to their own row. At 160 pt the root crumb took half of
+    /// it and the note's name was cut to about 8 characters.
+    static let minTitleWidth: CGFloat = 280
+
+    /// The narrowest the folders crumb gets: room for an ellipsis and a
+    /// letter either side, never a clipped glyph.
+    static let minFolderCrumbWidth: CGFloat = 32
 
     private var titleColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -394,10 +405,12 @@ struct KBEditorView: View {
             .help("Back to overview")
             if !tail.folders.isEmpty {
                 Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).fixedSize()
-                Text(tail.folders)
-                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
-                    .lineLimit(1).truncationMode(.middle)
-                    .layoutPriority(0)
+                KBCrumbFloorLayout(floor: Self.minFolderCrumbWidth) {
+                    Text(tail.folders)
+                        .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                .layoutPriority(0)
             }
             if !tail.note.isEmpty {
                 Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).fixedSize()
@@ -413,11 +426,18 @@ struct KBEditorView: View {
     /// Shown the moment the file changes under unsaved edits, with both ways
     /// out; neither discards anything without asking.
     private var changedOnDiskBanner: some View {
-        DSBanner(tone: .warning, title: "\(node.displayName) changed on disk",
+        Self.changedOnDiskBanner(name: node.displayName, saveMine: { forceSave() },
+                                 reload: { requestReload() })
+    }
+
+    /// Static so the layout tests host the banner the reader shows.
+    static func changedOnDiskBanner(name: String, saveMine: @escaping @MainActor () -> Void,
+                                    reload: @escaping @MainActor () -> Void) -> some View {
+        DSBanner(tone: .warning, title: "\(name) changed on disk",
                  message: "Something else changed this file while you were editing it. Your edits are still here. "
                     + "Save your version to replace the file, or reload to see the new one.",
-                 actions: [ProblemAction("Save My Version") { forceSave() },
-                           ProblemAction("Reload…") { requestReload() }])
+                 actions: [ProblemAction("Save My Version", perform: saveMine),
+                           ProblemAction("Reload…", perform: reload)])
             .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
@@ -427,11 +447,18 @@ struct KBEditorView: View {
     }
 
     private var draftBanner: some View {
+        Self.draftBanner(save: { save() }, discard: { requestReload() },
+                         dismiss: { draftBannerDismissed = true })
+    }
+
+    /// Static so the layout tests host the banner the reader shows.
+    static func draftBanner(save: @escaping @MainActor () -> Void, discard: @escaping @MainActor () -> Void,
+                            dismiss: @escaping @MainActor () -> Void) -> some View {
         DSBanner(tone: .info, title: "Unsaved draft",
                  message: "You edited this note earlier and haven't saved it. This is your draft, not the file on disk.",
-                 actions: [ProblemAction("Save") { save() },
-                           ProblemAction("Discard Edits…") { requestReload() }],
-                 onDismiss: { draftBannerDismissed = true })
+                 actions: [ProblemAction("Save", perform: save),
+                           ProblemAction("Discard Edits…", perform: discard)],
+                 onDismiss: dismiss)
             .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
@@ -1022,5 +1049,54 @@ struct KBSourceEditor: NSViewRepresentable {
             guard let tv = notification.object as? NSTextView else { return }
             text.wrappedValue = tv.string
         }
+    }
+}
+
+/// The note column's layout: its child at the size offered, and never a
+/// height taller than the one offered. A banner's text wraps at whatever
+/// width it gets, and the split view measures the detail column's minimum
+/// size in its own hosting view at a near-zero width (the window's 1070 pt
+/// minimum frame doesn't reach it). There the "Unsaved draft" banner asked
+/// for about 1,500 pt and the "changed on disk" one about 2,300 pt, and the
+/// split view centred that overflow, pushing the window's content up by half
+/// of it. Width passes through unchanged, so the page's minimum width
+/// doesn't move.
+struct KBNoteColumnLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(proposal)
+        guard let offered = proposal.height else { return size }
+        return CGSize(width: size.width, height: min(size.height, offered))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for child in subviews {
+            child.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
+/// A crumb that never gets narrower than `floor` (or its own width, when
+/// that's less), so a squeezed folder path truncates to "p…s" instead of a
+/// clipped glyph, and a short one gets no padding.
+struct KBCrumbFloorLayout: Layout {
+    let floor: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        return child.sizeThatFits(widened(proposal, child))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for child in subviews {
+            child.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                        proposal: ProposedViewSize(bounds.size))
+        }
+    }
+
+    private func widened(_ proposal: ProposedViewSize, _ child: LayoutSubview) -> ProposedViewSize {
+        guard let width = proposal.width else { return proposal }
+        let natural = child.sizeThatFits(.unspecified).width
+        return ProposedViewSize(width: max(width, min(floor, natural)), height: proposal.height)
     }
 }
