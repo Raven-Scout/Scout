@@ -35,7 +35,7 @@ from scout import cli
 from scout.errors import ConfigError
 from scout.events import Event
 from scout.scripts import notify_telegram
-from scout.telegram_inbound.ledger import ANSWERED, InboundMessage, Ledger, ledger_dir
+from scout.telegram_inbound.ledger import ANSWERED, FAILED, InboundMessage, Ledger, ledger_dir
 
 FAKE_TOKEN = "FAKE_TOKEN_123:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 FAKE_CHAT_ID = "987654321"
@@ -659,6 +659,18 @@ def test_successful_reply_records_answered_in_ledger(guarded: Path, fake_data_di
     assert ledger.get(5).state == ANSWERED and ledger.get(6).answered_at is not None  # type: ignore[union-attr]
     (row,) = (json.loads(line) for line in (ledger_dir(fake_data_dir) / "replies.jsonl").read_text().splitlines())
     assert row["reply_to"] == 6 and row["covers"] == [5, 6]
+
+
+def test_a_failed_message_is_still_answerable(guarded: Path, fake_data_dir: Path) -> None:
+    """Out of respond attempts, a message waits for a scheduled run, whose reply answers it."""
+    ledger = _inbound(fake_data_dir, 5, 6)
+    with ledger.locked():
+        ledger.mark_skipped([5], FAILED)
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        code, _ = _cli_send(fake_data_dir, reply_to=6, covers=[5])
+    assert code == 0 and post.call_count == 1
+    assert Ledger(fake_data_dir).get(5).state == ANSWERED  # type: ignore[union-attr]
 
 
 def test_failed_send_does_not_record_reply(guarded: Path, fake_data_dir: Path) -> None:

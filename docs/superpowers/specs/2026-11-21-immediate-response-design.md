@@ -152,7 +152,10 @@ snapshot, and proves it answered by sending a reply through the broker.
   - **Timeout:** a message dispatched more than 60 min ago with no reply record, and no
     live respond run, goes back to `pending` with `attempt + 1`.
   - **Failure:** after 3 attempts the message goes to `failed`, and the tick sends one
-    plain notice: "I couldn't handle your 14:02 message; it's logged in Scout."
+    plain notice per tick (no LLM), replying to the newest message that just failed: "I
+    couldn't handle this after 3 tries — I'll pick it up in the next scheduled run." A
+    failed message never fires a respond run again, but it stays answerable: the next
+    scheduled run's drain (§5) answers it.
 - **Broker change.** `notify telegram` gains `--reply-to <message_id>` and
   `--covers <id,id,…>`. The broker validates both against the ledger's dispatched set, and
   after delivery appends `{reply_to, covers, delivered_at}` to a reply record inside the

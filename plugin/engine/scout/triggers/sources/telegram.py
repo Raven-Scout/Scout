@@ -36,7 +36,8 @@ SUPPORTED_MATCH_TYPES: list[str] = ["message"]
 
 UNSUPPORTED_REPLY = "I can only read text messages for now."
 ACK_FALLBACK_REPLY = "On it"
-FAILED_NOTICE = "I couldn't handle this message after 3 tries. It's logged in Scout."
+# Sent by the tick itself, no LLM. A failed message stays answerable: the next scheduled run's drain answers it.
+FAILED_NOTICE = "I couldn't handle this after 3 tries — I'll pick it up in the next scheduled run."
 
 
 def _iso_z(when: dt.datetime) -> str:

@@ -21,7 +21,7 @@ from scout.triggers.sources.telegram import TelegramSource
 OWNER = 424242
 TOKEN = "123456:test-token"
 T0 = dt.datetime(2026, 11, 21, 9, 0, tzinfo=dt.UTC)
-FAILED_NOTICE = "I couldn't handle this message after 3 tries. It's logged in Scout."
+FAILED_NOTICE = "I couldn't handle this after 3 tries — I'll pick it up in the next scheduled run."
 UNSUPPORTED_NOTICE = "I can only read text messages for now."
 
 
@@ -418,6 +418,26 @@ def test_failed_message_sends_one_notice(fake_data_dir: Path):
 
     src.scan_since("ignored")
     assert len(bot.methods("sendMessage")) == 1  # once, not every tick
+
+
+def test_failed_message_never_fires_a_respond_run(fake_data_dir: Path):
+    """Out of attempts is left for a scheduled run: it fires nothing, even alongside a new message."""
+    clock = Clock()
+    ledger = Ledger(fake_data_dir)
+    with ledger.locked():
+        ledger.add(
+            InboundMessage(message_id=5, date=0, text="hard one", reply_to_text=None, forwarded=False, kind="text")
+        )
+        ledger.mark_skipped([5], ledger_mod.FAILED)
+    bot = FakeBot()
+    src = _source(fake_data_dir, bot, clock=clock)
+    assert src.scan_since("ignored") == []
+
+    bot.push(100, 6)
+    (event,) = src.scan_since("ignored")
+    assert [m["message_id"] for m in event.raw_payload["messages"]] == [6]
+    src.on_fired(event, _ok(event.source_event_id))
+    assert _state(fake_data_dir, 5) == ledger_mod.FAILED and _state(fake_data_dir, 6) == ledger_mod.DISPATCHED
 
 
 # ----- health / registry ----------------------------------------------------------------
