@@ -1,6 +1,6 @@
 # Immediate response: Scout answers a Telegram message within minutes
 
-**Status:** design, awaiting owner approval · **Date:** 2026-11-21
+**Status:** design, approved by owner 2026-11-21 · **Date:** 2026-11-21
 **Builds on:** [event-triggers spec](../../specs/event-triggers.md) (engine v1, merged in #184, never switched on)
 
 ## Intent
@@ -14,7 +14,7 @@ The owner wants Scout to react the way a colleague would. A message to the Scout
 picked up within minutes. A background run handles it, then replies in the same chat
 saying what it did.
 
-**Success:** the owner sends "that NAH item is done, drop it" from their phone. Within
+**Success:** the owner sends "that invoice item is done, drop it" from their phone. Within
 about 5 minutes the message gets a 👀. A few minutes later a reply says the item is marked
 ✅ in today's action items, with the commit.
 
