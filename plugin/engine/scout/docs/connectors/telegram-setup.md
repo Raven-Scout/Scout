@@ -79,24 +79,27 @@ your personal account's id with respect to this bot.
 
 ## 4. Capture the chat-id
 
-Telegram surfaces the chat-id via the Bot API's `getUpdates` method. Run:
+Run:
 
 ```bash
-TOKEN="$(cat ~/.scout-secrets/telegram-bot-token)"
-curl -s "https://api.telegram.org/bot${TOKEN}/getUpdates" | jq '.result[0].message.chat.id'
+scoutctl telegram find-chat-id
 ```
 
-You should see a number — usually a 9–10 digit positive int for personal
-DMs, or a negative int for group chats. Save it:
+It lists each private chat that has messaged your bot, as `<chat-id>` and
+the sender's first name. The id is usually a 9–10 digit positive int. It
+reads updates without confirming them, so it is safe to run more than once
+and never takes messages away from Scout's inbound polling. Save the id:
 
 ```bash
 printf '%s' '987654321' > ~/.scout-secrets/telegram-chat-id
 chmod 600 ~/.scout-secrets/telegram-chat-id
 ```
 
-> **If `getUpdates` returns an empty `result` array,** you haven't actually
-> sent the bot a message yet. Go back to step 3 and send any text. Telegram
-> only retains updates for ~24h and only for chats with recent activity.
+> **If it finds nothing,** you haven't sent the bot a message yet. Go back
+> to step 3 and send any text. Telegram only retains updates for ~24h and
+> only for chats with recent activity. Once the inbound trigger is on, it
+> confirms the updates it reads, so a raw `getUpdates` call (or this command)
+> can come back empty even though you did message the bot.
 
 > **Group chats are supported** but require an extra step — add the bot to
 > the group, then post anything in the group. The chat-id will be negative.

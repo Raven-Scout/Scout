@@ -3842,6 +3842,75 @@ def _register_notify() -> None:
 _register_notify()
 
 
+def _register_telegram() -> None:
+    """scoutctl telegram {find-chat-id, inbound-status} — setup and observability for inbound Telegram."""
+    telegram_app = typer.Typer(help="Inbound Telegram: find your chat id, check the poller.")
+    app.add_typer(telegram_app, name="telegram")
+
+    @telegram_app.command("find-chat-id")
+    def cli_telegram_find_chat_id() -> None:
+        """List the private chats that have messaged the bot, with the sender's first name.
+
+        Reads only the bot token (the chat id may not exist yet). Polls with offset 0, so it
+        never confirms an update: the inbound trigger, or a later run, still sees every message.
+        """
+        from scout.errors import ConfigError
+        from scout.scripts.notify_telegram import _read_secret
+        from scout.telegram_inbound import bot
+
+        try:
+            token = _read_secret("telegram-bot-token")
+            updates = bot.get_updates(token=token, offset=0, http_post=bot.default_http_post)
+        except (ConfigError, bot.TelegramApiError) as e:
+            typer.echo(f"scoutctl telegram find-chat-id: {e}", err=True)
+            raise typer.Exit(code=1) from e
+
+        found: dict[int, str] = {}
+        for update in updates:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat")
+            if not isinstance(chat, dict) or chat.get("type") != "private" or not isinstance(chat.get("id"), int):
+                continue
+            sender = message.get("from") or {}
+            found.setdefault(chat["id"], str(sender.get("first_name") or chat.get("first_name") or "?"))
+        if not found:
+            typer.echo(
+                "No private chats found. Send your bot a message (any text), then run this again. "
+                "If you already did, the inbound trigger may have consumed the updates: "
+                "check `scoutctl telegram inbound-status`, or read telegram-chat-id from your own records."
+            )
+            return
+        for chat_id, first_name in found.items():
+            typer.echo(f"{chat_id}\t{first_name}")
+
+    @telegram_app.command("inbound-status")
+    def cli_telegram_inbound_status(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+    ) -> None:
+        """Show the inbound ledger counts and the poller's last poll and last error."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        ledger = Ledger(_paths.data_dir())
+        counts = ledger.counts()
+        state = ledger.get_poll_state()
+        last_poll_at = state.get("last_poll_at")
+        last_error = state.get("last_error")
+        if as_json:
+            typer.echo(_json.dumps({"counts": counts, "last_poll_at": last_poll_at, "last_error": last_error}))
+            return
+        typer.echo("messages: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        typer.echo(f"last poll: {last_poll_at or 'never'}")
+        typer.echo(f"last error: {last_error or 'none'}")
+
+
+_register_telegram()
+
+
 health_app = typer.Typer(
     help="Run health: are scheduled runs happening and succeeding?",
     invoke_without_command=True,
