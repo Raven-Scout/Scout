@@ -106,6 +106,11 @@ struct AppUpdaterDelegateSelectorTests {
         "updater:didFindValidUpdate:",
         "updaterDidNotFindUpdate:error:",
         "feedURLStringForUpdater:",
+        // Gentle reminders (SPUStandardUserDriverDelegate): without these
+        // three, Sparkle pops its own alert for scheduled finds again.
+        "supportsGentleScheduledUpdateReminders",
+        "standardUserDriverShouldHandleShowingScheduledUpdate:andInImmediateFocus:",
+        "standardUserDriverWillHandleShowingUpdate:forUpdate:state:",
     ])
     func delegateRespondsTo(selector: String) {
         let delegate = AppUpdaterDelegate(onEvent: { _ in })

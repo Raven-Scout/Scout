@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Fires a schedule from a notification's "Run again"; `ScoutApp` points
     /// it at `AppState.retryFromNotification(slotKey:)`.
     @MainActor static var retrySlot: ((String) -> Void)?
+    /// Brings up Sparkle's alert for the update a clicked "Scout X is ready"
+    /// notification announced; `ScoutApp` points it at `UpdateService`.
+    @MainActor static var showAppUpdate: (() -> Void)?
 
     func applicationDidFinishLaunching(_: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -72,7 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Clicking a run notification opens that run in the Control Center;
-    /// its "Run again" fires the run's own schedule.
+    /// its "Run again" fires the run's own schedule. Clicking the update
+    /// notification brings up Sparkle's alert for that update.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -81,7 +85,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let info = response.notification.request.content.userInfo
         switch response.actionIdentifier {
         case UNNotificationDefaultActionIdentifier:
-            if let id = NotificationService.runID(from: info) { Self.openRun?(id) }
+            if AppUpdateNotifier.isAppUpdate(info) {
+                Self.showAppUpdate?()
+            } else if let id = NotificationService.runID(from: info) {
+                Self.openRun?(id)
+            }
         case NotificationService.retryActionID:
             if let slot = NotificationService.slotKey(from: info) { Self.retrySlot?(slot) }
         default:

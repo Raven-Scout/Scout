@@ -22,13 +22,21 @@ struct ScoutApp: App {
         let pluginChecker: any PluginUpdateChecking = AppState.Configuration.isTestHost
             ? InertPluginChecker()
             : PluginUpdateChecker.standard()
-        _updates = StateObject(wrappedValue: UpdateService(
+        let updates = UpdateService(
             pluginChecker: pluginChecker,
             engineStates: state.engineHealth.$state.eraseToAnyPublisher(),
-            makeAppController: { AppUpdater(onEvent: $0) }))
+            // Same rule as the plugin checker: the test host posts nothing.
+            appUpdateNotifier: AppState.Configuration.isTestHost ? nil : AppUpdateNotifier(),
+            makeAppController: { AppUpdater(onEvent: $0) })
+        _updates = StateObject(wrappedValue: updates)
         // A clicked run notification opens that run (card C3).
         AppDelegate.openRun = { [weak state] id in state?.openRun(id: id) }
         AppDelegate.retrySlot = { [weak state] slot in state?.retryFromNotification(slotKey: slot) }
+        // A clicked "Scout X is ready" brings up Sparkle's alert for it.
+        AppDelegate.showAppUpdate = { [weak updates] in
+            NSApp.activate()
+            updates?.check(.app)
+        }
     }
 
     var body: some Scene {

@@ -83,7 +83,7 @@ Cmd+, opens Settings. A few fields are worth filling in:
 
 ## Updates
 
-From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks daily and shows a badge when a new version is ready (see **Settings ▸ Updates**). Debug builds never check for updates.
+From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks every hour, and when a new version is ready it shows a banner at the top of every page, sends one macOS notification, and badges **Settings ▸ Updates**. Click **Update Now** on the banner, or the notification, to install it. Debug builds never check for updates.
 
 Which mechanism updates what:
 
