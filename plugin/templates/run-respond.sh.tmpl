@@ -315,7 +315,7 @@ fi
 START_TIME=$(date +%s)
 # The run's start on a clock that stops while the host sleeps (scout-lock.sh's
 # _scout_awake_now): `agent-runtime exec` counts a run timeout in awake time from
-# here (spec 2026-11-13 §8.6, Jordan 2026-11-16), and the run-outcome row records
+# here (spec 2026-11-13 §8.6, owner decision 2026-11-16), and the run-outcome row records
 # the run's awake length. Exported, so every retry attempt shares this one start.
 SCOUT_RUN_AWAKE_STARTED="$(_scout_awake_now)"
 export SCOUT_RUN_AWAKE_STARTED

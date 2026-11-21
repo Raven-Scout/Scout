@@ -22,9 +22,8 @@ bash runner templates, and markdown phase files.
 
 ## Global Constraints
 
-- **Paths.** All paths are relative to the worktree root
-  `/Users/jordanburger/.scout-worktrees/immediate-response`. The engine lives at
-  `plugin/engine/`.
+- **Paths.** All paths are relative to the worktree root (the checkout of this branch). The
+  engine lives at `plugin/engine/`.
 - **Tests.** Run them from `plugin/engine` with `.venv/bin/python -m pytest …`. Create the
   venv once with `uv venv && uv pip install -e ".[dev,full]"`.
 - **Snapshots.** Regenerate them with their scripts, never by hand. For the schedule
@@ -485,5 +484,5 @@ bash runner templates, and markdown phase files.
 ### Task 10: Whole-suite check and draft PR
 
 - [ ] **Step 1:** Run `cd plugin/engine && .venv/bin/python -m pytest tests -q`. Expected: all pass. Fix anything red before going on.
-- [ ] **Step 2:** Run `grep -rn "NAH\|Keboola\|Cuesta" docs/superpowers plugin/phases/respond plugin/engine/scout/telegram_inbound`. Expected: no hits.
+- [ ] **Step 2:** Check the new docs, phases and code (`docs/superpowers`, `plugin/phases/respond`, `plugin/engine/scout/telegram_inbound`) for personal names, home-directory paths, employer or client names. Expected: none (this repo is public).
 - [ ] **Step 3:** Push the branch, then run `gh pr create --draft --repo Raven-Scout/Scout --title "feat: immediate response to Telegram messages"`. The body links the spec and the plan, lists the two trims, and gives the on-switch steps. It ends with the 🤖 Generated line.
