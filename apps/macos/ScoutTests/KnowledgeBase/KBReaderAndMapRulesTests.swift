@@ -368,6 +368,117 @@ struct KBReaderAndMapRulesTests {
         #expect(KBMapLayoutCache.read(file) == ["n": [49, 0]])
     }
 
+    // MARK: - Layout cache permissions (only the user's account reads it)
+
+    private struct ChmodRefused: Error {}
+
+    private func mode(_ url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return try #require(attributes[.posixPermissions] as? NSNumber).intValue & 0o777
+    }
+
+    /// `<root>/kb-map/<bundle>/layout.json`, the production shape, with
+    /// `root` standing in for `Caches/Scout` at 755.
+    private func layoutTree() throws -> (root: URL, kbMap: URL, bundle: URL, file: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kb-map-perms-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        let kbMap = root.appendingPathComponent("kb-map")
+        let bundle = kbMap.appendingPathComponent("com.example.Scout")
+        return (root, kbMap, bundle, bundle.appendingPathComponent("layout.json"))
+    }
+
+    @Test("a stored layout is 0600 in 0700 folders, and the shared caches folder above is left alone")
+    func layoutCacheIsPrivateWhenNew() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let saved = (KBMapLayoutCache.file, KBMapLayoutCache.positions)
+        defer { (KBMapLayoutCache.file, KBMapLayoutCache.positions) = saved }
+        KBMapLayoutCache.file = tree.file
+        KBMapLayoutCache.store(["a": [1, 2]])
+        KBMapLayoutCache.waitForWrites()
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+        #expect(KBMapLayoutCache.read(tree.file) == ["a": [1, 2]])
+    }
+
+    @Test("an older install's 0644 layout in 0755 folders is tightened on the next store")
+    func layoutCacheTightensExistingOnStore() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let fm = FileManager.default
+        try fm.createDirectory(at: tree.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.kbMap.path)
+        try #require(KBMapLayoutCache.encode(["old": [0, 0]])).write(to: tree.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tree.file.path)
+        #expect(try mode(tree.file) == 0o644)
+
+        KBMapLayoutCache.write(try #require(KBMapLayoutCache.encode(["a": [1, 2]])), to: tree.file)
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+    }
+
+    @Test("an older install's 0644 layout is tightened when it is read")
+    func layoutCacheTightensExistingOnRead() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let fm = FileManager.default
+        try fm.createDirectory(at: tree.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.kbMap.path)
+        try #require(KBMapLayoutCache.encode(["a": [1, 2]])).write(to: tree.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tree.file.path)
+
+        #expect(KBMapLayoutCache.read(tree.file) == ["a": [1, 2]])
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+    }
+
+    @Test("a layout that can't be made private is deleted, never kept open")
+    func layoutCacheDeletesWhatItCantTighten() throws {
+        let fm = FileManager.default
+        let real = KBMapLayoutCache.posixSetMode
+        let data = try #require(KBMapLayoutCache.encode(["a": [1, 2]]))
+
+        // The file's chmod fails after the write: the new file goes.
+        let one = try layoutTree()
+        defer { try? fm.removeItem(at: one.root) }
+        KBMapLayoutCache.write(data, to: one.file) { url, mode in
+            if mode == 0o600 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(!fm.fileExists(atPath: one.file.path))
+
+        // An existing 0644 file that can't be tightened on read: gone, and
+        // the map opens empty.
+        try data.write(to: one.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: one.file.path)
+        let read = KBMapLayoutCache.read(one.file) { url, mode in
+            if mode == 0o600 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(read.isEmpty)
+        #expect(!fm.fileExists(atPath: one.file.path))
+
+        // A folder that can't be made 0700: nothing is written into it, and
+        // the older 0644 layout there is deleted.
+        let two = try layoutTree()
+        defer { try? fm.removeItem(at: two.root) }
+        try fm.createDirectory(at: two.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try data.write(to: two.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: two.file.path)
+        KBMapLayoutCache.write(data, to: two.file) { url, mode in
+            if mode == 0o700 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(!fm.fileExists(atPath: two.file.path))
+    }
+
     // MARK: - Web bridge
 
     @Test("a page saying ready gets what it last showed first, then the queue, without repeats")
