@@ -557,23 +557,25 @@ class Broker:
             return Reply(r.exit_code, f"git-safe-commit: {r.reason}\n", kind=REFUSED)
         return run_commit(self.vault, message, paths, override, self.env)
 
+    def _unanswerable(self, fields: Mapping[str, Any]) -> Reply | None:
+        """A reply to a message that isn't waiting (unknown, or already answered): refused for good, live or
+        drained, and before any limit, so a queued reply can't wait out a full hour for a predicted id to arrive.
+        The same check cli_send makes again as it sends; an unreadable ledger is exit 1, which the drain retries."""
+        if fields["reply_to"] is None:
+            return None
+        from scout.scripts.notify_telegram import EXIT_UNANSWERABLE, unanswerable
+
+        problem = unanswerable(self.vault, [fields["reply_to"], *fields["covers"]])
+        if problem is None:
+            return None
+        code, reason = problem
+        return Reply(code, f"scoutctl notify telegram: {reason}\n", kind=REFUSED if code == EXIT_UNANSWERABLE else "")
+
     def telegram(self, req: Mapping[str, Any]) -> Reply:
         try:
             fields = validate_telegram(req, self.limits)
         except Refused as r:
             return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n", kind=REFUSED)
-        if fields["reply_to"] is not None:
-            # Before any limit: a reply to a message that isn't waiting (unknown, or already answered) is refused
-            # for good, live or drained, so a queued reply can't wait out a full hour for a predicted id to arrive.
-            # The same check cli_send makes again as it sends.
-            from scout.scripts.notify_telegram import EXIT_UNANSWERABLE, unanswerable
-
-            problem = unanswerable(self.vault, [fields["reply_to"], *fields["covers"]])
-            if problem is not None:
-                code, reason = problem
-                return Reply(
-                    code, f"scoutctl notify telegram: {reason}\n", kind=REFUSED if code == EXIT_UNANSWERABLE else ""
-                )
         if fields["dry_run"]:
             return self._send(fields)
         rid = req["rid"] if isinstance(req.get("rid"), str) and _REQUEST_ID.match(req["rid"]) else ""
@@ -594,6 +596,8 @@ class Broker:
             rows = _read_sends(self.env, now)
             if rid and any(r["rid"] == rid for r in rows):
                 return Reply(0, f"scoutctl notify telegram: request {rid} was already sent\n")
+            if (unsendable := self._unanswerable(fields)) is not None:
+                return unsendable
             mine = [r for r in rows if r["run"] == run]
             if run == UNREGISTERED:
                 mine = [r for r in mine if now - datetime.fromisoformat(r["at"]) < timedelta(hours=1)]

@@ -262,6 +262,20 @@ def test_a_reply_to_a_message_not_yet_received_is_refused_for_good(
     assert Ledger(vault).unanswered_ids() == {5, 9}
 
 
+def test_a_reply_drained_twice_is_already_sent_not_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A drain stopped between the send and the unlink leaves the entry: the next drain finds its request id in
+    the send log (done), before the ledger check that would now refuse it as already answered."""
+    sent = _real_sender(monkeypatch)
+    _inbound(vault, 5)
+    req = _tg("answer", reply_to=5, rid="01REPLYRID")
+    broker.enqueue(vault, "telegram", req, now=NOW)
+    assert broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW)).done == 1
+    broker.enqueue(vault, "telegram", req, now=NOW)
+    again = broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW))
+    assert (again.done, again.failed) == (1, 0)
+    assert len(sent) == 1
+
+
 def test_a_live_reply_to_an_unknown_message_is_a_refusal(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sent = _real_sender(monkeypatch)
     _inbound(vault, 5)
