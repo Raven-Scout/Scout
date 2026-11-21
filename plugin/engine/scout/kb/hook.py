@@ -90,7 +90,7 @@ live_run() {{
     $2 ~ /^Z/ {{ next }}
     {{ cmd = $0; sub(/^ *[0-9]+ +[^ ]+ */, "", cmd) }}
     {{ first = cmd; sub(/ .*/, "", first); rest = cmd; sub(/^[^ ]+ +/, "", rest) }}
-    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research)\\.sh( |$)/ {{ found = 1 }}
+    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research|respond)\\.sh( |$)/ {{ found = 1 }}
     index(cmd " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
     first ~ /(^|\\/)-?(ba|z|da|k)?sh$/ && index(rest " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
     index(cmd, "--max-budget" "-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}

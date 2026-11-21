@@ -365,7 +365,6 @@ def test_write_event_payload_records_the_whole_event(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="run-respond.sh joins RUNNERS in Task 7; remove this mark there")
 def test_telegram_trigger_spawns_run_skill_and_marks_dispatched(fake_data_dir: Path) -> None:
     from scout.telegram_inbound.ledger import DISPATCHED, Ledger
     from scout.triggers.sources.telegram import TelegramSource

@@ -78,9 +78,9 @@ FAILED_TODAY_FINDING_ID = "runs.failed_today"
 HOLLOW_FINDING_ID = "runs.hollow_ok"
 HOLLOW_MAX_S = 60
 
-# Runner log filename prefixes written under <vault>/.scout-logs/ by the three
-# cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
-_RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log")
+# Runner log filename prefixes written under <vault>/.scout-logs/ by the cat-1b
+# runners (run-scout.sh / run-dreaming.sh / run-research.sh / run-respond.sh).
+_RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log", "respond-*.log")
 
 # The Claude CLI's own auth-error phrasing, anchored at the start of a line, so a
 # session that merely *writes about* a 401 or quotes one of these errors can't
@@ -342,7 +342,7 @@ def _parse_row(obj: object) -> OutcomeRow | None:
 # The same shapes run-outcome.sh writes, so a hand-edited row can't carry free text into a client.
 _RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
-_RUNNERS = frozenset({"scout", "dreaming", "research"})
+_RUNNERS = frozenset({"scout", "dreaming", "research", "respond"})
 _TRIGGERS = frozenset({"schedule", "heartbeat", "manual", "event"})
 
 

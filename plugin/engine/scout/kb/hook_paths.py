@@ -126,6 +126,7 @@ RUNNER_FILES: tuple[str, ...] = (
     "run-scout.sh",
     "run-dreaming.sh",
     "run-research.sh",
+    "run-respond.sh",
     "scripts/scout-tz.sh",
     "scripts/scoutctl",
     "scripts/budget-check.sh",

@@ -25,7 +25,7 @@ from tests._waits import wait_until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
-RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl")
+RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl", "run-respond.sh.tmpl")
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
 
 RUN_TIMEOUT_S = 30

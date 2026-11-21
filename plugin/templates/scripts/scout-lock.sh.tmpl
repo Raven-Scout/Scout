@@ -1,11 +1,11 @@
 #!/bin/bash
 # scout-lock.sh — the {{INSTANCE_NAME}} session lock, shared by run-scout.sh,
-# run-dreaming.sh and run-research.sh. Sourced, never executed: the functions
+# run-dreaming.sh, run-research.sh and run-respond.sh. Sourced, never executed: the functions
 # below run inside the runner's shell (set -euo pipefail).
 #
 # The runner sets, before sourcing:
 #   SCOUT_DIR  LOG_DIR  LOG_FILE  LOCK_FILE  MODE  RUN_START
-#   RUNNER_KIND   scout | dreaming | research
+#   RUNNER_KIND   scout | dreaming | research | respond
 # and then calls, in order:
 #   scout_lock_acquire          0 = the lock is ours (released on EXIT), with
 #                               the run marker beside it (#595);

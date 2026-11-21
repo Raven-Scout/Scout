@@ -238,6 +238,7 @@ _CAT1B_RUNNERS = (
     ("run-scout.sh", "templates/run-scout.sh.tmpl"),
     ("run-dreaming.sh", "templates/run-dreaming.sh.tmpl"),
     ("run-research.sh", "templates/run-research.sh.tmpl"),
+    ("run-respond.sh", "templates/run-respond.sh.tmpl"),
 )
 
 
