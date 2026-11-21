@@ -21,14 +21,31 @@ struct SessionsListView: View {
 
     var filtered: [Run] {
         let cal = Calendar.current
+        let scheduleTypes = Self.scheduleTypes(
+            slots: state.scheduleEditService.slots, upcoming: state.scheduleService.upcoming)
         return state.sessionLogService.runs.filter { run in
             if let d = dayFilter, !cal.isDate(run.startedAt, inSameDayAs: d) { return false }
-            if !typeFilter.contains(run.type) { return false }
+            if !typeFilter.contains(run.listType(scheduleTypes: scheduleTypes)) { return false }
             if !search.isEmpty {
                 if !Self.matches(run, search) { return false }
             }
             return true
         }
+    }
+
+    /// Each schedule's run type by slot key, from its `slot_type`, for
+    /// `Run.listType`: a schedule the owner made (`overnight-research`) has
+    /// no default key to map. The full schedule (`scoutctl schedule list`)
+    /// loads with the Schedules page; the upcoming list (polled from launch)
+    /// carries every schedule that fires in the next eight days, so it covers
+    /// the Control Center before that page opens. The full schedule wins.
+    static func scheduleTypes(slots: [Slot], upcoming: [UpcomingRun]) -> [String: RunType] {
+        var out: [String: RunType] = [:]
+        for up in upcoming { out[up.slotKey] = up.type }
+        for slot in slots {
+            if let type = RunType(slotKey: slot.key, slotType: slot.type.rawValue) { out[slot.key] = type }
+        }
+        return out
     }
 
     var body: some View {
@@ -113,16 +130,18 @@ struct SessionsListView: View {
 
     /// Search matches what the row shows ("morning briefing", "didn't
     /// finish", "Nov 12"), the engine name (the ledger's slot key, such as
-    /// `overnight-research`, or the log-guessed `morningBriefing` for a run
-    /// without a ledger row) and commit subjects. A run the ledger names
-    /// doesn't also match its log-name guess, so "morning" doesn't find an
-    /// overnight run (T2).
+    /// `overnight-research`, and its slot-or-mode `ledgerKey`, or the
+    /// log-guessed `morningBriefing` for a run without a ledger row) and
+    /// commit subjects. A run the ledger names doesn't also match its
+    /// log-name guess, so "morning" doesn't find an overnight run (T2).
     static func matches(_ run: Run, _ search: String) -> Bool {
-        let engineName = run.ledgerName == nil ? run.type.rawValue : (run.slotKey ?? "")
+        let engineNames = run.ledgerName == nil && run.ledgerKey == nil
+            ? [run.type.rawValue]
+            : Array(Set([run.slotKey, run.ledgerKey].compactMap { $0 })).sorted()
         let hay = [
-            run.displayName, engineName, run.status.displayName,
+            run.displayName, run.status.displayName,
             run.startedAt.formatted(date: .abbreviated, time: .omitted),
-        ] + ProtectionBadge.kinds(for: run).map(\.title) + run.commits.map(\.subject)
+        ] + engineNames + ProtectionBadge.kinds(for: run).map(\.title) + run.commits.map(\.subject)
         return hay.joined(separator: " ").localizedCaseInsensitiveContains(search)
     }
 

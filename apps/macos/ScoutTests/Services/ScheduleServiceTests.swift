@@ -172,8 +172,11 @@ struct ScheduleServiceTests {
         #expect(byKey["saturday-weekend-briefing"]?.type == .weekendBriefing)
         #expect(byKey["focus-hour"]?.type == .consolidation)
         #expect(byKey["focus-hour"]?.displayName == "Focus hour")
-        // A default schedule keeps its run type's name, as before.
-        #expect(byKey["evening-consolidation"]?.displayName == RunType.consolidation.displayName)
+        // A default schedule is named from its slot key too, as the Runs list
+        // names its finished runs: not its type's "Consolidation".
+        #expect(byKey["evening-consolidation"]?.displayName == "Evening consolidation")
+        #expect(byKey["evening-consolidation"]?.displayName
+                == DisplayName.ledgerRun(slot: "evening-consolidation", mode: "scout"))
     }
 
     @Test func refreshWithEmptyJSONProducesEmptyUpcoming() async {

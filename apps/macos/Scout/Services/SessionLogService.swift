@@ -31,6 +31,14 @@ final class SessionLogService: ObservableObject {
     /// Each ledger row's run name (`DisplayName.ledgerRun` of its slot or mode), by log file name
     /// (`Run.ledgerName`): the ledger, not the log's file name, says what kind of run it was.
     private var ledgerNames: [String: String] = [:]
+    /// Each ledger row's slot-or-mode key (`DisplayName.ledgerRunKey`), by log file name
+    /// (`Run.ledgerKey`): the key the name, the "Started by you" badge and the Type filter share.
+    private var ledgerKeys: [String: String] = [:]
+    /// The last ledger rows, by log file name, so a schedule change can rename runs without a new read.
+    private var ledgerEntries: [String: RunLedgerEntry] = [:]
+    /// The schedule's slot keys (`applyScheduleKeys`): a ledger key in it is a schedule, even one the
+    /// owner shaped like a hand-run key (`weekly-manual`), for the name, the badge and the Type filter.
+    private var scheduleKeys: Set<String> = []
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -394,10 +402,11 @@ final class SessionLogService: ObservableObject {
     nonisolated static func overlayLedger(
         _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
         triggers: [String: String] = [:], failureClasses: [String: String] = [:],
-        protection: [String: Run.Protection] = [:], names: [String: String] = [:]
+        protection: [String: Run.Protection] = [:], names: [String: String] = [:],
+        keys: [String: String] = [:], scheduleKeys: Set<String> = []
     ) -> [Run] {
         guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty || !failureClasses.isEmpty
-                || !protection.isEmpty || !names.isEmpty else { return runs }
+                || !protection.isEmpty || !names.isEmpty || !keys.isEmpty else { return runs }
         return runs.map { run in
             let name = run.logPath.lastPathComponent
             var out = run
@@ -407,30 +416,58 @@ final class SessionLogService: ObservableObject {
             if let fc = failureClasses[name], fc != out.failureClass { out.failureClass = fc }
             if let facts = protection[name], facts != out.protection { out.protection = facts }
             if let runName = names[name], runName != out.ledgerName { out.ledgerName = runName }
+            if let key = keys[name] {
+                if key != out.ledgerKey { out.ledgerKey = key }
+                let isSchedule = scheduleKeys.contains(key)
+                if isSchedule != out.ledgerKeyIsSchedule { out.ledgerKeyIsSchedule = isSchedule }
+            }
             return out
         }
     }
 
     /// Adopt the run ledger's statuses and slots (from `RunLedgerService`) and republish.
     func applyLedger(_ entries: [String: RunLedgerEntry]) {
+        ledgerEntries = entries
+        rebuildLedgerMaps()
+        let updated = Self.resolveStaleRunning(overlaid(runs))
+        if updated != runs { runs = updated }
+    }
+
+    /// Adopt the schedule's slot keys (from `ScheduleService` and `ScheduleEditService`) and rename
+    /// runs whose ledger key is one: a schedule named `weekly-manual` reads "Weekly manual" in the
+    /// run list, as in the Upcoming strip, and a Run now of it still shows "Started by you".
+    func applyScheduleKeys(_ keys: Set<String>) {
+        guard keys != scheduleKeys else { return }
+        scheduleKeys = keys
+        guard !ledgerEntries.isEmpty else { return }
+        rebuildLedgerMaps()
+        let updated = Self.resolveStaleRunning(overlaid(runs))
+        if updated != runs { runs = updated }
+    }
+
+    private func rebuildLedgerMaps() {
+        let entries = ledgerEntries
         ledgerStatuses = entries.mapValues(\.runStatus)
         ledgerSlots = entries.mapValues(\.slot)
         ledgerTriggers = entries.compactMapValues(\.trigger)
         ledgerFailureClasses = entries.compactMapValues(\.failureClass)
-        ledgerNames = entries.compactMapValues { DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner, startedAt: $0.startedAt) }
+        let schedules = scheduleKeys
+        ledgerNames = entries.compactMapValues {
+            DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner, startedAt: $0.startedAt,
+                                  schedules: schedules)
+        }
+        ledgerKeys = entries.compactMapValues { DisplayName.ledgerRunKey(slot: $0.slot, mode: $0.mode) }
         ledgerProtection = entries.compactMapValues { e in
             guard e.sandbox != nil || e.integrity != nil else { return nil }
             return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity,
                                   mode: e.mode)
         }
-        let updated = Self.resolveStaleRunning(overlaid(runs))
-        if updated != runs { runs = updated }
     }
 
     private func overlaid(_ runs: [Run]) -> [Run] {
         Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers,
                            failureClasses: ledgerFailureClasses, protection: ledgerProtection,
-                           names: ledgerNames)
+                           names: ledgerNames, keys: ledgerKeys, scheduleKeys: scheduleKeys)
     }
 
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
