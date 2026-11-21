@@ -324,3 +324,12 @@ def test_prepend_timeline_validates() -> None:
         prepend_timeline(base, TimelineEntry("2026-11-21 01:11", "owner", []))
     with pytest.raises(LabError, match="heading"):
         prepend_timeline("no h1\n", TimelineEntry("2026-11-21 01:11", "owner", ["x"]))
+
+
+def test_trailing_newline_is_refused_in_author_key_and_stamp() -> None:
+    with pytest.raises(LabError, match="author"):
+        add_comment(_front(), "Q3", "alex\n", "hi", STAMP)
+    with pytest.raises(LabError, match="key"):
+        set_frontmatter(_front(), **{"status\n": "paused"})
+    with pytest.raises(LabError, match="stamp"):
+        prepend_timeline(new_timeline("m", "M"), TimelineEntry("2026-11-21 01:11\n", "owner", ["x"]))

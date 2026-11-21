@@ -59,7 +59,7 @@ def test_illegal_transition(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     front_before = _front(vault)
     tl_before = paths.timeline_path(vault, "monitors").read_bytes()
-    with pytest.raises(LabError, match="cannot resume a active thread"):
+    with pytest.raises(LabError, match="cannot resume an active thread"):
         ops.owner_verb(vault, "monitors", "resume", "alex", now=NOW)
     assert _front(vault) == front_before
     assert paths.timeline_path(vault, "monitors").read_bytes() == tl_before

@@ -37,6 +37,11 @@ OWNER_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
 }
 
 
+def _article(word: str) -> str:
+    """``a`` or ``an`` for ``word`` (status names: an active, a paused)."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
 # --- lock, read, write -----------------------------------------------------------------
 
 
@@ -175,7 +180,7 @@ def owner_verb(
         text = _read(front)
         thread = guard_headings(slug, text)
         if thread.status not in allowed:
-            raise LabError(f"cannot {verb} a {thread.status} thread")
+            raise LabError(f"cannot {verb} {_article(thread.status)} {thread.status} thread")
         fields: dict[str, str | int] = {"status": target}
         if verb == "approve":
             fields["approved"] = when[:10]

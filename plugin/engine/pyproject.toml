@@ -56,6 +56,7 @@ select = ["E", "F", "W", "I", "B", "UP"]
 "scout/action_items/cli.py" = ["B008"]
 "scout/cli.py" = ["B008"]
 "scout/wishlist/cli.py" = ["B008"]
+"scout/lab/cli.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.11"

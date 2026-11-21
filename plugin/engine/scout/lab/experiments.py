@@ -265,7 +265,7 @@ def veto(vault: Path, slug: str, eid: str, author: str, now: _dt.datetime | None
     with ops.lab_lock(vault):
         thread, text, note, note_text, exp = _load(vault, slug, eid, active=False)
         if thread.status not in ("active", "paused"):
-            raise LabError(f"cannot veto on a {thread.status} thread")
+            raise LabError(f"cannot veto on {ops._article(thread.status)} {thread.status} thread")
         if exp.status != "planned":
             raise LabError(f"cannot veto: {eid} is {exp.status}; only a planned experiment can be vetoed")
         entry = TimelineEntry(_shown(moment), "owner", [f"**Veto:** {eid} by {author}"])

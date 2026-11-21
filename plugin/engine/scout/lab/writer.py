@@ -34,9 +34,9 @@ _H2_RE = re.compile(r"^## (?P<name>.+?)\s*$")
 _H1_RE = re.compile(r"^# ")
 _QID_FULL = re.compile(r"^Q[1-9]\d{0,3}\Z")
 _EID_FULL = re.compile(r"^E[1-9]\d{0,3}\Z")
-_AUTHOR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
-_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_STAMP_RE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d$")
+_AUTHOR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*\Z")
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
+_STAMP_RE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d\Z")
 
 
 # --- normalization ---------------------------------------------------------------------
