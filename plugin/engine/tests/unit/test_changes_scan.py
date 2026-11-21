@@ -5,11 +5,14 @@ import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from scout.changes.scan import classify, infer_why, lane_of, parse_trailers, scan, scan_new
-from scout.changes.store import SCAN_MARK_NAME, read_changes, read_scan_mark, write_scan_mark
+from scout.changes.models import Change, Why
+from scout.changes.report import changes_report
+from scout.changes.scan import classify, derive, infer_why, lane_of, parse_trailers, scan, scan_new
+from scout.changes.store import SCAN_MARK_NAME, append_change, read_changes, read_scan_mark, write_scan_mark
 
 _clock = itertools.count(1)
 
@@ -134,13 +137,23 @@ def test_non_repo_is_no_changes(tmp_path):
 
 
 def test_revert_update_and_summary_cap(repo):
-    commit(repo, "x.md", 'Revert "dreaming [01:00]: bad"')
+    commit(repo, "scripts/x.py", 'Revert "dreaming [01:00]: bad"')
     commit(repo, "y.md", "scout-update: upgrade to v0.19")
     commit(repo, "SKILL.md", "dreaming [03:00]: " + "w" * 300)
     got = {c.kind: c for c in scan(repo, since=None)}
     assert set(got) == {"rollback", "upgrade", "brain-edit"}
     assert got["upgrade"].author_lane == "update"
     assert len(got["brain-edit"].summary) == 120
+
+
+def test_a_git_revert_touching_no_self_change_path_is_not_a_change(repo):
+    """m11: a `Revert` subject alone doesn't make a rollback; it must put back part of a self-change."""
+    commit(repo, "README.md", 'Revert "dreaming [22:12]: SKILL.md self-edit"')
+    commit(repo, "knowledge-base/x.md", 'Revert "dreaming [22:13]: kb note"')
+    assert scan(repo, since=None) == []
+    assert classify([("M", "action-items/a.md")], 'Revert "x"', lambda p: "") is None
+    assert classify([("R100", "knowledge-base/b.md")], 'Revert "x"', lambda p: "") == "rollback"
+    assert classify([("M", "docs/wishlist/w.md")], 'Revert "x"', lambda p: "") == "rollback"
 
 
 def test_revert_touching_brain_file_is_rollback(repo):
@@ -214,10 +227,11 @@ def test_parse_log_skips_blank_short_and_undated_records():
             rec("c" * 40, "2026-11-17T10:00:00Z", "subject", "body", "M\tSKILL.md\n\nR090\told.md\tnew.md\nstray"),
         ]
     )
-    [(sha, ts, subject, body, paths)] = _parse_log(raw)
+    [(sha, ts, subject, body, paths, renames)] = _parse_log(raw)
     assert (sha, subject, body) == ("c" * 40, "subject", "body")
     assert ts.year == 2026
     assert paths == [("M", "SKILL.md"), ("R090", "new.md")]
+    assert renames == [("old.md", "new.md")]
 
 
 # --- the watermark: a plain `changes scan` reads from where the last one stopped (coordinator review item 2) ---
@@ -332,3 +346,181 @@ def test_a_mark_that_fails_to_save_is_swallowed_and_leaves_no_temp_file(repo, mo
     commit(repo, "SKILL.md", "dreaming [01:00]: SKILL.md self-edit — a", date="2026-11-10T01:00:00Z")
     assert len(scan_new(repo, now=NOW)) == 1
     assert sorted(p.name for p in (repo / ".scout-logs").iterdir()) == ["changes.jsonl"]
+
+
+# --- rows that can't be forged: the report re-derives every row from git (parked M3) ---
+
+
+def test_trailer_reverts_makes_a_rollback_row(repo):
+    commit(repo, "SKILL.md", "dreaming [22:12]: undo it\n\nScout-Change-Reverts: chg-0123456789ab")
+    [c] = scan(repo, since=None)
+    assert (c.kind, c.reverts) == ("rollback", "chg-0123456789ab")
+
+
+def test_git_revert_body_sets_reverts(repo):
+    target = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x")
+    commit(repo, "SKILL.md", f'Revert "x"\n\nThis reverts commit {target}.')
+    got = {c.kind: c for c in scan(repo, since=None)}
+    assert got["rollback"].reverts == "chg-" + target[:12]
+    assert got["brain-edit"].reverts is None
+
+
+def test_a_malformed_reverts_trailer_is_still_a_rollback_without_a_target(repo):
+    commit(repo, "SKILL.md", "dreaming [22:12]: undo\n\nScout-Change-Reverts: not-an-id")
+    [c] = scan(repo, since=None)
+    assert (c.kind, c.reverts) == ("rollback", None)
+
+
+def test_verdict_why_trailer(repo):
+    commit(repo, "SKILL.md", "dreaming [22:12]: x\n\nScout-Change-Why: verdict:chg-0123456789ab")
+    [c] = scan(repo, since=None)
+    assert (c.why.type, c.why.ref, c.why.inferred) == ("verdict", "verdict:chg-0123456789ab", False)
+
+
+def _seed(repo: Path, sha: str, **fields):
+    row = {
+        "id": "chg-" + sha[:12],
+        "ts": NOW,
+        "kind": "brain-edit",
+        "summary": "seeded",
+        "why": Why("unknown", ""),
+        "commit": sha,
+        "files": ("SKILL.md",),
+    }
+    append_change(repo, Change(**{**row, **fields}))
+
+
+def _report(repo: Path) -> dict:
+    return changes_report(
+        repo,
+        now=datetime(2027, 1, 1, tzinfo=UTC),
+        since=datetime(2026, 1, 1, tzinfo=UTC),
+        env={"HOME": str(repo.parent / "home")},
+        tz=ZoneInfo("UTC"),
+    )
+
+
+def test_report_drops_a_seeded_row_for_a_non_change_commit(repo):
+    sha = commit(repo, "trading/log.md", "trading [15:31]: NAV $45.82")
+    _seed(repo, sha)
+    doc = _report(repo)
+    assert doc["changes"] == [] and doc["skipped_rows"] == 1 and doc["verified"] is True
+
+
+def test_report_drops_rows_with_a_mismatched_id_or_a_malformed_commit(repo):
+    sha = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x")
+    _seed(repo, sha, id="chg-" + "0" * 12)
+    _seed(repo, "--output=/tmp/x", id="chg-" + "1" * 12)
+    _seed(repo, "f" * 40)  # a well-formed sha git doesn't have
+    doc = _report(repo)
+    assert doc["changes"] == [] and doc["skipped_rows"] == 3 and doc["verified"] is True
+
+
+def test_report_overrides_a_seeded_rows_fields_with_gits(repo):
+    sha = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — real")
+    _seed(repo, sha, governance=True, summary="x", kind="driver", backfilled=True)
+    [row] = _report(repo)["changes"]
+    assert (row["governance"], row["summary"], row["kind"]) == (False, "SKILL.md self-edit — real", "brain-edit")
+    assert row["backfilled"] is True  # the one field git can't know
+
+
+def test_report_without_git_marks_unverified(tmp_path):
+    _seed(tmp_path, "a" * 40, summary="as written")
+    doc = _report(tmp_path)
+    assert doc["verified"] is False and [c["summary"] for c in doc["changes"]] == ["as written"]
+
+
+def test_derive_maps_each_sha_and_is_none_without_git(repo, tmp_path):
+    good = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x")
+    bad = commit(repo, "trading/log.md", "trading [15:31]: NAV")
+    got = derive(repo, [good, bad, "e" * 40, "nonsense"])
+    assert got is not None and got[good] is not None and got[good].id == "chg-" + good[:12]
+    assert got[bad] is None and got["e" * 40] is None and got["nonsense"] is None
+    assert derive(tmp_path, [good]) is None
+    assert derive(repo, []) == {}
+
+
+def test_derive_chunks_big_ledgers_and_stays_all_or_nothing(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    shas = [commit(repo, "SKILL.md", f"dreaming [22:{i:02d}]: SKILL.md self-edit — {i}") for i in range(5)]
+    monkeypatch.setattr(scan_mod, "DERIVE_CHUNK", 2)
+    calls = []
+    real = scan_mod._git
+
+    def spy(vault, *args):
+        calls.append(args[0])
+        return real(vault, *args)
+
+    monkeypatch.setattr(scan_mod, "_git", spy)
+    got = derive(repo, shas)
+    assert got is not None and set(got) == set(shas) and all(got[s] is not None for s in shas)
+    assert calls.count("log") == 3
+    # One chunk failing fails the whole call.
+    n = {"log": 0}
+
+    def flaky(vault, *args):
+        if args[0] == "log":
+            n["log"] += 1
+            if n["log"] == 2:
+                return None
+        return real(vault, *args)
+
+    monkeypatch.setattr(scan_mod, "_git", flaky)
+    assert derive(repo, shas) is None
+
+
+def test_git_calls_never_take_optional_locks(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    seen = {}
+    real = subprocess.run
+
+    def spy(cmd, **kwargs):
+        seen["env"] = kwargs.get("env")
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(scan_mod.subprocess, "run", spy)
+    scan_mod._git(repo, "status")
+    assert seen["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+# --- what a commit is made of (name_status / own_paths): what undoing it restores, and what a revert must touch ---
+
+
+def test_name_status_reads_renames_and_root_commits(repo):
+    from scout.changes.scan import name_status, own_paths
+
+    root = commit(repo, "scripts/a.py", "seed", content="x\n")
+    assert name_status(repo, root) == [("A", ("scripts/a.py",))]
+    (repo / "tools").mkdir()
+    _git(repo, "mv", "scripts/a.py", "tools/a.py")
+    commit(repo, "SKILL.md", "dreaming [22:12]: move a driver out")
+    moved = _git(repo, "rev-parse", "HEAD")
+    entries = name_status(repo, moved)
+    assert entries is not None and ("R100", ("scripts/a.py", "tools/a.py")) in entries
+    # Both sides of a rename out of scripts/ are the change's own; README never is.
+    assert own_paths([*entries, ("M", ("README.md",))]) == ["SKILL.md", "scripts/a.py", "tools/a.py"]
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "empty", date=_next_date())
+    assert name_status(repo, _git(repo, "rev-parse", "HEAD")) == []
+
+
+def test_name_status_fails_closed(repo, monkeypatch):
+    from scout.changes import scan as scan_mod
+
+    assert scan_mod.name_status(repo, "HEAD") is None  # never a revision expression
+    assert scan_mod.name_status(repo, "e" * 40) is None  # git can't read it
+    for raw in (b"M\0", b"R100\0old\0", b"\0x\0"):
+        monkeypatch.setattr(scan_mod, "_git_bytes", lambda *a, _raw=raw, **k: _raw)
+        assert scan_mod.name_status(repo, "a" * 40) is None, raw
+
+
+def test_the_commit_that_moves_a_pending_file_to_applied_is_governance(repo):
+    """I2: only the move into applied/ makes a governance change; the trailer is ignored."""
+    commit(repo, "governance-pending/skip-red.md", "dreaming [22:00]: pending", content="---\nsummary: s\n---\n")
+    (repo / "governance-pending/applied").mkdir()
+    _git(repo, "mv", "governance-pending/skip-red.md", "governance-pending/applied/skip-red.md")
+    commit(repo, "SKILL.md", "dreaming [22:40]: apply gov-skip-red")
+    commit(repo, "SKILL.md", "dreaming [22:50]: SKILL.md self-edit\n\nScout-Change-Governance: yes")
+    got = {c.summary: c.governance for c in scan(repo, since=None)}
+    assert got == {"apply gov-skip-red": True, "SKILL.md self-edit": False}

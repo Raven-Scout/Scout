@@ -60,7 +60,7 @@ def test_record_refuses_owner_kind_in_a_run(cli, vault, home, monkeypatch):
 
 
 def test_record_owner_kind_in_an_owner_session(cli, vault, home):
-    r = cli(["engagement", "record", "approval", "--surface", "action-items"])
+    r = cli(["engagement", "record", "approval", "--surface", "action-items", "--ref", "approve:chg-0123456789ab"])
     assert r.exit_code == 0
     assert len(list(home.rglob("engagement.jsonl"))) == 1
     assert not (vault / ".scout-logs/engagement.jsonl").exists()
@@ -182,12 +182,15 @@ def test_owner_kinds_refused_when_the_process_table_shows_a_run(cli, vault, home
     assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
     assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("consent.json"))
     # A run kind is still the run's to record.
-    assert cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"]).exit_code == 0
+    assert cli(["engagement", "record", "dm-reply", "--surface", "slack-dm", "--ref", "1.2/3.4"]).exit_code == 0
 
 
 def test_owner_host_during_a_run_may_record(cli, vault, home, monkeypatch):
     _a_live_run(monkeypatch, runs=False)
-    assert cli(["engagement", "record", "approval", "--surface", "app"]).exit_code == 0
+    assert (
+        cli(["engagement", "record", "approval", "--surface", "app", "--ref", "approve:chg-0123456789ab"]).exit_code
+        == 0
+    )
     assert cli(["engagement", "consent", "--out-of-vault", "no"]).exit_code == 0
 
 
@@ -217,6 +220,456 @@ def test_changes_report_needs_an_existing_vault(cli, tmp_path, home, monkeypatch
 
 def test_record_needs_an_existing_vault(cli, tmp_path, home, monkeypatch):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
-    r = cli(["engagement", "record", "dm-reply", "--surface", "slack-dm"])
+    r = cli(["engagement", "record", "dm-reply", "--surface", "slack-dm", "--ref", "1.2/3.4"])
     assert r.exit_code == 2
     assert "vault directory missing" in r.output
+
+
+_DM = ["engagement", "record", "dm-reply", "--surface", "slack-dm"]
+
+
+def test_record_twice_prints_already_recorded(cli, vault):
+    args = [*_DM, "--ref", "1791624082.460129/1791625000.000100", "--ts", "1791625000.000100"]
+    first = cli(args)
+    second = cli(args)
+    assert first.exit_code == 0 and second.exit_code == 0
+    assert "already recorded" not in first.output and second.output.strip() == "already recorded"
+    rows = [json.loads(x) for x in (vault / ".scout-logs/engagement.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["ts"].startswith("2026-10-10T") and rows[0]["ts"].endswith("+00:00")
+
+
+def test_record_ts_accepts_slack_ts_and_iso_only(cli, vault):
+    assert cli([*_DM, "--ref", "a/b", "--ts", "1791625000"]).exit_code == 0
+    assert cli([*_DM, "--ref", "a/c", "--ts", "2026-10-10T09:00:00+00:00"]).exit_code == 0
+    assert cli([*_DM, "--ref", "a/d", "--ts", "12345"]).exit_code == 2
+
+
+def test_record_refuses_a_run_kind_without_ref(cli, vault, home):
+    assert cli(["engagement", "record", "dm-sent", "--surface", "slack-dm"]).exit_code == 2
+    assert cli(["engagement", "record", "approval", "--surface", "app"]).exit_code == 2
+    assert not (vault / ".scout-logs/engagement.jsonl").exists() and not any(home.rglob("engagement.jsonl"))
+
+
+def test_record_refuses_change_on_other_kinds(cli, vault):
+    ok = cli([*_DM, "--ref", "1.2/3.4", "--change", "chg-0123456789ab"])
+    assert ok.exit_code == 0
+    row = json.loads((vault / ".scout-logs/engagement.jsonl").read_text())
+    assert row["change"] == "chg-0123456789ab"
+    for kind in ("dm-sent", "dm-reaction", "recurrence"):
+        r = cli(["engagement", "record", kind, "--surface", "slack-dm", "--ref", "5.6", "--change", "chg-0123456789ab"])
+        assert r.exit_code == 2, kind
+    assert cli([*_DM, "--ref", "1.2/9.9", "--change", "chg-xyz"]).exit_code == 2
+
+
+def test_verdict_wrong_is_owner_only(cli, vault, home, monkeypatch):
+    args = ["engagement", "record", "verdict-wrong", "--surface", "app", "--ref", "chg-0123456789ab"]
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    assert cli(args).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl")) and not (vault / ".scout-logs/engagement.jsonl").exists()
+    monkeypatch.delenv("SCOUT_MODE")
+    assert cli(args).exit_code == 0
+    assert len(list(home.rglob("engagement.jsonl"))) == 1
+
+
+def test_record_with_no_home_exits_2(cli, vault, home, monkeypatch):
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("SCOUT_DATA_DIR")
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    r = cli([*_DM, "--ref", "1.2/3.4"])
+    assert r.exit_code == 2 and not isinstance(r.exception, RuntimeError)
+    assert "no home directory" in r.output
+    assert cli(["engagement", "consent", "--out-of-vault", "yes"]).exit_code == 2
+    assert cli(["engagement", "--json"]).exit_code == 2
+
+
+def _cwd_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A vault found from the cwd (a worktree, say) that isn't the installed one, with SCOUT_DATA_DIR unset."""
+    wt = tmp_path / "worktree-vault"
+    wt.mkdir()
+    (wt / "scout-config.yaml").write_text("")
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    monkeypatch.chdir(wt)
+    return wt
+
+
+def test_changes_json_keys_owner_rows_to_the_installed_vault(cli, tmp_path, home, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.changes.models import Change, Signal, Why
+    from scout.changes.store import append_change, append_signal
+
+    installed = home / "Scout"  # no SCOUT_DATA_DIR and no engine pointer: the installed vault is ~/Scout
+    installed.mkdir()
+    wt = _cwd_vault(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    env = {"HOME": str(home)}
+    ids = ("chg-0123456789ab", "chg-0123456789ac")
+    for cid in ids:
+        change = Change(
+            id=cid,
+            ts=now - timedelta(days=20),
+            kind="brain-edit",
+            summary="a change",
+            why=Why("unknown", "", inferred=True),
+            commit=cid[4:] + "0" * 28,
+            files=("SKILL.md",),
+            author_lane="dreaming",
+        )
+        append_change(wt, change)  # git and .scout-logs/ are read from the cwd's vault
+    # The owner marked the first verdict wrong, keyed to the installed vault as owner rows are. A row keyed to the
+    # cwd's vault, for the second, isn't the installed vault's and never counts.
+    wrong = Signal(ts=now - timedelta(days=1), kind="verdict-wrong", surface="app", ref=ids[0])
+    append_signal(wrong, vault=installed, env=env)
+    append_signal(Signal(ts=wrong.ts, kind="verdict-wrong", surface="app", ref=ids[1]), vault=wt, env=env)
+    r = cli(["changes", "--json"])
+    assert r.exit_code == 0, r.output
+    marked = {c["id"]: c["test"]["marked_wrong"] for c in json.loads(r.stdout)["changes"]}
+    assert marked == {ids[0]: True, ids[1]: False}
+
+
+def test_changes_json_with_no_home_exits_2(cli, tmp_path, home, monkeypatch):
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    _cwd_vault(tmp_path, monkeypatch)
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    r = cli(["changes", "--json"])
+    assert r.exit_code == 2 and not isinstance(r.exception, RuntimeError)
+    assert "no home directory" in r.output
+
+
+# --- owner decisions: approve / reject / undo / wrong / auto-rollback / calibrated ---------------------------------
+
+_PENDING = """---
+summary: Let the briefing skip a carried red item
+why: The same red item was carried for six days with no reply.
+---
+
+```diff
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -1 +1 @@
+-old
++new
+```
+"""
+
+
+def _pending(vault: Path, slug: str = "skip-red") -> str:
+    folder = vault / "governance-pending"
+    folder.mkdir(exist_ok=True)
+    (folder / f"{slug}.md").write_text(_PENDING, encoding="utf-8")
+    return f"gov-{slug}"
+
+
+def _owner_rows(home: Path) -> list[dict]:
+    return [json.loads(x) for p in home.rglob("engagement.jsonl") for x in p.read_text().splitlines()]
+
+
+def _hash(vault: Path, gov: str) -> str:
+    from scout.changes.governance import read_pending
+
+    return next(p.hash for p in read_pending(vault)[0] if p.id == gov)
+
+
+def _needs_ok(cli) -> dict[str, str]:
+    r = cli(["changes", "--json", "--since", "1d"])
+    assert r.exit_code == 0, r.output
+    return {n["id"]: n["state"] for n in json.loads(r.stdout)["needs_ok"]}
+
+
+def test_approve_reject_undo_wrong_are_owner_only(cli, git_vault, home, monkeypatch):
+    gov = _pending(git_vault)
+    assert cli(["changes", "scan"]).exit_code == 0
+    change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    for args in (
+        ["approve", gov],
+        ["reject", gov],
+        ["undo", change],
+        ["wrong", change],
+        ["auto-rollback", "targeted"],
+        ["calibrated"],
+        ["calibrated", "--reset"],
+    ):
+        assert cli(["changes", *args]).exit_code == 2, args
+    assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("settings.json"))
+    assert not (git_vault / ".scout-logs/engagement.jsonl").exists()
+
+
+def test_a_live_run_with_its_env_hidden_is_refused_too(cli, vault, home, monkeypatch):
+    gov = _pending(vault)
+    _a_live_run(monkeypatch, runs=True)
+    assert cli(["changes", "approve", gov]).exit_code == 2
+    assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("settings.json"))
+
+
+def test_approve_unknown_id_exits_2(cli, vault, home):
+    _pending(vault)
+    for verb in ("approve", "reject"):
+        r = cli(["changes", verb, "gov-nope"])
+        assert r.exit_code == 2 and "no pending governance change" in r.output
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def test_approve_then_changes_json_shows_the_state(cli, vault, home):
+    gov = _pending(vault)
+    assert _needs_ok(cli) == {gov: "awaiting-ok"}
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    [row] = _owner_rows(home)
+    digest = _hash(vault, gov)
+    assert (row["kind"], row["ref"], row["surface"]) == ("approval", f"approve:{gov}@{digest}", "scoutctl")
+    assert cli(["changes", "reject", gov, "--surface", "app"]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "rejected"}
+
+
+def test_a_decision_is_bound_to_the_diff_the_owner_saw(cli, vault, home):
+    """I3: approving binds the diff's hash; a diff edited afterwards is waiting again, and `--diff-hash` refuses a
+    diff that changed since the owner looked."""
+    gov = _pending(vault)
+    seen = json.loads(cli(["changes", "--json", "--since", "1d"]).stdout)["needs_ok"][0]
+    assert seen["diff_hash"] == _hash(vault, gov) and seen["governance"] is True
+    assert cli(["changes", "approve", gov, "--diff-hash", seen["diff_hash"]]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    path = vault / "governance-pending/skip-red.md"
+    path.write_text(path.read_text().replace("+new", "+something the owner never saw"))
+    assert _needs_ok(cli) == {gov: "awaiting-ok"}
+    r = cli(["changes", "approve", gov, "--diff-hash", seen["diff_hash"]])
+    assert r.exit_code == 2 and "changed since you saw it" in r.output
+    assert len(_owner_rows(home)) == 1
+    assert cli(["changes", "reject", gov]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "rejected"}
+
+
+def test_approve_reject_approve_ends_approved(cli, vault, home):
+    gov = _pending(vault)
+    for verb in ("approve", "reject", "approve"):
+        assert cli(["changes", verb, gov]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    digest = _hash(vault, gov)
+    assert [r["ref"] for r in _owner_rows(home)] == [f"{v}:{gov}@{digest}" for v in ("approve", "reject", "approve")]
+
+
+def test_repeating_the_standing_decision_is_a_no_op(cli, vault, home):
+    gov = _pending(vault)
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    again = cli(["changes", "approve", gov])
+    assert again.exit_code == 0 and again.output.strip() == "already approved"
+    assert len(_owner_rows(home)) == 1
+    assert cli(["changes", "reject", gov]).exit_code == 0
+    assert cli(["changes", "reject", gov]).output.strip() == "already rejected"
+
+
+def test_bad_surface_exits_2(cli, vault, home):
+    gov = _pending(vault)
+    assert cli(["changes", "approve", gov, "--surface", "kb"]).exit_code == 2
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def _commit_file(repo: Path, path: str, message: str) -> None:
+    (repo / path).write_text(message + "\n")
+    _git(repo, "add", path)
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def test_undo_records_once_for_a_tested_change(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]
+    assert change["test"]["state"] == "testing"
+    first = cli(["changes", "undo", change["id"]])
+    assert first.exit_code == 0 and first.output.strip() == ""
+    assert cli(["changes", "undo", change["id"]]).output.strip() == "already recorded"
+    [row] = _owner_rows(home)
+    assert (row["kind"], row["ref"]) == ("approval", f"undo:{change['id']}")
+
+
+def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
+    _commit_file(git_vault, "DREAMING.md", "interactive: tweak DREAMING.md")
+    # A governance change: the commit moves an approved pending file to applied/ (a trailer alone isn't one).
+    (git_vault / "SKILL.md").write_text("old\n")
+    gov = _pending(git_vault)
+    _git(git_vault, "add", "-A")
+    _git(git_vault, "commit", "-q", "-m", "dreaming [22:00]: governance-pending — skip red")
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    printed = cli(["changes", "apply", gov]).stdout.splitlines()
+    _git(git_vault, "add", "-A", "--", *printed)
+    _git(git_vault, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}\n\nScout-Change-Governance: yes")
+    assert cli(["changes", "scan", "--since", "2d"]).exit_code == 0
+    changes = json.loads(cli(["changes", "--json"]).stdout)["changes"]
+    governance = next(c for c in changes if c["governance"])
+    r = cli(["changes", "undo", governance["id"]])
+    assert r.exit_code == 2 and "governance" in r.output
+    untested = [c for c in changes if c["test"]["state"] == "not-tested"]
+    assert untested, "the interactive change is listed and not under test"
+    r = cli(["changes", "undo", untested[0]["id"]])
+    assert r.exit_code == 2 and "isn't under test" in r.output
+    assert cli(["changes", "undo", "chg-ffffffffffff"]).exit_code == 2
+    assert cli(["changes", "undo", "nonsense"]).exit_code == 2
+    assert [r["ref"].split(":")[0] for r in _owner_rows(home)] == ["approve"]  # no undo row was written
+
+
+def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    assert cli(["changes", "wrong", cid, "--surface", "app"]).exit_code == 0
+    assert cli(["changes", "wrong", cid]).output.strip() == "already recorded"
+    [row] = _owner_rows(home)
+    assert (row["kind"], row["ref"], row["surface"]) == ("verdict-wrong", cid, "app")
+    assert json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["test"]["marked_wrong"] is True
+    assert cli(["changes", "wrong", "not-an-id"]).exit_code == 2
+
+
+def test_auto_rollback_writes_settings(cli, vault, home):
+    from scout.changes.settings import read_settings
+
+    assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 0
+    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
+    assert json.loads(cli(["changes", "--json"]).stdout)["auto_rollback"] == "targeted"
+    assert cli(["changes", "auto-rollback", "sometimes"]).exit_code == 2
+    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
+    assert not (vault / ".scout-logs/settings.json").exists()
+
+
+def test_calibrated_sets_today_in_the_host_zone_and_resets(cli, vault, home):
+    from datetime import datetime
+
+    from scout.changes.settings import read_settings
+    from scout.config import resolve_timezone
+
+    assert cli(["changes", "auto-rollback", "one-at-a-time"]).exit_code == 0
+    assert cli(["changes", "calibrated"]).exit_code == 0
+    settings = read_settings({"HOME": str(home)})
+    assert settings.calibrated_on == datetime.now(resolve_timezone(vault)).date()
+    assert settings.auto_rollback == "one-at-a-time"  # the other settings are kept
+    assert json.loads(cli(["changes", "--json"]).stdout)["calibrating"] is False
+    assert cli(["changes", "calibrated", "--reset"]).exit_code == 0
+    assert read_settings({"HOME": str(home)}).calibrated_on is None
+
+
+# --- run-facing: due / rollback / apply / discard / announced ------------------------------------------------------
+
+
+def _due_doc(cli) -> dict:
+    r = cli(["changes", "due", "--json"])
+    assert r.exit_code == 0, r.output
+    return json.loads(r.stdout)
+
+
+def test_due_json_lists_an_owner_undo_and_rollback_prints_the_paths(cli, git_vault, home):
+    _commit_file(git_vault, "SKILL.md", "dreaming [22:30]: SKILL.md self-edit — y")
+    assert cli(["changes", "scan"]).exit_code == 0
+    doc = _due_doc(cli)
+    assert set(doc) >= {
+        "schema_version",
+        "verified",
+        "rollbacks",
+        "blocked",
+        "apply",
+        "discard",
+        "suspect_unannounced",
+        "engagement_tests_running",
+        "calibration_report_due",
+    }
+    assert doc["verified"] is True and doc["rollbacks"] == []
+    newest = next(
+        c["id"] for c in json.loads(cli(["changes", "--json"]).stdout)["changes"] if c["summary"].endswith("— y")
+    )
+    assert cli(["changes", "undo", newest]).exit_code == 0
+    assert [(r["id"], r["reason"]) for r in _due_doc(cli)["rollbacks"]] == [(newest, "owner-undo")]
+    r = cli(["changes", "rollback", newest])
+    assert r.exit_code == 0, r.output
+    assert r.stdout.splitlines() == ["SKILL.md"]
+    assert (git_vault / "SKILL.md").read_text() == "x\n"
+
+
+def test_rollback_refusal_exits_2_with_the_reason(cli, git_vault, home):
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    r = cli(["changes", "rollback", cid])
+    assert r.exit_code == 2 and "not-due" in r.output
+    # The seed commit is the root commit: asked to undo, it is blocked, and rollback says why.
+    assert cli(["changes", "undo", cid]).exit_code == 0
+    assert [b["why_blocked"] for b in _due_doc(cli)["blocked"]] == ["root-commit"]
+    r = cli(["changes", "rollback", cid])
+    assert r.exit_code == 2 and "root-commit" in r.output
+    assert (git_vault / "SKILL.md").read_text() == "x\n"
+
+
+def test_due_and_rollback_are_open_to_a_run(cli, git_vault, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_MODE", "dreaming")
+    assert cli(["changes", "due", "--json"]).exit_code == 0
+    r = cli(["changes", "rollback", "chg-ffffffffffff"])
+    assert r.exit_code == 2 and "not-due" in r.output  # refused as not due, not as a run
+
+
+def test_apply_and_discard_print_paths(cli, git_vault, home):
+    (git_vault / "SKILL.md").write_text("old\n")
+    _git(git_vault, "commit", "-qam", "scout: seed SKILL.md")
+    gov = _pending(git_vault)
+    other = _pending(git_vault, "drop-me")
+    assert cli(["changes", "apply", gov]).exit_code == 2  # awaiting the owner
+    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert cli(["changes", "reject", other]).exit_code == 0
+    doc = _due_doc(cli)
+    assert (doc["apply"], doc["discard"]) == ([gov], [other])
+    r = cli(["changes", "apply", gov])
+    assert r.exit_code == 0, r.output
+    assert r.stdout.splitlines() == [
+        "SKILL.md",
+        "governance-pending/applied/skip-red.md",
+        "governance-pending/skip-red.md",
+    ]
+    assert (git_vault / "SKILL.md").read_text() == "new\n"
+    r = cli(["changes", "discard", other])
+    assert r.exit_code == 0 and r.stdout.splitlines() == ["governance-pending/drop-me.md"]
+    doc = _due_doc(cli)
+    assert (doc["apply"], doc["discard"]) == ([], [])
+
+
+def test_announced_records_ids_and_refuses_junk(cli, vault):
+    assert cli(["changes", "announced", "chg-0123456789ab", "chg-0123456789ac"]).exit_code == 0
+    data = json.loads((vault / ".scout-logs/changes-announced.json").read_text())
+    assert data == {"schema": 1, "ids": ["chg-0123456789ab", "chg-0123456789ac"], "blocked": []}
+    assert cli(["changes", "announced", "--blocked", "chg-0123456789ad"]).exit_code == 0
+    data = json.loads((vault / ".scout-logs/changes-announced.json").read_text())
+    assert data["ids"] == ["chg-0123456789ab", "chg-0123456789ac"] and data["blocked"] == ["chg-0123456789ad"]
+    assert cli(["changes", "announced", "../etc"]).exit_code == 2
+
+
+def test_a_ledger_that_cannot_be_written_is_exit_2_with_one_line(cli, git_vault, home, monkeypatch):
+    """m9: `engagement record` and the owner commands turn a failed append into exit 2 and one line, no traceback."""
+    from scout.changes import store
+
+    def full(*_a, **_k):
+        raise OSError("No space left on device")
+
+    assert cli(["changes", "scan"]).exit_code == 0
+    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    gov = _pending(git_vault)
+    monkeypatch.setattr(store, "_append", full)
+    for args in (
+        ["engagement", "record", "dm-sent", "--surface", "slack-dm", "--ref", "1790330702.929009"],
+        ["engagement", "record", "app-edit", "--surface", "app"],
+        ["changes", "approve", gov],
+        ["changes", "undo", cid],
+        ["changes", "wrong", cid],
+    ):
+        r = cli(args)
+        assert r.exit_code == 2, args
+        assert r.exception is None or isinstance(r.exception, SystemExit), args
+        assert "No space left on device" in r.output and "Traceback" not in r.output, args
+
+
+def test_due_with_a_missing_vault_prints_nothing_to_do(cli, tmp_path, home, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "no-such-vault"))
+    r = cli(["changes", "due", "--json"])
+    assert r.exit_code == 0
+    doc = json.loads(r.stdout)
+    assert doc["rollbacks"] == [] and doc["verified"] is False

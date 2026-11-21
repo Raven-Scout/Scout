@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import stat
-import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,7 +22,7 @@ from typing import Any
 
 from scout.changes.consent import out_of_vault_answer
 from scout.changes.models import Signal
-from scout.changes.store import append_signal, is_owner_session, owner_dir, vault_key
+from scout.changes.store import append_signal, atomic_write_json, is_owner_session, owner_dir, vault_key
 from scout.changes.vault import installed_vault, vault_roots
 from scout.hooks.run_context import RunContext, _text_of
 
@@ -78,7 +76,7 @@ def _rows(transcript_path: Path):
             for raw in f:
                 try:
                     row = json.loads(raw)
-                except ValueError:
+                except (ValueError, RecursionError):  # RecursionError: a line nested deeper than the decoder goes
                     continue
                 if isinstance(row, dict):
                     yield row
@@ -158,21 +156,6 @@ def _read_seen(env: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    """Atomic 0600 JSON write. Best-effort: a failure leaves the old file (or none) and no temp file."""
-    tmp = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, sort_keys=True) + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except OSError:
-        if tmp:
-            Path(tmp).unlink(missing_ok=True)
-
-
 def _write_seen(env: Mapping[str, str], sessions: dict[str, Any], now: datetime) -> None:
     """Drops sessions not touched for a week. Best-effort: the rows are already written."""
     kept: dict[str, Any] = {}
@@ -183,7 +166,7 @@ def _write_seen(env: Mapping[str, str], sessions: dict[str, Any], now: datetime)
         except (ValueError, TypeError):
             continue
         kept[key] = entry
-    _atomic_write(_seen_path(env), {"schema": _SEEN_SCHEMA, "sessions": kept})
+    atomic_write_json(_seen_path(env), {"schema": _SEEN_SCHEMA, "sessions": kept})
 
 
 def _fresh(entry: Any, now: datetime) -> datetime | None:
@@ -237,7 +220,7 @@ def cached_vault_roots(vault: Path, env: Mapping[str, str], *, now: datetime, cw
     roots = vault_roots(vault)
     kept = {k: v for k, v in vaults.items() if k != key and _fresh(v, now) is not None}
     kept[key] = {"roots": [str(r) for r in roots], "at": now.isoformat()}
-    _atomic_write(path, {"schema": _ROOTS_SCHEMA, "vaults": kept})
+    atomic_write_json(path, {"schema": _ROOTS_SCHEMA, "vaults": kept})
     return roots
 
 
@@ -268,7 +251,10 @@ def record_reliance(
         in_vault = _in_vault(cwd, roots)
         if not in_vault and not consented:
             return 0
-    session = hashlib.sha256(str(payload.get("session_id") or "").encode()).hexdigest()[:16]
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return 0  # every session without an id would hash to one shared key and count once, ever
+    session = hashlib.sha256(session_id.encode()).hexdigest()[:16]
     # Stop fires after every turn; count each (session, surface) once.
     seen = _read_seen(env)
     already = set((seen.get(session) or {}).get("surfaces") or [])

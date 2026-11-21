@@ -30,9 +30,31 @@ _SCAN_MARK_SCHEMA = 1
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
+# Where the owner store goes when the account database has no home for this user: a root-owned folder no run can
+# create files in, so writes fail (exit 2) and reads find nothing. Never a path taken from the environment.
+_NO_ACCOUNT_HOME = Path("/var/empty")
+
+
+def _account_home() -> Path:
+    """This user's home from the account database (``pwd``), never ``$HOME``: a run sets its own environment, and an
+    owner store found through ``HOME`` would let it plant the owner's decisions and settings."""
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        return _NO_ACCOUNT_HOME
+    return Path(home) if home else _NO_ACCOUNT_HOME
+
+
 def owner_dir(env: Mapping[str, str]) -> Path:
-    """``~/.local/state/scout/scout-change-ledger-owner/``: owner-sourced engagement rows. A protected engine root."""
-    return Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
+    """``~/.local/state/scout/scout-change-ledger-owner/``: owner-sourced engagement rows. A protected engine root.
+
+    ``~`` is the account's home (:func:`_account_home`) for every read and write; ``env`` is not consulted (no
+    ``HOME``, no ``XDG_*``), so a run can't point the reader at a store it wrote. The parameter stays so callers
+    pass the environment they have."""
+    del env
+    return _account_home() / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
 
 
 def vault_key(vault: Path) -> str:
@@ -100,6 +122,23 @@ def _read(path: Path) -> tuple[list[dict[str, Any]], int]:
     return rows, skipped
 
 
+def atomic_write_json(path: Path, data: dict[str, Any]) -> bool:
+    """Atomic 0600 JSON write; whether it saved. A failure leaves the old file (or none) and no temp file."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, sort_keys=True) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        return False
+    return True
+
+
 def append_change(vault: Path, change: Change) -> None:
     _append(_logs(vault) / CHANGES_NAME, change.to_row())
 
@@ -152,8 +191,34 @@ def append_signal(signal: Signal, *, vault: Path, env: Mapping[str, str]) -> Non
         _append(_logs(vault) / ENGAGEMENT_NAME, signal.to_row())
 
 
-def read_signals(vault: Path, env: Mapping[str, str]) -> tuple[list[Signal], int]:
-    key = vault_key(vault)
+def has_signal(vault: Path, env: Mapping[str, str], kind: str, ref: str) -> bool:
+    """Whether a row of this ``kind`` and ``ref`` is already in the store ``kind`` is written to. Never raises."""
+    try:
+        if kind in OWNER_KINDS:
+            raw, _ = _read(owner_dir(env) / ENGAGEMENT_NAME)
+            key = vault_key(vault)
+            raw = [r for r in raw if r.get("vault_key") == key]
+        else:
+            raw, _ = _read(_logs(vault) / ENGAGEMENT_NAME)
+        return any(r.get("kind") == kind and r.get("ref") == ref for r in raw)
+    except Exception:  # noqa: BLE001 - a dedupe check that can't read says "not recorded"
+        return False
+
+
+def append_signal_once(signal: Signal, *, vault: Path, env: Mapping[str, str]) -> bool:
+    """:func:`append_signal` unless ``signal.ref`` is set and a row of its kind and ref exists: then False, no write."""
+    if signal.ref and has_signal(vault, env, signal.kind, signal.ref):
+        return False
+    append_signal(signal, vault=vault, env=env)
+    return True
+
+
+def read_signals(vault: Path, env: Mapping[str, str], *, owner_vault: Path | None = None) -> tuple[list[Signal], int]:
+    """Run rows from ``vault``'s ``.scout-logs/``, plus owner rows keyed to ``owner_vault`` (default ``vault``).
+
+    Owner rows are keyed to the installed vault (scout.changes.vault), so a reader whose ``vault`` came from the cwd
+    (a worktree, say) passes the installed vault here."""
+    key = vault_key(owner_vault if owner_vault is not None else vault)
     out: list[Signal] = []
     skipped = 0
     for path, owned in ((owner_dir(env) / ENGAGEMENT_NAME, True), (_logs(vault) / ENGAGEMENT_NAME, False)):

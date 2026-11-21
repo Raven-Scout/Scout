@@ -117,6 +117,18 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     monkeypatch.setenv("SCOUT_RUN_SANDBOX", "off")
 
 
+@pytest.fixture(autouse=True)
+def _owner_store_follows_home(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Path]:
+    """The changes map's owner store lives under the account's home from the account database, never ``$HOME``
+    (a run sets its own environment). Tests keep it under the per-test HOME, read when it is used, so a test that
+    re-points HOME moves the store with it. Returns the real lookup for the tests that exercise it."""
+    from scout.changes import store
+
+    real = store._account_home
+    monkeypatch.setattr(store, "_account_home", lambda: Path(os.environ["HOME"]))
+    return real
+
+
 # ---- protected roots: the machine's git config, asked once per process ---------
 #
 # Every gate decision builds the protected roots (scout.kb.hook_paths), and

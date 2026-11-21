@@ -38,7 +38,17 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # step runs `scoutctl wishlist check-log-move` (+~205: the command, exit 1's fix, its 3-try bound and restore,
 # exit 2's note). DREAMING also absorbs ~980 of drift already on main, which had left it about 5 tokens under the
 # limit.
-PINS = {"SKILL": 44_613, "DREAMING": 20_867, "RESEARCH": 7_375}
+# 2026-11-19 (changes map, plan 2 task 8): DREAMING re-pinned to its measure. Feedback processing records each DM
+# reply, reaction and mistake recurrence (`scoutctl engagement record`), routes governance changes to a
+# `governance-pending/` file in place of proposals, and its Step 1e now carries out the owner's rollback and governance
+# decisions from `scoutctl changes due` (+~1,800); git-setup's change trailers (+~80) reach every mode. SKILL and
+# RESEARCH stay inside their headroom (RESEARCH within ~60 tokens of it).
+# 2026-11-19 (changes map, plan 2 final review): all three re-pinned to their measure. git-setup's change trailers
+# drop the governance trailer and say how to write an apostrophe inside `$'…'` and that one engagement change per run
+# is the limit (+~36 in every mode); Step 1e words a suspect `undo` would refuse, reports a blocked undo once, and says
+# the move into `applied/` is what makes a governance change (+~315 DREAMING). The pins also absorb drift already on
+# the branch (+1,341 SKILL, +182 DREAMING, +367 RESEARCH, which had left RESEARCH 2 tokens under the limit).
+PINS = {"SKILL": 45_990, "DREAMING": 23_376, "RESEARCH": 7_779}
 GROWTH = 0.05
 SHRINK = 0.10
 
