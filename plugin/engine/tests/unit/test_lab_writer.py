@@ -283,6 +283,21 @@ def test_new_front_page_rejects_bad_slug() -> None:
         new_front_page("Bad Slug", "T", "Q?", [], [], "2026-11-22", "normal")
 
 
+def test_new_front_page_rejects_trailing_newline_slug() -> None:
+    with pytest.raises(LabError, match="slug"):
+        new_front_page("abc\n", "T", "Q?", [], [], "2026-11-22", "normal")
+
+
+def test_ids_with_trailing_newline_refused() -> None:
+    from scout.lab.writer import add_comment, set_experiment_line
+
+    page = new_front_page("p", "T", "Q?", ["one"], [], "2026-11-22", "normal")
+    with pytest.raises(LabError):
+        add_comment(page, "Q1\n", "alex", "hi", "2026-11-22 09:30")
+    with pytest.raises(LabError):
+        set_experiment_line(page, "E1\n", "p-E1-x", "t", "planned", "2026-11-22")
+
+
 def test_prepend_timeline_newest_first() -> None:
     text = new_timeline("monitors", "Monitors under adaptive attack")
     assert text.startswith("# Monitors under adaptive attack — timeline\n")

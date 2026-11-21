@@ -19,7 +19,7 @@ FRONT_HEADINGS = (
     "Comments",
 )
 
-SLUG_RE = r"^[a-z0-9][a-z0-9-]{0,63}$"
+SLUG_RE = r"^[a-z0-9][a-z0-9-]{0,63}\Z"
 QID_RE = r"Q[1-9]\d{0,3}"
 EID_RE = r"E[1-9]\d{0,3}"
 

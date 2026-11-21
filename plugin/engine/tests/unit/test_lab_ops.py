@@ -426,3 +426,20 @@ def test_owner_verb_updates_index(tmp_path: Path) -> None:
     ops.owner_verb(vault, "monitors", "approve", "alex", now=NOW)
     text = paths.index_path(vault).read_text(encoding="utf-8")
     assert "[[monitors]]" in text.split("## Active")[1].split("## Paused")[0]
+
+
+def test_propose_refuses_slug_with_trailing_newline(tmp_path: Path) -> None:
+    with pytest.raises(LabError, match="slug"):
+        _propose(tmp_path, "abc\n")
+    assert not paths.lab_dir(tmp_path).exists() or not list(paths.lab_dir(tmp_path).iterdir())
+
+
+def test_index_omits_private_threads_with_count(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    ops.write_index(vault)
+    assert "private thread" not in paths.index_path(vault).read_text(encoding="utf-8")
+    ops.propose(vault, "secret-one", "Secret", "A hidden question?", [], [], visibility="private", now=NOW)
+    text = paths.index_path(vault).read_text(encoding="utf-8")
+    assert "secret-one" not in text and "hidden question" not in text
+    assert "_1 private thread(s) not listed._" in text
+    assert "[[monitors]]" in text

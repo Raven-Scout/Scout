@@ -361,7 +361,7 @@ def propose(
     now: _dt.datetime | None = None,
 ) -> Thread:
     """Create a ``proposed`` thread: front page, timeline and index entry, or nothing at all."""
-    if not re.match(SLUG_RE, slug):
+    if not re.fullmatch(SLUG_RE, slug):
         raise LabError(f"bad thread slug '{slug}'")
     when = stamp(vault, now)
     page = writer.new_front_page(slug, title, question, open_questions, evidence, when[:10], visibility)
@@ -421,10 +421,11 @@ def _before_the_lab(existing: str) -> list[str]:
 def _render_index(vault: Path) -> str:
     threads = _threads(vault)
     out = ["# Lab", ""]
+    hidden = sum(1 for t in threads if t.visibility == "private")
     for heading, statuses in _INDEX_SECTIONS:
         out.append(f"## {heading}")
         for t in threads:
-            if t.status in statuses:
+            if t.status in statuses and t.visibility != "private":
                 text = " ".join(t.question.split()) or t.title or t.slug
                 out.append(f"- [[{t.slug}]] — {text}")
         out.append("")
@@ -432,6 +433,8 @@ def _render_index(vault: Path) -> str:
         existing = paths.index_path(vault).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         existing = ""
+    if hidden:
+        out.extend([f"_{hidden} private thread(s) not listed._", ""])
     keep = _before_the_lab(existing)
     if keep:
         out.extend(keep)

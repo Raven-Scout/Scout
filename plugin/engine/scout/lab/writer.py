@@ -32,8 +32,8 @@ MAX_TEXT = 2000
 
 _H2_RE = re.compile(r"^## (?P<name>.+?)\s*$")
 _H1_RE = re.compile(r"^# ")
-_QID_FULL = re.compile(r"^Q[1-9]\d{0,3}$")
-_EID_FULL = re.compile(r"^E[1-9]\d{0,3}$")
+_QID_FULL = re.compile(r"^Q[1-9]\d{0,3}\Z")
+_EID_FULL = re.compile(r"^E[1-9]\d{0,3}\Z")
 _AUTHOR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STAMP_RE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d$")
@@ -379,7 +379,7 @@ def set_experiment_line(
 
 
 def _check_slug(slug: str) -> None:
-    if not re.match(SLUG_RE, slug):
+    if not re.fullmatch(SLUG_RE, slug):
         raise LabError(f"bad thread slug '{slug}'")
 
 
