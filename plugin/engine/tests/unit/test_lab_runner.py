@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -81,6 +82,78 @@ def test_child_in_its_own_session_is_killed_at_timeout(tmp_path: Path) -> None:
     if not _gone(pid, group=False):  # don't leave it running if the runner failed
         os.kill(pid, signal.SIGKILL)
         pytest.fail("a child that left the process group survived the timeout")
+
+
+def _alive(pid: int) -> bool:
+    """Running or stopped; a zombie waiting for launchd to reap it is dead."""
+    state = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def _assert_dead_now(pid: int) -> None:
+    if _alive(pid):
+        os.kill(pid, signal.SIGKILL)  # don't leave it running if the runner failed
+        pytest.fail(f"process {pid} that holds the experiment's sandbox outlived run_experiment")
+
+
+# Writes its pid to esc.txt once it is out of the script's session, then sleeps.
+_SETSID = "import os, time; os.setsid(); open('esc.txt', 'w').write(str(os.getpid())); time.sleep(120)"
+_DOUBLE_FORK = (
+    "import os, time\n"
+    "if os.fork():\n    os._exit(0)\n"
+    "os.setsid()\n"
+    "if os.fork():\n    os._exit(0)\n"
+    "open('esc.txt', 'w').write(str(os.getpid()))\n"
+    "time.sleep(120)\n"
+)
+_WAIT_ESC = "while [ ! -s esc.txt ]; do sleep 0.05; done"
+
+
+@kernel
+def test_setsid_child_killed_after_a_normal_exit(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path)
+    out = h.run(vault, tmp_path, f'{h.PY} -c "{_SETSID}" & {_WAIT_ESC}; exit 0')
+    assert out.exit == 0 and out.timed_out is False, out.stderr_tail
+    _assert_dead_now(int((h.exp_dir(vault) / "esc.txt").read_text()))
+
+
+@kernel
+def test_double_forked_setsid_child_killed_at_timeout(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path)
+    (tmp_path / "home").mkdir(exist_ok=True)
+    script = h.exp_dir(vault)
+    script.mkdir()
+    (script / "daemon.py").write_text(_DOUBLE_FORK)
+    out = h.run(vault, tmp_path, f"{h.PY} daemon.py; {_WAIT_ESC}; sleep 300", timeout_s=3)
+    assert out.timed_out is True
+    _assert_dead_now(int((h.exp_dir(vault) / "esc.txt").read_text()))
+
+
+@kernel
+def test_sweep_leaves_other_sandboxes_alone(tmp_path: Path) -> None:
+    """A process in another sandbox that may write the experiment's folder (the run's own) is never killed."""
+    vault = h.make_vault(tmp_path)
+    exp = h.exp_dir(vault)
+    exp.mkdir()
+    (exp / ".tmp").mkdir()
+    kb = os.path.realpath(vault / "knowledge-base")
+    run_like = subprocess.Popen(
+        [
+            str(profile.SANDBOX_EXEC),
+            "-p",
+            f'(version 1)(allow default)(allow file-write* (subpath "{kb}"))',
+            "/bin/sleep",
+            "60",
+        ]
+    )
+    try:
+        time.sleep(0.3)
+        out = h.run(vault, tmp_path, "true")
+        assert out.exit == 0
+        assert run_like.poll() is None, "the sweep killed a process whose sandbox isn't the experiment's"
+    finally:
+        run_like.kill()
+        run_like.wait()
 
 
 @pytest.mark.parametrize("status", ["planned", "done", "abandoned", "vetoed"])

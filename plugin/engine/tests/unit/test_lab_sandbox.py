@@ -42,18 +42,26 @@ def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
     allow_form = text[allow : text.index("\n(", allow)]
     for item in (f'(subpath "{real(exp)}")', f'(subpath "{real(exp / ".tmp")}")', '(literal "/dev/null")'):
         assert item in allow_form
+    # R20: the script's own terminal only, never a regex that reaches the owner's /dev/ttys* terminals.
+    assert '(literal "/dev/tty")' in allow_form and "^/dev/tty" not in text
     # Every path is resolved (/tmp is /private/tmp), and the socket sits in a path-literal.
     assert f'(path-literal "{real(sock)}")' in text and real(sock).startswith("/private/tmp/")
     reads = text[text.index("(deny file-read-data") :]
     assert f'(literal "{real(private)}")' in reads
     assert f'(subpath "{real(gitdir)}")' in reads
     assert f'(subpath "{real(tmp_path / "home" / ".scout-secrets")}")' in reads
+    for d in (".ssh", ".aws", ".config/gh", ".gnupg", "Library/Keychains"):  # R19
+        assert f'(subpath "{real(tmp_path / "home" / d)}")' in reads, d
+    assert f'(literal "{real(tmp_path / "home" / ".netrc")}")' in reads
     net = text.index("(deny network*)")
     assert text.index("(deny file-read-data") < net < text.index("(allow network-outbound (remote unix-socket")
     execs = text[text.index("(deny process-exec") :]
     assert '(literal "/usr/bin/git")' in execs and '(literal "/bin/launchctl")' in execs
     for form in ("(deny job-creation)", "(deny appleevent-send)", "(deny file-mount)"):
         assert form in text
+    mach = text[text.index("(deny mach-lookup") :]
+    for name in ("com.apple.SecurityServer", "com.apple.securityd", "com.apple.pasteboard.1"):
+        assert f'(global-name "{name}")' in mach, name
 
 
 def test_profile_refuses_a_path_sbpl_cant_carry(tmp_path: Path) -> None:
@@ -168,3 +176,88 @@ def test_spawn_routes_and_git_refused(vault: Path, tmp_path: Path) -> None:
     if git is not None:
         out = h.run(vault, tmp_path, f"'{os.path.realpath(git)}' --version")
         assert out.exit != 0 and "git version" not in out.stdout_tail
+
+
+@kernel
+def test_other_checkouts_raw_and_action_items_unreadable(tmp_path: Path) -> None:
+    """R18: copies of private notes in other checkouts of the repo, Raw/ drops and action items."""
+    vault = h.make_vault(tmp_path / "a")
+    note = (vault / h.PRIVATE_NOTE).read_text()
+    nested = vault / ".claude" / "worktrees" / "x" / h.PRIVATE_NOTE  # a worktree-style checkout in the vault
+    nested.parent.mkdir(parents=True)
+    nested.write_text(note)
+    other = tmp_path / "a" / "elsewhere-checkout"  # a git worktree of the vault's repo outside it
+    (other / "knowledge-base" / "people").mkdir(parents=True)
+    (other / h.PRIVATE_NOTE).write_text(note)
+    (other / ".git").write_text(f"gitdir: {vault / '.git' / 'worktrees' / 'w'}\n")
+    pointer = vault / ".git" / "worktrees" / "w" / "gitdir"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(f"{other / '.git'}\n")
+    raw = vault / "Raw" / "Drop" / "scan.md"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("CANARY-PRIV-RAW")
+    items = vault / "action-items" / "action-items-2026-11-21.md"
+    items.parent.mkdir()
+    items.write_text("CANARY-PRIV-ITEMS")
+    logs = vault / ".scout-logs" / "connector-calls-2026-11-21.jsonl"  # in bounds (spec §6.3)
+    logs.parent.mkdir()
+    logs.write_text("in-bounds-log")
+    for path in (nested, other / h.PRIVATE_NOTE, raw, items):
+        out = h.run(vault, tmp_path / "a", f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+        assert "not permitted" in out.stderr_tail, path
+    shown = h.run(vault, tmp_path / "a", f"cat '{logs}'")
+    assert shown.exit == 0 and "in-bounds-log" in shown.stdout_tail
+
+    pvault = h.make_vault(tmp_path / "b", visibility="private")
+    (pvault / "action-items").mkdir()
+    (pvault / "action-items" / "a.md").write_text("CANARY-PRIV-ITEMS")
+    allowed = h.run(pvault, tmp_path / "b", f"cat '{pvault / 'action-items' / 'a.md'}'")
+    assert allowed.exit == 0 and "CANARY-PRIV-ITEMS" in allowed.stdout_tail
+
+
+@kernel
+def test_credential_stores_unreadable(vault: Path, tmp_path: Path) -> None:
+    """R19, on a fake HOME tree (the env's HOME is inside tmp_path)."""
+    home = tmp_path / "home"
+    files = [
+        home / ".ssh" / "id_test",
+        home / ".aws" / "credentials",
+        home / ".config" / "gh" / "hosts.yml",
+        home / ".netrc",
+        home / ".gnupg" / "secring.gpg",
+        home / "Library" / "Keychains" / "test.keychain-db",
+    ]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("CANARY-CREDENTIAL")
+    for path in files:
+        out = h.run(vault, tmp_path, f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+        assert "not permitted" in out.stderr_tail, path
+
+
+@kernel
+def test_keychain_unreachable(vault: Path, tmp_path: Path) -> None:
+    """R19: a lookup of an item that doesn't exist fails because the keychain can't be reached at all.
+
+    Nothing in the owner's keychain is created, read or changed: the service name is made up, and the
+    lookup runs only inside the sandbox.
+    """
+    name = f"scout-lab-test-no-such-item-{os.getpid()}"
+    out = h.run(vault, tmp_path, f"/usr/bin/security find-generic-password -s '{name}'")
+    assert out.exit != 0
+    # Denied: the search itself can't be created (errSecParam), before any "not found" from its empty result.
+    assert "SecKeychainSearchCreateFromAttributes" in out.stderr_tail, out.stderr_tail
+    listed = h.run(vault, tmp_path, "/usr/bin/security list-keychains")
+    assert listed.exit != 0 and "SecKeychainCopySearchList" in listed.stderr_tail
+
+
+@kernel
+def test_other_terminals_unwritable(vault: Path, tmp_path: Path) -> None:
+    """R20: the owner's open terminals (/dev/ttys*) can't be written; an empty write, so a failure shows nothing."""
+    ttys = sorted(Path("/dev").glob("ttys[0-9]*"))
+    if not ttys:
+        pytest.skip("no /dev/ttys* device on this machine")
+    out = h.run(vault, tmp_path, f"printf '' > '{ttys[0]}'")
+    assert out.exit != 0 and "not permitted" in out.stderr_tail

@@ -19,11 +19,16 @@ What it holds the script to, and why each piece is where it is:
 - **The runner never follows a link the script could plant.** It keeps a descriptor on the
   experiment folder and writes the run log and removes the scratch dir through it (``O_NOFOLLOW``,
   ``O_EXCL``, :func:`shutil.rmtree` with ``dir_fd``).
-- **The whole process group is killed**, at the timeout, after a normal exit (a background child
-  left behind) and when the runner itself is interrupted. At the timeout, children that left the
-  group but whose parent is still in the tree (``setsid``) are found by parent pid and killed too.
-  A child that daemonizes (double fork plus ``setsid``) before the timeout is not traceable on
-  macOS; the profile still holds it (no writes outside the folder, no network but the meter).
+- **Nothing the script started survives it.** At the timeout, after a normal exit and when the
+  runner itself is interrupted, the process group is SIGKILLed; then every process of this user is
+  swept and killed when its sandbox is this experiment's (the kernel, through ``sandbox_check``,
+  says it may write the scratch dir and may not write the folder holding the experiment). A child
+  that left the group (``setsid``, a double fork) still carries the profile, so the sweep finds it
+  whatever its parentage. Matches are frozen (SIGSTOP) until a pass finds no new one, then killed,
+  until a sweep finds none.
+- **Private bytes outside knowledge-base/ are denied too** (ruling R18): the git objects, the inbox,
+  the engine cache, every other checkout of the vault's repo (``.claude/worktrees/`` and each git
+  worktree), ``Raw/`` and ``action-items/``. Transcripts and ``.scout-logs`` stay readable (spec §6.3).
 - **The experiment's status is left alone.** The run finishes or abandons it.
 """
 
@@ -68,6 +73,11 @@ READER = "autonomous"
 # phone-notification inbox (privacy.DELEGATE_NEVER) and the engine's caches (the privacy index holds private
 # notes' frontmatter).
 INBOX_DIR = ".scout-inbox"
+# Copies of private material at the vault root (ruling R18): Raw/ drops, action items, and other checkouts.
+PRIVATE_ROOT_DIRS: tuple[str, ...] = ("Raw", "action-items", ".claude/worktrees")
+# In a checkout that holds this vault (the vault is one of its worktrees), the parts that hold private bytes.
+CHECKOUT_PRIVATE_DIRS: tuple[str, ...] = ("knowledge-base", "Raw", "action-items", INBOX_DIR, ".scout-cache")
+_SWEEP_ROUNDS = 20
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
     "/usr/bin/git",
@@ -208,7 +218,48 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
     for folder in (vault / INBOX_DIR, vault_paths.cache_dir(vault)):
         if folder.is_dir():
             out.append(folder)
+    vault_real = os.path.realpath(vault)
+
+    def tree(path: Path) -> None:
+        real = os.path.realpath(path)
+        if not os.path.isdir(real) or _within(vault_real, real) or _within(exp_real, real):
+            return
+        if not any(_within(real, os.path.realpath(done)) for done in out):  # not already under a denied folder
+            out.append(path)
+
+    for name in PRIVATE_ROOT_DIRS:
+        tree(vault / name)
+    for checkout in other_checkouts(vault):
+        if _within(vault_real, os.path.realpath(checkout)):
+            for name in CHECKOUT_PRIVATE_DIRS:
+                tree(checkout / name)
+        else:
+            tree(checkout)
     return out
+
+
+def other_checkouts(vault: Path) -> list[Path]:
+    """Every other working tree of the vault's repo: the main checkout and each ``<gitdir>/worktrees/*``."""
+    vault_real = os.path.realpath(vault)
+    found: list[Path] = []
+    for gitdir in [vault / ".git", *hook_paths.git_dirs(vault)]:
+        if not gitdir.is_dir():
+            continue
+        candidates: list[Path] = []
+        if gitdir.name == ".git":
+            candidates.append(gitdir.parent)
+        for pointer in sorted(gitdir.glob("worktrees/*/gitdir")):
+            try:
+                target = Path(pointer.read_text(encoding="utf-8").strip())
+            except (OSError, UnicodeDecodeError):
+                continue
+            target = target if target.is_absolute() else pointer.parent / target
+            candidates.append(target.parent)
+        for checkout in candidates:
+            real = os.path.realpath(checkout)
+            if real != vault_real and checkout not in found:
+                found.append(checkout)
+    return found
 
 
 def _deny_execs(path_values: Sequence[str | None]) -> list[Path]:
@@ -234,38 +285,59 @@ def ledger_path(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Pat
 # --- processes -------------------------------------------------------------------------
 
 
-def _children(pids: set[int]) -> set[int]:
-    """Live processes whose parent is in ``pids`` (one ``ps`` snapshot)."""
+def _own_live_pids() -> list[int]:
+    """This user's processes other than this one, zombies left out (one ``ps`` snapshot)."""
     try:
         listing = subprocess.run(
-            [_PS, "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True, timeout=5, check=False
+            [_PS, "-A", "-o", "pid=", "-o", "uid=", "-o", "stat="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        return set()
-    found: set[int] = set()
+        return []
+    uid, me = os.getuid(), os.getpid()
+    out: list[int] = []
     for line in listing.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and int(parts[1]) in pids:
-            found.add(int(parts[0]))
-    return found
+        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+            pid = int(parts[0])
+            if int(parts[1]) == uid and pid != me and not parts[2].startswith("Z"):
+                out.append(pid)
+    return out
 
 
-def _stop_tree(root: int) -> set[int]:
-    """Freeze ``root``'s group and every descendant found by parent pid; return the descendants."""
-    with contextlib.suppress(OSError):
-        os.killpg(root, signal.SIGSTOP)
-    tree: set[int] = set()
-    frontier = {root}
-    for _ in range(32):
-        new = _children(frontier | tree) - tree - {root}
-        if not new:
-            break
-        for pid in new:
+def _holders(probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> set[int]:
+    """Live processes whose sandbox is this experiment's: it may write ``tmp_real`` and may not write ``outside``."""
+    return {
+        pid
+        for pid in _own_live_pids()
+        if probe.sandboxed(pid)
+        and probe.denies(pid, "file-write-data", outside) is True
+        and probe.denies(pid, "file-write-data", tmp_real) is False
+    }
+
+
+def _sweep(probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> bool:
+    """Kill every process holding this experiment's sandbox; True once a sweep finds none."""
+    for _ in range(_SWEEP_ROUNDS):
+        frozen: set[int] = set()
+        for _ in range(50):  # freeze first, so nothing forks while the rest are found
+            new = _holders(probe, tmp_real, outside) - frozen
+            if not new:
+                break
+            for pid in new:
+                with contextlib.suppress(OSError):
+                    os.kill(pid, signal.SIGSTOP)
+            frozen |= new
+        if not frozen:
+            return True
+        for pid in frozen:
             with contextlib.suppress(OSError):
-                os.kill(pid, signal.SIGSTOP)
-        tree |= new
-        frontier = new
-    return tree
+                os.kill(pid, signal.SIGKILL)
+        time.sleep(0.05)
+    return not _holders(probe, tmp_real, outside)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -278,23 +350,21 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def _kill_all(proc: subprocess.Popen[bytes]) -> None:
-    """SIGKILL the script's process group (and, while it still runs, its descendants), reap, and wait
-    until no member of the group is left."""
+def _kill_all(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> bool:
+    """SIGKILL the script's process group, reap it, then sweep out every process still holding the
+    experiment's sandbox, wherever it moved to. True when none is left."""
     pgid = proc.pid
-    tree = _stop_tree(pgid) if proc.poll() is None else set()
     with contextlib.suppress(OSError):
         os.killpg(pgid, signal.SIGKILL)
-    for pid in tree:
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=_KILL_WAIT_S)
+    clean = _sweep(probe, tmp_real, outside)
     deadline = time.monotonic() + _KILL_WAIT_S
     while _group_alive(pgid) and time.monotonic() < deadline:
         with contextlib.suppress(OSError):
             os.killpg(pgid, signal.SIGKILL)
         time.sleep(0.05)
+    return clean and not _group_alive(pgid)
 
 
 def _tail(path: str) -> str:
@@ -439,6 +509,16 @@ def _run(
         with open(profile_file, "w", encoding="utf-8") as fh:  # a file, not -p: thousands of denies outgrow argv
             fh.write(text)
 
+        # The sweep's two probes: the scratch dir (this experiment's sandbox may write it) and the folder of
+        # experiment notes (it may not; the run itself may, so a run's own processes never match).
+        outside = os.path.dirname(exp_real)
+        try:
+            probe = sandbox.SandboxProbe()
+        except (OSError, AttributeError) as exc:
+            raise LabError(f"cannot load sandbox_check to find the script's processes afterwards: {exc}") from None
+        if not probe.works(tmp_real):
+            raise LabError("sandbox_check gave a wrong answer about this process; can't sweep afterwards, not run")
+
         command = list(claude_argv)
         if command and os.sep not in command[0]:
             command[0] = shutil.which(command[0]) or command[0]
@@ -460,6 +540,7 @@ def _run(
         out_path, err_path = os.path.join(private_dir, "stdout"), os.path.join(private_dir, "stderr")
         started = config.now(vault)
         timed_out = False
+        clean = False
         with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
             proc = subprocess.Popen(
                 [str(profile.SANDBOX_EXEC), "-f", profile_file, *argv],
@@ -476,7 +557,7 @@ def _run(
                 except subprocess.TimeoutExpired:
                     timed_out = True
             finally:
-                _kill_all(proc)
+                clean = _kill_all(proc, probe, tmp_real, outside)
         stderr_tail = _tail(err_path)
         outcome = RunOutcome(
             exit=proc.returncode if proc.returncode is not None else -signal.SIGKILL,
@@ -485,7 +566,12 @@ def _run(
             spent_usd=server._spent()[0],
             timed_out=timed_out,
         )
-        _write_log(exp_fd, started, _log_body(argv, started, config.now(vault), outcome, spent_before, cap_usd))
+        body = _log_body(argv, started, config.now(vault), outcome, spent_before, cap_usd)
+        if not clean:
+            body += "survivors: a process holding this experiment's sandbox was still alive after the sweep\n"
+        _write_log(exp_fd, started, body)
+        if not clean:
+            raise LabError("a process the experiment started survived every kill sweep; check `ps` before re-running")
         if outcome.exit in (65, 71) and stderr_tail.startswith("sandbox-exec:"):
             # The script never ran: a profile the kernel rejected, or a sandbox that can't start inside another.
             raise LabError(f"sandbox-exec could not apply the experiment profile (exit {outcome.exit}): {stderr_tail}")
