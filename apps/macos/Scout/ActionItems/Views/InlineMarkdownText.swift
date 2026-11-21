@@ -212,12 +212,10 @@ struct InlineMarkdownText: View {
     /// cells (as `KnowledgeBaseService.extractWikilinks` reads it); without
     /// that, the backslash stayed on the target and the link went nowhere.
     private static let wikilinkRe = try! NSRegularExpression(
-        pattern: #"\[\[([^\]|]+?)(?:\\?\|([^\]]+))?\]\]"#
+        // No `[` or newline inside, so an unclosed `[[` gives up at the next one
+        // instead of scanning to the end of the text from every `[[`.
+        pattern: #"\[\[([^\[\]|\n]+?)(?:\\?\|([^\[\]\n]+))?\]\]"#
     )
-
-    /// An inline code span: a run of backticks, its text, and the same run
-    /// closing it. A wikilink inside one is code, not a link.
-    private static let codeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
 
     /// Linear issue key, e.g. `PROJ-1234`.
     private static let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
@@ -228,7 +226,8 @@ struct InlineMarkdownText: View {
         let ns = s as NSString
         var result = s
         let whole = NSRange(location: 0, length: ns.length)
-        let code = codeSpanRe.matches(in: s, range: whole).map(\.range)
+        // A wikilink inside an inline code span is code, not a link.
+        let code = CodeSpanScanner.ranges(in: s)
         let matches = wikilinkRe.matches(in: s, range: whole).reversed()
         for m in matches where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
             let target = ns.substring(with: m.range(at: 1))

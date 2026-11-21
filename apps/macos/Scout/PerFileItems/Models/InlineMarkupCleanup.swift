@@ -8,8 +8,9 @@ import Foundation
 ///   `(\ge 1.5)` (it reads `\(` as an escaped parenthesis);
 /// - an unbalanced `**` left over from a cut-off bold span.
 ///
-/// Math becomes plain text (`≥ 1.5`). When the `**` marks don't pair up, the
-/// last one is dropped, but only when it reads as a cut-off bold span: it
+/// Math becomes plain text (`≥ 1.5`). The `**` marks are paired the way the
+/// markdown parser pairs them, and each one that pairs with nothing is
+/// dropped, wherever it is, but only when it reads as a cut-off bold span: it
 /// touches a word on exactly one side, and nothing next to it suggests a glob
 /// (`src/**/*.swift`), an operator (`x ** 2`), a kwargs prefix
 /// (`f(**kwargs)`) or a URL. Anything else is left as written. Inline code
@@ -30,20 +31,18 @@ nonisolated enum InlineMarkupCleanup {
         let isCode: Bool
     }
 
-    /// A run of backticks, its text, and the same run closing it.
-    private static let codeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
-
+    /// A run of backticks, its text, and the same run closing it (`CodeSpanScanner`).
     private static func segments(_ text: String) -> [Segment] {
         let ns = text as NSString
         var out: [Segment] = []
         var cursor = 0
-        for m in codeSpanRe.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            if m.range.location > cursor {
-                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)),
+        for m in CodeSpanScanner.ranges(in: text) {
+            if m.location > cursor {
+                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.location - cursor)),
                                    isCode: false))
             }
-            out.append(Segment(text: ns.substring(with: m.range), isCode: true))
-            cursor = m.range.location + m.range.length
+            out.append(Segment(text: ns.substring(with: m), isCode: true))
+            cursor = m.location + m.length
         }
         if cursor < ns.length { out.append(Segment(text: ns.substring(from: cursor), isCode: false)) }
         return out
@@ -196,12 +195,32 @@ nonisolated enum InlineMarkupCleanup {
         while end < text.length, !isSpace(unit(end)) { end += 1 }
         let token = text.substring(with: NSRange(location: start, length: end - start))
         if token.contains("://") || token.contains("](") { return false }
-        let tail = text.substring(with: NSRange(location: at, length: end - at))
-        return kwargsRe.firstMatch(in: tail, range: NSRange(location: 0, length: (tail as NSString).length)) == nil
+        return !looksLikeKwargs(text, markAt: at)
     }
 
-    /// `**name)` or `**name,`: Python's keyword-argument unpacking.
-    private static let kwargsRe = try! NSRegularExpression(pattern: #"^\*\*[A-Za-z_][A-Za-z0-9_]*[),]"#)
+    /// Whether the `**` at `at` reads as Python's keyword-argument unpacking,
+    /// not a cut-off bold span. The name after it is followed by `)` or `,`
+    /// (`f(**opts)`), is snake_case or a name kwargs go by (`**kwargs`,
+    /// `**extra_fields`), or a `*args` comes before it (`*a and **kw`).
+    static func looksLikeKwargs(_ text: NSString, markAt at: Int) -> Bool {
+        let start = at + 2
+        guard start < text.length else { return false }
+        let ahead = text.substring(with: NSRange(location: start, length: min(80, text.length - start)))
+        guard let m = identifierRe.firstMatch(in: ahead, range: NSRange(location: 0, length: (ahead as NSString).length))
+        else { return false }
+        if m.range(at: 2).location != NSNotFound { return true }
+        let name = (ahead as NSString).substring(with: m.range(at: 1))
+        if name.contains("_") || kwargsNames.contains(name.lowercased()) { return true }
+        let back = max(0, at - 200)
+        let before = text.substring(with: NSRange(location: back, length: at - back))
+        return starArgsRe.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) != nil
+    }
+
+    /// A name, and the `)` or `,` that would end it as an argument.
+    private static let identifierRe = try! NSRegularExpression(pattern: #"^([A-Za-z_][A-Za-z0-9_]*)([),])?"#)
+    private static let kwargsNames: Set<String> = ["kwargs", "kwds", "kw", "opts", "options", "params", "attrs", "extra"]
+    /// `*args`: a lone star before a name, not an italic span (`*word*`).
+    private static let starArgsRe = try! NSRegularExpression(pattern: #"(?<![\w*])\*[A-Za-z_][A-Za-z0-9_]*(?![\w*])"#)
 
     private static func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
 

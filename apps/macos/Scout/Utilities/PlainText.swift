@@ -20,12 +20,32 @@ nonisolated enum PlainText {
 
     /// `text` without its markdown, line by line (the line count only drops
     /// for a table's `|---|` rule).
+    /// Lines past this many characters are cut (with "…") before stripping.
+    /// They're for reading, and a log line can be any length: a 10 KB line
+    /// of backticks or `[[` must not hold the main thread (review of #751).
+    static let maxLineLength = 2_000
+
     static func strippingMarkdown(_ text: String) -> String {
         guard text.contains(where: { markupCharacters.contains($0) }) else { return text }
-        return text.components(separatedBy: "\n").compactMap(stripLine).joined(separator: "\n")
+        return text.components(separatedBy: "\n").compactMap { stripLine(capped($0)) }.joined(separator: "\n")
+    }
+
+    /// `text` without its inline markup (bold, italics, code spans, links,
+    /// wikilinks, escapes), but with its block syntax as written: for a
+    /// title, where a leading `>` or `#` or a `|` is the title's own words
+    /// ("> 1000 rows dropped").
+    static func strippingInlineMarkdown(_ text: String) -> String {
+        guard text.contains(where: { markupCharacters.contains($0) }) else { return text }
+        return text.components(separatedBy: "\n").map { line in
+            inline(replace(wikilinkRe, in: capped(line), groups: 2) { g in wikilinkLabel(target: g[0], alias: g[1]) })
+        }.joined(separator: "\n")
     }
 
     private static let markupCharacters: Set<Character> = ["*", "_", "`", "[", "]", "|", "#", ">", "\\", "<", "~"]
+
+    private static func capped(_ line: String) -> String {
+        line.count > maxLineLength ? String(line.prefix(maxLineLength)) + "…" : line
+    }
 
     private static func stripLine(_ line: String) -> String? {
         if matches(tableRuleRe, line) { return nil }
@@ -65,8 +85,19 @@ nonisolated enum PlainText {
         // A wikilink cut off by a snippet's length limit, or a stray `**` the
         // cleanup kept: neither reads as anything but noise in plain text.
         s = s.replacingOccurrences(of: "[[", with: "").replacingOccurrences(of: "]]", with: "")
-        s = replace(strayBoldRe, in: s) { _ in "" }
+        s = dropStrayBold(s)
         return replace(escapeRe, in: s) { $0 }
+    }
+
+    /// Each `**` `strayBoldRe` finds, unless it's a kwargs prefix (`*args and **kwargs`).
+    private static func dropStrayBold(_ s: String) -> String {
+        let ns = s as NSString
+        var out = ns
+        for m in strayBoldRe.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
+        where !InlineMarkupCleanup.looksLikeKwargs(ns, markAt: m.range.location) {
+            out = out.replacingCharacters(in: m.range, with: "") as NSString
+        }
+        return out as String
     }
 
     /// `[[folder/note|alias]]` reads as its alias, else the note's name.
@@ -159,23 +190,19 @@ nonisolated enum PlainText {
         let isCode: Bool
     }
 
-    /// A run of backticks, its text, and the same run closing it. The same
-    /// rule `InlineMarkdownText` and `InlineMarkupCleanup` use.
-    private static let codeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
-
     /// `text` split into code spans (kept whole, backticks included) and the
     /// prose between them.
     private static func segments(_ text: String) -> [Segment] {
         let ns = text as NSString
         var out: [Segment] = []
         var cursor = 0
-        for m in codeSpanRe.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            if m.range.location > cursor {
-                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)),
+        for m in CodeSpanScanner.ranges(in: text) {
+            if m.location > cursor {
+                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.location - cursor)),
                                    isCode: false))
             }
-            out.append(Segment(text: ns.substring(with: m.range), isCode: true))
-            cursor = m.range.location + m.range.length
+            out.append(Segment(text: ns.substring(with: m), isCode: true))
+            cursor = m.location + m.length
         }
         if cursor < ns.length { out.append(Segment(text: ns.substring(from: cursor), isCode: false)) }
         return out
@@ -190,9 +217,12 @@ nonisolated enum PlainText {
     private static let headingPrefixRe = try! NSRegularExpression(pattern: #"^\s{0,3}#{1,6}\s+"#)
     private static let taskPrefixRe = try! NSRegularExpression(pattern: #"^(\s*)[-*+]\s+\[[ xX]\]\s+"#)
     private static let starBulletRe = try! NSRegularExpression(pattern: #"^(\s*)[*+]\s+"#)
-    private static let wikilinkRe = try! NSRegularExpression(pattern: #"\[\[([^\]|\\]+?)(?:\\?\|([^\]]*))?\]\]"#)
-    private static let imageRe = try! NSRegularExpression(pattern: #"!\[([^\]]*)\]\([^)\s]*(?:\s+"[^"]*")?\)"#)
-    private static let linkRe = try! NSRegularExpression(pattern: #"\[([^\]]+)\]\([^)\s]*(?:\s+"[^"]*")?\)"#)
+    // No `[` inside a wikilink's or a link's text: an unclosed `[[` or `[`
+    // then gives up at the next bracket instead of scanning to the line's end
+    // from every one of them.
+    private static let wikilinkRe = try! NSRegularExpression(pattern: #"\[\[([^\[\]|\\]+?)(?:\\?\|([^\[\]]*))?\]\]"#)
+    private static let imageRe = try! NSRegularExpression(pattern: #"!\[([^\[\]]*)\]\([^)\s]*(?:\s+"[^"]*")?\)"#)
+    private static let linkRe = try! NSRegularExpression(pattern: #"\[([^\[\]]+)\]\([^)\s]*(?:\s+"[^"]*")?\)"#)
     private static let autolinkRe = try! NSRegularExpression(pattern: #"<((?:https?|mailto):[^>\s]+)>"#)
     private static let htmlBreakRe = try! NSRegularExpression(pattern: #"<br\s*/?>"#, options: .caseInsensitive)
     // An escaped mark (`\*`, `\_`) neither opens nor closes; `escapeRe` shows it as written.

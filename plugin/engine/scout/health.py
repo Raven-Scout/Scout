@@ -2223,6 +2223,8 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
     found = []
     if st.changes:
         named = st.changes[0] if len(st.changes) == 1 else f"e.g. {st.changes[0]}"
+        it = "it runs" if len(st.changes) == 1 else "they run"
+        blocks = "blocks" if len(st.changes) == 1 else "block"
         found.append(
             Finding(
                 id="engine.dirty",
@@ -2230,8 +2232,8 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
                 since=None,
                 summary=(
                     f"The engine checkout scheduled runs use ({st.root}) has {len(st.changes)} uncommitted "
-                    f"{noun(len(st.changes), 'change')} ({named}): they run in every scheduled run, unreviewed, "
-                    "and block upgrades."
+                    f"{noun(len(st.changes), 'change')} ({named}): {it} in every scheduled run, unreviewed, "
+                    f"and {blocks} upgrades."
                 ),
                 fix=(
                     f"Save the work as a branch or PR from a clone under {WORKTREES_HINT}, then in Terminal: "

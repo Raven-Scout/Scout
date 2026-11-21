@@ -28,13 +28,16 @@ struct RawMarkupGuardTests {
         ("Utilities/DSBanner.swift", #"Text\((title|message)\)"#, "Text(PlainText.codeSpans(…))"),
         ("Health/HealthView.swift", #"Text\((model\.summary|note|issue\.title|reason|fix|concern)\)|Label\(concern"#,
          "Text(PlainText.codeSpans(…))"),
-        ("Shell/SettingsComponents.swift", #"Text\(help\)"#, "Text(settingsHelp(help))"),
+        ("Shell/SettingsComponents.swift", #"Text\(help\)"#, "Text(SettingsHelp.attributed(help))"),
         ("KnowledgeBase/Views/KBRightPanel.swift", #"InlineMarkdownText\(bl\.excerpt\)|Text\(bl\.excerpt\)"#,
          "Text(PlainText.strippingMarkdown(bl.excerpt))"),
         ("ControlCenter/Detail/SummaryTab.swift", #"fallbackPreview = Self\.tail\("#,
          "Self.fallbackPreview(of:)"),
         ("PerFileItems/Views/PerFileItemCardView.swift", #"Text\(item\.title\)"#, "Text(item.displayTitle)"),
-        ("PerFileItems/Views/PerFileListView.swift", #"Text\(item\.title\)"#, "Text(item.displayTitle)"),
+        ("PerFileItems/Views/PerFileListView.swift", #"Text\(item\.title\)|label: item\.title"#, "item.displayTitle"),
+        ("Proposals/Views/ProposalCardView.swift", #"Text\(proposal\.title\)|\\\(proposal\.title\)"#,
+         "proposal.displayTitle"),
+        ("Proposals/Views/ProposalsView.swift", #"label: proposal\.title"#, "proposal.displayTitle"),
     ]
 
     @Test("text the app didn't write goes through PlainText")

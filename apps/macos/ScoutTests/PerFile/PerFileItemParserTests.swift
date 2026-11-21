@@ -187,8 +187,20 @@ struct PerFileItemParserTests {
         ---
         """
         let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
-        #expect(item.title == "**Cut-off bold title with `code`")   // as written, for the writer
+        // `title` keeps the file's text; the card and the undo label show `displayTitle`.
+        #expect(item.title == "**Cut-off bold title with `code`")
         #expect(item.displayTitle == "Cut-off bold title with code")
+    }
+
+    @Test("a title's leading > or # is its own words, not a quote or a heading", arguments: [
+        "> 1000 rows dropped",
+        "# of runs doubled",
+        "a | b split",
+    ])
+    func aTitleKeepsBlockSyntax(_ title: String) throws {
+        let text = "---\ntitle: \"\(title)\"\n---\n"
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.displayTitle == title)
     }
 
     @Test func returnsNilWhenNoFrontmatter() {

@@ -23,7 +23,7 @@ nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
         self.fileURL = fileURL
         self.date = date
         self.title = title
-        self.displayTitle = PlainText.strippingMarkdown(title)
+        self.displayTitle = PlainText.strippingInlineMarkdown(title)
         self.status = status
         self.priority = priority
         self.source = source

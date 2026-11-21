@@ -88,13 +88,16 @@ def test_uncommitted_changes_are_a_yellow_finding(tmp_path: Path, probe) -> None
     assert f.severity == "yellow" and f.source == "git" and f.since is None
     assert str(ROOT) in f.summary
     assert "3 uncommitted changes" in f.summary and "plugin/engine/x.py" in f.summary
+    assert "they run in every scheduled run" in f.summary and "and block upgrades." in f.summary
     assert "~/.scout-worktrees/" in f.fix
 
 
 def test_one_change_is_named_without_an_e_g(tmp_path: Path, probe) -> None:
     _pointer(tmp_path)
     probe["state"] = CheckoutState(root=ROOT, branch="main", release_tag=None, changes=("plugin/a.py",))
-    assert "1 uncommitted change (plugin/a.py)" in _ids(tmp_path)["engine.dirty"].summary
+    summary = _ids(tmp_path)["engine.dirty"].summary
+    assert "1 uncommitted change (plugin/a.py): it runs in every scheduled run" in summary
+    assert "and blocks upgrades." in summary
 
 
 def test_a_branch_other_than_main_is_a_yellow_finding(tmp_path: Path, probe) -> None:

@@ -30,6 +30,16 @@ struct PlainTextTests {
         #expect(strip("2**8 is 256") == "2**8 is 256")
         #expect(strip("x ** 2 and a * b * c") == "x ** 2 and a * b * c")
         #expect(strip("snake_case_name and __init__") == "snake_case_name and __init__")
+        #expect(strip("*args and **kwargs") == "*args and **kwargs")
+        #expect(strip("pass **extra_fields through") == "pass **extra_fields through")
+        #expect(strip("call it with **opts") == "call it with **opts")
+    }
+
+    @Test func titlesLoseOnlyInlineMarkup() {
+        let title = PlainText.strippingInlineMarkdown
+        #expect(title("> 1000 rows dropped") == "> 1000 rows dropped")
+        #expect(title("# of runs, **doubled**") == "# of runs, doubled")
+        #expect(title("a | b with `code` and [[notes/x|x]]") == "a | b with code and x")
     }
 
     @Test func linksBecomeTheirText() {
@@ -76,6 +86,86 @@ struct PlainTextTests {
         #expect(SummaryTab.fallbackPreview(of: log) == strip(log))
     }
 
+    @Test func aLongLineIsCut() {
+        let line = String(repeating: "word ", count: 1_000)
+        let shown = strip(line + "**")
+        #expect(shown.count == PlainText.maxLineLength + 1)
+        #expect(shown.hasSuffix("…"))
+    }
+
+    @Test func aLogIsReadOffTheMainActor() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("run.log")
+        try "start\n**Housekeeping:** done\nexit 0".write(to: log, atomically: true, encoding: .utf8)
+        let loaded = try #require(SummaryTab.read(log))
+        #expect(loaded.summary == nil)
+        #expect(loaded.fallbackPreview == "start\nHousekeeping: done\nexit 0")
+        #expect(SummaryTab.read(dir.appendingPathComponent("missing.log")) == nil)
+    }
+
+    // MARK: Untrusted text can't hang the main thread (review of #751)
+
+    /// 10 KB lines that made the old code-span and wikilink regexes take
+    /// seconds each: a log tail of them took about a minute.
+    static let pathological: [(name: String, line: String)] = [
+        ("backticks", String(repeating: "`", count: 10_000)),
+        ("backticks then text", String(repeating: "`", count: 5_000) + String(repeating: "a", count: 5_000)),
+        ("short tick runs", String(repeating: "``a", count: 3_400)),
+        ("unclosed wikilinks", String(repeating: "[[", count: 5_000)),
+        ("unclosed links", String(repeating: "[a", count: 5_000)),
+        ("unclosed bold", String(repeating: "**x ", count: 2_500)),
+        ("stars", String(repeating: "*", count: 10_000)),
+        ("underscores", String(repeating: "_a", count: 5_000)),
+    ]
+
+    @Test("a pathological 10 KB line strips quickly", arguments: pathological.map(\.name))
+    func pathologicalLineIsFast(_ name: String) throws {
+        let line = try #require(Self.pathological.first { $0.name == name }).line
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            _ = PlainText.strippingMarkdown(line)
+            _ = PlainText.codeSpans(line)
+            _ = InlineMarkupCleanup.clean(line)
+        }
+        #expect(elapsed < .milliseconds(500), "\(name): \(elapsed)")
+    }
+
+    @Test func aTailOfPathologicalLinesIsFast() {
+        let log = Self.pathological.map(\.line).joined(separator: "\n") + "\n"
+            + Array(repeating: String(repeating: "`", count: 10_000), count: 12).joined(separator: "\n")
+        let clock = ContinuousClock()
+        let elapsed = clock.measure { _ = SummaryTab.fallbackPreview(of: log) }
+        #expect(elapsed < .seconds(1), "\(elapsed)")
+    }
+
+    // MARK: Code-span scanner
+
+    /// The regex the scanner replaced, kept here as its specification.
+    static let oldCodeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
+
+    static func oldRanges(_ s: String) -> [NSRange] {
+        oldCodeSpanRe.matches(in: s, range: NSRange(location: 0, length: (s as NSString).length)).map(\.range)
+    }
+
+    @Test(arguments: [
+        "", "no ticks", "`a`", "``a``", "``a`", "`a``", "``a `b` c``", "` `", "``", "`\n`", "`a\nb`",
+        "x `a` y `b` z", "```a``b```", "`é`and`ü`", "`a\r\nb`", "`\ra`", "`` ` ``", "a `b",
+    ])
+    func scannerFindsTheOldRegexSpans(_ s: String) {
+        #expect(CodeSpanScanner.ranges(in: s) == Self.oldRanges(s), "\(s.debugDescription)")
+    }
+
+    @Test func scannerMatchesTheOldRegexOnRandomText() {
+        var rng = SystemRandomNumberGenerator()
+        let alphabet: [Character] = ["`", "`", "`", "a", " ", "\n", "\r", "é"]
+        for _ in 0..<3_000 {
+            let s = String((0..<Int.random(in: 0...24, using: &rng)).map { _ in alphabet.randomElement(using: &rng)! })
+            #expect(CodeSpanScanner.ranges(in: s) == Self.oldRanges(s), "\(s.debugDescription)")
+        }
+    }
+
     // MARK: Code spans
 
     @Test func codeSpansDropTheirBackticksAndAreMarkedAsCode() throws {
@@ -104,7 +194,7 @@ struct PlainTextTests {
     }
 
     @Test func settingsHelpStylesCodeRuns() {
-        let a = settingsHelp("Run `scoutctl doctor` now")
+        let a = SettingsHelp.attributed("Run `scoutctl doctor` now")
         #expect(String(a.characters) == "Run scoutctl doctor now")
         #expect(a.runs.contains { $0.backgroundColor != nil })
     }

@@ -79,7 +79,7 @@ struct SettingsRow<Trailing: View>: View {
                         .foregroundStyle(DS.Ink.p1)
                         .accessibilityHidden(titleUsedByControl)
                     // Help can be the engine's own words (a run-health finding), with commands in backticks.
-                    Text(settingsHelp(help))
+                    Text(SettingsHelp.attributed(help))
                         .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -111,7 +111,7 @@ struct SettingsField<Input: View>: View {
                 .accessibilityHidden(true)   // the input below is labelled with it
             input()
                 .environment(\.settingsControlLabel, label)
-            Text(settingsHelp(help))
+            Text(SettingsHelp.attributed(help))
                 .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
@@ -121,14 +121,16 @@ struct SettingsField<Input: View>: View {
 
 /// Settings help text: backtick `code` spans in a monospaced caption on a
 /// recessed wash, through `PlainText.codeSpans` (no links, nothing else parsed).
-func settingsHelp(_ s: String) -> AttributedString {
-    var out = PlainText.codeSpans(s)
-    let code = out.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }.map(\.range)
-    for range in code {
-        out[range].font = DS.font(.caption, .mono)
-        out[range].backgroundColor = DS.Paper.sunk
+enum SettingsHelp {
+    static func attributed(_ s: String) -> AttributedString {
+        var out = PlainText.codeSpans(s)
+        let code = out.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }.map(\.range)
+        for range in code {
+            out[range].font = DS.font(.caption, .mono)
+            out[range].backgroundColor = DS.Paper.sunk
+        }
+        return out
     }
-    return out
 }
 
 /// Pill-shaped input on a recessed paper field.

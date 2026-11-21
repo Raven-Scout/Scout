@@ -146,25 +146,37 @@ struct SummaryTab: View {
 
     // MARK: - Load
 
+    /// What a run log shows: its summary block, else its last lines.
+    nonisolated struct Loaded: Sendable {
+        let summary: String?
+        let fallbackPreview: String
+    }
+
     private func load() async {
-        do {
-            let data = try Data(contentsOf: logPath)
-            let text = String(data: data, encoding: .utf8) ?? ""
-            let extracted = Self.extractSummary(from: text)
-            await MainActor.run {
-                summary = extracted
-                if extracted == nil {
-                    fallbackPreview = Self.fallbackPreview(of: text)
-                }
-            }
-        } catch {
-            await MainActor.run { loadFailed = true }
+        // Reading the log and stripping its tail happen off the main actor:
+        // the log is any size and the tail is untrusted text.
+        let url = logPath
+        let loaded = await Task.detached(priority: .userInitiated) { Self.read(url) }.value
+        guard !Task.isCancelled else { return }
+        if let loaded {
+            summary = loaded.summary
+            fallbackPreview = loaded.fallbackPreview
+        } else {
+            loadFailed = true
         }
+    }
+
+    /// The log at `url`, or nil when it can't be read.
+    nonisolated static func read(_ url: URL) -> Loaded? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let extracted = extractSummary(from: text)
+        return Loaded(summary: extracted, fallbackPreview: extracted == nil ? fallbackPreview(of: text) : "")
     }
 
     /// Pull the body from the first `**SCOUT … complete…` (or `Run summary`)
     /// marker until the trailing run-finished banner.
-    static func extractSummary(from text: String) -> String? {
+    nonisolated static func extractSummary(from text: String) -> String? {
         let lines = text.components(separatedBy: "\n")
         var startIdx: Int? = nil
         for (i, line) in lines.enumerated() {
