@@ -8,8 +8,9 @@ import Foundation
 ///   `(\ge 1.5)` (it reads `\(` as an escaped parenthesis);
 /// - an unbalanced `**` left over from a cut-off bold span.
 ///
-/// Math becomes plain text (`≥ 1.5`). When the `**` marks don't pair up, the
-/// last one is dropped, but only when it reads as a cut-off bold span: it
+/// Math becomes plain text (`≥ 1.5`). The `**` marks are paired the way the
+/// markdown parser pairs them, and each one that pairs with nothing is
+/// dropped, wherever it is, but only when it reads as a cut-off bold span: it
 /// touches a word on exactly one side, and nothing next to it suggests a glob
 /// (`src/**/*.swift`), an operator (`x ** 2`), a kwargs prefix
 /// (`f(**kwargs)`) or a URL. Anything else is left as written. Inline code
@@ -30,20 +31,18 @@ nonisolated enum InlineMarkupCleanup {
         let isCode: Bool
     }
 
-    /// A run of backticks, its text, and the same run closing it.
-    private static let codeSpanRe = try! NSRegularExpression(pattern: #"(`+)[^`\n].*?\1"#)
-
+    /// A run of backticks, its text, and the same run closing it (`CodeSpanScanner`).
     private static func segments(_ text: String) -> [Segment] {
         let ns = text as NSString
         var out: [Segment] = []
         var cursor = 0
-        for m in codeSpanRe.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            if m.range.location > cursor {
-                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)),
+        for m in CodeSpanScanner.ranges(in: text) {
+            if m.location > cursor {
+                out.append(Segment(text: ns.substring(with: NSRange(location: cursor, length: m.location - cursor)),
                                    isCode: false))
             }
-            out.append(Segment(text: ns.substring(with: m.range), isCode: true))
-            cursor = m.range.location + m.range.length
+            out.append(Segment(text: ns.substring(with: m), isCode: true))
+            cursor = m.location + m.length
         }
         if cursor < ns.length { out.append(Segment(text: ns.substring(from: cursor), isCode: false)) }
         return out
@@ -127,9 +126,12 @@ nonisolated enum InlineMarkupCleanup {
     /// Exactly two asterisks, not part of a longer run (`***` is left alone).
     private static let boldMarkRe = try! NSRegularExpression(pattern: #"(?<!\*)\*\*(?!\*)"#)
 
-    /// When the `**` marks (outside code) don't pair up, drop the last one if
-    /// it reads as a cut-off bold span. A mark with spaces on both sides can
-    /// neither open nor close bold, so it doesn't count toward the pairing.
+    /// Drop each `**` (outside code) that pairs with nothing, if it reads as a
+    /// cut-off bold span. Marks pair the way the markdown parser pairs them: a
+    /// mark with text after it can open, one with text before it can close,
+    /// and a closer takes the nearest open mark. So in `**A and **B**` the
+    /// first mark is the stray one, not the last (UI audit T3). A mark with
+    /// spaces on both sides can do neither, so it doesn't count.
     private static func balanceBold(_ parts: [Segment]) -> [Segment] {
         var parts = parts
         let joined = parts.map(\.text).joined() as NSString
@@ -150,11 +152,27 @@ nonisolated enum InlineMarkupCleanup {
         }
         func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
         let pairing = marks.filter { !(isSpace(unit($0.absolute - 1)) && isSpace(unit($0.absolute + 2))) }
-        guard pairing.count % 2 == 1, let last = pairing.last,
-              isCutOffBold(at: last.absolute, in: joined, unit: unit) else { return parts }
-
-        let ns = parts[last.segment].text as NSString
-        parts[last.segment].text = ns.replacingCharacters(in: NSRange(location: last.location, length: 2), with: "")
+        var open: [Int] = []       // indexes into `pairing`
+        var unpaired: [Int] = []
+        for (i, mark) in pairing.enumerated() {
+            let canClose = !isSpace(unit(mark.absolute - 1))
+            let canOpen = !isSpace(unit(mark.absolute + 2))
+            if canClose, !open.isEmpty {
+                open.removeLast()
+            } else if canOpen {
+                open.append(i)
+            } else {
+                unpaired.append(i)
+            }
+        }
+        unpaired += open
+        // Last first, so each removal leaves the earlier marks' offsets as they were.
+        for i in unpaired.sorted(by: >) {
+            let mark = pairing[i]
+            guard isCutOffBold(at: mark.absolute, in: joined, unit: unit) else { continue }
+            let ns = parts[mark.segment].text as NSString
+            parts[mark.segment].text = ns.replacingCharacters(in: NSRange(location: mark.location, length: 2), with: "")
+        }
         return parts
     }
 
@@ -177,12 +195,43 @@ nonisolated enum InlineMarkupCleanup {
         while end < text.length, !isSpace(unit(end)) { end += 1 }
         let token = text.substring(with: NSRange(location: start, length: end - start))
         if token.contains("://") || token.contains("](") { return false }
-        let tail = text.substring(with: NSRange(location: at, length: end - at))
-        return kwargsRe.firstMatch(in: tail, range: NSRange(location: 0, length: (tail as NSString).length)) == nil
+        return !looksLikeKwargs(text, markAt: at)
     }
 
-    /// `**name)` or `**name,`: Python's keyword-argument unpacking.
-    private static let kwargsRe = try! NSRegularExpression(pattern: #"^\*\*[A-Za-z_][A-Za-z0-9_]*[),]"#)
+    /// Whether the `**` at `at` reads as Python's keyword-argument unpacking,
+    /// not a cut-off bold span. The name after it is followed by `)` or `,`
+    /// (`f(**opts)`), is snake_case (`**extra_fields`), is `kwargs`, `kwds`
+    /// or `kw`, ends the text as another lower-case name kwargs go by
+    /// (`with **opts`), or a `*args` comes before it (`*a and **kw`). Names
+    /// compare case-sensitively: "**Params changed" and "**options for the
+    /// migration" are cut-off bold.
+    static func looksLikeKwargs(_ text: NSString, markAt at: Int) -> Bool {
+        let start = at + 2
+        guard start < text.length else { return false }
+        let ahead = text.substring(with: NSRange(location: start, length: min(80, text.length - start)))
+        guard let m = identifierRe.firstMatch(in: ahead, range: NSRange(location: 0, length: (ahead as NSString).length))
+        else { return false }
+        if m.range(at: 2).location != NSNotFound { return true }
+        let name = (ahead as NSString).substring(with: m.range(at: 1))
+        if name.contains("_") || kwargsOnlyNames.contains(name) { return true }
+        let endsText = start + m.range.length == text.length
+        if endsText, kwargsNames.contains(name) { return true }
+        let back = max(0, at - 200)
+        let before = text.substring(with: NSRange(location: back, length: at - back))
+        return starArgsRe.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) != nil
+    }
+
+    /// A name, and the `)` or `,` that would end it as an argument.
+    private static let identifierRe = try! NSRegularExpression(pattern: #"^([A-Za-z_][A-Za-z0-9_]*)([),])?"#)
+    /// Names only kwargs go by, and English words kwargs often go by too.
+    private static let kwargsOnlyNames: Set<String> = ["kwargs", "kwds", "kw"]
+    private static let kwargsNames: Set<String> = ["opts", "options", "params", "attrs", "extra"]
+    /// `*args`: a lone star before a name. Not an italic span, `*word*`,
+    /// `*Note:*` or `*e.g.*`: a single `*` closing it later on the line
+    /// (within 40 characters, and not half of a `**`) rules it out.
+    private static let starArgsRe = try! NSRegularExpression(
+        pattern: #"(?<![\w*])\*[A-Za-z_][A-Za-z0-9_]*(?![\w*])(?![^*\n]{0,40}(?<!\*)\*(?!\*))"#
+    )
 
     private static func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
 

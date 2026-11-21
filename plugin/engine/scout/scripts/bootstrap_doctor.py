@@ -24,6 +24,7 @@ import yaml
 from scout.config import config_load_problem
 from scout.doctor_triage import TriageEntry, WarningMeta
 from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
+from scout.plural import count, noun, were
 from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
 from scout.yaml_safe import load_yaml, yaml_problem
@@ -516,13 +517,14 @@ def _check_runtime_bin(*, runtime: str, slots: list[str]) -> tuple[list[str], li
         return [], [f"could not look for the {name} CLI ({runtime}): {e}"]
     if found is None:
         return [
-            f"{name} ({runtime}) isn't installed, or isn't on the PATH scheduled runs see — the runs of slot(s) "
-            f"{_slot_list(slots)} on it are skipped. Fix: install it, then re-check with {fix}."
+            f"{name} ({runtime}) isn't installed, or isn't on the PATH scheduled runs see — the runs of "
+            f"{noun(len(slots), 'slot')} {_slot_list(slots)} on it are skipped. Fix: install it, then re-check "
+            f"with {fix}."
         ], []
     if version is None:
         return [], [
-            f"{name} ({runtime}) at {found}: can't read its version, so the runs of slot(s) {_slot_list(slots)} "
-            f"on it are skipped. Re-check with {fix}."
+            f"{name} ({runtime}) at {found}: can't read its version, so the runs of "
+            f"{noun(len(slots), 'slot')} {_slot_list(slots)} on it are skipped. Re-check with {fix}."
         ]
     return [], []
 
@@ -542,8 +544,9 @@ def _check_runtime_auth(*, runtime: str, slots: list[str]) -> tuple[list[str], l
     auth = adapter.auth_status(binary)
     if auth.signed_in is False:
         return [
-            f"{name} isn't signed in for scheduled runs ({auth.mode}: {auth.detail}); the runs of slot(s) "
-            f"{_slot_list(slots)} on it fail until it is. Sign in to {name}, then start one of them to check."
+            f"{name} isn't signed in for scheduled runs ({auth.mode}: {auth.detail}); the runs of "
+            f"{noun(len(slots), 'slot')} {_slot_list(slots)} on it fail until it is. Sign in to {name}, then "
+            "start one of them to check."
         ], []
     if auth.signed_in is None:
         return [], [f"{name} signs in by {auth.mode} ({auth.detail}); only a run can tell whether that still works"]
@@ -713,7 +716,7 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
     # any timed-out run is worth a warning of its own (review of #653).
     for key, n in sorted(timeouts.items()):
         warnings.append(
-            f"slot {key!r}: {n} run(s) in {RUN_TIMEOUT_WINDOW_DAYS} days were stopped at their run timeout "
+            f"slot {key!r}: {count(n, 'run')} in {RUN_TIMEOUT_WINDOW_DAYS} days {were(n)} stopped at the run timeout "
             "(failure_class timeout). Raise it if the work needs longer: scoutctl agent-runtime set-limit "
             "<runtime> --run-timeout-minutes <minutes>"
         )
@@ -744,7 +747,7 @@ def _check_run_timeouts(*, vault: Path, now: datetime | None = None) -> tuple[li
     notes = []
     if unmeasured and not lengths:
         notes.append(
-            f"{unmeasured} recent run(s) recorded no awake length, so run lengths can't be compared with run "
+            f"{count(unmeasured, 'recent run')} recorded no awake length, so run lengths can't be compared with run "
             "timeouts: the runners measure it with python3, which wasn't found where they ran"
         )
     if readiness:
@@ -793,8 +796,8 @@ def _check_run_limits(*, vault: Path, now: datetime | None = None) -> list[str]:
         warnings.append(f"could not check scout-config.yaml run limits: {e}")
     if n := _limits.future_rows(vault, now=now):
         warnings.append(
-            f".scout-logs/usage-tracker.jsonl has {n} row(s) dated in the future. The daily token ceiling skips "
-            "them; a run, or a wrong clock, wrote them. Remove them if nothing explains them."
+            f".scout-logs/usage-tracker.jsonl has {count(n, 'row')} dated in the future. The daily token ceiling "
+            "skips those; a run, or a wrong clock, wrote them. Remove them if nothing explains them."
         )
     return warnings
 
@@ -962,11 +965,13 @@ def _check_plugin_drift(*, vault: Path) -> tuple[list[str], list[str]]:
         upstreamable = [p for p in edited if p not in vault_drift.VAULT_DEVELOPED_FILES]
         hint = " — `scoutctl bootstrap drift --patch` turns them into a plugin PR" if upstreamable else ""
         notes.append(
-            f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)}{hint}"
+            f"{count(len(edited), 'plugin-owned file')} {'carries' if len(edited) == 1 else 'carry'} vault edits "
+            f"that upgrades keep: {', '.join(edited)}{hint}"
         )
     if parked:
         notes.append(
-            f"an upgrade replaced {len(parked)} vault file(s) and parked the previous cop(ies): "
+            f"an upgrade replaced {count(len(parked), 'vault file')} and parked the previous "
+            f"{noun(len(parked), 'copy', 'copies')}: "
             f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
@@ -1087,8 +1092,9 @@ def _check_kb_interactive(*, vault: Path) -> list[str]:
     listed = ", ".join(f"{path} ({'?' if days is None else days} d)" for path, days in waiting[:5])
     more = f" and {len(waiting) - 5} more" if len(waiting) > 5 else ""
     return [
-        f"kb: {len(waiting)} project page(s) wait for an interactive rebuild, too big for the nightly pass: "
-        f"{listed}{more}. Rebuild them in a session (`scoutctl kb structure` marks them [interactive])."
+        f"kb: {count(len(waiting), 'project page')} {'waits' if len(waiting) == 1 else 'wait'} for an interactive "
+        f"rebuild, too big for the nightly pass: {listed}{more}. Rebuild them in a session "
+        "(`scoutctl kb structure` marks them [interactive])."
     ]
 
 
@@ -1104,7 +1110,7 @@ def _check_fact_check_skips(*, vault: Path, now: datetime | None) -> list[str]:
     if skips < SKIP_NOTE_AT:
         return []
     return [
-        f"kb: the dreaming fact-check pass was skipped {skips} time(s) in the last {SKIP_WINDOW_DAYS} days "
+        f"kb: the dreaming fact-check pass was skipped {count(skips, 'time')} in the last {SKIP_WINDOW_DAYS} days "
         "(no live source reached): check the connectors it verifies against"
     ]
 
@@ -1197,16 +1203,17 @@ def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
     if blocked:
+        what = count(blocked, "blocked outbound check or denied read", "blocked outbound checks or denied reads")
         out.append(
-            f"privacy: {blocked} blocked outbound check(s) or denied read(s) in the last 7 days "
+            f"privacy: {what} in the last 7 days "
             "(.scout-logs/kb-reads.jsonl) — a run reached for a shared surface with private content; "
             "the content was held back, but check what the runs were trying to send"
         )
     if unchecked:
         out.append(
-            f"privacy: {unchecked} commit(s) in the last 7 days were made while the privacy check could not run "
-            "(.scout-logs/kb-reads.jsonl) — they were NOT checked for private links in shared files; fix what "
-            "this doctor reports about scoutctl, then review drafts/ and other shared files"
+            f"privacy: {count(unchecked, 'commit')} in the last 7 days {were(unchecked)} made while the privacy "
+            "check could not run (.scout-logs/kb-reads.jsonl) — they were NOT checked for private links in shared "
+            "files; fix what this doctor reports about scoutctl, then review drafts/ and other shared files"
         )
     return out
 
@@ -1334,15 +1341,16 @@ def _check_delegate_inboxes(*, vault: Path, now: datetime | None) -> tuple[list[
             warnings.append(f"delegate inbox {key}: not pulled for over a day; is the schedule tick running? "
                             "(scoutctl inbox sync pulls now)")  # fmt: skip
         if box["untaken"]:
-            warnings.append(f"delegate inbox {key}: {box['untaken']} file(s) in its copies folder were never taken "
-                            "by a pull; they are ignored")  # fmt: skip
+            warnings.append(f"delegate inbox {key}: {count(box['untaken'], 'file')} in its copies folder "
+                            f"{were(box['untaken'])} never taken by a pull; ignored")  # fmt: skip
     from scout.repo_sync import git
 
     tracked = git(vault, "ls-files", "--", ".scout-inbox/agents", check=False).stdout.split()
     stray = [t for t in tracked if t != ".scout-inbox/agents/.gitignore" and not t.endswith("/taken.ledger")]
     if stray:
         warnings.append(
-            f"delegate inboxes: {len(stray)} copy file(s) of what agents wrote are committed (from before V4b), "
+            f"delegate inboxes: {count(len(stray), 'copy file')} of what agents wrote "
+            f"{'is' if len(stray) == 1 else 'are'} committed (from before V4b), "
             "and stay in the vault's git history even once untracked; untrack them, keeping the files: "
             "git rm -r -q --cached .scout-inbox/agents && git add .scout-inbox/agents && "
             "git commit -m 'inbox: untrack the copies'"

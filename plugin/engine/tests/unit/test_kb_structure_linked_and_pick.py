@@ -293,7 +293,7 @@ def test_doctor_notes_the_pages_waiting_for_an_interactive_rebuild(kb_repo, monk
     commit_at(kb_repo, str(today(kb_repo.root) - dt.timedelta(days=4)), monkeypatch)
     [note] = _check_kb_interactive(vault=kb_repo.root)
     assert (
-        note.startswith("kb: 1 project page(s) wait for an interactive rebuild")
+        note.startswith("kb: 1 project page waits for an interactive rebuild")
         and f"{P}/widgets/widgets.md (4 d)" in note
     )
 

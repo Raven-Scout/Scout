@@ -185,7 +185,7 @@ def test_an_attempted_and_failing_connector_still_alerts(fake_data_dir, monkeypa
     assert "mcp:claude_ai_Slack" in _alert_keys(event), "Slack failed 5/5 calls this run — must alert."
     assert event is not None
     reason = next(a["reason"] for a in event.payload["alerts"] if a["connector_key"] == "mcp:claude_ai_Slack")
-    assert reason.startswith("5 failed call(s) in `afternoon-consolidation` run"), reason
+    assert reason.startswith("5 failed calls in `afternoon-consolidation` run"), reason
 
 
 def test_the_chronic_skip_backstop_still_escalates_a_sustained_gap(fake_data_dir, monkeypatch):
@@ -233,7 +233,7 @@ def test_a_failing_connector_escalates_through_the_backstop_when_the_vote_says_n
     assert "github" in _alert_keys(event)
     assert event is not None
     reason = next(a["reason"] for a in event.payload["alerts"] if a["connector_key"] == "github")
-    assert reason.startswith("2 failed call(s) in `morning-briefing` run"), reason
+    assert reason.startswith("2 failed calls in `morning-briefing` run"), reason
     assert "1/3 prior" in reason, reason
 
 

@@ -96,7 +96,7 @@ def test_a_run_stopped_at_its_timeout_is_a_warning(vault: Path) -> None:
         f.write(json.dumps({"slot": "other", "outcome": "failed", "finished_at": finished, "failure_class": "timeout"}))
         f.write("\n")
     warnings, _ = _check_run_timeouts(vault=vault, now=NOW)
-    assert len(warnings) == 1 and "'other': 1 run(s)" in warnings[0] and "stopped at their run timeout" in warnings[0]
+    assert len(warnings) == 1 and "'other': 1 run in" in warnings[0] and "was stopped at the run timeout" in warnings[0]
 
 
 def test_ignored_config_values_are_a_warning_on_a_fresh_vault(vault: Path) -> None:
@@ -152,7 +152,7 @@ def test_future_dated_usage_rows_are_a_warning(vault: Path) -> None:
         "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     warnings = _check_run_limits(vault=vault, now=NOW)
-    assert len(warnings) == 1 and "1 row(s) dated in the future" in warnings[0]
+    assert len(warnings) == 1 and "1 row dated in the future" in warnings[0]
 
 
 def test_run_limits_are_silent_by_default(vault: Path) -> None:
@@ -191,4 +191,4 @@ def test_runs_without_an_awake_length_say_why(vault: Path) -> None:
             )
             f.write("\n")
     _, notes = _check_run_timeouts(vault=vault, now=NOW)
-    assert len(notes) == 1 and "3 recent run(s) recorded no awake length" in notes[0] and "python3" in notes[0]
+    assert len(notes) == 1 and "3 recent runs recorded no awake length" in notes[0] and "python3" in notes[0]

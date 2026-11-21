@@ -47,6 +47,17 @@ struct InlineMarkupCleanupTests {
         #expect(clean("**Unclosed") == "Unclosed")
     }
 
+    /// The stray mark is the one the parser can't pair, not always the last
+    /// one (UI audit T3: Research cards still showed a literal `**`).
+    @Test func theStrayMarkIsTheOneThatPairsWithNothing() {
+        #expect(clean("**A and **B** done") == "A and **B** done")
+        #expect(clean("**one** and **two and **three**") == "**one** and two and **three**")
+        // Two strays, both cut off.
+        #expect(clean("**open and **again") == "open and again")
+        // A closer with no opener before it.
+        #expect(clean("trailing** and **real**") == "trailing and **real**")
+    }
+
     @Test func aBoldMarkerBetweenSpacesIsLeftAndDoesNotCountTowardPairing() {
         #expect(clean("x ** 2") == "x ** 2")
         #expect(clean("A ** stray, then **real bold**") == "A ** stray, then **real bold**")
