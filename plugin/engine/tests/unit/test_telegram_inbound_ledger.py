@@ -13,8 +13,15 @@ NOW = dt.datetime(2026, 11, 21, 12, 0, tzinfo=dt.UTC)
 
 
 def msg(i: int, **kw) -> L.InboundMessage:
-    return L.InboundMessage(message_id=i, date=1000 + i, text=f"m{i}", reply_to_text=None, forwarded=False,
-                            kind=kw.pop("kind", "text"), **kw)
+    return L.InboundMessage(
+        message_id=i,
+        date=1000 + i,
+        text=f"m{i}",
+        reply_to_text=None,
+        forwarded=False,
+        kind=kw.pop("kind", "text"),
+        **kw,
+    )
 
 
 @pytest.fixture
@@ -158,8 +165,15 @@ def test_unlocked_read_of_corrupt_file_leaves_it_in_place(led: L.Ledger) -> None
 
 
 def test_unknown_field_in_row_is_ignored(led: L.Ledger) -> None:
-    row = {"message_id": 1, "date": 1, "text": "x", "reply_to_text": None, "forwarded": False,
-           "kind": "text", "future_field": 7}
+    row = {
+        "message_id": 1,
+        "date": 1,
+        "text": "x",
+        "reply_to_text": None,
+        "forwarded": False,
+        "kind": "text",
+        "future_field": 7,
+    }
     d = _write_raw(led, json.dumps({"1": row}))
     assert led.get(1).text == "x"
     assert not list(d.glob("messages.json.corrupt-*"))

@@ -119,7 +119,8 @@ class Ledger:
 
     def in_flight(self, now: dt.datetime) -> list[InboundMessage]:
         return [
-            m for m in self._in_state(DISPATCHED)
+            m
+            for m in self._in_state(DISPATCHED)
             if m.dispatched_at and now - dt.datetime.fromisoformat(m.dispatched_at) < DISPATCH_TIMEOUT
         ]
 
