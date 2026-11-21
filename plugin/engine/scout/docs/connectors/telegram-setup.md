@@ -160,13 +160,15 @@ will.
 
 The runners (`run-scout.sh`, `run-dreaming.sh`, `run-research.sh`) only say
 that a wrap message is owed. The brain file's notification section names the
-channel and the recipient:
+channel and the recipient. `run-respond.sh` (the immediate-response run, started
+by the inbound trigger) sends no wrap at all:
 
 | Runner             | Reads the channel from                                               |
 |--------------------|----------------------------------------------------------------------|
 | `run-scout.sh`     | `SKILL.md`'s notification sections                                   |
 | `run-dreaming.sh`  | `DREAMING.md`'s notification section, else `SKILL.md`'s              |
 | `run-research.sh`  | `RESEARCH.md`'s Step 4d, else `SKILL.md`'s notification sections     |
+| `run-respond.sh`   | `RESPOND.md`'s Step 6: the one reply to your messages, threaded under the newest (`--reply-to`), no wrap |
 
 Turn it on with the `telegram` connector:
 
