@@ -33,6 +33,7 @@ _ASSEMBLY_MAP: dict[str, tuple[tuple[str, ...], set[str]]] = {
     "SKILL": (("core", "connectors"), {"briefing", "consolidation"}),
     "DREAMING": (("core", "modes"), {"dreaming"}),
     "RESEARCH": (("core", "research"), {"research"}),
+    "RESPOND": (("core", "respond"), {"respond"}),
 }
 
 # Template vars whose values are long/unique enough to reverse without false
@@ -145,7 +146,7 @@ def build_rendered_sections(
     try:
         src_dirs, modes = _ASSEMBLY_MAP[kind]
     except KeyError:
-        raise ValueError(f"unknown brain-file kind: {kind!r} (expected SKILL/DREAMING/RESEARCH)") from None
+        raise ValueError(f"unknown brain-file kind: {kind!r} (expected SKILL/DREAMING/RESEARCH/RESPOND)") from None
     out: list[RenderedSection] = []
     for dirname in src_dirs:
         src = phases_root / dirname

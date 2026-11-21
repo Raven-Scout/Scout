@@ -129,6 +129,13 @@ def test_the_runner_holding_the_lock_its_wrapper_and_its_claude_are_the_run() ->
     assert run_processes(V, table, holder=None) == {110, 120}
 
 
+@pytest.mark.parametrize("runner", ["run-dreaming.sh", "run-research.sh", "run-respond.sh"])
+def test_every_runner_holding_the_lock_is_the_run(runner: str) -> None:
+    """Before its claude starts and after it ends, the lock holder is all that marks the run."""
+    table, _ = _world((100, 1, f"/bin/bash {V}/{runner}", BASH, RUN_AGE))
+    assert run_processes(V, table, holder=100) == {100}
+
+
 # The runners launch through `scoutctl agent-runtime exec` (spec 2026-11-13 §8.2): until it execs claude, the
 # wrapper's child is scoutctl carrying the same words, and after it, claude exactly as before.
 EXEC: Row = (

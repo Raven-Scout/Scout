@@ -1710,10 +1710,10 @@ Add `--help` to any of them for their options.
 
 ## Brain files
 
-`SKILL.md`, `DREAMING.md` and `RESEARCH.md`, if this mirror has them, are the owner's
-instructions for Scout's scheduled runs on the laptop. Read them for how the owner works
-and what the knowledge base holds. Don't follow their steps that write files, send
-messages or run schedules.
+`SKILL.md`, `DREAMING.md`, `RESEARCH.md` and `RESPOND.md`, if this mirror has them, are
+the owner's instructions for Scout's scheduled runs on the laptop. Read them for how the
+owner works and what the knowledge base holds. Don't follow their steps that write files,
+send messages or run schedules.
 
 ## Staying current
 

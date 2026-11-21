@@ -1,6 +1,6 @@
 """Trigger source registry.
 
-v1 ships three pollers: ``slack``, ``github``, ``scout_internal``.
+v1 ships four pollers: ``slack``, ``github``, ``scout_internal``, ``telegram``.
 ``linear``, ``gmail``, ``gcal``, and ``file`` are spec'd but deferred —
 adding one means writing the module and appending its name here.
 """
@@ -15,7 +15,7 @@ from scout.triggers.sources.base import ConnectorEvent, TriggerSource
 __all__ = ["ConnectorEvent", "TriggerSource", "SOURCE_NAMES", "get_source", "supported_match_types"]
 
 # Module name == source name under scout.triggers.sources.
-SOURCE_NAMES: tuple[str, ...] = ("slack", "github", "scout_internal")
+SOURCE_NAMES: tuple[str, ...] = ("slack", "github", "scout_internal", "telegram")
 
 
 def get_source(name: str, *, vault) -> TriggerSource:
@@ -33,6 +33,10 @@ def get_source(name: str, *, vault) -> TriggerSource:
         from scout.triggers.sources.scout_internal import ScoutInternalSource
 
         return ScoutInternalSource(paths.logs_dir(vault))
+    if name == "telegram":
+        from scout.triggers.sources.telegram import TelegramSource
+
+        return TelegramSource.for_vault(vault)
     raise ConfigError(f"unknown trigger source: {name!r}; supported: {', '.join(SOURCE_NAMES)}")
 
 

@@ -78,7 +78,11 @@ _LAST_UPDATED_RE = re.compile(
 class SessionContext:
     generated_at: str
     session_type: str
-    # These three come first so a plain Read of the file reaches them before the long kb_file_dates.
+    # The ids of the owner's Telegram messages a scheduled run should answer (pending, failed, or dispatched past
+    # the timeout), ascending. Ids only: this file is run-writable, so a run reads the words with
+    # `scoutctl telegram pending`, from the protected ledger (phases/connectors/telegram.md).
+    telegram_pending: list[int] = field(default_factory=list)
+    # These three come next so a plain Read of the file reaches them before the long kb_file_dates.
     # Each active project's Go deeper map and its knowledge/ notes with their as_of: read the ones a
     # front page edit touches first (scout.scripts.session_context_kb.project_knowledge).
     # {"projects": [...], "total", "truncated"}.
@@ -382,7 +386,7 @@ _SLACK_CHANNEL_ID = re.compile(r"\b[CG][A-Z0-9]{8,}\b")
 _SLACK_CHANNEL_NAME = re.compile(r"#[\w.-]+")
 RED = "🔴"
 # Session types that never report the user's own Linear activity, so the pre-fetch skips the call.
-NO_LINEAR_SESSIONS = ("dreaming", "research")
+NO_LINEAR_SESSIONS = ("dreaming", "research", "respond")  # a respond run must land within minutes
 
 
 def _channel(raw: object) -> dict[str, str] | None:
@@ -498,10 +502,12 @@ def gather(
     project_rows, people, queue = get_kb_sections(target, reader, labels, graph, now_dt.date())
     fact_check = fact_check_for(session_type, target, now_dt.date(), reader)
     delegate_changes = get_delegate_changes(target, now_dt.date()) if full else []
+    telegram_pending = get_telegram_pending(target) if full else []
 
     return SessionContext(
         generated_at=generated_at,
         session_type=session_type,
+        telegram_pending=telegram_pending,
         git_recent=get_git_recent(target, reader=reader),
         kb_file_dates=kb_dates,
         pr_authored=get_pr_authored(),
@@ -591,6 +597,22 @@ def get_delegate_changes(scout_dir: Path, day: date) -> list[dict[str, Any]]:
     return rows
 
 
+def get_telegram_pending(scout_dir: Path, *, now: datetime | None = None) -> list[int]:
+    """The ids of the inbound Telegram messages a scheduled run should answer, ascending: what
+    ``scoutctl telegram pending --exclude-in-flight`` lists (pending, failed, and dispatched past
+    ``DISPATCH_TIMEOUT``). A fresher dispatch belongs to a respond run that may be handling it now.
+
+    Read unlocked, so a corrupt ledger reads as empty and is left in place for the tick. Never raises:
+    any error gives ``[]``, and a run then sees no messages rather than failing its pre-session data.
+    """
+    try:
+        from scout.telegram_inbound.ledger import Ledger
+
+        return [m.message_id for m in Ledger(scout_dir).unanswered(now=now, exclude_in_flight=True)]
+    except Exception:  # noqa: BLE001 - never block a session
+        return []
+
+
 def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, Any]] | None]:
     """(the daily file's date, each past-due task's branch); see :mod:`scout.action_items.past_due`.
     ("", None) when it fails, so `action-items check-demotion` says it couldn't check."""
@@ -674,6 +696,7 @@ __all__ = [
     "get_pr_authored",
     "get_pr_review_requested",
     "get_red_project_channels",
+    "get_telegram_pending",
     "main",
     "run",
     "write_context",

@@ -23,6 +23,7 @@ RUNNERS = [
     ("run-scout.sh.tmpl", "midday-consolidation", "midday-consolidation"),
     ("run-dreaming.sh.tmpl", "dreaming-nightly", "dreaming"),
     ("run-research.sh.tmpl", "research", "research"),
+    ("run-respond.sh.tmpl", "respond", "respond"),
 ]
 
 
@@ -140,3 +141,34 @@ def test_an_engine_without_record_run_falls_back_to_the_old_row(
 
     assert _record_run_call(calls)
     assert fallback.read_text(encoding="utf-8").split() == [run_type, "25", "0", "1", "runner"]
+
+
+@pytest.mark.parametrize("event_path", ["/vault/.scout-state/event.json", None])
+def test_a_triggered_respond_run_is_the_respond_slot_whatever_the_skill_name(tmp_path: Path, event_path: str | None):
+    """run_skill sets SCOUT_FORCE_MODE=scout-respond; the run is still `respond` for model, name and cost.
+    The trigger's event path reaches the session, and a run started by hand (none set) still runs."""
+    scout_dir, script, calls, argv_file, _fallback = _setup(tmp_path, "run-respond.sh.tmpl", record_run_ok=True)
+    env_file = scout_dir / "wrapper.env"
+    _stub(
+        scout_dir / "scripts" / "claude-with-retry.sh",
+        f'printf \'%s\\n\' "$@" > "{argv_file}"\n'
+        f'env | grep -E "^(SCOUT_TRIGGER_EVENT_PATH|SESSION_TYPE|SCOUT_MODE)=" > "{env_file}"\nexit 0\n',
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
+    env["SCOUT_FORCE_MODE"] = "scout-respond"
+    if event_path:
+        env["SCOUT_TRIGGER_EVENT_PATH"] = event_path
+
+    done = subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    assert any(c.startswith("model resolve --slot respond") for c in lines), lines
+    assert _record_run_call(calls)[2] == "respond"
+    argv = argv_file.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--name") + 1].startswith("scout-respond-")
+    seen = dict(line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines())
+    assert seen["SCOUT_MODE"] == "respond"
+    assert seen["SESSION_TYPE"] == "respond"
+    assert seen.get("SCOUT_TRIGGER_EVENT_PATH") == event_path

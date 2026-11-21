@@ -218,6 +218,19 @@ def test_a_commit_during_a_live_run_is_refused_when_the_check_cant_run_whatever_
     assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
 
 
+@pytest.mark.parametrize("runner", ["run-dreaming.sh", "run-research.sh", "run-respond.sh"])
+def test_every_runner_holding_the_lock_is_a_live_run_to_the_fallback_check(tmp_path, live, runner: str) -> None:
+    """The hook's awk twin of scout.kb.live_run names the same runners."""
+    vault = _git_vault(tmp_path)
+    pid = live(vault, runner)
+    _hold_lock(vault, pid, f"{pid} {runner.removeprefix('run-').removesuffix('.sh')}\n")
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 1
+    assert "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run." in (
+        proc.stderr
+    )
+
+
 def _dead_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()

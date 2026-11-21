@@ -929,6 +929,37 @@ def test_a_run_cant_write_the_delegate_state(vault: Path, rel: str) -> None:
     assert "delegate state" in _denied(_bash(vault, "rm -rf .scout-state"))
 
 
+@pytest.mark.parametrize(
+    "rel",
+    [
+        ".scout-state/telegram-inbound",
+        ".scout-state/telegram-inbound/2026-11-21.jsonl",
+        ".scout-state/telegram-inbound/state.json",
+    ],
+)
+def test_a_run_cant_write_the_telegram_inbound_ledger(vault: Path, rel: str) -> None:
+    assert "Telegram inbound ledger" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
+    assert "Telegram inbound ledger" in _denied(_bash(vault, f"echo x > {rel}"))
+    assert "Telegram inbound ledger" in _denied(_bash(vault, "rm -rf .scout-state/telegram-inbound"))
+
+
+def test_the_telegram_inbound_deny_names_who_writes_it(vault: Path) -> None:
+    """There is no listener: the tick and Scout's Telegram send write it, both trusted code outside a run."""
+    reason = _denied(_bash(vault, "echo x > .scout-state/telegram-inbound/messages.json"))
+    assert "listener" not in reason
+    assert "the 5-minute tick and Scout's Telegram send (trusted code)" in reason
+    assert "scoutctl telegram pending" in reason
+
+
+def test_the_protected_ledger_folder_name_matches_the_ledger() -> None:
+    from scout.kb import hook_paths
+    from scout.telegram_inbound import ledger
+
+    # hook_paths hard-codes the name (importing the package would be an import cycle); keep the two in step.
+    assert ledger.LEDGER_DIRNAME == "telegram-inbound"
+    assert hook_paths.TELEGRAM_INBOUND_DIRNAME == ledger.LEDGER_DIRNAME
+
+
 def test_a_run_cant_write_the_title_rewrite_records(vault: Path) -> None:
     rel = ".scout-state/title-rewrites.jsonl"
     assert "title-rewrite records" in _denied(_decision(vault, "Write", _input("Write", str(vault / rel))))
