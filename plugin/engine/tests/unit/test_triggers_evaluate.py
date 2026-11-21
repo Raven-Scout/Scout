@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
+from scout.triggers.dispatcher import FireOutcome
 from scout.triggers.engine import evaluate
 from scout.triggers.sources.base import ConnectorEvent
 
@@ -24,13 +26,21 @@ class FakeSource:
     SUPPORTED_MATCH_TYPES = ["mention"]
 
     def __init__(
-        self, name: str, events: list[ConnectorEvent], *, healthy: bool = True, error: Exception | None = None
+        self,
+        name: str,
+        events: list[ConnectorEvent],
+        *,
+        healthy: bool = True,
+        error: Exception | None = None,
+        on_fired: Callable[[ConnectorEvent, FireOutcome], None] | None = None,
     ):
         self.name = name
         self.events = events
         self.healthy = healthy
         self.error = error
         self.scan_calls: list[str] = []
+        if on_fired is not None:
+            self.on_fired = on_fired  # optional post-dispatch hook, like TelegramSource's
 
     def scan_since(self, ts: str) -> list[ConnectorEvent]:
         self.scan_calls.append(ts)
@@ -265,3 +275,36 @@ def test_scan_window_is_bounded_by_lookback(fake_data_dir: Path):
     src = FakeSource("slack", [])
     _evaluate(fake_data_dir, {"slack": src}, lookback_minutes=60)
     assert src.scan_calls == ["2026-07-01T15:00:00Z"]
+
+
+# ----- on_fired hook -----------------------------------------------------------------
+
+
+def test_on_fired_hook_called_after_successful_dispatch(fake_data_dir: Path):
+    _write_triggers(fake_data_dir, [_notify_trigger()])
+    calls: list[tuple[ConnectorEvent, FireOutcome]] = []
+    src = FakeSource("slack", [_mention("ev-1")], on_fired=lambda ev, outcome: calls.append((ev, outcome)))
+
+    result = _evaluate(fake_data_dir, {"slack": src})
+
+    assert len(result.fired) == 1
+    assert len(calls) == 1
+    event, outcome = calls[0]
+    assert event.source_event_id == "ev-1"
+    assert outcome is result.fired[0]
+    assert outcome.status == "ok"
+    # The fire was recorded before the hook ran: a second tick does not re-fire.
+    again = _evaluate(fake_data_dir, {"slack": src}, now=NOW + dt.timedelta(minutes=5))
+    assert again.fired == [] and len(calls) == 1
+
+
+def test_on_fired_exception_is_recorded_not_raised(fake_data_dir: Path):
+    _write_triggers(fake_data_dir, [_notify_trigger()])
+
+    def hook(_event: ConnectorEvent, _outcome: FireOutcome) -> None:
+        raise RuntimeError("ledger locked")
+
+    result = _evaluate(fake_data_dir, {"slack": FakeSource("slack", [_mention("ev-1")], on_fired=hook)})
+
+    assert len(result.fired) == 1
+    assert result.errors == [{"source": "slack", "error": "on_fired: RuntimeError: ledger locked"}]
