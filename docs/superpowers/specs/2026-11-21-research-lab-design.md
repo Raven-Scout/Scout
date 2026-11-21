@@ -563,6 +563,36 @@ My calls (flagged for review):
 - no research outside threads, with entity enrichment as an optional standing thread
 - every lab write, runs' included, going through `scoutctl lab` with a short lock
 
+## 14a. Found while planning (2026-11-21, Plan 1)
+
+These follow from how the engine works today. They change how the spec is built, not what it
+does.
+
+- **Nested sandboxes don't work.** A scheduled run already executes inside `sandbox-exec`, and
+  macOS refuses a second one inside it (`sandbox_apply: Operation not permitted`). So the run's
+  **broker** (`scout/sandbox/broker.py`, outside the sandbox) runs experiment scripts, through a
+  new `experiment` verb. A scheduled run with no broker can't run experiments. It refuses and
+  records "not run".
+- **Experiment limits are the owner's, not the vault's.** The broker reads the per-run count and
+  the maximum cost cap from the owner's run-broker `config.json`, the file that already holds
+  the Telegram limits, which a run can't write. It clamps a note's `cost_cap_usd` to that
+  maximum.
+- **The plan-then-run notice is enforced by the broker, from git.** Before running an
+  experiment, it checks two things in commits only it can make:
+  - the experiment note was committed at least `experiment_notice_hours` ago
+  - its status at HEAD is not `vetoed`
+  So a run can't backdate `not_before`.
+- **Scripts can reach the network only through a meter.** That is a unix socket the runner
+  serves outside the sandbox. It runs each `claude -p` call, adds up the cost, and refuses calls
+  once the cap is reached. A single call can overshoot by its own cost.
+- **`scoutctl lab` writes files but doesn't commit.** Inside a run, commits go through the
+  broker's `commit` verb (`git-safe-commit.sh`), as every other run write does. The app commits
+  its own owner writes, as it does today. The lock still makes each write safe.
+- **The app reads the lab through `scoutctl lab list --json` / `show --json`** instead of
+  parsing markdown itself, so there is one parser (the engine's). Its JSON carries any parse
+  problems, which the app shows as "doesn't match the lab format" (§9). The JSON is a contract
+  with canonical fixtures, like the changes map's.
+
 ## 14. Left to the builder
 
 - Exact `scoutctl lab` subcommand and flag names, and the JSON shape of the `lab`
