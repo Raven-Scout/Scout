@@ -86,6 +86,36 @@ def test_plan_validates_input(tmp_path: Path, short: str, body: str, match: str)
     assert _front(vault) == before
 
 
+def _assert_refused(vault: Path, match: str, **kwargs: float) -> None:
+    before = _front(vault)
+    with pytest.raises(LabError, match=match):
+        experiments.plan(vault, "monitors", "x", "T", ["Q5"], BODY, now=PLAN_NOW, **kwargs)
+    assert _front(vault) == before
+    assert paths.experiment_note(vault, "monitors", "E3") is None
+
+
+@pytest.mark.parametrize("cap", [float("nan"), float("inf"), float("-inf"), True, 0, -1])
+def test_plan_refuses_bad_cap_argument(tmp_path: Path, cap: float) -> None:
+    _assert_refused(_vault(tmp_path), "cost cap", cap_usd=cap)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("experiment_cost_cap_usd", ".nan"),
+        ("experiment_cost_cap_usd", ".inf"),
+        ("experiment_cost_cap_usd", "0"),
+        ("experiment_notice_hours", "-1"),
+        ("experiment_notice_hours", ".nan"),
+        ("experiment_notice_hours", ".inf"),
+    ],
+)
+def test_plan_refuses_bad_config_values(tmp_path: Path, key: str, value: str) -> None:
+    vault = _vault(tmp_path)
+    (vault / "scout-config.yaml").write_text(f"lab:\n  {key}: {value}\n", encoding="utf-8")
+    _assert_refused(vault, f"lab.{key}")
+
+
 def test_plan_refuses_answered_question(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     before = _front(vault)

@@ -9,6 +9,7 @@ this module records and checks them in the files. Nothing here commits.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -56,12 +57,19 @@ def _check_eid(eid: str) -> None:
         raise LabError(f"'{eid}' is not an experiment ID (E<n>)")
 
 
-def _lab_setting(vault: Path, key: str, default: float) -> float:
+def _lab_setting(vault: Path, key: str, default: float, *, positive: bool) -> float:
+    """A numeric ``lab:`` setting: finite, and greater than 0 (``positive``) or at least 0."""
     raw = ops._lab_settings(vault).get(key, default)
+    if isinstance(raw, bool):
+        raise LabError(f"lab.{key} is {raw!r}; it must be a number")
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         raise LabError(f"lab.{key} is {raw!r}; it must be a number") from None
+    if not math.isfinite(value) or (value <= 0 if positive else value < 0):
+        bound = "greater than 0" if positive else "0 or more"
+        raise LabError(f"lab.{key} is {raw!r}; it must be a finite number {bound}")
+    return value
 
 
 def _load(vault: Path, slug: str, eid: str, *, active: bool = True) -> tuple[Thread, str, Path, str, Experiment]:
@@ -128,10 +136,13 @@ def plan(
     for heading in _RESERVED:
         if re.search(rf"^## {re.escape(heading)}\s*$", body_md, re.MULTILINE):
             raise LabError(f"experiment body must not contain '## {heading}'; plan adds it empty")
-    cap = cap_usd if cap_usd is not None else _lab_setting(vault, "experiment_cost_cap_usd", 1.0)
-    if cap <= 0:
-        raise LabError(f"cost cap must be positive, not {cap}")
-    notice = _lab_setting(vault, "experiment_notice_hours", 6.0)
+    if cap_usd is not None:
+        if isinstance(cap_usd, bool) or not math.isfinite(cap_usd) or cap_usd <= 0:
+            raise LabError(f"cost cap is {cap_usd!r}; it must be a finite number greater than 0")
+        cap = float(cap_usd)
+    else:
+        cap = _lab_setting(vault, "experiment_cost_cap_usd", 1.0, positive=True)
+    notice = _lab_setting(vault, "experiment_notice_hours", 6.0, positive=False)
     planned = _moment(vault, now)
     not_before = planned + _dt.timedelta(hours=notice)
     clean_title = writer._norm(title, "experiment title", dot=True)
