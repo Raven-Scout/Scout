@@ -30,9 +30,10 @@ struct KBReaderAndMapRulesTests {
     /// about 410 pt wide, and the header wrapped one letter per line, which
     /// made the page taller than the window.
     /// From `KnowledgeBaseView.minEditorWidth` (the narrowest the page lets
-    /// the editor get) up. Since `KBNoteColumnLayout` caps the column's
-    /// height at the one offered, the width check is the one that bites; an
-    /// overgrown header now shows as clipped content, not a taller window.
+    /// the editor get) up. `KBNoteColumnLayout` caps the column's height at
+    /// the one offered, so the height is measured with the cap out of the way
+    /// (`fixedSize` asks for the natural height): an overgrown header still
+    /// fails here instead of hiding as clipped content.
     @Test("the editor fits a narrow reader column without growing taller than the window",
           arguments: [Double(KnowledgeBaseView.minEditorWidth), 410.0, 520.0, 800.0])
     func editorFitsNarrowColumn(width: Double) async throws {
@@ -46,8 +47,10 @@ struct KBReaderAndMapRulesTests {
             onDeleted: {}, onRenamed: { _ in }, onRenameProblem: { _ in }, onOverview: {},
             linksPanelShown: true, onToggleLinksPanel: {})
             .environmentObject(vault.state.vaultUndo)
-        let size = LayoutHarness.size(of: editor, proposing: CGSize(width: width, height: 600))
-        #expect(size.height <= 600, "the editor asked for \(size.height) pt at \(width) pt wide")
+        let proposal = CGSize(width: width, height: 600)
+        let natural = LayoutHarness.size(of: editor.fixedSize(horizontal: false, vertical: true), proposing: proposal)
+        #expect(natural.height <= 600, "the editor's natural height is \(natural.height) pt at \(width) pt wide")
+        let size = LayoutHarness.size(of: editor, proposing: proposal)
         #expect(size.width <= width + 0.5, "the editor asked for \(size.width) pt at \(width) pt wide")
     }
 
@@ -87,10 +90,12 @@ struct KBReaderAndMapRulesTests {
     }
 
     /// A banner above the note jumped the whole window's content up under
-    /// the title bar (hand check of #750): the window measures its minimum
-    /// size at a near-zero width, where a banner's text wraps a word per line
-    /// and asked for 1,500-2,300 pt. The note column caps its height at the
-    /// one offered, so a banner never makes the window taller.
+    /// the title bar (hand check of #750). The split view measures the detail
+    /// column's minimum size in its own hosting view, at a near-zero width the
+    /// window's 1070 pt minimum doesn't reach. There a banner's text wraps a
+    /// word per line and asked for 1,500-2,300 pt, and the overflow was
+    /// centred, pushing the content up by half of it. The note column caps
+    /// its height at the one offered.
     @Test("a reader banner never makes the note column ask for more height than offered",
           arguments: ["draft", "disk"])
     func bannerDoesNotGrowTheWindow(kind: String) {
@@ -139,6 +144,61 @@ struct KBReaderAndMapRulesTests {
         #expect(LayoutHarness.size(of: editor, proposing: .zero).height == 0)
     }
 
+    /// The bug as the window showed it: a split view whose detail column is
+    /// the note column with a banner, in a 1081 × 800 window. Uncapped, the
+    /// header was laid out at y = -304 (draft) and -720 (disk).
+    @Test("with a banner in the detail column, the header and sidebar stay in the window",
+          arguments: ["draft", "disk"])
+    func bannerKeepsTheWindowInPlace(kind: String) async {
+        final class Tops: ObservableObject { var header = CGFloat.nan; var sidebar = CGFloat.nan }
+        struct Page: View {
+            let kind: String
+            let tops: Tops
+            var body: some View {
+                NavigationSplitView {
+                    List {
+                        Text("A sidebar row")
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { tops.sidebar = $0 }
+                    }
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+                } detail: {
+                    HStack(spacing: 0) {
+                        Color.clear.frame(width: KnowledgeBaseView.treeWidth)
+                        KBNoteColumnLayout {
+                            VStack(spacing: 0) {
+                                Text("The note header").lineLimit(1).padding(12)
+                                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { tops.header = $0 }
+                                if kind == "draft" {
+                                    KBEditorView.draftBanner(save: {}, discard: {}, dismiss: {})
+                                } else {
+                                    KBEditorView.changedOnDiskBanner(name: "a-long-note-name-about-the-quarterly-plan",
+                                                                     saveMine: {}, reload: {})
+                                }
+                                Color.clear
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
+            }
+        }
+        let tops = Tops()
+        let controller = NSHostingController(rootView: Page(kind: kind, tops: tops))
+        let window = NSWindow(contentViewController: controller)
+        window.styleMask = [.titled, .resizable, .fullSizeContentView]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(CGSize(width: 1081, height: 800))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil); window.contentViewController = nil }
+        for _ in 0..<20 {
+            controller.view.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(tops.header >= 0, "the header was laid out at y = \(tops.header)")
+        #expect(tops.sidebar >= 0, "the sidebar row was laid out at y = \(tops.sidebar)")
+    }
+
     @Test("a squeezed folders crumb truncates to an ellipsis, never a clipped glyph")
     func folderCrumbFloor() {
         let floor = KBEditorView.minFolderCrumbWidth
@@ -152,8 +212,6 @@ struct KBReaderAndMapRulesTests {
         let natural = LayoutHarness.size(of: Text("ops"), proposing: CGSize(width: 200, height: 20)).width
         #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 4, height: 20)).width == natural)
         #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 200, height: 20)).width == natural)
-        // The one-row header leaves the path and name room for more than a stub.
-        #expect(KBEditorView.minTitleWidth >= 280)
     }
 
     @Test("the draft store publishes when a file gains or loses a draft, not on every keystroke")

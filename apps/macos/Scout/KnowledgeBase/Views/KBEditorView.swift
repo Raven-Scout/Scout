@@ -168,8 +168,8 @@ struct KBEditorView: View {
     private var showsReader: Bool { isMarkdown && !isUnreadable && mode == .read }
 
     var body: some View {
-        // The column never asks for more height than it's offered: a banner
-        // measured at the window's minimum-size probe (a near-zero width)
+        // The column never asks for more height than it's offered: measured
+        // for the split view's minimum size (a near-zero width), a banner
         // wrapped a word per line and asked for 1500-2300 pt, which pushed
         // the whole window's content up under the title bar.
         KBNoteColumnLayout {
@@ -453,7 +453,7 @@ struct KBEditorView: View {
 
     /// Static so the layout tests host the banner the reader shows.
     static func draftBanner(save: @escaping @MainActor () -> Void, discard: @escaping @MainActor () -> Void,
-                            dismiss: @escaping () -> Void) -> some View {
+                            dismiss: @escaping @MainActor () -> Void) -> some View {
         DSBanner(tone: .info, title: "Unsaved draft",
                  message: "You edited this note earlier and haven't saved it. This is your draft, not the file on disk.",
                  actions: [ProblemAction("Save", perform: save),
@@ -1054,11 +1054,13 @@ struct KBSourceEditor: NSViewRepresentable {
 
 /// The note column's layout: its child at the size offered, and never a
 /// height taller than the one offered. A banner's text wraps at whatever
-/// width it gets, and the window measures its minimum size at a near-zero
-/// width, where the "Unsaved draft" banner asked for about 1,500 pt and the
-/// "changed on disk" one about 2,300 pt. That minimum pushed the window's
-/// content up under the title bar. Width passes through unchanged, so the
-/// page's minimum width doesn't move.
+/// width it gets, and the split view measures the detail column's minimum
+/// size in its own hosting view at a near-zero width (the window's 1070 pt
+/// minimum frame doesn't reach it). There the "Unsaved draft" banner asked
+/// for about 1,500 pt and the "changed on disk" one about 2,300 pt, and the
+/// split view centred that overflow, pushing the window's content up by half
+/// of it. Width passes through unchanged, so the page's minimum width
+/// doesn't move.
 struct KBNoteColumnLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let child = subviews.first else { return .zero }
