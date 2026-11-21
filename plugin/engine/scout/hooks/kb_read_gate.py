@@ -250,6 +250,13 @@ def _deny_delegate_state(form: str) -> str:
     )
 
 
+def _deny_telegram_inbound(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't change {form} (.scout-state/telegram-inbound/): it records which of the "
+        "owner's Telegram messages arrived and which were answered, and only Scout's listener writes it, outside a run."
+    )
+
+
 def _deny_agent_text(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't read or change {form} (.scout-inbox/agents/): what the owner's agents "
@@ -282,6 +289,7 @@ def _deny_skip_form(form: str) -> str:
         hp.INLINE_WRITE: _deny_inline_write,
         hp.SECRETS: _deny_secrets,
         hp.DELEGATE_STATE: _deny_delegate_state,
+        hp.TELEGRAM_INBOUND: _deny_telegram_inbound,
         hp.TITLE_REWRITES: _deny_title_rewrites,
         hp.AGENT_TEXT: _deny_agent_text,
         hp.AGENT_NOTES: _deny_agent_notes,
