@@ -420,6 +420,26 @@ def test_failed_message_sends_one_notice(fake_data_dir: Path):
     assert len(bot.methods("sendMessage")) == 1  # once, not every tick
 
 
+def test_a_batch_that_fails_together_gets_one_notice(fake_data_dir: Path):
+    """One notice per tick, threaded under the newest message that just failed, naming how many."""
+    clock = Clock()
+    ledger = Ledger(fake_data_dir)
+    with ledger.locked():
+        for i in (5, 6, 7):
+            ledger.add(
+                InboundMessage(message_id=i, date=0, text=f"ask {i}", reply_to_text=None, forwarded=False, kind="text")
+            )
+        for _ in range(ledger_mod.MAX_ATTEMPTS):
+            ledger.mark_dispatched([5, 6, 7], now=clock() - dt.timedelta(minutes=61))
+    bot = FakeBot()
+    assert _source(fake_data_dir, bot, clock=clock).scan_since("ignored") == []
+    assert all(_state(fake_data_dir, i) == ledger_mod.FAILED for i in (5, 6, 7))
+    replies = bot.methods("sendMessage")
+    assert [(r["text"], r["reply_parameters"]["message_id"]) for r in replies] == [
+        ("I couldn't handle 3 of your messages after 3 tries — I'll pick them up in the next scheduled run.", 7)
+    ]
+
+
 def test_failed_message_never_fires_a_respond_run(fake_data_dir: Path):
     """Out of attempts is left for a scheduled run: it fires nothing, even alongside a new message."""
     clock = Clock()

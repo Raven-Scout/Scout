@@ -38,6 +38,13 @@ UNSUPPORTED_REPLY = "I can only read text messages for now."
 ACK_FALLBACK_REPLY = "On it"
 # Sent by the tick itself, no LLM. A failed message stays answerable: the next scheduled run's drain answers it.
 FAILED_NOTICE = "I couldn't handle this after 3 tries — I'll pick it up in the next scheduled run."
+FAILED_NOTICE_MANY = (
+    "I couldn't handle {n} of your messages after 3 tries — I'll pick them up in the next scheduled run."
+)
+
+
+def _failed_notice(n: int) -> str:
+    return FAILED_NOTICE if n == 1 else FAILED_NOTICE_MANY.format(n=n)
 
 
 def _iso_z(when: dt.datetime) -> str:
@@ -112,12 +119,13 @@ class TelegramSource:
                 offset = max(offset, max(update_ids) + 1)
             ledger.set_poll_state(offset=offset, last_poll_at=now.isoformat(), last_error=None)
 
-            for failed in ledger.reconcile(now=now, run_alive=self._lock_held()):
+            failed = ledger.reconcile(now=now, run_alive=self._lock_held())
+            if failed:  # one notice for the batch, under its newest message
                 bot.send_plain_reply(
                     token=token,
                     chat_id=chat_id,
-                    reply_to=failed.message_id,
-                    text=FAILED_NOTICE,
+                    reply_to=max(m.message_id for m in failed),
+                    text=_failed_notice(len(failed)),
                     http_post=self._http_post,
                 )
 
