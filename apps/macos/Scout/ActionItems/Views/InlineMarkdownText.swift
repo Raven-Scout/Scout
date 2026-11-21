@@ -206,35 +206,24 @@ struct InlineMarkdownText: View {
         }
     }
 
-    /// `[[target]]` / `[[target|alias]]` — compiled once; rewriteWikilinks runs
-    /// for every cache miss and regex compilation dominates its cost. The
-    /// alias separator may be escaped as `\|`, the form notes use inside table
-    /// cells (as `KnowledgeBaseService.extractWikilinks` reads it); without
-    /// that, the backslash stayed on the target and the link went nowhere.
-    private static let wikilinkRe = try! NSRegularExpression(
-        // No `[` or newline inside, so an unclosed `[[` gives up at the next one
-        // instead of scanning to the end of the text from every `[[`.
-        pattern: #"\[\[([^\[\]|\n]+?)(?:\\?\|([^\[\]\n]+))?\]\]"#
-    )
-
     /// Linear issue key, e.g. `PROJ-1234`.
     private static let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
 
     /// Replace ``[[target]]`` / ``[[target|alias]]`` with ``[label](scout-wiki://target)``
     /// so AttributedString(markdown:) renders them as clickable links we intercept.
+    /// What counts as a wikilink is `Wikilink`'s rule, the one the knowledge
+    /// base counts links and backlinks by. Its alias separator may be escaped
+    /// as `\|`, the form notes use inside table cells; without that, the
+    /// backslash stayed on the target and the link went nowhere.
     private static func rewriteWikilinks(_ s: String) -> String {
-        let ns = s as NSString
         var result = s
-        let whole = NSRange(location: 0, length: ns.length)
         // A wikilink inside an inline code span is code, not a link.
         let code = CodeSpanScanner.ranges(in: s)
-        let matches = wikilinkRe.matches(in: s, range: whole).reversed()
-        for m in matches where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
-            let target = ns.substring(with: m.range(at: 1))
+        for m in Wikilink.matches(in: s).reversed()
+        where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
+            let target = m.target
             // An alias written inside a table cell escapes its own pipes too (`a\|b`).
-            let label  = m.range(at: 2).location == NSNotFound
-                ? target
-                : ns.substring(with: m.range(at: 2)).replacingOccurrences(of: "\\|", with: "|")
+            let label = m.alias?.replacingOccurrences(of: "\\|", with: "|") ?? target
             let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? target
             let replacement = "[\(label)](scout-wiki://\(encoded))"
             result = (result as NSString).replacingCharacters(in: m.range, with: replacement)
