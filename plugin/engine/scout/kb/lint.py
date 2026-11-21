@@ -689,6 +689,15 @@ def _bullet_count_findings(f: StagedFile, rules: PageRules, staged: str, old: st
     ]
 
 
+def _lab(f: StagedFile) -> list[Finding]:
+    """The lab's format check (:mod:`scout.lab.lint`) on a staged file under ``knowledge-base/lab/``."""
+    if not f.rel.startswith("knowledge-base/lab/"):
+        return []
+    from scout.lab.lint import lab_findings
+
+    return lab_findings(f.repo, f.rel, staged_text_lossy(f.repo, f.rel))
+
+
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
 # A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
 # It reports `Finding(blocking=True)` for what should refuse a commit, and the
@@ -704,6 +713,7 @@ STAGED_CHECKS: tuple[StagedCheck, ...] = (
     _page_sections,
     _page_narration,
     _page_bullets,
+    _lab,
 )
 
 

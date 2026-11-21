@@ -153,6 +153,37 @@ def cli_show(
         typer.echo(f"problem (line {p['line']}): {p['message']}")
 
 
+@app.command("lint")
+def cli_lint(
+    ctx: typer.Context,
+    files: list[Path] = typer.Argument(None, metavar="[PATH]...", help="Lab files (vault-relative or absolute)."),
+) -> None:
+    """Check lab files against the thread format (what kb-lint's lab-format enforces at commit).
+
+    With no PATH, every file under knowledge-base/lab/. One line per finding:
+    '<path>:<line>: <check>: <message>'. Exits 1 when any finding blocks; warnings exit 0.
+    """
+    from scout.lab import lint, paths
+
+    vault = _vault(ctx)
+    root = paths.lab_dir(vault)
+    targets: list[Path] = []
+    for given in files or [root]:
+        path = given if given.is_absolute() else vault / given
+        targets += sorted(p for p in path.rglob("*.md")) if path.is_dir() else [path]
+    blocking = False
+    for path in sorted(set(targets)):
+        try:
+            rel = path.resolve().relative_to(vault.resolve()).as_posix()
+        except ValueError:
+            raise LabError(f"{path} is not inside the vault {vault}") from None
+        for f in lint.lab_findings(vault, rel, _read_text(path)):
+            typer.echo(f"{f.path}:{f.line or 1}: {f.check}: {f.message}")
+            blocking = blocking or f.blocking
+    if blocking:
+        raise typer.Exit(1)
+
+
 # --- owner verbs -----------------------------------------------------------------------
 
 
