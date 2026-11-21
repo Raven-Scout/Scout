@@ -108,11 +108,15 @@ def test_claude_argv_cwd_and_env_are_locked_down(d: Path, monkeypatch: pytest.Mo
     argv = lines[0].removeprefix("ARGV:")
     assert argv == (
         "-p --output-format json --restricted --tools  --strict-mcp-config --no-session-persistence"
-        " --model claude-x_1.2:3"
+        " --disable-slash-commands --model claude-x_1.2:3"
     )
     assert "--model" not in blocks[1].splitlines()[0]
     cwd = Path(lines[1].removeprefix("CWD:"))
     assert not cwd.exists()
+    env_lines = dict(x.removeprefix("ENV:").split("=", 1) for x in lines if x.startswith("ENV:") and "=" in x)
+    assert os.path.realpath(env_lines["HOME"]) == str(cwd)
+    assert env_lines["HOME"] != os.environ.get("HOME")
+    assert not Path(env_lines["HOME"]).exists()
     keys = {x.removeprefix("ENV:").split("=", 1)[0] for x in lines if x.startswith("ENV:")}
     assert "SCOUT_X" not in keys
     assert keys <= ALLOWED_ENV | SHELL_ENV
@@ -176,17 +180,36 @@ def test_protocol_rejections(d: Path) -> None:
     assert not (d / "calls.log").exists()
 
 
-def test_failed_call_still_recorded(d: Path) -> None:
+@pytest.mark.parametrize("prompt", ["FAILCALL", "BADJSON", "NOCOST", "NEGCOST", "SLEEPCALL"])
+def test_ambiguous_call_charges_remaining_budget(d: Path, prompt: str) -> None:
+    s = meter.MeterServer(
+        d / "m.sock", d / "ledger.jsonl", 1.0, claude_argv=(str(FAKE), str(d / "calls.log")), call_timeout_s=0.5
+    )
+    s.start()
+    try:
+        ok1 = meter.meter_call("fine", env=_env(d))  # 0.4 spent
+        r1 = meter.meter_call(prompt, env=_env(d))
+        r2 = meter.meter_call("after", env=_env(d))
+    finally:
+        s.stop()
+    assert ok1["ok"] is True
+    assert "refused" not in r1
+    rows = _ledger(d)
+    assert len(rows) == 2
+    assert rows[1]["cost_usd"] == pytest.approx(0.6)
+    assert r2["ok"] is False and r2["refused"] == "cap"
+    assert len(rows) == 2
+
+
+def test_negative_ledger_rows_ignored(d: Path) -> None:
+    (d / "ledger.jsonl").write_text(json.dumps({"at": "x", "cost_usd": -50, "ok": True}) + "\n")
     s = _server(d)
     s.start()
     try:
-        r1 = meter.meter_call("FAILCALL", env=_env(d))
-        r2 = meter.meter_call("BADJSON", env=_env(d))
+        r = meter.meter_call("a", env=_env(d))
     finally:
         s.stop()
-    assert r1["ok"] is False and r2["ok"] is False and "error" in r1 and "error" in r2
-    rows = _ledger(d)
-    assert [r["ok"] for r in rows] == [False, False] and [r["cost_usd"] for r in rows] == [0, 0]
+    assert r["ok"] is True and r["spent_usd"] == 0.4
 
 
 def test_unreachable_meter_raises(d: Path) -> None:

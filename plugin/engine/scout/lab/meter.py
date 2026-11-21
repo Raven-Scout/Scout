@@ -6,10 +6,15 @@ cost in a JSONL ledger and refuses once the per-experiment dollar cap is reached
 
 Security: the call runs unsandboxed, so it must not be a way out of the sandbox. ``claude`` is
 started with no tools (``--tools ""``), ``--restricted``, no MCP servers, no session persistence, in
-a fresh empty directory, with an environment of only ``PATH``, ``HOME``, ``LANG`` and the Claude auth
-variables the scheduled runner passes (``scripts/claude-with-retry.sh``): ``CLAUDE_CODE_OAUTH_TOKEN``
-and ``ANTHROPIC_API_KEY``. The ``model`` value is passed as an argv value, so it is held to a strict
-pattern.
+a fresh empty directory that is both its working directory and its ``HOME`` (so no user CLAUDE.md,
+skills, commands or settings are loaded; slash commands are disabled), with an environment of only
+``PATH``, ``LANG`` and the Claude auth variables the scheduled runner passes
+(``scripts/claude-with-retry.sh``): ``CLAUDE_CODE_OAUTH_TOKEN`` and ``ANTHROPIC_API_KEY``. Auth comes
+only from that env token or API key, never from the user's home. The ``model`` value is passed as an
+argv value, so it is held to a strict pattern.
+
+Cost accounting fails closed: a timed-out call, or one whose JSON lacks a valid non-negative finite
+``total_cost_usd``, is charged the remaining budget so the next call is refused.
 
 Protocol: one JSON line per connection, ``{"v":1,"prompt":str,"model":str|None}``; one JSON line back.
 """
@@ -35,7 +40,7 @@ MAX_PROMPT_CHARS = 200_000
 MAX_REQUEST_BYTES = 1 << 20
 _READ_TIMEOUT_S = 10.0
 _MODEL_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
-_PASS_ENV = ("PATH", "HOME", "LANG", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+_PASS_ENV = ("PATH", "LANG", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 
 class MeterUnavailable(Exception):
@@ -165,7 +170,7 @@ class MeterServer:
                 cost = json.loads(line).get("cost_usd", 0)
             except (ValueError, AttributeError):
                 continue
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost):
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0:
                 total += cost
                 biggest = max(biggest, cost)
         return total, biggest
@@ -195,11 +200,12 @@ class MeterServer:
             "",
             "--strict-mcp-config",
             "--no-session-persistence",
+            "--disable-slash-commands",
             *(["--model", model] if model else []),
         ]
-        env = {k: os.environ[k] for k in _PASS_ENV if k in os.environ}
         cwd = tempfile.mkdtemp(prefix="scout-lab-meter-")
-        cost = 0.0
+        env = {k: os.environ[k] for k in _PASS_ENV if k in os.environ}
+        env["HOME"] = cwd  # no ~/.claude/CLAUDE.md, skills or settings: the call sees nothing of the user's
         try:
             try:
                 proc = subprocess.run(
@@ -213,10 +219,16 @@ class MeterServer:
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                self._record(0.0, False)
-                return {"ok": False, "error": f"model call timed out after {self.call_timeout_s:g}s"}
+                # The API has likely billed something we cannot see: fail closed.
+                charge = max(self.cap_usd - spent, 0.0)
+                self._record(charge, False)
+                return {
+                    "ok": False,
+                    "error": f"model call timed out after {self.call_timeout_s:g}s; remaining budget charged",
+                    "spent_usd": spent + charge,
+                }
             except OSError as exc:
-                self._record(0.0, False)
+                self._record(0.0, False)  # claude never started: nothing was billed
                 return {"ok": False, "error": f"cannot run claude: {exc.__class__.__name__}"}
         finally:
             shutil.rmtree(cwd, ignore_errors=True)
@@ -225,10 +237,11 @@ class MeterServer:
             doc = json.loads(proc.stdout)
         except ValueError:
             pass
-        if isinstance(doc, dict):
-            raw = doc.get("total_cost_usd")
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw) and raw >= 0:
-                cost = float(raw)
+        raw = doc.get("total_cost_usd") if isinstance(doc, dict) else None
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw) and raw >= 0:
+            cost = float(raw)
+        else:
+            cost = max(self.cap_usd - spent, 0.0)  # cost unknown: fail closed, charge the remaining budget
         spent_after = spent + cost
         if proc.returncode != 0:
             self._record(cost, False)
