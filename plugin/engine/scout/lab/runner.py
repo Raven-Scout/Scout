@@ -21,11 +21,17 @@ What it holds the script to, and why each piece is where it is:
   ``O_EXCL``, :func:`shutil.rmtree` with ``dir_fd``).
 - **Nothing the script started survives it.** At the timeout, after a normal exit and when the
   runner itself is interrupted, the process group is SIGKILLed; then every process of this user is
-  swept and killed when its sandbox is this experiment's (the kernel, through ``sandbox_check``,
-  says it may write the scratch dir and may not write the folder holding the experiment). A child
-  that left the group (``setsid``, a double fork) still carries the profile, so the sweep finds it
-  whatever its parentage. Matches are frozen (SIGSTOP) until a pass finds no new one, then killed,
-  until a sweep finds none.
+  swept and killed when its sandbox is this run's: the kernel (``sandbox_check``) says it may write
+  this run's probe file and may not write the folder holding the experiment. The probe file sits in
+  the runner's 0700 temp dir and the profile grants it ``file-write-data`` only, so a script can't
+  delete or swap it to hide from the sweep (it can delete its own ``.tmp``). A child that left the
+  group (``setsid``, a double fork) still carries the profile, so the sweep finds it whatever its
+  parentage. Matches are frozen (SIGSTOP) until a pass finds no new one, then killed, until a sweep
+  finds none; a probe file that isn't a plain file any more is "not clean".
+- **The sweep fails closed (ruling R21).** The script starts behind a gate (a ``sh`` that waits on
+  its stdin pipe): the runner first checks the kernel's answers about that live, sandboxed process
+  (sandboxed, may write the probe file, may not write outside). On a wrong or missing answer it
+  kills the group and raises :class:`LabError`; the script never ran.
 - **Private bytes outside knowledge-base/ are denied too** (ruling R18): the git objects, the inbox,
   the engine cache, every other checkout of the vault's repo (``.claude/worktrees/`` and each git
   worktree), ``Raw/`` and ``action-items/``. Transcripts and ``.scout-logs`` stay readable (spec §6.3).
@@ -78,6 +84,9 @@ PRIVATE_ROOT_DIRS: tuple[str, ...] = ("Raw", "action-items", ".claude/worktrees"
 # In a checkout that holds this vault (the vault is one of its worktrees), the parts that hold private bytes.
 CHECKOUT_PRIVATE_DIRS: tuple[str, ...] = ("knowledge-base", "Raw", "action-items", INBOX_DIR, ".scout-cache")
 _SWEEP_ROUNDS = 20
+# Runs inside the sandbox ahead of the script: wait until the runner has checked the sandboxed process
+# (R21), give the script /dev/null for stdin, and become the script (same pid, same process group).
+_GATE = 'read -r _ || :; exec </dev/null; exec "$@"'
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
     "/usr/bin/git",
@@ -246,8 +255,10 @@ def other_checkouts(vault: Path) -> list[Path]:
         if not gitdir.is_dir():
             continue
         candidates: list[Path] = []
-        if gitdir.name == ".git":
-            candidates.append(gitdir.parent)
+        # git_dirs gives a linked worktree's common dir as "<gitdir>/../..": compare the resolved name.
+        real_gitdir = Path(os.path.realpath(gitdir))
+        if real_gitdir.name == ".git":
+            candidates.append(real_gitdir.parent)
         for pointer in sorted(gitdir.glob("worktrees/*/gitdir")):
             try:
                 target = Path(pointer.read_text(encoding="utf-8").strip())
@@ -257,7 +268,7 @@ def other_checkouts(vault: Path) -> list[Path]:
             candidates.append(target.parent)
         for checkout in candidates:
             real = os.path.realpath(checkout)
-            if real != vault_real and checkout not in found:
+            if real != vault_real and all(os.path.realpath(f) != real for f in found):
                 found.append(checkout)
     return found
 
@@ -308,23 +319,42 @@ def _own_live_pids() -> list[int]:
     return out
 
 
-def _holders(probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> set[int]:
-    """Live processes whose sandbox is this experiment's: it may write ``tmp_real`` and may not write ``outside``."""
-    return {
-        pid
-        for pid in _own_live_pids()
-        if probe.sandboxed(pid)
+def _decoy(marker: str) -> str:
+    return marker + "-denied"
+
+
+def _holds_profile(probe: sandbox.SandboxProbe, pid: int, marker: str, outside: str) -> bool:
+    """The kernel says ``pid``'s sandbox is this run's: it may write ``marker`` but not the decoy beside it
+    (a sandbox that allows all of /tmp, as several of the user's own daemons' do, allows both), and may
+    not write ``outside``."""
+    return (
+        probe.sandboxed(pid)
         and probe.denies(pid, "file-write-data", outside) is True
-        and probe.denies(pid, "file-write-data", tmp_real) is False
-    }
+        and probe.denies(pid, "file-write-data", _decoy(marker)) is True
+        and probe.denies(pid, "file-write-data", marker) is False
+    )
 
 
-def _sweep(probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> bool:
-    """Kill every process holding this experiment's sandbox; True once a sweep finds none."""
+def _holders(probe: sandbox.SandboxProbe, marker: str, outside: str) -> set[int]:
+    return {pid for pid in _own_live_pids() if _holds_profile(probe, pid, marker, outside)}
+
+
+def _marker_ok(marker: str) -> bool:
+    """The probe file is still a plain file (not removed, not a link): the sweep's answers mean something."""
+    try:
+        return all(stat.S_ISREG(os.lstat(p).st_mode) for p in (marker, _decoy(marker)))
+    except OSError:
+        return False
+
+
+def _sweep(probe: sandbox.SandboxProbe, marker: str, outside: str) -> bool:
+    """Kill every process holding this run's sandbox; True once a sweep finds none (False if it can't tell)."""
     for _ in range(_SWEEP_ROUNDS):
+        if not _marker_ok(marker):
+            return False
         frozen: set[int] = set()
         for _ in range(50):  # freeze first, so nothing forks while the rest are found
-            new = _holders(probe, tmp_real, outside) - frozen
+            new = _holders(probe, marker, outside) - frozen
             if not new:
                 break
             for pid in new:
@@ -337,7 +367,7 @@ def _sweep(probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> bool:
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)
         time.sleep(0.05)
-    return not _holders(probe, tmp_real, outside)
+    return _marker_ok(marker) and not _holders(probe, marker, outside)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -350,7 +380,7 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def _kill_all(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe, tmp_real: str, outside: str) -> bool:
+def _kill_all(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe, marker: str, outside: str) -> bool:
     """SIGKILL the script's process group, reap it, then sweep out every process still holding the
     experiment's sandbox, wherever it moved to. True when none is left."""
     pgid = proc.pid
@@ -358,13 +388,29 @@ def _kill_all(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe, tmp_re
         os.killpg(pgid, signal.SIGKILL)
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=_KILL_WAIT_S)
-    clean = _sweep(probe, tmp_real, outside)
+    clean = _sweep(probe, marker, outside)
     deadline = time.monotonic() + _KILL_WAIT_S
     while _group_alive(pgid) and time.monotonic() < deadline:
         with contextlib.suppress(OSError):
             os.killpg(pgid, signal.SIGKILL)
         time.sleep(0.05)
     return clean and not _group_alive(pgid)
+
+
+def _positive_control(proc: subprocess.Popen[bytes], probe: sandbox.SandboxProbe, marker: str, outside: str) -> bool:
+    """R21: the kernel's answers about the gated, sandboxed leader are the expected ones.
+
+    True also when the leader is already gone: then ``sandbox-exec`` itself failed (a profile the kernel
+    rejected), the gate never opened and nothing of the script ran; the caller reports that exit.
+    """
+    deadline = time.monotonic() + _KILL_WAIT_S
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return True
+        if probe.sandboxed(proc.pid):
+            return _holds_profile(probe, proc.pid, marker, outside)
+        time.sleep(0.01)
+    return False
 
 
 def _tail(path: str) -> str:
@@ -483,10 +529,16 @@ def _run(
     server: MeterServer | None = None
     try:
         sock = Path(os.path.realpath(private_dir)) / "m.sock"
+        # The sweep's fingerprint: only this run's profile may write it, and the script can't remove it.
+        marker = os.path.join(os.path.realpath(private_dir), "probe")
+        for path in (marker, _decoy(marker)):
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
         deny_reads = [] if private else _deny_reads(vault, exp_real)
         deny_execs = _deny_execs([source.get("PATH"), os.environ.get("PATH")])
         try:
-            text = sandbox.experiment_profile(Path(exp_real), Path(tmp_real), sock, deny_reads, deny_execs, env=source)
+            text = sandbox.experiment_profile(
+                Path(exp_real), Path(tmp_real), sock, deny_reads, deny_execs, env=source, probe_file=Path(marker)
+            )
         except profile.ProfileError as exc:
             raise LabError(f"cannot build the experiment sandbox: {exc}") from None
         # The folders must still be the real ones now that the profile is rendered: a link swapped in
@@ -509,8 +561,8 @@ def _run(
         with open(profile_file, "w", encoding="utf-8") as fh:  # a file, not -p: thousands of denies outgrow argv
             fh.write(text)
 
-        # The sweep's two probes: the scratch dir (this experiment's sandbox may write it) and the folder of
-        # experiment notes (it may not; the run itself may, so a run's own processes never match).
+        # The folder of experiment notes: the experiment may not write it; the run itself may, so a run's
+        # own processes never match the sweep.
         outside = os.path.dirname(exp_real)
         try:
             probe = sandbox.SandboxProbe()
@@ -542,22 +594,36 @@ def _run(
         timed_out = False
         clean = False
         with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
-            proc = subprocess.Popen(
-                [str(profile.SANDBOX_EXEC), "-f", profile_file, *argv],
-                cwd=exp_real,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=out_f,
-                stderr=err_f,
-                start_new_session=True,
-            )
+            gate_r, gate_w = os.pipe()
             try:
+                proc = subprocess.Popen(
+                    [str(profile.SANDBOX_EXEC), "-f", profile_file, "/bin/sh", "-c", _GATE, "sh", *argv],
+                    cwd=exp_real,
+                    env=child_env,
+                    stdin=gate_r,
+                    stdout=out_f,
+                    stderr=err_f,
+                    start_new_session=True,
+                )
+            finally:
+                os.close(gate_r)
+            try:
+                try:
+                    if not _positive_control(proc, probe, marker, outside):
+                        raise LabError(
+                            "sandbox_check gave the wrong answer about the sandboxed script before it started; "
+                            "its processes couldn't be found afterwards, so it was not run"
+                        )
+                    if proc.poll() is None:
+                        os.write(gate_w, b"go\n")  # the gate opens: the script runs
+                finally:
+                    os.close(gate_w)
                 try:
                     proc.wait(timeout=timeout_s)
                 except subprocess.TimeoutExpired:
                     timed_out = True
             finally:
-                clean = _kill_all(proc, probe, tmp_real, outside)
+                clean = _kill_all(proc, probe, marker, outside)
         stderr_tail = _tail(err_path)
         outcome = RunOutcome(
             exit=proc.returncode if proc.returncode is not None else -signal.SIGKILL,

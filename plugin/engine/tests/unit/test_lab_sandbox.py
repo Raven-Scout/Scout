@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -261,3 +262,37 @@ def test_other_terminals_unwritable(vault: Path, tmp_path: Path) -> None:
         pytest.skip("no /dev/ttys* device on this machine")
     out = h.run(vault, tmp_path, f"printf '' > '{ttys[0]}'")
     assert out.exit != 0 and "not permitted" in out.stderr_tail
+
+
+def _git(cwd: Path, *args: str) -> None:
+    """git with no user or system config (the owner's signing, hooks and defaults can't change the result)."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    ident = ["-c", "user.name=Alex", "-c", "user.email=alex@example.org", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", *ident, *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+
+@kernel
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git to make a linked worktree")
+@pytest.mark.parametrize("layout", ["beside", "inside"])
+def test_main_checkout_unreadable_from_a_linked_worktree(tmp_path: Path, layout: str) -> None:
+    """I2b: an experiment in a ``git worktree add`` checkout can't read the main checkout's private material,
+    whether the worktree sits beside the main checkout or inside it (``.claude/worktrees/x``, the vault's
+    own layout)."""
+    main = h.make_vault(tmp_path)
+    _git(main, "init", "-q")
+    _git(main, "add", "-A")
+    _git(main, "commit", "-q", "-m", "seed")
+    linked = tmp_path / "linked" if layout == "beside" else main / ".claude" / "worktrees" / "x"
+    _git(main, "worktree", "add", "-q", str(linked))
+    items = main / "action-items" / "action-items-2026-11-21.md"
+    items.parent.mkdir()
+    items.write_text("CANARY-PRIV-ITEMS")
+    raw = main / "Raw" / "Drop" / "scan.md"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("CANARY-PRIV-RAW")
+    for path in (main / h.PRIVATE_NOTE, items, raw):
+        out = h.run(linked, tmp_path, f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+        assert "not permitted" in out.stderr_tail, path
+    own = h.run(linked, tmp_path, f"cat '{linked / h.NORMAL_NOTE}'")
+    assert own.exit == 0 and "normal-note-text" in own.stdout_tail

@@ -131,29 +131,76 @@ def test_double_forked_setsid_child_killed_at_timeout(tmp_path: Path) -> None:
 
 @kernel
 def test_sweep_leaves_other_sandboxes_alone(tmp_path: Path) -> None:
-    """A process in another sandbox that may write the experiment's folder (the run's own) is never killed."""
+    """Processes in other sandboxes are never killed: one that may write the experiment's folder (the run's
+    own), and one that may write all of /tmp but nothing in the home folder (as the user's cfprefsd and
+    sharingd do: an early version of the fingerprint matched them)."""
     vault = h.make_vault(tmp_path)
-    exp = h.exp_dir(vault)
-    exp.mkdir()
-    (exp / ".tmp").mkdir()
     kb = os.path.realpath(vault / "knowledge-base")
-    run_like = subprocess.Popen(
-        [
-            str(profile.SANDBOX_EXEC),
-            "-p",
-            f'(version 1)(allow default)(allow file-write* (subpath "{kb}"))',
-            "/bin/sleep",
-            "60",
-        ]
-    )
+    profiles = [
+        f'(version 1)(allow default)(allow file-write* (subpath "{kb}"))',
+        '(version 1)(allow default)(deny file-write* (subpath "/"))(allow file-write* (subpath "/private/tmp"))',
+    ]
+    others = [subprocess.Popen([str(profile.SANDBOX_EXEC), "-p", text, "/bin/sleep", "60"]) for text in profiles]
     try:
         time.sleep(0.3)
         out = h.run(vault, tmp_path, "true")
         assert out.exit == 0
-        assert run_like.poll() is None, "the sweep killed a process whose sandbox isn't the experiment's"
+        for other in others:
+            assert other.poll() is None, "the sweep killed a process whose sandbox isn't the experiment's"
     finally:
-        run_like.kill()
-        run_like.wait()
+        for other in others:
+            other.kill()
+            other.wait()
+
+
+# --- the sweep can't be blinded (round 2) ------------------------------------------------------
+
+
+@kernel
+def test_setsid_child_killed_when_the_script_deletes_its_tmp_dir(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path)
+    out = h.run(vault, tmp_path, f'{h.PY} -c "{_SETSID}" & {_WAIT_ESC}; rm -rf .tmp; exit 0')
+    assert out.exit == 0 and out.timed_out is False, out.stderr_tail
+    _assert_dead_now(int((h.exp_dir(vault) / "esc.txt").read_text()))
+
+
+@kernel
+def test_setsid_child_killed_at_timeout_when_the_script_deletes_its_tmp_dir(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path)
+    out = h.run(vault, tmp_path, f'{h.PY} -c "{_SETSID}" & {_WAIT_ESC}; rm -rf .tmp; sleep 300', timeout_s=3)
+    assert out.timed_out is True
+    _assert_dead_now(int((h.exp_dir(vault) / "esc.txt").read_text()))
+
+
+@kernel
+def test_setsid_child_killed_when_the_script_swaps_its_tmp_dir_for_a_link(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    swap = f"rm -rf .tmp; ln -s '{elsewhere}' .tmp"
+    out = h.run(vault, tmp_path, f'{h.PY} -c "{_SETSID}" & {_WAIT_ESC}; {swap}; exit 0')
+    assert out.exit == 0, out.stderr_tail
+    _assert_dead_now(int((h.exp_dir(vault) / "esc.txt").read_text()))
+    assert elsewhere.is_dir() and list(elsewhere.iterdir()) == []
+    assert not (h.exp_dir(vault) / ".tmp").exists() and not (h.exp_dir(vault) / ".tmp").is_symlink()
+
+
+@kernel
+def test_wrong_probe_answers_refuse_before_the_script_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R21's positive control: a probe that can't answer (an OS or ctypes change) refuses the run."""
+    vault = h.make_vault(tmp_path)
+    real_denies = runner.sandbox.SandboxProbe.denies
+
+    def blind(self: runner.sandbox.SandboxProbe, pid: int, operation: str, path: str) -> bool | None:
+        # Right about this process (so the pre-launch self-check passes), blind about every other one.
+        return real_denies(self, pid, operation, path) if pid == os.getpid() else None
+
+    monkeypatch.setattr(runner.sandbox.SandboxProbe, "denies", blind)
+    with pytest.raises(LabError, match="sandbox_check"):
+        h.run(vault, tmp_path, "echo ran > ran.txt")
+    assert not (h.exp_dir(vault) / "ran.txt").exists()
+    logs = list(h.exp_dir(vault).glob("run-*.log"))
+    assert logs == []
 
 
 @pytest.mark.parametrize("status", ["planned", "done", "abandoned", "vetoed"])
@@ -301,3 +348,14 @@ def test_a_profile_the_kernel_rejects_is_an_error_not_a_run(tmp_path: Path, monk
 
 def test_labels_are_read_as_a_full_reader() -> None:
     assert runner.READER in FULL_READERS
+
+
+@kernel
+def test_sweep_is_not_clean_without_its_probe_files(tmp_path: Path) -> None:
+    """A probe file that is gone or a link makes the sweep 'not clean', never a silent pass."""
+    marker = tmp_path / "probe"
+    probe = runner.sandbox.SandboxProbe()
+    assert runner._sweep(probe, str(marker), str(tmp_path)) is False  # neither file exists
+    marker.write_text("")
+    Path(runner._decoy(str(marker))).symlink_to(tmp_path)
+    assert runner._sweep(probe, str(marker), str(tmp_path)) is False

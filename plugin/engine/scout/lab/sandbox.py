@@ -64,13 +64,16 @@ def experiment_profile(
     deny_execs: Sequence[Path],
     *,
     env: Mapping[str, str] | None = None,
+    probe_file: Path | None = None,
 ) -> str:
     """The SBPL text for one experiment. Raises :class:`scout.sandbox.profile.ProfileError` on a path SBPL
     can't carry.
 
     ``deny_reads`` are files (a ``literal``) or folders (a ``subpath``); the secrets dirs of ``env`` and of
     this process's own environment are added. ``deny_execs`` are programs (``literal``), to which the
-    run sandbox's spawn routes are added.
+    run sandbox's spawn routes are added. ``probe_file``, a runner-owned file in a folder the script
+    can't write, gets ``file-write-data`` only (no unlink, rename or mode change): the fingerprint the
+    runner's sweep asks the kernel about, which the script can't remove.
     """
     exp, tmp, sock = _real(exp_dir), _real(tmp_dir), _real(meter_sock)
     writes = [
@@ -80,6 +83,8 @@ def experiment_profile(
         Rule("allow", "file-write*", "literal", "/dev/null"),
         Rule("allow", "file-write*", "literal", "/dev/tty"),
     ]
+    if probe_file is not None:
+        writes.append(Rule("allow", "file-write-data", "literal", _real(probe_file)))
     redeny = [Rule("deny", "file-write*", "regex", rx) for rx in ANYWHERE_SUFFIXES]
     reads: list[Rule] = []
     for path in deny_reads:
