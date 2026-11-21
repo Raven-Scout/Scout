@@ -89,6 +89,9 @@ class SessionContext:
     # The research queue's open entries (id, status, priority, title) and counts by status
     # (session_context_kb.research_queue): no need to read every entry to filter by status.
     research_queue: dict[str, Any] = field(default_factory=dict)
+    # The lab's threads (session_context_kb.lab_block): status, question counts, unanswered owner
+    # comments, planned/due experiments. {"schema_version", "threads": [...], "needs_you": {...}}.
+    lab: dict[str, Any] = field(default_factory=dict)
     # The vault's commits since DEFAULT_GIT_LOG_LOOKBACK, newest first, labelled (see get_git_recent).
     git_recent: list[dict[str, Any]] = field(default_factory=list)
     # {path: {"last_updated": ..., "visibility": "normal" | "private"}}
@@ -520,6 +523,7 @@ def gather(
         project_knowledge=project_rows,
         people_context=people,
         research_queue=queue,
+        lab=get_lab_section(target, reader, labels),
         fact_check_targets=fact_check,
         delegate_changes=delegate_changes,
     )
@@ -561,6 +565,18 @@ def get_kb_sections(
     except Exception:
         queue = {}
     return projects, people, queue
+
+
+def get_lab_section(scout_dir: Path, reader: str, labels: dict[str, str]) -> dict[str, Any]:
+    """The lab block for the session context; ``{}`` for a reader that sees nothing or when it can't be built."""
+    from scout.scripts import session_context_kb as kbs
+
+    if not reads_any(reader):
+        return {}
+    try:
+        return kbs.lab_block(scout_dir, labels, full=reader in FULL_READERS)
+    except Exception:
+        return {}
 
 
 def get_delegate_changes(scout_dir: Path, day: date) -> list[dict[str, Any]]:

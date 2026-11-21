@@ -1,0 +1,43 @@
+{
+  "needs_you": {
+    "close_proposals": 0,
+    "proposals": 0
+  },
+  "schema_version": 1,
+  "threads": [
+    {
+      "counts": {
+        "answered": 1,
+        "dropped": 1,
+        "open": 2,
+        "raised_7d": 2
+      },
+      "experiments": {
+        "due": [],
+        "planned": [
+          "E2"
+        ],
+        "running": []
+      },
+      "last_run": "2026-11-21T01:11",
+      "path": "knowledge-base/lab/monitors/monitors.md",
+      "problems": 0,
+      "question": "Do behaviour monitors that score well on fixed test sets still catch an agent that adapts to them?",
+      "scout_replies": [
+        {
+          "stamp": "2026-11-21 01:11",
+          "target": "Q3"
+        },
+        {
+          "stamp": "2026-11-21 01:11",
+          "target": "thread"
+        }
+      ],
+      "slug": "monitors",
+      "status": "active",
+      "title": "Monitors under adaptive attack",
+      "unanswered_comments": 1,
+      "visibility": "normal"
+    }
+  ]
+}

@@ -1,0 +1,188 @@
+{
+  "answered": [
+    {
+      "comments": [],
+      "line": 28,
+      "note": "95% to 32\u201360% across three papers; see [[sandbagging-and-monitor-evasion]].",
+      "qid": "Q1",
+      "status": "answered",
+      "text": "How far do catch rates fall under refined attacks?",
+      "when": "2026-11-20"
+    },
+    {
+      "comments": [],
+      "line": 29,
+      "note": "owner: not relevant",
+      "qid": "Q2",
+      "status": "dropped",
+      "text": "Do monitors need retraining per model family?",
+      "when": "2026-11-21"
+    }
+  ],
+  "comments": [
+    {
+      "author": "alex",
+      "line": 40,
+      "replies": [
+        {
+          "author": "scout",
+          "line": 41,
+          "replies": [],
+          "stamp": "2026-11-21 01:11",
+          "text": "Understood, scoping new questions to adaptive attacks."
+        }
+      ],
+      "stamp": null,
+      "text": "keep this thread focused on adaptive attacks"
+    }
+  ],
+  "evidence": [
+    {
+      "line": 36,
+      "target": "sandbagging-and-monitor-evasion",
+      "why": "how much catch rates drop under adaptive attackers"
+    },
+    {
+      "line": 37,
+      "target": "probe-monitor-false-positives-and-cascades",
+      "why": "cascade cost and false-positive behaviour"
+    }
+  ],
+  "experiments": [
+    {
+      "comments": [],
+      "eid": "E2",
+      "frontmatter": {
+        "cost_cap_usd": 1.0,
+        "data": [
+          "sample transcripts 2026-10-01..2026-11-20"
+        ],
+        "id": "E2",
+        "not_before": "2026-11-21T13:00",
+        "planned": "2026-11-21T01:11",
+        "questions": [
+          "Q3"
+        ],
+        "status": "planned",
+        "thread": "monitors",
+        "type": "lab-experiment",
+        "visibility": "normal"
+      },
+      "line": 32,
+      "note": null,
+      "status": "planned",
+      "target": "monitors-E2-cascade",
+      "title": "Cascade recall on seeded faults in own transcripts",
+      "when": "runs after 2026-11-21 13:00"
+    },
+    {
+      "comments": [],
+      "eid": "E1",
+      "frontmatter": {
+        "cost_cap_usd": 1.0,
+        "data": [
+          "sample transcripts 2026-10-01..2026-11-19"
+        ],
+        "id": "E1",
+        "not_before": "2026-11-20T10:00",
+        "planned": "2026-11-20T09:00",
+        "questions": [
+          "Q1"
+        ],
+        "status": "done",
+        "thread": "monitors",
+        "type": "lab-experiment"
+      },
+      "line": 33,
+      "note": "baseline recall 0.81",
+      "status": "done",
+      "target": "monitors-E1-seeded",
+      "title": "Seeded faults against a single judge",
+      "when": "2026-11-20"
+    }
+  ],
+  "frontmatter": {
+    "approved": "2026-11-20",
+    "created": "2026-11-20",
+    "last_run": "2026-11-21T01:11",
+    "next_e": 3,
+    "next_q": 8,
+    "status": "active",
+    "title": "Monitors under adaptive attack",
+    "type": "lab-thread",
+    "visibility": "normal"
+  },
+  "open": [
+    {
+      "comments": [
+        {
+          "author": "alex",
+          "line": 22,
+          "replies": [
+            {
+              "author": "scout",
+              "line": 23,
+              "replies": [],
+              "stamp": "2026-11-21 01:11",
+              "text": "Planned [[monitors-E2-cascade|E2]] for the next run."
+            }
+          ],
+          "stamp": null,
+          "text": "test this on our own traces, don't just read"
+        },
+        {
+          "author": "alex",
+          "line": 24,
+          "replies": [],
+          "stamp": null,
+          "text": "also compare against the plain judge baseline"
+        }
+      ],
+      "line": 21,
+      "note": null,
+      "qid": "Q3",
+      "status": "open",
+      "text": "Do probe\u2192judge cascades keep their recall against adaptive attacks?",
+      "when": "raised 2026-11-20"
+    },
+    {
+      "comments": [],
+      "line": 25,
+      "note": null,
+      "qid": "Q5",
+      "status": "open",
+      "text": "Does the cascade threshold transfer between trace sources?",
+      "when": "raised 2026-11-21"
+    }
+  ],
+  "path": "knowledge-base/lab/monitors/monitors.md",
+  "problems": [],
+  "question": "Do behaviour monitors that score well on fixed test sets still catch an agent that adapts to them?",
+  "schema_version": 1,
+  "slug": "monitors",
+  "status": "active",
+  "timeline": [
+    {
+      "bullets": [
+        "**Did:** read 3 papers on cascade monitors; planned E2.",
+        "**Found:** cascades match judge recall at ~30\u201350\u00d7 lower cost on static sets; no adaptive tests yet.",
+        "**Questions:** opened Q5 \u00b7 answered Q1 \u00b7 Q3 still open (E2 planned)",
+        "**Steers handled:** alex on Q3 \u2192 planned E2",
+        "Evidence: [[probe-monitor-false-positives-and-cascades]]"
+      ],
+      "stamp": "2026-11-21 01:11",
+      "tag": "research run"
+    },
+    {
+      "bullets": [
+        "Approved the thread."
+      ],
+      "stamp": "2026-11-20 13:05",
+      "tag": "owner"
+    }
+  ],
+  "title": "Monitors under adaptive attack",
+  "unanswered_comments": 1,
+  "understanding": "Catch rates fall sharply once attackers refine against the monitor; see [[sandbagging-and-monitor-evasion]]. Cascades look cheap on static sets but have no adaptive test yet.",
+  "visibility": "normal"
+}

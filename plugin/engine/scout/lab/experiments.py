@@ -34,7 +34,7 @@ def _moment(vault: Path, now: _dt.datetime | None) -> _dt.datetime:
     return now if now is not None else config.now(vault)
 
 
-def _as_datetime(value: Any, tz: _dt.tzinfo | None, what: str) -> _dt.datetime:
+def as_datetime(value: Any, tz: _dt.tzinfo | None, what: str) -> _dt.datetime:
     """A frontmatter time as an aware datetime; a naive one is read in ``tz``."""
     if isinstance(value, _dt.datetime):
         got = value
@@ -205,7 +205,7 @@ def start(vault: Path, slug: str, eid: str, now: _dt.datetime | None = None) -> 
         thread, text, note, note_text, exp = _load(vault, slug, eid)
         if exp.status != "planned":
             raise LabError(f"{eid} is {exp.status}, not planned")
-        not_before = _as_datetime(exp.frontmatter.get("not_before"), moment.tzinfo, "not_before")
+        not_before = as_datetime(exp.frontmatter.get("not_before"), moment.tzinfo, "not_before")
         if moment < not_before:
             raise LabError(f"{eid} cannot start yet: not before {_shown(not_before)}")
         held = holds(thread, exp)
