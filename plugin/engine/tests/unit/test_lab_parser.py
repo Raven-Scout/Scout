@@ -92,6 +92,20 @@ def test_missing_frontmatter_is_a_problem() -> None:
     assert any("frontmatter" in p.message for p in t.problems)
 
 
+def test_malformed_frontmatter_date_is_a_problem_not_a_crash() -> None:
+    t = parse_front_page("monitors", _front().replace("created: 2026-11-20", "created: 2026-13-45"))
+    assert t.frontmatter == {}
+    assert any("frontmatter" in p.message for p in t.problems)
+    assert [q.qid for q in t.open] == ["Q3", "Q5"]
+    assert len(t.experiments) == 2
+
+    path = MONITORS / "experiments" / "monitors-E2-cascade.md"
+    text = path.read_text(encoding="utf-8").replace("planned: 2026-11-21T01:11", "planned: 2026-13-45")
+    e = parse_experiment("monitors", text)
+    assert any("frontmatter" in p.message for p in e.problems)
+    assert "Hypothesis" in e.sections and "Method" in e.sections
+
+
 def test_parse_timeline_fixture() -> None:
     entries = parse_timeline((MONITORS / "monitors-timeline.md").read_text(encoding="utf-8"))
     assert len(entries) == 2

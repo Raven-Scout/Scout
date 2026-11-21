@@ -56,7 +56,7 @@ def _split_frontmatter(text: str, problems: list[Problem]) -> tuple[dict[str, An
     offset = len(block) + 2
     try:
         data = yaml.safe_load("\n".join(block)) or {}
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError, TypeError, OverflowError) as exc:  # e.g. created: 2026-13-45
         problems.append(Problem(1, f"frontmatter is not valid YAML: {exc}"))
         return {}, lines[offset:], offset
     if not isinstance(data, dict):
