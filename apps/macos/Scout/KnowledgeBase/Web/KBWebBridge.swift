@@ -22,7 +22,7 @@ final class KBWebBridge: NSObject, ObservableObject {
     var onExternalLink: ((URL) -> Void)?
 
     private(set) var isReady = false
-    private var queue: [String] = []
+    private var queue: [(type: String, json: String)] = []
     /// Message types whose latest copy is sent again if the page has to be
     /// reloaded (its web process died), so it comes back showing what it
     /// showed instead of blank. The map marks `load`.
@@ -54,7 +54,25 @@ final class KBWebBridge: NSObject, ObservableObject {
         load()
     }
 
+    /// Reload the page if it hasn't said `ready` within `timeout` of being
+    /// shown: a page that never came up would otherwise leave its pane blank
+    /// for good (UI audit T1). Messages sent meanwhile stay queued for it.
+    func reloadIfNotReady(after timeout: Duration = .seconds(4)) {
+        let started = loads
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard let self, !self.isReady, self.loads == started, self.webView.window != nil else { return }
+            NSLog("[KBWeb \(self.page)] not ready after \(timeout); reloading")
+            self.load()
+        }
+    }
+
+    /// How many times the page has been loaded; a reload already under way
+    /// isn't started again.
+    private var loads = 0
+
     private func load() {
+        loads += 1
         guard let url = Bundle.main.url(forResource: page, withExtension: "html") else {
             assertionFailure("Missing bundled page \(page).html")
             return
@@ -83,15 +101,27 @@ final class KBWebBridge: NSObject, ObservableObject {
 
     private func deliver(_ json: String, type: String) {
         if replayOnReload.contains(type) { latest[type] = json }
-        guard isReady else { queue.append(json); return }
+        guard isReady else { queue.append((type, json)); return }
         webView.evaluateJavaScript("window.scoutReceive(\(json));", completionHandler: nil)
+    }
+
+    /// What a page that just said `ready` is sent, in order: the latest copy
+    /// of each replayed type the queue doesn't already carry (a fresh document
+    /// has none of what the old one showed), then the queue. Every `ready`
+    /// gets this, so a reload that raced the old page's `ready` still comes
+    /// back showing what it showed.
+    nonisolated static func messagesOnReady(queue: [(type: String, json: String)],
+                                            latest: [String: String]) -> [String] {
+        let queued = Set(queue.map(\.type))
+        let replay = latest.filter { !queued.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
+        return replay + queue.map(\.json)
     }
 
     fileprivate func receive(_ body: Any) {
         guard let dict = body as? [String: Any], let type = dict["type"] as? String else { return }
         if type == "ready" {
             isReady = true
-            let pending = queue
+            let pending = Self.messagesOnReady(queue: queue, latest: latest)
             queue.removeAll()
             for json in pending {
                 webView.evaluateJavaScript("window.scoutReceive(\(json));", completionHandler: nil)
@@ -116,10 +146,16 @@ extension KBWebBridge: WKNavigationDelegate {
         decisionHandler(.cancel)
     }
 
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        // The page is gone; reload it, then replay what it was showing.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        // A new document is coming up: hold messages until it says `ready`.
+        // Without this, an old page's late `ready` could take the queue and
+        // leave the new one blank (review of #750).
         isReady = false
-        queue = Array(latest.values)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // The page is gone; reload it. Its `ready` replays what it showed.
+        isReady = false
         load()
     }
 }

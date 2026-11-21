@@ -8,12 +8,104 @@ nonisolated struct KBMapLoad: Encodable {
     let payload: KBMapPayload
     /// Where each note sat when the vault map last settled, by note id.
     var positions: [String: [Double]] = [:]
+    /// The user's open/closed choice for the map's floating panels; a nil
+    /// panel follows the map's width.
+    var panels: KBMapPanels = KBMapPanels()
 }
 
-/// The vault map's last settled layout, kept for the app's lifetime so the
-/// map reopens exactly as it was left — and stays where you know things are.
+/// Whether the map's Notes legend and side card are collapsed, as the user
+/// last set them (nil: by width). Kept in user defaults.
+nonisolated struct KBMapPanels: Codable, Equatable {
+    var legend: Bool?
+    var card: Bool?
+
+    static let defaultsKey = "kbMapPanels"
+
+    static func load(from defaults: UserDefaults = .standard) -> KBMapPanels {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let panels = try? JSONDecoder().decode(KBMapPanels.self, from: data) else { return KBMapPanels() }
+        return panels
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: Self.defaultsKey) }
+    }
+
+    /// The page's `panels` message: each value a bool, or null for "by width".
+    init(message body: [String: Any]) {
+        legend = body["legend"] as? Bool
+        card = body["card"] as? Bool
+    }
+
+    init(legend: Bool? = nil, card: Bool? = nil) {
+        self.legend = legend
+        self.card = card
+    }
+}
+
+/// The vault map's last settled layout, so the map reopens exactly as it was
+/// left — and stays where you know things are. Kept for the app's lifetime,
+/// and on disk (`file`, the app's caches folder) so a relaunch opens on a
+/// settled map instead of laying a big vault out from scratch (UI audit T1).
 @MainActor enum KBMapLayoutCache {
     static var positions: [String: [Double]] = [:]
+    /// The on-disk copy; nil keeps it in memory only (tests).
+    static var file: URL? = nil
+    private static var loadedFrom: URL? = nil
+
+    /// The positions to open with: memory, else the file once.
+    static func current() -> [String: [Double]] {
+        if positions.isEmpty, let file, loadedFrom != file {
+            loadedFrom = file
+            positions = read(file)
+        }
+        return positions
+    }
+
+    /// One write at a time, in the order stored, so an older layout can't
+    /// land after a newer one.
+    nonisolated private static let writes = DispatchQueue(label: "scout.kb-map-layout", qos: .utility)
+
+    static func store(_ new: [String: [Double]]) {
+        positions = new
+        guard let file else { return }
+        let data = encode(new)
+        writes.async {
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? data?.write(to: file, options: .atomic)
+        }
+    }
+
+    /// Blocks until every stored layout is on disk (tests).
+    nonisolated static func waitForWrites() { writes.sync {} }
+
+    /// Finite numbers only: a NaN would make the whole load unencodable and
+    /// leave the map blank.
+    nonisolated static func sanitized(_ raw: [String: [Double]]) -> [String: [Double]] {
+        raw.filter { $0.value.count == 2 && $0.value.allSatisfy(\.isFinite) }
+    }
+
+    nonisolated static func encode(_ positions: [String: [Double]]) -> Data? {
+        try? JSONEncoder().encode(sanitized(positions))
+    }
+
+    nonisolated static func read(_ file: URL) -> [String: [Double]] {
+        guard let data = try? Data(contentsOf: file),
+              let raw = try? JSONDecoder().decode([String: [Double]].self, from: data) else { return [:] }
+        return sanitized(raw)
+    }
+
+    /// `~/Library/Caches/Scout/kb-map/<bundle id>/<vault key>.json`, one per
+    /// build and vault.
+    nonisolated static func defaultFile(scoutDirectory: URL) -> URL? {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let bundle = Bundle.main.bundleIdentifier ?? "Scout"
+        let key = String(scoutDirectory.standardizedFileURL.path.utf8.reduce(UInt64(14695981039346656037)) {
+            ($0 ^ UInt64($1)) &* 1099511628211
+        }, radix: 16)
+        return caches.appendingPathComponent("Scout/kb-map/\(bundle)/\(key).json")
+    }
 }
 
 /// The knowledge map (`kb-map.html`): the whole vault on the overview, or one
@@ -43,7 +135,12 @@ struct KBMapWebView: View {
     var body: some View {
         KBWebViewHost(bridge: bridge)
             .accessibilityLabel(mode == .vault ? "Knowledge map" : "Link graph")
-            .onAppear { wire() }
+            .onAppear {
+                wire()
+                // A page already up when the view comes back is told to
+                // measure and draw again rather than wait for a frame.
+                if bridge.isReady { bridge.send("shown") } else { bridge.reloadIfNotReady() }
+            }
             .task(id: LoadKey(mode: mode, generation: service.indexGeneration)) { await sendLoad() }
             .onChange(of: focus) { _, new in
                 guard let new, new != deliveredFocus else { return }
@@ -68,7 +165,9 @@ struct KBMapWebView: View {
                 if let id = body["id"] as? String { open(id) }
             case "positions":
                 guard let raw = body["positions"] as? [String: [NSNumber]] else { return }
-                KBMapLayoutCache.positions = raw.mapValues { $0.map(\.doubleValue) }
+                KBMapLayoutCache.store(KBMapLayoutCache.sanitized(raw.mapValues { $0.map(\.doubleValue) }))
+            case "panels":
+                KBMapPanels(message: body).save()
             case "details":
                 guard let id = body["id"] as? String, let service else { return }
                 bridge?.send("details", ["id": id, "excerpt": service.summary(for: id)])
@@ -109,6 +208,7 @@ struct KBMapWebView: View {
         bridge.send("load", data: KBMapLoad(mode: center == nil ? "full" : "local",
                                             focus: newFocus,
                                             payload: payload,
-                                            positions: center == nil ? KBMapLayoutCache.positions : [:]))
+                                            positions: center == nil ? KBMapLayoutCache.current() : [:],
+                                            panels: KBMapPanels.load()))
     }
 }
