@@ -27,9 +27,6 @@ from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 KINDS = ("SKILL", "DREAMING", "RESEARCH", "RESPOND")
-# RESPOND's duplicate guard finds earlier commits by the `tg:<id>` line in their body, which `kb delta` doesn't
-# print (it lists subjects and paths). Shas and subjects only: what `kb delta` shows the owner anyway.
-RESPOND_DUPLICATE_GUARD = "git log --grep \"tg:<id>\" --format='%h %s'"
 PRIVACY_HEADING = "## Privacy: owner-only and shared surfaces"
 _WALK_KB = re.compile(
     r"\b(?:read|open|walk|scan|go through|cat|list)\s+(?:every|each|all)\b"
@@ -150,9 +147,6 @@ def test_no_assembled_phase_reads_the_kb_raw(kind: str) -> None:
     assert prose == []
     # claude-sessions reads the git history of *other* repos (`git -C <repo> log`): not the vault's.
     vault_only = _assembled(kind, _all_connectors() - {"claude_sessions"})
-    if kind == "RESPOND":
-        assert vault_only.count(RESPOND_DUPLICATE_GUARD) == 1
-        vault_only = vault_only.replace(RESPOND_DUPLICATE_GUARD, "")
     assert not re.search(r"\bgit (?:-C \S+ )?log\b", vault_only), "the vault's history comes through scoutctl kb delta"
 
 
