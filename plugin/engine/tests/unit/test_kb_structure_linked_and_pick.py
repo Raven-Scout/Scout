@@ -11,11 +11,20 @@ from typer.testing import CliRunner
 
 from scout import cli
 from scout.config import today
+from scout.kb import structure
 from scout.kb.structure import cmd_structure, next_target, pick_score, structure_rows
 
 runner = CliRunner()
 P = "knowledge-base/projects"
 SECTIONS = ["Where it stands", "What's next", "Key decisions", "Open questions", "People", "Go deeper", "History"]
+# The day the fixed-date tests below run on. Their notes change on fixed October days, and the linked
+# history only reaches LINKED_WINDOW_DAYS back from today, so on the real clock they'd fail from 2027-01.
+DAY = dt.date(2026, 11, 19)
+
+
+@pytest.fixture
+def pinned_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(structure, "today", lambda data_dir=None: DAY)
 
 
 def page(name: str, *, priority: str = "🟢", as_of: str | None = "2026-10-01", extra: str = "", fm: str = "") -> str:
@@ -43,6 +52,7 @@ def picked(kb_repo) -> str | None:
 # ----- staleness through linked notes ----------------------------------------------------
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_a_source_note_linking_to_the_project_after_as_of_makes_it_stale(kb_repo, monkeypatch) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
     commit_at(kb_repo, "2026-10-01", monkeypatch)
@@ -63,6 +73,7 @@ def test_a_source_note_linking_to_the_project_after_as_of_makes_it_stale(kb_repo
         "[[Widget Platform]]",  # an alias on the front page
     ],
 )
+@pytest.mark.usefixtures("pinned_day")
 def test_every_way_of_linking_counts(kb_repo, monkeypatch, link: str) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", fm="aliases: [Widget Platform]\n"))
     commit_at(kb_repo, "2026-10-01", monkeypatch)
@@ -79,6 +90,7 @@ def test_every_way_of_linking_counts(kb_repo, monkeypatch, link: str) -> None:
         "See [[gadgets]].\n",
     ],
 )
+@pytest.mark.usefixtures("pinned_day")
 def test_a_note_that_doesnt_link_to_the_project_does_not_count(kb_repo, monkeypatch, text: str) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of="2026-10-20"))
@@ -88,6 +100,7 @@ def test_a_note_that_doesnt_link_to_the_project_does_not_count(kb_repo, monkeypa
     assert not rows(kb_repo)["widgets"]["stale"]
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_a_linked_change_within_stale_days_is_not_stale(kb_repo, monkeypatch) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
     commit_at(kb_repo, "2026-10-01", monkeypatch)
@@ -97,6 +110,7 @@ def test_a_linked_change_within_stale_days_is_not_stale(kb_repo, monkeypatch) ->
     assert not r["stale"] and r["linked_last_change"] == "2026-10-03"
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_a_private_linking_note_counts_without_showing_its_date(kb_repo, monkeypatch) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
     commit_at(kb_repo, "2026-10-01", monkeypatch)
@@ -107,6 +121,7 @@ def test_a_private_linking_note_counts_without_showing_its_date(kb_repo, monkeyp
     assert r["problems"] == ["stale (as_of 2026-10-01, a linked note changed)"]
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_an_excluded_linking_note_does_not_count(kb_repo, monkeypatch) -> None:
     kb_repo.write("scout-config.yaml", "kb_lint:\n  exclude_globs: ['knowledge-base/sources/**']\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
@@ -116,6 +131,7 @@ def test_an_excluded_linking_note_does_not_count(kb_repo, monkeypatch) -> None:
     assert not rows(kb_repo)["widgets"]["stale"]
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_linked_dirs_is_a_setting(kb_repo, monkeypatch) -> None:
     kb_repo.write("scout-config.yaml", "kb_structure:\n  linked_dirs: [knowledge-base/topics]\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
@@ -125,6 +141,7 @@ def test_linked_dirs_is_a_setting(kb_repo, monkeypatch) -> None:
     assert not rows(kb_repo)["widgets"]["stale"]
 
 
+@pytest.mark.usefixtures("pinned_day")
 def test_linked_history_is_one_git_call_bounded_by_the_oldest_as_of(kb_repo, monkeypatch) -> None:
     import subprocess
 
@@ -208,6 +225,7 @@ def test_a_page_over_budget_needs_a_full_rebuild_too(kb_repo) -> None:
 
 
 @pytest.mark.parametrize("problem", ["no as_of", "stale", "narration", "a loose file"])
+@pytest.mark.usefixtures("pinned_day")
 def test_a_big_page_that_only_needs_a_refresh_keeps_its_nightly_refresh(kb_repo, monkeypatch, problem: str) -> None:
     extra = "x" * 13000 + ("\nFinding 3 holds.\n" if problem == "narration" else "")
     kb_repo.write(
