@@ -1,0 +1,168 @@
+"""The experiment sandbox profile (spec §6.3, §12 step 1): each refusal is checked against the real kernel.
+
+Only the first test is pure text; the rest run ``sandbox-exec`` and skip only where it doesn't exist (not
+macOS). They are the proof of the owner's decision that experiment scripts are held by an OS sandbox.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import socket
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from scout.lab import sandbox
+from scout.sandbox import profile
+from tests.unit import lab_runner_helpers as h
+
+kernel = pytest.mark.skipif(not profile.available(), reason="needs sandbox-exec")
+
+
+def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
+    exp = tmp_path / "exp"
+    (exp / ".tmp").mkdir(parents=True)
+    private = tmp_path / "kb" / "p.md"
+    private.parent.mkdir()
+    private.write_text("x")
+    gitdir = tmp_path / "vault-git"
+    gitdir.mkdir()
+    sock = Path("/tmp/scout-lab-x/m.sock")
+    text = sandbox.experiment_profile(
+        exp, exp / ".tmp", sock, [private, gitdir], [Path("/usr/bin/git")], env={"HOME": str(tmp_path / "home")}
+    )
+    real = os.path.realpath
+    assert text.startswith("(version 1)")
+    deny = text.index('(deny file-write*\n  (subpath "/"))')
+    allow = text.index("(allow file-write*")
+    assert text.index("(allow default)") < deny < allow
+    allow_form = text[allow : text.index("\n(", allow)]
+    for item in (f'(subpath "{real(exp)}")', f'(subpath "{real(exp / ".tmp")}")', '(literal "/dev/null")'):
+        assert item in allow_form
+    # Every path is resolved (/tmp is /private/tmp), and the socket sits in a path-literal.
+    assert f'(path-literal "{real(sock)}")' in text and real(sock).startswith("/private/tmp/")
+    reads = text[text.index("(deny file-read-data") :]
+    assert f'(literal "{real(private)}")' in reads
+    assert f'(subpath "{real(gitdir)}")' in reads
+    assert f'(subpath "{real(tmp_path / "home" / ".scout-secrets")}")' in reads
+    net = text.index("(deny network*)")
+    assert text.index("(deny file-read-data") < net < text.index("(allow network-outbound (remote unix-socket")
+    execs = text[text.index("(deny process-exec") :]
+    assert '(literal "/usr/bin/git")' in execs and '(literal "/bin/launchctl")' in execs
+    for form in ("(deny job-creation)", "(deny appleevent-send)", "(deny file-mount)"):
+        assert form in text
+
+
+def test_profile_refuses_a_path_sbpl_cant_carry(tmp_path: Path) -> None:
+    with pytest.raises(profile.ProfileError):
+        sandbox.experiment_profile(tmp_path, tmp_path / ".tmp", Path("/tmp/s"), [Path("/tmp/a\nb")], [], env={})
+
+
+# --- against the kernel ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def vault(tmp_path: Path) -> Path:
+    return h.make_vault(tmp_path)
+
+
+@kernel
+def test_write_outside_experiment_dir_refused(vault: Path, tmp_path: Path) -> None:
+    target = vault / "knowledge-base" / "x.md"
+    out = h.run(vault, tmp_path, f"echo x > '{target}'")
+    assert out.exit != 0 and not out.timed_out
+    assert not target.exists()
+    assert "not permitted" in out.stderr_tail
+
+    ok = h.run(vault, tmp_path, 'echo y > out.txt && echo t > "$TMPDIR/t.txt" && cat "$TMPDIR/t.txt"')
+    assert ok.exit == 0, ok.stderr_tail
+    assert (h.exp_dir(vault) / "out.txt").read_text() == "y\n"
+    assert ok.stdout_tail.strip() == "t"
+
+    home_file = tmp_path / "home" / "x"
+    for path in (home_file, Path("/tmp") / f"scout-lab-test-{os.getpid()}", vault / "outside.md"):
+        refused = h.run(vault, tmp_path, f"echo z > '{path}'")
+        assert refused.exit != 0, path
+        assert not path.exists(), path
+
+
+@pytest.fixture
+def other_socket() -> Iterator[Path]:
+    d = Path(tempfile.mkdtemp(dir="/tmp"))
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(d / "o.sock"))
+    s.listen(1)
+    try:
+        yield d / "o.sock"
+    finally:
+        s.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@kernel
+def test_direct_network_refused(vault: Path, tmp_path: Path, other_socket: Path) -> None:
+    by_name = h.run(vault, tmp_path, "/usr/bin/curl -sS -m 5 https://example.com")
+    assert by_name.exit != 0
+    by_ip = h.run(vault, tmp_path, "/usr/bin/curl -sS -m 5 https://1.1.1.1")
+    assert by_ip.exit != 0
+    py = (
+        f"{h.PY} -c \"import socket; s=socket.socket(socket.AF_UNIX); s.connect('{other_socket}'); print('connected')\""
+    )
+    unix = h.run(vault, tmp_path, py)
+    assert unix.exit != 0 and "connected" not in unix.stdout_tail
+    assert "not permitted" in unix.stderr_tail
+
+    metered = h.run(vault, tmp_path, f"printf hi > p.txt && {h.CALL}")
+    assert metered.exit == 0, metered.stderr_tail
+    assert metered.stdout_tail.strip() == "echo:hi"
+    assert metered.spent_usd == pytest.approx(0.4)
+
+
+@kernel
+def test_private_file_unreadable(tmp_path: Path) -> None:
+    vault = h.make_vault(tmp_path / "a")
+    private, normal = vault / h.PRIVATE_NOTE, vault / h.NORMAL_NOTE
+    out = h.run(vault, tmp_path / "a", f"cat '{private}'")
+    assert out.exit != 0 and "CANARY-PRIV-LAB" not in out.stdout_tail
+    # Through the vault's other spelling of the path too: the kernel matches the resolved file.
+    upper = str(private).replace("knowledge-base/people", "Knowledge-Base/PEOPLE")
+    assert h.run(vault, tmp_path / "a", f"cat '{upper}'").exit != 0
+    shown = h.run(vault, tmp_path / "a", f"cat '{normal}'")
+    assert shown.exit == 0 and "normal-note-text" in shown.stdout_tail
+
+    pvault = h.make_vault(tmp_path / "b", visibility="private")
+    allowed = h.run(pvault, tmp_path / "b", f"cat '{pvault / h.PRIVATE_NOTE}'")
+    assert allowed.exit == 0, allowed.stderr_tail
+    assert "CANARY-PRIV-LAB" in allowed.stdout_tail
+
+
+@kernel
+def test_private_copies_outside_the_kb_unreadable(vault: Path, tmp_path: Path) -> None:
+    """Git keeps every private note's bytes; the phone-notification inbox is private; secrets are secrets."""
+    obj = vault / ".git" / "objects" / "ab" / "cdef"
+    obj.parent.mkdir(parents=True)
+    obj.write_text("CANARY-PRIV-GIT")
+    inbox = vault / ".scout-inbox" / "n.jsonl"
+    inbox.parent.mkdir()
+    inbox.write_text("CANARY-PRIV-INBOX")
+    secret = tmp_path / "home" / ".scout-secrets" / "token"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("CANARY-SECRET")
+    for path in (obj, inbox, secret):
+        out = h.run(vault, tmp_path, f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+
+
+@kernel
+def test_spawn_routes_and_git_refused(vault: Path, tmp_path: Path) -> None:
+    for cmd in ("/bin/launchctl list", "/usr/bin/osascript -e 'return 1'", "/usr/bin/open /nonexistent-scout-lab"):
+        out = h.run(vault, tmp_path, cmd)
+        assert out.exit != 0, cmd
+        assert "not permitted" in out.stderr_tail, cmd
+    git = shutil.which("git")
+    if git is not None:
+        out = h.run(vault, tmp_path, f"'{os.path.realpath(git)}' --version")
+        assert out.exit != 0 and "git version" not in out.stdout_tail
