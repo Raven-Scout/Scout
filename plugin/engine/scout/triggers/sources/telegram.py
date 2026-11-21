@@ -159,7 +159,7 @@ class TelegramSource:
             )
             ledger.mark_skipped([message_id], SKIPPED_UNSUPPORTED)
             return
-        if is_cheap(entry.text):
+        if is_cheap(entry.text, reply_to_text=entry.reply_to_text):
             ledger.mark_skipped([message_id], SKIPPED_CHEAP)
             return
         reacted = bot.set_reaction(token=token, chat_id=chat_id, message_id=message_id, http_post=self._http_post)

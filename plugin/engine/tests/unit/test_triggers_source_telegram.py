@@ -151,6 +151,18 @@ def test_cheap_message_is_skipped_without_ack_or_event(fake_data_dir: Path):
     assert bot.methods("sendMessage") == []
 
 
+def test_ok_replying_to_a_scout_question_starts_a_run(fake_data_dir: Path):
+    bot = FakeBot()
+    bot.push(100, 5, text="ok", reply_to_message={"message_id": 4, "text": "Shall I open the draft PR?"})
+    bot.push(101, 6, text="/start")
+    (event,) = _source(fake_data_dir, bot).scan_since("ignored")
+
+    assert [m["message_id"] for m in event.raw_payload["messages"]] == [5]
+    assert _state(fake_data_dir, 5) == ledger_mod.PENDING
+    assert _state(fake_data_dir, 6) == ledger_mod.SKIPPED_CHEAP
+    assert [r["message_id"] for r in bot.methods("setMessageReaction")] == [5]
+
+
 def test_unsupported_message_gets_one_plain_reply_and_no_run(fake_data_dir: Path):
     """A photo with no caption: one plain reply, no reaction, no event, and not a cheap skip
     (is_cheap("") is True, so the unsupported check must come first)."""
