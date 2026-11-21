@@ -141,19 +141,21 @@ def test_private_file_unreadable(tmp_path: Path) -> None:
 
 @kernel
 def test_private_copies_outside_the_kb_unreadable(vault: Path, tmp_path: Path) -> None:
-    """Git keeps every private note's bytes; the phone-notification inbox is private; secrets are secrets."""
+    """Git keeps every private note's bytes, the privacy index their frontmatter; the inbox is private; secrets."""
     obj = vault / ".git" / "objects" / "ab" / "cdef"
     obj.parent.mkdir(parents=True)
     obj.write_text("CANARY-PRIV-GIT")
     inbox = vault / ".scout-inbox" / "n.jsonl"
     inbox.parent.mkdir()
     inbox.write_text("CANARY-PRIV-INBOX")
+    index = vault / ".scout-cache" / "privacy-index.json"  # written by the runner's own label read
     secret = tmp_path / "home" / ".scout-secrets" / "token"
     secret.parent.mkdir(parents=True)
     secret.write_text("CANARY-SECRET")
-    for path in (obj, inbox, secret):
+    for path in (obj, inbox, secret, index):
         out = h.run(vault, tmp_path, f"cat '{path}'")
         assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+        assert "not permitted" in out.stderr_tail, path  # refused, not merely missing
 
 
 @kernel

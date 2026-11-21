@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scout import config
+from scout import paths as vault_paths
 from scout.errors import LabError
 from scout.kb import hook_paths
 from scout.kb.read import visibility_map
@@ -63,8 +64,9 @@ TAIL_BYTES = 4000
 # The labels are read as a full reader (one of FULL_READERS), the way pre_session_data reads them: the runner
 # must see every private file to deny it.
 READER = "autonomous"
-# Where a vault keeps private bytes outside knowledge-base/: every note's history (the git objects) and the
-# phone-notification inbox (privacy.DELEGATE_NEVER).
+# Where a vault keeps private bytes outside knowledge-base/: every note's history (the git objects), the
+# phone-notification inbox (privacy.DELEGATE_NEVER) and the engine's caches (the privacy index holds private
+# notes' frontmatter).
 INBOX_DIR = ".scout-inbox"
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
@@ -203,8 +205,9 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
     for gitdir in [vault / ".git", *hook_paths.git_dirs(vault)]:
         if gitdir.is_dir() and gitdir not in out:
             out.append(gitdir)
-    if (vault / INBOX_DIR).is_dir():
-        out.append(vault / INBOX_DIR)
+    for folder in (vault / INBOX_DIR, vault_paths.cache_dir(vault)):
+        if folder.is_dir():
+            out.append(folder)
     return out
 
 
