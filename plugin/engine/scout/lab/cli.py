@@ -456,6 +456,33 @@ def cli_experiment_abandon(
     _ok(slug, f"abandon {eid}")
 
 
+@experiment_app.command("call")
+def cli_experiment_call(
+    model: str | None = typer.Option(None, "--model", help="Model name passed to claude."),
+    prompt_file: Path = typer.Option(..., "--prompt-file", help="UTF-8 text file with the prompt."),
+) -> None:
+    """Make one metered model call from inside an experiment (via $SCOUT_LAB_METER).
+
+    Prints the reply text. Exit 0 ok; 3 refused (this experiment's cost cap is reached); 4 the meter
+    is unreachable or the call failed (reason on stderr).
+    """
+    from scout.lab import meter
+
+    try:
+        reply = meter.meter_call(_read_text(prompt_file), model)
+    except meter.MeterUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(4) from None
+    if reply.get("ok") is True and isinstance(reply.get("text"), str):
+        typer.echo(reply["text"])
+        return
+    if reply.get("refused") == "cap":
+        typer.echo(f"refused: cost cap reached (spent ${reply.get('spent_usd')} of ${reply.get('cap_usd')})", err=True)
+        raise typer.Exit(3)
+    typer.echo(str(reply.get("error") or "model call failed"), err=True)
+    raise typer.Exit(4)
+
+
 @experiment_app.command("finish")
 def cli_experiment_finish(
     ctx: typer.Context,
