@@ -545,7 +545,6 @@ private struct DSCardButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let cornerRadius: CGFloat
     @Environment(\.isFocused) private var isFocused
-    @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
     @State private var hovering = false
 
     var body: some View {
@@ -554,7 +553,7 @@ private struct DSCardButtonBody: View {
             .environment(\.dsCardPressed, configuration.isPressed)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
             .onHover { hovering = $0 }
-            .dsFocusRing(isFocused && !containerHasFocus, cornerRadius: cornerRadius)
+            .dsControlFocusRing(isFocused, cornerRadius: cornerRadius)
     }
 }
 

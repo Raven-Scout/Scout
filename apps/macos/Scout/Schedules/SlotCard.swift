@@ -35,25 +35,48 @@ struct SlotCard: View {
             OnMissPill(policy: slot.onMiss)
             SlotWarningLines(warnings: warnings)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Self.horizontalPadding)
         .padding(.vertical, 14)
         .editorialCard(padding: 0, cornerRadius: 10, selected: isSelected, accentBar: typeColor)
     }
 
+    /// The time with the type pill beside it, or under it when a narrow card at
+    /// a large Text size can't fit both on a line (UI audit T4).
     private var topRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(twentyFourHour ? slot.firesAtLocal : formattedTime)
-                .dsFont(.display, .serif, weight: .medium)
-                .foregroundStyle(DS.Ink.p1)
-            if !twentyFourHour {
-                Text(amPm)
-                    .font(DS.font(.caption))
-                    .foregroundStyle(DS.Ink.p3)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                time
+                Spacer(minLength: 8)
+                TypePill(type: slot.type)
             }
-            Spacer()
-            TypePill(type: slot.type)
+            VStack(alignment: .leading, spacing: 6) {
+                time
+                TypePill(type: slot.type)
+            }
         }
     }
+
+    private var time: some View { Self.time(slot.firesAtLocal, twentyFourHour: twentyFourHour) }
+
+    /// The big serif time, with AM/PM unless 24-hour. One line, at its own width.
+    static func time(_ firesAtLocal: String, twentyFourHour: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(twentyFourHour ? firesAtLocal : formattedTime(firesAtLocal))
+                .dsFont(.display, .serif, weight: .medium)
+                .foregroundStyle(DS.Ink.p1)
+                .lineLimit(1)
+            if !twentyFourHour {
+                Text(amPm(firesAtLocal))
+                    .font(DS.font(.caption))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(1)
+            }
+        }
+        .fixedSize()
+    }
+
+    /// The card's padding either side (`body`).
+    static let horizontalPadding: CGFloat = 16
 
     private var cooldownRow: some View {
         HStack(spacing: 6) {
@@ -68,17 +91,17 @@ struct SlotCard: View {
     }
 
     /// Convert "HH:MM" 24-hour to "H:MM" 12-hour for the big card display.
-    private var formattedTime: String {
-        let parts = slot.firesAtLocal.split(separator: ":")
+    nonisolated static func formattedTime(_ firesAtLocal: String) -> String {
+        let parts = firesAtLocal.split(separator: ":")
         guard parts.count == 2,
               let h24 = Int(parts[0]), let m = Int(parts[1])
-        else { return slot.firesAtLocal }
+        else { return firesAtLocal }
         let h12 = h24 == 0 ? 12 : (h24 > 12 ? h24 - 12 : h24)
         return String(format: "%d:%02d", h12, m)
     }
 
-    private var amPm: String {
-        let parts = slot.firesAtLocal.split(separator: ":")
+    nonisolated static func amPm(_ firesAtLocal: String) -> String {
+        let parts = firesAtLocal.split(separator: ":")
         guard let h24 = parts.first.flatMap({ Int($0) }) else { return "" }
         return h24 < 12 ? "AM" : "PM"
     }

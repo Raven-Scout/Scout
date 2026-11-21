@@ -207,6 +207,13 @@ nonisolated enum SessionsLayout {
         }
     }
 
+    /// Whether a lane shows its stale or done cards open, with no toggle: the
+    /// state chips pick that state (T4 hand check). Otherwise they wait behind
+    /// the lane's "Stale (n)" / "Done (n)" toggle.
+    static func opens(_ state: AgentSessionState, filter: SessionsFilter) -> Bool {
+        (state == .stale || state == .done) && filter.states.contains(state)
+    }
+
     /// Needs-you cards, then running cards, across every project (spec §6.2).
     static func nowStrip(index: SessionIndex, filter: SessionsFilter, now: Date) -> [AgentSession] {
         let visible = visibleSessions(index: index, filter: filter, now: now)

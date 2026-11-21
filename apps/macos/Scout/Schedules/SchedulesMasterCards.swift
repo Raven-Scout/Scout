@@ -14,14 +14,17 @@ struct SchedulesMasterCards: View {
     /// Keyboard focus, set by a click on a card (see `SchedulesMasterTable`).
     @FocusState private var cardsFocused: Bool
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 240, maximum: 320), spacing: 12)
+    /// Top-aligned, so a taller card in a row never pushes its neighbours' tops down.
+    static let columns = [
+        GridItem(.adaptive(minimum: minCardWidth, maximum: 320), spacing: 12, alignment: .top)
     ]
+    /// The narrowest a card gets.
+    static let minCardWidth: CGFloat = 240
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
                     if let draft = newDraftSlot {
                         cardButton(for: draft)
                     }
@@ -46,6 +49,11 @@ struct SchedulesMasterCards: View {
         }
     }
 
+    /// The card the arrows move from: the selected one, else the first.
+    private var cursorKey: String? {
+        selectedSlotKey ?? SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot).first
+    }
+
     @ViewBuilder
     private func cardButton(for slot: Slot) -> some View {
         let isSelected = selectedSlotKey == slot.key
@@ -57,6 +65,8 @@ struct SchedulesMasterCards: View {
                      twentyFourHour: twentyFourHour)
         }
         .buttonStyle(.dsCard(cornerRadius: 10))
+        // Tab onto the grid itself rings this card; a card Tab lands on rings itself (T4).
+        .dsCursorRing(cursorKey == slot.key, cornerRadius: 10)
         .accessibilitySelected(isSelected)
         .id(slot.key)
     }

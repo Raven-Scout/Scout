@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Design-system v2 buttons (audit #105)
@@ -103,7 +104,6 @@ private struct DSButtonBody: View {
     @Environment(\.isEnabled) private var isEnabled
     /// The nearest focusable ancestor's focus: the button's own, or its list's (`dsFocusContainer`).
     @Environment(\.isFocused) private var isFocused
-    @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
     @State private var isHovering = false
 
     var body: some View {
@@ -141,7 +141,7 @@ private struct DSButtonBody: View {
             .opacity(!chromed && configuration.isPressed ? 0.7 : 1)
             .contentShape(shape)
             .onHover { hovering in if role == .quiet { isHovering = hovering } }
-            .dsFocusRing(isFocused && !containerHasFocus, cornerRadius: DS.buttonCornerRadius)
+            .dsControlFocusRing(isFocused, cornerRadius: DS.buttonCornerRadius)
     }
 }
 
@@ -166,21 +166,105 @@ extension ButtonStyle where Self == DSButtonStyle {
 
 extension EnvironmentValues {
     /// A focusable container around this view (a list that takes the arrow
-    /// keys) has the keyboard focus. See `dsFocusContainer(_:)`.
+    /// keys) has the keyboard focus, itself or a control inside it.
+    /// See `dsFocusContainer(_:)`.
     @Entry var dsFocusContainerHasFocus: Bool = false
+    /// That container holds the keyboard focus itself, not a control inside
+    /// it: its current item draws the ring (`dsCursorRing`).
+    @Entry var dsFocusContainerShowsCursor: Bool = false
+}
+
+/// Whether buttons take keyboard focus themselves: on macOS only with
+/// Keyboard navigation (Full Keyboard Access) on. Off, a button's
+/// `isFocused` is always its container's.
+enum DSKeyboardNavigation {
+    static var isOn: Bool { NSApp?.isFullKeyboardAccessEnabled ?? false }
+}
+
+/// A DS control inside holds the keyboard focus itself (OR of every control).
+struct DSOwnFocusKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+/// The ring a DS control draws for its own focus (`dsControlFocusRing`).
+private struct DSControlFocusRing: ViewModifier {
+    let isFocused: Bool
+    let cornerRadius: CGFloat
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
+
+    func body(content: Content) -> some View {
+        let navigation = DSKeyboardNavigation.isOn
+        let ring = DSFocus.controlDrawsRing(isFocused: isFocused, isEnabled: isEnabled,
+                                            containerHasFocus: containerHasFocus, keyboardNavigation: navigation)
+        content
+            .dsFocusRing(ring, cornerRadius: cornerRadius)
+            .preference(key: DSOwnFocusKey.self, value: ring && navigation)
+    }
+}
+
+/// Marks a focusable container (see `dsFocusContainer(_:)`).
+private struct DSFocusContainer: ViewModifier {
+    let hasFocus: Bool
+    let showsCursor: Bool
+    @State private var focusInside = false
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.dsFocusContainerHasFocus, hasFocus)
+            .environment(\.dsFocusContainerShowsCursor,
+                         showsCursor && DSFocus.containerShowsCursor(hasFocus: hasFocus, focusInside: focusInside))
+            .onPreferenceChange(DSOwnFocusKey.self) { focusInside = $0 }
+    }
+}
+
+/// The focus-ring rules, as plain functions the tests pin (UI audit T4).
+nonisolated enum DSFocus {
+    /// A control rings its own focus. `isFocused` is the nearest focusable
+    /// ancestor's: with Keyboard navigation on, a button is focusable, so it
+    /// is the button's own; off, a button inside a focused container only
+    /// inherits the container's and draws nothing. Disabled controls never
+    /// take focus, so theirs is always inherited.
+    static func controlDrawsRing(isFocused: Bool, isEnabled: Bool, containerHasFocus: Bool,
+                                 keyboardNavigation: Bool) -> Bool {
+        isFocused && isEnabled && (keyboardNavigation || !containerHasFocus)
+    }
+
+    /// A container's current item rings while the container holds the focus
+    /// itself. `@FocusState` on a container is true while a control inside
+    /// has the focus too, so that case is subtracted: that control rings.
+    static func containerShowsCursor(hasFocus: Bool, focusInside: Bool) -> Bool {
+        hasFocus && !focusInside
+    }
 }
 
 extension View {
-    /// Marks a `.focusable()` container whose buttons draw their own ring.
+    /// Marks a `.focusable()` container: a list or grid that takes the arrow
+    /// keys. Every focusable container needs one (`FocusContainerGuardTests`).
     ///
-    /// `isFocused` is the nearest focusable ancestor's focus, not the
-    /// button's: without Full Keyboard Access a button can't take focus, so
-    /// while the list has it, every button inside read "focused" and drew a
-    /// ring (after Done handed the keys back to Action Items, UI audit T4).
-    /// While `hasFocus`, the controls inside draw none; a control that takes
-    /// focus itself takes it from the container, so its ring still shows.
-    func dsFocusContainer(_ hasFocus: Bool) -> some View {
-        environment(\.dsFocusContainerHasFocus, hasFocus)
+    /// While `hasFocus`, the buttons inside don't draw the ring they'd
+    /// inherit from it (without Keyboard navigation, every button in Action
+    /// Items drew one after Done handed the keys back, UI audit T4). A
+    /// control that holds the focus itself still rings. While the container
+    /// holds it itself, its current item draws the ring (`dsCursorRing`), so
+    /// Tab never stops on it silently. Pass `showsCursor: false` while a
+    /// field inside that isn't a `dsField` has the focus.
+    func dsFocusContainer(_ hasFocus: Bool, showsCursor: Bool = true) -> some View {
+        modifier(DSFocusContainer(hasFocus: hasFocus, showsCursor: showsCursor))
+    }
+
+    /// The ring on a focusable container's current item (its cursor or
+    /// selection) while the container holds the keyboard focus itself.
+    func dsCursorRing(_ isCurrent: Bool, cornerRadius: CGFloat = 6) -> some View {
+        modifier(DSCursorRing(isCurrent: isCurrent, cornerRadius: cornerRadius))
+    }
+
+    /// A DS control's own focus ring: drawn for its own keyboard focus, never
+    /// one inherited from a focusable container (`DSFocus.controlDrawsRing`).
+    /// Every DS button and chip style draws focus through this.
+    func dsControlFocusRing(_ isFocused: Bool, cornerRadius: CGFloat = 6) -> some View {
+        modifier(DSControlFocusRing(isFocused: isFocused, cornerRadius: cornerRadius))
     }
 
     /// The keyboard focus ring custom-styled controls draw for themselves
@@ -195,5 +279,15 @@ extension View {
                     .allowsHitTesting(false)
             }
         }
+    }
+}
+
+private struct DSCursorRing: ViewModifier {
+    let isCurrent: Bool
+    let cornerRadius: CGFloat
+    @Environment(\.dsFocusContainerShowsCursor) private var showsCursor
+
+    func body(content: Content) -> some View {
+        content.dsFocusRing(isCurrent && showsCursor, cornerRadius: cornerRadius)
     }
 }

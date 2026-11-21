@@ -115,6 +115,8 @@ struct TaskCardView: View {
         // Picked for copying is `marked`; keyboard-current is `selected`.
         .editorialCard(padding: 0, cornerRadius: 10, selected: isCursor, marked: isSelected,
                        accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
+        // While the list itself has the keys, the current card rings (T4).
+        .dsCursorRing(isCursor, cornerRadius: 10)
         // A click anywhere on the card makes it keyboard-current, alongside
         // whatever the click hit (a button still does its own thing).
         .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })

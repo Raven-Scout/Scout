@@ -69,20 +69,28 @@ struct SessionsBoardView: View {
                     }
                 }
                 ForEach(rows) { row in
+                    // A state chip that picks stale or done opens them: folded,
+                    // the Done chip showed every lane empty (T4 hand check).
+                    let staleOpen = SessionsLayout.opens(.stale, filter: filter) || expandedStale.contains(row.id)
+                    let doneOpen = SessionsLayout.opens(.done, filter: filter) || expandedDone.contains(row.id)
                     lane(title: row.name, counts: row.counts, chips: {
-                        toggle("Stale", count: row.stale.count, rowID: row.id, expanded: $expandedStale)
-                        toggle("Done", count: row.done.count, rowID: row.id, expanded: $expandedDone)
+                        if !SessionsLayout.opens(.stale, filter: filter) {
+                            toggle("Stale", count: row.stale.count, rowID: row.id, expanded: $expandedStale)
+                        }
+                        if !SessionsLayout.opens(.done, filter: filter) {
+                            toggle("Done", count: row.done.count, rowID: row.id, expanded: $expandedDone)
+                        }
                     }) {
                         if !row.active.isEmpty {
                             grid { ForEach(row.active) { card($0, titles: titles) } }
                         }
                         // Opened stale or done cards start under a quiet rule, so they
                         // don't read as more of the lane's active work (T4 review).
-                        if expandedStale.contains(row.id), !row.stale.isEmpty {
+                        if staleOpen, !row.stale.isEmpty {
                             groupRule("Stale")
                             grid { ForEach(row.stale) { card($0, titles: titles) } }
                         }
-                        if expandedDone.contains(row.id), !row.done.isEmpty {
+                        if doneOpen, !row.done.isEmpty {
                             groupRule("Done")
                             grid { ForEach(row.done) { card($0, titles: titles) } }
                         }

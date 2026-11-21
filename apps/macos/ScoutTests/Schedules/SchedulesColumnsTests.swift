@@ -11,11 +11,11 @@ import Testing
 struct SchedulesColumnsTests {
     private let scales = TextScale.Size.allCases.map(\.factor)
 
-    /// The table's width at a window width: the page, less the 380 pt detail pane a
-    /// wide page always shows (none on a compact page with nothing selected).
+    /// The table's width at a window width: the page, less the detail pane, which
+    /// opens only with a schedule picked (T4 hand check).
     private func tableWidth(window: CGFloat, selected: Bool) -> CGFloat {
         let page = LayoutSize.pageWidth(window: window)
-        switch DetailPaneLayout.layout(pageWidth: page, hasSelection: selected) {
+        switch DetailPaneLayout.layout(pageWidth: page, hasSelection: selected, hidesWhenEmpty: true) {
         case .hidden: return page
         case .shown(let width, _): return page - width
         }
@@ -49,6 +49,8 @@ struct SchedulesColumnsTests {
         let wide = tableWidth(window: 1600, selected: true)
         #expect(standard.mode(forAvailable: wide) == .full)
         #expect(largest.mode(forAvailable: wide) != .stacked)
+        // 1280 pt with nothing picked: no empty pane, so Standard keeps every word.
+        #expect(standard.mode(forAvailable: tableWidth(window: 1280, selected: false)) == .full)
     }
 
     @Test func columnsWidenWithTheTextButNeverShrink() {
@@ -95,5 +97,51 @@ struct SchedulesColumnsTests {
         for label in ["weekdays", "weekends", "every day", "Mon, Wed, Fri"] {
             expectFits(Text(label).font(DS.font(.caption)), \.daysLabel, label)
         }
+    }
+}
+
+/// T4 hand check: at Largest text and 1100 pt, TypePill broke "Consolidation"
+/// mid-word on every consolidation card, the cards grew, and row tops no longer
+/// lined up. Measured at Standard and scaled, as `SchedulesColumnsTests` does,
+/// so no test changes the app-wide Text size under the others.
+@Suite("Schedule cards at Largest text")
+@MainActor
+struct ScheduleCardLargestTextTests {
+    private let largest = TextScale.Size.largest.factor
+
+    private func ideal<V: View>(_ view: V) -> CGSize {
+        LayoutHarness.size(of: view.fixedSize(), proposing: CGSize(width: 10_000, height: 400))
+    }
+
+    @Test("a type pill keeps one line however narrow it's offered")
+    func typePillNeverBreaksAWord() {
+        for type in SlotType.allCases {
+            let whole = ideal(TypePill(type: type))
+            let squeezed = LayoutHarness.size(of: TypePill(type: type), proposing: CGSize(width: 20, height: 400))
+            #expect(squeezed.height <= whole.height + 0.5, "\(type) wrapped: \(squeezed) vs \(whole)")
+            #expect(squeezed.width >= whole.width - 0.5, "\(type) was squeezed: \(squeezed) vs \(whole)")
+        }
+    }
+
+    /// The narrowest card at 1100 pt is the grid's 240 pt minimum (two beside the
+    /// 340 pt detail pane, three without it).
+    @Test("at Largest and 1100 pt the narrowest card holds the time and every pill, stacked if not side by side")
+    func theNarrowestCardHoldsItsTopRow() {
+        let page = LayoutSize.pageWidth(window: 1100)
+        #expect(page - 340 - 32 >= SchedulesMasterCards.minCardWidth * 2)
+        let inner = SchedulesMasterCards.minCardWidth - 2 * SlotCard.horizontalPadding
+        for twentyFourHour in [false, true] {
+            let time = ideal(SlotCard.time("12:45", twentyFourHour: twentyFourHour)).width / TextScale.shared.factor
+            #expect(time * largest <= inner, "time \(time * largest) > \(inner)")
+        }
+        for type in SlotType.allCases {
+            let pill = ideal(TypePill(type: type)).width / TextScale.shared.factor
+            #expect(pill * largest <= inner, "\(type) pill \(pill * largest) > \(inner)")
+        }
+    }
+
+    @Test("cards in a row share their top edge")
+    func cardRowsAlignTops() {
+        #expect(SchedulesMasterCards.columns.allSatisfy { $0.alignment == .top })
     }
 }

@@ -193,15 +193,19 @@ struct PageLayoutTests {
         #expect(Pane.layout(pageWidth: nil, hasSelection: false, hidesWhenEmpty: true) == .hidden)
     }
 
-    @Test("Schedules closes its pane only when compact, and never over a new slot or unsaved edits")
+    @Test("Schedules closes its pane, but never over a new slot or unsaved edits")
     func schedulesCloseRule() {
         let compact = DetailPaneLayout.shown(width: 340, closable: true)
         let regular = DetailPaneLayout.shown(width: 380, closable: false)
+        // Since the T4 hand check Schedules hides its empty pane too, so a shown one always closes.
+        #expect(DetailPaneLayout.layout(pageWidth: 1379, hasSelection: true, hidesWhenEmpty: true)
+                == .shown(width: 380, closable: true))
+        #expect(SchedulesView.canCloseDetail(pane: .shown(width: 380, closable: true), isNewDraft: false, isDirty: false))
         #expect(SchedulesView.canCloseDetail(pane: compact, isNewDraft: false, isDirty: false))
         // A dirty edit of an existing slot survives Esc and the close button.
         #expect(!SchedulesView.canCloseDetail(pane: compact, isNewDraft: false, isDirty: true))
         #expect(!SchedulesView.canCloseDetail(pane: compact, isNewDraft: true, isDirty: false))
-        // At full width Esc never closes the pane, dirty or not.
+        // A pane that can't close (the shared rule's full width) stays, dirty or not.
         #expect(!SchedulesView.canCloseDetail(pane: regular, isNewDraft: false, isDirty: false))
         #expect(!SchedulesView.canCloseDetail(pane: .hidden, isNewDraft: false, isDirty: false))
     }

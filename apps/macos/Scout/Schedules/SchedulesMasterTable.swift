@@ -101,6 +101,7 @@ struct SchedulesMasterTable: View {
     @ViewBuilder
     private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
         let isSelected = selectedSlotKey == slot.key
+        let isCursor = (selectedSlotKey ?? Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot).first) == slot.key
         // A button, not a tap gesture, so rows take keyboard focus and
         // VoiceOver reads each one as a selectable button.
         Button {
@@ -112,6 +113,8 @@ struct SchedulesMasterTable: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
+        // Tab onto the table itself rings this row (T4).
+        .dsCursorRing(isCursor, cornerRadius: 4)
         .accessibilitySelected(isSelected)
         .accessibilityIdentifier("schedules-row-\(slot.key)")
         .id(slot.key)

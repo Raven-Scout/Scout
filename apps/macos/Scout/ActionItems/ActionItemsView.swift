@@ -221,8 +221,9 @@ struct ActionItemsView: View {
                 .focusable()
                 .focused($listFocused)
                 .focusEffectDisabled()
-                // The list's focus isn't each button's: no ring on every card (T4).
-                .dsFocusContainer(listFocused)
+                // The list's focus isn't each button's: no ring on every card,
+                // but one on the current card while the list has the keys (T4).
+                .dsFocusContainer(listFocused, showsCursor: listOwnsKeys)
                 // Each handler acts only while the list itself has focus, never
                 // for keys typed into a comment editor or a focused button
                 // inside it (`listOwnsKeys`).
