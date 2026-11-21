@@ -4283,7 +4283,7 @@ def _register_bootstrap() -> None:
 
     @bootstrap_app.command("resolve")
     def cli_bootstrap_resolve(
-        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md and/or RESEARCH.md"),
+        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md, RESEARCH.md and/or RESPOND.md"),
     ) -> None:
         """Record a brain file's sidecar as resolved.
 
@@ -4299,7 +4299,7 @@ def _register_bootstrap() -> None:
         kinds = [f.upper().removesuffix(".MD") for f in files]
         unknown = [f for f, k in zip(files, kinds, strict=True) if k not in BRAIN_KINDS]
         if unknown:
-            expected = "expected SKILL.md, DREAMING.md or RESEARCH.md"
+            expected = "expected SKILL.md, DREAMING.md, RESEARCH.md or RESPOND.md"
             typer.echo(f"not a brain file: {', '.join(unknown)} ({expected})", err=True)
             raise typer.Exit(code=2)
         vault = _paths.data_dir()
@@ -4930,7 +4930,7 @@ def _register_phases() -> None:
 
     @phases_app.command("backport")
     def cli_phases_backport(
-        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | all"),
+        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | RESPOND | all"),
         apply: bool = typer.Option(
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
@@ -4944,7 +4944,7 @@ def _register_phases() -> None:
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
-        Diffs each vault SKILL/DREAMING/RESEARCH against its last-assembled
+        Diffs each vault SKILL/DREAMING/RESEARCH/RESPOND against its last-assembled
         snapshot, maps each divergence to a phase fragment, conservatively
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
@@ -4956,6 +4956,7 @@ def _register_phases() -> None:
         from scout import paths as _paths
         from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
+        from scout.scripts.brain_merge import BRAIN_KINDS
         from scout.scripts.phase_backport import (
             build_rendered_sections,
             bundle_files,
@@ -4977,7 +4978,7 @@ def _register_phases() -> None:
         vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
-        kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
+        kinds = list(BRAIN_KINDS) if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
 
         # Plan every kind once. A hunk in a core fragment shows up in each brain

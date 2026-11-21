@@ -61,6 +61,7 @@ _STRUCTURAL_FILES = frozenset(
         "SKILL.md",
         "DREAMING.md",
         "RESEARCH.md",
+        "RESPOND.md",
         "knowledge-base/ontology/parser.py",
         "action-items/render.py",
     }
@@ -80,7 +81,7 @@ _GIT_FILES = frozenset(
         ".git/MERGE_HEAD",
     }
 )
-_STRUCTURAL_MD = frozenset({"CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "README.md"})
+_STRUCTURAL_MD = frozenset({"CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md", "README.md"})
 # Scout's own folder names: never hidden as names, though what is inside them is walked.
 _KEEP_WORDS = frozenset(
     {"knowledge-base", "action-items", "ontology", "wishlist", "research", "proposals", "archive", "scripts", "hooks"}
