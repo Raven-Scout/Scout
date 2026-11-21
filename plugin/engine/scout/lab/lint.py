@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from pathlib import Path
+from typing import Protocol
 
 from scout.errors import LabError
 from scout.kb.lint import Finding
@@ -32,6 +33,7 @@ _TIMELINE_H1 = re.compile(r"^# .+ — timeline\s*$")
 _TIMELINE_HEADING = re.compile(r"^### \d{4}-\d\d-\d\d \d\d:\d\d · (?P<tag>.+?)\s*$")
 _QID = re.compile(rf"(?<![\w-]){QID_RE}(?!\w)")
 _EID = re.compile(rf"(?<![\w-]){EID_RE}(?!\w)")
+_ID_BULLETS = ("- **Questions:**", "- **Steers handled:**")
 _EXPERIMENT_NAME = re.compile(rf"^(?P<slug>.+)-(?P<eid>{EID_RE})-.+\.md$")
 _LINK = re.compile(r"\[\[([^\]|#]+)")
 _PRIVATE_COUNT = re.compile(r"^_(\d+) private thread\(s\) not listed\._\s*$", re.MULTILINE)
@@ -49,19 +51,81 @@ def _line_of(text: str, prefix: str) -> int:
     return 1
 
 
-def lab_findings(repo: Path, rel: str, text: str) -> list[Finding]:
-    """Findings for one file under ``knowledge-base/lab/`` (``rel`` is vault-relative, ``text`` its content)."""
+INDEX_REL = f"{_PREFIX}lab.md"
+
+
+class Source(Protocol):
+    """Where the cross-file checks read the rest of the lab from."""
+
+    def files(self) -> list[str]:
+        """Vault-relative paths of the lab's markdown files."""
+        ...
+
+    def read(self, rel: str) -> str | None:
+        """A file's text, or None when it does not exist or cannot be read."""
+        ...
+
+
+class WorkingTree:
+    """The files on disk: ``scoutctl lab lint``."""
+
+    def __init__(self, repo: Path) -> None:
+        self.repo = repo
+
+    def files(self) -> list[str]:
+        root = paths.lab_dir(self.repo)
+        if not root.is_dir():
+            return []
+        return sorted(p.relative_to(self.repo).as_posix() for p in root.rglob("*.md"))
+
+    def read(self, rel: str) -> str | None:
+        try:
+            return (self.repo / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+
+class StagedIndex:
+    """The git index: what a commit would contain, whatever the working tree holds."""
+
+    def __init__(self, repo: Path) -> None:
+        self.repo = repo
+        self._files: list[str] | None = None
+
+    def files(self) -> list[str]:
+        if self._files is None:
+            from scout.kb.git_io import git_bytes
+
+            out = git_bytes(self.repo, "ls-files", "-z", "--", _PREFIX).stdout.decode("utf-8", errors="replace")
+            self._files = sorted(p for p in out.split("\0") if p.endswith(".md"))
+        return self._files
+
+    def read(self, rel: str) -> str | None:
+        from scout.kb.git_io import staged_text_lossy
+
+        return staged_text_lossy(self.repo, rel) if rel in self.files() else None
+
+
+def lab_findings(
+    repo: Path, rel: str, text: str, source: Source | None = None, *, include_index: bool = True
+) -> list[Finding]:
+    """Findings for one file under ``knowledge-base/lab/`` (``rel`` is vault-relative, ``text`` its content).
+
+    ``source`` is where sibling files are read from (default: the working tree). ``include_index`` False
+    leaves ``lab.md``'s own check to :func:`index_findings`, for a caller that runs it once per commit.
+    """
     if not rel.startswith(_PREFIX) or not rel.endswith(".md"):
         return []
+    source = source or WorkingTree(repo)
     parts = rel[len(_PREFIX) :].split("/")
     if parts == ["lab.md"]:
-        return _index(repo, rel, text)
+        return index_findings(source, text) if include_index else []
     if len(parts) == 2:
         slug, name = parts
         if name == f"{slug}.md":
             return _front(rel, slug, text)
         if name == f"{slug}-timeline.md":
-            return _timeline(repo, rel, slug, text)
+            return _timeline(source, rel, slug, text)
     if len(parts) == 3 and parts[1] == "experiments" and parts[2].startswith(f"{parts[0]}-E"):
         return _experiment(rel, parts[0], parts[2], text)
     return []
@@ -111,22 +175,20 @@ def _front(rel: str, slug: str, text: str) -> list[Finding]:
 # --- timeline --------------------------------------------------------------------------
 
 
-def _read_front(repo: Path, slug: str) -> Thread | None:
-    try:
-        return parse_front_page(slug, paths.front_page(repo, slug).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError):
-        return None
+def _read_front(source: Source, slug: str) -> Thread | None:
+    text = source.read(f"{_PREFIX}{slug}/{slug}.md")
+    return None if text is None else parse_front_page(slug, text)
 
 
-def _timeline(repo: Path, rel: str, slug: str, text: str) -> list[Finding]:
+def _timeline(source: Source, rel: str, slug: str, text: str) -> list[Finding]:
     out: list[Finding] = []
     lines = text.removeprefix("\ufeff").split("\n")
     first = next((i for i, raw in enumerate(lines) if raw.strip()), None)
     if first is None or not _TIMELINE_H1.match(lines[first]):
         out.append(_bad(rel, "the file must start with '# <title> — timeline'", (first or 0) + 1))
-    thread = _read_front(repo, slug)
+    thread = _read_front(source, slug)
     if thread is None:
-        out.append(_bad(rel, f"no front page for thread '{slug}' (expected {paths.front_page(repo, slug).name})"))
+        out.append(_bad(rel, f"no front page for thread '{slug}' (expected {slug}.md)"))
     qids = {q.qid for q in [*thread.open, *thread.answered]} if thread else set()
     eids = {e.eid for e in thread.experiments} if thread else set()
     for n, raw in enumerate(lines, 1):
@@ -139,7 +201,8 @@ def _timeline(repo: Path, rel: str, slug: str, text: str) -> list[Finding]:
                     _bad(rel, f"unknown timeline tag '{m.group('tag')}'; use one of {', '.join(TIMELINE_TAGS)}", n)
                 )
             continue
-        if thread is None or raw.startswith("# "):
+        # IDs are written only in these bullets (ops.timeline_add); elsewhere "Q3 2026" is prose.
+        if thread is None or not raw.startswith(_ID_BULLETS):
             continue
         out += [
             _bad(rel, f"{token} is not a question of thread '{slug}'", n)
@@ -193,16 +256,18 @@ def _as_naive(value: object, what: str) -> _dt.datetime:
 # --- lab.md ----------------------------------------------------------------------------
 
 
-def _index(repo: Path, rel: str, text: str) -> list[Finding]:
-    root = paths.lab_dir(repo)
-    folders = (
-        sorted(p.name for p in root.iterdir() if p.is_dir() and (p / f"{p.name}.md").is_file()) if root.is_dir() else []
-    )
+def index_findings(source: Source, text: str | None) -> list[Finding]:
+    """``lab.md`` against the thread folders ``source`` holds; ``text`` None means lab.md is absent."""
+    rel = INDEX_REL
+    pattern = re.compile(rf"^{re.escape(_PREFIX)}([^/]+)/\1\.md$")
+    folders = sorted(m.group(1) for f in source.files() if (m := pattern.match(f)))
+    out: list[Finding] = []
+    if text is None:
+        return [_bad(rel, "lab.md is missing; it must list every thread folder")] if folders else []
     linked = set(_LINK.findall(text))
     private = 0
-    out: list[Finding] = []
     for slug in folders:
-        thread = _read_front(repo, slug)
+        thread = _read_front(source, slug)
         if thread is not None and thread.visibility == "private":
             private += 1
         elif slug not in linked:

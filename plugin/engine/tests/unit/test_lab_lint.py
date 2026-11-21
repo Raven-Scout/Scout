@@ -105,9 +105,20 @@ def test_timeline_unknown_qid_blocks(vault: Path) -> None:
 
 
 def test_timeline_unknown_eid_blocks(vault: Path) -> None:
-    text = _text(vault, TIMELINE).replace("planned E2.", "planned E7.")
+    text = _text(vault, TIMELINE).replace("(E2 planned)", "(E7 planned)")
     [f] = _lint(vault, TIMELINE, text)
     assert f.blocking and "E7" in f.message
+
+
+def test_ids_in_prose_bullets_are_not_references(vault: Path) -> None:
+    text = _text(vault, TIMELINE).replace("cascades match", "Q3 2026 results; E5 embeddings; cascades match")
+    assert _lint(vault, TIMELINE, text) == []
+
+
+def test_unknown_id_in_the_steers_bullet_blocks(vault: Path) -> None:
+    text = _text(vault, TIMELINE).replace("alex on Q3", "alex on Q8")
+    [f] = _lint(vault, TIMELINE, text)
+    assert f.blocking and "Q8" in f.message
 
 
 def test_timeline_heading_form_and_tag_vocabulary(vault: Path) -> None:
@@ -272,3 +283,66 @@ def test_cli_lint_paths_limit_the_files_and_warnings_exit_zero(vault: Path) -> N
     assert result.exit_code == 0, result.output
     assert "lab-understanding-size" in result.output and "monitors-timeline" not in result.output
     assert _run(vault, str(vault / TIMELINE)).exit_code == 1
+
+
+# ----- the staged lab is judged as a whole, from the index ---------------------------
+
+
+def _lab_findings(kb_repo) -> list:
+    result = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    return [f for f in result.findings if f.check.startswith("lab-")]
+
+
+def test_thread_staged_without_lab_md_blocks(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.git("rm", "-q", "--cached", INDEX)
+    found = [f for f in _lab_findings(kb_repo) if f.path == INDEX]
+    assert len(found) == 1 and found[0].blocking and "missing" in found[0].message
+
+
+def _text_of_fixture() -> str:
+    return (FIXTURES / "monitors" / "monitors.md").read_text(encoding="utf-8")
+
+
+def test_new_thread_without_staging_lab_md_blocks(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.commit()
+    kb_repo.stage(f"{LAB}/other/other.md", _text_of_fixture())
+    [f] = [f for f in _lab_findings(kb_repo) if f.check == "lab-format"]
+    assert f.path == INDEX and "'other'" in f.message
+
+
+def test_visibility_flip_with_lab_md_unchanged_blocks(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.commit()
+    kb_repo.stage(FRONT, _text_of_fixture().replace("visibility: normal", "visibility: private"))
+    [f] = [f for f in _lab_findings(kb_repo) if f.check == "lab-format"]
+    assert f.path == INDEX and "private" in f.message
+
+
+def test_index_is_checked_once_per_commit(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.git("rm", "-q", "--cached", INDEX)
+    assert len([f for f in _lab_findings(kb_repo) if f.path == INDEX]) == 1
+
+
+def test_untracked_thread_folder_does_not_block_a_lab_md_commit(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.commit()
+    kb_repo.write(f"{LAB}/draft/draft.md", _text_of_fixture())
+    kb_repo.stage(INDEX, INDEX_TEXT + "\n")
+    assert _lab_findings(kb_repo) == []
+
+
+def test_partially_staged_front_page_is_judged_by_its_staged_text(kb_repo) -> None:
+    _stage_thread(kb_repo)
+    kb_repo.commit()
+    front = _text_of_fixture()
+    kb_repo.stage(FRONT, front)  # the index keeps a good page
+    kb_repo.write(FRONT, front.replace("**Q5**", "**Q4**").replace("next_q: 8", "next_q: 1"))
+    kb_repo.stage(TIMELINE, (FIXTURES / "monitors/monitors-timeline.md").read_text(encoding="utf-8") + "\n")
+    assert _lab_findings(kb_repo) == []
+    # and the other way: a bad staged page with a good worktree copy still blocks its timeline's IDs
+    kb_repo.stage(FRONT, front.replace("- **Q5** ", "- **Q6** "))
+    kb_repo.write(FRONT, front)
+    assert any("Q5" in f.message for f in _lab_findings(kb_repo))

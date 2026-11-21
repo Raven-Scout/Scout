@@ -470,6 +470,8 @@ class StagedFile:
     page_rules: Callable[[], PageRules | None]
     # A new daily file's earlier daily file; its lines count as this file's old version.
     baseline_text: str | None = None
+    # Per-commit marks for checks that run once however many files are staged; shared across the lint.
+    once: set[str] = field(default_factory=set)
 
 
 StagedCheck = Callable[[StagedFile], list[Finding]]
@@ -690,12 +692,22 @@ def _bullet_count_findings(f: StagedFile, rules: PageRules, staged: str, old: st
 
 
 def _lab(f: StagedFile) -> list[Finding]:
-    """The lab's format check (:mod:`scout.lab.lint`) on a staged file under ``knowledge-base/lab/``."""
+    """The lab's format check (:mod:`scout.lab.lint`) on a staged file under ``knowledge-base/lab/``.
+
+    Sibling files are read from the index, not the working tree. ``lab.md`` is checked once per
+    commit whenever any lab file is staged, so a new thread without it, or a front page flipped
+    private, is caught.
+    """
     if not f.rel.startswith("knowledge-base/lab/"):
         return []
-    from scout.lab.lint import lab_findings
+    from scout.lab.lint import INDEX_REL, StagedIndex, index_findings, lab_findings
 
-    return lab_findings(f.repo, f.rel, staged_text_lossy(f.repo, f.rel))
+    source = StagedIndex(f.repo)
+    out = lab_findings(f.repo, f.rel, staged_text_lossy(f.repo, f.rel), source, include_index=False)
+    if INDEX_REL not in f.once:
+        f.once.add(INDEX_REL)
+        out += index_findings(source, source.read(INDEX_REL))
+    return out
 
 
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
@@ -721,6 +733,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
     debts = _LineDebt(repo, cfg)
+    once: set[str] = set()
 
     def known_targets() -> set[str]:
         nonlocal known
@@ -765,7 +778,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
                 baseline_text = head_text(repo, baseline)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         staged = StagedFile(
-            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text
+            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text, once
         )
         for check in STAGED_CHECKS:
             result.findings += check(staged)
