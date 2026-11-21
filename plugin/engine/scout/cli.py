@@ -3766,6 +3766,16 @@ def _register_notify() -> None:
             "--allow-duplicate",
             help="Send even if a byte-identical message went to this chat in the last 10 minutes.",
         ),
+        reply_to: int | None = typer.Option(
+            None,
+            "--reply-to",
+            help="Reply to this inbound message id (the newest one answered). Marks it answered once delivered.",
+        ),
+        covers: str | None = typer.Option(
+            None,
+            "--covers",
+            help="Comma-separated inbound message ids this reply also answers (needs --reply-to).",
+        ),
     ) -> None:
         """Send a Telegram message via the configured bot.
 
@@ -3774,6 +3784,18 @@ def _register_notify() -> None:
         import os as _os
 
         from scout.scripts.notify_telegram import cli_send
+
+        try:
+            covered = sorted({int(p) for p in (covers or "").split(",") if p.strip()})
+        except ValueError as e:
+            typer.echo(f"scoutctl notify telegram: --covers takes comma-separated message ids ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        if covered and reply_to is None:
+            typer.echo("scoutctl notify telegram: --covers needs --reply-to (a reply threads to a message)", err=True)
+            raise typer.Exit(code=1)
+        if any(i <= 0 for i in [*covered, *([reply_to] if reply_to is not None else [])]):
+            typer.echo("scoutctl notify telegram: message ids are positive integers", err=True)
+            raise typer.Exit(code=1)
 
         if body is not None and body_file is None:
             text = body
@@ -3798,6 +3820,8 @@ def _register_notify() -> None:
                 "body": text,
                 "allow_duplicate": allow_duplicate,
                 "dry_run": dry_run,
+                "reply_to": reply_to,
+                "covers": covered,
             }
             raise typer.Exit(code=broker.client_telegram(fields))
         code = cli_send(
@@ -3808,6 +3832,8 @@ def _register_notify() -> None:
             allow_duplicate=allow_duplicate,
             echo_out=typer.echo,
             echo_err=lambda line: typer.echo(line, err=True),
+            reply_to=reply_to,
+            covers=covered,
         )
         if code:
             raise typer.Exit(code=code)

@@ -155,7 +155,61 @@ def test_the_send_carries_only_the_message_never_a_recipient(vault: Path) -> Non
     sender = Sender()
     reply = broker.Broker(vault, _env(), sender=sender).handle(_tg(chat_id="12345", token="t", url="https://x"))
     assert reply.exit == 0
-    assert set(sender.calls[0]) == {"tier", "parse_mode", "body", "allow_duplicate", "dry_run"}
+    assert set(sender.calls[0]) == {"tier", "parse_mode", "body", "allow_duplicate", "dry_run", "reply_to", "covers"}
+    assert sender.calls[0]["reply_to"] is None and sender.calls[0]["covers"] == []
+
+
+def test_broker_passes_reply_to_and_covers_through(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sender = Sender()
+    live = broker.Broker(vault, _env(), sender=sender, run_id="scout-broker.reply")
+    assert live.handle(_tg(reply_to=7, covers=[5, 6])).exit == 0
+    assert sender.calls[0]["reply_to"] == 7 and sender.calls[0]["covers"] == [5, 6]
+    # The default sender is cli_send in this process: it records the reply in this broker's vault, whatever the cwd.
+    seen: dict[str, Any] = {}
+
+    def fake_cli_send(**kw: Any) -> int:
+        seen.update(kw)
+        return 0
+
+    from scout.scripts import notify_telegram
+
+    monkeypatch.setattr(notify_telegram, "cli_send", fake_cli_send)
+    monkeypatch.chdir("/")
+    assert broker.Broker(vault, _env(), run_id="scout-broker.reply").handle(_tg("b", reply_to=7, covers=[5])).exit == 0
+    assert seen["reply_to"] == 7 and seen["covers"] == [5] and seen["vault"] == vault
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"covers": "5,6"},
+        {"covers": ["5"]},
+        {"covers": [True]},
+        {"covers": [0]},
+        {"covers": [-3]},
+        {"covers": [1.5]},
+        {"covers": list(range(1, 102))},
+        {"reply_to": "7"},
+        {"reply_to": 0},
+        {"reply_to": True},
+        {"reply_to": 7.0},
+        {"reply_to": None, "covers": [5]},  # a reply threads to a message
+    ],
+)
+def test_broker_refuses_non_int_covers(vault: Path, extra: dict[str, Any]) -> None:
+    sender = Sender()
+    reply = broker.Broker(vault, _env(), sender=sender).handle(_tg(**{"reply_to": 7, **extra}))
+    assert reply.exit == broker.EXIT_REFUSED and reply.kind == broker.REFUSED
+    assert sender.calls == []
+
+
+def test_queued_reply_with_covers_is_validated_on_drain(vault: Path) -> None:
+    broker.enqueue(vault, "telegram", _tg("forged", reply_to=7, covers=["all"]), now=NOW)
+    broker.enqueue(vault, "telegram", _tg("answer", reply_to=7, covers=[5, 7]), now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender, clock=lambda: NOW))
+    assert result.failed == 1 and result.done == 1
+    assert [(c["body"], c["reply_to"], c["covers"]) for c in sender.calls] == [("answer", 7, [5, 7])]
 
 
 def test_the_per_run_limit_holds(vault: Path) -> None:

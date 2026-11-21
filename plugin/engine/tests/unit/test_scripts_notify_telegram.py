@@ -35,6 +35,7 @@ from scout import cli
 from scout.errors import ConfigError
 from scout.events import Event
 from scout.scripts import notify_telegram
+from scout.telegram_inbound.ledger import ANSWERED, InboundMessage, Ledger, ledger_dir
 
 FAKE_TOKEN = "FAKE_TOKEN_123:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 FAKE_CHAT_ID = "987654321"
@@ -591,3 +592,115 @@ def test_cli_refuses_duplicate_with_exit_3(runner: CliRunner, guarded: Path) -> 
     assert lines[1].startswith("scoutctl notify telegram: refused — byte-identical message sent at ")
     assert f"(id {original['id']}); pass --allow-duplicate to send it again" in lines[1]
     assert third.exit_code == 0
+
+
+# ----- replies to inbound messages: --reply-to / --covers --------------------
+#
+# A reply is the respond run's proof it answered. cli_send checks the ids against
+# the inbound ledger before sending and, after a real send, records the reply
+# there itself, which marks those messages answered.
+
+
+def _inbound(vault: Path, *ids: int, dispatched: bool = True) -> Ledger:
+    ledger = Ledger(vault)
+    with ledger.locked():
+        for i in ids:
+            ledger.add(InboundMessage(message_id=i, date=0, text="q", reply_to_text=None, forwarded=False, kind="text"))
+        if dispatched:
+            ledger.mark_dispatched(list(ids), now=T0)
+    return ledger
+
+
+def _cli_send(vault: Path, **kw: object) -> tuple[int, list[str]]:
+    err: list[str] = []
+    args: dict[str, object] = {"tier": "info", "text": "answer", "parse_mode": "none", "dry_run": False}
+    args.update(allow_duplicate=False, echo_out=lambda _s: None, echo_err=err.append, vault=vault, **kw)
+    code = notify_telegram.cli_send(**args)  # type: ignore[arg-type]
+    return code, err
+
+
+def test_reply_to_sets_reply_parameters(secrets_dir: Path) -> None:
+    assert "reply_parameters" not in notify_telegram._build_payload(chat_id="1", text="t", tier="info")
+    body = "X" * 5000  # two chunks: only the first one threads
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        notify_telegram.send("info", body, reply_to=42)
+    first, second = (c.kwargs["json"] for c in post.call_args_list)
+    assert first["reply_parameters"] == {"message_id": 42, "allow_sending_without_reply": True}
+    assert "reply_parameters" not in second
+
+
+def test_covers_unknown_id_refuses_without_sending(guarded: Path, fake_data_dir: Path) -> None:
+    ledger = _inbound(fake_data_dir, 5)
+    with ledger.locked():
+        ledger.record_reply(reply_to=5, covers=[5], at=T0)
+    _inbound(fake_data_dir, 6)
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        unknown = _cli_send(fake_data_dir, reply_to=6, covers=[99])
+        answered = _cli_send(fake_data_dir, reply_to=6, covers=[5])
+        no_thread = _cli_send(fake_data_dir, covers=[6])
+    assert post.call_count == 0
+    for code, err in (unknown, answered):
+        assert code == 1 and "unknown or already answered message ids" in err[-1]
+    assert no_thread[0] == 1
+    assert Ledger(fake_data_dir).unanswered_ids() == {6}
+
+
+def test_successful_reply_records_answered_in_ledger(guarded: Path, fake_data_dir: Path) -> None:
+    _inbound(fake_data_dir, 5, 6, 7)
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        code, _ = _cli_send(fake_data_dir, reply_to=6, covers=[5, 5])
+    assert code == 0 and post.call_args.kwargs["json"]["reply_parameters"]["message_id"] == 6
+    ledger = Ledger(fake_data_dir)
+    assert ledger.unanswered_ids() == {7}
+    assert ledger.get(5).state == ANSWERED and ledger.get(6).answered_at is not None  # type: ignore[union-attr]
+    (row,) = (json.loads(line) for line in (ledger_dir(fake_data_dir) / "replies.jsonl").read_text().splitlines())
+    assert row["reply_to"] == 6 and row["covers"] == [5, 6]
+
+
+def test_failed_send_does_not_record_reply(guarded: Path, fake_data_dir: Path) -> None:
+    import requests
+
+    _inbound(fake_data_dir, 5, 6)
+    bad = MagicMock()
+    bad.status_code, bad.reason = 502, "Bad Gateway"
+    bad.raise_for_status.side_effect = requests.HTTPError(response=bad)
+    with patch("scout.scripts.notify_telegram.requests.post", return_value=bad):
+        code, _ = _cli_send(fake_data_dir, reply_to=6, covers=[5])
+    assert code == 2
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        assert _cli_send(fake_data_dir, reply_to=6, dry_run=True)[0] == 0  # a dry run checks, never records
+        assert _cli_send(fake_data_dir, text="dup", reply_to=6)[0] == 0
+        assert _cli_send(fake_data_dir, text="dup", reply_to=5)[0] == 3  # a suppressed duplicate records nothing
+    assert Ledger(fake_data_dir).unanswered_ids() == {5}
+
+
+def test_a_reply_that_cant_be_recorded_still_counts_as_sent(
+    guarded: Path, fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _inbound(fake_data_dir, 5)
+
+    def boom(self: Ledger, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Ledger, "record_reply", boom)
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        code, err = _cli_send(fake_data_dir, reply_to=5)
+    assert code == 0 and post.call_count == 1
+    assert "warning" in err[-1] and "disk full" in err[-1]
+
+
+def test_cli_reply_to_and_covers(runner: CliRunner, guarded: Path, fake_data_dir: Path) -> None:
+    _inbound(fake_data_dir, 5, 6, 7)
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        bad = runner.invoke(cli.app, ["notify", "telegram", "--body", "a", "--reply-to", "7", "--covers", "5,x"])
+        unthreaded = runner.invoke(cli.app, ["notify", "telegram", "--body", "a", "--covers", "5"])
+        assert post.call_count == 0
+        ok = runner.invoke(cli.app, ["notify", "telegram", "--body", "a", "--reply-to", "7", "--covers", " 5,,6,5"])
+    assert bad.exit_code == 1 and unthreaded.exit_code == 1
+    assert ok.exit_code == 0, ok.output
+    assert Ledger(fake_data_dir).unanswered_ids() == set()
