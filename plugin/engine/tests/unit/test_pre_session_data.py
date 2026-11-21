@@ -309,8 +309,8 @@ def test_gather_carries_the_dated_assigned_issues(tmp_path: Path, monkeypatch: p
     assert gather("morning-briefing", scout_dir=scout_dir).linear_assigned_due is None
 
 
-@pytest.mark.parametrize("session_type", ["dreaming", "research"])
-def test_dreaming_and_research_get_no_linear_fetch(
+@pytest.mark.parametrize("session_type", ["dreaming", "research", "respond"])
+def test_dreaming_research_and_respond_get_no_linear_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_type: str
 ) -> None:
     from scout.scripts import pre_session_data as psd
@@ -467,3 +467,76 @@ def test_write_context_carries_the_new_fields(tmp_path: Path) -> None:
     assert parsed["linear_own_activity"] == [{"identifier": "PROJ-1"}]
     assert parsed["linear_own_activity_status"] == "fetched"
     assert parsed["red_project_channels"][0]["project"] == "widgets"
+
+
+# ----- Telegram messages no run has answered yet (spec 2026-11-21-immediate-response §5) -----
+
+
+def _ledger_with_every_state(scout_dir: Path) -> None:
+    import datetime as dt
+
+    from scout.telegram_inbound.ledger import SKIPPED_CHEAP, InboundMessage, Ledger
+
+    led = Ledger(scout_dir)
+    now = dt.datetime(2026, 4, 15, 12, 0, tzinfo=dt.UTC)
+    with led.locked():
+        for i in (12, 9, 10, 11, 13):  # added out of order: the context lists them by id
+            led.add(
+                InboundMessage(
+                    message_id=i,
+                    date=1_776_250_000 + i,
+                    text=f"msg {i}",
+                    reply_to_text=None,
+                    forwarded=i == 12,
+                    kind="text",
+                )
+            )
+        led.mark_dispatched([10], now=now)
+        led.mark_skipped([11], SKIPPED_CHEAP)
+        led.record_reply(reply_to=13, covers=[13], at=now)
+
+
+def test_gather_includes_telegram_pending_for_full_reader(tmp_path: Path) -> None:
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "knowledge-base").mkdir(parents=True)
+    _ledger_with_every_state(scout_dir)
+    ctx = gather("midday-consolidation", scout_dir=scout_dir)
+    rows = ctx.telegram_pending
+    assert [r["message_id"] for r in rows] == [9, 10, 12]  # pending and dispatched, oldest first
+    assert [(r["state"], r["attempt"]) for r in rows] == [("pending", 0), ("dispatched", 1), ("pending", 0)]
+    assert rows[2]["forwarded"] is True and rows[0]["text"] == "msg 9" and "reply_to_text" in rows[0]
+    out = tmp_path / "session-context.json"
+    write_context(ctx, out)
+    assert [r["message_id"] for r in json.loads(out.read_text())["telegram_pending"]] == [9, 10, 12]
+
+
+@pytest.mark.parametrize("reader", ["agent:person:priya@example.com", "delegate:helper"])
+def test_gather_omits_telegram_pending_for_restricted_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    from scout.scripts import pre_session_data as psd
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "knowledge-base").mkdir(parents=True)
+    _ledger_with_every_state(scout_dir)
+    monkeypatch.setenv("SCOUT_READER", reader)
+    monkeypatch.setattr(psd, "get_telegram_pending", lambda *a: pytest.fail("only a full reader reads the ledger"))
+    assert gather("midday-consolidation", scout_dir=scout_dir).telegram_pending == []
+
+
+def test_get_telegram_pending_returns_empty_on_corrupt_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts.pre_session_data import get_telegram_pending
+    from scout.telegram_inbound.ledger import Ledger, ledger_dir
+
+    assert get_telegram_pending(tmp_path) == []  # no ledger yet
+    messages = ledger_dir(tmp_path) / "messages.json"
+    messages.parent.mkdir(parents=True)
+    messages.write_text("{not json", encoding="utf-8")
+    assert get_telegram_pending(tmp_path) == []
+    assert messages.read_text(encoding="utf-8") == "{not json"  # an unlocked read never quarantines it
+
+    def unreadable(self: Ledger) -> set[int]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Ledger, "unanswered_ids", unreadable)
+    assert get_telegram_pending(tmp_path) == []

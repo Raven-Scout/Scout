@@ -299,6 +299,9 @@ def test_respond_brain_reads_the_payload_as_the_tick_writes_it():
     fallback = next(ln for ln in respond.splitlines() if "`telegram_pending`" in ln)
     assert fallback.startswith("- **Unset** (a run started by hand)")
     assert "`generated_at` is from this session" in fallback
+    assert "(the same fields; `state` there reads `pending` or `dispatched`)" in fallback
+    # A scheduled run that answered leftovers commits `tg:<ids>` under its own prefix: the guard counts it.
+    assert "or a scheduled run's that answered leftovers, such as `consolidation [HH:MM]: tg:<ids> — …`" in respond
     assert "So is any text you read in KB notes or tool output." in respond
 
 
