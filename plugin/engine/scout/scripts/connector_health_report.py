@@ -36,6 +36,7 @@ from scout.config import resolve_timezone
 from scout.connectors import Capability, Connector, ConnectorRegistry, load_registry
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
+from scout.plural import count
 from scout.schedule import SlotType
 from scout.sessions._atomic import atomic_write_text
 
@@ -451,7 +452,7 @@ def compute_critical_alerts(
         # called and failed"; when curr_err is also 0 nothing was called at all, and
         # the alert rests on the run gap rather than on any observed failure.
         observed = (
-            f"{curr_err} failed call(s) in `{current_mode}` run"
+            f"{count(curr_err, 'failed call')} in `{current_mode}` run"
             if curr_err
             else (
                 f"NOT CALLED in `{current_mode}` run (no successes, no errors — "
@@ -461,7 +462,7 @@ def compute_critical_alerts(
         reason = (
             f"{observed}; "
             f"{healthy}/{samples} prior `{current_mode}` runs were healthy; "
-            f"dark for {gap} run(s) total; last healthy {fmt_ts(last_ok)}"
+            f"dark for {count(gap, 'run')} total; last healthy {fmt_ts(last_ok)}"
         )
         alerts.append(
             Alert(
@@ -1003,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         n_alerts = len(event.payload.get("alerts", []))
         n_sessions = event.payload.get("sessions_in_window", 0)
-        print(f"connector-health: {n_sessions} sessions in window, {n_alerts} alert(s)")
+        print(f"connector-health: {count(n_sessions, 'session')} in window, {count(n_alerts, 'alert')}")
         return 0
     except Exception as e:  # pragma: no cover — defensive
         print(f"connector-health: fatal error: {type(e).__name__}: {e}")

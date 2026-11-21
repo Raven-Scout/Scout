@@ -34,6 +34,82 @@ struct KnowledgeBaseView: View {
     @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
     /// The page's width, so the Links/Graph panel never squeezes the editor.
     @State private var pageWidth: CGFloat?
+    /// Whether the Links/Graph panel shows beside a note: by page width
+    /// until the user picks, then their pick. Persisted.
+    @AppStorage("kbLinksPanel") private var linksPanelChoice: LinksPanelChoice = .auto
+
+    enum LinksPanelChoice: String { case auto, shown, hidden }
+
+    /// Below this page width (a window of about 1400 pt) the Links panel
+    /// starts hidden: beside the tree it left the reader about 410 pt at
+    /// 1280 pt, and the header collapsed (UI audit T1).
+    static let linksPanelAutoWidth: CGFloat = 1180
+
+    nonisolated static func linksPanelShown(choice: LinksPanelChoice, pageWidth: CGFloat?) -> Bool {
+        switch choice {
+        case .shown: return true
+        case .hidden: return false
+        case .auto: return (pageWidth ?? .infinity) >= linksPanelAutoWidth
+        }
+    }
+
+    /// The header button's choice: the opposite of what's on screen.
+    nonisolated static func toggledLinksPanel(shown: Bool) -> LinksPanelChoice { shown ? .hidden : .shown }
+
+    private var linksPanelShown: Bool {
+        Self.linksPanelShown(choice: linksPanelChoice, pageWidth: pageWidth)
+    }
+
+    /// The note the home button (or the path's root) was asked to leave while
+    /// it has an unsaved draft: the alert says the draft is kept.
+    @State private var leavingDraft: KBNode? = nil
+
+    /// What leaving a note for the overview does: go at once, or first say
+    /// that its unsaved draft stays behind (UI audit T1).
+    enum LeaveStep: Equatable { case leave, confirm }
+    nonisolated static func leaveStep(hasUnsavedDraft: Bool) -> LeaveStep { hasUnsavedDraft ? .confirm : .leave }
+
+    /// The leave alert's buttons. "Stay" has the cancel role, so Esc never
+    /// discards anything; keeping the draft is the default.
+    enum LeaveChoice: CaseIterable {
+        case keepDraft, discard, stay
+
+        var title: String {
+            switch self {
+            case .keepDraft: return "Keep Draft and Leave"
+            case .discard: return "Discard Edits"
+            case .stay: return "Stay"
+            }
+        }
+
+        var role: ButtonRole? {
+            switch self {
+            case .keepDraft: return nil
+            case .discard: return .destructive
+            case .stay: return .cancel
+            }
+        }
+    }
+
+    private func requestOverview() {
+        guard let node = selectedNode else { selectedPath = nil; return }
+        switch Self.leaveStep(hasUnsavedDraft: service.drafts.draft(for: node.url)?.isDirty == true) {
+        case .leave: selectedPath = nil
+        case .confirm: leavingDraft = node
+        }
+    }
+
+    private func finishLeaving(_ choice: LeaveChoice) {
+        guard let node = leavingDraft else { return }
+        leavingDraft = nil
+        switch choice {
+        case .keepDraft: selectedPath = nil
+        case .discard:
+            service.drafts.discard(for: node.url)
+            selectedPath = nil
+        case .stay: break
+        }
+    }
 
     static let treeWidth: CGFloat = 268
     static let minEditorWidth: CGFloat = 380
@@ -70,12 +146,12 @@ struct KnowledgeBaseView: View {
     }
 
     var body: some View {
-        let panelShown = selectedNode?.isEditable == true
+        let panelShown = selectedNode?.isEditable == true && linksPanelShown
         HStack(spacing: 0) {
             leftPane.frame(width: Self.treeWidth(pageWidth: pageWidth, panelShown: panelShown))
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let node = selectedNode, node.isEditable {
+            if panelShown, let node = selectedNode {
                 // The handle starts a drag from the width on screen, not the
                 // stored one: when the page clamps a wide stored panel, a drag
                 // from the stored width would do nothing until it caught up.
@@ -151,6 +227,15 @@ struct KnowledgeBaseView: View {
         )) {
             Button("OK", role: .cancel) { renameProblem = nil }
         } message: { Text(renameProblem ?? "") }
+        .alert("Leave \(leavingDraft?.displayName ?? "this note") with unsaved edits?", isPresented: Binding(
+            get: { leavingDraft != nil }, set: { if !$0 { leavingDraft = nil } }
+        )) {
+            ForEach(LeaveChoice.allCases, id: \.self) { choice in
+                Button(choice.title, role: choice.role) { finishLeaving(choice) }
+            }
+        } message: {
+            Text("Your edits stay as a draft: the note is marked in the list, and opening it again shows them. Nothing is saved until you press Save.")
+        }
         .alert(renameNotice?.title ?? "", isPresented: Binding(
             get: { renameNotice != nil }, set: { if !$0 { renameNotice = nil } }
         )) {
@@ -194,7 +279,7 @@ struct KnowledgeBaseView: View {
                     .glossaryHelp(.knowledgeBase)
                 Spacer()
                 if selectedPath != nil {
-                    Button { selectedPath = nil } label: {
+                    Button { requestOverview() } label: {
                         Image(systemName: "house").font(DS.font(.caption, weight: .semibold))
                             .foregroundStyle(DS.Ink.p3)
                     }
@@ -273,13 +358,16 @@ struct KnowledgeBaseView: View {
         }
     }
 
-    @ViewBuilder
     private var tree: some View {
-        if let privacy {
-            KBBadgedTreeView(service: service, privacy: privacy,
-                             selectedPath: $selectedPath, expanded: $expanded)
-        } else {
-            KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded)
+        KBDraftMarks(drafts: service.drafts, scoutDirectory: service.scoutDirectory,
+                     tree: service.tree) { draftPaths in
+            if let privacy {
+                KBBadgedTreeView(service: service, privacy: privacy, draftPaths: draftPaths,
+                                 selectedPath: $selectedPath, expanded: $expanded)
+            } else {
+                KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded,
+                           draftPaths: draftPaths)
+            }
         }
     }
 
@@ -297,7 +385,8 @@ struct KnowledgeBaseView: View {
                             Text(hit.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                             Text(hit.path).font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4).lineLimit(1)
                             if !hit.snippet.isEmpty {
-                                InlineMarkdownText(hit.snippet)
+                                // Plain text: a snippet is a cut of a note (table pipes, `**`), inside a button.
+                                Text(PlainText.strippingMarkdown(hit.snippet))
                                     .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                     .lineLimit(2).multilineTextAlignment(.leading)
                             }
@@ -328,7 +417,7 @@ struct KnowledgeBaseView: View {
                 },
                 onRenameProblem: { renameProblem = $0 },
                 onRenameNotice: { renameNotice = ($0, $1) },
-                onOverview: { selectedPath = nil },
+                onOverview: { requestOverview() },
                 onMoved: { from, to in
                     // Follow an undone or redone rename only if the note is
                     // still the one on screen.
@@ -336,7 +425,9 @@ struct KnowledgeBaseView: View {
                     if selectedPath == fromPath {
                         selectedPath = KnowledgeBaseService.relativePath(of: to, in: service.scoutDirectory)
                     }
-                }
+                },
+                linksPanelShown: linksPanelShown,
+                onToggleLinksPanel: { linksPanelChoice = Self.toggledLinksPanel(shown: linksPanelShown) }
             )
             .id(node.id)
         } else {
@@ -458,6 +549,7 @@ struct KnowledgeBaseView: View {
 private struct KBBadgedTreeView: View {
     @ObservedObject var service: KnowledgeBaseService
     @ObservedObject var privacy: KBPrivacyLabelService
+    var draftPaths: Set<String> = []
     @Binding var selectedPath: String?
     @Binding var expanded: Set<String>
     @State private var reparses = 0
@@ -470,11 +562,26 @@ private struct KBBadgedTreeView: View {
     var body: some View {
         let visible = KBPrivacyLabelService.visibleFiles(in: service.tree, expanded: expanded)
         KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded,
-                   privatePaths: privacy.privatePaths)
+                   privatePaths: privacy.privatePaths, draftPaths: draftPaths)
             .onReceive(service.$tree) { _ in reparses &+= 1 }
             .task(id: RefreshKey(paths: visible.map(\.relativePath), reparses: reparses)) {
                 await privacy.refresh(visible)
             }
+    }
+}
+
+/// Hands its content the notes with unsaved drafts (tree ids), redrawn when
+/// a note gains or loses one. Only notes the tree still has: a note renamed
+/// or deleted outside the app keeps its draft (the quit prompt still lists
+/// it), but no longer marks a folder it has left.
+private struct KBDraftMarks<Content: View>: View {
+    @ObservedObject var drafts: KBDraftStore
+    let scoutDirectory: URL
+    let tree: [KBNode]
+    @ViewBuilder let content: (Set<String>) -> Content
+
+    var body: some View {
+        content(KBDraftStore.shownDraftPaths(drafts.relativePaths(in: scoutDirectory), tree: tree))
     }
 }
 

@@ -293,8 +293,7 @@ struct MenuBarExtraContent: View {
         dismiss()
         NSApp.activate(ignoringOtherApps: true)
         // Reopens the "main" Window scene — fronts the existing window or
-        // recreates a closed one. Never look the window up by its title:
-        // RunDetailView's .navigationTitle retitles it.
+        // recreates a closed one, without looking the window up by its title.
         openWindow(id: "main")
     }
 

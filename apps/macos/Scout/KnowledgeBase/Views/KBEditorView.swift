@@ -29,6 +29,10 @@ struct KBEditorView: View {
     /// URL to the second, so the parent can follow it if it's still showing
     /// the note.
     var onMoved: ((URL, URL) -> Void)? = nil
+    /// Whether the parent shows the Links panel beside this note, and the
+    /// header button that shows or hides it (nil: no button).
+    var linksPanelShown: Bool = true
+    var onToggleLinksPanel: (() -> Void)? = nil
 
     @EnvironmentObject private var vaultUndo: VaultUndoController
     @Environment(\.undoManager) private var undoManager
@@ -53,6 +57,10 @@ struct KBEditorView: View {
     @State private var showConflict = false
     /// File changed on disk while the user had unsaved edits.
     @State private var externallyChanged = false
+    /// The note opened on an unsaved draft kept from earlier: a banner says
+    /// so, in every mode, until it's saved, discarded or dismissed (UI audit T1).
+    @State private var restoredDraft = false
+    @State private var draftBannerDismissed = false
     @State private var showRename = false
     @State private var renameText = ""
     /// Point the notes that link here at the new name (UI audit #75).
@@ -163,7 +171,12 @@ struct KBEditorView: View {
         VStack(spacing: 0) {
             header
             EditorialRule()
-            if externallyChanged { changedOnDiskBanner }
+            if externallyChanged {
+                changedOnDiskBanner
+            } else if Self.showsDraftBanner(restored: restoredDraft, isDirty: isDirty,
+                                            dismissed: draftBannerDismissed) {
+                draftBanner
+            }
             if find.readerBarVisible && showsReader { KBReaderFindBar(controller: find) }
             content
         }
@@ -193,6 +206,11 @@ struct KBEditorView: View {
         // out from under us.
         .onReceive(service.objectWillChange) { _ in
             DispatchQueue.main.async { detectExternalChange() }
+        }
+        // Coming back to the app is when another editor's change shows up;
+        // check then too, not only when the watcher's reparse lands.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            detectExternalChange()
         }
         .alert("File changed on disk", isPresented: $showConflict) {
             ForEach(ConflictChoice.allCases, id: \.self) { choice in
@@ -229,41 +247,106 @@ struct KBEditorView: View {
 
     // MARK: - Header
 
+    /// The header: the note's path and name beside its controls when there's
+    /// room for both, else the controls on a row of their own above the path.
+    /// The path truncates in the middle and every control keeps its size, so
+    /// a narrow reader (sidebar, tree and Links panel open at 1280 pt) never
+    /// wraps a word a letter per line (UI audit T1).
     private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                breadcrumb
-                HStack(spacing: 6) {
-                    Text(node.name).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p3)
-                    if isDirty {
-                        Circle().fill(DS.Accent.fill).frame(width: 6, height: 6)
-                        Text("unsaved").font(DS.font(.caption2)).foregroundStyle(DS.Accent.ink)
-                    }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                titleColumn
+                    .frame(minWidth: Self.minTitleWidth, idealWidth: Self.minTitleWidth,
+                           maxWidth: .infinity, alignment: .leading)
+                controls(compact: false)
+            }
+            stacked(compact: false)
+            // Narrower still: the mode switch becomes a menu.
+            stacked(compact: true)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+    }
+
+    private func stacked(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                controls(compact: compact)
+            }
+            titleColumn.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private static let modeOptions: [(label: String, value: Mode)] =
+        [(label: "Read", value: .read), (label: "Rich", value: .rich), (label: "Source", value: .source)]
+
+    /// The narrowest the path and name get beside the controls before the
+    /// controls move to their own row.
+    static let minTitleWidth: CGFloat = 160
+
+    private var titleColumn: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            breadcrumb
+            HStack(spacing: 6) {
+                Text(node.name).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p3)
+                    .lineLimit(1).truncationMode(.middle)
+                if isDirty {
+                    Circle().fill(DS.Accent.fill).frame(width: 6, height: 6)
+                    Text("unsaved").font(DS.font(.caption2)).foregroundStyle(DS.Accent.ink)
+                        .lineLimit(1).fixedSize()
                 }
             }
-            Spacer()
+        }
+    }
 
+    private func controls(compact: Bool) -> some View {
+        HStack(spacing: 8) {
             if isMarkdown {
-                EditorialSegmentedControl(
-                    selection: Binding(get: { mode },
-                                       set: { mode = $0 }),
-                    options: [(label: "Read", value: .read),
-                              (label: "Rich", value: .rich),
-                              (label: "Source", value: .source)],
-                    minSegmentWidth: 54
-                )
+                if compact {
+                    Picker("View", selection: Binding(get: { mode }, set: { mode = $0 })) {
+                        ForEach(Self.modeOptions, id: \.value) { Text($0.label).tag($0.value) }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
+                    .font(DS.font(.label))
+                    .fixedSize()
+                    .accessibilityLabel("View")
+                } else {
+                    EditorialSegmentedControl(
+                        selection: Binding(get: { mode },
+                                           set: { mode = $0 }),
+                        options: Self.modeOptions,
+                        minSegmentWidth: 54
+                    )
+                    .fixedSize()
+                }
             }
 
-            Button { requestReload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                .buttonStyle(.dsQuiet)
-                .help(isDirty ? "Reload from disk (asks before discarding your unsaved edits)" : "Reload from disk")
+            Button { requestReload() } label: {
+                Label("Reload", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.dsQuiet)
+            .fixedSize()
+            .help(isDirty ? "Reload from disk (asks before discarding your unsaved edits)" : "Reload from disk")
+            .accessibilityLabel("Reload from disk")
 
             Button(action: save) {
-                Label("Save", systemImage: "checkmark")
+                Label("Save", systemImage: "checkmark").lineLimit(1)
             }
             .buttonStyle(.dsPrimary)
+            .fixedSize()
             .disabled(!isDirty || isSaving || isUnreadable)
             .keyboardShortcut("s", modifiers: .command)
+
+            if let onToggleLinksPanel {
+                Button(action: onToggleLinksPanel) {
+                    Image(systemName: "sidebar.right").font(DS.font(.label))
+                        .foregroundStyle(linksPanelShown ? DS.Ink.p1 : DS.Ink.p3)
+                }
+                .buttonStyle(.plainHit) // ds-guard: hit area (an icon button)
+                .frame(width: 24, height: 24).contentShape(Rectangle())
+                .help(linksPanelShown ? "Hide the Links panel" : "Show the Links panel")
+                .accessibilityLabel(linksPanelShown ? "Hide Links panel" : "Show Links panel")
+            }
 
             Menu {
                 Button("Rename…") {
@@ -283,34 +366,72 @@ struct KBEditorView: View {
             .menuStyle(.borderlessButton).frame(width: 28)
             .accessibilityLabel("Note actions")
         }
-        .padding(.horizontal, 20).padding(.vertical, 12)
+        .fixedSize()
     }
 
+    /// The crumbs after the root: the folders between, and the note's stem.
+    /// Pure, so tests pin it.
+    static func breadcrumbTail(_ relativePath: String) -> (folders: String, note: String) {
+        let parts = relativePath.components(separatedBy: "/").dropFirst()
+        guard let last = parts.last else { return ("", "") }
+        let stem = (last as NSString).deletingPathExtension
+        return (parts.dropLast().joined(separator: " / "), stem.isEmpty ? last : stem)
+    }
+
+    /// Root crumb (back to the overview), then the folders and the note on
+    /// one line each truncating in the middle: the folders give way first,
+    /// then the note's name.
     private var breadcrumb: some View {
-        let parts = node.relativePath.components(separatedBy: "/")
+        let root = node.relativePath.components(separatedBy: "/").first ?? ""
+        let tail = Self.breadcrumbTail(node.relativePath)
         return HStack(spacing: 4) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
-                if i > 0 { Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4) }
-                if i == 0 {
-                    // Root crumb navigates back to the overview.
-                    Button(action: onOverview) {
-                        Text(part)
-                    }
-                    .buttonStyle(.ds(.link, size: .small))
-                    .help("Back to overview")
-                } else {
-                    Text((part as NSString).deletingPathExtension.isEmpty ? part : (i == parts.count - 1 ? (part as NSString).deletingPathExtension : part))
-                        .font(DS.font(.caption, weight: i == parts.count - 1 ? .semibold : .regular))
-                        .foregroundStyle(i == parts.count - 1 ? DS.Ink.p1 : DS.Ink.p3)
-                }
+            // Root crumb navigates back to the overview.
+            Button(action: onOverview) {
+                Text(root).lineLimit(1)
+            }
+            .buttonStyle(.ds(.link, size: .small))
+            .fixedSize()
+            .help("Back to overview")
+            if !tail.folders.isEmpty {
+                Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).fixedSize()
+                Text(tail.folders)
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+                    .lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(0)
+            }
+            if !tail.note.isEmpty {
+                Text("/").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).fixedSize()
+                Text(tail.note)
+                    .font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(1)
             }
         }
+        .help(node.relativePath)
     }
 
+    /// Shown the moment the file changes under unsaved edits, with both ways
+    /// out; neither discards anything without asking.
     private var changedOnDiskBanner: some View {
-        DSBanner(tone: .warning, title: "This file changed on disk",
-                 message: "Reload to see the new version, or save to overwrite it.",
-                 actions: [ProblemAction("Reload") { requestReload() }])
+        DSBanner(tone: .warning, title: "\(node.displayName) changed on disk",
+                 message: "Something else changed this file while you were editing it. Your edits are still here. "
+                    + "Save your version to replace the file, or reload to see the new one.",
+                 actions: [ProblemAction("Save My Version") { forceSave() },
+                           ProblemAction("Reload…") { requestReload() }])
+            .padding(.horizontal, 20).padding(.vertical, 8)
+    }
+
+    /// Whether the "Unsaved draft" banner shows. Pure, so tests pin it.
+    static func showsDraftBanner(restored: Bool, isDirty: Bool, dismissed: Bool) -> Bool {
+        restored && isDirty && !dismissed
+    }
+
+    private var draftBanner: some View {
+        DSBanner(tone: .info, title: "Unsaved draft",
+                 message: "You edited this note earlier and haven't saved it. This is your draft, not the file on disk.",
+                 actions: [ProblemAction("Save") { save() },
+                           ProblemAction("Discard Edits…") { requestReload() }],
+                 onDismiss: { draftBannerDismissed = true })
             .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
@@ -387,6 +508,7 @@ struct KBEditorView: View {
         if !isMarkdown { mode = .source }
         switch result {
         case .unreadable:
+            restoredDraft = false
             isUnreadable = true
             draft = ""
             originalText = ""
@@ -398,6 +520,8 @@ struct KBEditorView: View {
             originalText = loaded.originalText
             baselineContents = loaded.baselineContents
             baselineDate = loaded.baselineDate
+            restoredDraft = restored
+            draftBannerDismissed = false
             // A restored draft may predate a change on disk: flag it now.
             if restored { detectExternalChange() }
         }
@@ -424,18 +548,36 @@ struct KBEditorView: View {
             return
         }
         guard FileManager.default.fileExists(atPath: node.url.path) else { return }
-        let current = GuardedFileWrite.fsModificationDate(node.url)
-        guard let current, current != baselineDate else { return }
-        let diskText = service.readFile(node.url)
-        guard diskText != baselineContents else {
-            baselineDate = current   // content unchanged — just track the new mtime
-            return
+        let url = node.url
+        switch Self.externalChange(isDirty: isDirty, baselineDate: baselineDate,
+                                   currentDate: GuardedFileWrite.fsModificationDate(url),
+                                   baselineContents: baselineContents,
+                                   diskText: { service.readFile(url) }) {
+        case .none: break
+        case .sameContent(let date): baselineDate = date
+        case .reload: loadFile()
+        case .conflict: externallyChanged = true
         }
-        if isDirty {
-            externallyChanged = true
-        } else {
-            loadFile()
-        }
+    }
+
+    /// What a change on disk means for the open note: the mtime is the cheap
+    /// trigger, the content compare confirms (the app's own atomic save or a
+    /// same-content touch isn't a change). Pure, so tests pin it.
+    enum ExternalChange: Equatable {
+        case none
+        /// The mtime moved but the text didn't: track the new mtime.
+        case sameContent(Date)
+        /// Changed, nothing unsaved: show the new text.
+        case reload
+        /// Changed under unsaved edits: say so at once.
+        case conflict
+    }
+
+    static func externalChange(isDirty: Bool, baselineDate: Date?, currentDate: Date?,
+                               baselineContents: String?, diskText: () -> String?) -> ExternalChange {
+        guard let currentDate, currentDate != baselineDate else { return .none }
+        guard diskText() != baselineContents else { return .sameContent(currentDate) }
+        return isDirty ? .conflict : .reload
     }
 
     private func save() {
@@ -446,6 +588,9 @@ struct KBEditorView: View {
     /// Overwrite despite a detected conflict — re-baseline to what's on disk
     /// right now so the guard passes, then save.
     private func forceSave() {
+        // A second click mid-save would re-baseline against the file this
+        // save is writing and report a false change on disk.
+        guard !isSaving else { return }
         performSave(baseline: service.readFile(node.url))
     }
 
@@ -530,6 +675,8 @@ struct KBEditorView: View {
         baselineContents = contents
         baselineDate = GuardedFileWrite.fsModificationDate(node.url)
         externallyChanged = false
+        // Saved: new edits are new, not the draft from before.
+        restoredDraft = false
         isSaving = false
     }
 

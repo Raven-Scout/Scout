@@ -331,7 +331,7 @@ extension RunLedgerEntry {
             return Problem(failureClass: failureClass, details: details)
         }
         if isSkip {
-            return Problem(runStatus: outcome, runName: DisplayName.slotKey(slot), details: details)
+            return Problem(runStatus: outcome, runName: DisplayName.ledgerRun(slot: slot, mode: mode, runner: runner, startedAt: startedAt) ?? DisplayName.slotKey(slot), details: details)
         }
         return Problem(failureClass: "unknown", details: details)
     }

@@ -1,8 +1,8 @@
 // Scout knowledge map: every note as a node, every [[wikilink]] as a line,
 // laid out by d3-force and drawn on a canvas.
 //
-// Swift → page:  load {data, mode, focus?}, focus {id}, details {id, excerpt}
-// Page → Swift:  ready, open {id}, details {id}, jsError
+// Swift → page:  load {data, mode, focus?, positions?, panels?}, focus {id}, details {id, excerpt}
+// Page → Swift:  ready, open {id}, details {id}, positions {positions}, panels {legend, card}, jsError
 (function () {
   'use strict';
 
@@ -39,7 +39,8 @@
   let byDegree = [];            // visible nodes, most connected first
   let hubCut = Infinity;        // links touching a note above this degree are drawn only on focus
   let tween = null;
-  let frameRequested = false;
+  let frameId = 0;              // the pending animation frame, 0 for none
+  let framesDrawn = 0;          // frames drawn with notes on them (kbMapState)
   let reduced = scout.reducedMotion();
   const now = Date.now() / 1000;
 
@@ -116,21 +117,74 @@
     W = r.width; H = r.height;
     canvas.width = Math.max(1, Math.round(W * dpr));
     canvas.height = Math.max(1, Math.round(H * dpr));
+    applyPanels();
     if (first && nodes.length) fit(false);
     else if (autoFit) fit(false);
     requestDraw();
   }
   new ResizeObserver(resize).observe(canvas);
 
-  // The part of the canvas not covered by the floating panels.
+  // The part of the canvas not covered by the floating panels, measured from
+  // the panels as drawn (collapsed ones are small). A side is left out only
+  // when what remains is still wide enough to read; otherwise the graph is
+  // framed under the panel rather than squeezed into a sliver (UI audit T1).
+  function panelRect(id) {
+    const el = $(id);
+    if (!el || el.offsetParent === null) return null;
+    const r = el.getBoundingClientRect();
+    const c = canvas.getBoundingClientRect();
+    return r.width && r.height ? { left: r.left - c.left, right: r.right - c.left, top: r.top - c.top, bottom: r.bottom - c.top } : null;
+  }
   function freeArea() {
     let left = 0, right = W, top = 0, bottom = H;
-    if (mode === 'full') {
-      top = 56;
-      if (document.body.classList.contains('card-open') && W > 760) right = W - 324;
-      if (W > 760) left = 240;
+    if (mode !== 'full') return { left, right, top, bottom };
+    top = 56;
+    const minWidth = Math.min(420, W * 0.55);
+    const card = document.body.classList.contains('card-open') ? panelRect('card') : null;
+    // A collapsed panel is a short strip at the top or bottom: frame below or above it.
+    if (card && card.bottom - card.top > H * 0.3) {
+      if (card.left - 12 - left >= minWidth) right = card.left - 12;
+    }
+    const legend = panelRect('legend');
+    if (legend && legend.bottom - legend.top > H * 0.3) {
+      if (right - (legend.right + 12) >= minWidth) left = legend.right + 12;
+    } else if (legend) {
+      bottom = Math.min(bottom, legend.top - 8);
     }
     return { left, right, top, bottom };
+  }
+
+  // ---------- collapsible panels ----------
+  // `panelChoice` is what the user picked (from Swift, kept across visits);
+  // null means "by width": both start collapsed on a narrow map.
+  const AUTO_COLLAPSE_WIDTH = 980;
+  const panelChoice = { legend: null, card: null };
+  function panelCollapsed(id) {
+    const c = panelChoice[id];
+    return c == null ? (W > 0 && W < AUTO_COLLAPSE_WIDTH) : c;
+  }
+  function applyPanels() {
+    for (const id of ['legend', 'card']) {
+      const collapsed = panelCollapsed(id);
+      const el = $(id);
+      const was = el.classList.contains('collapsed');
+      el.classList.toggle('collapsed', collapsed);
+      const t = $(id + '-toggle');
+      t.setAttribute('aria-expanded', String(!collapsed));
+      const what = id === 'legend' ? 'note types' : 'the side panel';
+      t.setAttribute('aria-label', (collapsed ? 'Show ' : 'Hide ') + what);
+      t.title = collapsed ? 'Show' : 'Hide';
+      if (was !== collapsed && autoFit) fit(false);
+    }
+    document.body.classList.toggle('card-collapsed', panelCollapsed('card'));
+  }
+  for (const id of ['legend', 'card']) {
+    $(id + '-toggle').addEventListener('click', () => {
+      panelChoice[id] = !panelCollapsed(id);
+      applyPanels();
+      scout.post('panels', { legend: panelChoice.legend, card: panelChoice.card });
+      if (autoFit) fit(true);
+    });
   }
 
   function visibleBounds() {
@@ -194,6 +248,11 @@
     document.body.className = 'mode-' + mode;
     const data = m.payload || { nodes: [], links: [], groups: [] };
     const saved = m.positions || {};
+    if (m.panels) {
+      panelChoice.legend = typeof m.panels.legend === 'boolean' ? m.panels.legend : null;
+      panelChoice.card = typeof m.panels.card === 'boolean' ? m.panels.card : null;
+    }
+    applyPanels();
     message = { focus: m.focus };
     const previous = byId;
     nodes = data.nodes.map((n) => {
@@ -238,6 +297,8 @@
     renderA11y();
     if (fresh || mode === 'local' || previous.size === 0) { autoFit = true; fit(false); }
     if (message.focus) focusId(message.focus, false);
+    resize();
+    drawNow();
   }
 
   // A stable pseudo-random number in [0, 1) for a note: the same vault lays
@@ -383,9 +444,17 @@
 
   // ---------- drawing ----------
   function requestDraw() {
-    if (frameRequested) return;
-    frameRequested = true;
-    requestAnimationFrame(draw);
+    if (frameId) return;
+    frameId = requestAnimationFrame((t) => { frameId = 0; draw(t); });
+  }
+
+  // Draw this instant rather than on the next animation frame. WebKit holds
+  // animation frames while it thinks the page is hidden, and a map that only
+  // ever drew from one stayed blank (no notes, no panels) when it came back
+  // to a page it had been created on (UI audit T1).
+  function drawNow() {
+    if (frameId) { cancelAnimationFrame(frameId); frameId = 0; }
+    draw(performance.now());
   }
 
   const labelWidths = new Map();
@@ -397,7 +466,6 @@
   }
 
   function draw(time) {
-    frameRequested = false;
     if (tween) {
       const t = Math.min(1, (time - tween.start) / tween.dur);
       const e = ease(t);
@@ -409,6 +477,7 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     if (!nodes.length) return;
+    framesDrawn++;
 
     const focus = hover || selected;
     const lit = focus ? new Set([focus, ...(neighbours.get(focus) || [])]) : null;
@@ -722,6 +791,7 @@
       rebuild(0.2);
     }
     if (n && !details.has(n.id)) scout.post('details', { id: n.id });
+    if (n && panelCollapsed('card')) { panelChoice.card = false; applyPanels(); }
     renderCard();
     if (n && recenter) centerOn(n, mode === 'full' ? 1.4 : 0);
     requestDraw();
@@ -760,14 +830,14 @@
   }
 
   function renderCard() {
-    const card = $('card');
+    const card = $('card-body');
     if (mode !== 'full' || !nodes.length) { document.body.classList.remove('card-open'); card.innerHTML = ''; return; }
     document.body.classList.add('card-open');
+    $('card-title').textContent = selected ? 'Note' : 'Explore';
     if (!selected) {
       const hubs = nodes.filter((n) => n.degree > 0).sort((a, b) => b.degree - a.degree).slice(0, 6);
       const recent = nodes.filter((n) => n.modified).sort((a, b) => b.modified - a.modified).slice(0, 6);
       card.innerHTML =
-        `<h2>Explore</h2>` +
         `<p class="hint">Click a note to see what it connects to, double-click to open it. ` +
         `Drag to pan, pinch to zoom, <kbd>/</kbd> to search.</p>` +
         (hubs.length ? `<h3><span>Most connected</span><span>links</span></h3><ul>${hubs.map((n) => nodeButton(n)).join('')}</ul>` : '') +
@@ -804,7 +874,7 @@
   }
 
   function wireCardButtons() {
-    for (const b of $('card').querySelectorAll('li button[data-id]')) {
+    for (const b of $('card-body').querySelectorAll('li button[data-id]')) {
       const n = byId.get(b.dataset.id);
       b.addEventListener('click', () => { autoFit = false; select(n, true); });
       b.addEventListener('dblclick', () => scout.post('open', { id: n.id }));
@@ -996,8 +1066,23 @@
     }
   }
 
+  // ---------- state for tests ----------
+  // Read-only: what the map holds and has drawn, so a test hosting the real
+  // page can tell a blank map from a loaded one (UI audit T1).
+  window.kbMapState = () => ({
+    mode, nodes: nodes.length, width: W, height: H, frames: framesDrawn,
+    settled: !sim || sim.alpha() <= sim.alphaMin(),
+  });
+
+  // Shown again (the page came back, or WebKit says it's visible): measure
+  // and draw at once, whatever happened to the frames held meanwhile.
+  function reappear() { resize(); drawNow(); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reappear(); });
+  window.addEventListener('pageshow', reappear);
+
   // ---------- messages ----------
   scout.on('load', load);
+  scout.on('shown', reappear);
   scout.on('focus', (m) => focusId(m.id, true));
   scout.on('details', (m) => {
     details.set(m.id, m.excerpt || '');

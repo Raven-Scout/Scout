@@ -523,8 +523,13 @@ def _network_ready(
 # ----- runner spawn -------------------------------------------------------
 
 
-def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
+def _spawn_runner(vault: Path, slot_key: str, slot: Slot, *, trigger: str | None = None) -> int:
     """Spawn the runner for ``slot_key``. Returns the child PID.
+
+    ``trigger`` goes to the run as ``SCOUT_TRIGGER``, which the run ledger's
+    ``trigger`` records (``run_trigger`` in run-outcome.sh). ``fire_now``
+    passes ``manual``: a person pressed Run now. The tick passes nothing, so
+    the runner records ``schedule`` from ``SCOUT_FORCE_MODE``.
 
     Raises ``FileNotFoundError`` if the runner script is missing — that
     propagates from ``subprocess.Popen`` when the file does not exist on
@@ -551,6 +556,8 @@ def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
     # The run reads the vault as the owner's unattended reader (#453, spec §6.2),
     # whatever runner the slot names (a vault-local one may not export it).
     env["SCOUT_READER"] = "autonomous"
+    if trigger is not None:
+        env["SCOUT_TRIGGER"] = trigger
     proc = subprocess.Popen(
         [str(runner_path)],
         cwd=str(vault),
@@ -1098,7 +1105,9 @@ def fire_now(slot_key: str) -> Event:
         target_local = now.isoformat()
         target_utc = _target_utc_iso(now)
         try:
-            pid = _spawn_runner(vault, slot_key, slot)
+            # A person started it: the ledger says `trigger: manual` while the
+            # slot names the schedule, so the app can mark it "Started by you".
+            pid = _spawn_runner(vault, slot_key, slot, trigger="manual")
         except (FileNotFoundError, OSError, ConfigError) as exc:
             return _emit_event(
                 log_dir,

@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// Editorial session row: status icon → name/when → status → commits → cost
-/// → reveal chevron. No boxes; hairline rules do the separation. CC-8:
+/// Editorial run row: status icon → name/when → status → reveal chevron.
+/// No boxes; hairline rules do the separation. The commits and cost columns
+/// went in card T2: commits load only when the detail opens and runs rarely
+/// carry a cost, so both only ever showed dashes. CC-8:
 /// added selection highlight + hover chevron + pointing cursor so the
 /// row is obviously interactive (previous version gave no signal that
 /// tapping would do anything).
@@ -22,7 +24,7 @@ struct RunRow: View {
                     Text(run.displayName)
                         .font(DS.font(.body, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
-                    if run.wasManuallyTriggered && run.type != .manual {
+                    if run.showsManualBadge {
                         manualBadge
                     }
                     ForEach(ProtectionBadge.kinds(for: run), id: \.title) { ProtectionBadge(kind: $0) }
@@ -34,14 +36,6 @@ struct RunRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             statusCell
                 .frame(width: 100, alignment: .leading)
-            Text(commitsString)
-                .font(DS.font(.caption, .mono, weight: .medium))
-                .foregroundStyle(DS.Ink.p3)
-                .frame(width: 90, alignment: .trailing)
-            Text(costString)
-                .font(DS.font(.caption, .mono))
-                .foregroundStyle(DS.Ink.p3)
-                .frame(width: 80, alignment: .trailing)
             Image(systemName: "chevron.right")
                 .font(DS.font(.caption2, weight: .medium))
                 .foregroundStyle(hovering || isSelected ? DS.Ink.p2 : DS.Ink.p4.opacity(0.5))
@@ -77,14 +71,6 @@ struct RunRow: View {
                 .foregroundStyle(statusColor)
                 .help(run.status.reason ?? run.status.displayName)
         }
-    }
-
-    private var commitsString: String {
-        run.commits.isEmpty ? "—" : "\(run.commits.count) commit\(run.commits.count == 1 ? "" : "s")"
-    }
-
-    private var costString: String {
-        run.cost.map { "$\($0 as NSDecimalNumber)" } ?? "—"
     }
 
     private var iconName: String {

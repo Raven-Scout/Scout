@@ -74,7 +74,7 @@ struct HealthView: View {
                         .accessibilityHidden(true)
                     Text(model.headline).font(DS.font(.headline, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 }
-                Text(model.summary).font(DS.font(.body)).foregroundStyle(DS.Ink.p3)
+                Text(PlainText.codeSpans(model.summary)).font(DS.font(.body)).foregroundStyle(DS.Ink.p3)
             }
         }
         .padding(.bottom, 6)
@@ -124,7 +124,7 @@ struct HealthView: View {
             DisclosureGroup(isExpanded: $everythingElseExpanded) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(model.everythingElse.enumerated()), id: \.offset) { _, note in
-                        Text(note).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                        Text(PlainText.codeSpans(note)).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
@@ -258,16 +258,16 @@ struct EngineIssueRow: View {
                 if let risk = issue.risk {
                     RiskChip(risk: risk)
                 }
-                Text(issue.title).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text(PlainText.codeSpans(issue.title)).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             if let reason = issue.riskReason {
-                Text("Why: \(reason).").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
+                Text(PlainText.codeSpans("Why: \(reason).")).font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let fix = issue.fix {
-                (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+                (Text("What to do: ").fontWeight(.semibold) + Text(PlainText.codeSpans(fix)))
                     .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -372,11 +372,11 @@ struct RunLedgerRow: View {
                         .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 if let reason = line.reason {
-                    Text(reason).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                    Text(PlainText.codeSpans(reason)).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let fix = line.fix {
-                    (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+                    (Text("What to do: ").fontWeight(.semibold) + Text(PlainText.codeSpans(fix)))
                         .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -385,7 +385,7 @@ struct RunLedgerRow: View {
                         .font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
                 }
                 ForEach([line.protection, line.integrity].compactMap { $0 }, id: \.self) { concern in
-                    Label(concern, systemImage: "shield.lefthalf.filled.slash")
+                    Label { Text(PlainText.codeSpans(concern)) } icon: { Image(systemName: "shield.lefthalf.filled.slash") }
                         .font(DS.font(.label)).foregroundStyle(DS.Status.warn)
                 }
                 HStack(spacing: 10) {

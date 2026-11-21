@@ -24,6 +24,7 @@ JSON.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import os
 from pathlib import Path
@@ -220,6 +221,10 @@ def test_no_secret_or_path_reaches_the_fixture(doc: dict[str, Any], tmp_path: Pa
 def test_the_cli_prints_the_same_shapes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The fixture comes from the library; the CLI the app runs prints the same keys around it."""
     build_vault(tmp_path, monkeypatch)
+    # The CLI reads the real clock, and the vault's op over the limit is listed for a week after its fixed
+    # time, so these calls run at NOW like the fixture's.
+    for name in ("review", "accept", "preview_promote", "promote", "unpromote"):
+        monkeypatch.setattr(dr, name, functools.partial(getattr(dr, name), now=NOW))
     expected = json.loads(CANONICAL.read_text(encoding="utf-8"))
     runner = CliRunner()
 

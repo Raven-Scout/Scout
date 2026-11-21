@@ -61,7 +61,7 @@ def test_one_failure_is_yellow_two_are_red(tmp_path):
     report = health.evaluate(v, now=NOW)
     assert _ids(report) == {"runs.failing": "red"}
     assert report.findings[0].since == NOW - timedelta(hours=5)
-    assert "last 2 scheduled run(s) failed (unknown)" in report.findings[0].summary
+    assert "last 2 scheduled runs failed (unknown)" in report.findings[0].summary
 
 
 def test_a_success_ends_the_streak(tmp_path):
@@ -94,7 +94,7 @@ def test_the_233_shape_is_one_auth_finding_with_the_count(tmp_path):
     report = health.evaluate(v, now=NOW)
     assert _ids(report) == {"auth.expired": "red"}
     f = report.findings[0]
-    assert f.since == ok_at and "72 failed run(s)" in f.summary and health.iso_z(ok_at) in f.summary
+    assert f.since == ok_at and "72 failed runs" in f.summary and health.iso_z(ok_at) in f.summary
 
 
 def test_auth_is_judged_on_the_newest_non_skip_row(tmp_path):
@@ -120,7 +120,7 @@ def _failing(report: health.RunHealth) -> health.Finding:
         # #237: a run that committed before it died did not "produce nothing".
         (
             {"commits_in_window": 2, "newest_commit": "abc1234"},
-            "2 commit(s) in that run's window (newest abc1234).",
+            "2 commits in that run's window (newest abc1234).",
             "No commits",
         ),
         ({"commits_in_window": 0, "newest_commit": None}, "No commits in that run's window.", "commit(s)"),
@@ -135,7 +135,7 @@ def test_a_failing_run_states_only_what_was_measured_in_its_window(tmp_path, ext
 
     summary = _failing(health.evaluate(v, now=NOW)).summary
 
-    assert summary.startswith("The last 1 scheduled run(s) failed (network).")
+    assert summary.startswith("The last scheduled run failed (network).")
     assert said in summary
     assert unsaid not in summary
     assert "by this run" not in summary
@@ -185,7 +185,7 @@ def test_a_pause_after_a_failing_streak_is_still_one_yellow_pause(tmp_path):
     assert _ids(report) == {"runs.paused": "yellow"}
     summary = _paused(report).summary
     assert "paused until 2026-10-14T12:00:00Z" in summary
-    assert "3 scheduled run(s) failed on the limit" in summary
+    assert "3 scheduled runs failed on the limit" in summary
 
 
 @pytest.mark.parametrize(
@@ -204,7 +204,7 @@ def test_a_usage_limit_without_a_future_reset_reads_as_before(tmp_path, resets_a
 
     finding = _failing(health.evaluate(v, now=NOW))
 
-    assert finding.summary == "The last 1 scheduled run(s) failed (rate_limited)."
+    assert finding.summary == "The last scheduled run failed (rate_limited)."
     assert finding.fix.startswith("Run scoutctl bootstrap doctor")
 
 
@@ -339,7 +339,7 @@ def test_report_to_dict_shape(tmp_path):
             "id": "runs.failing",
             "severity": "yellow",
             "since": None,
-            "summary": "The last 1 scheduled run(s) failed (network).",
+            "summary": "The last scheduled run failed (network).",
             "fix": d["findings"][0]["fix"],
             "source": "ledger",
             # The row's log isn't on disk, so there is no line to quote and no log to open (#445).

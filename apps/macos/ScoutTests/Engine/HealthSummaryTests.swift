@@ -166,7 +166,7 @@ struct HealthSummaryTests {
     }
 
     @Test func aRunProtectionWarningOffersNoReview() {
-        let line = "privacy: 2 blocked outbound check(s) or denied read(s) in the last 7 days …"
+        let line = "privacy: 2 blocked outbound checks or denied reads in the last 7 days …"
         let doctor = DoctorReport(severity: .yellow, errors: [], warnings: [line], warningTriage: [
             .init(id: "protection.abc", kind: "protection", risk: .high, reason: "it can't be marked reviewed",
                   summary: line, fingerprint: "0123456789abcdef", reviewable: false),

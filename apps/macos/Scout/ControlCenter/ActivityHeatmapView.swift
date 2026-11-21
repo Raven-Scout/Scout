@@ -308,7 +308,7 @@ struct ActivityHeatmapView: View {
                 .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
-            Text("\(totalShown) session\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
+            Text("\(totalShown) run\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
                 .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }

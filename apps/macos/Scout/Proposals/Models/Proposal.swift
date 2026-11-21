@@ -26,6 +26,9 @@ nonisolated struct Proposal: Identifiable, Equatable, Sendable {
     /// duplicate `# …` heading stripped (the title shows in the card header).
     let bodyMarkdown: String
 
+    /// The title as words: a model-written title can hold `**` or backticks.
+    var displayTitle: String { PlainText.strippingInlineMarkdown(title) }
+
     var id: String { fileURL.path }
 
     /// Header chip — the date reads like the old `code` the card renders.

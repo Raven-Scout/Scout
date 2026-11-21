@@ -42,7 +42,8 @@ struct RunDetailView: View {
             actionBar
         }
         .padding()
-        .navigationTitle(run.displayName)
+        // No .navigationTitle: it renamed the main window after the selected
+        // run (card T2). The header below names the run.
         .task(id: run.id) {
             // Resolve commits lazily on run selection to keep launch fast.
             resolvedCommits = await state.sessionLogService.commits(for: run)
@@ -67,7 +68,7 @@ struct RunDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(run.displayName).font(DS.font(.title)).fontWeight(.bold)
-                if run.wasManuallyTriggered && run.type != .manual {
+                if run.showsManualBadge {
                     DSPill("Started by you")
                 }
             }

@@ -92,6 +92,71 @@ nonisolated enum DisplayName {
 
     private static let defaultSlotNames = Set(slotKeys.values)
 
+    /// A run's name from its run-ledger row (`scoutctl runs --json`): its
+    /// schedule's name from `slot` (`overnight-research` → "Overnight
+    /// research"), or from `mode` when the slot is missing, `unknown`, or not
+    /// shaped like a key the engine writes. A run started by hand reads
+    /// "Dreaming (manual)" (`dreaming-manual`, or a bare `manual` from the
+    /// dreaming runner). A bare `manual` from run-scout.sh (`/scout-briefing`,
+    /// `/scout-consolidation`) is a briefing or a consolidation by the day and
+    /// hour, as the session itself decides, so it is named from `startedAt`
+    /// the same way the log-name guess does ("Consolidation (manual)"), or
+    /// "Manual run" without one. nil when the row names nothing, so the caller
+    /// falls back to its own guess. Control Center and the Health page both
+    /// name runs with this (card T2).
+    ///
+    /// `schedules` holds the schedule's slot keys: a key in it is named as
+    /// its schedule is everywhere else (`slotKey`), even when the owner gave
+    /// it a hand-run shape (`weekly-manual` reads "Weekly manual", as in the
+    /// Upcoming strip, not "Weekly (manual)").
+    static func ledgerRun(slot: String?, mode: String?, runner: String? = nil, startedAt: Date? = nil,
+                          schedules: Set<String> = []) -> String? {
+        guard let key = ledgerRunKey(slot: slot, mode: mode) else { return nil }
+        if schedules.contains(key) { return slotKey(key) }
+        if key == "manual" {
+            switch runner {
+            case "dreaming": return "Dreaming (manual)"
+            case "research": return "Research (manual)"
+            case nil, "scout":
+                guard let startedAt else { return "Manual run" }
+                return "\(runType(SessionLogService.deriveType(runner: "scout", date: startedAt))) (manual)"
+            default:         return "Manual run"
+            }
+        }
+        if isHandRunKey(key) {
+            let family = String(key.dropLast("-manual".count))
+            return family.isEmpty ? "Manual run" : "\(humanize(family)) (manual)"
+        }
+        return slotKey(key)
+    }
+
+    /// The key a run-ledger row names its run by: `slot`, or `mode` when the
+    /// slot is missing, `unknown`, or not shaped like a key the engine writes;
+    /// nil when neither names anything. `ledgerRun` names the run from it,
+    /// and the run's "Started by you" badge, Type filter and search read the
+    /// same key, so they never disagree about what kind of run it was.
+    static func ledgerRunKey(slot: String?, mode: String?) -> String? {
+        [slot, mode]
+            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+            .first { $0 != "unknown" && isLedgerKey($0) }
+    }
+
+    /// A key for a run started by hand outside any schedule (`manual`,
+    /// `dreaming-manual`, `research-manual`), whose name already says
+    /// "(manual)".
+    static func isHandRunKey(_ key: String) -> Bool {
+        key == "manual" || key.hasSuffix("-manual")
+    }
+
+    /// The engine's slot/mode shape, `[A-Za-z0-9][A-Za-z0-9._-]{0,80}`. A
+    /// ledger value outside it is not named from (defence in depth: the
+    /// engine already refuses such keys).
+    static func isLedgerKey(_ s: String) -> Bool {
+        guard let first = s.unicodeScalars.first, s.unicodeScalars.count <= 81 else { return false }
+        let alnum: (Unicode.Scalar) -> Bool = { $0.isASCII && CharacterSet.alphanumerics.contains($0) }
+        return alnum(first) && s.unicodeScalars.allSatisfy { alnum($0) || $0 == "." || $0 == "_" || $0 == "-" }
+    }
+
     private static let slotKeys: [String: String] = [
         "morningbriefing":        "Morning briefing",
         "weekendbriefing":        "Weekend briefing",

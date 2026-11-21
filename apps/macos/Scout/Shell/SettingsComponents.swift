@@ -78,7 +78,8 @@ struct SettingsRow<Trailing: View>: View {
                         .font(DS.font(.body, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
                         .accessibilityHidden(titleUsedByControl)
-                    Text(help)
+                    // Help can be the engine's own words (a run-health finding), with commands in backticks.
+                    Text(SettingsHelp.attributed(help))
                         .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -110,27 +111,24 @@ struct SettingsField<Input: View>: View {
                 .accessibilityHidden(true)   // the input below is labelled with it
             input()
                 .environment(\.settingsControlLabel, label)
-            Text(parseHelp(help))
+            Text(SettingsHelp.attributed(help))
                 .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.vertical, 14)
     }
+}
 
-    /// Light renderer for backtick-wrapped `code` spans in help text.
-    private func parseHelp(_ s: String) -> AttributedString {
-        var out = AttributedString()
-        var rest = s[...]
-        while let openIdx = rest.firstIndex(of: "`"),
-              let closeIdx = rest[rest.index(after: openIdx)...].firstIndex(of: "`") {
-            out.append(AttributedString(rest[rest.startIndex..<openIdx]))
-            var code = AttributedString(rest[rest.index(after: openIdx)..<closeIdx])
-            code.font = DS.font(.caption, .mono)
-            code.backgroundColor = DS.Paper.sunk
-            out.append(code)
-            rest = rest[rest.index(after: closeIdx)...]
+/// Settings help text: backtick `code` spans in a monospaced caption on a
+/// recessed wash, through `PlainText.codeSpans` (no links, nothing else parsed).
+enum SettingsHelp {
+    static func attributed(_ s: String) -> AttributedString {
+        var out = PlainText.codeSpans(s)
+        let code = out.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }.map(\.range)
+        for range in code {
+            out[range].font = DS.font(.caption, .mono)
+            out[range].backgroundColor = DS.Paper.sunk
         }
-        out.append(AttributedString(rest))
         return out
     }
 }

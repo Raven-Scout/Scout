@@ -598,7 +598,7 @@ def test_the_doctor_flags_copies_committed_before_v4b(linked: tuple[Path, Path])
     git(v, "add", "-f", "--", f".scout-inbox/agents/{D}/{ulid}.json")
     git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "an old commit")
     warnings, _ = bd._check_delegate_inboxes(vault=v, now=None)
-    assert any("are committed" in w and "git rm -r -q --cached" in w for w in warnings)
+    assert any("1 copy file of what agents wrote is committed" in w and "git rm -r -q --cached" in w for w in warnings)
 
 
 def test_settling_a_commit_that_fails_unstages_and_a_clean_file_is_left(

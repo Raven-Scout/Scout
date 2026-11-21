@@ -14,6 +14,9 @@ struct KBTreeView: View {
     @Binding var expanded: Set<String>
     /// Files whose privacy label is private: they get a lock badge (#453).
     var privatePaths: Set<String> = []
+    /// Notes with an unsaved draft: they get a dot, as the editor's header
+    /// does (UI audit T1).
+    var draftPaths: Set<String> = []
 
     /// The keyboard's row: a note (then also `selectedPath`) or a folder.
     @State private var cursor: String?
@@ -29,7 +32,7 @@ struct KBTreeView: View {
                     // else the open note, else the first row (T4 review).
                     let ring = cursor ?? selectedPath ?? nodes.first?.relativePath
                     ForEach(nodes) { node in
-                        KBTreeRow(node: node, depth: 0, privatePaths: privatePaths, cursor: cursor, ring: ring,
+                        KBTreeRow(node: node, depth: 0, privatePaths: privatePaths, draftPaths: draftPaths, cursor: cursor, ring: ring,
                                   selectedPath: $selectedPath, expanded: $expanded,
                                   onClick: { cursor = $0; treeFocused = true })
                     }
@@ -170,6 +173,7 @@ private struct KBTreeRow: View {
     let node: KBNode
     let depth: Int
     let privatePaths: Set<String>
+    let draftPaths: Set<String>
     let cursor: String?
     /// The row the focus ring marks while the tree holds the focus itself.
     let ring: String?
@@ -191,7 +195,7 @@ private struct KBTreeRow: View {
                 .id(node.relativePath)
             if isExpanded {
                 ForEach(node.children) { child in
-                    KBTreeRow(node: child, depth: depth + 1, privatePaths: privatePaths, cursor: cursor, ring: ring,
+                    KBTreeRow(node: child, depth: depth + 1, privatePaths: privatePaths, draftPaths: draftPaths, cursor: cursor, ring: ring,
                               selectedPath: $selectedPath, expanded: $expanded, onClick: onClick)
                 }
             }
@@ -216,6 +220,12 @@ private struct KBTreeRow: View {
             Text(node.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            // A closed folder still says it holds a draft.
+            if !isExpanded, KBDraftStore.containsDraft(under: node.relativePath, in: draftPaths) {
+                Circle().fill(DS.Accent.fill).frame(width: 6, height: 6)
+                    .help("A note in this folder has an unsaved draft")
+                    .accessibilityLabel("Holds an unsaved draft")
+            }
         }
         .padding(.leading, CGFloat(depth) * 14 + 4)
         .padding(.vertical, 4).padding(.trailing, 6)
@@ -238,6 +248,11 @@ private struct KBTreeRow: View {
                 .foregroundStyle(isSelected ? DS.Ink.p1 : DS.Ink.p2)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            if draftPaths.contains(node.relativePath) {
+                Circle().fill(DS.Accent.fill).frame(width: 6, height: 6)
+                    .help("Unsaved draft: open the note to save or discard it")
+                    .accessibilityLabel("Unsaved draft")
+            }
             if privatePaths.contains(node.relativePath) {
                 Image(systemName: "lock.fill")
                     .font(DS.font(.micro)).foregroundStyle(DS.Ink.p4)

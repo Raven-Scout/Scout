@@ -732,6 +732,10 @@
 
   // ---------- messages ----------
   scout.editable = true;
+  // Read-only: what the page shows, so a test hosting the real page can tell
+  // a blank reader from a rendered one (UI audit T1).
+  window.kbReaderState = () => ({ version, text: doc.textContent });
+
   scout.on('render', render);
   scout.on('endEdit', () => closeEditor(true));
   scout.on('setEditable', (m) => { scout.editable = !!m.editable; });

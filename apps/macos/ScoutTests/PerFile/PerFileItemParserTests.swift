@@ -153,6 +153,56 @@ struct PerFileItemParserTests {
         #expect(item.area == "build #2")
     }
 
+    /// A quoted title is read as YAML reads it, so its escapes don't show
+    /// (UI audit T3: a Research title showed `\"bigger than …\"`).
+    @Test func quotedTitlesLoseTheirEscapes() throws {
+        let text = """
+        ---
+        title: "Is the \\"bigger\\" plan worth it? C:\\\\demo"
+        area: 'Sam''s lane'
+        ---
+        Body.
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("2026-06-12-plan.md")))
+        #expect(item.title == #"Is the "bigger" plan worth it? C:\demo"#)
+        #expect(item.area == "Sam's lane")
+    }
+
+    @Test(arguments: [
+        (#""tab\there""#, "tab\there"),
+        (#""caf\u00e9""#, "café"),
+        (#""keeps \q as written""#, #"keeps \q as written"#),
+        (#""unterminated"#, #""unterminated"#),
+        ("plain value", "plain value"),
+        (#""""#, ""),
+    ])
+    func yamlUnquoting(_ raw: String, _ value: String) {
+        #expect(PerFileItemParser.yamlUnquoted(raw) == value)
+    }
+
+    @Test func aCardTitleShowsNoMarkup() throws {
+        let text = """
+        ---
+        title: "**Cut-off bold title with `code`"
+        ---
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        // `title` keeps the file's text; the card and the undo label show `displayTitle`.
+        #expect(item.title == "**Cut-off bold title with `code`")
+        #expect(item.displayTitle == "Cut-off bold title with code")
+    }
+
+    @Test("a title's leading > or # is its own words, not a quote or a heading", arguments: [
+        "> 1000 rows dropped",
+        "# of runs doubled",
+        "a | b split",
+    ])
+    func aTitleKeepsBlockSyntax(_ title: String) throws {
+        let text = "---\ntitle: \"\(title)\"\n---\n"
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.displayTitle == title)
+    }
+
     @Test func returnsNilWhenNoFrontmatter() {
         #expect(PerFileItemParser.parseFile(contents: "# Just a heading\n\ntext", fileURL: url("a.md")) == nil)
     }

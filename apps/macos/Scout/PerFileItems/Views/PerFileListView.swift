@@ -158,7 +158,7 @@ struct PerFileListView: View {
             }
             .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
             .accessibilityLabel("Close details")
-            Text(item.title).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
+            Text(item.displayTitle).dsFont(.headline, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
             Spacer()
             ItemStatusPill(status: item.status)
@@ -333,15 +333,15 @@ struct PerFileListView: View {
     }
 
     private func resolve(_ item: PerFileItem, _ resolution: ItemResolution) async throws {
-        try await reflecting { try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.title) }
+        try await reflecting { try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.displayTitle) }
     }
 
     private func changePriority(_ item: PerFileItem, _ priority: ItemPriority) async throws {
-        try await reflecting { try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.title) }
+        try await reflecting { try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.displayTitle) }
     }
 
     private func changeStatus(_ item: PerFileItem, _ status: ItemStatus) async throws {
-        try await reflecting { try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.title) }
+        try await reflecting { try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.displayTitle) }
     }
 
     /// Run a field write, reload from disk whether it worked or not (C10), and

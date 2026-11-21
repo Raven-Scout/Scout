@@ -30,7 +30,7 @@ struct ConnectorAlertContractTests {
         // fingerprint is stable across runs.
         #expect(slack.firstSeen == Self.date("2026-04-27T13:00:00Z"))
         #expect(slack.fingerprint == "mcp:claude_ai_Slack|CRITICAL|2026-04-27T13:00:00Z")
-        #expect(slack.reason.hasPrefix("2 failed call(s) in `morning-briefing` run"))
+        #expect(slack.reason.hasPrefix("2 failed calls in `morning-briefing` run"))
 
         let linear = try #require(alerts.first { $0.connector == "mcp:claude_ai_Linear" })
         #expect(linear.level == .warning)

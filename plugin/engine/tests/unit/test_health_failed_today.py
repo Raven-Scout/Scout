@@ -211,12 +211,34 @@ def _schedule(vault: Path, *slots: str) -> None:
 
 
 def test_a_manual_run_that_failed_clears_on_any_later_finished_run(tmp_path):
+    # No readable schedule: only the hand-run trigger says no schedule runs it.
     v = _vault(tmp_path)
     _ledger(
         v,
         [
             _row(NOW - timedelta(hours=4), "morning-briefing", code=1, trigger="manual"),
             _row(NOW - timedelta(hours=1), "midday-consolidation"),
+        ],
+    )
+    assert health.FAILED_TODAY_FINDING_ID not in _ids(health.evaluate(v, now=NOW))
+
+
+def test_a_run_now_failure_of_a_schedule_waits_for_that_schedule(tmp_path):
+    # fire-now records `trigger: manual` with the schedule's own slot: it is still that schedule's
+    # run, so another slot's success doesn't clear it, and its own next success does.
+    v = _vault(tmp_path)
+    _schedule(v, "morning-briefing", "midday-consolidation")
+    forced = _row(NOW - timedelta(hours=4), "morning-briefing", code=1, klass="unknown", trigger="manual")
+    _ledger(v, [forced, _row(NOW - timedelta(hours=1), "midday-consolidation")])
+    finding = _today(health.evaluate(v, now=NOW))
+    assert finding.summary.startswith("morning-briefing (at 08:00, unknown) failed today")
+
+    _ledger(
+        v,
+        [
+            forced,
+            _row(NOW - timedelta(hours=2), "midday-consolidation"),
+            _row(NOW - timedelta(hours=1), "morning-briefing", trigger="schedule"),
         ],
     )
     assert health.FAILED_TODAY_FINDING_ID not in _ids(health.evaluate(v, now=NOW))

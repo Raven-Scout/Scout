@@ -448,6 +448,16 @@ final class AppState: ObservableObject {
                 logs?.applyLedger(ledger.entriesByLog)
             }
             .store(in: &cancellables)
+        // Which ledger keys are schedules: the full schedule (loaded with the
+        // Schedules page) and the upcoming list (polled from launch). A
+        // schedule the owner named `weekly-manual` is still a schedule in the
+        // run list's name, badge and Type filter.
+        sched.$upcoming.combineLatest(scheduleEditService.$slots)
+            .map { upcoming, slots in Set(upcoming.map(\.slotKey)).union(slots.map(\.key)) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak logs] keys in logs?.applyScheduleKeys(keys) }
+            .store(in: &cancellables)
         engineHealth.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
@@ -507,6 +517,14 @@ final class AppState: ObservableObject {
         // shell-out. Tests build the same object graph with this switched off
         // so a rendered view can't reach the filesystem or the network.
         guard configuration.startsBackgroundWork else { return }
+
+        // The knowledge map reopens on its last settled layout after a
+        // relaunch (UI audit T1). Only production names a file: a test graph
+        // with background work on must not point the shared cache at the
+        // real caches folder for every test after it.
+        if let mapLayoutCacheURL = configuration.mapLayoutCacheURL {
+            KBMapLayoutCache.file = mapLayoutCacheURL
+        }
 
         // Loads the last index from disk, then keeps it current: the sidebar
         // badge needs it before the Sessions page is ever opened.
@@ -908,6 +926,11 @@ final class AppState: ObservableObject {
         /// Where run notifications go; nil is `NotificationService`, the
         /// real Notification Center. Tests pass a fake.
         var notifications: (any RunNotificationPosting)? = nil
+        /// Where the knowledge map keeps its last settled layout
+        /// (`~/Library/Caches/Scout/kb-map/<bundle id>/<vault key>.json` in
+        /// production). nil keeps it in memory only, the default for every
+        /// test graph, for the same reason as `parseCacheURL`.
+        var mapLayoutCacheURL: URL? = nil
 
         static func production() -> Configuration {
             let layout = EngineLayout.live
@@ -927,7 +950,7 @@ final class AppState: ObservableObject {
             #else
             let sessionsFile: FileSessionIndexSource? = nil
             #endif
-            return Configuration(
+            var configuration = Configuration(
                 scoutDirectory: vault,
                 // Every scoutctl/git call must see the vault the app is
                 // looking at (the engine defaults to ~/Scout otherwise) —
@@ -957,6 +980,8 @@ final class AppState: ObservableObject {
                 resolveClaude: PrerequisiteChecker.defaultResolveClaude,
                 fileDownloader: URLSessionDownloader()
             )
+            configuration.mapLayoutCacheURL = KBMapLayoutCache.defaultFile(scoutDirectory: vault)
+            return configuration
         }
 
         /// What `ScoutApp` boots with. Under `xcodebuild test` this process is
