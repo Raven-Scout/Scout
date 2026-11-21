@@ -101,10 +101,13 @@ chmod 600 ~/.scout-secrets/telegram-chat-id
 > confirms the updates it reads, so a raw `getUpdates` call (or this command)
 > can come back empty even though you did message the bot.
 
-> **Group chats are supported** but require an extra step — add the bot to
-> the group, then post anything in the group. The chat-id will be negative.
-> Use the same file path; the value can be either a string or a number per
-> Telegram's API. Scout treats it as a raw string.
+> **Group chats are supported for outbound notifications** but require an
+> extra step — add the bot to the group, then post anything in the group.
+> `scoutctl telegram find-chat-id` lists it as `group (outbound only)` with
+> the group's title; its chat-id is negative. Use the same file path; the
+> value can be either a string or a number per Telegram's API. Scout treats
+> it as a raw string. Inbound immediate-response handling is private-chat
+> only: messages in a group are ignored.
 
 ## 5. Verify with a dry-run
 

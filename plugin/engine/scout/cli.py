@@ -3849,7 +3849,7 @@ def _register_telegram() -> None:
 
     @telegram_app.command("find-chat-id")
     def cli_telegram_find_chat_id() -> None:
-        """List the private chats that have messaged the bot, with the sender's first name.
+        """List the chats that have messaged the bot: private chats (sender's first name) and groups (title).
 
         Reads only the bot token (the chat id may not exist yet). Polls with offset 0, so it
         never confirms an update: the inbound trigger, or a later run, still sees every message.
@@ -3871,19 +3871,25 @@ def _register_telegram() -> None:
             if not isinstance(message, dict):
                 continue
             chat = message.get("chat")
-            if not isinstance(chat, dict) or chat.get("type") != "private" or not isinstance(chat.get("id"), int):
+            if not isinstance(chat, dict) or type(chat.get("id")) is not int:
                 continue
-            sender = message.get("from") or {}
-            found.setdefault(chat["id"], str(sender.get("first_name") or chat.get("first_name") or "?"))
+            if chat.get("type") == "private":
+                sender = message.get("from") or {}
+                label = str(sender.get("first_name") or chat.get("first_name") or "?")
+            elif chat.get("type") in ("group", "supergroup"):
+                label = f"{chat.get('title') or '?'}\tgroup (outbound only)"
+            else:
+                continue
+            found.setdefault(chat["id"], label)
         if not found:
             typer.echo(
-                "No private chats found. Send your bot a message (any text), then run this again. "
-                "If you already did, the inbound trigger may have consumed the updates: "
+                "No chats found. Send your bot a message (any text), or add it to a group and post there, "
+                "then run this again. If you already did, the inbound trigger may have consumed the updates: "
                 "check `scoutctl telegram inbound-status`, or read telegram-chat-id from your own records."
             )
             return
-        for chat_id, first_name in found.items():
-            typer.echo(f"{chat_id}\t{first_name}")
+        for chat_id, label in found.items():
+            typer.echo(f"{chat_id}\t{label}")
 
     @telegram_app.command("inbound-status")
     def cli_telegram_inbound_status(
