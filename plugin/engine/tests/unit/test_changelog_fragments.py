@@ -79,27 +79,14 @@ _FRAGS = [
 ]
 
 
-def test_unreleased_entries_come_first_verbatim_then_fragments_by_heading():
-    unreleased = (
-        "\n\n### Fixed\n- old fix\n\n- old fix after a blank\n\n"
-        "### Documentation\n- a doc note\n\n### Added\n- old add\n\n"
+def test_fragments_go_under_their_headings_in_section_order():
+    assert changelog.render_section(_FRAGS) == (
+        "### Upgrade notes\n- upgrade first\n\n### Added\n- frag added\n\n### Fixed\n- frag fixed\n  - detail"
     )
-    assert changelog.render_section(unreleased, _FRAGS) == (
-        "### Upgrade notes\n- upgrade first\n\n"
-        "### Added\n- old add\n- frag added\n\n"
-        "### Fixed\n- old fix\n\n- old fix after a blank\n- frag fixed\n  - detail\n\n"
-        "### Documentation\n- a doc note"
-    )
+    assert changelog.render_section([]) == ""
 
 
-def test_a_heading_unreleased_repeats_is_merged_and_unknown_headings_kept():
-    unreleased = "Some preamble.\n\n### Changed\n- one\n\n### Notes\n- odd\n\n### Changed\n- two\n"
-    assert changelog.render_section(unreleased, []) == (
-        "Some preamble.\n\n### Changed\n- one\n- two\n\n### Notes\n- odd"
-    )
-
-
-def test_assemble_without_an_unreleased_heading_goes_above_the_first_release():
+def test_assemble_goes_above_the_previous_release():
     text = "# Changelog\n\nProse.\n\n## [1.0.0] - 2026-01-01\n\n- old\n"
     out = changelog.assemble(text, _FRAGS[:1], version="1.1.0", date="2026-02-02")
     assert out == (
@@ -109,25 +96,32 @@ def test_assemble_without_an_unreleased_heading_goes_above_the_first_release():
 
 
 def test_assemble_with_nothing_writes_an_empty_section():
-    out = changelog.assemble("# C\n\n## [Unreleased]\n", [], version="1.1.0", date="2026-02-02")
-    assert out == "# C\n\n## [Unreleased]\n\n## [1.1.0] - 2026-02-02\n"
+    out = changelog.assemble("# C\n", [], version="1.1.0", date="2026-02-02")
+    assert out == "# C\n\n## [1.1.0] - 2026-02-02\n"
 
 
-def test_promoting_the_real_changelogs_without_fragments_renders_unreleased_unchanged(tmp_path):
-    """The release notes a release without fragments gets are exactly today's: [Unreleased], verbatim."""
+def test_promoting_the_real_changelogs_adds_one_section_below_the_header(tmp_path):
+    """The committed changelogs: the header prose stays put, the new section sits above the last release,
+    and no released section changes (the app's ends with its pre-monorepo history, which must stay out)."""
     for rel in versioning._CHANGELOGS:
         _write(tmp_path, rel, (REAL_REPO / rel).read_text(encoding="utf-8"))
+    _write(tmp_path, "apps/macos/changelog.d/x.fixed.md", "- an app fix\n")
     old = {rel: (tmp_path / rel).read_text(encoding="utf-8") for rel in versioning._CHANGELOGS}
     changelog.assemble_changelogs(tmp_path, version="9.9.0", date="2026-11-18")
     for rel in versioning._CHANGELOGS:
         new = (tmp_path / rel).read_text(encoding="utf-8")
-        assert release_notes.extract_section(new, "9.9.0") == release_notes.extract_section(old[rel], "Unreleased")
-        assert changelog.versioned_sections(new).keys() - {"9.9.0"} == changelog.versioned_sections(old[rel]).keys()
+        first = old[rel].index("\n## [")
+        assert new[:first] == old[rel][:first], f"{rel}: header prose changed"
+        assert new.index("## [9.9.0] - 2026-11-18") < new.index("\n## [", new.index("## [9.9.0]") + 1)
+        before, after = changelog.versioned_sections(old[rel]), changelog.versioned_sections(new)
+        assert {v: s for v, s in after.items() if v != "9.9.0"} == before, rel
+    app = release_notes.extract_section((tmp_path / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8"), "9.9.0")
+    assert app == "### Fixed\n- an app fix"
 
 
 def _two_changelogs(root: Path) -> None:
     for rel in changelog.CHANGELOGS:
-        _write(root, rel, "# C\n\n## [Unreleased]\n\n### Added\n- left over\n\n## [1.0.0] - 2026-01-01\n\n- old\n")
+        _write(root, rel, "# C\n\n## [1.0.0] - 2026-01-01\n\n- old\n")
 
 
 def test_assemble_changelogs_writes_both_and_deletes_their_fragments(tmp_path):
@@ -139,8 +133,19 @@ def test_assemble_changelogs_writes_both_and_deletes_their_fragments(tmp_path):
     assert not p.exists() and not a.exists() and (tmp_path / "apps/macos/changelog.d/README.md").exists()
     plugin = (tmp_path / "plugin/CHANGELOG.md").read_text(encoding="utf-8")
     app = (tmp_path / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8")
-    assert release_notes.extract_section(plugin, "1.1.0") == "### Added\n- left over\n\n### Fixed\n- plugin fix"
-    assert release_notes.extract_section(app, "1.1.0") == "### Added\n- left over\n- app add"
+    assert release_notes.extract_section(plugin, "1.1.0") == "### Fixed\n- plugin fix"
+    assert release_notes.extract_section(app, "1.1.0") == "### Added\n- app add"
+
+
+def test_assemble_changelogs_refuses_an_unreleased_heading(tmp_path):
+    """Its entries would be left out of the release: an old PR merged after the heading was dropped."""
+    _two_changelogs(tmp_path)
+    log = tmp_path / "plugin/CHANGELOG.md"
+    log.write_text("# C\n\n## [Unreleased]\n\n### Fixed\n- old style\n\n## [1.0.0] - 2026-01-01\n\n- old\n")
+    frag = _write(tmp_path, "apps/macos/changelog.d/y.added.md", "- app add\n")
+    with pytest.raises(changelog.FragmentError, match=r"plugin/CHANGELOG.md: has a '## \[Unreleased\]' heading"):
+        changelog.assemble_changelogs(tmp_path, version="1.1.0", date="2026-02-02")
+    assert frag.exists() and "1.1.0" not in (tmp_path / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_one_bad_fragment_changes_neither_changelog(tmp_path):
@@ -188,15 +193,30 @@ def _commit(repo: Path, rel: str, text: str, msg: str = "change") -> None:
     _git(repo, "commit", "-q", "-m", msg)
 
 
-def test_check_passes_fragments_unreleased_additions_and_a_new_release(tmp_path):
+def test_check_passes_fragments_and_a_new_release(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     _commit(repo, "plugin/changelog.d/x.fixed.md", "- fix\n")
-    log = repo / "apps/macos/CHANGELOG.md"
-    _commit(repo, "apps/macos/CHANGELOG.md", log.read_text().replace("- left over\n", "- left over\n- in flight\n"))
     changelog.assemble_changelogs(repo, version="1.1.0", date="2026-02-02")  # what a release PR adds
     assert changelog.check(repo, base) == []
     assert changelog.main(["--repo-root", str(repo), "check", "--base", base]) == 0
+
+
+def test_check_refuses_an_unreleased_heading_on_every_event(tmp_path):
+    """An old PR that still adds to `## [Unreleased]` re-creates the heading when it resolves its conflict."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    log = repo / "apps/macos/CHANGELOG.md"
+    _commit(
+        repo, "apps/macos/CHANGELOG.md", log.read_text().replace("# C\n", "# C\n\n## [Unreleased]\n\n- old style\n")
+    )
+    for event in ("pull_request", "merge_group", "push", None):
+        problems = changelog.check(repo, base, event=event)
+        assert problems == [
+            "apps/macos/CHANGELOG.md: has a '## [Unreleased]' heading. Move its entries to fragments under "
+            "apps/macos/changelog.d/ (see plugin/changelog.d/README.md) and delete the heading."
+        ], event
+    assert changelog.main(["--repo-root", str(repo), "check"]) == 1
 
 
 def test_check_refuses_an_entry_filed_under_a_released_section(tmp_path):

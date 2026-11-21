@@ -162,8 +162,8 @@ def promote_changelog(root: Path = PLUGIN_ROOT, *, version: str, date: str) -> N
 
 
 def promote_changelogs(repo_root: Path, *, version: str, date: str) -> None:
-    """Write `## [version] - date` into both the plugin and the app changelog: each one's `[Unreleased]`
-    entries plus its changelog.d/ fragments, which are deleted (scout.scripts.changelog)."""
+    """Write `## [version] - date` into both the plugin and the app changelog from each one's changelog.d/
+    fragments, which are deleted (scout.scripts.changelog)."""
     changelog.assemble_changelogs(repo_root, version=version, date=date)
 
 

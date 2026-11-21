@@ -7,9 +7,8 @@ file and nothing conflicts when one of them merges. `<section>` names the `### `
 under (`SECTIONS`). `scripts/release.sh prepare` calls `assemble_changelogs`, which writes every fragment
 into the new `## [X.Y.Z] - date` section, grouped by heading, and deletes the fragments in the release commit.
 
-Transition: entries still written under `## [Unreleased]` by PRs opened before fragments existed are kept.
-They come first in each heading, verbatim, then the fragments, so a release without fragments renders
-exactly what promoting `[Unreleased]` used to.
+There is no `## [Unreleased]` section any more: it existed only for PRs opened before fragments, and
+`check` (on every run) and `assemble_changelogs` refuse a CHANGELOG that has one again.
 
 `check` validates every fragment and, given `--base`, refuses a change to any `## [X.Y.Z]` section the base
 already has: that is how a plain `git merge origin/main` after a release silently files an entry under the
@@ -113,59 +112,33 @@ def read_fragments(directory: Path) -> list[Fragment]:
     return fragments
 
 
-def _split_sections(body: str) -> tuple[list[str], dict[str, list[str]]]:
-    """A release body -> (lines before its first `### `, {heading: lines}). Lines are kept verbatim;
-    only blank lines at either end of each part go. A heading that repeats is merged into the first."""
-    chunks: list[tuple[str | None, list[str]]] = [(None, [])]
-    for line in body.splitlines():
-        if line.startswith("### "):
-            chunks.append((line[4:].strip(), []))
-        else:
-            chunks[-1][1].append(line)
-
-    def trim(lines: list[str]) -> list[str]:
-        while lines and not lines[0].strip():
-            lines = lines[1:]
-        while lines and not lines[-1].strip():
-            lines = lines[:-1]
-        return lines
-
+def render_section(fragments: list[Fragment]) -> str:
+    """The body of a new release section: the fragments under their `### ` headings, in `SECTIONS` order."""
     sections: dict[str, list[str]] = {}
-    for heading, lines in chunks[1:]:
-        sections.setdefault(heading or "", []).extend(trim(lines))
-    return trim(chunks[0][1]), sections
-
-
-def render_section(unreleased: str, fragments: list[Fragment]) -> str:
-    """The body of a new release section: `[Unreleased]`'s entries, then the fragments, by heading."""
-    preamble, sections = _split_sections(unreleased)
     for f in fragments:
         sections.setdefault(f.section, []).extend(f.text.splitlines())
-    known = [h for h in _ORDER if sections.get(h)]
-    other = [h for h in sections if h not in SECTIONS.values() and sections[h]]
-    parts = ["\n".join(preamble)] if preamble else []
-    parts += [f"### {h}\n" + "\n".join(sections[h]) for h in known + other]
-    return "\n\n".join(parts)
+    return "\n\n".join(f"### {h}\n" + "\n".join(sections[h]) for h in _ORDER if h in sections)
 
 
 def assemble(text: str, fragments: list[Fragment], *, version: str, date: str) -> str:
-    """CHANGELOG text with a new `## [version] - date` section: the `[Unreleased]` body plus the fragments.
-
-    `## [Unreleased]` stays, empty, above it while PRs from before fragments may still add to it. Without
-    that heading the new section goes above the first `## ` heading."""
-    head = _UNRELEASED.search(text)
-    if head:
-        start = head.end()
-        nxt = _LEVEL2.search(text, start)
-        end = nxt.start() if nxt else len(text)
-        before, unreleased, after = text[:start] + "\n\n", text[start:end], text[end:]
-    else:
-        nxt = _LEVEL2.search(text)
-        end = nxt.start() if nxt else len(text)
-        before, unreleased, after = text[:end].rstrip("\n") + "\n\n", "", text[end:]
-    body = render_section(unreleased, fragments)
+    """CHANGELOG text with a new `## [version] - date` section holding the fragments, above the first
+    `## ` heading (the previous release), below the file's header prose."""
+    nxt = _LEVEL2.search(text)
+    end = nxt.start() if nxt else len(text)
+    before, after = text[:end].rstrip("\n") + "\n\n", text[end:]
+    body = render_section(fragments)
     section = f"## [{version}] - {date}\n" + (f"\n{body}\n" if body else "")
     return before + section + ("\n" + after if after else "")
+
+
+def unreleased_problems(repo_root: Path) -> list[str]:
+    """A CHANGELOG that has a `## [Unreleased]` heading again: its entries would never be released."""
+    return [
+        f"{rel}: has a '## [Unreleased]' heading. Move its entries to fragments under {frag_dir}/ "
+        "(see plugin/changelog.d/README.md) and delete the heading."
+        for rel, frag_dir in CHANGELOGS.items()
+        if (repo_root / rel).exists() and _UNRELEASED.search((repo_root / rel).read_text(encoding="utf-8"))
+    ]
 
 
 def assemble_changelogs(repo_root: Path, *, version: str, date: str) -> list[Path]:
@@ -178,6 +151,7 @@ def assemble_changelogs(repo_root: Path, *, version: str, date: str) -> list[Pat
             plan.append((repo_root / rel, read_fragments(repo_root / frag_dir)))
         except FragmentError as e:
             problems.append(str(e))
+    problems += unreleased_problems(repo_root)
     if problems:
         raise FragmentError("\n".join(problems))
     for path, _ in plan:
@@ -266,8 +240,9 @@ def check(
 ) -> list[str]:
     """Problems with the fragments and, given `base`, with what changed since it.
 
-    `event` is the CI event (`github.event_name`). Outside `GATED_EVENTS` (a push) only the fragments are
-    checked: a squash merge drops the PR's trailers, so the base checks would fail a waiver the PR passed.
+    `event` is the CI event (`github.event_name`). Outside `GATED_EVENTS` (a push) only the fragments and the
+    `[Unreleased]` heading are checked: a squash merge drops the PR's trailers, so the base checks would fail
+    a waiver the PR passed.
 
     `target_branch` is the branch the PR merges into (`github.base_ref`). For `release/vX.Y.Z`, that
     version's section may change, and no fragment may be added: fragments there are never assembled into
@@ -278,6 +253,7 @@ def check(
             read_fragments(repo_root / frag_dir)
         except FragmentError as e:
             problems += str(e).splitlines()
+    problems += unreleased_problems(repo_root)
     if event and event not in GATED_EVENTS:
         return problems
     if not base or set(base) == {"0"}:  # all zeros: a push that created the branch, which has no base
