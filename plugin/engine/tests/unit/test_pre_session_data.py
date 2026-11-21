@@ -540,3 +540,47 @@ def test_get_telegram_pending_returns_empty_on_corrupt_ledger(tmp_path: Path, mo
 
     monkeypatch.setattr(Ledger, "unanswered_ids", unreadable)
     assert get_telegram_pending(tmp_path) == []
+
+
+def _dispatched(scout_dir: Path, at: str) -> None:
+    import datetime as dt
+
+    from scout.telegram_inbound.ledger import InboundMessage, Ledger
+
+    led = Ledger(scout_dir)
+    with led.locked():
+        for i in (1, 2):
+            led.add(
+                InboundMessage(
+                    message_id=i, date=1_776_250_000, text=f"msg {i}", reply_to_text=None, forwarded=False, kind="text"
+                )
+            )
+        led.mark_dispatched([2], now=dt.datetime.fromisoformat(at))
+
+
+def test_get_telegram_pending_skips_rows_dispatched_within_timeout(tmp_path: Path) -> None:
+    """A fresh dispatch belongs to a respond run that may be answering it now: the drain leaves it alone."""
+    import datetime as dt
+
+    from scout.scripts.pre_session_data import get_telegram_pending
+
+    _dispatched(tmp_path, "2026-04-15T12:00:00+00:00")
+    now = dt.datetime(2026, 4, 15, 12, 59, tzinfo=dt.UTC)
+    assert [r["message_id"] for r in get_telegram_pending(tmp_path, now=now)] == [1]
+
+
+def test_get_telegram_pending_returns_rows_dispatched_past_timeout(tmp_path: Path) -> None:
+    import datetime as dt
+
+    from scout.scripts.pre_session_data import get_telegram_pending
+    from scout.telegram_inbound.ledger import Ledger
+
+    _dispatched(tmp_path, "2026-04-15T12:00:00+00:00")
+    now = dt.datetime(2026, 4, 15, 13, 0, tzinfo=dt.UTC)  # exactly the 60-minute timeout: stale
+    rows = get_telegram_pending(tmp_path, now=now)
+    assert [(r["message_id"], r["state"], r["attempt"]) for r in rows] == [(1, "pending", 0), (2, "dispatched", 1)]
+
+    led = Ledger(tmp_path)  # an unreadable dispatch time counts as stale too
+    with led.locked():
+        led._update([2], lambda m: setattr(m, "dispatched_at", "not a time"))
+    assert [r["message_id"] for r in get_telegram_pending(tmp_path, now=now)] == [1, 2]

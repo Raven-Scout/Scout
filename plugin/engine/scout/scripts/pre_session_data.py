@@ -34,7 +34,7 @@ import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,7 @@ _LAST_UPDATED_RE = re.compile(
 class SessionContext:
     generated_at: str
     session_type: str
-    # The owner's Telegram messages no run has answered yet (state pending or dispatched), oldest first:
+    # The owner's Telegram messages no run has answered yet (pending, or dispatched past the timeout), oldest first:
     # each the ledger's row (message_id, date, text, reply_to_text, forwarded, state, attempt, ...). A
     # briefing or consolidation answers them (phases/connectors/telegram.md); so does a hand-started respond run.
     telegram_pending: list[dict[str, Any]] = field(default_factory=list)
@@ -597,19 +597,33 @@ def get_delegate_changes(scout_dir: Path, day: date) -> list[dict[str, Any]]:
     return rows
 
 
-def get_telegram_pending(scout_dir: Path) -> list[dict[str, Any]]:
-    """The inbound Telegram messages still unanswered (pending or dispatched), ascending by ``message_id``.
+def get_telegram_pending(scout_dir: Path, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """The inbound Telegram messages a run should answer now, ascending by ``message_id``: every
+    pending one, and every dispatched one whose dispatch is older than ``DISPATCH_TIMEOUT`` (or has
+    no readable time). A fresher dispatch belongs to a respond run that may be handling it right now.
 
     Read unlocked, so a corrupt ledger reads as empty and is left in place for the tick. Never raises:
     any error gives ``[]``, and a run then sees no messages rather than failing its pre-session data.
     """
-    from scout.telegram_inbound.ledger import DISPATCHED, PENDING, Ledger
-
     try:
+        from scout.telegram_inbound.ledger import DISPATCH_TIMEOUT, DISPATCHED, PENDING, InboundMessage, Ledger
+
+        at = now or datetime.now(UTC)
+
+        def in_flight(m: InboundMessage) -> bool:
+            try:
+                return at - datetime.fromisoformat(m.dispatched_at or "") < DISPATCH_TIMEOUT
+            except (ValueError, TypeError):  # unreadable or naive time: stale, so a run answers it
+                return False
+
         ledger = Ledger(scout_dir)
         rows = [ledger.get(i) for i in sorted(ledger.unanswered_ids())]
         # Re-check the state: the tick may answer one between the two reads.
-        return [asdict(m) for m in rows if m is not None and m.state in (PENDING, DISPATCHED)]
+        return [
+            asdict(m)
+            for m in rows
+            if m is not None and (m.state == PENDING or (m.state == DISPATCHED and not in_flight(m)))
+        ]
     except Exception:  # noqa: BLE001 - never block a session
         return []
 
