@@ -86,7 +86,7 @@ struct HealthView: View {
     @ViewBuilder
     private func loaded(_ model: HealthPanelModel) -> some View {
         if model.groups.isEmpty && model.engineIssues.isEmpty {
-            Text("Nothing needs fixing.")
+            Text("Nothing needs attention.")
                 .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
         }

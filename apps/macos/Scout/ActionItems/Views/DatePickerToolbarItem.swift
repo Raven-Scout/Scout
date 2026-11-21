@@ -33,6 +33,7 @@ struct DatePickerToolbarItem: View {
             if !Calendar.current.isDate(date, inSameDayAs: today) {
                 Button("Today") { date = today }
                     .buttonStyle(.bordered)
+                    .dsReportsOwnFocus()
                     .controlSize(.small)
             }
         }

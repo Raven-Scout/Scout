@@ -83,6 +83,50 @@ struct FocusContainerGuardTests {
         }
     }
 
+    /// Where a focusable container's items are drawn. A native control there
+    /// (a `.borderless` button, a `Menu`) doesn't report its own focus the way
+    /// DS styles do, so the card around it kept its ring and the list kept
+    /// the arrows while Tab sat on "Show more" (T4 review).
+    static let containerContent: [String] = ["ActionItems/", "Schedules/", "KnowledgeBase/Views/KBTreeView.swift"]
+    static let nativeControl = try! NSRegularExpression(
+        pattern: #"\.buttonStyle\(\.(plain|borderless|link|bordered\w*)\)|\.menuStyle\(|\bLink\(destination"#)
+
+    @Test("a native control drawn inside a focusable container reports its own focus")
+    func nativeControlsReportOwnFocus() throws {
+        let root = ButtonStyleGuardTests.sourceRoot
+        let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+        var found = 0
+        var hits: [String] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            let relative = String(url.path.dropFirst(root.path.count + 1))
+            guard Self.containerContent.contains(where: { relative.hasPrefix($0) }) else { continue }
+            let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+            for (i, line) in lines.enumerated()
+            where !ButtonStyleGuardTests.isComment(line) && ButtonStyleGuardTests.matches(Self.nativeControl, line) {
+                found += 1
+                let near = lines[i..<min(lines.count, i + 4)]
+                if !near.contains(where: { $0.contains(".dsReportsOwnFocus()") }) {
+                    hits.append("\(relative):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        #expect(found >= 10, "found only \(found) native controls; is the scan still looking in the right place?")
+        #expect(hits.isEmpty, """
+            add .dsReportsOwnFocus() to each (or move it to a DS style):
+            \(hits.joined(separator: "\n"))
+            """)
+    }
+
+    @Test("a focused list rings its current item, else the first")
+    func ringedItem() {
+        #expect(KeyboardListNavigation.ringed("b", in: ["a", "b"]) == "b")
+        // Nothing current (Esc), or the current one filtered out: the first, where ↓ starts.
+        #expect(KeyboardListNavigation.ringed(nil, in: ["a", "b"]) == "a")
+        #expect(KeyboardListNavigation.ringed("gone", in: ["a", "b"]) == "a")
+        #expect(KeyboardListNavigation.target(from: "gone", in: ["a", "b"], move: .next) == "a")
+        #expect(KeyboardListNavigation.ringed("a", in: [String]()) == nil)
+    }
+
     /// The rules the DS styles and containers draw by.
     @Test("a control rings only its own focus; a container rings its item only when it holds the focus itself")
     func focusRules() {

@@ -37,7 +37,7 @@ struct EngineSettingsModelTests {
         let m2 = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
                                      doctor: DoctorReport(severity: .red, errors: ["launchd: com.scout.heartbeat not registered"], warnings: ["w"]),
                                      lastError: nil, bundledVersion: nil)
-        #expect(m2.healthLabel == "Needs fixing")
+        #expect(m2.healthLabel == "Needs attention")
         #expect(m2.healthTone == .err)
         #expect(m2.messages == ["launchd: com.scout.heartbeat not registered", "w"])
     }
@@ -406,7 +406,7 @@ struct EngineSettingsModelTests {
                                 doctor: DoctorReport(severity: .green, errors: [], warnings: [], runHealth: rh),
                                 lastError: nil, bundledVersion: nil).healthLabel
         }
-        #expect(label(red) == "Needs fixing")
+        #expect(label(red) == "Needs attention")
         #expect(label(yellow) == "Needs a look")
     }
 
@@ -420,7 +420,7 @@ struct EngineSettingsModelTests {
                                     doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w1", "w2", "w3"], runHealth: red),
                                     lastError: nil, bundledVersion: nil)
         #expect(m.findingCountsLabel == "1 problem · 3 warnings")
-        #expect(m.healthLabel == "Needs fixing")
+        #expect(m.healthLabel == "Needs attention")
         #expect(m.healthTone == .err)
         #expect(!m.healthIsOK)
         #expect(m.runsLabel == "Failing")

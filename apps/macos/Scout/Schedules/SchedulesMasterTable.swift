@@ -44,18 +44,20 @@ struct SchedulesMasterTable: View {
     }
 
     private func table(_ columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // The row the ring marks while the table has the keys (see `SchedulesMasterCards`).
+        let ringed = KeyboardListNavigation.ringed(selectedSlotKey, in: Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot))
+        return VStack(alignment: .leading, spacing: 0) {
             headerRow(columns, mode: mode, nameWidth: nameWidth)
             Divider().background(DS.Rule.hard)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if let draft = newDraftSlot {
-                            row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth)
+                            row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
                             Divider().background(DS.Rule.soft)
                         }
                         ForEach(slots) { slot in
-                            row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth)
+                            row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
                             Divider().background(DS.Rule.soft)
                         }
                     }
@@ -99,9 +101,9 @@ struct SchedulesMasterTable: View {
     }
 
     @ViewBuilder
-    private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
+    private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat,
+                     ringed: String?) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        let isCursor = (selectedSlotKey ?? Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot).first) == slot.key
         // A button, not a tap gesture, so rows take keyboard focus and
         // VoiceOver reads each one as a selectable button.
         Button {
@@ -114,7 +116,7 @@ struct SchedulesMasterTable: View {
         }
         .buttonStyle(.plainHit)
         // Tab onto the table itself rings this row (T4).
-        .dsCursorRing(isCursor, cornerRadius: 4)
+        .dsCursorRing(ringed == slot.key, cornerRadius: 4)
         .accessibilitySelected(isSelected)
         .accessibilityIdentifier("schedules-row-\(slot.key)")
         .id(slot.key)

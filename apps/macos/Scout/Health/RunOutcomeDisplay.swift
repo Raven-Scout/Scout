@@ -135,7 +135,7 @@ nonisolated enum RunOutcomeDisplay {
         }
         var title: String {
             switch self {
-            case .red: return "Needs fixing"
+            case .red: return "Needs attention"
             case .yellow: return "Worth a look"
             case .note: return "Everything else"
             }
@@ -146,7 +146,7 @@ nonisolated enum RunOutcomeDisplay {
         switch severity {
         case .green: return "Scheduled runs are healthy"
         case .yellow: return "Scheduled runs need a look"
-        case .red: return "Scheduled runs need fixing"
+        case .red: return "Scheduled runs need attention"
         case nil: return "Run health unknown"
         }
     }

@@ -57,7 +57,7 @@ private struct DSField: ViewModifier {
             )
             .dsFocusRing(focused, cornerRadius: DS.fieldCornerRadius)
             // A field in a focusable list holds the focus itself (`dsFocusContainer`).
-            .preference(key: DSOwnFocusKey.self, value: focused)
+            .transformPreference(DSOwnFocusKey.self) { $0 = $0 || focused }
     }
 }
 

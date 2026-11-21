@@ -176,9 +176,38 @@ extension EnvironmentValues {
 
 /// Whether buttons take keyboard focus themselves: on macOS only with
 /// Keyboard navigation (Full Keyboard Access) on. Off, a button's
-/// `isFocused` is always its container's.
-enum DSKeyboardNavigation {
-    static var isOn: Bool { NSApp?.isFullKeyboardAccessEnabled ?? false }
+/// `isFocused` is always its container's. `@Observable` and refreshed when
+/// the setting changes, so rings redraw at once rather than at the next
+/// focus change (T4 review).
+@Observable
+final class DSKeyboardNavigation {
+    static let shared = DSKeyboardNavigation()
+
+    private(set) var isOn: Bool
+    @ObservationIgnored private var observer: NSObjectProtocol?
+
+    private init() {
+        isOn = Self.current
+        observer = DistributedNotificationCenter.default().addObserver(
+            forName: Self.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isOn = Self.current }
+        }
+    }
+
+    /// Posted by System Settings when Keyboard navigation turns on or off.
+    nonisolated static let didChange = Notification.Name("com.apple.KeyboardUIModeDidChange")
+
+    /// `AppleKeyboardUIMode` bit 2, read fresh: AppKit's
+    /// `isFullKeyboardAccessEnabled` may still hold the old value when the
+    /// notification arrives.
+    private static var current: Bool {
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+        if let mode = CFPreferencesCopyAppValue("AppleKeyboardUIMode" as CFString, kCFPreferencesAnyApplication) as? Int {
+            return mode & 2 != 0
+        }
+        return NSApp?.isFullKeyboardAccessEnabled ?? false
+    }
 }
 
 /// A DS control inside holds the keyboard focus itself (OR of every control).
@@ -195,12 +224,24 @@ private struct DSControlFocusRing: ViewModifier {
     @Environment(\.dsFocusContainerHasFocus) private var containerHasFocus
 
     func body(content: Content) -> some View {
-        let navigation = DSKeyboardNavigation.isOn
+        let navigation = DSKeyboardNavigation.shared.isOn
         let ring = DSFocus.controlDrawsRing(isFocused: isFocused, isEnabled: isEnabled,
                                             containerHasFocus: containerHasFocus, keyboardNavigation: navigation)
         content
             .dsFocusRing(ring, cornerRadius: cornerRadius)
-            .preference(key: DSOwnFocusKey.self, value: ring && navigation)
+            // OR'd in, never set: a control inside this one's label still counts.
+            .transformPreference(DSOwnFocusKey.self) { $0 = $0 || (ring && navigation) }
+    }
+}
+
+/// A control that isn't a DS style reports its own focus (`dsReportsOwnFocus`).
+private struct DSReportsOwnFocus: ViewModifier {
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($focused)
+            .transformPreference(DSOwnFocusKey.self) { $0 = $0 || focused }
     }
 }
 
@@ -258,6 +299,15 @@ extension View {
     /// selection) while the container holds the keyboard focus itself.
     func dsCursorRing(_ isCurrent: Bool, cornerRadius: CGFloat = 6) -> some View {
         modifier(DSCursorRing(isCurrent: isCurrent, cornerRadius: cornerRadius))
+    }
+
+    /// For a native control (a `.borderless` button, a `Menu`) inside a
+    /// focusable container: tells the container when it holds the focus, so
+    /// the container's current item drops its ring and the list lets go of
+    /// the arrow keys. DS styles and `dsField` report their own;
+    /// `FocusContainerGuardTests` checks the rest do.
+    func dsReportsOwnFocus() -> some View {
+        modifier(DSReportsOwnFocus())
     }
 
     /// A DS control's own focus ring: drawn for its own keyboard focus, never

@@ -30,6 +30,7 @@ struct BoardSideListsView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .dsReportsOwnFocus()
                     .foregroundStyle(DS.Ink.p2)
                     .help("Switch between the last 7 days, today and yesterday. Also in Settings ▸ Action Items.")
                     .accessibilityLabel("Done range: \(doneRange.label)")

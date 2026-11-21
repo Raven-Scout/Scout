@@ -22,14 +22,19 @@ struct SchedulesMasterCards: View {
     static let minCardWidth: CGFloat = 240
 
     var body: some View {
+        // The card the ring marks while the grid has the keys: the selected one
+        // while it's shown (a Type filter can hide it), else the first, which
+        // ↓ picks from nothing (`KeyboardListNavigation.ringed`).
+        let ringed = KeyboardListNavigation.ringed(
+            selectedSlotKey, in: SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot))
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
                     if let draft = newDraftSlot {
-                        cardButton(for: draft)
+                        cardButton(for: draft, ringed: ringed)
                     }
                     ForEach(slots) { slot in
-                        cardButton(for: slot)
+                        cardButton(for: slot, ringed: ringed)
                     }
                 }
                 .padding(16)
@@ -49,13 +54,8 @@ struct SchedulesMasterCards: View {
         }
     }
 
-    /// The card the arrows move from: the selected one, else the first.
-    private var cursorKey: String? {
-        selectedSlotKey ?? SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot).first
-    }
-
     @ViewBuilder
-    private func cardButton(for slot: Slot) -> some View {
+    private func cardButton(for slot: Slot, ringed: String?) -> some View {
         let isSelected = selectedSlotKey == slot.key
         Button {
             selectedSlotKey = slot.key
@@ -66,7 +66,7 @@ struct SchedulesMasterCards: View {
         }
         .buttonStyle(.dsCard(cornerRadius: 10))
         // Tab onto the grid itself rings this card; a card Tab lands on rings itself (T4).
-        .dsCursorRing(cursorKey == slot.key, cornerRadius: 10)
+        .dsCursorRing(ringed == slot.key, cornerRadius: 10)
         .accessibilitySelected(isSelected)
         .id(slot.key)
     }

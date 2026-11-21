@@ -11,11 +11,11 @@ import Testing
 struct SchedulesColumnsTests {
     private let scales = TextScale.Size.allCases.map(\.factor)
 
-    /// The table's width at a window width: the page, less the detail pane, which
-    /// opens only with a schedule picked (T4 hand check).
+    /// The table's width at a window width: the page, less the 380 pt detail pane a
+    /// wide page always shows (none on a compact page with nothing selected).
     private func tableWidth(window: CGFloat, selected: Bool) -> CGFloat {
         let page = LayoutSize.pageWidth(window: window)
-        switch DetailPaneLayout.layout(pageWidth: page, hasSelection: selected, hidesWhenEmpty: true) {
+        switch DetailPaneLayout.layout(pageWidth: page, hasSelection: selected) {
         case .hidden: return page
         case .shown(let width, _): return page - width
         }
@@ -49,8 +49,6 @@ struct SchedulesColumnsTests {
         let wide = tableWidth(window: 1600, selected: true)
         #expect(standard.mode(forAvailable: wide) == .full)
         #expect(largest.mode(forAvailable: wide) != .stacked)
-        // 1280 pt with nothing picked: no empty pane, so Standard keeps every word.
-        #expect(standard.mode(forAvailable: tableWidth(window: 1280, selected: false)) == .full)
     }
 
     @Test func columnsWidenWithTheTextButNeverShrink() {

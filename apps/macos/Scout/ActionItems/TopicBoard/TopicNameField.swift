@@ -49,6 +49,7 @@ struct TopicNameField: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .dsReportsOwnFocus()
                     .foregroundStyle(DS.Ink.p3)
                     .opacity(rowHovered ? 1 : 0)
                     .help("Rename")

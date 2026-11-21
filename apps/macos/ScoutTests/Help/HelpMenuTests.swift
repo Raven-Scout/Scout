@@ -138,7 +138,7 @@ struct DoctorPresentationTests {
         let p = DoctorPresentation(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil)
         // The count every other health surface shows (R1).
         // A yellow install beside a failing run is red, never "works, with warnings" (UI audit T4).
-        #expect(p.headline == "Scheduled runs need fixing · 2 problems · 3 warnings")
+        #expect(p.headline == "Scheduled runs need attention · 2 problems · 3 warnings")
         #expect(p.tone == .error)
         #expect(p.groups.map(\.title) == ["Problems", "Warnings", "Scheduled runs"])
         #expect(p.groups[0].items.map(\.text) == ["e1"])

@@ -140,7 +140,7 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         case .red: return "Failing"
         }
     }
-    /// "Failing" is red, as the Health page paints a run that needs fixing (T4); a pause is grey.
+    /// "Failing" is red, as the Health page paints a run that needs attention (T4); a pause is grey.
     var runsTone: ScoutStatus.Tone {
         guard let rh = doctor?.runHealth else { return .neutral }
         return runsIsPaused ? .neutral : HealthSummary.tone(rh.severity)

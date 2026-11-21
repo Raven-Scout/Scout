@@ -15,11 +15,10 @@ nonisolated enum DetailPaneLayout: Equatable, Sendable {
 
     /// `pageWidth` nil (not laid out yet) keeps the regular pane.
     ///
-    /// `hidesWhenEmpty` (Sessions, Schedules) steps the pane aside whenever
-    /// nothing is selected, at any width, and lets a shown pane always be
-    /// closed: an empty "Pick a session" took about a quarter of the window at
-    /// 1280 and 1600 pt, and "Pick a schedule" pushed the 1280 pt table into
-    /// cards (UI audit T4).
+    /// `hidesWhenEmpty` (Sessions) steps the pane aside whenever nothing is
+    /// selected, at any width, and lets a shown pane always be closed: its
+    /// empty "Pick a session" took about a quarter of the window at 1280 and
+    /// 1600 pt (UI audit T4). Schedules keeps the rule above.
     static func layout(pageWidth: CGFloat?, hasSelection: Bool, hidesWhenEmpty: Bool = false) -> DetailPaneLayout {
         if hidesWhenEmpty {
             guard hasSelection else { return .hidden }

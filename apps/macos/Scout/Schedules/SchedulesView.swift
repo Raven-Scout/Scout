@@ -35,8 +35,8 @@ struct SchedulesView: View {
         RunOutcomeDisplay.slotWarnings(appState.runLedgerService.health)
     }
 
-    /// Whether the close button or Esc may hide the detail pane: a closable
-    /// pane (every shown one since T4), and never over a new slot or unsaved edits:
+    /// Whether the close button or Esc may hide the detail pane. Only a
+    /// compact pane closes, and never over a new slot or unsaved edits:
     /// `SlotDraftStore` would keep them, but a pane that vanishes over them
     /// leaves no sign they exist.
     nonisolated static func canCloseDetail(pane: DetailPaneLayout, isNewDraft: Bool, isDirty: Bool) -> Bool {
@@ -45,9 +45,7 @@ struct SchedulesView: View {
     }
 
     var body: some View {
-        // No empty "Pick a schedule" pane: it took a third of a 1280 pt page and
-        // pushed the table into cards (T4 hand check). It opens with a schedule.
-        let pane = DetailPaneLayout.layout(pageWidth: pageWidth, hasSelection: detailSlot != nil, hidesWhenEmpty: true)
+        let pane = DetailPaneLayout.layout(pageWidth: pageWidth, hasSelection: detailSlot != nil)
         HStack(spacing: 0) {
             masterPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

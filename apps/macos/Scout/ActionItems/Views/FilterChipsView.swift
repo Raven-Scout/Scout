@@ -100,6 +100,7 @@ struct FilterChipsView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .dsReportsOwnFocus()
         .fixedSize()
         .help("Choose which sections to show")
         .accessibilityLabel("Sections")
@@ -118,6 +119,7 @@ struct FilterChipsView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .dsReportsOwnFocus()
         .fixedSize()
         .help("Show all, open, done or snoozed action items")
     }

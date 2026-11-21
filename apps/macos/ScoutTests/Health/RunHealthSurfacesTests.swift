@@ -193,7 +193,7 @@ struct RunHealthBannerModelTests {
 
     @Test func redWithoutFindingsStillSaysSo() throws {
         let p = try #require(RunOutcomeDisplay.bannerProblem(S.health(.red, [S.note])))
-        #expect(p.title == "Scheduled runs need fixing")
+        #expect(p.title == "Scheduled runs need attention")
         #expect(p.impact == nil)
     }
 

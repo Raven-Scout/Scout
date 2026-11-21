@@ -122,10 +122,10 @@ nonisolated struct HealthSummary: Equatable, Sendable {
         return doctor.rank >= severity.rank ? doctor : severity
     }
 
-    /// The words for a verdict, the Health page's: a problem needs fixing, never "healthy".
+    /// The words for a verdict, the Health page's: a problem needs attention, never "healthy".
     static func verdictLabel(_ severity: DoctorReport.Severity) -> String {
         switch severity {
-        case .red: "Needs fixing"
+        case .red: "Needs attention"
         case .yellow: "Needs a look"
         case .green: "Healthy"
         }

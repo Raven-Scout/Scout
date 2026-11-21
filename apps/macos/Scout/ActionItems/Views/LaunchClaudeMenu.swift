@@ -89,6 +89,7 @@ struct LaunchClaudeMenu: View {
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .dsReportsOwnFocus()
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("More ways to launch in Claude")
@@ -108,6 +109,7 @@ struct LaunchClaudeMenu: View {
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
+        .dsReportsOwnFocus()
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Launch this action item in Claude Code or Claude Desktop")

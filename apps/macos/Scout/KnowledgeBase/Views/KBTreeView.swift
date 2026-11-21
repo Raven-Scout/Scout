@@ -25,8 +25,11 @@ struct KBTreeView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
+                    // The ring while the tree has the keys: the keyboard's row,
+                    // else the open note, else the first row (T4 review).
+                    let ring = cursor ?? selectedPath ?? nodes.first?.relativePath
                     ForEach(nodes) { node in
-                        KBTreeRow(node: node, depth: 0, privatePaths: privatePaths, cursor: cursor,
+                        KBTreeRow(node: node, depth: 0, privatePaths: privatePaths, cursor: cursor, ring: ring,
                                   selectedPath: $selectedPath, expanded: $expanded,
                                   onClick: { cursor = $0; treeFocused = true })
                     }
@@ -168,6 +171,8 @@ private struct KBTreeRow: View {
     let depth: Int
     let privatePaths: Set<String>
     let cursor: String?
+    /// The row the focus ring marks while the tree holds the focus itself.
+    let ring: String?
     @Binding var selectedPath: String?
     @Binding var expanded: Set<String>
     let onClick: (String) -> Void
@@ -180,13 +185,13 @@ private struct KBTreeRow: View {
         if node.isDirectory {
             Button { toggle(); onClick(node.relativePath) } label: { dirLabel }
                 .buttonStyle(.plainHit)
-                .dsCursorRing(isCursor)
+                .dsCursorRing(ring == node.relativePath)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                 .accessibilityAddTraits(isCursor ? .isSelected : [])
                 .id(node.relativePath)
             if isExpanded {
                 ForEach(node.children) { child in
-                    KBTreeRow(node: child, depth: depth + 1, privatePaths: privatePaths, cursor: cursor,
+                    KBTreeRow(node: child, depth: depth + 1, privatePaths: privatePaths, cursor: cursor, ring: ring,
                               selectedPath: $selectedPath, expanded: $expanded, onClick: onClick)
                 }
             }
@@ -194,7 +199,7 @@ private struct KBTreeRow: View {
             Button { selectedPath = node.relativePath; onClick(node.relativePath) } label: { fileLabel }
                 .buttonStyle(.plainHit)
                 // While the tree itself has the keys, the current row rings (T4).
-                .dsCursorRing(isCursor)
+                .dsCursorRing(ring == node.relativePath)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .id(node.relativePath)
         }

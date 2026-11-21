@@ -54,7 +54,7 @@ struct DoctorPresentation: Equatable {
         case (.red, _): headline = "Scout's engine has problems\(count)"; tone = .error
         case (_, .red):
             headline = summary.issues.first?.source == .install
-                ? "Scout's engine has problems\(count)" : "Scheduled runs need fixing\(count)"
+                ? "Scout's engine has problems\(count)" : "Scheduled runs need attention\(count)"
             tone = .error
         case (.yellow, _): headline = "Scout's engine works, with warnings\(count)"; tone = .warn
         // A healthy install whose runs aren't: say so, rather than "healthy" beside a warning.
