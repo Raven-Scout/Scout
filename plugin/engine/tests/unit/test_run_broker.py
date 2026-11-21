@@ -656,6 +656,16 @@ def test_the_tightened_rules_refuse_git_dir_writes_and_secret_reads_and_keep_ord
         assert sbx.decide(rules, str(ok), "read") == "allow"
 
 
+def test_a_run_reads_the_telegram_inbound_ledger_but_never_writes_it(vault: Path, tmp_path: Path) -> None:
+    """`scoutctl telegram pending` runs inside the run's sandbox: the ledger is write-protected, not read-protected."""
+    env = _env()
+    rules = sbx.build_rules(vault, env) + sbx.broker_rules(vault, tmp_path / "broker", env)
+    inbound = vault / ".scout-state" / "telegram-inbound"
+    for name in ("messages.json", "replies.jsonl", "offset.json", ".lock"):
+        assert sbx.decide(rules, str(inbound / name), "read") == "allow", name
+        assert sbx.decide(rules, str(inbound / name)) == "deny", name
+
+
 def test_the_rules_render_after_the_base_profile(vault: Path, tmp_path: Path) -> None:
     env = _env()
     text = sbx.with_broker_rules("(version 1)\n(allow default)\n", sbx.broker_rules(vault, tmp_path / "b", env))
