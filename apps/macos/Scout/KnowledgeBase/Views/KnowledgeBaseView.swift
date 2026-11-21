@@ -297,7 +297,8 @@ struct KnowledgeBaseView: View {
                             Text(hit.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                             Text(hit.path).font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4).lineLimit(1)
                             if !hit.snippet.isEmpty {
-                                InlineMarkdownText(hit.snippet)
+                                // Plain text: a snippet is a cut of a note (table pipes, `**`), inside a button.
+                                Text(PlainText.strippingMarkdown(hit.snippet))
                                     .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                     .lineLimit(2).multilineTextAlignment(.leading)
                             }

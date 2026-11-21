@@ -261,11 +261,12 @@ def test_a_task_line_hidden_since_the_mirror_is_unknown(mirrored: Path) -> None:
 
 
 def test_set_block_applies_and_a_command_refusal_is_refused(mirrored: Path) -> None:
-    ok = _op(mirrored, "set-block", args={"day": "2026-11-20", "start": "09:00", "end": "10:30"})
-    bad = _op(mirrored, "set-block", "EF56", args={"day": "2026-11-20", "start": "10:30", "end": "09:00"})
+    day = (TODAY + dt.timedelta(days=1)).isoformat()  # inside the horizon on any day the suite runs
+    ok = _op(mirrored, "set-block", args={"day": day, "start": "09:00", "end": "10:30"})
+    bad = _op(mirrored, "set-block", "EF56", args={"day": day, "start": "10:30", "end": "09:00"})
     r = da.apply(mirrored, D)
     assert r.outcomes == {ok.id: "applied", bad.id: "refused"}
-    assert "block: 2026-11-20 09:00-10:30" in _daily(mirrored)
+    assert f"block: {day} 09:00-10:30" in _daily(mirrored)
     assert di.load_state(mirrored).applied[D][bad.id]["why"] == "command"
 
 

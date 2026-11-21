@@ -200,8 +200,11 @@ nonisolated enum InlineMarkupCleanup {
 
     /// Whether the `**` at `at` reads as Python's keyword-argument unpacking,
     /// not a cut-off bold span. The name after it is followed by `)` or `,`
-    /// (`f(**opts)`), is snake_case or a name kwargs go by (`**kwargs`,
-    /// `**extra_fields`), or a `*args` comes before it (`*a and **kw`).
+    /// (`f(**opts)`), is snake_case (`**extra_fields`), is `kwargs`, `kwds`
+    /// or `kw`, ends the text as another lower-case name kwargs go by
+    /// (`with **opts`), or a `*args` comes before it (`*a and **kw`). Names
+    /// compare case-sensitively: "**Params changed" and "**options for the
+    /// migration" are cut-off bold.
     static func looksLikeKwargs(_ text: NSString, markAt at: Int) -> Bool {
         let start = at + 2
         guard start < text.length else { return false }
@@ -210,7 +213,9 @@ nonisolated enum InlineMarkupCleanup {
         else { return false }
         if m.range(at: 2).location != NSNotFound { return true }
         let name = (ahead as NSString).substring(with: m.range(at: 1))
-        if name.contains("_") || kwargsNames.contains(name.lowercased()) { return true }
+        if name.contains("_") || kwargsOnlyNames.contains(name) { return true }
+        let endsText = start + m.range.length == text.length
+        if endsText, kwargsNames.contains(name) { return true }
         let back = max(0, at - 200)
         let before = text.substring(with: NSRange(location: back, length: at - back))
         return starArgsRe.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) != nil
@@ -218,9 +223,15 @@ nonisolated enum InlineMarkupCleanup {
 
     /// A name, and the `)` or `,` that would end it as an argument.
     private static let identifierRe = try! NSRegularExpression(pattern: #"^([A-Za-z_][A-Za-z0-9_]*)([),])?"#)
-    private static let kwargsNames: Set<String> = ["kwargs", "kwds", "kw", "opts", "options", "params", "attrs", "extra"]
-    /// `*args`: a lone star before a name, not an italic span (`*word*`).
-    private static let starArgsRe = try! NSRegularExpression(pattern: #"(?<![\w*])\*[A-Za-z_][A-Za-z0-9_]*(?![\w*])"#)
+    /// Names only kwargs go by, and English words kwargs often go by too.
+    private static let kwargsOnlyNames: Set<String> = ["kwargs", "kwds", "kw"]
+    private static let kwargsNames: Set<String> = ["opts", "options", "params", "attrs", "extra"]
+    /// `*args`: a lone star before a name. Not an italic span, `*word*`,
+    /// `*Note:*` or `*e.g.*`: a single `*` closing it later on the line
+    /// (within 40 characters, and not half of a `**`) rules it out.
+    private static let starArgsRe = try! NSRegularExpression(
+        pattern: #"(?<![\w*])\*[A-Za-z_][A-Za-z0-9_]*(?![\w*])(?![^*\n]{0,40}(?<!\*)\*(?!\*))"#
+    )
 
     private static func isSpace(_ ch: Character?) -> Bool { ch.map(\.isWhitespace) ?? true }
 

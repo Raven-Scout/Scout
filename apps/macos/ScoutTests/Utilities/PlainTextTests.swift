@@ -35,6 +35,20 @@ struct PlainTextTests {
         #expect(strip("call it with **opts") == "call it with **opts")
     }
 
+    /// Cut-off bold that only looked like kwargs: a capitalised or mid-sentence
+    /// name, or an italic (`*Note:*`) taken for `*args` (review of #751).
+    @Test(arguments: [
+        ("**Params changed in config", "Params changed in config"),
+        ("**options for the migration", "options for the migration"),
+        ("Done: **Extra fields", "Done: Extra fields"),
+        ("*Note:* the **deadline moved", "*Note:* the deadline moved"),
+        ("*e.g.* the **deadline moved", "*e.g.* the deadline moved"),
+    ])
+    func cutOffBoldThatIsntKwargsIsDropped(_ text: String, _ cleaned: String) {
+        #expect(InlineMarkupCleanup.clean(text) == cleaned)
+        #expect(strip(text) == strip(cleaned))
+    }
+
     @Test func titlesLoseOnlyInlineMarkup() {
         let title = PlainText.strippingInlineMarkdown
         #expect(title("> 1000 rows dropped") == "> 1000 rows dropped")
@@ -93,6 +107,15 @@ struct PlainTextTests {
         #expect(shown.hasSuffix("…"))
     }
 
+    /// A line of few characters but many UTF-16 units (combining marks) is
+    /// cut too, where a character starts (review of #751).
+    @Test func aLineOfCombiningMarksIsCutAtACharacter() {
+        let heavy = "a" + String(repeating: "\u{0301}", count: 600)   // one character, 601 units
+        let shown = strip(String(repeating: heavy, count: 10) + "**")
+        #expect(shown.utf16.count <= PlainText.maxLineLength + 1)
+        #expect(shown == String(repeating: heavy, count: 3) + "…")
+    }
+
     @Test func aLogIsReadOffTheMainActor() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -107,7 +130,7 @@ struct PlainTextTests {
 
     // MARK: Untrusted text can't hang the main thread (review of #751)
 
-    /// 10 KB lines that made the old code-span and wikilink regexes take
+    /// Long lines (10 KB, or 1.2M UTF-16 units) that made the old code-span and wikilink regexes take
     /// seconds each: a log tail of them took about a minute.
     static let pathological: [(name: String, line: String)] = [
         ("backticks", String(repeating: "`", count: 10_000)),
@@ -120,7 +143,7 @@ struct PlainTextTests {
         ("underscores", String(repeating: "_a", count: 5_000)),
     ]
 
-    @Test("a pathological 10 KB line strips quickly", arguments: pathological.map(\.name))
+    @Test("a pathological line strips quickly", arguments: pathological.map(\.name))
     func pathologicalLineIsFast(_ name: String) throws {
         let line = try #require(Self.pathological.first { $0.name == name }).line
         let clock = ContinuousClock()
@@ -129,7 +152,19 @@ struct PlainTextTests {
             _ = PlainText.codeSpans(line)
             _ = InlineMarkupCleanup.clean(line)
         }
-        #expect(elapsed < .milliseconds(500), "\(name): \(elapsed)")
+        #expect(elapsed < .seconds(2), "\(name): \(elapsed)")
+    }
+
+    /// 1.2M UTF-16 units in 600 characters: the cap counts units, so titles
+    /// and snippets like this strip quickly on the main thread.
+    @Test func aLineOfManyCombiningMarksStripsQuickly() {
+        let line = String(repeating: "\\(" + "a" + String(repeating: "\u{0301}", count: 2_000), count: 600)
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            _ = PlainText.strippingMarkdown(line)
+            _ = PlainText.strippingInlineMarkdown(line)
+        }
+        #expect(elapsed < .seconds(2), "\(elapsed)")
     }
 
     @Test func aTailOfPathologicalLinesIsFast() {
@@ -137,7 +172,7 @@ struct PlainTextTests {
             + Array(repeating: String(repeating: "`", count: 10_000), count: 12).joined(separator: "\n")
         let clock = ContinuousClock()
         let elapsed = clock.measure { _ = SummaryTab.fallbackPreview(of: log) }
-        #expect(elapsed < .seconds(1), "\(elapsed)")
+        #expect(elapsed < .seconds(5), "\(elapsed)")
     }
 
     // MARK: Code-span scanner

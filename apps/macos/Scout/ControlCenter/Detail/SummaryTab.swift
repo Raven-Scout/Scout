@@ -161,6 +161,7 @@ struct SummaryTab: View {
         if let loaded {
             summary = loaded.summary
             fallbackPreview = loaded.fallbackPreview
+            loadFailed = false
         } else {
             loadFailed = true
         }

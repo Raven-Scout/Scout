@@ -38,6 +38,8 @@ struct RawMarkupGuardTests {
         ("Proposals/Views/ProposalCardView.swift", #"Text\(proposal\.title\)|\\\(proposal\.title\)"#,
          "proposal.displayTitle"),
         ("Proposals/Views/ProposalsView.swift", #"label: proposal\.title"#, "proposal.displayTitle"),
+        ("KnowledgeBase/Views/KnowledgeBaseView.swift", #"InlineMarkdownText\(hit\.snippet\)|Text\(hit\.snippet\)"#,
+         "Text(PlainText.strippingMarkdown(hit.snippet))"),
     ]
 
     @Test("text the app didn't write goes through PlainText")

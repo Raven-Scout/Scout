@@ -20,7 +20,7 @@ nonisolated enum PlainText {
 
     /// `text` without its markdown, line by line (the line count only drops
     /// for a table's `|---|` rule).
-    /// Lines past this many characters are cut (with "…") before stripping.
+    /// Lines past this many UTF-16 units are cut (with "…") before stripping.
     /// They're for reading, and a log line can be any length: a 10 KB line
     /// of backticks or `[[` must not hold the main thread (review of #751).
     static let maxLineLength = 2_000
@@ -43,8 +43,12 @@ nonisolated enum PlainText {
 
     private static let markupCharacters: Set<Character> = ["*", "_", "`", "[", "]", "|", "#", ">", "\\", "<", "~"]
 
+    /// Counted in UTF-16 units, what the regexes walk: a few characters can
+    /// carry thousands of combining marks. Cut where a character starts.
     private static func capped(_ line: String) -> String {
-        line.count > maxLineLength ? String(line.prefix(maxLineLength)) + "…" : line
+        guard line.utf16.count > maxLineLength else { return line }
+        let ns = line as NSString
+        return ns.substring(to: ns.rangeOfComposedCharacterSequence(at: maxLineLength).location) + "…"
     }
 
     private static func stripLine(_ line: String) -> String? {
