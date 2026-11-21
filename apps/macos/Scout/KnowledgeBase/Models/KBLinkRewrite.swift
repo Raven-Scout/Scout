@@ -21,7 +21,7 @@ nonisolated enum KBLinkRewrite {
     /// the target as written, group 2 the alias part (with its separator).
     /// `Wikilink`'s rule, which `KnowledgeBaseService.extractWikilinks` counts
     /// links by, so a rename rewrites exactly the links it counted.
-    static let linkPattern = #"\[\["# + "(\(Wikilink.targetCharacter)+?)((?:\(Wikilink.separator)\(Wikilink.aliasCharacter)+)?)"
+    static let linkPattern = #"\[\["# + "(\(Wikilink.targetCharacter)+?)((?:\(Wikilink.separator)\(Wikilink.aliasPiece)+)?)"
         + #"\]\]"#
 
     /// A note that links to the one being renamed.
@@ -158,11 +158,13 @@ nonisolated enum KBLinkRewrite {
         let targetRange: Range<String.Index>
     }
 
+    /// `linkPattern`, compiled once.
+    private static let linkRe = try! NSRegularExpression(pattern: linkPattern)
+
     static func matches(in text: String) -> [Match] {
-        guard text.contains("[["),
-              let re = try? NSRegularExpression(pattern: linkPattern) else { return [] }
+        guard text.contains("[[") else { return [] }
         let ns = NSRange(text.startIndex..., in: text)
-        return re.matches(in: text, range: ns).compactMap { m in
+        return linkRe.matches(in: text, range: ns).compactMap { m in
             guard let r = Range(m.range(at: 1), in: text) else { return nil }
             return Match(target: String(text[r]), targetRange: r)
         }

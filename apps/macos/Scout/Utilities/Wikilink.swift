@@ -3,9 +3,11 @@ import Foundation
 /// The one rule for what counts as a `[[wikilink]]`.
 ///
 /// `[[target]]` or `[[target|alias]]`, where the alias separator may be
-/// written `\|`, the form notes use inside table cells. Neither part holds
-/// `[`, `]` or a line break, and the target holds no `|`. So an unclosed `[[`
-/// gives up at the next bracket or line instead of scanning on.
+/// written `\|`, the form notes use inside table cells. Neither part holds a
+/// newline (LF), and the target holds no `[`, `]` or `|`. The alias may hold
+/// a balanced `[…]` with no brackets inside it (`[[alex|Alex [ext]]]`), which
+/// renders as written, but no other bracket. So an unclosed `[[` gives up at
+/// the next `[[`, unmatched bracket or newline instead of scanning on.
 ///
 /// `InlineMarkdownText` renders exactly these as links, and the knowledge
 /// base counts exactly these as links and backlinks
@@ -16,16 +18,19 @@ import Foundation
 nonisolated enum Wikilink {
     /// What a target may hold.
     static let targetCharacter = #"[^\[\]|\n]"#
-    /// What an alias may hold.
-    static let aliasCharacter = #"[^\[\]\n]"#
+    /// One piece of an alias: a character that isn't a bracket or a newline,
+    /// or a bracketed run of them. Each piece starts with a different
+    /// character from the others, and the run can't hold `]`, so matching
+    /// stays linear.
+    static let aliasPiece = #"(?:[^\[\]\n]|\[[^\[\]\n]*\])"#
     /// The alias separator, `|` or `\|`.
     static let separator = #"\\?\|"#
 
     /// Group 1 is the target, group 2 the alias (absent without one).
-    static let pattern = #"\[\["# + "(\(targetCharacter)+?)(?:\(separator)(\(aliasCharacter)+))?" + #"\]\]"#
+    static let pattern = #"\[\["# + "(\(targetCharacter)+?)(?:\(separator)(\(aliasPiece)+))?" + #"\]\]"#
 
     /// The same link with no groups, to embed in a larger pattern.
-    static let ungroupedPattern = #"\[\["# + "\(targetCharacter)+?(?:\(separator)\(aliasCharacter)+)?" + #"\]\]"#
+    static let ungroupedPattern = #"\[\["# + "\(targetCharacter)+?(?:\(separator)\(aliasPiece)+)?" + #"\]\]"#
 
     /// `pattern`, compiled once.
     static let regex = try! NSRegularExpression(pattern: pattern)

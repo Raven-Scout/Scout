@@ -175,19 +175,22 @@ struct InlineMarkupCleanupTests {
         }
     }
 
-    /// Lines that took the old regexes a third of a second or more each in
-    /// a release build (more in a debug one, and more on non-ASCII text).
-    /// The limits are generous because CI's macOS runners vary about 2×.
+    /// About 50k characters each. The first five took the old regexes 5 to
+    /// 14 s each in a release build (0.002 s or so now), so a revert fails;
+    /// the rest guard the passes that were linear already. The limits are
+    /// generous because CI's macOS runners vary about 2×.
     static let pathologicalMath: [(name: String, text: String)] = [
-        ("unclosed \\(", String(repeating: #"\("#, count: 5_000)),
-        ("unclosed \\[", String(repeating: #"\["#, count: 5_000)),
-        ("unclosed \\( after é", String(repeating: #"é\("#, count: 5_000)),
-        ("unclosed \\[ after an emoji", String(repeating: #"😀\["#, count: 5_000)),
-        ("unclosed \\( with a command", String(repeating: #"\(\ge "#, count: 5_000)),
+        ("unclosed \\(", String(repeating: #"\("#, count: 25_000)),
+        ("unclosed \\[", String(repeating: #"\["#, count: 25_000)),
+        ("unclosed \\( after é", String(repeating: #"é\("#, count: 16_667)),
+        ("unclosed \\[ after an emoji", String(repeating: #"😀\["#, count: 12_500)),
+        ("unclosed \\( with a command", String(repeating: #"\(\ge "#, count: 8_334)),
         ("many closed spans", String(repeating: #"\(\ge\) "#, count: 3_000)),
-        ("dollars", String(repeating: "$", count: 10_000)),
-        ("dollar math after é", String(repeating: #"é$\ge"#, count: 3_000)),
-        ("bare symbols", String(repeating: #"\ge "#, count: 5_000)),
+        ("dollars", String(repeating: "$", count: 50_000)),
+        ("dollar math after é", String(repeating: #"é$\ge"#, count: 10_000)),
+        ("bare symbols", String(repeating: #"\ge "#, count: 12_500)),
+        // Each `**` pairs with nothing; they used to be removed one copy of the text at a time.
+        ("stray bold marks", String(repeating: "**a ", count: 6_250)),
     ]
 
     @Test("unclosed or repeated math cleans quickly", arguments: pathologicalMath.map(\.name))

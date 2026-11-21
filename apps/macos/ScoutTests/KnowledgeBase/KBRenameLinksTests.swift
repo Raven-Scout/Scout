@@ -34,6 +34,27 @@ struct KBLinkRewriteTests {
         """)
     }
 
+    /// Rename follows `Wikilink`'s rule, the one the app renders and counts
+    /// links by: what isn't a link there isn't rewritten (review of #753).
+    @Test("a rename rewrites exactly the links Wikilink's rule finds", arguments: [
+        // A balanced `[…]` in the alias is a link.
+        ("[[alex|Alex [ext]]]", "[[alexandra|Alex [ext]]]", 1),
+        (#"| [[alex\|Alex [ext]]] |"#, #"| [[alexandra\|Alex [ext]]] |"#, 1),
+        // An inner link the old rule swallowed into an unclosed `[[` is found.
+        ("[[a[[alex]]", "[[a[[alexandra]]", 1),
+        // A newline in the alias or the target, or a `[` in the target: not a
+        // link, so left at the old name (the engine's `kb lint` still counts these).
+        ("[[alex|first\nsecond]]", "[[alex|first\nsecond]]", 0),
+        ("[[alex#Role\nx]]", "[[alex#Role\nx]]", 0),
+        ("[[alex#a[b]]", "[[alex#a[b]]", 0),
+        ("[[alex|Alex [ext]]", "[[alex|Alex [ext]]", 0),
+    ])
+    func renameFollowsTheWikilinkRule(_ text: String, _ expected: String, _ count: Int) {
+        let out = rewrite(text)
+        #expect(out.text == expected)
+        #expect(out.count == count)
+    }
+
     @Test("links to other notes, missing notes and markdown links stay as written")
     func othersUntouched() {
         let text = "[[hub]] [[priya]] [[ghost]] [[projects/alex]] [[#Role]] [alex](https://example.com/alex) [a](people/alex.md) alex"

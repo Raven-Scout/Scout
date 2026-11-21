@@ -236,12 +236,17 @@ nonisolated enum InlineMarkupCleanup {
             }
         }
         unpaired += open
-        // Last first, so each removal leaves the earlier marks' offsets as they were.
-        for i in unpaired.sorted(by: >) {
+        // Each segment is rebuilt once, front to back. (Removing one mark at a
+        // time copied the segment once per stray mark: `**a ` repeated to
+        // 1 MB took 15 s.)
+        var removals: [Int: [(NSRange, String)]] = [:]
+        for i in unpaired.sorted() {
             let mark = pairing[i]
             guard isCutOffBold(at: mark.absolute, in: joined, unit: unit) else { continue }
-            let ns = parts[mark.segment].text as NSString
-            parts[mark.segment].text = ns.replacingCharacters(in: NSRange(location: mark.location, length: 2), with: "")
+            removals[mark.segment, default: []].append((NSRange(location: mark.location, length: 2), ""))
+        }
+        for (segment, edits) in removals {
+            parts[segment].text = rebuild(parts[segment].text, edits)
         }
         return parts
     }
