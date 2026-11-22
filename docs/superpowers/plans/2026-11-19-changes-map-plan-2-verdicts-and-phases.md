@@ -1,5 +1,12 @@
 # Changes Map — Plan 2: Verdicts, Owner Decisions and Run Phases
 
+> **Changed in review (PR Raven-Scout/Scout#747), so parts of this plan no longer match what shipped.**
+> - Ordinary large or uncertain brain changes stay opt-out proposals in `dreaming-proposals.md`, applied as before, because the app's Proposals tab still reads them. Only governance goes to `governance-pending/`. Read the "No mention of `dreaming-proposals.md`" lines and `test_no_phase_routes_to_dreaming_proposals` below as superseded.
+> - There is no Changes tab yet. Phases point the owner at `scoutctl changes approve|reject|undo`, not at the tab.
+> - A commit is a rollback only when git shows it put the named change's lines back and touched no other self-change path, and its target isn't itself a rollback. A trailer only names the candidate.
+> - Approvals bind the full SHA-256 of the pending file (diff and frontmatter), need `--diff-hash`, and are used up once acted on. Automatic rollback modes are refused and inert until Plan 3.
+> - Trailer commits use plain double quotes, not `$'…'`. The trailer rule lives in `core/git-trailers.md`, outside respond runs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every Scout self-change gets a before/after test and a verdict. The owner can approve, reject, undo and mark verdicts wrong. Scheduled runs record the Slack, stale-🔴 and recurrence signals the verdicts need, and they carry out the owner's decisions.

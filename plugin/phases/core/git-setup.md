@@ -36,15 +36,6 @@ The commit history is as valuable as the files themselves. When verifying KB cla
 
 Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`: it prints `committed <sha>` (exit 6: queued for after the session, no SHA yet). In a scheduled run git reads history but can't change the repository: to move or delete, `mv`/`rm` and pass every path to the helper; to restore, `git show HEAD:<path> > <path>`; to untrack, list it in `.gitignore`, move it aside, commit its path, move it back.
 
-**A commit that touches `SKILL.md`, `DREAMING.md`, `RESEARCH.md` or `scripts/` is a change on the changes map** (`scripts/scoutctl changes --json`), which tests whether it helped. Commit each such change on its own, with trailers after a blank line: `Scout-Change-Why:` says why (`pattern-<N>` for a mistake-audit pattern, `owner-ask:<Slack ts>` for {{USER_NAME}}'s message, `wishlist:<slug>`, or `research:<slug>`), and `Scout-Change-Summary:` says what changed in one plain sentence of at most 120 characters. Optional: `Scout-Change-Targets:` (comma-separated `pattern-<N>`s it should reduce, or `engagement` for a change meant to raise {{USER_NAME}}'s engagement: at most one such change per run, and only when `scripts/scoutctl changes due --json` shows `engagement_tests_running` is 0, since only one may be under test at a time). A change to what {{INSTANCE_NAME}} may do on its own is never committed directly: it goes to `governance-pending/` (feedback processing, Step 1d). Pass the message in plain double quotes, the blank line and each trailer on a line of its own; inside the quotes, never write `"`, `$`, a backtick or a backslash:
-
-```bash
-scripts/git-safe-commit.sh "dreaming [HH:MM]: SKILL.md — re-query issue status before reporting it
-
-Scout-Change-Why: pattern-<N>
-Scout-Change-Summary: Briefings re-check an issue's status live before reporting it." SKILL.md
-```
-
 ### Vault Git-Delta Narration (consolidation/briefing — mandatory before composing)
 
 Interactive sessions ({{INSTANCE_NAME}} work sessions, manual edits, `/scout-work`, audits) commit to the vault between scheduled runs. Those commits are a **primary signal source**, not background noise — a `work [HH:MM]:` commit may already have done the thing an action item is about. Before composing the run summary:

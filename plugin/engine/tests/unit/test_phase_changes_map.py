@@ -25,7 +25,7 @@ DECISIONS = PHASES / "modes" / "follow-change-decisions.md"
 STEP_1E = "## Step 1e: Test changes and act on your decisions"
 PRIVACY = PHASES / "core" / "privacy.md"
 CALENDAR = PHASES / "connectors" / "calendar.md"
-GIT_SETUP = PHASES / "core" / "git-setup.md"
+GIT_TRAILERS = PHASES / "core" / "git-trailers.md"
 
 
 def _text(path: Path) -> str:
@@ -96,6 +96,8 @@ def test_step_1d_keeps_ordinary_proposals_until_the_app_can_show_changes() -> No
     assert "Pending (auto-apply after [today + 3 days])" in step_1d
     assert "`Approved`" in step_1d and "not `Rejected`" in step_1d and "Applied — [today's date]" in step_1d
     assert "**Before writing new ones, apply**" in step_1d
+    # The app's Proposals tab keeps per-file proposals in dreaming-proposals/: an apply commits every path main did.
+    assert "`<the brain file> dreaming-proposals.md dreaming-proposals/ dreaming-proposals-archive.md`" in step_1d
     fallback = step_1d[step_1d.index("**Harness fallback.**") :]
     assert "opt-out `Pending` proposal" in fallback and "governance-pending" not in fallback
 
@@ -217,10 +219,12 @@ def test_owner_away_is_recorded_by_the_inbound_calendar_scan() -> None:
     assert not any("owner-away" in s.body for s in others)
 
 
-def test_git_setup_names_the_trailers() -> None:
-    (section,) = parse_phase_file(GIT_SETUP)
-    assert set(section.mode or []) == {"briefing", "consolidation", "dreaming", "research", "respond"}
-    rule = _step(section.body, "### Changing the vault's git")
+def test_git_trailers_name_the_trailers_outside_respond() -> None:
+    """The trailer rule is its own core section (it sorts right after git-setup), so respond runs, which never make
+    a change on the map, don't carry it."""
+    (section,) = parse_phase_file(GIT_TRAILERS)
+    assert set(section.mode or []) == {"briefing", "consolidation", "dreaming", "research"}
+    rule = section.body
     for needle in (
         "Scout-Change-Why:",
         "Scout-Change-Summary:",
@@ -240,10 +244,14 @@ def test_git_setup_names_the_trailers() -> None:
     assert "Scout-Change-Governance" not in rule  # I2: only the apply step's move makes a governance change
     assert "at most one such change per run" in rule  # m10
     assert re.search(r'git-safe-commit\.sh "[^"$`\\]*\n\nScout-Change-Why: ', rule)
-    for kind in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
+    for kind in ("SKILL", "DREAMING", "RESEARCH"):
         brain = _assemble(_config(set()), kind, custom={})
         assert "Scout-Change-Why:" in brain and "Scout-Change-Summary:" in brain, kind
         assert "`engagement_tests_running` is 0" in brain, kind
+        # Right after git-setup: its last section, session cost reporting, comes just before.
+        assert brain.index("## Session Cost Reporting") < brain.index("## Commits That Change TestScout Itself"), kind
+    respond = _assemble(_config(set()), "RESPOND", custom={})
+    assert "Scout-Change-" not in respond and "## Step 0: Git Setup" in respond
 
 
 # --- what reaches the brains ------------------------------------------------------------------------------------------
@@ -299,7 +307,7 @@ def _double_quoted_commits(text: str) -> list[str]:
     return [m for m in re.findall(r'git-safe-commit\.sh "([^"]*)"', text) if "\n" in m]
 
 
-@pytest.mark.parametrize("path", [GIT_SETUP, DECISIONS])
+@pytest.mark.parametrize("path", [GIT_TRAILERS, DECISIONS])
 def test_trailer_commits_use_plain_double_quotes_bash_reads_as_written(path: Path) -> None:
     """`$'…'` may not pass the runner's command check, so a trailer message is a plain double-quoted string with
     real newlines; bash must read it back exactly (an apostrophe included), and nothing in it may expand."""
@@ -318,5 +326,5 @@ def test_trailer_commits_use_plain_double_quotes_bash_reads_as_written(path: Pat
         assert not set(message) & set("$`\\"), message
         out = subprocess.run([bash, "-c", f'printf %s "{message}"'], capture_output=True, text=True, check=True).stdout
         assert out == message and "\n\n" in out and "Scout-Change-" in out, out
-    if path == GIT_SETUP:
+    if path == GIT_TRAILERS:
         assert any("'s " in m for m in messages), "the example message carries an apostrophe"
