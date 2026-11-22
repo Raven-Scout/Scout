@@ -26,7 +26,7 @@ from tests.eval.harness.checks.privacy_canary import raw_kb_read
 from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-KINDS = ("SKILL", "DREAMING", "RESEARCH")
+KINDS = ("SKILL", "DREAMING", "RESEARCH", "RESPOND")
 PRIVACY_HEADING = "## Privacy: owner-only and shared surfaces"
 _WALK_KB = re.compile(
     r"\b(?:read|open|walk|scan|go through|cat|list)\s+(?:every|each|all)\b"

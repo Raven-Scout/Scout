@@ -201,6 +201,14 @@ SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"; [ -x "$SCOUTCTL" ] || SCOUTCTL="$HOM
 
 Store both results for rendering in the dashboard below.
 
+Then, only when `<SCOUT_DIR>/.scout-state/triggers.yaml` exists and names a `source: telegram` trigger, check the inbound Telegram poller:
+
+```bash
+SCOUT_DATA_DIR="$SCOUT_DIR" "$SCOUTCTL" telegram inbound-status --json || echo "INBOUND_STATUS_UNAVAILABLE"
+```
+
+Render its `counts`, `last_poll_at` and `last_error` as one `Telegram inbound:` line in the dashboard (a non-null `last_error` gets a ⚠️). Skip the line when the trigger isn't configured.
+
 ### 3g. Run health
 
 The runners record how every scheduled run ended in `.scout-logs/run-outcomes.jsonl`, and the scheduler records every fire, both outside Claude, so a run that dies at startup (an expired login) still leaves a trace. `scoutctl health` reads both. The git log in 3a can't show this: a failed run commits nothing.

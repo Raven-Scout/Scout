@@ -99,6 +99,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read_log import log_event
 from scout.kb.reader import delegate_id
+from scout.plural import count
 
 INDEX_FILENAME = "privacy-index.json"
 # 5: facts carry delegate_source/promoted/delegate_scope/delegate_author (#550 V4b2); 4: shared_source (#550);
@@ -844,7 +845,7 @@ def query_rows(graph: KnowledgeGraph, filters: Mapping[str, Any], visibility: st
 class Output:
     """One command's result: its JSON form, its text form, and what it returned.
 
-    ``lines`` are printed one ``print()`` each (so ``"\\nN result(s)."`` gives
+    ``lines`` are printed one ``print()`` each (so ``"\\nN results."`` gives
     the template's blank line); ``raw``, when set, is written as is instead.
     ``labels`` are the labels of the paths returned (the audit log counts them).
     ``surface`` and ``blocked`` are a ``check-outbound``/``check-query`` call's
@@ -994,7 +995,7 @@ def cmd_stat(vault: Path, reader: str, paths: Sequence[str], globs: Sequence[str
             lines.append(f"{_mark(r['label'])}{r['path']}  {r['bytes']} bytes  {r['lines']} lines  {r['words']} words")
     if len(rows) - denied > 1:
         total = sum(r.get("bytes", 0) for r in rows)
-        lines.append(f"{len(rows) - denied} file(s), {total} bytes")
+        lines.append(f"{count(len(rows) - denied, 'file')}, {total} bytes")
     return Output(data=rows, lines=lines, labels=_labels_json(labels), denied=denied, code=3 if denied else 0)
 
 
@@ -1064,7 +1065,7 @@ def cmd_query(graph: KnowledgeGraph, filters: Mapping[str, Any], visibility: str
         extras = [f"{k}={r[k]}" for k in ("status", "domain", "deadline") if r.get(k)]
         suffix = f"  ({', '.join(extras)})" if extras else ""
         lines.append(f"  {_mark(r.get('_label'))}[{r.get('type')}] {r.get('name')}{suffix}")
-    lines.append(f"\n{len(results)} result(s).")
+    lines.append(f"\n{count(len(results), 'result')}.")
     return Output(
         data=[_entity_row(r) for r in results], lines=lines, labels=[r["_label"] for r in results if r.get("_label")]
     )
@@ -1120,7 +1121,7 @@ def cmd_path(graph: KnowledgeGraph, source: str, target: str, hops: int | None) 
     chain = (
         _mark(graph.label_of(source)) + source + "".join(f" --{t}--> {_mark(graph.label_of(n))}{n}" for t, n in steps)
     )
-    return Output(data=data, lines=[f"  {chain}", f"\n{len(steps)} hop(s)."], labels=labels)
+    return Output(data=data, lines=[f"  {chain}", f"\n{count(len(steps), 'hop')}."], labels=labels)
 
 
 def cmd_entity(graph: KnowledgeGraph, name: str) -> Output:
@@ -1164,7 +1165,7 @@ def cmd_name_lookup(graph: KnowledgeGraph, token: str, threshold: float, lookup_
             f"(slug={r['slug']}, type={r.get('type') or '?'}, matched_field={r['matched_field']}, score={r['score']})"
             for r in rows
         ]
-        lines.append(f"\n{len(results)} candidate(s) — searched: {scope}.")
+        lines.append(f"\n{count(len(results), 'candidate')} — searched: {scope}.")
     return Output(data=rows, lines=lines, labels=[r["label"] for r in rows if r["label"]])
 
 
@@ -1207,14 +1208,14 @@ def cmd_validate(graph: KnowledgeGraph) -> Output:
     gaps: list[dict[str, Any]] = [{**g, "label": graph.label_of(g["entity"])} for g in graph.known_gaps]
     if rows:
         lines = [f"  {_mark(r['label'])}[{r['entity']}] {r['message']}" for r in rows]
-        lines.append(f"\n{len(errors)} validation error(s) found.")
+        lines.append(f"\n{count(len(errors), 'validation error')} found.")
     else:
         lines = ["No validation errors."]
     if gaps:
         by_target: dict[str, list[dict[str, Any]]] = {}
         for g in gaps:
             by_target.setdefault(g["target"], []).append(g)
-        lines.append(f"\n{len(by_target)} known entity gap(s) — accepted backlog, not errors:")
+        lines.append(f"\n{count(len(by_target), 'known entity gap')} — accepted backlog, not errors:")
         for target in sorted(by_target):
             sources = sorted({(g["entity"], _mark(g["label"])) for g in by_target[target]})
             refs = ", ".join(f"{mark}{name}" for name, mark in sources)

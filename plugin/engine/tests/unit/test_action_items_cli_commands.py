@@ -401,7 +401,7 @@ def test_backfill_prefixes_dry_run_does_not_write(vault: Path) -> None:
 
     result = runner.invoke(app, ["backfill-prefixes", str(target), "--dry-run"])
     assert result.exit_code == 0, result.output
-    assert "would add 1 prefix(es):" in result.stdout
+    assert "would add 1 prefix:" in result.stdout
     assert "unprefixed task" in result.stdout
     assert target.read_text() == before
 
@@ -411,7 +411,7 @@ def test_backfill_prefixes_writes(vault: Path) -> None:
 
     result = runner.invoke(app, ["backfill-prefixes", str(target)])
     assert result.exit_code == 0, result.output
-    assert "added 1 prefix(es):" in result.stdout
+    assert "added 1 prefix:" in result.stdout
     assert "[#" in target.read_text()
 
 

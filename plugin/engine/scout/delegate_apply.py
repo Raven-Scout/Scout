@@ -71,6 +71,7 @@ from scout import delegate_mirror as dm
 from scout import delegate_proposals as dp
 from scout.action_items.parser import ActionItem, parse_lines
 from scout.errors import ActionItemError
+from scout.plural import agree, count, were
 from scout.repo_sync import RepoSyncError, git, headless_gate
 
 DAILY_CAPS = {"mark-done": 10, "snooze": 10, "set-estimate": 30, "set-block": 10, "clear-block": 10}
@@ -487,9 +488,15 @@ def apply(
         finally:
             os.close(dir_fd)
     if result.waiting:
-        result.notes.append(f"{result.waiting} observation(s) wait for your review: scoutctl inbox review")
+        result.notes.append(
+            f"{count(result.waiting, 'observation')} {agree(result.waiting, 'waits', 'wait')} for your review: "
+            "scoutctl inbox review"
+        )
     if result.untaken:
-        result.notes.append(f"{result.untaken} cop(ies) in the copies folder were never taken by a pull; ignored")
+        result.notes.append(
+            f"{count(result.untaken, 'copy', 'copies')} in the copies folder {were(result.untaken)} never taken "
+            "by a pull; ignored"
+        )
     return result
 
 

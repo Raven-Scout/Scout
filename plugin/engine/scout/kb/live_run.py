@@ -7,7 +7,7 @@ owner's rules. A run can change its environment and delete files, but not the
 processes it runs in, so this module reads one ``ps`` snapshot:
 
 - **A live run** (:func:`run_processes`): the session lock's holder when its
-  argv is a ``run-(scout|dreaming|research).sh``; a running
+  argv is a ``run-(scout|dreaming|research|respond).sh``; a running
   ``<vault>/scripts/claude-with-retry.sh`` (argv[0], or argv[1] of a shell; a
   command that only names it isn't one); and the run's own ``claude``
   session (``--name``, ``-p`` and ``--max-budget-usd`` with the vault's path in
@@ -60,7 +60,7 @@ _DIGITS_RE = re.compile(r"^[0-9]+$")
 _ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
 _PS_LINE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+((?:\d+-)?(?:\d+:)?\d+:\d+)\s?(.*)$")
 _SHELL_RE = re.compile(r"(?:^|/)-?(?:ba|z|da|k)?sh$")
-_RUNNER_RE = re.compile(r"(?:^|[\s/])run-(?:scout|dreaming|research)\.sh(?:\s|$)")
+_RUNNER_RE = re.compile(r"(?:^|[\s/])run-(?:scout|dreaming|research|respond)\.sh(?:\s|$)")
 # Interactive hosts, by the real executable: an app bundle in an Applications folder (Xcode's developer
 # tools live in one too, and aren't hosts), or one of these names in a system directory.
 _APP_HOST_RE = re.compile(r"^(?:/System|/Users/[^/]+)?/Applications/(?:[^/]+/)*?[^/]+\.app/Contents/")

@@ -164,7 +164,7 @@ def test_a_clear_plan_reports_kept_stops_and_the_pending_pull() -> None:
     assert [r.principal for r in plan.keep_stopped] == [SAM]
     data = plan.to_json()
     assert data["available"] and data["keeps_stopped"][0]["principal"] == SAM
-    assert any("Agnes has 2 commit(s)" in n for n in plan.notes)
+    assert any("Agnes has 2 commits" in n for n in plan.notes)
     assert any("keeps it stopped for the people you didn't name" in line for line in plan.lines())
 
 
@@ -198,5 +198,5 @@ def test_still_served_skips_a_share_stopped_for_everyone_and_kb_shares_mentions_
     )
     assert ss.still_served(v, {}) == []
     lines = ss.stop_lines(v, None, [GLOB])
-    assert any("Agnes has 1 commit(s) on top of your last push" in line for line in lines)
+    assert any("Agnes has 1 commit on top of your last push" in line for line in lines)
     assert ss.stop_lines(None, ss.UNLINKED_NOTE, []) == []

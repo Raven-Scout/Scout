@@ -69,7 +69,7 @@ from typing import Any
 
 from scout import delegate_mirror as dm
 from scout import delegate_proposals as dp
-from scout import safe_write
+from scout import plural, safe_write
 from scout.repo_sync import RepoSyncError, git, headless_gate
 
 SCHEMA_VERSION = 1
@@ -414,7 +414,8 @@ def _check_github(repo: str, facts: Mapping[str, str], gh: GhRunner, keys: Colle
     others = sorted({p for p in people.split() if p} - {facts["owner"]})
     if others:
         raise RepoSyncError(
-            "remote_shared", f"refused: {repo} has {len(others)} collaborator(s) besides its owner; remove them first"
+            "remote_shared",
+            f"refused: {repo} has {plural.count(len(others), 'collaborator')} besides its owner; remove them first",
         )
     listed = dm._ask_gh(gh, ["api", "--paginate", f"repos/{repo}/keys", "--jq", ".[] | [.id, .read_only] | @tsv"], repo)
     strangers = [line.split("\t")[0] for line in listed.splitlines() if line.strip()]
@@ -422,8 +423,9 @@ def _check_github(repo: str, facts: Mapping[str, str], gh: GhRunner, keys: Colle
     if strangers:
         raise RepoSyncError(
             "inbox_other_key",
-            f"refused: {repo} has {len(strangers)} deploy key(s) Scout didn't make for this inbox; whoever holds one "
-            "could write proposals as this delegate. Delete them in the repository's settings",
+            f"refused: {repo} has {plural.count(len(strangers), 'deploy key')} Scout didn't make for this inbox; "
+            "whoever holds one could write proposals as this delegate. "
+            f"Delete {plural.agree(len(strangers), 'it', 'them')} in the repository's settings",
         )
     enabled = dm._ask_gh(gh, ["api", f"repos/{repo}/actions/permissions", "--jq", ".enabled"], repo).strip()
     if enabled != "false":
@@ -610,8 +612,10 @@ def _apps_note(gh: GhRunner) -> str:
     apps = sorted({a for a in proc.stdout.split() if a}) if proc.returncode == 0 else None
     if apps:
         return (
-            f"warning: GitHub App(s) {', '.join(apps)} can reach all of your repositories, this inbox included; "
-            "limit them to the repositories they need (Settings → Applications)"
+            f"warning: GitHub {plural.noun(len(apps), 'App')} {', '.join(apps)} can reach all of your repositories, "
+            "this inbox included; "
+            f"limit {plural.agree(len(apps), 'it to the repositories it needs', 'them to the repositories they need')} "
+            "(Settings → Applications)"
         )
     if apps is None:
         return (
@@ -1475,7 +1479,8 @@ def _pull_once(vault: Path, state: InboxState, delegate: str, when: dt.datetime)
         save_state(vault, state)
     if result.waiting:
         result.notes.append(
-            f"{result.waiting} proposal(s) wait for a later pull (at most {dp.MAX_PER_PULL} a pull, "
+            f"{plural.count(result.waiting, 'proposal')} {plural.agree(result.waiting, 'waits', 'wait')} "
+            f"for a later pull (at most {dp.MAX_PER_PULL} a pull, "
             f"{MAX_TAKEN_PER_DAY} a day)"
         )
     return result

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 from scout.errors import ActionItemError
+from scout.plural import count, have
 
 if TYPE_CHECKING:
     from scout.events import Event
@@ -1081,8 +1082,10 @@ def cli_check_titles(
         )
     else:
         n_long = result.long_carried
-        carried = f"; {n_long} carried title(s) still long, left for a later touch" if n_long else ""
-        sys.stdout.write(f"{name}: {result.checked} task title(s) and Today's Focus within the limits{carried}\n")
+        carried = f"; {count(n_long, 'carried title')} still long, left for a later touch" if n_long else ""
+        sys.stdout.write(
+            f"{name}: {count(result.checked, 'task title')} and Today's Focus within the limits{carried}\n"
+        )
     if not result.passed:
         raise typer.Exit(code=1)
 
@@ -1250,9 +1253,9 @@ def _retitle_undo(vault: Path, day: str, commit_sha: str, yes: bool) -> None:
         sys.stdout.write(f"  [#{tag}] left alone: changed since the cleanup\n")
     n = len(undo_plan.restore)
     if not yes:
-        sys.stdout.write(f"retitle --undo: would restore {n} title(s); run again with --yes to do it\n")
+        sys.stdout.write(f"retitle --undo: would restore {count(n, 'title')}; run again with --yes to do it\n")
     else:
-        sys.stdout.write(f"retitle --undo: restored {n} title(s), clocks kept; committed {sha}\n")
+        sys.stdout.write(f"retitle --undo: restored {count(n, 'title')}, clocks kept; committed {sha}\n")
 
 
 @app.command("backfill-prefixes")
@@ -1281,7 +1284,7 @@ def cli_backfill_prefixes(
         sys.stdout.write("no unprefixed open tasks found\n")
         return
     verb = "would add" if dry_run else "added"
-    sys.stdout.write(f"{verb} {len(added)} prefix(es):\n")
+    sys.stdout.write(f"{verb} {count(len(added), 'prefix', 'prefixes')}:\n")
     for line_no, prefix, title in added:
         sys.stdout.write(f"  line {line_no}: [#{prefix}] {title}\n")
 
@@ -1313,7 +1316,7 @@ def cli_backfill_context(
     data_dir = daily.parent.parent if daily is not None else paths.data_dir()
     report = backfill_context(data_dir=data_dir, snapshot=snapshot, daily=target, write=write)
     verb = "wrote" if write else "would write"
-    sys.stdout.write(f"{verb} {len(report.to_write)} note(s); {len(report.existing)} already had one\n")
+    sys.stdout.write(f"{verb} {count(len(report.to_write), 'note')}; {len(report.existing)} already had one\n")
     if report.missing:
         sys.stdout.write(f"no snapshot entry: {', '.join(report.missing)}\n")
     if report.ambiguous:
@@ -1324,7 +1327,8 @@ def cli_backfill_context(
             sys.stdout.write(f"  'action-items/context/{tag}.md': null   # {size} bytes\n")
     if report.long_lines:
         sys.stdout.write(
-            f"{len(report.long_lines)} note(s) have line(s) over the kb-lint limit (blocking `mega-line` "
+            f"{count(len(report.long_lines), 'note')} {have(len(report.long_lines))} a line over the kb-lint limit "
+            "(blocking `mega-line` "
             "in block mode) — commit the backfill with SCOUT_LINT_OVERRIDE='restore pre-restructure context'\n"
         )
 

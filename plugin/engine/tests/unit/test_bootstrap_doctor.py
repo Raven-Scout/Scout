@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from scout import health
 from scout.scripts.bootstrap_auto import doctor_dict
 from scout.scripts.bootstrap_doctor import (
@@ -20,7 +22,7 @@ def _populate_minimal_vault(vault: Path) -> None:
     (vault / ".scout-state").mkdir(parents=True)
     (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n")
     (vault / ".scout-state" / "last-assembled").mkdir()
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
     (vault / "scout-config.yaml").write_text(
@@ -300,13 +302,14 @@ def test_empty_cat1_file_is_red(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_snapshot_is_yellow(tmp_path):
-    """Missing snapshot file → YELLOW warning."""
+@pytest.mark.parametrize("name", ["SKILL", "RESPOND"])
+def test_missing_snapshot_is_yellow(tmp_path, name):
+    """Missing snapshot file → YELLOW warning, for every brain file, RESPOND included."""
     _populate_minimal_vault(tmp_path)
-    (tmp_path / ".scout-state" / "last-assembled" / "SKILL.md").unlink()
+    (tmp_path / ".scout-state" / "last-assembled" / f"{name}.md").unlink()
     report = run_doctor(vault=tmp_path, check_jobs=False)
     assert report.severity is Severity.YELLOW
-    assert any("snapshot missing" in w for w in report.warnings)
+    assert any(f"snapshot missing: .scout-state/last-assembled/{name}.md" in w for w in report.warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -1005,7 +1008,7 @@ def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
 
 
 def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
-    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "unknown key ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
     assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
 
 

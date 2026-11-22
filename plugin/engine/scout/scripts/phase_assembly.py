@@ -16,6 +16,8 @@ from pathlib import Path
 
 import yaml
 
+from scout.plural import noun
+
 # Connectors whose ``slot: notification`` section carries the run's wrap message.
 # With no ``notify.wrap_channels`` in scout-config.yaml, every enabled one gets it.
 WRAP_CHANNELS = ("slack", "telegram")
@@ -35,7 +37,7 @@ def parse_wrap_channels(value: object) -> frozenset[str] | None:
     unknown = [v for v in value if v not in WRAP_CHANNELS]
     if unknown:
         raise ValueError(
-            f"notify.wrap_channels: unknown channel(s) {', '.join(map(repr, unknown))}; "
+            f"notify.wrap_channels: unknown {noun(len(unknown), 'channel')} {', '.join(map(repr, unknown))}; "
             f"expected any of {', '.join(WRAP_CHANNELS)}"
         )
     return frozenset(value)

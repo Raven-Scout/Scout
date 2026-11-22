@@ -163,7 +163,7 @@ def test_lock_busy_at_the_vault_step_defers(tmp_path):
     "result",
     [
         {"action": "refused", "error": "held by live PID 1", "mutated": True},
-        {"action": "refused", "error": "unresolved proposed-merge sidecar(s)", "mutated": False},
+        {"action": "refused", "error": "unresolved proposed-merge sidecar", "mutated": False},
         {"action": "refused", "error": None, "reason": "weird", "mutated": True},
     ],
 )

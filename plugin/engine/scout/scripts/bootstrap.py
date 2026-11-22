@@ -6,7 +6,7 @@
 3. Managed files    — plugin-owned scripts, hooks, runners, render.py, parser.py;
                       a vault's edits are kept, merged or parked (vault_drift)
 4. .gitignore       — append-only merge
-5. Cat 4 assembled  — SKILL/DREAMING/RESEARCH (3-way merge on upgrade; see brain_merge)
+5. Cat 4 assembled  — SKILL/DREAMING/RESEARCH/RESPOND (3-way merge on upgrade; see brain_merge)
 6. Job lifecycle    — launchd / cron
 7. Version stamp    — scout-config.yaml plugin.version_*
 8. Doctor smoke     — runs bootstrap_doctor.run_doctor
@@ -30,6 +30,7 @@ import yaml
 from scout import config as scout_config
 from scout import custom_connectors, safe_write, yaml_blocks
 from scout.errors import ConfigError
+from scout.plural import noun
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -238,6 +239,7 @@ _CAT1B_RUNNERS = (
     ("run-scout.sh", "templates/run-scout.sh.tmpl"),
     ("run-dreaming.sh", "templates/run-dreaming.sh.tmpl"),
     ("run-research.sh", "templates/run-research.sh.tmpl"),
+    ("run-respond.sh", "templates/run-respond.sh.tmpl"),
 )
 
 
@@ -510,7 +512,7 @@ def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConne
 def _assemble(
     cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
 ) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files, then add custom-connector sections
+    """Assemble SKILL/DREAMING/RESEARCH/RESPOND from phase files, then add custom-connector sections
     (appended; in RESEARCH, just before the first ``deep-research`` section).
 
     ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
@@ -525,7 +527,8 @@ def _assemble(
     # Map assembly target → which modes this assembly is consumed by.
     # SKILL.md is read by BOTH briefing- and consolidation-type runs (run-scout.sh
     # auto-detects which); DREAMING.md by dreaming runs only; RESEARCH.md by
-    # research runs only. Phases declaring `mode: [...]` get filtered to only
+    # research runs only; RESPOND.md by respond runs only (answering the
+    # owner's Telegram messages). Phases declaring `mode: [...]` get filtered to only
     # those whose mode list intersects the target. Phases with no `mode:`
     # (legacy / cross-cutting) land in every target.
     if kind == "SKILL":
@@ -534,6 +537,9 @@ def _assemble(
     elif kind == "DREAMING":
         sources = [phases_root / "core", phases_root / "modes"]
         target_modes = {"dreaming"}
+    elif kind == "RESPOND":
+        sources = [phases_root / "core", phases_root / "respond"]
+        target_modes = {"respond"}
     else:  # RESEARCH
         sources = [phases_root / "core", phases_root / "research"]
         target_modes = {"research"}
@@ -1276,7 +1282,7 @@ def _refuse_pending_sidecars(vault: Path) -> None:
     pending = blocking_sidecars(vault)
     if pending:
         raise RuntimeError(
-            f"Unresolved proposed-merge sidecar(s): {pending}. "
+            f"Unresolved proposed-merge {noun(len(pending), 'sidecar')}: {pending}. "
             f"Edit each to remove conflict markers, then "
             f"`mv <file>.proposed-merge <file>`, then re-run /scout-update."
         )

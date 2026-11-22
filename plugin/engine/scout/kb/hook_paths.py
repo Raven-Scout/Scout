@@ -98,6 +98,10 @@ SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
 SSH_CONFIG = "ssh config"
 DELEGATE_STATE = "Scout's delegate state"
+# The owner's Telegram messages as the listener logged them: only trusted, unsandboxed code writes them. The name
+# is hard-coded (importing scout.telegram_inbound.ledger would make an import cycle); a test keeps the two equal.
+TELEGRAM_INBOUND = "Scout's Telegram inbound ledger"
+TELEGRAM_INBOUND_DIRNAME = "telegram-inbound"
 # Copies of what the owner's agents proposed (#550 V4): untrusted text, which never reaches a run (spec §7.1b).
 AGENT_TEXT = "the agents' inbox copies"
 AGENT_TEXT_DIR = (".scout-inbox", "agents")
@@ -122,6 +126,7 @@ RUNNER_FILES: tuple[str, ...] = (
     "run-scout.sh",
     "run-dreaming.sh",
     "run-research.sh",
+    "run-respond.sh",
     "scripts/scout-tz.sh",
     "scripts/scoutctl",
     "scripts/budget-check.sh",
@@ -376,6 +381,7 @@ def protected_specs(
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
         add(vault / ".scout-state" / "delegate-scan", DELEGATE_STATE, tree=True)
         add(vault / ".scout-state" / "delegate-inbox", DELEGATE_STATE, tree=True)
+        add(vault / ".scout-state" / TELEGRAM_INBOUND_DIRNAME, TELEGRAM_INBOUND, tree=True)
         add(vault.joinpath(*AGENT_TEXT_DIR), AGENT_TEXT, tree=True)
         add(vault.joinpath(*AGENT_NOTES_DIR), AGENT_NOTES, tree=True)
         # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.

@@ -16,6 +16,7 @@ from scout.action_items.task_fields import TASK_FIELD_KEYS
 from scout.errors import ActionItemAmbiguous, ActionItemError, ActionItemNotFound
 from scout.id_map import IdMap, IdMapEntry
 from scout.ids import new_ulid
+from scout.plural import count
 
 # Matches the comment shape that `add-comment` writes:
 #   `  - <author>: <text>`
@@ -90,7 +91,7 @@ def select_comment(
         raise ActionItemError("no comments found on this task")
     if index is not None:
         if index < 1 or index > len(candidates):
-            raise ActionItemError(f"--index {index} out of range; task has {len(candidates)} comment(s)")
+            raise ActionItemError(f"--index {index} out of range; task has {count(len(candidates), 'comment')}")
         return candidates[index - 1]
     assert text is not None
     needle = text.lower()

@@ -219,7 +219,7 @@ def test_owner_away_is_recorded_by_the_inbound_calendar_scan() -> None:
 
 def test_git_setup_names_the_trailers() -> None:
     (section,) = parse_phase_file(GIT_SETUP)
-    assert set(section.mode or []) == {"briefing", "consolidation", "dreaming", "research"}
+    assert set(section.mode or []) == {"briefing", "consolidation", "dreaming", "research", "respond"}
     rule = _step(section.body, "### Changing the vault's git")
     for needle in (
         "Scout-Change-Why:",
@@ -240,7 +240,7 @@ def test_git_setup_names_the_trailers() -> None:
     assert "Scout-Change-Governance" not in rule  # I2: only the apply step's move makes a governance change
     assert "at most one such change per run" in rule  # m10
     assert re.search(r'git-safe-commit\.sh "[^"$`\\]*\n\nScout-Change-Why: ', rule)
-    for kind in ("SKILL", "DREAMING", "RESEARCH"):
+    for kind in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         brain = _assemble(_config(set()), kind, custom={})
         assert "Scout-Change-Why:" in brain and "Scout-Change-Summary:" in brain, kind
         assert "`engagement_tests_running` is 0" in brain, kind

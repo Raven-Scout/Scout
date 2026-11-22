@@ -224,7 +224,7 @@ def test_send_html_drops_unsafe_links_and_warns(secrets_dir: Path, capsys: pytes
         mock_post.return_value = _ok_response()
         ev = notify_telegram.send(tier="info", body=body, parse_mode="html")
     assert _payloads(mock_post)[0]["text"] == 'join <a href="https://example.com">ok</a>'
-    assert "warning: dropped 1 link(s) whose href is not http(s) or mailto" in capsys.readouterr().err
+    assert "warning: dropped 1 link whose href is not http(s) or mailto" in capsys.readouterr().err
     assert ev.payload["body_chars"] == len(body)
 
 

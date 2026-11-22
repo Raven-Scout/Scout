@@ -17,6 +17,7 @@ import typer
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
+from scout.plural import agree, count
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -538,14 +539,14 @@ def cli_changes_scan(
 
     now = _dt.now(UTC)
     if not (since or backfill):
-        typer.echo(f"{len(scan_new(paths.require_data_dir(), now=now))} new change(s)")
+        typer.echo(count(len(scan_new(paths.require_data_dir(), now=now)), "new change"))
         return
     try:
         cutoff = parse_since(since or "2026-06-01", now=now)
     except ValueError as e:
         typer.echo(f"scoutctl changes scan: {e}", err=True)
         raise typer.Exit(2) from None
-    typer.echo(f"{len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill))} new change(s)")
+    typer.echo(count(len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill)), "new change"))
 
 
 def _owner_changes(command: str) -> tuple[Path, Path]:
@@ -1144,7 +1145,7 @@ def kb_lint(
         missing = lossless_check(root, lossless_rev, lossless_path)
         for tok in missing:
             print(f"missing: {tok}")
-        print(f"lossless: {len(missing)} token(s) missing")
+        print(f"lossless: {count(len(missing), 'token')} missing")
         raise typer.Exit(1 if missing else 0)
     if report:
         from scout.kb.lint import config_problems, over_budget
@@ -1155,7 +1156,7 @@ def kb_lint(
         for problem in config_problems(root, cfg):
             print(f"config: {problem}")
         rows = over_budget(root, cfg)
-        print(f"{len(rows)} file(s) over budget")
+        print(f"{count(len(rows), 'file')} over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
         for line in format_report(privacy_report(root)):
@@ -1961,7 +1962,7 @@ def kb_name_lookup(
     lookup_type: str = typer.Option(
         "person",
         "--lookup-type",
-        help="Entity type(s) to search: person (default), organization, any, or a comma-separated list.",
+        help="The entity types to search: person (default), organization, any, or a comma-separated list.",
     ),
     reader: str | None = _R,
     as_json: bool = _J,
@@ -2121,14 +2122,15 @@ def kb_check_fact_check(
     elif not result.targets:
         typer.echo(f"{name}: no KB note changed in the last days is waiting to be re-verified")
     elif result.passed and result.skipped is None:
-        typer.echo(f"{name}: {len(result.verified)} of {len(result.targets)} recent note(s) re-verified today")
+        typer.echo(f"{name}: {len(result.verified)} of {count(len(result.targets), 'recent note')} re-verified today")
     elif result.passed:
         typer.echo(
             f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
         )
     else:
         typer.echo(
-            f"{name}: {len(result.verified)} of the {result.required} required recent note(s) re-verified today. "
+            f"{name}: {len(result.verified)} of the {count(result.required, 'required recent note')} "
+            "re-verified today. "
             "Re-check the highest-stakes claims in these against a freshly read primary source, correct or mark "
             "what doesn't hold, and set `last_verified:` (today) and `verified_against:` in each one you check:"
         )
@@ -2200,10 +2202,11 @@ def budget_record_run_cmd(
     )
     if cost.measured:
         typer.echo(
-            f"run cost: ${cost.usd:.2f} by claude's figure ({cost.measured} of {cost.attempts} attempt(s) measured)"
+            f"run cost: ${cost.usd:.2f} by claude's figure "
+            f"({cost.measured} of {count(cost.attempts, 'attempt')} measured)"
         )
     else:
-        typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+        typer.echo(f"run cost: not measured ({count(cost.attempts, 'transcript')} named {name}) — recorded $0")
 
 
 @budget_app.command("usage")
@@ -2252,7 +2255,7 @@ def budget_record_attempt_cmd(
     )
     attempt_usd = sum(a.usd for a in outcome.recorded)
     typer.echo(
-        f"attempt cost: ${attempt_usd:.2f} ({len(outcome.recorded)} attempt(s) recorded); "
+        f"attempt cost: ${attempt_usd:.2f} ({count(len(outcome.recorded), 'attempt')} recorded); "
         f"this run so far ${outcome.cost.usd:.2f}; {outcome.reason}",
         err=True,
     )
@@ -3982,7 +3985,7 @@ def _register_triggers() -> None:
         if triggers is None:
             typer.echo("triggers OK: (no triggers.yaml; no triggers configured)")
         else:
-            typer.echo(f"triggers OK: {path} ({len(triggers)} trigger(s))")
+            typer.echo(f"triggers OK: {path} ({count(len(triggers), 'trigger')})")
 
     @trigger_app.command("reload")
     def cli_trigger_reload() -> None:
@@ -4108,7 +4111,7 @@ def _register_triggers() -> None:
             typer.echo(_json.dumps({"days": days, "by_trigger": by_trigger, "by_day": by_day}))
             return
         if not by_trigger:
-            typer.echo(f"(no trigger fires in the last {days} day(s))")
+            typer.echo(f"(no trigger fires in the last {count(days, 'day')})")
             return
         for tid in sorted(by_trigger):
             e = by_trigger[tid]
@@ -4166,6 +4169,16 @@ def _register_notify() -> None:
             "--allow-duplicate",
             help="Send even if a byte-identical message went to this chat in the last 10 minutes.",
         ),
+        reply_to: int | None = typer.Option(
+            None,
+            "--reply-to",
+            help="Reply to this inbound message id (the newest one answered). Marks it answered once delivered.",
+        ),
+        covers: str | None = typer.Option(
+            None,
+            "--covers",
+            help="Comma-separated inbound message ids this reply also answers (needs --reply-to).",
+        ),
     ) -> None:
         """Send a Telegram message via the configured bot.
 
@@ -4174,6 +4187,18 @@ def _register_notify() -> None:
         import os as _os
 
         from scout.scripts.notify_telegram import cli_send
+
+        try:
+            covered = sorted({int(p) for p in (covers or "").split(",") if p.strip()})
+        except ValueError as e:
+            typer.echo(f"scoutctl notify telegram: --covers takes comma-separated message ids ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        if covered and reply_to is None:
+            typer.echo("scoutctl notify telegram: --covers needs --reply-to (a reply threads to a message)", err=True)
+            raise typer.Exit(code=1)
+        if any(i <= 0 for i in [*covered, *([reply_to] if reply_to is not None else [])]):
+            typer.echo("scoutctl notify telegram: message ids are positive integers", err=True)
+            raise typer.Exit(code=1)
 
         if body is not None and body_file is None:
             text = body
@@ -4198,6 +4223,8 @@ def _register_notify() -> None:
                 "body": text,
                 "allow_duplicate": allow_duplicate,
                 "dry_run": dry_run,
+                "reply_to": reply_to,
+                "covers": covered,
             }
             raise typer.Exit(code=broker.client_telegram(fields))
         code = cli_send(
@@ -4208,12 +4235,132 @@ def _register_notify() -> None:
             allow_duplicate=allow_duplicate,
             echo_out=typer.echo,
             echo_err=lambda line: typer.echo(line, err=True),
+            reply_to=reply_to,
+            covers=covered,
         )
         if code:
             raise typer.Exit(code=code)
 
 
 _register_notify()
+
+
+def _register_telegram() -> None:
+    """scoutctl telegram {find-chat-id, inbound-status, pending} — setup, observability and the unanswered
+    messages for inbound Telegram."""
+    telegram_app = typer.Typer(help="Inbound Telegram: find your chat id, check the poller, list unanswered messages.")
+    app.add_typer(telegram_app, name="telegram")
+
+    @telegram_app.command("find-chat-id")
+    def cli_telegram_find_chat_id() -> None:
+        """List the chats that have messaged the bot: private chats (sender's first name) and groups (title).
+
+        Reads only the bot token (the chat id may not exist yet). Polls with offset 0, so it
+        never confirms an update: the inbound trigger, or a later run, still sees every message.
+        """
+        from scout.errors import ConfigError
+        from scout.scripts.notify_telegram import _read_secret
+        from scout.telegram_inbound import bot
+
+        try:
+            token = _read_secret("telegram-bot-token")
+            updates = bot.get_updates(token=token, offset=0, http_post=bot.default_http_post)
+        except (ConfigError, bot.TelegramApiError) as e:
+            typer.echo(f"scoutctl telegram find-chat-id: {e}", err=True)
+            raise typer.Exit(code=1) from e
+
+        found: dict[int, str] = {}
+        for update in updates:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat")
+            if not isinstance(chat, dict) or type(chat.get("id")) is not int:
+                continue
+            if chat.get("type") == "private":
+                sender = message.get("from") or {}
+                label = str(sender.get("first_name") or chat.get("first_name") or "?")
+            elif chat.get("type") in ("group", "supergroup"):
+                label = f"{chat.get('title') or '?'}\tgroup (outbound only)"
+            else:
+                continue
+            found.setdefault(chat["id"], label)
+        if not found:
+            typer.echo(
+                "No chats found. Send your bot a message (any text), or add it to a group and post there, "
+                "then run this again. If you already did, the inbound trigger may have consumed the updates: "
+                "check `scoutctl telegram inbound-status`, or read telegram-chat-id from your own records."
+            )
+            return
+        for chat_id, label in found.items():
+            typer.echo(f"{chat_id}\t{label}")
+
+    @telegram_app.command("inbound-status")
+    def cli_telegram_inbound_status(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+    ) -> None:
+        """Show the inbound ledger counts and the poller's last poll and last error."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        ledger = Ledger(_paths.data_dir())
+        counts = ledger.counts()
+        state = ledger.get_poll_state()
+        last_poll_at = state.get("last_poll_at")
+        last_error = state.get("last_error")
+        if as_json:
+            typer.echo(_json.dumps({"counts": counts, "last_poll_at": last_poll_at, "last_error": last_error}))
+            return
+        typer.echo("messages: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        typer.echo(f"last poll: {last_poll_at or 'never'}")
+        typer.echo(f"last error: {last_error or 'none'}")
+
+    @telegram_app.command("pending")
+    def cli_telegram_pending(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+        ids: str | None = typer.Option(
+            None, "--ids", help="Comma-separated message ids: only these, and only those still unanswered."
+        ),
+        exclude_in_flight: bool = typer.Option(
+            False,
+            "--exclude-in-flight",
+            help="Leave out messages a respond run was given within the dispatch timeout (a scheduled run's drain).",
+        ),
+    ) -> None:
+        """Print the owner's unanswered Telegram messages (pending, dispatched, failed), oldest first.
+
+        The only place a run reads their text: the inbound ledger, which only trusted code writes.
+        Read-only: it never writes, locks or quarantines the ledger.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        wanted: set[int] | None = None
+        if ids is not None:
+            parts = [p.strip() for p in ids.split(",") if p.strip()]
+            if not all(p.isascii() and p.isdigit() and int(p) > 0 for p in parts):
+                typer.echo("scoutctl telegram pending: --ids takes comma-separated message ids", err=True)
+                raise typer.Exit(code=1)
+            wanted = {int(p) for p in parts}
+        try:
+            rows = Ledger(_paths.data_dir()).unanswered(exclude_in_flight=exclude_in_flight)
+        except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
+            typer.echo(f"scoutctl telegram pending: couldn't read the inbound ledger ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        keys = ("message_id", "date", "text", "reply_to_text", "forwarded", "kind", "state", "attempt")
+        out = [{k: getattr(m, k) for k in keys} for m in rows if wanted is None or m.message_id in wanted]
+        if as_json:
+            typer.echo(_json.dumps({"messages": out}, ensure_ascii=False))
+            return
+        for m in out:
+            typer.echo(f"{m['message_id']}\t{m['state']}\t{_json.dumps(m['text'], ensure_ascii=False)}")
+
+
+_register_telegram()
 
 
 health_app = typer.Typer(
@@ -4684,7 +4831,7 @@ def _register_bootstrap() -> None:
 
     @bootstrap_app.command("resolve")
     def cli_bootstrap_resolve(
-        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md and/or RESEARCH.md"),
+        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md, RESEARCH.md and/or RESPOND.md"),
     ) -> None:
         """Record a brain file's sidecar as resolved.
 
@@ -4700,7 +4847,7 @@ def _register_bootstrap() -> None:
         kinds = [f.upper().removesuffix(".MD") for f in files]
         unknown = [f for f, k in zip(files, kinds, strict=True) if k not in BRAIN_KINDS]
         if unknown:
-            expected = "expected SKILL.md, DREAMING.md or RESEARCH.md"
+            expected = "expected SKILL.md, DREAMING.md, RESEARCH.md or RESPOND.md"
             typer.echo(f"not a brain file: {', '.join(unknown)} ({expected})", err=True)
             raise typer.Exit(code=2)
         vault = _paths.data_dir()
@@ -5268,7 +5415,7 @@ def _register_bootstrap() -> None:
                     typer.echo(vault_drift.printable(fp.patch), nl=False)
                     produced += 1
             typer.echo(
-                f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "
+                f"{count(produced, 'file')} in the patch — apply with `git apply` in a plugin checkout, review it, "
                 "then open a PR"
                 if produced
                 else "nothing to back-port",
@@ -5285,13 +5432,19 @@ def _register_bootstrap() -> None:
             return
 
         if privacy:
-            typer.echo(f"privacy drift — {len(privacy)} vault file(s) read the vault around the privacy labels:")
+            typer.echo(
+                f"privacy drift — {count(len(privacy), 'vault file')} {agree(len(privacy), 'reads', 'read')} the vault "
+                "around the privacy labels:"
+            )
             for finding in privacy:
                 typer.echo(f"  {finding.rule:<18} {finding.path}  {finding.message}")
         if not rows:
             typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
             return
-        typer.echo(f"vault drift — {len(rows)} plugin-owned file(s) differ from what the plugin last wrote:")
+        typer.echo(
+            f"vault drift — {count(len(rows), 'plugin-owned file')} {agree(len(rows), 'differs', 'differ')} from what "
+            "the plugin last wrote:"
+        )
         for row in rows:
             typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
             if diff and row.diff:
@@ -5331,7 +5484,7 @@ def _register_phases() -> None:
 
     @phases_app.command("backport")
     def cli_phases_backport(
-        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | all"),
+        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | RESPOND | all"),
         apply: bool = typer.Option(
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
@@ -5345,7 +5498,7 @@ def _register_phases() -> None:
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
-        Diffs each vault SKILL/DREAMING/RESEARCH against its last-assembled
+        Diffs each vault SKILL/DREAMING/RESEARCH/RESPOND against its last-assembled
         snapshot, maps each divergence to a phase fragment, conservatively
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
@@ -5357,6 +5510,7 @@ def _register_phases() -> None:
         from scout import paths as _paths
         from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
+        from scout.scripts.brain_merge import BRAIN_KINDS
         from scout.scripts.phase_backport import (
             build_rendered_sections,
             bundle_files,
@@ -5378,7 +5532,7 @@ def _register_phases() -> None:
         vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
-        kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
+        kinds = list(BRAIN_KINDS) if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
 
         # Plan every kind once. A hunk in a core fragment shows up in each brain
@@ -5424,11 +5578,11 @@ def _register_phases() -> None:
             unmapped = [r for r in results if r.status == "unmapped"]
 
             typer.echo(
-                f"\nphases backport — {k} ({len(results)} hunk(s): "
+                f"\nphases backport — {k} ({count(len(results), 'hunk')}: "
                 f"{len(applied)} applied · {len(review)} needs-review · {len(unmapped)} unmapped)"
             )
             for r in applied:
-                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{len(r.added)} line(s))")
+                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{count(len(r.added), 'line')})")
             for r in review:
                 where = f"{r.phase_file} «{r.section_name}»" if r.phase_file else "—"
                 extra = f" [risky: {', '.join(r.risky_hits)}]" if r.risky_hits else ""
@@ -5447,7 +5601,7 @@ def _register_phases() -> None:
 
         if apply:
             typer.echo(
-                f"\nApplied {total_applied} hunk(s) to phases/. "
+                f"\nApplied {count(total_applied, 'hunk')} to phases/. "
                 "Review the diff, run the phase-assembly tests, commit, and open a PR."
             )
         else:
@@ -5701,12 +5855,12 @@ def _register_repo() -> None:
         for note in result.notes:
             typer.echo(note)
         if result.replayed:
-            typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
+            typer.echo(f"replayed {count(len(result.replayed), 'commit')} from Agnes")
         if result.action in ("link", "sync"):
             typer.echo(
-                f"pushed {len(result.pushed)} commit(s)"
+                f"pushed {count(len(result.pushed), 'commit')}"
                 + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
-                + (f"; {result.stripped} local-only file(s) kept on this computer" if result.stripped else "")
+                + (f"; {count(result.stripped, 'local-only file')} kept on this computer" if result.stripped else "")
             )
 
     @repo_app.command("link")
@@ -6079,10 +6233,10 @@ def _register_delegate() -> None:
             else:
                 verb = "would hold" if r.action == "preview" else "pushed a mirror commit with"
                 typer.echo(
-                    f"{r.delegate}: {verb} {r.files} file(s); {r.withheld} withheld"
+                    f"{r.delegate}: {verb} {count(r.files, 'file')}; {r.withheld} withheld"
                     + (f", {r.left_out} left out after redaction" if r.left_out else "")
                     + (
-                        f"; {r.redacted_lines} line(s) removed from {r.redacted_files} file(s)"
+                        f"; {count(r.redacted_lines, 'line')} removed from {count(r.redacted_files, 'file')}"
                         if r.redacted_files
                         else ""
                     )
@@ -6243,7 +6397,7 @@ def _register_delegate() -> None:
         if as_json:
             typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
             return
-        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {result.files} file(s) visible to it")
+        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {count(result.files, 'file')} visible to it")
         for note in result.notes:
             typer.echo(f"warning: {note}")
         if result.env_file:
@@ -6283,7 +6437,7 @@ def _register_delegate() -> None:
         for k, v in sorted(links.items()):
             key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
             if v.stale_key_ids:
-                key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
+                key += f", {count(len(v.stale_key_ids), 'old key')} still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
             typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
 

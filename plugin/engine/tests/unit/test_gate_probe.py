@@ -385,7 +385,7 @@ def _hook_flags(words: list[str]) -> list[str]:
 def test_probe_flags_match_the_runners_launch() -> None:
     """PROBE_FLAGS is a copy of the runners' flags that can matter to hooks; keep them in step (review #635)."""
     templates = Path(gate_probe.default_plugin_root()) / "templates"
-    for name in ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"):
+    for name in ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl", "run-respond.sh.tmpl"):
         assert _launch_flags((templates / name).read_text(encoding="utf-8")) == list(gate_probe.PROBE_FLAGS), name
 
 

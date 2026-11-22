@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from scout.plural import noun
 from scout.scripts.bootstrap import (
     BootstrapConfig,
     InstallResult,
@@ -71,7 +72,8 @@ def detect(vault: Path) -> Plan:
     if sidecars:
         return Plan(
             AutoAction.REFUSED,
-            f"unresolved proposed-merge sidecar(s): {sidecars} — edit each, `mv X.proposed-merge X`, then re-run",
+            f"unresolved proposed-merge {noun(len(sidecars), 'sidecar')}: {sidecars} — edit each, "
+            "`mv X.proposed-merge X`, then re-run",
         )
     if install_incomplete(vault):
         return Plan(AutoAction.INSTALL, "resuming an interrupted install")

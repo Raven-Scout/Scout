@@ -22,7 +22,7 @@ DERIVE_CHUNK = 500
 # How far back the first watermark scan reads (no mark yet, or its commit is gone from the repository).
 FALLBACK_WINDOW = timedelta(days=14)
 
-BRAIN_FILES = frozenset({"SKILL.md", "DREAMING.md", "RESEARCH.md"})
+BRAIN_FILES = frozenset({"SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md"})
 _PHASE_LANES = ("briefing", "consolidation", "dreaming", "research", "work")
 _UPDATE_PREFIXES = ("scout-update:", "upgrade", "chore(scout-update)")
 _PREFIX_RE = re.compile(r"^(?:(?:briefing|consolidation|dreaming|research|work|trading) \[[^\]]*\]|scout):\s*")

@@ -48,7 +48,19 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # is the limit (+~36 in every mode); Step 1e words a suspect `undo` would refuse, reports a blocked undo once, and says
 # the move into `applied/` is what makes a governance change (+~315 DREAMING). The pins also absorb drift already on
 # the branch (+1,341 SKILL, +182 DREAMING, +367 RESEARCH, which had left RESEARCH 2 tokens under the limit).
-PINS = {"SKILL": 45_990, "DREAMING": 23_376, "RESEARCH": 7_779}
+# 2026-11-21 (immediate response, spec §5): SKILL re-pinned to its measure. connectors/telegram.md's "Messages
+# waiting from <owner>" (+~386): briefings and consolidations answer the Telegram messages no respond run did,
+# and SKILL.md doesn't carry RESPOND.md, so the section restates the data-not-instructions rule, the guardrails,
+# the `tg:<ids>` commit subject and the one reply. SKILL also absorbs drift already present, which had left it
+# about 26 tokens under the limit.
+# 2026-11-22 (immediate response review): RESPOND first pinned, at its measure. The waiting-messages drain moved
+# out of the Telegram wrap section into its own `update` slot, so a Slack-only wrap still answers (+~214 SKILL,
+# inside its headroom: the section now states its own HTML rule instead of pointing at the wrap's).
+# 2026-11-22 (changes map plan 2, merge with main): all four re-pinned to their measure on the merged tree. On top of
+# main's pins this carries plan 2's phase text: feedback processing's signal recording, Step 1e and the restored
+# opt-out proposals (DREAMING +~3,600), and, in every mode RESPOND included (main added it to git-setup), git-setup's
+# change trailers and privacy's dm-sent record (RESPOND +~450).
+PINS = {"SKILL": 48_142, "DREAMING": 24_479, "RESEARCH": 8_061, "RESPOND": 6_490}
 GROWTH = 0.05
 SHRINK = 0.10
 
