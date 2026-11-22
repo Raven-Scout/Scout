@@ -75,6 +75,7 @@ nonisolated enum DisplayName {
         "consolidation":   "Consolidation",
         "dreaming":        "Dreaming",
         "research":        "Research",
+        "respond":         "Telegram reply",
         "manual":          "Manual run",
     ]
 
@@ -168,6 +169,11 @@ nonisolated enum DisplayName {
         "dreamingnightly":        "Nightly dreaming",
         "dreamingweekendmorning": "Weekend morning dreaming",
         "research":               "Research",
+        // Not schedules: the run-ledger slot of a Telegram reply, started by
+        // the inbound trigger (`scout-respond`, the skill it runs) or by hand
+        // (`respond`). Listed so the run reads "Telegram reply" either way.
+        "respond":                "Telegram reply",
+        "scoutrespond":           "Telegram reply",
     ]
 
     static func slotType(_ type: SlotType) -> String {

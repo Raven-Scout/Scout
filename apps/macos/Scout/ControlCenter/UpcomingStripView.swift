@@ -110,6 +110,7 @@ struct UpcomingStripView: View {
         if s.contains("dreaming")      { return "tidies notes" }
         if s.contains("briefing")      { return "today's action items" }
         if s.contains("research")      { return "news on your topics" }
+        if s.contains("respond")       { return "answers your messages" }
         return ""
     }
 

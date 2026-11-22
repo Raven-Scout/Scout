@@ -12,6 +12,8 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
     case briefing
     case dreaming
     case research
+    /// `respond [HH:MM]: tg:<ids> — …`, from a Telegram reply.
+    case respond
 
     static func of(subject: String) -> CommitFamily? {
         for family in allCases where subject.hasPrefix(family.rawValue) {
@@ -28,6 +30,7 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
         case .weekendBriefing, .briefing, .consolidation: return "run-scout.sh"
         case .dreaming: return "run-dreaming.sh"
         case .research: return "run-research.sh"
+        case .respond:  return "run-respond.sh"
         }
     }
 
@@ -38,6 +41,7 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
         case .consolidation:   return "Consolidation"
         case .dreaming:        return "Dreaming"
         case .research:        return "Research"
+        case .respond:         return DisplayName.runType(.respond)
         }
     }
 }
