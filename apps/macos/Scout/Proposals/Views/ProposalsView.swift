@@ -187,7 +187,7 @@ struct ProposalsView: View {
         guard let change = try await writer.decide(
             decision,
             fileURL: proposal.fileURL,
-            label: proposal.title
+            label: proposal.displayTitle
         ) else { return }
         vaultUndo.register(
             .restoring(change) { change, direction in try await writer.restore(change, direction) },

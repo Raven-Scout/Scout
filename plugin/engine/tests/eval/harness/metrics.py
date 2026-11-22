@@ -42,6 +42,9 @@ class ToolCall:
     # The Scout PreToolUse gate that denied the call (``kb-read-gate``, ``outbound-gate``), read from
     # the ``[scout:<gate>]`` mark its error result carries; None when it ran. None in an older metrics.json.
     gate: str | None = None
+    # Claude Code's own permission check refused it (the result's ``permission_denials``), not a hook or the
+    # tool. False in an older metrics.json.
+    denied: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,8 +151,17 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
         elif kind == "result":
             result = event
     total = len(uses)
+    denied = {d.get("tool_use_id") for d in result.get("permission_denials") or [] if isinstance(d, dict)}
     calls = tuple(
-        ToolCall(seq=i, name=name, input=inp, is_error=tid in errors, position=_position(i, total), gate=gates.get(tid))
+        ToolCall(
+            seq=i,
+            name=name,
+            input=inp,
+            is_error=tid in errors,
+            position=_position(i, total),
+            gate=gates.get(tid),
+            denied=bool(tid) and tid in denied,
+        )
         for i, (tid, name, inp) in enumerate(uses, start=1)
     )
     usage = result.get("usage") or {}

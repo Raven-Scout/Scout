@@ -232,7 +232,7 @@ struct EngineSettingsModelTests {
     private let limitLog = "/Users/alex/Scout/.scout-logs/scout-2026-10-13_13-00.log"
     private func paused(until: String?) -> RunHealth.Finding {
         RunHealth.Finding(id: "runs.paused", severity: "yellow", since: nil,
-                          summary: "Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 5 scheduled run(s) failed on the limit.",
+                          summary: "Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 5 scheduled runs failed on the limit.",
                           fix: "Nothing to fix: the first scheduled run after the reset picks up.", source: "ledger",
                           detail: limitLine, log: limitLog, until: until)
     }
@@ -257,12 +257,12 @@ struct EngineSettingsModelTests {
 
     @Test func runsRowFailingShowsTheErrorLineFixAndLog() {
         let failing = RunHealth.Finding(id: "runs.failing", severity: "red", since: nil,
-                                        summary: "The last 2 scheduled run(s) failed (network).", fix: "Run scoutctl bootstrap doctor",
+                                        summary: "The last 2 scheduled runs failed (network).", fix: "Run scoutctl bootstrap doctor",
                                         source: "ledger", detail: "API Error: Connection error (ECONNRESET)", log: "/v/.scout-logs/x.log")
         let m = model(runHealth(.red, findings: [failing]))
         #expect(m.runsLabel == "Failing")
         #expect(!m.runsIsPaused)
-        #expect(m.runsHelp == "The last 2 scheduled run(s) failed (network).")
+        #expect(m.runsHelp == "The last 2 scheduled runs failed (network).")
         #expect(m.runsDetail == "API Error: Connection error (ECONNRESET)")
         #expect(m.runsFix == "Run scoutctl bootstrap doctor")
         #expect(m.runsLogURL == URL(fileURLWithPath: "/v/.scout-logs/x.log"))

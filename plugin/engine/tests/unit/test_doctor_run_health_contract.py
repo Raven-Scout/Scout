@@ -221,5 +221,5 @@ def test_the_fixture_models_a_state_the_engine_can_reach(tmp_path, monkeypatch):
         if slot["last_outcome"] is not None:
             assert fire >= parse(slot["last_outcome"]["finished_at"]) - timedelta(seconds=5), slot
     auth = next(f for f in rh["findings"] if f["id"] == "auth.expired")
-    assert "2 failed run(s)" in auth["summary"]
+    assert "2 failed runs" in auth["summary"]
     assert any(f["id"] == "slot.fired_silent:weekly-research" for f in rh["findings"])

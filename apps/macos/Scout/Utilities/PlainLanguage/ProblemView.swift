@@ -36,6 +36,16 @@ struct ProblemView: View {
 
     @State private var showDetails = false
     @State private var copied = false
+    /// "Resolve with Claude" couldn't build its prompt or launch.
+    @State private var launchError: String?
+    @Environment(\.resolvePromptService) private var resolveService
+
+    /// Whether the problem gets "Resolve with Claude": it names something to investigate and
+    /// the app gave this view the engine's prompt service. (The button itself also waits for
+    /// the engine to advertise `resolve_prompt_v1`.)
+    static func showsResolve(problem: Problem, service: ResolvePromptService?) -> Bool {
+        problem.resolveSubject != nil && service != nil
+    }
 
     var body: some View {
         switch style {
@@ -67,19 +77,21 @@ struct ProblemView: View {
     }
 
     /// What happened, why it matters, what to do, the buttons and the details.
+    /// The engine writes commands in backticks; `PlainText.codeSpans` sets
+    /// them in monospace instead of showing the backticks (UI audit T3).
     @ViewBuilder private var lines: some View {
-        Text(problem.title)
+        Text(PlainText.codeSpans(problem.title))
             .font(DS.font(.label, weight: .semibold))
             .foregroundStyle(DS.Ink.p1)
             .fixedSize(horizontal: false, vertical: true)
         if let impact = problem.impact {
-            Text(impact)
+            Text(PlainText.codeSpans(impact))
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let fix = problem.fix {
-            (Text("What to do: ").fontWeight(.semibold) + Text(fix))
+            (Text("What to do: ").fontWeight(.semibold) + Text(PlainText.codeSpans(fix)))
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
@@ -98,8 +110,12 @@ struct ProblemView: View {
     }
 
     @ViewBuilder private var buttons: some View {
-        if !actions.isEmpty || problem.details != nil {
+        let resolves = Self.showsResolve(problem: problem, service: resolveService)
+        if !actions.isEmpty || problem.details != nil || resolves {
             DSBannerActions(actions: actions) {
+                if resolves, let subject = problem.resolveSubject, let resolveService {
+                    ResolveWithClaudeButton(subject: subject, service: resolveService, launchError: $launchError)
+                }
                 if problem.details != nil {
                     Button(showDetails ? "Hide details" : "Details") { showDetails.toggle() }
                         .buttonStyle(.ds(.link, size: .small))
@@ -114,6 +130,12 @@ struct ProblemView: View {
                     .buttonStyle(.ds(.link, size: .small))
                 }
             }
+        }
+        if let launchError {
+            Text(launchError)
+                .font(DS.font(.caption))
+                .foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

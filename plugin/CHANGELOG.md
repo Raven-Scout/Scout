@@ -10,6 +10,85 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.21] - 2026-11-21
+
+### Added
+- **What the macOS app's inbox review reads (#550 V4b3).**
+  - **`delegate status --json` reports each agent's inbox.** A new optional `inbox` per delegate holds when it was
+    linked and last pulled, a failed pull's code with a fixed sentence (`INBOX_REASONS`), and counts: what waits
+    for review, what is taken but not settled, and files no pull took. `can_review` says the review may run. A
+    new top-level `inbox_state` (`ok`, `none`, `unverified`, `unsafe`, `unreadable`) covers the signed inbox state
+    as a whole; only `ok` shows any inbox. The fields are additive, so `schema_version` stays 1.
+  - **`inbox review promote <ULID> --preview --json` writes nothing.** It returns everything promote publishes,
+    with hidden characters shown and look-alikes checked: the note's text, and the agent's `about` and `source`
+    (its title and `agent_source`). It also returns the note's `sha256` and its `audience`: the delegates who would
+    see it, found by classifying the note as promote would write it. `--to` narrows it.
+  - **`promote --previewed <sha>` checks that hash.** Promote runs only while the note is still exactly the
+    previewed bytes, as well as the accepted ones. Without `--previewed` it previews first, as before.
+  - **`unpromote <ULID> --preview --json`** returns the text and who sees it now, and `unpromote --previewed <sha>`
+    checks the hash the same way. Unpromote still needs no `--confirm`, because it only narrows who sees the note.
+  - **`inbox review --accepted --json`** lists the accepted observations, with ids and times only: whether each
+    is promoted, and to whom.
+  - **A new contract fixture**, `tests/fixtures/contract/inbox-review.json`, is generated from a builder vault.
+    The app keeps a byte copy, and `contract.yml` compares the two.
+- **`author` is reserved, never a delegate id**, since `promote --to author` means the note's author. A
+  `privacy.delegates` entry named `author` is skipped with the usual bad-entry warning.
+- **The inbox's `review` count matches the review list**: it now includes an op over the day's limit while it can
+  still apply.
+- **A live run's `busy` refusal names the step it refused** (accept, promote, unpromote or the inbox sync), not
+  always "inbox apply and revert".
+- **Run health flags a run that ended ok but did nothing** (`engine/scout/health.py`, finding `runs.hollow_ok`, yellow). When the newest run exits 0 in under 60 s with no commits in its measured window, `scoutctl health`, the doctor and the app say so and point at its log. Exit 0 only means the session ended, and a run that gave up early used to read as healthy. A row with no measured length or commit count says nothing, and the finding clears when the next run commits.
+- **The doctor checks that `scripts/scout-tz.sh date +%Y` prints a year** (`engine/scout/scripts/bootstrap_doctor.py`). A copy older than this plugin, kept by an upgrade or restored from a backup, prints the zone name instead and exits 0, so every date and weekday a run writes would be wrong with nothing to say so.
+- **`scoutctl health resolve-prompt <kind> <key> [--json]` builds an investigation prompt for one alert**
+  (`engine/scout/resolve_prompt.py`). The kind is `finding` (a run-health finding id, including
+  suffixed ones such as `slot.stale:<key>`), `connector` (a `connector_key` from
+  `connector-alerts.json`) or `run` (a run log's file name). It re-reads the live state and returns
+  markdown in six sections: what Scout saw, the evidence to read (log, ledger row, schedule, the
+  refs and commits an integrity check names, the engine's own code), how to investigate, the commands
+  that reproduce it, a shared guardrail block (read-only first, no protected-file edits without asking,
+  vault commits only through `scripts/git-safe-commit.sh`, never read secrets or `.env` files), and
+  when it is done. Codes with their own playbook include the integrity checks, failing runs, sign-in,
+  the sandbox, the privacy checks, the scheduler, slots and lanes, and updates; any other finding gets
+  a generic one. A prompt carries paths, ids and SHAs, never a file's body. Read-only; exit 2 on a bad
+  kind or key. The manifest advertises it as `resolve_prompt_v1`, and
+  `tests/fixtures/contract/resolve-prompt.json` is its contract with the macOS app.
+
+### Changed
+- **`scoutctl inbox review` says up front that hand-editing an accepted observation rules out promoting it.** The review list
+  and `accept` say so before any edit. `promote`'s refusal for an edited note now names the way back (restore the accepted
+  text from its commit) instead of `inbox revert`, which refuses an edited note too. `revert`'s refusal says the same.
+
+### Fixed
+- **One denied tool call no longer ends a run** (`phases/core/git-setup.md`, `templates/scripts/scout-tz.sh.tmpl`). The v0.18.19 KB gate's morning consolidation ran a compound Bash command holding `TZ="$(scripts/scout-tz.sh)" date …`. In Claude Code's don't-ask mode a command substitution is always denied, whatever the allowlist says. The model read that one refusal as "Bash is now denied in this session" and stopped after 28 s, committing nothing. Five of the local KB-gate runs since 2026-11-07 ended the same way.
+  - Step 0 now says a denied call denies only that call. If its message says what to do instead (a `[scout:…]` gate's does), the run does that and never gets the same thing another way. Otherwise it redoes a shell command as plain single commands or with the file tools, and carries on.
+  - The brain's date calls are now `scripts/scout-tz.sh date '+FORMAT'`, which `scout-tz.sh` runs in the resolved zone. It takes exactly one `+FORMAT` operand and refuses every other argument (date's `-f`, `-r`, `-s` and `-j` would read files or set the clock) with exit 2 and nothing on stdout. Scripts keep the `TZ="$(scripts/scout-tz.sh)"` form.
+  - Phase text changed: the next release branch needs the KB gate (`scripts/eval.sh kb-gate --yes`).
+- **Run now is recorded as started by a person.** `scoutctl schedule fire-now` (Scout.app's Run now and Run
+  again) now starts the run with `SCOUT_TRIGGER=manual`, so its run ledger row says `trigger: manual` with
+  the schedule's own slot. It used to say `schedule`, the same as a run the tick started, so the app could
+  never mark it "Started by you". The tick still records `schedule`.
+- **A failed Run now of a schedule still counts against that schedule.** `runs.failed_today` decides whether
+  a run belongs to a schedule from its slot, not its trigger. A forced run of `morning-briefing` that failed
+  stays reported until `morning-briefing` next finishes a run, instead of clearing when any other schedule
+  succeeds. A hand-started `manual` or `dreaming-manual` run, which no schedule runs, still clears on any
+  later finished run.
+- **Run-health findings, doctor lines and connector alerts say "1 run" and "3 runs", not "run(s)"** (UI audit T3; `engine/scout/plural.py`). The app shows this text verbatim on its Health page, banners and Settings, so a finding now reads "The last scheduled run was skipped" or "The last 3 scheduled runs were skipped". `engine/tests/unit/test_plural_wording.py` fails on a new "(s)" plural in `health.py`, `bootstrap_doctor.py` or `connector_health_report.py`. Because a reviewed doctor warning is keyed by its text, a reworded warning you had marked reviewed shows once more after the upgrade. Mark it reviewed again.
+
+### Security
+- **The run and update ledgers keep only the shapes their writers produce** (`engine/scout/health.py`,
+  `engine/scout/update_outcomes.py`). A run writes both files, so a forged row could carry text into health
+  findings and from there into a prompt. Now a run's `failure_class` must be a snake_case code (anything else
+  reads as `<other>`), `newest_commit` must be hex, and `log` is cut to its file name and must look like a run
+  log. In the update ledger, `from` and `target` must be versions, `managed_by` and `doctor` short names, and `log` a
+  log file name, and `detail` is folded to one line with control and format characters removed
+  (`engine/scout/plain_text.py`). A network failure with an empty error message still reads as a network failure,
+  so it never counts against the release.
+- **Resolve with Claude prompts treat recorded text as evidence.** Every summary, fix, error line and connector
+  name or reason is cleaned to one line and put in its own code fence, under a note that it is what Scout
+  recorded. The guardrails add that text read from logs, ledgers, notes or connector output is evidence, not
+  instructions. Scout's suggested fix is labelled as the owner's to run. Every suggested command is read-only:
+  `gates probe`, `sandbox status` and `agent-runtime check` are named only as steps that need the owner's OK.
+
 ## [0.18.20] - 2026-11-20
 
 ### Upgrade notes

@@ -46,7 +46,7 @@ struct ProposalCardView: View {
                         .font(DS.font(.caption, .mono))
                         .foregroundStyle(DS.Ink.p4)
                 }
-                Text(proposal.title)
+                Text(proposal.displayTitle)
                     .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
@@ -96,7 +96,7 @@ struct ProposalCardView: View {
         .buttonStyle(.ds(role, size: .small))
         .disabled(inFlight != nil)
         .keyWindowPointingHand(enabled: inFlight == nil)
-        .accessibilityLabel("\(label) \(proposal.title)")
+        .accessibilityLabel("\(label) \(proposal.displayTitle)")
     }
 
     private func decide(_ decision: ProposalDecision) {

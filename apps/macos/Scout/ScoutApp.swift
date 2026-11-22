@@ -40,6 +40,7 @@ struct ScoutApp: App {
         Window("Scout", id: "main") {
             MainWindowView()
                 .environmentObject(appState)
+                .environment(\.resolvePromptService, appState.resolvePromptService)
                 .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(updates)
                 .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
@@ -66,6 +67,7 @@ struct ScoutApp: App {
         MenuBarExtra {
             MenuBarExtraContent()
                 .environmentObject(appState)
+                .environment(\.resolvePromptService, appState.resolvePromptService)
                 .environmentObject(updates)
         } label: {
             MenuBarIcon(status: appState.status, updateAvailable: updates.anyUpdateAvailable)

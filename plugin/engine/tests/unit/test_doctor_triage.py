@@ -333,7 +333,7 @@ def test_the_privacy_audit_count_is_never_reviewable(vault: Path, home: Path, mo
     from scout.scripts import bootstrap_doctor
 
     # A rolling 7-day count: next week's two new blocked sends read exactly like this week's two.
-    line = "privacy: 2 blocked outbound check(s) or denied read(s) in the last 7 days (.scout-logs/kb-reads.jsonl)"
+    line = "privacy: 2 blocked outbound checks or denied reads in the last 7 days (.scout-logs/kb-reads.jsonl)"
     monkeypatch.setattr(bootstrap_doctor, "_check_privacy_audit", lambda **_: [line])
     audit = next(e for e in _doctor(vault, home)["warning_triage"] if e["summary"] == line)
     assert audit["reviewable"] is False and audit["risk"] == "high" and audit["id"].startswith("protection.")

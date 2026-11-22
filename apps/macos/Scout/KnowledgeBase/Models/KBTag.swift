@@ -21,7 +21,7 @@ import Foundation
 ///
 /// Matches inside existing markdown links, wikilinks and inline code spans are
 /// left untouched, so already-formatted content isn't corrupted.
-enum KBTag {
+nonisolated enum KBTag {
     /// URL scheme for a tag click. Paired with `EnvironmentValues.kbTagHandler`.
     static let scheme = "scout-tag"
 

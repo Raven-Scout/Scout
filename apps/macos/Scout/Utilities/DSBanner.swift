@@ -110,18 +110,20 @@ struct DSBanner<Content: View>: View {
 }
 
 /// A banner's standard lines: a title, an optional message, and buttons.
+/// Backtick code spans (engine text names commands that way) show in
+/// monospace without their backticks (UI audit T3).
 struct DSBannerText: View {
     let title: String
     var message: String? = nil
     var actions: [ProblemAction] = []
 
     var body: some View {
-        Text(title)
+        Text(PlainText.codeSpans(title))
             .font(DS.font(.label, weight: .semibold))
             .foregroundStyle(DS.Ink.p1)
             .fixedSize(horizontal: false, vertical: true)
         if let message {
-            Text(message)
+            Text(PlainText.codeSpans(message))
                 .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)

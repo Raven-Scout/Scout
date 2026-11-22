@@ -5,7 +5,7 @@
       "first_seen": "2026-04-27T13:00:00Z",
       "level": "CRITICAL",
       "name": "Slack",
-      "reason": "2 failed call(s) in `morning-briefing` run; 2/3 prior `morning-briefing` runs were healthy; dark for 2 run(s) total; last healthy Apr 25 08:00 EDT",
+      "reason": "2 failed calls in `morning-briefing` run; 2/3 prior `morning-briefing` runs were healthy; dark for 2 runs total; last healthy Apr 25 08:00 EDT",
       "ts": "2026-04-28T13:00:00Z"
     },
     {

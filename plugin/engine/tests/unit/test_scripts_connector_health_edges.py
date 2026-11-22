@@ -524,7 +524,7 @@ def test_main_summarizes_the_report(monkeypatch: pytest.MonkeyPatch, capsys: pyt
         ),
     )
     assert chr_mod.main() == 0
-    assert "7 sessions in window, 2 alert(s)" in capsys.readouterr().out
+    assert "7 sessions in window, 2 alerts" in capsys.readouterr().out
 
 
 def test_main_requests_the_cleanup_pass(monkeypatch: pytest.MonkeyPatch) -> None:

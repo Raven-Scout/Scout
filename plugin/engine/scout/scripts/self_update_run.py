@@ -54,6 +54,8 @@ RETRY_AFTER_FAILURE = timedelta(hours=24)
 MAX_FAILURES_PER_TARGET = 3
 SLOT_LOOKAHEAD = timedelta(minutes=45)
 NETWORK_PREFIX = "network: "
+# The ledger folds `detail` to one clean line, so an empty error reads back as "network:", without the space.
+_NETWORK_MARK = NETWORK_PREFIX.rstrip()
 _LOCK_BUSY_MARK = "held by live PID"
 _STEP_TIMEOUT_S = 900
 _DETAIL_MAX = 300
@@ -212,7 +214,7 @@ def scheduled_gate(deps: Deps, rows: list[UpdateOutcome]) -> str | None:
 def _target_backoff(rows: list[UpdateOutcome], target: str, *, now: datetime) -> str | None:
     # A network outage says nothing about the release itself, so it never counts against it.
     failures = [
-        r for r in rows if r.result == "failed" and r.target == target and not r.detail.startswith(NETWORK_PREFIX)
+        r for r in rows if r.result == "failed" and r.target == target and not r.detail.startswith(_NETWORK_MARK)
     ]
     if len(failures) >= MAX_FAILURES_PER_TARGET:
         return f"{target} failed {len(failures)} times; waiting for a newer release or --force"
@@ -224,7 +226,7 @@ def _target_backoff(rows: list[UpdateOutcome], target: str, *, now: datetime) ->
 def _trailing_network_failures(rows: list[UpdateOutcome]) -> int:
     count = 0
     for row in reversed(rows):
-        if row.step == "check" and row.result in ("deferred", "failed") and row.detail.startswith(NETWORK_PREFIX):
+        if row.step == "check" and row.result in ("deferred", "failed") and row.detail.startswith(_NETWORK_MARK):
             if row.result == "failed":
                 break
             count += 1

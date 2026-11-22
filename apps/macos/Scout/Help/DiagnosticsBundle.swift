@@ -180,7 +180,7 @@ nonisolated struct DiagnosticsCollector: Sendable {
         }
         var lines = ["This engine has no `scoutctl diagnostics` (engines after 0.18.14 have it); showing the doctor's summary."]
         if let doctor {
-            lines.append("Doctor: \(doctor.severity.rawValue) · \(doctor.errors.count) error(s), \(doctor.warnings.count) warning(s)")
+            lines.append("Doctor: \(doctor.severity.rawValue) · \(PlainText.count(doctor.errors.count, "error")), \(PlainText.count(doctor.warnings.count, "warning"))")
             if let rh = doctor.runHealth {
                 lines.append("Run health: \(rh.severity.rawValue)")
                 for f in rh.findings { lines.append("  \(f.severity) \(f.id) (\(f.source))") }
@@ -199,7 +199,7 @@ nonisolated struct DiagnosticsCollector: Sendable {
             if let end = run.endedAt { parts.append("\(Int(end.timeIntervalSince(run.startedAt)))s") }
             if let code = run.exitCode { parts.append("exit \(code)") }
             if let model = run.model { parts.append("model \(model)") }
-            if !run.errorsDetected.isEmpty { parts.append("\(run.errorsDetected.count) error line(s)") }
+            if !run.errorsDetected.isEmpty { parts.append(PlainText.count(run.errorsDetected.count, "error line")) }
             return parts.joined(separator: " · ")
         }.joined(separator: "\n")
     }

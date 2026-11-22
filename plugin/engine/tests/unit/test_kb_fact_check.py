@@ -301,7 +301,7 @@ def test_an_accepted_skip_is_recorded_and_doctor_notes_repeats(kb_repo, monkeypa
     logged = "".join(p.read_text() for p in (kb_repo.root / ".scout-logs").glob("schedule-events-*.jsonl"))
     assert SKIP_EVENT in logged and "unreachable" not in logged  # never the reason's text
     [doctor_note] = _check_fact_check_skips(vault=kb_repo.root, now=now)
-    assert "skipped 3 time(s)" in doctor_note
+    assert "skipped 3 times" in doctor_note
 
 
 def test_a_refused_skip_is_not_recorded(kb_repo) -> None:

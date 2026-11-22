@@ -12,7 +12,7 @@
         "severity": "red",
         "since": "2026-10-07T08:01:00Z",
         "source": "ledger",
-        "summary": "Scout can't run: your Claude login expired. 2 failed run(s) since the last success (2026-10-07T08:01:00Z).",
+        "summary": "Scout can't run: your Claude login expired. 2 failed runs since the last success (2026-10-07T08:01:00Z).",
         "until": null
       },
       {
@@ -84,15 +84,15 @@
   ],
   "warning_triage": [
     {
-      "fingerprint": "d315c1a377c5eac8",
-      "id": "protection.f7791e49de64",
+      "fingerprint": "d8b00c86080b1191",
+      "id": "protection.90742a4d3a52",
       "items": [],
       "kind": "protection",
       "reason": "it is about privacy or run protection, so it can't be marked reviewed",
       "reviewable": false,
       "reviewed_at": null,
       "risk": "high",
-      "summary": "privacy: 1 blocked outbound check(s) or denied read(s) in the last 7 days (.scout-logs/kb-reads.jsonl) \u2014 a run reached for a shared surface with private content; the content was held back, but check what the runs were trying to send"
+      "summary": "privacy: 1 blocked outbound check or denied read in the last 7 days (.scout-logs/kb-reads.jsonl) \u2014 a run reached for a shared surface with private content; the content was held back, but check what the runs were trying to send"
     },
     {
       "fingerprint": "3b80e6d1fdf7835d",
@@ -134,7 +134,7 @@
     }
   ],
   "warnings": [
-    "privacy: 1 blocked outbound check(s) or denied read(s) in the last 7 days (.scout-logs/kb-reads.jsonl) \u2014 a run reached for a shared surface with private content; the content was held back, but check what the runs were trying to send",
+    "privacy: 1 blocked outbound check or denied read in the last 7 days (.scout-logs/kb-reads.jsonl) \u2014 a run reached for a shared surface with private content; the content was held back, but check what the runs were trying to send",
     "privacy: 2 vault scripts read the knowledge base directly, not through `scoutctl kb`, but mention no way to send what they read and no other vault script runs them, so their output likely stays in the vault: scripts/link-check.py, scripts/tag-audit.py. To fix, check they only feed checks inside the vault, then mark this warning reviewed; or make them read through `scoutctl kb files`; `scoutctl bootstrap drift` lists them all.",
     "privacy: scripts/weekly-digest.py reads the knowledge base directly, not through `scoutctl kb`, so what it produces carries no privacy labels. Read it through `scoutctl kb files` (and `scoutctl kb read`), and tag each item it produces with its source file's visibility; send an item from a private file only to an owner-only channel (the daily file, Telegram to your private chat), never Slack (#453)."
   ]
