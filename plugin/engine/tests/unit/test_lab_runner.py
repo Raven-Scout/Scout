@@ -392,7 +392,7 @@ def test_deny_list_collapses_wholly_private_folders(tmp_path: Path, monkeypatch:
     exp.mkdir()
     (exp / "script.py").write_text("print(1)\n")
     exp_real = os.path.realpath(exp)
-    denied = runner._deny_reads(vault, exp_real)
+    denied, _ = runner._deny_reads(vault, exp_real)
     assert personal in denied and vault / h.PRIVATE_NOTE in denied
     assert vault / h.NORMAL_NOTE not in denied
     assert not any(p.is_relative_to(personal) and p != personal for p in denied)
@@ -400,10 +400,41 @@ def test_deny_list_collapses_wholly_private_folders(tmp_path: Path, monkeypatch:
 
     # No labels (they couldn't be read): every KB file but the experiment's own is denied.
     monkeypatch.setattr(runner, "visibility_map", lambda *a, **k: {})
-    denied = runner._deny_reads(vault, exp_real)
+    denied, _ = runner._deny_reads(vault, exp_real)
     assert vault / "knowledge-base" / "people" in denied
     assert paths.front_page(vault, h.SLUG) in denied
     assert not any(_touches(p, exp) for p in denied)
+
+
+def test_private_lab_folders_are_denied_whole_even_before_they_exist(tmp_path: Path) -> None:
+    """I4: a private thread's folder and a private experiment's folder are denied as folders, so an output the
+    private experiment writes later is denied too; the running experiment's own folder never is."""
+    vault = h.make_vault(tmp_path)
+    side = paths.thread_dir(vault, "side")
+    side.mkdir()
+    (side / "side.md").write_text("---\ntype: lab-thread\nvisibility: private\n---\n# Side\n", "utf-8")
+    e1 = paths.experiment_note(vault, h.SLUG, "E1")
+    assert e1 is not None
+    e1.write_text(
+        e1.read_text("utf-8").replace("type: lab-experiment\n", "type: lab-experiment\nvisibility: private\n")
+    )
+    assert not paths.experiment_dir(e1).exists()
+    exp_real = os.path.realpath(h.exp_dir(vault))
+    files, folders = runner._deny_reads(vault, exp_real)
+    assert folders == [paths.experiment_dir(e1)]  # it doesn't exist yet: only a folder deny covers it
+    assert side in files and not any(p.is_relative_to(side) and p != side for p in files)  # a folder: a subpath
+    assert e1 in files  # the note itself, by its own label
+    text = runner.sandbox.experiment_profile(
+        h.exp_dir(vault), h.exp_dir(vault) / ".tmp", Path("/tmp/s"), files, [], env={}, deny_read_dirs=folders
+    )
+    assert f'(subpath "{os.path.realpath(paths.experiment_dir(e1))}")' in text
+    # A private thread holding the (normal) experiment: its other files are denied, its own folder isn't.
+    front = paths.front_page(vault, h.SLUG)
+    front.write_text(front.read_text("utf-8").replace("visibility: normal", "visibility: private"), "utf-8")
+    files, folders = runner._deny_reads(vault, exp_real)
+    assert side in files and front in files and paths.timeline_path(vault, h.SLUG) in files
+    assert folders == [paths.experiment_dir(e1)]  # the private thread's other experiment, as a whole
+    assert not any(_touches(p, h.exp_dir(vault)) for p in [*files, *folders])
 
 
 @kernel

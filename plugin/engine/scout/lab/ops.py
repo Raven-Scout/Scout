@@ -120,9 +120,9 @@ def _timeline_with(slug: str, thread: Thread, entry: TimelineEntry, timeline: Pa
     if timeline.is_file():
         old = timeline.read_text(encoding="utf-8")
     else:
-        old = writer.new_timeline(slug, thread.title or slug)
+        old = writer.new_timeline(slug, thread.title or slug, thread.visibility)
     try:
-        return writer.prepend_timeline(old, entry)
+        return writer.with_visibility(writer.prepend_timeline(old, entry), thread.visibility)
     except LabError as exc:
         raise LabError(f"{slug}: cannot update {timeline.name}: {exc}") from exc
 
@@ -372,7 +372,7 @@ def propose(
     page = writer.new_front_page(slug, title, question, open_questions, evidence, when[:10], visibility)
     parsed = parse_front_page(slug, page)
     entry = TimelineEntry(when, "proposal", [f"**Proposed:** {question}"])
-    timeline_text = writer.prepend_timeline(writer.new_timeline(slug, title), entry)
+    timeline_text = writer.prepend_timeline(writer.new_timeline(slug, title, parsed.visibility), entry)
     limit = int(_lab_settings(vault).get("max_open_proposals", 5))
     folder = paths.thread_dir(vault, slug)
 

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from scout.lab import sandbox
+from scout.lab import paths, sandbox
 from scout.sandbox import profile
 from tests.unit import lab_runner_helpers as h
 
@@ -410,6 +410,47 @@ def test_home_is_unreadable_but_the_vault_and_interpreters_work(tmp_path: Path) 
     assert py.exit == 0 and "py-ok" in py.stdout_tail, py.stderr_tail
     private = h.run(vault, tmp_path, f"cat '{vault / h.PRIVATE_NOTE}'")  # the private deny still holds inside
     assert private.exit != 0 and "CANARY-PRIV-LAB" not in private.stdout_tail
+
+
+def _private_side_thread(vault: Path) -> dict[str, Path]:
+    """A second, private thread whose timeline, script output and run log carry no frontmatter of their own (a
+    timeline written before the rule, and the files a script and the runner write), plus a private experiment
+    in the normal thread with an output of its own."""
+    side = paths.thread_dir(vault, "side")
+    (side / "experiments" / "side-E1-probe").mkdir(parents=True)
+    (side / "side.md").write_text("---\ntype: lab-thread\ntitle: Side\nvisibility: private\n---\n# Side\n", "utf-8")
+    (side / "side-timeline.md").write_text("# Side — timeline\nCANARY-PRIV-TIMELINE\n", "utf-8")
+    note = side / "experiments" / "side-E1-probe.md"
+    note.write_text("---\nid: E1\nvisibility: private\n---\n## Method\nCANARY-PRIV-NOTE\n", "utf-8")
+    (side / "experiments" / "side-E1-probe" / "out.csv").write_text("CANARY-PRIV-OUTPUT\n", "utf-8")
+    (side / "experiments" / "side-E1-probe" / "run-20261120-1500.log").write_text("CANARY-PRIV-LOG\n", "utf-8")
+    e1 = paths.experiment_note(vault, h.SLUG, "E1")
+    assert e1 is not None
+    e1.write_text(
+        e1.read_text("utf-8").replace("type: lab-experiment\n", "type: lab-experiment\nvisibility: private\n")
+    )
+    (paths.experiment_dir(e1)).mkdir()
+    (paths.experiment_dir(e1) / "out.csv").write_text("CANARY-PRIV-E1-OUTPUT\n", "utf-8")
+    return {
+        "timeline": side / "side-timeline.md",
+        "note": note,
+        "output": side / "experiments" / "side-E1-probe" / "out.csv",
+        "log": side / "experiments" / "side-E1-probe" / "run-20261120-1500.log",
+        "e1 output": paths.experiment_dir(e1) / "out.csv",
+    }
+
+
+@kernel
+def test_a_private_threads_and_a_private_experiments_files_are_unreadable(vault: Path, tmp_path: Path) -> None:
+    """I4: a normal experiment can't read any file of a private thread, nor of a private experiment of its own
+    thread, whatever those files' own labels say (a CSV or a log has none)."""
+    files = _private_side_thread(vault)
+    for what, path in files.items():
+        out = h.run(vault, tmp_path, f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, what
+        assert "not permitted" in out.stderr_tail, what
+    shown = h.run(vault, tmp_path, f"cat '{vault / h.NORMAL_NOTE}'")
+    assert shown.exit == 0 and "normal-note-text" in shown.stdout_tail
 
 
 @kernel

@@ -11,6 +11,7 @@ from scout import cli
 from scout.kb import lint_config
 from scout.kb.lint import enforced, lint_staged, run_hook
 from scout.kb.lint_config import load_lint_config
+from scout.lab import writer
 from scout.lab.lint import lab_findings
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
@@ -176,8 +177,53 @@ def test_index_private_threads_are_counted_not_listed(vault: Path) -> None:
     assert _lint(vault, INDEX, INDEX_TEXT + "\n_1 private thread(s) not listed._\n") == []
     wrong = _lint(vault, INDEX, INDEX_TEXT + "\n_3 private thread(s) not listed._\n")
     assert len(wrong) == 1 and wrong[0].blocking and "private" in wrong[0].message
-    # a private thread must not be linked from lab.md either way: it is simply not required
-    assert _lint(vault, INDEX, INDEX_TEXT + "- [[secret]] — hi\n_1 private thread(s) not listed._\n") == []
+    # a private thread is never named in lab.md: linking it, in any spelling, blocks
+    for link in ("[[secret]]", "[[secret|a thread]]", "[[lab/secret/secret]]", "[[secret-timeline]]"):
+        [f] = _lint(vault, INDEX, INDEX_TEXT + f"- {link} — hi\n_1 private thread(s) not listed._\n")
+        assert f.blocking and "links private thread 'secret'" in f.message, link
+    assert _lint(vault, INDEX, INDEX_TEXT + "- [[secretive]] — another note\n_1 private thread(s) not listed._\n") == []
+
+
+def _private_thread(vault: Path) -> None:
+    """Make the fixture thread private, with its timeline and experiment notes saying so."""
+    (vault / FRONT).write_text(_text(vault, FRONT).replace("visibility: normal", "visibility: private"), "utf-8")
+    for rel in (E1, E2):
+        (vault / rel).write_text(writer.set_frontmatter(_text(vault, rel), visibility="private"), "utf-8")
+    (vault / TIMELINE).write_text("---\nvisibility: private\n---\n" + _text(vault, TIMELINE), "utf-8")
+
+
+def test_a_private_threads_timeline_with_its_visibility_is_clean(vault: Path) -> None:
+    _private_thread(vault)
+    for rel in (FRONT, TIMELINE, E1, E2):
+        assert _lint(vault, rel) == [], rel
+
+
+def test_every_file_of_a_private_thread_must_say_private(vault: Path) -> None:
+    """I4: the privacy layer labels each file by its own frontmatter; a private thread's file without it would
+    be shown to a delegate."""
+    _private_thread(vault)
+    bare = _text(vault, TIMELINE).split("---\n", 2)[2]  # the timeline without its frontmatter
+    [f] = _lint(vault, TIMELINE, bare)
+    assert f.blocking and "visibility: private" in f.message
+    normal_note = _text(vault, E2).replace("visibility: private", "visibility: normal")
+    [f] = _lint(vault, E2, normal_note)
+    assert f.blocking and "visibility: private" in f.message
+    out = f"{LAB}/monitors/experiments/monitors-E2-cascade/results.md"
+    [f] = lab_findings(vault, out, "# Results\nnumbers\n")
+    assert f.blocking and f.path == out
+    assert lab_findings(vault, out, "---\nvisibility: private\n---\n# Results\n") == []
+    # The front page names every sibling that doesn't say so (only the front page may be in the commit).
+    (vault / TIMELINE).write_text(bare, "utf-8")
+    [f] = _lint(vault, FRONT)
+    assert f.blocking and TIMELINE in f.message
+
+
+def test_a_timelines_frontmatter_holds_only_its_visibility(vault: Path) -> None:
+    body = _text(vault, TIMELINE)
+    assert _lint(vault, TIMELINE, "---\nvisibility: normal\n---\n" + body) == []
+    for fm in ("visibility: secret", "visibility: private\nowner: alex", "- a list"):
+        [f] = _lint(vault, TIMELINE, f"---\n{fm}\n---\n" + body)
+        assert f.blocking and "frontmatter" in f.message, fm
 
 
 def test_every_finding_uses_a_known_check_id() -> None:
@@ -316,8 +362,10 @@ def test_visibility_flip_with_lab_md_unchanged_blocks(kb_repo) -> None:
     _stage_thread(kb_repo)
     kb_repo.commit()
     kb_repo.stage(FRONT, _text_of_fixture().replace("visibility: normal", "visibility: private"))
-    [f] = [f for f in _lab_findings(kb_repo) if f.check == "lab-format"]
-    assert f.path == INDEX and "private" in f.message
+    found = sorted(f.message for f in _lab_findings(kb_repo) if f.check == "lab-format" and f.path == INDEX)
+    assert len(found) == 2 and "links private thread 'monitors'" in found[0] and "1 private thread" in found[1]
+    # and the thread's other files, which still don't say private, are named on the front page
+    assert {f.path for f in _lab_findings(kb_repo) if f.path != INDEX} == {FRONT}
 
 
 def test_index_is_checked_once_per_commit(kb_repo) -> None:

@@ -97,13 +97,15 @@ def experiment_profile(
     env: Mapping[str, str] | None = None,
     probe_file: Path | None = None,
     allow_reads: Sequence[Path] = (),
+    deny_read_dirs: Sequence[Path] = (),
 ) -> str:
     """The SBPL text for one experiment. Raises :class:`scout.sandbox.profile.ProfileError` on a path SBPL
     can't carry.
 
     Reads under the home folders (:func:`homes`) are denied, except below ``allow_reads`` (folders) and the
     experiment's own two folders. ``deny_reads`` are files (a ``literal``) or folders (a ``subpath``) denied
-    after that, wherever they are; the secrets dirs and credential stores of ``env`` and of this process's
+    after that, wherever they are; ``deny_read_dirs`` are folders denied as a ``subpath`` whether or not they
+    exist yet; the secrets dirs and credential stores of ``env`` and of this process's
     own environment are added. ``deny_execs`` are programs (``literal``), to which the run sandbox's spawn
     routes are added. ``probe_file``, a runner-owned file in a folder the script can't write, gets
     ``file-write-data`` only (no unlink, rename or mode change): the fingerprint the runner's sweep asks the
@@ -128,6 +130,7 @@ def experiment_profile(
     for path in deny_reads:
         real = _real(path)
         reads.append(Rule("deny", "file-read-data", "subpath" if os.path.isdir(real) else "literal", real))
+    reads += [Rule("deny", "file-read-data", "subpath", _real(path)) for path in deny_read_dirs]
     for source in (os.environ, env if env is not None else os.environ):
         for d in secrets_dirs(source):
             reads.append(Rule("deny", "file-read-data", "subpath", _real(d)))

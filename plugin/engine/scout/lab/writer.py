@@ -437,9 +437,22 @@ def new_front_page(
     return _join(out)
 
 
-def new_timeline(slug: str, title: str) -> str:
+def new_timeline(slug: str, title: str, visibility: str = "normal") -> str:
+    """A fresh timeline. A private thread's says so in its frontmatter: the privacy layer labels each file by
+    its own frontmatter, so a timeline without it would label normal and name the thread to a delegate."""
     _check_slug(slug)
-    return f"# {_norm(title, 'title', dot=True)} — timeline\n"
+    h1 = f"# {_norm(title, 'title', dot=True)} — timeline\n"
+    return with_visibility(h1, visibility)
+
+
+def with_visibility(text: str, visibility: str) -> str:
+    """``text`` (a timeline) carrying ``visibility: private`` when ``visibility`` is private: a frontmatter
+    block is added, or the key set in the one there. A normal thread's text comes back unchanged."""
+    if visibility != "private":
+        return text
+    if frontmatter_block(_split(text)) is not None:
+        return set_frontmatter(text, visibility="private")
+    return f"---\nvisibility: private\n---\n{text.removeprefix(chr(0xFEFF))}"
 
 
 def prepend_timeline(text: str, entry: TimelineEntry) -> str:

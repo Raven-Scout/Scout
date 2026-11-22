@@ -17,7 +17,10 @@ import re
 from pathlib import Path
 from typing import Protocol
 
+import yaml
+
 from scout.errors import LabError
+from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint import Finding
 from scout.lab import paths
 from scout.lab.model import EID_RE, QID_RE, TIMELINE_TAGS, Thread
@@ -120,15 +123,62 @@ def lab_findings(
     parts = rel[len(_PREFIX) :].split("/")
     if parts == ["lab.md"]:
         return index_findings(source, text) if include_index else []
-    if len(parts) == 2:
-        slug, name = parts
-        if name == f"{slug}.md":
-            return _front(rel, slug, text)
-        if name == f"{slug}-timeline.md":
-            return _timeline(source, rel, slug, text)
-    if len(parts) == 3 and parts[1] == "experiments" and parts[2].startswith(f"{parts[0]}-E"):
-        return _experiment(rel, parts[0], parts[2], text)
-    return []
+    if len(parts) == 2 and parts[1] == f"{parts[0]}.md":
+        return _front(rel, parts[0], text) + _private_siblings(source, rel, parts[0], text)
+    out: list[Finding] = []
+    if len(parts) == 2 and parts[1] == f"{parts[0]}-timeline.md":
+        out = _timeline(source, rel, parts[0], text)
+    elif len(parts) == 3 and parts[1] == "experiments" and parts[2].startswith(f"{parts[0]}-E"):
+        out = _experiment(rel, parts[0], parts[2], text)
+    return out + _private_thread(source, rel, parts[0], text) if len(parts) >= 2 else out
+
+
+# --- private threads -------------------------------------------------------------------
+
+
+def _declared(text: str) -> object:
+    """A note's own ``visibility:`` (None when it has no readable frontmatter or no such key)."""
+    block = frontmatter_block(text.removeprefix("﻿").split("\n"))
+    if block is None:
+        return None
+    try:
+        data = yaml.safe_load("\n".join(block))
+    except (yaml.YAMLError, ValueError, TypeError, OverflowError):
+        return None
+    return data.get("visibility") if isinstance(data, dict) else None
+
+
+def _private_thread(source: Source, rel: str, slug: str, text: str) -> list[Finding]:
+    """Every markdown file in a private thread's folder says ``visibility: private`` itself (spec §11): the
+    privacy layer labels each file by its own frontmatter, so one that doesn't would be shown to a delegate,
+    naming the thread."""
+    thread = _read_front(source, slug)
+    if thread is None or thread.visibility != "private" or _declared(text) == "private":
+        return []
+    return [
+        _bad(
+            rel,
+            f"thread '{slug}' is private, so this file must say 'visibility: private' in its frontmatter "
+            "(a file without it is shown to delegates)",
+            1,
+        )
+    ]
+
+
+def _private_siblings(source: Source, rel: str, slug: str, text: str) -> list[Finding]:
+    """A private front page whose thread still holds files that don't say so (the thread was made private, or
+    a file was added by hand): each is named here, since only the front page may be in the commit."""
+    if parse_front_page(slug, text).visibility != "private":
+        return []
+    folder = f"{_PREFIX}{slug}/"
+    out: list[Finding] = []
+    for other in source.files():
+        if other == rel or not other.startswith(folder):
+            continue
+        body = source.read(other)
+        if body is not None and _declared(body) != "private":
+            out.append(_bad(rel, f"thread '{slug}' is private but {other} doesn't say 'visibility: private'"))
+    return out
 
 
 # --- front page ------------------------------------------------------------------------
@@ -183,9 +233,21 @@ def _read_front(source: Source, slug: str) -> Thread | None:
 def _timeline(source: Source, rel: str, slug: str, text: str) -> list[Finding]:
     out: list[Finding] = []
     lines = text.removeprefix("\ufeff").split("\n")
-    first = next((i for i, raw in enumerate(lines) if raw.strip()), None)
+    # A private thread's timeline opens with a frontmatter block holding only its visibility.
+    block = frontmatter_block(lines)
+    start = 0 if block is None else len(block) + 2
+    if block is not None:
+        try:
+            data = yaml.safe_load("\n".join(block))
+        except (yaml.YAMLError, ValueError, TypeError, OverflowError):
+            data = None
+        if not isinstance(data, dict) or set(data) != {"visibility"} or data["visibility"] not in ("normal", "private"):
+            out.append(_bad(rel, "a timeline's frontmatter may hold only 'visibility: private' (or normal)", 1))
+    first = next((i for i in range(start, len(lines)) if lines[i].strip()), None)
     if first is None or not _TIMELINE_H1.match(lines[first]):
-        out.append(_bad(rel, "the file must start with '# <title> — timeline'", (first or 0) + 1))
+        out.append(
+            _bad(rel, "the file must start with '# <title> — timeline'", (start if first is None else first) + 1)
+        )
     thread = _read_front(source, slug)
     if thread is None:
         out.append(_bad(rel, f"no front page for thread '{slug}' (expected {slug}.md)"))
@@ -256,6 +318,18 @@ def _as_naive(value: object, what: str) -> _dt.datetime:
 # --- lab.md ----------------------------------------------------------------------------
 
 
+def _names_thread(target: str, slug: str) -> bool:
+    """Whether a wikilink target points into thread ``slug``: its front page, timeline, an experiment note, or any
+    path through its folder."""
+    parts = target.strip().removesuffix(".md").split("/")
+    last = parts[-1]
+    return (
+        slug in parts[:-1]
+        or last in (slug, f"{slug}-timeline")
+        or re.match(rf"{re.escape(slug)}-{EID_RE}-", last) is not None
+    )
+
+
 def index_findings(source: Source, text: str | None) -> list[Finding]:
     """``lab.md`` against the thread folders ``source`` holds; ``text`` None means lab.md is absent."""
     rel = INDEX_REL
@@ -270,6 +344,8 @@ def index_findings(source: Source, text: str | None) -> list[Finding]:
         thread = _read_front(source, slug)
         if thread is not None and thread.visibility == "private":
             private += 1
+            if any(_names_thread(target, slug) for target in linked):
+                out.append(_bad(rel, f"lab.md links private thread '{slug}'; a private thread is never named there"))
         elif slug not in linked:
             out.append(_bad(rel, f"thread folder '{slug}' is not listed in lab.md"))
     counts = [int(n) for n in _PRIVATE_COUNT.findall(text)]

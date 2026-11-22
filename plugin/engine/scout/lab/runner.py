@@ -41,6 +41,8 @@ What it holds the script to, and why each piece is where it is:
 - **Private bytes outside knowledge-base/ are denied too** (ruling R18): the git objects, the inbox,
   the engine cache, every other checkout of the vault's repo (``.claude/worktrees/`` and each git
   worktree), ``Raw/`` and ``action-items/``. Transcripts and ``.scout-logs`` stay readable (spec §6.3).
+- **A private thread's folder and a private experiment's folder are denied whole** (I4): their scripts,
+  outputs and run logs carry no frontmatter, so file by file they would label ``normal``.
 - **Nothing else under a home folder is readable** (ruling R32): only the vault, the engine and its
   interpreter, the vault's session transcripts and the allowlisted interpreters on the run's PATH
   (:func:`_allow_reads`). The rendered profile itself is unreadable too: it names every private file.
@@ -196,8 +198,31 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
-    """Every file under knowledge-base/ not labeled ``normal``, plus the private bytes kept elsewhere.
+def private_lab_folders(vault: Path, labels: Mapping[str, str]) -> list[Path]:
+    """The lab folders private as a whole (I4): a thread's folder when its front page isn't labeled ``normal``
+    (one that is missing counts as private), and an experiment's folder when its note isn't. Their other
+    files (a timeline, scripts, outputs, run logs) label by their own frontmatter or by path alone, which
+    for a file without frontmatter is ``normal``; the front page's or note's label is the one that holds."""
+    lab = paths.lab_dir(vault)
+    out: list[Path] = []
+    try:
+        threads = sorted(p for p in lab.iterdir() if p.is_dir() and not p.is_symlink())
+    except OSError:
+        return out
+    for thread in threads:
+        if labels.get(paths.front_page(vault, thread.name).relative_to(vault).as_posix()) != "normal":
+            out.append(thread)
+            continue
+        for note in sorted((thread / "experiments").glob(f"{thread.name}-E*.md")):
+            if labels.get(note.relative_to(vault).as_posix()) != "normal":
+                out.append(paths.experiment_dir(note))
+    return out
+
+
+def _deny_reads(vault: Path, exp_real: str) -> tuple[list[Path], list[Path]]:
+    """(files and folders to deny, folders to deny whether or not they exist yet): every file under
+    knowledge-base/ not labeled ``normal``, the private lab folders (:func:`private_lab_folders`), and the
+    private bytes kept elsewhere.
 
     A path the labels leave out counts as private (the rule every :func:`visibility_map` caller
     follows), so a label failure denies the whole KB rather than none of it. The experiment's own
@@ -206,6 +231,25 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
     two thousand file paths), and a private folder (``personal/``) is usually private as a whole.
     """
     labels = visibility_map(vault, READER, ["knowledge-base/**"], who="lab runner")
+    private_folders: list[Path] = []
+    holding: list[str] = []
+    for folder in private_lab_folders(vault, labels):
+        if not _within(exp_real, os.path.realpath(folder)):
+            private_folders.append(folder)
+            continue
+        # A private thread holding this (normal) experiment: its other files are denied one by one, and its
+        # other experiments' folders as wholes.
+        holding.append(os.path.realpath(folder))
+        for note in sorted((folder / "experiments").glob(f"{folder.name}-E*.md")):
+            other = paths.experiment_dir(note)
+            if os.path.realpath(other) != exp_real:
+                private_folders.append(other)
+    private_reals = [os.path.realpath(p) for p in private_folders]
+
+    def private_file(path: Path) -> bool:
+        real = os.path.realpath(path)
+        return any(_within(real, root) for root in [*private_reals, *holding])
+
     kb = vault / "knowledge-base"
     # Per folder, bottom-up: (anything readable below it, anything denied below it, its deny entries).
     seen: dict[str, tuple[bool, bool, list[Path]]] = {}
@@ -216,7 +260,9 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
         entries: list[Path] = []
         for name in files:
             path = base / name
-            if _within(os.path.realpath(path), exp_real) or labels.get(path.relative_to(vault).as_posix()) == "normal":
+            if _within(os.path.realpath(path), exp_real) or (
+                labels.get(path.relative_to(vault).as_posix()) == "normal" and not private_file(path)
+            ):
                 readable = True
             else:
                 denied = True
@@ -238,6 +284,13 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
     kb_readable, kb_denied, out = seen.get(str(kb), (False, False, []))
     if kb_denied and not kb_readable:
         out = [kb]
+    # The private lab folders as wholes, so a file written into one later (another run's output) is denied too.
+    whole: list[Path] = []
+    for folder, real in zip(private_folders, private_reals, strict=True):
+        if any(_within(real, os.path.realpath(done)) for done in out):
+            continue  # already under a folder denied as a whole (the KB, say)
+        out = [p for p in out if not _within(os.path.realpath(p), real)]
+        whole.append(folder)
     for gitdir in [vault / ".git", *hook_paths.git_dirs(vault)]:
         if gitdir.is_dir() and gitdir not in out:
             out.append(gitdir)
@@ -261,7 +314,7 @@ def _deny_reads(vault: Path, exp_real: str) -> list[Path]:
                 tree(checkout / name)
         else:
             tree(checkout)
-    return out
+    return out, whole
 
 
 def other_checkouts(vault: Path) -> list[Path]:
@@ -621,7 +674,7 @@ def _run(
         for path in (marker, _decoy(marker)):
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
         profile_file = os.path.join(private_dir, "experiment.sb")
-        deny_reads = [] if private else _deny_reads(vault, exp_real)
+        deny_reads, deny_dirs = ([], []) if private else _deny_reads(vault, exp_real)
         deny_reads.append(Path(profile_file))  # it names every private file the profile denies
         deny_execs = _deny_execs([source.get("PATH"), os.environ.get("PATH")])
         try:
@@ -634,6 +687,7 @@ def _run(
                 env=source,
                 probe_file=Path(marker),
                 allow_reads=_allow_reads(vault, source, []),
+                deny_read_dirs=deny_dirs,
             )
         except profile.ProfileError as exc:
             raise LabError(f"cannot build the experiment sandbox: {exc}") from None

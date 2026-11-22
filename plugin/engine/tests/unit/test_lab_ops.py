@@ -248,6 +248,33 @@ def test_propose_creates_three_files_and_index(tmp_path: Path) -> None:
     assert "- [[probe-drift]] — Do linear probes drift across checkpoints?" in needs
 
 
+def test_a_private_threads_timeline_says_it_is_private(tmp_path: Path) -> None:
+    """I4: the timeline labels by its own frontmatter, so a private thread's timeline carries the visibility."""
+    from scout.kb.privacy import classify, load_policy
+    from scout.lab.lint import lab_findings
+
+    ops.propose(tmp_path, "quiet", "Quiet", "Is it quiet?", ["Why?"], [], visibility="private", now=NOW)
+    timeline = paths.timeline_path(tmp_path, "quiet")
+    text = timeline.read_text(encoding="utf-8")
+    assert text.startswith("---\nvisibility: private\n---\n# Quiet — timeline\n")
+    assert parse_timeline(text)[0].tag == "proposal"
+    rel = timeline.relative_to(tmp_path).as_posix()
+    assert classify(rel, text, load_policy(tmp_path)).visibility == "private"
+    assert lab_findings(tmp_path, rel, text) == []
+    assert "quiet" not in paths.index_path(tmp_path).read_text(encoding="utf-8")
+    # A timeline written before this rule gets the frontmatter on its next entry.
+    timeline.write_text(text.split("---\n", 2)[2], encoding="utf-8")
+    ops.owner_verb(tmp_path, "quiet", "approve", "alex", now=NOW)
+    timeline.write_text(timeline.read_text(encoding="utf-8").split("---\n", 2)[2], encoding="utf-8")
+    ops.timeline_add(tmp_path, "quiet", "owner", "read the notes", "still quiet", "none answered", now=NOW)
+    again = timeline.read_text(encoding="utf-8")
+    assert again.startswith("---\nvisibility: private\n---\n# Quiet — timeline\n")
+    assert [e.tag for e in parse_timeline(again)] == ["owner", "owner", "proposal"]
+    # A normal thread's timeline has no frontmatter.
+    _propose(tmp_path)
+    assert paths.timeline_path(tmp_path, "probe-drift").read_text(encoding="utf-8").startswith("# Probe drift")
+
+
 def test_propose_refuses_sixth_open_proposal(tmp_path: Path) -> None:
     for i in range(5):
         _propose(tmp_path, f"idea-{i}")
