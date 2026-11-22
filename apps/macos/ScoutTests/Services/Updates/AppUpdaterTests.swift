@@ -37,7 +37,11 @@ struct AppUpdaterTests {
     /// tests, and brings back Sparkle's own alert for scheduled finds.
     @Test func sparklesUserDriverHasOurDelegate() {
         let updater = AppUpdater(enabled: false) { _ in }
-        #expect(updater.userDriverDelegateForTesting === updater.delegateForTesting)
+        // SPUStandardUserDriver keeps it in the `_delegate` ivar, with no
+        // accessor; KVC reads the ivar. Sparkle builds the user driver in
+        // the controller's init, so it exists for a never-started updater.
+        let held = updater.controllerForTesting.value(forKeyPath: "userDriver._delegate") as AnyObject?
+        #expect(held === updater.delegateForTesting)
     }
 }
 

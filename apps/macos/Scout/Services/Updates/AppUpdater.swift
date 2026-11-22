@@ -79,13 +79,11 @@ final class AppUpdater: AppUpdateController {
         return true
     }
 
-    /// The delegate Sparkle's user driver holds. Read back only by a test
-    /// that pins the gentle-reminder wiring: the user driver keeps it in an
-    /// ivar with no accessor, and passing nil for it in `init` compiles and
-    /// passes every other test.
-    var userDriverDelegateForTesting: AnyObject? {
-        controller.userDriver.value(forKey: "delegate") as AnyObject?
-    }
+    /// Sparkle's controller and our delegate, untyped so tests need no Sparkle
+    /// import. Read only by `AppUpdaterTests`, which pins that the controller's
+    /// user driver holds our delegate: passing nil for it in `init` compiles
+    /// and passes every other test.
+    var controllerForTesting: AnyObject { controller }
     var delegateForTesting: AnyObject { delegate }
 
     /// Sparkle-free so it can be unit tested without starting Sparkle or
