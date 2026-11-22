@@ -1008,7 +1008,7 @@ def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
 
 
 def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
-    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "unknown key ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
     assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
 
 

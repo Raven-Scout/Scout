@@ -540,7 +540,7 @@ def test_trigger_stats_json_and_empty_text(vault: Path) -> None:
 
     empty_text = runner.invoke(cli.app, ["trigger", "stats", "--days", "3"])
     assert empty_text.exit_code == 0, empty_text.output
-    assert "no trigger fires in the last 3 day(s)" in empty_text.stdout
+    assert "no trigger fires in the last 3 days" in empty_text.stdout
 
 
 def test_trigger_stats_skips_blank_and_unparseable_log_lines(vault: Path) -> None:
@@ -1160,7 +1160,7 @@ def test_phases_backport_reports_unchanged_files(vault: Path) -> None:
 
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL"])
     assert result.exit_code == 0, result.output
-    assert "phases backport — SKILL (0 hunk(s)" in result.stdout
+    assert "phases backport — SKILL (0 hunks" in result.stdout
 
 
 def test_phases_backport_honours_explicit_vault_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1218,7 +1218,7 @@ def test_phases_backport_apply_writes_the_applied_hunks(vault: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert "✓ applied" in result.stdout
     assert f"→ wrote {fragment}" in result.stdout
-    assert "Applied 1 hunk(s) to phases/." in result.stdout
+    assert "Applied 1 hunk to phases/." in result.stdout
     assert "EDITED BODY" in fragment.read_text()
 
 
@@ -1294,7 +1294,7 @@ def test_phases_backport_plugin_root_reads_and_writes_that_checkout(
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply", "--plugin-root", str(clone)])
     assert result.exit_code == 0, result.output
     assert seen["phases_root"] == clone / "phases"
-    assert "Applied 0 hunk(s) to phases/." in result.stdout
+    assert "Applied 0 hunks to phases/." in result.stdout
 
 
 def test_phases_backport_plugin_root_must_hold_phases(vault: Path, tmp_path: Path) -> None:
@@ -1364,7 +1364,7 @@ def test_phases_backport_apply_with_no_applied_hunks_writes_nothing(
 
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply"])
     assert result.exit_code == 0, result.output
-    assert "Applied 0 hunk(s) to phases/." in result.stdout
+    assert "Applied 0 hunks to phases/." in result.stdout
     assert "→ wrote" not in result.stdout
 
 

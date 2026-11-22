@@ -175,6 +175,7 @@ from scout.kb.privacy import (
     policy_from_config_text,
     visible_to,
 )
+from scout.plural import agree, are, count, noun, were
 from scout.repo_sync import (
     POLICY_PATH,
     SYMLINK_MODE,
@@ -567,7 +568,8 @@ def _check_github(repo: str, gh: GhRunner) -> None:
     others = sorted({p for p in people.split() if p} - {owner})
     if others:
         raise RepoSyncError(
-            "remote_shared", f"refused: {repo} has {len(others)} collaborator(s) besides its owner; remove them first"
+            "remote_shared",
+            f"refused: {repo} has {count(len(others), 'collaborator')} besides its owner; remove them first",
         )
 
 
@@ -1866,7 +1868,7 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
         if bad:
             raise RepoSyncError(
                 "delegate_mirror_unsafe",
-                f"refused: mirror commit {rev[:12]} would show {delegate} {bad} file(s) it may not see; "
+                f"refused: mirror commit {rev[:12]} would show {delegate} {count(bad, 'file')} it may not see; "
                 "nothing was pushed",
             )
         return fingerprint
@@ -2010,7 +2012,8 @@ def _build_and_push(
     result.pushed = commit
     if result.in_history:
         result.notes.append(
-            f"{result.in_history} file(s) left {link.id}'s mirror but stay in its history; to start it over: "
+            f"{count(result.in_history, 'file')} left {link.id}'s mirror but "
+            f"{agree(result.in_history, 'stays', 'stay')} in its history; to start it over: "
             f"scoutctl delegate link {link.id} --remote <url> --replace-remote --confirm-account-unshared"
         )
     done = dataclasses.replace(
@@ -2045,7 +2048,8 @@ def _drop_warning(delegate: str, the_plan: Plan) -> list[str]:
     if the_plan.left_out < DROP_WARN_MIN or the_plan.left_out * 2 <= total:
         return []
     return [
-        f"warning: {the_plan.left_out} of the {total} file(s) {delegate} may see were left out of its mirror, "
+        f"warning: {the_plan.left_out} of the {count(total, 'file')} {delegate} may see "
+        f"{were(the_plan.left_out)} left out of its mirror, "
         "because they name a hidden file or can't be scanned; check `scoutctl delegate preview "
         f"{delegate}` and the privacy settings before relying on this mirror"
     ]
@@ -2070,7 +2074,8 @@ def _agent_files_note(delegate: str, the_plan: Plan) -> list[str]:
         parts.append(f"{len(github)} under the root's .github/, whose workflows would run in the mirror's repository "
                      f"({listing(github)})")  # fmt: skip
     return [
-        f"left out as agent config: {len(the_plan.agent_files)} file(s): {'; '.join(parts)}. They're for the "
+        f"left out as agent config: {count(len(the_plan.agent_files), 'file')}: {'; '.join(parts)}. "
+        f"{agree(len(the_plan.agent_files), 'It is', 'They are')} for the "
         f"owner's computer; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. Rename or move a "
         "note to keep it in the mirror"
     ]
@@ -2410,8 +2415,10 @@ def unlink(vault: Path, delegate: str, *, env: Mapping[str, str] | None = None, 
             if current.stale_key_ids:
                 raise RepoSyncError(
                     "key_revoke_failed",
-                    f"refused: old deploy key(s) {', '.join(map(str, current.stale_key_ids))} on {repo} are still "
-                    "live; delete them in the repository's settings, then unlink again",
+                    f"refused: old deploy {noun(len(current.stale_key_ids), 'key')} "
+                    f"{', '.join(map(str, current.stale_key_ids))} on {repo} {are(len(current.stale_key_ids))} "
+                    f"still live; delete {agree(len(current.stale_key_ids), 'it', 'them')} in the "
+                    "repository's settings, then unlink again",
                 )
             result.notes += notes
         _remove_key_files(vault, delegate, current)
@@ -2752,12 +2759,12 @@ def trust_state(
                 stale_key_ids=stale,
             )
             keys = f"deploy key {deploy}" if deploy is not None else "no deploy key"
-            old = f", {len(stale)} old key(s) to delete" if stale else ""
+            old = f", {count(len(stale), 'old key')} to delete" if stale else ""
             result.notes.append(f"{key}: {link.remote} holds {key}'s mirror; {keys}{old}; the next sync rebuilds it")
         save_links(vault, checked)
         for memo in (vault / SCAN_DIR).glob("*.json"):
             memo.unlink(missing_ok=True)
-    result.notes.append(f"signed {STATE_REL} again for {len(checked)} delegate(s)")
+    result.notes.append(f"signed {STATE_REL} again for {count(len(checked), 'delegate')}")
     return result
 
 

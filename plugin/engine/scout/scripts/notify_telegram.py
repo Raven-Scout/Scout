@@ -83,6 +83,7 @@ from scout.errors import ConfigError, ScoutError
 from scout.events import Event, append_event
 from scout.ids import new_ulid
 from scout.links import safe_href
+from scout.plural import count
 from scout.redact import redact_secrets
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -728,7 +729,7 @@ def send(
 
     chunks, dropped = _prepare(body, parse_mode)
     if dropped:
-        print(f"warning: dropped {dropped} link(s) whose href is not http(s) or mailto", file=sys.stderr)
+        print(f"warning: dropped {count(dropped, 'link')} whose href is not http(s) or mailto", file=sys.stderr)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:

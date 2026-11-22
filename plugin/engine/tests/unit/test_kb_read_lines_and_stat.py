@@ -91,7 +91,7 @@ def test_stat_marks_private_files_and_totals_several(vault) -> None:
     result = kb(vault, "stat", NOTE, SECRET)
     lines = result.stdout.splitlines()
     assert lines[1].startswith(f"[private] {SECRET}  ")
-    assert lines[-1].startswith("2 file(s), ")
+    assert lines[-1].startswith("2 files, ")
 
 
 def test_stat_takes_globs(vault) -> None:

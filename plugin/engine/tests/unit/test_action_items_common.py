@@ -327,7 +327,7 @@ def test_select_comment_by_index_and_by_unique_text() -> None:
         (_COMMENTS, None, None, "exactly one of --index or --text"),
         (_COMMENTS, 1, "x", "exactly one of --index or --text"),
         ([], 1, None, "no comments found on this task"),
-        (_COMMENTS, 0, None, r"--index 0 out of range; task has 3 comment\(s\)"),
+        (_COMMENTS, 0, None, r"--index 0 out of range; task has 3 comments"),
         (_COMMENTS, 4, None, r"--index 4 out of range"),
         (_COMMENTS, None, "nothing like it", "no comment matched text: 'nothing like it'"),
         (_COMMENTS, None, "numbers", "ambiguous comment text 'numbers'; matched 2"),

@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from scout.plural import count
 from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
 
 PLUGIN = Path(__file__).resolve().parents[3]
@@ -406,13 +407,18 @@ def _strip_labels(value: Any) -> Any:
 
 
 _SEARCHED = re.compile(r"(?:, type=[^,]+| — searched: [^.]+|, searched: [^)]+)")
+# The pre-shim parser counted "N result(s).": the engine writes "1 result." / "2 results.".
+_LEGACY_PLURAL = re.compile(r"\b(\d+) ([a-z][a-z ]*?)\(s\)")
+_VALIDATE_TOTAL = re.compile(r"^\d+ validation errors? found\.$")
 
 
 def _normalise(command: str, out: str) -> Any:
     """``out`` without labels, and without what the engine adds on purpose: name_lookup's
-    candidate type and search scope (and its PEOPLE-only hint), validate's parse failures."""
+    candidate type and search scope (and its PEOPLE-only hint), validate's parse failures,
+    and real plurals where the pre-shim parser wrote "(s)"."""
     if command in ("export", "entity") and out.lstrip().startswith("{"):
         return _strip_labels(json.loads(out))
+    out = _LEGACY_PLURAL.sub(lambda m: count(int(m.group(1)), m.group(2)), out)
     out = out.replace("[private] ", "")
     if command == "name_lookup":
         out = "".join(line for line in out.splitlines(True) if "Searched PEOPLE only" not in line)
@@ -420,7 +426,8 @@ def _normalise(command: str, out: str) -> Any:
     if command == "validate":
         kept = [line for line in out.splitlines() if "YAML parse failure" not in line]
         errors = sum(1 for line in kept if line.startswith("  ["))
-        kept = [f"{errors} validation error(s) found." if "validation error(s) found" in ln else ln for ln in kept]
+        total = f"{count(errors, 'validation error')} found."
+        kept = [total if _VALIDATE_TOTAL.match(ln) else ln for ln in kept]
         out = "\n".join(kept) + "\n"
     return out
 
@@ -543,6 +550,6 @@ def test_shim_gives_an_agent_nothing(vault: Path) -> None:
         assert "task-renew-permit" not in result.stdout and "knowledge-base/" not in result.stdout
         assert "[private]" not in result.stdout and "_label" not in result.stdout
         if args[0] == "query":
-            assert result.stdout.strip() == "0 result(s)."
+            assert result.stdout.strip() == "0 results."
         if args[0] == "export":
             assert json.loads(result.stdout) == {"entities": {}, "relationships": []}

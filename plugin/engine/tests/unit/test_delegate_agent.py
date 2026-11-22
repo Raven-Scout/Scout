@@ -453,7 +453,7 @@ def test_visible_agent_files_are_counted_when_left_out(vault: Path, tmp_path: Pa
     result = _link(vault, "grok-personal", bare)
     (note,) = [n for n in result.notes if n.startswith("left out as agent config:")]
     # notes/.mcp.json and notes/.envrc are already local-only (`.mcp.json`, `.env*` match at any depth)
-    assert note.startswith("left out as agent config: 7 file(s)") and "tools/claude.md" in note
+    assert note.startswith("left out as agent config: 7 files") and "tools/claude.md" in note
     assert not {"notes/.mcp.json", "notes/.envrc"} & _files(bare)
     assert (
         LAPTOP
@@ -496,13 +496,24 @@ def test_root_github_files_are_counted_and_named_apart(vault: Path, tmp_path: Pa
         _commit(vault, rel, f"{LAPTOP}\n", f"left out {rel}")
     bare = _bare(tmp_path, "grok")
     (note,) = [n for n in _link(vault, "grok-personal", bare).notes if n.startswith("left out as agent config:")]
-    assert note.startswith("left out as agent config: 3 file(s): 1 that agents read")
+    assert note.startswith("left out as agent config: 3 files: 1 that agents read")
     assert "2 under the root's .github/" in note and ".github/notes.md" in note and ".github/workflows/run.yml" in note
     assert "tools/claude.md" in note.split("; 2 under")[0]
     assert not {".github/notes.md", ".github/workflows/run.yml", "tools/claude.md"} & _files(bare)
     only_github = dm.Plan(delegate="d", agent_files=[".github/x.md"])
     (alone,) = dm._agent_files_note("d", only_github)
-    assert alone.startswith("left out as agent config: 1 file(s): 1 under the root's .github/")
+    assert alone.startswith("left out as agent config: 1 file: 1 under the root's .github/")
+    assert alone.endswith(
+        "). It is for the owner's computer; d's mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. "
+        "Rename or move a note to keep it in the mirror"
+    )
+    (two,) = dm._agent_files_note("d", dm.Plan(delegate="d", agent_files=[".github/x.md", ".github/y.md"]))
+    assert two.startswith("left out as agent config: 2 files: 2 under the root's .github/")
+    assert two.endswith(
+        "). They are for the owner's computer; d's mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. "
+        "Rename or move a note to keep it in the mirror"
+    )
+    assert "They are for the owner's computer" in note
     many = dm.Plan(delegate="d", agent_files=[f"tools/{i}/claude.md" for i in range(dm.LEFT_OUT_LISTED + 2)])
     assert "and 2 more" in dm._agent_files_note("d", many)[0]
 

@@ -59,6 +59,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels
 from scout.kb.reader import resolve_reader
+from scout.plural import agree, count
 from scout.yaml_safe import load_yaml, yaml_problem
 
 Outcome = Literal["rewritten", "unchanged", "refused"]
@@ -453,13 +454,18 @@ class MigrationReport:
         out: list[str] = []
         if self.visibility_values:
             out.append(
-                f"visibility: {len(self.visibility_values)} note(s) set visibility: to something other than "
-                "normal/private; they already count as private:"
+                f"visibility: {count(len(self.visibility_values), 'note')} "
+                f"{agree(len(self.visibility_values), 'sets', 'set')} visibility: to something other than "
+                f"normal/private; {agree(len(self.visibility_values), 'it already counts', 'they already count')} "
+                "as private:"
             )
             out += [f"  {p}" for p in self.visibility_values]
             out.append("  with the owner's OK, per note: scoutctl bootstrap privacy-migrate --set-private <path>")
         if self.private_links:
-            out.append(f"private links: {len(self.private_links)} shared file(s) link or name a private note:")
+            out.append(
+                f"private links: {count(len(self.private_links), 'shared file')} "
+                f"{agree(len(self.private_links), 'links to or names', 'link to or name')} a private note:"
+            )
             for p, ls in self.private_links:
                 out.append(f"  {p}: line{'s' if len(ls) > 1 else ''} {', '.join(str(n) for n in ls)}")
             out.append("  remove the reference, or allow one with %%privacy:allow <slug>%% on that line")

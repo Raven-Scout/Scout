@@ -36,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, TextIO
 
-from scout import paths, safe_write
+from scout import paths, plural, safe_write
 from scout.action_items.context_notes import context_note_rel
 from scout.ids import leading_prefix_pattern
 from scout.kb.git_io import (
@@ -571,7 +571,12 @@ def _page_sections(f: StagedFile) -> list[Finding]:
     if not missing:
         return []
     verb = "new front page lacks" if old is None else "commit removes"
-    what = f"{len(missing)} required section(s)" if _page_private(f) else "required section(s) " + ", ".join(missing)
+    n = len(missing)
+    what = (
+        plural.count(n, "required section")
+        if _page_private(f)
+        else f"required {plural.noun(n, 'section')} " + ", ".join(missing)
+    )
     return [Finding(f.rel, "page-sections", True, f"{verb} {what} — see docs/kb-page-standard.md")]
 
 
@@ -815,7 +820,7 @@ def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
     count = f"{len(result.blocking)} blocking"
     if per_path:
         count += f" ({sum(enforced(f, cfg) for f in result.blocking)} enforced)"
-    lines = [f"kb-lint: {count}, {len(result.warnings)} warning(s) (mode: {mode})"]
+    lines = [f"kb-lint: {count}, {plural.count(len(result.warnings), 'warning')} (mode: {mode})"]
     for f in result.findings:
         mark = "✗" if f.blocking else "!"
         where = f"{f.path}:{f.line}" if f.line else f.path

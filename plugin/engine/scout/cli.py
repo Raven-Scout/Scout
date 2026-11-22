@@ -17,6 +17,7 @@ import typer
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
+from scout.plural import agree, count
 
 if TYPE_CHECKING:
     from scout.agent_runtimes.base import AgentRuntime
@@ -518,14 +519,14 @@ def cli_changes_scan(
 
     now = _dt.now(UTC)
     if not (since or backfill):
-        typer.echo(f"{len(scan_new(paths.require_data_dir(), now=now))} new change(s)")
+        typer.echo(count(len(scan_new(paths.require_data_dir(), now=now)), "new change"))
         return
     try:
         cutoff = parse_since(since or "2026-06-01", now=now)
     except ValueError as e:
         typer.echo(f"scoutctl changes scan: {e}", err=True)
         raise typer.Exit(2) from None
-    typer.echo(f"{len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill))} new change(s)")
+    typer.echo(count(len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill)), "new change"))
 
 
 @engagement_app.command("record")
@@ -744,7 +745,7 @@ def kb_lint(
         missing = lossless_check(root, lossless_rev, lossless_path)
         for tok in missing:
             print(f"missing: {tok}")
-        print(f"lossless: {len(missing)} token(s) missing")
+        print(f"lossless: {count(len(missing), 'token')} missing")
         raise typer.Exit(1 if missing else 0)
     if report:
         from scout.kb.lint import config_problems, over_budget
@@ -755,7 +756,7 @@ def kb_lint(
         for problem in config_problems(root, cfg):
             print(f"config: {problem}")
         rows = over_budget(root, cfg)
-        print(f"{len(rows)} file(s) over budget")
+        print(f"{count(len(rows), 'file')} over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
         for line in format_report(privacy_report(root)):
@@ -1561,7 +1562,7 @@ def kb_name_lookup(
     lookup_type: str = typer.Option(
         "person",
         "--lookup-type",
-        help="Entity type(s) to search: person (default), organization, any, or a comma-separated list.",
+        help="The entity types to search: person (default), organization, any, or a comma-separated list.",
     ),
     reader: str | None = _R,
     as_json: bool = _J,
@@ -1721,14 +1722,15 @@ def kb_check_fact_check(
     elif not result.targets:
         typer.echo(f"{name}: no KB note changed in the last days is waiting to be re-verified")
     elif result.passed and result.skipped is None:
-        typer.echo(f"{name}: {len(result.verified)} of {len(result.targets)} recent note(s) re-verified today")
+        typer.echo(f"{name}: {len(result.verified)} of {count(len(result.targets), 'recent note')} re-verified today")
     elif result.passed:
         typer.echo(
             f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
         )
     else:
         typer.echo(
-            f"{name}: {len(result.verified)} of the {result.required} required recent note(s) re-verified today. "
+            f"{name}: {len(result.verified)} of the {count(result.required, 'required recent note')} "
+            "re-verified today. "
             "Re-check the highest-stakes claims in these against a freshly read primary source, correct or mark "
             "what doesn't hold, and set `last_verified:` (today) and `verified_against:` in each one you check:"
         )
@@ -1800,10 +1802,11 @@ def budget_record_run_cmd(
     )
     if cost.measured:
         typer.echo(
-            f"run cost: ${cost.usd:.2f} by claude's figure ({cost.measured} of {cost.attempts} attempt(s) measured)"
+            f"run cost: ${cost.usd:.2f} by claude's figure "
+            f"({cost.measured} of {count(cost.attempts, 'attempt')} measured)"
         )
     else:
-        typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+        typer.echo(f"run cost: not measured ({count(cost.attempts, 'transcript')} named {name}) — recorded $0")
 
 
 @budget_app.command("usage")
@@ -1852,7 +1855,7 @@ def budget_record_attempt_cmd(
     )
     attempt_usd = sum(a.usd for a in outcome.recorded)
     typer.echo(
-        f"attempt cost: ${attempt_usd:.2f} ({len(outcome.recorded)} attempt(s) recorded); "
+        f"attempt cost: ${attempt_usd:.2f} ({count(len(outcome.recorded), 'attempt')} recorded); "
         f"this run so far ${outcome.cost.usd:.2f}; {outcome.reason}",
         err=True,
     )
@@ -3582,7 +3585,7 @@ def _register_triggers() -> None:
         if triggers is None:
             typer.echo("triggers OK: (no triggers.yaml; no triggers configured)")
         else:
-            typer.echo(f"triggers OK: {path} ({len(triggers)} trigger(s))")
+            typer.echo(f"triggers OK: {path} ({count(len(triggers), 'trigger')})")
 
     @trigger_app.command("reload")
     def cli_trigger_reload() -> None:
@@ -3708,7 +3711,7 @@ def _register_triggers() -> None:
             typer.echo(_json.dumps({"days": days, "by_trigger": by_trigger, "by_day": by_day}))
             return
         if not by_trigger:
-            typer.echo(f"(no trigger fires in the last {days} day(s))")
+            typer.echo(f"(no trigger fires in the last {count(days, 'day')})")
             return
         for tid in sorted(by_trigger):
             e = by_trigger[tid]
@@ -5012,7 +5015,7 @@ def _register_bootstrap() -> None:
                     typer.echo(vault_drift.printable(fp.patch), nl=False)
                     produced += 1
             typer.echo(
-                f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "
+                f"{count(produced, 'file')} in the patch — apply with `git apply` in a plugin checkout, review it, "
                 "then open a PR"
                 if produced
                 else "nothing to back-port",
@@ -5029,13 +5032,19 @@ def _register_bootstrap() -> None:
             return
 
         if privacy:
-            typer.echo(f"privacy drift — {len(privacy)} vault file(s) read the vault around the privacy labels:")
+            typer.echo(
+                f"privacy drift — {count(len(privacy), 'vault file')} {agree(len(privacy), 'reads', 'read')} the vault "
+                "around the privacy labels:"
+            )
             for finding in privacy:
                 typer.echo(f"  {finding.rule:<18} {finding.path}  {finding.message}")
         if not rows:
             typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
             return
-        typer.echo(f"vault drift — {len(rows)} plugin-owned file(s) differ from what the plugin last wrote:")
+        typer.echo(
+            f"vault drift — {count(len(rows), 'plugin-owned file')} {agree(len(rows), 'differs', 'differ')} from what "
+            "the plugin last wrote:"
+        )
         for row in rows:
             typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
             if diff and row.diff:
@@ -5169,11 +5178,11 @@ def _register_phases() -> None:
             unmapped = [r for r in results if r.status == "unmapped"]
 
             typer.echo(
-                f"\nphases backport — {k} ({len(results)} hunk(s): "
+                f"\nphases backport — {k} ({count(len(results), 'hunk')}: "
                 f"{len(applied)} applied · {len(review)} needs-review · {len(unmapped)} unmapped)"
             )
             for r in applied:
-                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{len(r.added)} line(s))")
+                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{count(len(r.added), 'line')})")
             for r in review:
                 where = f"{r.phase_file} «{r.section_name}»" if r.phase_file else "—"
                 extra = f" [risky: {', '.join(r.risky_hits)}]" if r.risky_hits else ""
@@ -5192,7 +5201,7 @@ def _register_phases() -> None:
 
         if apply:
             typer.echo(
-                f"\nApplied {total_applied} hunk(s) to phases/. "
+                f"\nApplied {count(total_applied, 'hunk')} to phases/. "
                 "Review the diff, run the phase-assembly tests, commit, and open a PR."
             )
         else:
@@ -5446,12 +5455,12 @@ def _register_repo() -> None:
         for note in result.notes:
             typer.echo(note)
         if result.replayed:
-            typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
+            typer.echo(f"replayed {count(len(result.replayed), 'commit')} from Agnes")
         if result.action in ("link", "sync"):
             typer.echo(
-                f"pushed {len(result.pushed)} commit(s)"
+                f"pushed {count(len(result.pushed), 'commit')}"
                 + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
-                + (f"; {result.stripped} local-only file(s) kept on this computer" if result.stripped else "")
+                + (f"; {count(result.stripped, 'local-only file')} kept on this computer" if result.stripped else "")
             )
 
     @repo_app.command("link")
@@ -5824,10 +5833,10 @@ def _register_delegate() -> None:
             else:
                 verb = "would hold" if r.action == "preview" else "pushed a mirror commit with"
                 typer.echo(
-                    f"{r.delegate}: {verb} {r.files} file(s); {r.withheld} withheld"
+                    f"{r.delegate}: {verb} {count(r.files, 'file')}; {r.withheld} withheld"
                     + (f", {r.left_out} left out after redaction" if r.left_out else "")
                     + (
-                        f"; {r.redacted_lines} line(s) removed from {r.redacted_files} file(s)"
+                        f"; {count(r.redacted_lines, 'line')} removed from {count(r.redacted_files, 'file')}"
                         if r.redacted_files
                         else ""
                     )
@@ -5988,7 +5997,7 @@ def _register_delegate() -> None:
         if as_json:
             typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
             return
-        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {result.files} file(s) visible to it")
+        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {count(result.files, 'file')} visible to it")
         for note in result.notes:
             typer.echo(f"warning: {note}")
         if result.env_file:
@@ -6028,7 +6037,7 @@ def _register_delegate() -> None:
         for k, v in sorted(links.items()):
             key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
             if v.stale_key_ids:
-                key += f", {len(v.stale_key_ids)} old key(s) still live (scoutctl delegate key {k} retries)"
+                key += f", {count(len(v.stale_key_ids), 'old key')} still live (scoutctl delegate key {k} retries)"
             synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
             typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
 

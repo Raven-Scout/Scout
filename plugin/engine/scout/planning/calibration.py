@@ -21,6 +21,7 @@ from typing import Any
 
 from scout import paths, safe_write
 from scout.planning.settings import PlanningSettings
+from scout.plural import count
 
 LOG_NAME = "planning-log.jsonl"
 UNKNOWN_KIND = "unknown"
@@ -97,7 +98,7 @@ def load_entries(data_dir: Path | None = None) -> list[dict[str, Any]]:
         else:
             bad += 1
     if bad:
-        print(f"planning-log: skipped {bad} unreadable line(s) in {path}", file=sys.stderr)
+        print(f"planning-log: skipped {count(bad, 'unreadable line')} in {path}", file=sys.stderr)
     return rows
 
 

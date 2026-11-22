@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import IO
 
 from scout import safe_write
+from scout.plural import count
 
 try:
     import fcntl
@@ -160,7 +161,7 @@ def append_rows(path: Path, lines: Sequence[str], *, max_bytes: int = MAX_DAY_BY
     dropped = len(lines) - len(kept)
     if dropped:
         print(
-            f"connector-log: {path.name} reached its {max_bytes} byte daily cap; dropped {dropped} row(s)",
+            f"connector-log: {path.name} reached its {max_bytes} byte daily cap; dropped {count(dropped, 'row')}",
             file=sys.stderr,
         )
     if new_day:

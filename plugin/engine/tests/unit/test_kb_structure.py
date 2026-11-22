@@ -447,7 +447,7 @@ def test_a_private_front_page_shows_only_paths_and_counts(kb_repo, monkeypatch: 
     assert row["missing_sections"] is None and row["missing_count"] == 4
     assert row["narration"] is None and row["narration_count"] == 1
     assert row["loose"] == [f"{P}/widgets/notes.md"]
-    assert row["problems"] == ["1 loose", "4 sections missing", "narration: 1 marker(s)", "stale"]
+    assert row["problems"] == ["1 loose", "4 sections missing", "narration: 1 marker", "stale"]
 
     for args in (["kb", "structure"], ["kb", "structure", "--json"], ["kb", "structure", "--next"]):
         out = runner.invoke(cli.app, [*args, "--repo", str(kb_repo.root)]).output

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from scout.config import config_load_problem, load_config, user_value
+from scout.plural import noun
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -404,7 +405,7 @@ def _path_mode(d: Any, where: str, warn: Warn) -> PathMode | None:
         return None
     unknown = sorted(str(k) for k in d if k not in _RULE_KEYS)
     if unknown:
-        warn(f"{where} has unknown key(s) {unknown}, ignored; known: {sorted(_RULE_KEYS)}")
+        warn(f"{where} has unknown {noun(len(unknown), 'key')} {unknown}, ignored; known: {sorted(_RULE_KEYS)}")
     glob = d.get("glob")
     if not isinstance(glob, str) or not glob:
         warn(f"{where} has glob {glob!r}, not a path glob, so the rule is dropped")
@@ -472,7 +473,7 @@ def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) ->
     raw = cfg.get("kb_lint")
     unknown = sorted(str(k) for k in raw if k not in _KB_LINT_KEYS) if isinstance(raw, dict) else []
     if unknown:
-        warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
+        warn(f"kb_lint has unknown {noun(len(unknown), 'key')} {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
 
 
 def _fail_closed(cfg: LintConfig, problem: str) -> LintConfig:
