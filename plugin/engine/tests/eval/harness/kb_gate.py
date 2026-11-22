@@ -11,6 +11,7 @@ uncommitted edits count too. Reading is here; the checks themselves are pure.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -31,6 +32,7 @@ from .checks.kb_writing import (
     kb_structure,
     source_keys,
 )
+from .metrics import SampleMetrics, ToolCall
 from .scenario import Scenario
 
 GATE = "kb-writing"
@@ -161,6 +163,70 @@ def _bytes(text: str | None) -> int | None:
     return None if text is None else len(text.encode("utf-8"))
 
 
+WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
+DENIED_INPUT_CHARS = 300
+
+
+def commits_since_fixture(vault: Path) -> int | None:
+    """Commits on HEAD past the vault's fixture (root) commit; None when git can't say."""
+    try:
+        roots = _git(vault, "rev-list", "--max-parents=0", "HEAD").split()
+        return int(_git(vault, "rev-list", "--count", f"{roots[0]}..HEAD").strip()) if roots else None
+    except (KbReadError, ValueError):
+        return None
+
+
+def _denied(call: ToolCall) -> dict[str, str | None]:
+    shown = call.input.get("command") or call.input.get("file_path") or json.dumps(call.input, sort_keys=True)
+    # by: Claude Code's permission check, or the Scout gate hook that refused it (kb-read-gate, outbound-gate)
+    return {"tool": call.name, "input": str(shown)[:DENIED_INPUT_CHARS], "by": call.gate or "permissions"}
+
+
+def denied_calls(metrics: SampleMetrics) -> list[dict[str, str | None]]:
+    """Every refused call: Claude Code's ``permission_denials`` and the Scout gate hooks' denies."""
+    denied = [_denied(c) for c in metrics.calls if c.denied or c.gate]
+    listed = {d["tool"] for d in denied}
+    # An older transcript whose denials carry no tool_use_id: name the tool at least.
+    return denied + [{"tool": name, "input": "", "by": "permissions"} for name in metrics.denials if name not in listed]
+
+
+def void_run(metrics: SampleMetrics | None, commits: int | None, pages_changed: bool | None) -> dict[str, Any] | None:
+    """Why a session that finished did nothing after a refused call, so the gate tested no KB writing; else None.
+
+    Void needs all four: at least one denied call (Claude Code's or a Scout gate hook's), no commit past the
+    fixture, no Edit/Write that went through, and the project's pages as the fixture left them. A run that
+    did nothing with no denial is a ``fail``: a brain or phase change that makes runs skip KB writing must
+    block the release, not ask for a rerun every time. A run that tried and wrote badly is a ``fail`` too.
+    Anything unmeasured (no transcript, git can't say) is not void: the checks decide.
+    """
+    if metrics is None or commits != 0 or pages_changed is not False:
+        return None
+    if any(c.name in WRITE_TOOLS and not c.is_error for c in metrics.calls):
+        return None
+    denied = denied_calls(metrics)
+    if not denied:
+        return None
+    return {
+        "reason": (
+            "the session finished but did nothing after a refused call: no commit, no file written, "
+            "the project's pages unchanged"
+        ),
+        "denials": denied,
+        "duration_s": metrics.duration_s,
+        "turns": metrics.turns,
+        "tool_calls": metrics.tool_call_count,
+        "result": metrics.result_subtype,
+    }
+
+
+def pages_changed(vault: Path, project: str) -> bool | None:
+    """Whether the project's front page or a knowledge/ note differs from the fixture; None when git can't say."""
+    try:
+        return pages_at_fixture(vault, project) != pages_now(vault, project)
+    except KbReadError:
+        return None
+
+
 def gate_report(
     vault: Path,
     spec: KbSpec,
@@ -168,13 +234,18 @@ def gate_report(
     *,
     scenario: str,
     sample: dict[str, Any] | None = None,
+    void: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The gate's JSON report. ``verdict``: ``pass`` (every check passed), ``fail`` (one failed),
-    ``unevaluated`` (none failed, but one couldn't be scored) or ``aborted`` (the session didn't
-    finish, so nothing was scored)."""
+    ``unevaluated`` (none failed, but one couldn't be scored), ``aborted`` (the session didn't
+    finish, so nothing was scored) or ``void`` (it finished but did nothing, :func:`void_run`: the
+    run tested no KB writing, so it is neither a pass nor a fail; ``void`` says why and lists the
+    denied calls; the checks are still reported)."""
     aborted = (sample or {}).get("aborted")
     if aborted:
         verdict = "aborted"
+    elif void:
+        verdict = "void"
     elif any(c.passed is False for c in checks):
         verdict = "fail"
     elif checks and all(c.passed is True for c in checks):
@@ -199,10 +270,15 @@ def gate_report(
         "facts": [f.id for f in spec.facts],
         "front_page": front,
         "checks": [asdict(c) for c in checks],
+        "void": void,
         "sample": sample,
     }
 
 
+EXIT_VOID = 3
+
+
 def exit_code(report: dict[str, Any]) -> int:
-    """0 pass, 1 fail; 2 when the gate couldn't decide (an aborted session, an unscored check)."""
-    return {"pass": 0, "fail": 1}.get(report["verdict"], 2)
+    """0 pass, 1 fail; 2 when the gate couldn't decide (an aborted session, an unscored check);
+    3 for a void run (it finished but did nothing): rerun it, it says nothing about the release."""
+    return {"pass": 0, "fail": 1, "void": EXIT_VOID}.get(report["verdict"], 2)

@@ -600,7 +600,12 @@ maintainer's decision. §13 Q2 still holds for everything else, and `release.sh`
 because the gate needs a Claude login that neither the script nor CI has.
 - **`eval.sh kb-gate`** runs ONE sample of `scenarios/kb-front-page/` (`morning-consolidation`,
   Sonnet unless `--opus`) and writes `kb-gate-report.json` into the result dir (and to `--report`).
-  Exit 0 is a pass, 1 a fail, 2 a sample that aborted or a check that couldn't be scored.
+  Exit 0 is a pass, 1 a fail, 2 a sample that aborted or a check that couldn't be scored, 3 a void
+  run (`"verdict": "void"`): at least one call was refused (Claude Code's permissions or a Scout gate
+  hook), then the session did nothing (no commit past the fixture, no Edit/Write that went through,
+  the project's pages unchanged). Rerun it: it is not a verdict on the release. The report's `void`
+  block lists each refused call, what refused it and its command. A do-nothing run with no refusal
+  is a fail.
 - **The fixture** is one project folder that meets the KB page standard (`kb structure` ✓), plus a
   day of scripted signals about it: a merged PR (fake `gh`), a ticket moved to Done (Linear stub),
   and a meeting's notes (Calendar event, notes mail). It targets why rebuilt front pages regrew:
