@@ -86,14 +86,16 @@ final class SessionLogService: ObservableObject {
         // Accept <runner>-YYYY-MM-DD_HH-MM (the run that claimed the minute's
         // log, and every log written before unique names) and
         // <runner>-YYYY-MM-DD_HH-MM-SS-PID (a later run in the same minute),
-        // for runner scout, dreaming or research.
+        // for runner scout, dreaming, research or respond. A log from a runner
+        // this build doesn't know is left out (nil), never filed as another
+        // kind, so a newer engine's runs can't read as, say, a briefing.
         guard let underscoreIdx = name.firstIndex(of: "_") else { return nil }
         let head = String(name[..<underscoreIdx])                       // "scout-2026-04-19"
         let tail = String(name[name.index(after: underscoreIdx)...])    // "08-03"
         let headParts = head.components(separatedBy: "-")
         guard headParts.count == 4 else { return nil }
         let runner = headParts[0]
-        guard ["scout", "dreaming", "research"].contains(runner) else { return nil }
+        guard Self.runnerScripts[runner] != nil else { return nil }
 
         let tailParts = tail.components(separatedBy: "-")
         guard tailParts.count == 2 || tailParts.count == 4,
@@ -127,19 +129,21 @@ final class SessionLogService: ObservableObject {
         components.timeZone = timeZone
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return nil }
 
-        let runnerScript: String = {
-            switch runner {
-            case "scout": return "run-scout.sh"
-            case "dreaming": return "run-dreaming.sh"
-            case "research": return "run-research.sh"
-            default: return "run-scout.sh"
-            }
-        }()
-
+        guard let runnerScript = Self.runnerScripts[runner] else { return nil }
         let type = deriveType(runner: runner, date: date, timeZone: timeZone)
         return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date,
                               pid: pid, uniqueSuffix: uniqueSuffix)
     }
+
+    /// The log-name prefix each runner writes under `.scout-logs/`
+    /// (`<prefix>-YYYY-MM-DD_HH-MM.log`) and the runner script that writes it.
+    /// Mirrors `_RUN_LOG_GLOBS` in `plugin/engine/scout/health.py`.
+    nonisolated static let runnerScripts: [String: String] = [
+        "scout":    "run-scout.sh",
+        "dreaming": "run-dreaming.sh",
+        "research": "run-research.sh",
+        "respond":  "run-respond.sh",
+    ]
 
     nonisolated static func deriveType(
         runner: String,
@@ -177,6 +181,8 @@ final class SessionLogService: ObservableObject {
             return .dreaming
         case "research":
             return .research
+        case "respond":
+            return .respond
         default:
             return .manual
         }
@@ -806,6 +812,7 @@ extension RunType {
         case .consolidation: return "consolidation"
         case .dreaming:      return "dreaming"
         case .research:      return "research"
+        case .respond:       return "respond"
         case .manual:        return "manual"
         }
     }
@@ -833,6 +840,13 @@ extension RunType {
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:
             return 2 * 3600          // 2 h — unchanged, research can legitimately churn
+        case .respond:
+            // 75 min. A reply usually lands in minutes, but a run queued
+            // behind another one waits for the session lock first
+            // (SCOUT_LOCK_WAIT_SECS, 30 min) with no watcher yet and only one
+            // "waiting up to …" log line, then gets the default run timeout
+            // (DEFAULT_RUN_TIMEOUT_MINUTES, 45: respond has no kind of its own).
+            return 30 * 60 + 45 * 60
         case .manual:
             return 45 * 60           // 45 min — catch-all, prefer to orphan fast
         }

@@ -68,7 +68,10 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         "runtime", "provider", "gate_probe", "ok", "checked_at", "claude_version", "recent_runs", "slot", "mode",
         "started_at", "exit_code", "integrity", "commits", "redaction", "unavailable",
     ]
-    static let structuralMarkdown: Set<String> = ["CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "README.md"]
+    /// Scout's own Markdown files, kept by name (diagnostics._STRUCTURAL_MD).
+    static let structuralMarkdown: Set<String> = [
+        "CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md", "README.md",
+    ]
     /// Scout's own folder names: never hidden, though what is inside them is.
     static let keepWords: Set<String> = [
         "knowledge-base", "action-items", "ontology", "wishlist", "research",

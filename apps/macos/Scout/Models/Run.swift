@@ -10,6 +10,10 @@ enum RunType: String, CaseIterable, Codable, Sendable {
     case consolidation
     case dreaming
     case research
+    /// A reply to the owner's Telegram messages (`run-respond.sh`), started
+    /// by the inbound trigger, or by hand. No schedule runs it, so it has no
+    /// `SlotType` and `RunType(slotKey:)` never returns it.
+    case respond
     case manual
 }
 
@@ -201,9 +205,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// to fire. A run started outside the schedule (`manual`,
     /// `dreaming-manual`, `research-manual`, or any `event` run, whose slot is
     /// a skill name that `fire-now` doesn't know or, worse, that a schedule
-    /// shares) or one the ledger couldn't name (`unknown`) has none.
+    /// shares) or one the ledger couldn't name (`unknown`) has none. Neither
+    /// has a Telegram reply: started by hand its ledger slot is `respond`,
+    /// which names no schedule.
     var rerunSlotKey: String? {
-        guard startedBySchedule,
+        guard startedBySchedule, runnerScript != "run-respond.sh",
               let key = slotKey?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
               key != "unknown", key != "manual", !key.hasSuffix("-manual")
         else { return nil }
@@ -290,6 +296,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             switch runnerScript {
             case "run-dreaming.sh": return .dreaming
             case "run-research.sh": return .research
+            case "run-respond.sh":  return .respond
             // run-scout.sh: the log's guess is already the runner's, by the hour.
             default: return type
             }
@@ -346,6 +353,7 @@ extension Run {
                 switch type {
                 case .dreaming: return "run-dreaming.sh"
                 case .research: return "run-research.sh"
+                case .respond:  return "run-respond.sh"
                 default:        return "run-scout.sh"
                 }
             }(),
