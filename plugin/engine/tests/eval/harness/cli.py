@@ -191,7 +191,7 @@ def _cmd_kb_gate(args: argparse.Namespace) -> int:
         sample={"result_dir": str(sample.result_dir), **meta, "checkout": checkout, "aborted": sample.aborted},
     )  # fmt: skip
     if void:
-        denied = "; ".join(f"{d['tool']}: {d['input'][:120]}" for d in void["denials"]) or "none"
+        denied = "; ".join(f"{d['tool']} ({d['by']}): {str(d['input'])[:120]}" for d in void["denials"])
         print(
             f"eval: VOID run, not a verdict on the release: {void['reason']}. Denied calls: {denied}. Rerun the gate.",
             file=sys.stderr,

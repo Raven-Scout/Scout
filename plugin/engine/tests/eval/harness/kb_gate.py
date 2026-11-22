@@ -176,29 +176,41 @@ def commits_since_fixture(vault: Path) -> int | None:
         return None
 
 
-def _denied(call: ToolCall) -> dict[str, str]:
+def _denied(call: ToolCall) -> dict[str, str | None]:
     shown = call.input.get("command") or call.input.get("file_path") or json.dumps(call.input, sort_keys=True)
-    return {"tool": call.name, "input": str(shown)[:DENIED_INPUT_CHARS]}
+    # by: Claude Code's permission check, or the Scout gate hook that refused it (kb-read-gate, outbound-gate)
+    return {"tool": call.name, "input": str(shown)[:DENIED_INPUT_CHARS], "by": call.gate or "permissions"}
+
+
+def denied_calls(metrics: SampleMetrics) -> list[dict[str, str | None]]:
+    """Every refused call: Claude Code's ``permission_denials`` and the Scout gate hooks' denies."""
+    denied = [_denied(c) for c in metrics.calls if c.denied or c.gate]
+    listed = {d["tool"] for d in denied}
+    # An older transcript whose denials carry no tool_use_id: name the tool at least.
+    return denied + [{"tool": name, "input": "", "by": "permissions"} for name in metrics.denials if name not in listed]
 
 
 def void_run(metrics: SampleMetrics | None, commits: int | None, pages_changed: bool | None) -> dict[str, Any] | None:
-    """Why a session that finished did nothing, so the gate tested no KB writing; None when it did something.
+    """Why a session that finished did nothing after a refused call, so the gate tested no KB writing; else None.
 
-    Nothing means all three: no commit past the fixture, no Edit/Write that went through, and the project's
-    pages as the fixture left them. A run that tried and wrote badly is a ``fail``, never void. Anything
-    unmeasured (no transcript, git can't say) is not void: the checks decide. The denied calls are listed,
-    since one the session took to mean "the run can't go on" is the usual cause (v0.18.19, v0.18.21).
+    Void needs all four: at least one denied call (Claude Code's or a Scout gate hook's), no commit past the
+    fixture, no Edit/Write that went through, and the project's pages as the fixture left them. A run that
+    did nothing with no denial is a ``fail``: a brain or phase change that makes runs skip KB writing must
+    block the release, not ask for a rerun every time. A run that tried and wrote badly is a ``fail`` too.
+    Anything unmeasured (no transcript, git can't say) is not void: the checks decide.
     """
     if metrics is None or commits != 0 or pages_changed is not False:
         return None
     if any(c.name in WRITE_TOOLS and not c.is_error for c in metrics.calls):
         return None
-    denied = [_denied(c) for c in metrics.calls if c.denied]
-    listed = {d["tool"] for d in denied}
-    # An older transcript whose denials carry no tool_use_id: name the tool at least.
-    denied += [{"tool": name, "input": ""} for name in metrics.denials if name not in listed]
+    denied = denied_calls(metrics)
+    if not denied:
+        return None
     return {
-        "reason": "the session finished but did nothing: no commit, no file written, the project's pages unchanged",
+        "reason": (
+            "the session finished but did nothing after a refused call: no commit, no file written, "
+            "the project's pages unchanged"
+        ),
         "denials": denied,
         "duration_s": metrics.duration_s,
         "turns": metrics.turns,

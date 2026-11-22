@@ -572,32 +572,61 @@ def _metrics(*calls: ToolCall, denials: tuple[str, ...] | None = None) -> Sample
     )  # fmt: skip
 
 
-def _call(name: str, inp: dict, *, error: bool = False, denied: bool = False) -> ToolCall:
-    return ToolCall(seq=1, name=name, input=inp, is_error=error or denied, position=0.5, denied=denied)
+def _call(name: str, inp: dict, *, error: bool = False, denied: bool = False, gate: str | None = None) -> ToolCall:
+    return ToolCall(
+        seq=1, name=name, input=inp, is_error=error or denied or bool(gate), position=0.5, gate=gate, denied=denied
+    )
 
 
 DENIED_BASH = _call("Bash", {"command": "ls .scout-state ../.scout-state 2>/dev/null; " + "x" * 400}, denied=True)
 
 
-def test_a_session_that_did_nothing_is_void_with_its_denials() -> None:
+def test_a_session_that_did_nothing_after_a_denial_is_void_with_its_denials() -> None:
     void = void_run(_metrics(_call("Read", {"file_path": "SKILL.md"}), DENIED_BASH), 0, False)
     assert void is not None and void["result"] == "success"
     assert (void["duration_s"], void["turns"], void["tool_calls"]) == (18.9, 5, 2)
     [denied] = void["denials"]
-    assert denied["tool"] == "Bash" and denied["input"].startswith("ls .scout-state ../.scout-state")
+    assert denied["tool"] == "Bash" and denied["by"] == "permissions"
+    assert denied["input"].startswith("ls .scout-state ../.scout-state")
     assert len(denied["input"]) == DENIED_INPUT_CHARS
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        (),  # it ended at once
+        (_call("Read", {"file_path": "SKILL.md"}),),  # it read and stopped
+        (_call("Bash", {"command": "false"}, error=True),),  # a call failed on its own: no refusal
+    ],
+)
+def test_a_session_that_did_nothing_with_no_denial_is_not_void(calls) -> None:
+    """A brain or phase change that makes runs skip KB writing must fail the gate, not ask for a rerun
+    every time (at one model session each)."""
+    assert void_run(_metrics(*calls), 0, False) is None
+
+
+def test_a_scout_gate_hook_deny_makes_a_do_nothing_run_void_and_is_listed() -> None:
+    hooked = _call("Bash", {"command": "cat knowledge-base/people/x.md"}, gate="kb-read-gate")
+    void = void_run(_metrics(hooked, DENIED_BASH), 0, False)
+    assert void is not None
+    assert [(d["tool"], d["by"]) for d in void["denials"]] == [("Bash", "kb-read-gate"), ("Bash", "permissions")]
+    assert void["denials"][0]["input"] == "cat knowledge-base/people/x.md"
+    only_hook = void_run(_metrics(hooked), 0, False)
+    assert only_hook is not None and [d["by"] for d in only_hook["denials"]] == ["kb-read-gate"]
 
 
 def test_a_denied_read_is_listed_by_its_path() -> None:
     void = void_run(_metrics(_call("Read", {"file_path": "/elsewhere/x.md"}, denied=True)), 0, False)
-    assert void is not None and void["denials"] == [{"tool": "Read", "input": "/elsewhere/x.md"}]
+    assert void is not None
+    assert void["denials"] == [{"tool": "Read", "input": "/elsewhere/x.md", "by": "permissions"}]
     mcp = void_run(_metrics(_call("mcp__x__send", {"to": "a"}, denied=True)), 0, False)
-    assert mcp is not None and mcp["denials"] == [{"tool": "mcp__x__send", "input": '{"to": "a"}'}]
+    assert mcp is not None
+    assert mcp["denials"] == [{"tool": "mcp__x__send", "input": '{"to": "a"}', "by": "permissions"}]
 
 
 def test_an_older_transcript_names_the_denied_tool_without_its_input() -> None:
     void = void_run(_metrics(_call("Bash", {"command": "ls"}, error=True), denials=("Bash",)), 0, False)
-    assert void is not None and void["denials"] == [{"tool": "Bash", "input": ""}]
+    assert void is not None and void["denials"] == [{"tool": "Bash", "input": "", "by": "permissions"}]
 
 
 @pytest.mark.parametrize(
@@ -616,7 +645,7 @@ def test_a_session_that_did_something_or_cannot_be_measured_is_not_void(calls, c
 
 
 def test_a_failed_write_still_counts_as_nothing_written() -> None:
-    assert void_run(_metrics(_call("Write", {"file_path": "a.md"}, error=True)), 0, False) is not None
+    assert void_run(_metrics(_call("Write", {"file_path": "a.md"}, error=True), DENIED_BASH), 0, False) is not None
 
 
 def test_no_transcript_is_never_void() -> None:
@@ -722,17 +751,16 @@ def _fake_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, *ex
 def test_kb_gate_runs_one_session_and_writes_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A stand-in session that writes nothing: the front page is untouched and nothing was committed,
-    so the run tested no KB writing. The gate calls it void (exit 3), never a fail, still reports the
-    checks, and says so in the report it leaves in the result dir."""
+    """A stand-in session that writes nothing and had no call refused: the front page is untouched, so
+    the gate fails on the facts alone (never void: nothing stopped it), and says so in the report it
+    leaves in the result dir."""
     extra = tmp_path / "out" / "gate.json"
     code = _fake_gate(tmp_path, monkeypatch, "", "--report", str(extra))
     captured = capsys.readouterr()
     assert "Will start 1 session (kb-front-page ×1, morning-consolidation) on sonnet" in captured.err
     report = json.loads(captured.out)
-    assert code == 3 and report["verdict"] == "void" and report["passed"] is False
-    assert report["void"]["denials"] == [] and report["void"]["result"] == "success"
-    assert "VOID run, not a verdict on the release" in captured.err and "Denied calls: none" in captured.err
+    assert code == 1 and report["verdict"] == "fail" and report["void"] is None
+    assert "VOID" not in captured.err
     assert {c["name"]: c["passed"] for c in report["checks"]} == {
         **dict.fromkeys(KB_CHECKS, True),
         "kb_facts_cited": False,
@@ -760,9 +788,10 @@ def test_kb_gate_lists_the_denied_call_of_a_void_run(
     report = json.loads(captured.out)
     assert code == 3 and report["verdict"] == "void"
     [denied] = report["void"]["denials"]
-    assert denied["tool"] == "Bash" and "../.scout-state" in denied["input"]
+    assert denied["tool"] == "Bash" and denied["by"] == "permissions" and "../.scout-state" in denied["input"]
     assert (report["void"]["turns"], report["void"]["tool_calls"]) == (1, 1)
-    assert "Bash: cat .scout-cache/run-health.json" in captured.err
+    assert "VOID run, not a verdict on the release" in captured.err
+    assert "Bash (permissions): cat .scout-cache/run-health.json" in captured.err
 
 
 def test_kb_gate_fails_a_run_that_did_work_but_cited_nothing(

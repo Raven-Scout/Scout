@@ -45,8 +45,9 @@ TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
 RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl")
 PROMPT_RULE = (
     "- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, "
-    "do that and never get the same thing another way; otherwise redo a shell command as plain single commands "
-    "on paths inside /v/vault, or with Read/Edit, and carry on."
+    "do that and never get the same thing another way; otherwise redo a shell command as plain single commands, "
+    "with no command substitution, variables or loops and only paths inside /v/vault, or with Read/Edit, "
+    "and carry on."
 )
 
 
@@ -72,6 +73,10 @@ def test_every_runner_prompt_says_a_denial_covers_one_call(name):
     prompt = _runner_prompt(name)
     assert prompt.count(PROMPT_RULE) == 1, prompt
     assert prompt.index(PROMPT_RULE) > prompt.index("Important:")
+    # In the template it sits inside PROMPT's double quotes: nothing bash would expand or end the string on.
+    lines = (TEMPLATES / name).read_text(encoding="utf-8").splitlines()
+    template_line = next(ln for ln in lines if "denied tool" in ln)
+    assert not set(template_line) & set('$`"\\'), template_line
 
 
 @pytest.mark.parametrize("kind", sorted(PINS))

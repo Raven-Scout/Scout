@@ -123,7 +123,7 @@ Step 4: Commit results to git.
 Step 5: If anything material changed, send the wrap notification summarizing what was found and changed, as SKILL.md's notification sections direct: they name the channel and recipient. Send every notification section SKILL.md has (in a stock install, Slack Notification and, when Telegram is set up, Telegram Notification as well; the vault's notify.wrap_channels setting decides which are there). Do not assume Slack: {{USER_NAME}} may have moved the wrap off Slack on purpose, for example because it is an employer-controlled workspace and runs carry personal content, and this prompt must not contradict that. If SKILL.md has no notification section, send nothing and say so in your final message.
 
 Important:
-- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, do that and never get the same thing another way; otherwise redo a shell command as plain single commands on paths inside {{SCOUT_DIR}}, or with Read/Edit, and carry on.
+- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, do that and never get the same thing another way; otherwise redo a shell command as plain single commands, with no command substitution, variables or loops and only paths inside {{SCOUT_DIR}}, or with Read/Edit, and carry on.
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
 - The knowledge base and action items are in {{SCOUT_DIR}}/knowledge-base/ and {{SCOUT_DIR}}/action-items/.
 - Always use [[wikilinks]] when referencing KB files.
