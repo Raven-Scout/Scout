@@ -86,12 +86,17 @@ struct NowStripView: View {
         // failed to write would latch the hero on "running · started 4 h ago"
         // even though a later run of the same type already completed cleanly.
         let runs = state.sessionLogService.runs
-        let live = runs.first { $0.status == .running }
+        // A run that is working beats one queued behind it for the session lock.
+        let live = runs.first { $0.status == .running && !$0.isWaitingForLock }
+            ?? runs.first { $0.status == .running }
         let resolved = runs.first { $0.status != .running && $0.status != .orphaned }
         VStack(alignment: .leading, spacing: 4) {
             if let r = live {
                 bigName(r.displayName)
-                sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
+                sub(r.isWaitingForLock
+                    ? "waiting for another run · queued \(r.startedAt.formatted(.relative(presentation: .named)))"
+                    : "running · started \(r.startedAt.formatted(.relative(presentation: .named)))",
+                    color: DS.Status.warn)
             } else if let r = resolved {
                 bigName(r.displayName)
                 // One status model (UI audit R10, #21): a routine skip is

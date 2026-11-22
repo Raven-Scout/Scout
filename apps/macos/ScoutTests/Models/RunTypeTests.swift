@@ -52,6 +52,7 @@ struct RunTypeTests {
             "consolidation",
             "dreaming",
             "research",
+            "respond",
             "manual",
         ]))
     }

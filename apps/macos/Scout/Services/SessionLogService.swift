@@ -86,14 +86,16 @@ final class SessionLogService: ObservableObject {
         // Accept <runner>-YYYY-MM-DD_HH-MM (the run that claimed the minute's
         // log, and every log written before unique names) and
         // <runner>-YYYY-MM-DD_HH-MM-SS-PID (a later run in the same minute),
-        // for runner scout, dreaming or research.
+        // for runner scout, dreaming, research or respond. A log from a runner
+        // this build doesn't know is left out (nil), never filed as another
+        // kind, so a newer engine's runs can't read as, say, a briefing.
         guard let underscoreIdx = name.firstIndex(of: "_") else { return nil }
         let head = String(name[..<underscoreIdx])                       // "scout-2026-04-19"
         let tail = String(name[name.index(after: underscoreIdx)...])    // "08-03"
         let headParts = head.components(separatedBy: "-")
         guard headParts.count == 4 else { return nil }
         let runner = headParts[0]
-        guard ["scout", "dreaming", "research"].contains(runner) else { return nil }
+        guard Self.runnerScripts[runner] != nil else { return nil }
 
         let tailParts = tail.components(separatedBy: "-")
         guard tailParts.count == 2 || tailParts.count == 4,
@@ -127,19 +129,21 @@ final class SessionLogService: ObservableObject {
         components.timeZone = timeZone
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return nil }
 
-        let runnerScript: String = {
-            switch runner {
-            case "scout": return "run-scout.sh"
-            case "dreaming": return "run-dreaming.sh"
-            case "research": return "run-research.sh"
-            default: return "run-scout.sh"
-            }
-        }()
-
+        guard let runnerScript = Self.runnerScripts[runner] else { return nil }
         let type = deriveType(runner: runner, date: date, timeZone: timeZone)
         return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date,
                               pid: pid, uniqueSuffix: uniqueSuffix)
     }
+
+    /// The log-name prefix each runner writes under `.scout-logs/`
+    /// (`<prefix>-YYYY-MM-DD_HH-MM.log`) and the runner script that writes it.
+    /// Mirrors `_RUN_LOG_GLOBS` in `plugin/engine/scout/health.py`.
+    nonisolated static let runnerScripts: [String: String] = [
+        "scout":    "run-scout.sh",
+        "dreaming": "run-dreaming.sh",
+        "research": "run-research.sh",
+        "respond":  "run-respond.sh",
+    ]
 
     nonisolated static func deriveType(
         runner: String,
@@ -177,6 +181,8 @@ final class SessionLogService: ObservableObject {
             return .dreaming
         case "research":
             return .research
+        case "respond":
+            return .respond
         default:
             return .manual
         }
@@ -194,6 +200,12 @@ final class SessionLogService: ObservableObject {
         let errorsDetected: [DetectedError]
         /// From the runner's `=== model: <model> ===` line; nil for older logs.
         var model: String? = nil
+        /// Set while the run is queued behind another one for the session
+        /// lock: its log has the lock library's "waiting up to Ns for the
+        /// lock" line and nothing has ended the wait yet (no "Lock acquired"
+        /// line, no skip). The value is that N, the longest the wait can last
+        /// (`SCOUT_LOCK_WAIT_SECS`). nil for every other log.
+        var lockWaitSecs: Int? = nil
     }
 
     // Compiled once and reused. `parseBody` runs on every FSEvent for a log
@@ -242,6 +254,22 @@ final class SessionLogService: ObservableObject {
         pattern: #"=== Another .+? session running.*skipping"#,
         options: [.caseInsensitive]
     )
+    // `=== Another … session running (PID …) — waiting up to 1800s for the lock ===`
+    // and, once the wait ends with the lock, `=== Lock acquired after 412s wait ===`
+    // (`scout_lock_acquire` in plugin/templates/scripts/scout-lock.sh.tmpl).
+    // The runner takes the lock before it writes anything else, so between the
+    // two the waiting line is the log's only content: it sleeps in 30 s polls,
+    // writing nothing, and its progress watcher starts only once it holds the lock.
+    private static let lockWaitRegex = try! NSRegularExpression(
+        pattern: #"=== Another .+? session running.*waiting up to (\d+)s for the lock"#,
+        options: [.caseInsensitive]
+    )
+    private static let lockAcquiredRegex = try! NSRegularExpression(
+        pattern: #"=== Lock acquired after"#,
+        options: [.caseInsensitive]
+    )
+    /// The wait `SCOUT_LOCK_WAIT_SECS` gives when the line's number can't be read.
+    nonisolated static let defaultLockWaitSecs = 1800
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
     private static let rateLimitRegex = try! NSRegularExpression(pattern: #"Rate limit detected"#)
     // `=== model: sonnet ===`, written by the runner before the session starts.
@@ -306,6 +334,17 @@ final class SessionLogService: ObservableObject {
             model = String(text[modelRange])
         }
 
+        // Still waiting for the session lock: the wait line, and nothing since
+        // that ended the wait. A run that got the lock, or gave up and skipped
+        // (`.skippedConcurrency`), is judged like any other.
+        var lockWaitSecs: Int? = nil
+        if status == .running,
+           let match = lockWaitRegex.firstMatch(in: text, range: range),
+           lockAcquiredRegex.firstMatch(in: text, range: range) == nil {
+            let secs = Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) }
+            lockWaitSecs = secs ?? defaultLockWaitSecs
+        }
+
         let errors = scanErrors(in: text)
         return ParsedBody(
             startedAt: startedAt,
@@ -314,7 +353,8 @@ final class SessionLogService: ObservableObject {
             status: status,
             logSizeBytes: size,
             errorsDetected: errors,
-            model: model
+            model: model,
+            lockWaitSecs: lockWaitSecs
         )
     }
 
@@ -334,11 +374,20 @@ final class SessionLogService: ObservableObject {
     /// later of its start and `lastActivityAt` (the log's modification time),
     /// as #701 had it. Counting from the start alone marked a healthy
     /// 23-minute consolidation "Didn't finish" while it was still working.
+    ///
+    /// `lockWait` is set while the run is queued for the session lock
+    /// (`ParsedBody.lockWaitSecs`). Waiting is not a run going without
+    /// progress: the waiter writes nothing while it polls, and the watcher's
+    /// line is the holder's. So the wait, counted from the waiting line (the
+    /// log's last write), gets its full length first, and the kind's
+    /// threshold applies only after it: the waiter writes a line as soon as
+    /// the wait ends, either way, so silence past both means it is gone.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
         lastActivityAt: Date? = nil,
         watcherStall: TimeInterval? = nil,
+        lockWait: TimeInterval? = nil,
         type: RunType,
         now: Date
     ) -> RunStatus {
@@ -347,7 +396,8 @@ final class SessionLogService: ObservableObject {
             return watcherStall > type.orphanAfter ? .orphaned : .running
         }
         let lastSignOfLife = max(startedAt, lastActivityAt ?? startedAt)
-        return now.timeIntervalSince(lastSignOfLife) > type.orphanAfter
+        let allowedQuiet = max(0, lockWait ?? 0) + type.orphanAfter
+        return now.timeIntervalSince(lastSignOfLife) > allowedQuiet
             ? .orphaned
             : .running
     }
@@ -591,6 +641,7 @@ final class SessionLogService: ObservableObject {
                     startedAt: filename.startedAt,
                     lastActivityAt: meta.modifiedAt,
                     watcherStall: progress?.stall(for: url),
+                    lockWait: body.lockWaitSecs.map(TimeInterval.init),
                     type: filename.type,
                     now: nowSnapshot
                 )
@@ -612,7 +663,8 @@ final class SessionLogService: ObservableObject {
                     errorsDetected: body.errorsDetected,
                     commits: [],
                     retryOf: nil,
-                    model: body.model
+                    model: body.model,
+                    lockWait: body.lockWaitSecs.map(TimeInterval.init)
                 )
                 out.append(run)
             }
@@ -705,6 +757,7 @@ final class SessionLogService: ObservableObject {
             startedAt: filename.startedAt,
             lastActivityAt: Self.logModifiedAt(url),
             watcherStall: watcherStall,
+            lockWait: body.lockWaitSecs.map(TimeInterval.init),
             type: filename.type,
             now: now
         )
@@ -729,7 +782,8 @@ final class SessionLogService: ObservableObject {
             errorsDetected: body.errorsDetected,
             commits: commits,
             retryOf: nil,
-            model: body.model
+            model: body.model,
+            lockWait: body.lockWaitSecs.map(TimeInterval.init)
         )
         var updated = runs
         if let idx = updated.firstIndex(where: { $0.id == newRun.id }) {
@@ -773,6 +827,7 @@ final class SessionLogService: ObservableObject {
                 startedAt: run.startedAt,
                 lastActivityAt: Self.logModifiedAt(run.logPath),
                 watcherStall: progress?.stall(for: run.logPath),
+                lockWait: run.lockWait,
                 type: run.type,
                 now: now
             )
@@ -806,6 +861,7 @@ extension RunType {
         case .consolidation: return "consolidation"
         case .dreaming:      return "dreaming"
         case .research:      return "research"
+        case .respond:       return "respond"
         case .manual:        return "manual"
         }
     }
@@ -823,6 +879,9 @@ extension RunType {
     /// "Didn't finish" after it, however often the lease keepalive writes the
     /// log, and a slow run that keeps working never is. Without one it bounds
     /// silence in the log since the later of the start and its last line.
+    ///
+    /// None of these counts a wait for the session lock: a run queued behind
+    /// another one gets that wait in full first (`promoteOrphan`'s `lockWait`).
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
@@ -833,6 +892,14 @@ extension RunType {
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:
             return 2 * 3600          // 2 h — unchanged, research can legitimately churn
+        case .respond:
+            // 45 min, the default run timeout (DEFAULT_RUN_TIMEOUT_MINUTES:
+            // respond has no kind of its own). A reply usually lands in
+            // minutes. A run queued behind another one first waits for the
+            // session lock (SCOUT_LOCK_WAIT_SECS, 30 min), but that wait is
+            // not counted here: `promoteOrphan` gives it on top for every
+            // kind, from the log's "waiting up to …" line (`lockWait`).
+            return 45 * 60
         case .manual:
             return 45 * 60           // 45 min — catch-all, prefer to orphan fast
         }

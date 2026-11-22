@@ -10,6 +10,10 @@ enum RunType: String, CaseIterable, Codable, Sendable {
     case consolidation
     case dreaming
     case research
+    /// A reply to the owner's Telegram messages (`run-respond.sh`), started
+    /// by the inbound trigger, or by hand. No schedule runs it, so it has no
+    /// `SlotType` and `RunType(slotKey:)` never returns it.
+    case respond
     case manual
 }
 
@@ -123,6 +127,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// The model the runner passed to claude, from the log's
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
+    /// Set while the run is queued behind another one for the session lock:
+    /// the longest the wait can last, from the log's "waiting up to Ns for
+    /// the lock" line (`SessionLogService.ParsedBody.lockWaitSecs`). nil once
+    /// the run holds the lock or gave up, and for every log without the line.
+    var lockWait: TimeInterval? = nil
     /// The schedule this run ran for (`evening-consolidation`, a slot the owner
     /// made in the app), from the run ledger's `slot`. nil when the run has no
     /// ledger row: it's still going, it's older than the ledger's window, or an
@@ -201,9 +210,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// to fire. A run started outside the schedule (`manual`,
     /// `dreaming-manual`, `research-manual`, or any `event` run, whose slot is
     /// a skill name that `fire-now` doesn't know or, worse, that a schedule
-    /// shares) or one the ledger couldn't name (`unknown`) has none.
+    /// shares) or one the ledger couldn't name (`unknown`) has none. Neither
+    /// has a Telegram reply: started by hand its ledger slot is `respond`,
+    /// which names no schedule.
     var rerunSlotKey: String? {
-        guard startedBySchedule,
+        guard startedBySchedule, runnerScript != "run-respond.sh",
               let key = slotKey?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
               key != "unknown", key != "manual", !key.hasSuffix("-manual")
         else { return nil }
@@ -290,11 +301,28 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             switch runnerScript {
             case "run-dreaming.sh": return .dreaming
             case "run-research.sh": return .research
+            case "run-respond.sh":  return .respond
             // run-scout.sh: the log's guess is already the runner's, by the hour.
             default: return type
             }
         }
         return type
+    }
+
+    /// Still in flight, but queued behind another run for the session lock
+    /// rather than working: `status` stays `.running`, and the run's name for
+    /// it is "Waiting for another run".
+    var isWaitingForLock: Bool { status == .running && lockWait != nil }
+
+    /// The run's status in the owner's words. A run waiting for the session
+    /// lock reads "Waiting for another run", not "Running".
+    var statusDisplayName: String {
+        isWaitingForLock ? DisplayName.runStatus(DisplayName.waitingForLockKey) : status.displayName
+    }
+
+    /// Why the run has its status, when that needs saying (`RunStatus.reason`).
+    var statusReason: String? {
+        isWaitingForLock ? DisplayName.runStatusReason(DisplayName.waitingForLockKey) : status.reason
     }
 
     /// Copy with a different `status`. Used by the stale-running reconciler
@@ -307,7 +335,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
+            model: model, lockWait: lockWait, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
             protection: protection, ledgerName: ledgerName, ledgerKey: ledgerKey,
             ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
@@ -346,6 +374,7 @@ extension Run {
                 switch type {
                 case .dreaming: return "run-dreaming.sh"
                 case .research: return "run-research.sh"
+                case .respond:  return "run-respond.sh"
                 default:        return "run-scout.sh"
                 }
             }(),

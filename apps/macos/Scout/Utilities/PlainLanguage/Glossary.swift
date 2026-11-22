@@ -6,7 +6,7 @@ import SwiftUI
 /// the engine use, so an owner who meets one of them can find it here.
 nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
     case scoutFolder, knowledgeBase, schedule, run, session, engine
-    case briefing, consolidation, dreaming, research, proposal, delegate
+    case briefing, consolidation, dreaming, research, telegramReply, proposal, delegate
     /// What can happen to an action item (audit #51).
     case done, onHold, parked, archived
 
@@ -24,6 +24,7 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .consolidation: return "Consolidation"
         case .dreaming:      return "Dreaming"
         case .research:      return "Research"
+        case .telegramReply: return "Telegram reply"
         case .proposal:      return "Proposal"
         case .delegate:      return "Agent copy"
         case .done:          return "Done"
@@ -55,6 +56,8 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
             return "A quieter run, every evening and on weekend mornings, that tidies the knowledge base, makes the changes you approved on the Proposals page, and may suggest new ones."
         case .research:
             return "A run that looks outward, on the web and in connected tools, for news about the topics you asked Scout to follow."
+        case .telegramReply:
+            return "A short run that starts within minutes of you messaging Scout on Telegram. It does what your messages ask and answers in the same chat."
         case .proposal:
             return "A change Scout suggests to its own instructions. You approve or decline it on the Proposals page."
         case .delegate:
@@ -83,6 +86,7 @@ nonisolated enum GlossaryTerm: String, CaseIterable, Identifiable, Sendable {
         case .consolidation: return []
         case .dreaming:      return []
         case .research:      return ["research topic"]
+        case .telegramReply: return ["respond", "respond run", "immediate response"]
         case .proposal:      return ["skill change", "SKILL.md proposal"]
         case .delegate:      return ["delegate", "delegate mirror"]
         case .done:          return ["completed", "Recently Completed"]
