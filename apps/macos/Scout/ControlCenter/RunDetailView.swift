@@ -115,7 +115,7 @@ struct RunDetailView: View {
     }
 
     private var statusPill: some View {
-        DSPill(run.status.displayName, tone: statusTone)
+        DSPill(run.statusDisplayName, tone: statusTone)
     }
 
     /// The run's status tone (`RunOutcomeDisplay.tone`), as a pill tone.

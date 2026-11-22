@@ -122,26 +122,30 @@ struct RespondRunKindTests {
     /// A respond run queued behind another run waits for the session lock
     /// (`SCOUT_LOCK_WAIT_SECS`, 30 min) before its progress watcher starts,
     /// with one "waiting up to …" log line, then gets the default 45-minute
-    /// run timeout. It is not "Didn't finish" until both could have passed.
+    /// run timeout. It is not "Didn't finish" until both could have passed:
+    /// the wait comes from that line (`lockWait`, as for every kind), and
+    /// respond's own threshold is the run timeout alone.
     @Test func respondRunWaitingForTheLockIsNotOrphaned() {
         let lockWait: TimeInterval = 1800
         let runTimeout: TimeInterval = 45 * 60
-        #expect(RunType.respond.orphanAfter == lockWait + runTimeout)
+        #expect(RunType.respond.orphanAfter == runTimeout)
 
         let start = Self.date(20, 14, 7)
         let waitingLine = start.addingTimeInterval(2)   // the log's only line while it waits
         func status(after minutes: Double) -> RunStatus {
             SessionLogService.promoteOrphan(
                 parsedStatus: .running, startedAt: start, lastActivityAt: waitingLine,
-                type: .respond, now: waitingLine.addingTimeInterval(minutes * 60))
+                lockWait: lockWait, type: .respond, now: waitingLine.addingTimeInterval(minutes * 60))
         }
         #expect(status(after: 29) == .running, "still waiting for the lock")
         #expect(status(after: 74) == .running, "the full wait plus a full run")
         #expect(status(after: 76) == .orphaned)
 
-        // With a watcher reading after the lock, its stall decides the same way.
-        #expect(SessionLogService.promoteOrphan(parsedStatus: .running, startedAt: start, watcherStall: 60 * 60,
+        // Holding the lock, the watcher's stall is judged against the run timeout.
+        #expect(SessionLogService.promoteOrphan(parsedStatus: .running, startedAt: start, watcherStall: 40 * 60,
                                                 type: .respond, now: start) == .running)
+        #expect(SessionLogService.promoteOrphan(parsedStatus: .running, startedAt: start, watcherStall: 50 * 60,
+                                                type: .respond, now: start) == .orphaned)
     }
 
     // MARK: - Commits

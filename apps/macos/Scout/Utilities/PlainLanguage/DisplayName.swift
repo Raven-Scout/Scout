@@ -221,6 +221,10 @@ nonisolated enum DisplayName {
         runStatus(status.rawValue)
     }
 
+    /// Not a `RunStatus`: a `.running` run still queued for the session lock
+    /// (`Run.isWaitingForLock`) is named and explained under this key.
+    static let waitingForLockKey = "waitingForLock"
+
     /// The reason half of a skip's name, as a phrase that stands alone:
     /// `skippedBudget` → "Over budget" (its name is "Skipped: over budget").
     /// nil for anything that isn't a skip.
@@ -247,6 +251,7 @@ nonisolated enum DisplayName {
     static let runStatuses: [String: String] = [
         "scheduled":           "Scheduled",
         "running":             "Running",
+        "waitingforlock":      "Waiting for another run",
         "success":             "Finished",
         "ok":                  "Finished",
         "failure":             "Failed",
@@ -265,6 +270,7 @@ nonisolated enum DisplayName {
     ]
 
     private static let runStatusReasons: [String: String] = [
+        "waitingforlock":      "Another Scout run is still going, so this one is waiting its turn. It starts when that run ends, or skips if it is still going after the wait.",
         "timeout":             "The run reached its time limit and Scout stopped it.",
         "orphaned":            "The run never wrote its last line, so Scout can't tell how it ended. It stopped showing signs of work, or a later run of the same kind has started since.",
         "ratelimited":         "Your Claude plan's usage limit was reached. Scout tries again after it resets.",

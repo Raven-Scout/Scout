@@ -127,6 +127,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// The model the runner passed to claude, from the log's
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
+    /// Set while the run is queued behind another one for the session lock:
+    /// the longest the wait can last, from the log's "waiting up to Ns for
+    /// the lock" line (`SessionLogService.ParsedBody.lockWaitSecs`). nil once
+    /// the run holds the lock or gave up, and for every log without the line.
+    var lockWait: TimeInterval? = nil
     /// The schedule this run ran for (`evening-consolidation`, a slot the owner
     /// made in the app), from the run ledger's `slot`. nil when the run has no
     /// ledger row: it's still going, it's older than the ledger's window, or an
@@ -304,6 +309,22 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         return type
     }
 
+    /// Still in flight, but queued behind another run for the session lock
+    /// rather than working: `status` stays `.running`, and the run's name for
+    /// it is "Waiting for another run".
+    var isWaitingForLock: Bool { status == .running && lockWait != nil }
+
+    /// The run's status in the owner's words. A run waiting for the session
+    /// lock reads "Waiting for another run", not "Running".
+    var statusDisplayName: String {
+        isWaitingForLock ? DisplayName.runStatus(DisplayName.waitingForLockKey) : status.displayName
+    }
+
+    /// Why the run has its status, when that needs saying (`RunStatus.reason`).
+    var statusReason: String? {
+        isWaitingForLock ? DisplayName.runStatusReason(DisplayName.waitingForLockKey) : status.reason
+    }
+
     /// Copy with a different `status`. Used by the stale-running reconciler
     /// (`SessionLogService.resolveStaleRunning`) to demote a stuck `.running`
     /// run to `.orphaned` without rebuilding every field by hand.
@@ -314,7 +335,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
+            model: model, lockWait: lockWait, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
             protection: protection, ledgerName: ledgerName, ledgerKey: ledgerKey,
             ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
