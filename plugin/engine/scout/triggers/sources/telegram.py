@@ -157,10 +157,10 @@ class TelegramSource:
             bot.send_plain_reply(
                 token=token, chat_id=chat_id, reply_to=message_id, text=UNSUPPORTED_REPLY, http_post=self._http_post
             )
-            ledger.mark_skipped([message_id], SKIPPED_UNSUPPORTED)
+            ledger.mark_skipped([message_id], SKIPPED_UNSUPPORTED, now=self._clock())
             return
         if is_cheap(entry.text, reply_to_text=entry.reply_to_text):
-            ledger.mark_skipped([message_id], SKIPPED_CHEAP)
+            ledger.mark_skipped([message_id], SKIPPED_CHEAP, now=self._clock())
             return
         reacted = bot.set_reaction(token=token, chat_id=chat_id, message_id=message_id, http_post=self._http_post)
         if not reacted:
@@ -174,16 +174,33 @@ class TelegramSource:
         """Mark the event's message snapshot dispatched once a run_skill run was spawned.
 
         Only ids still pending are marked, re-read under the lock: a fast run may already
-        have answered some, and an answered message must never go back to dispatched."""
-        if outcome.status != "ok" or outcome.action_kind != "run_skill":
+        have answered some, and an answered message must never go back to dispatched.
+
+        A failed spawn (say, ``run-respond.sh`` not installed yet) counts as a try: the
+        engine has already recorded this event id, so without a new attempt the message
+        would never fire again. Out of attempts, it fails with one notice."""
+        if outcome.action_kind != "run_skill":
             return
         ids = {int(m["message_id"]) for m in event.raw_payload.get("messages", [])}
         if not ids:
             return
         with self._ledger.locked():
             still_pending = [m.message_id for m in self._ledger.pending() if m.message_id in ids]
-            if still_pending:
+            if not still_pending:
+                return
+            if outcome.status == "ok":
                 self._ledger.mark_dispatched(still_pending, now=self._clock())
+                return
+            failed = self._ledger.mark_spawn_failed(still_pending)
+            if failed:
+                token, chat_id = self._credentials()
+                bot.send_plain_reply(
+                    token=token,
+                    chat_id=chat_id,
+                    reply_to=max(m.message_id for m in failed),
+                    text=_failed_notice(len(failed)),
+                    http_post=self._http_post,
+                )
 
     # -- health ------------------------------------------------------------------
     def health_check(self) -> tuple[bool, str]:

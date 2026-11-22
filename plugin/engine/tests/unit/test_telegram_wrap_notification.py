@@ -218,9 +218,9 @@ def test_briefing_and_consolidation_answer_messages_waiting_in_session_context()
     from tests.unit.test_briefing_mode_layer import _config
 
     skill = _assemble(_config(enabled_connectors={"telegram"}), "SKILL", custom={})
-    heading = "### Messages waiting from Test User"
+    heading = "## Telegram Messages Waiting from Test User"
     assert skill.count(heading) == 1
-    section = skill.split(heading, 1)[1].split("### How to send", 1)[0]
+    section = skill.split(heading, 1)[1].split("\n## ", 1)[0]
     # Session-context (run-writable) gives ids only; the words come only from the protected ledger, and a
     # respond run's fresh dispatch is left to it.
     assert "scoutctl telegram pending --json --exclude-in-flight" in section
@@ -246,3 +246,15 @@ def test_briefing_and_consolidation_answer_messages_waiting_in_session_context()
         assert needle in section, needle
     assert "{{" not in section
     assert heading not in _assemble(_config(enabled_connectors=set()), "SKILL", custom={})
+
+
+@pytest.mark.parametrize(
+    "config", ["", "notify:\n  wrap_channels: [slack]\n", "notify:\n  wrap_channels: [telegram]\n"]
+)
+def test_messages_waiting_are_answered_whatever_carries_the_wrap(tmp_path: Path, config: str) -> None:
+    """The drain is not a wrap section: a Slack-only wrap still answers waiting Telegram messages, which
+    is what the tick's failure notice ("the next scheduled run") promises."""
+    cfg = config_from_vault(_vault(tmp_path, config), plugin_root=REPO_ROOT, plugin_version="0.0.0")
+    skill = _assemble(cfg, "SKILL", custom={})
+    assert skill.count("## Telegram Messages Waiting from Alex") == 1
+    assert "scoutctl telegram pending --json --exclude-in-flight" in skill

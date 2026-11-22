@@ -102,6 +102,52 @@ def test_third_timeout_moves_message_to_failed_and_returns_it(led: L.Ledger) -> 
     assert led.get(1).state == L.FAILED
 
 
+def test_reconcile_does_not_rewrite_the_file_when_nothing_changed(
+    led: L.Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with led.locked():
+        led.add(msg(1))
+        led.mark_dispatched([2], now=NOW)  # unknown id: no-op
+    saves: list[int] = []
+    monkeypatch.setattr(L.Ledger, "_save", lambda self, msgs: saves.append(len(msgs)))
+    with led.locked():
+        assert led.reconcile(now=NOW, run_alive=False) == []
+        assert led.reconcile(now=NOW, run_alive=True) == []
+    assert saves == []
+
+
+def test_reconcile_drops_closed_messages_past_retention_and_keeps_open_ones(led: L.Ledger) -> None:
+    old = NOW - L.RETENTION - dt.timedelta(minutes=1)
+    recent = NOW - L.RETENTION + dt.timedelta(minutes=1)
+    with led.locked():
+        for i in range(1, 8):
+            led.add(msg(i))
+        led.record_reply(reply_to=1, covers=[], at=old)  # answered long ago: dropped
+        led.record_reply(reply_to=2, covers=[], at=recent)  # answered recently: kept
+        led.mark_skipped([3], L.SKIPPED_CHEAP, now=old)  # dropped
+        led.mark_skipped([4], L.SKIPPED_UNSUPPORTED, now=recent)  # kept
+        led.mark_skipped([5], L.FAILED, now=old)  # still answerable: kept, however old
+        led.mark_dispatched([6], now=old)  # timed out back to pending: kept
+        # 7 stays pending
+        assert led.reconcile(now=NOW, run_alive=True) == []  # pruning runs even while a run is alive
+    assert led.get(1) is None and led.get(3) is None
+    assert [m for m in (2, 4, 5, 6, 7) if led.get(m) is None] == []
+    assert led.get(5).closed_at is None
+    assert led.get(6).state == L.DISPATCHED  # a live run keeps its dispatch
+    with led.locked():
+        led.reconcile(now=NOW, run_alive=False)
+    assert led.get(6).state == L.PENDING
+
+
+def test_a_closed_row_without_a_close_time_is_kept(led: L.Ledger) -> None:
+    """Rows written before closed_at existed have none: never guess their age, keep them."""
+    with led.locked():
+        led.add(msg(1, state=L.SKIPPED_CHEAP))
+        led.add(msg(2, state=L.ANSWERED, answered_at="not a time"))
+        led.reconcile(now=NOW + dt.timedelta(days=365), run_alive=False)
+    assert led.get(1) is not None and led.get(2) is not None
+
+
 def test_record_reply_marks_reply_to_and_covers_answered(led: L.Ledger) -> None:
     with led.locked():
         for i in (1, 2, 3):

@@ -37,6 +37,9 @@ FAILED = "failed"
 STATES = (PENDING, DISPATCHED, ANSWERED, SKIPPED_CHEAP, SKIPPED_UNSUPPORTED, FAILED)
 # What a reply may still answer. Only PENDING fires a respond run; a FAILED message waits for a scheduled run.
 UNANSWERED = (PENDING, DISPATCHED, FAILED)
+# Done with: dropped from messages.json RETENTION after the ledger closed them (answered_at / closed_at).
+CLOSED = (ANSWERED, SKIPPED_CHEAP, SKIPPED_UNSUPPORTED)
+RETENTION = dt.timedelta(days=30)
 
 
 def ledger_dir(vault: Path) -> Path:
@@ -56,6 +59,15 @@ class InboundMessage:
     dispatched_at: str | None = None
     acked: bool = False
     answered_at: str | None = None
+    closed_at: str | None = None  # when a skip closed it; RETENTION counts from here (or answered_at)
+
+
+def _older_than(iso: str | None, now: dt.datetime) -> bool:
+    """True when ``iso`` is more than RETENTION before ``now``. Missing or unreadable: keep the row."""
+    try:
+        return iso is not None and now - dt.datetime.fromisoformat(iso) > RETENTION
+    except (ValueError, TypeError):
+        return False
 
 
 class Ledger:
@@ -146,7 +158,7 @@ class Ledger:
         return {m.message_id for m in self._in_state(*UNANSWERED)}
 
     def counts(self) -> dict[str, int]:
-        out = dict.fromkeys(STATES, 0)
+        out: dict[str, int] = dict.fromkeys(STATES, 0)
         for m in self._load().values():
             out[m.state] = out.get(m.state, 0) + 1
         return out
@@ -172,8 +184,15 @@ class Ledger:
     def mark_acked(self, ids: list[int]) -> None:
         self._update(ids, lambda m: setattr(m, "acked", True))
 
-    def mark_skipped(self, ids: list[int], state: str) -> None:
-        self._update(ids, lambda m: setattr(m, "state", state))
+    def mark_skipped(self, ids: list[int], state: str, *, now: dt.datetime | None = None) -> None:
+        at = (now or dt.datetime.now(dt.UTC)).isoformat()
+
+        def f(m: InboundMessage) -> None:
+            m.state = state
+            if state in CLOSED:
+                m.closed_at = at
+
+        self._update(ids, f)
 
     def mark_dispatched(self, ids: list[int], *, now: dt.datetime) -> None:
         def f(m: InboundMessage) -> None:
@@ -182,6 +201,21 @@ class Ledger:
             m.dispatched_at = now.isoformat()
 
         self._update(ids, f)
+
+    def mark_spawn_failed(self, ids: list[int]) -> list[InboundMessage]:
+        """A respond run that never started still counts as a try. Bumping ``attempt`` makes the next
+        event id new, so dedup lets the retry through; a message out of attempts becomes FAILED and is
+        returned, for the caller's one notice. The rest stay pending."""
+        failed: list[InboundMessage] = []
+
+        def f(m: InboundMessage) -> None:
+            m.attempt += 1
+            if m.attempt >= MAX_ATTEMPTS:
+                m.state = FAILED
+                failed.append(m)
+
+        self._update(ids, f)
+        return failed
 
     def record_reply(self, *, reply_to: int, covers: list[int], at: dt.datetime) -> None:
         self._require_lock()
@@ -197,14 +231,18 @@ class Ledger:
         self._update([*covers, reply_to], f2)
 
     def reconcile(self, *, now: dt.datetime, run_alive: bool) -> list[InboundMessage]:
-        """Revert timed-out dispatches to pending (none while a run is alive); fail those out of attempts."""
+        """Revert timed-out dispatches to pending (none while a run is alive); fail those out of attempts.
+        Also drops closed messages (answered or skipped) older than ``RETENTION``, so the owner's words
+        aren't kept forever. Writes the file only when something changed."""
         self._require_lock()
-        if run_alive:
-            return []
         msgs = self._load()
+        closed = [k for k, m in msgs.items() if m.state in CLOSED and _older_than(m.answered_at or m.closed_at, now)]
+        for k in closed:
+            del msgs[k]
+        changed = bool(closed)
         failed: list[InboundMessage] = []
         for m in msgs.values():
-            if m.state != DISPATCHED or not m.dispatched_at:
+            if run_alive or m.state != DISPATCHED or not m.dispatched_at:
                 continue
             if now - dt.datetime.fromisoformat(m.dispatched_at) < DISPATCH_TIMEOUT:
                 continue
@@ -213,7 +251,9 @@ class Ledger:
                 failed.append(m)
             else:
                 m.state = PENDING
-        self._save(msgs)
+            changed = True
+        if changed:
+            self._save(msgs)
         return failed
 
     # -- poll state ------------------------------------------------------

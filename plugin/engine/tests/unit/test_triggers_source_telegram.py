@@ -335,13 +335,61 @@ def test_event_id_changes_on_retry_after_timeout(fake_data_dir: Path):
     assert retry.source_event_id == "5:2"
 
 
-def test_on_fired_ignores_a_failed_dispatch(fake_data_dir: Path):
+def _spawn_failed(event_id: str) -> FireOutcome:
+    return FireOutcome(trigger_id="telegram-respond", event_id=event_id, action_kind="run_skill", status="error")
+
+
+def test_a_failed_spawn_leaves_the_message_pending_with_a_new_attempt(fake_data_dir: Path):
     bot = FakeBot()
     src = _source(fake_data_dir, bot)
     bot.push(100, 5)
     [ev] = src.scan_since("ignored")
-    src.on_fired(ev, FireOutcome(trigger_id="t", event_id=ev.source_event_id, action_kind="run_skill", status="error"))
-    assert _state(fake_data_dir, 5) == ledger_mod.PENDING
+    src.on_fired(ev, _spawn_failed(ev.source_event_id))
+    msg = Ledger(fake_data_dir).get(5)
+    assert msg is not None and msg.state == ledger_mod.PENDING and msg.attempt == 1
+    assert msg.dispatched_at is None
+
+
+def test_a_failed_spawn_refires_on_a_later_tick(fake_data_dir: Path):
+    """The engine records the fire whatever the outcome, so the retry needs a new event id.
+    Realistic case: triggers.yaml exists before run-respond.sh is installed."""
+    from scout.triggers.dedup import DedupStore
+
+    dedup = DedupStore(fake_data_dir / ".scout-cache" / "trigger-fires.json")
+    bot = FakeBot()
+    clock = Clock()
+    src = _source(fake_data_dir, bot, clock=clock)
+    bot.push(100, 5)
+
+    [first] = src.scan_since("ignored")
+    dedup.record_fire("telegram-respond", first.source_event_id, clock())
+    src.on_fired(first, _spawn_failed(first.source_event_id))
+
+    clock.advance(minutes=10)
+    [retry] = src.scan_since("ignored")
+    assert (first.source_event_id, retry.source_event_id) == ("5:1", "5:2")
+    assert dedup.is_new("telegram-respond", retry.source_event_id)
+
+    src.on_fired(retry, _ok(retry.source_event_id))
+    msg = Ledger(fake_data_dir).get(5)
+    assert msg is not None and msg.state == ledger_mod.DISPATCHED and msg.attempt == 2
+
+
+def test_a_message_that_never_spawns_fails_with_one_notice(fake_data_dir: Path):
+    bot = FakeBot()
+    clock = Clock()
+    src = _source(fake_data_dir, bot, clock=clock)
+    bot.push(100, 5)
+    for _ in range(ledger_mod.MAX_ATTEMPTS):
+        [ev] = src.scan_since("ignored")
+        src.on_fired(ev, _spawn_failed(ev.source_event_id))
+        clock.advance(minutes=10)
+
+    assert _state(fake_data_dir, 5) == ledger_mod.FAILED
+    replies = bot.methods("sendMessage")
+    assert [(r["text"], r["reply_parameters"]["message_id"]) for r in replies] == [(FAILED_NOTICE, 5)]
+    assert src.scan_since("ignored") == []  # a failed message fires nothing more
+    assert len(bot.methods("sendMessage")) == 1
 
 
 @pytest.mark.parametrize("kind", ["notify", "interactive"])

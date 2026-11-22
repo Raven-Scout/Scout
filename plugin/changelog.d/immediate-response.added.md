@@ -14,7 +14,7 @@
   - **`scoutctl telegram find-chat-id`** lists the private chats that have messaged your bot, without confirming any update. Use it instead of a raw `getUpdates` call, which comes back empty once the trigger has confirmed the updates.
   - **`scoutctl telegram inbound-status [--json]`** shows the ledger counts, the last poll time and the last poll error. `/scout-status` shows them when the trigger is on.
   - **`scoutctl telegram pending [--json] [--ids 5,6] [--exclude-in-flight]`** lists the messages still waiting for an answer, read-only. Runs read your messages only through it, never from a file a run can write.
+  - **Safety net.** A briefing or consolidation answers any message still waiting, whichever channels carry its wrap. A message whose respond run never starts (say, `triggers.yaml` was added before `/scout-update`) is retried, and after 3 tries the bot tells you and leaves it for that safety net.
   - **Known limits.**
-    - The scheduled-run safety net, which picks up a message the trigger missed, needs `telegram` in `notify.wrap_channels`.
     - `scoutctl trigger test` on the Telegram trigger is not a dry run: it consumes and acknowledges real messages.
     - Private chats only, and text and captions only. Photos, voice notes and other attachments are ignored.

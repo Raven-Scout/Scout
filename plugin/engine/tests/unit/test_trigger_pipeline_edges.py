@@ -431,3 +431,76 @@ def test_telegram_trigger_spawns_run_skill_and_marks_dispatched(fake_data_dir: P
     assert [m["message_id"] for m in payload["event"]["raw_payload"]["messages"]] == [5]
     msg = Ledger(fake_data_dir).get(5)
     assert msg is not None and msg.state == DISPATCHED and msg.attempt == 1
+
+
+def test_telegram_trigger_refires_after_a_failed_spawn(fake_data_dir: Path) -> None:
+    """End to end through the engine: a spawn that raises records the fire, and a later tick
+    (past the cooldown) still fires again for the same message."""
+    from scout.telegram_inbound.ledger import DISPATCHED, Ledger
+    from scout.triggers.sources.telegram import TelegramSource
+
+    owner = 424242
+    updates = [
+        {
+            "update_id": 100,
+            "message": {
+                "message_id": 5,
+                "date": 1_790_000_000,
+                "chat": {"id": owner, "type": "private"},
+                "from": {"id": owner},
+                "text": "what is on my plate today?",
+            },
+        }
+    ]
+
+    def http_post(url: str, *, json: dict[str, Any], timeout: float) -> dict:
+        if url.endswith("/getUpdates"):
+            return {"ok": True, "result": [u for u in updates if u["update_id"] >= json["offset"]]}
+        return {"ok": True, "result": True}
+
+    (fake_data_dir / ".scout-state" / "triggers.yaml").write_text(
+        "schema_version: 1\n"
+        "triggers:\n"
+        "  - id: telegram-respond\n"
+        "    source: telegram\n"
+        "    match: {type: message}\n"
+        "    action: {kind: run_skill, skill: scout-respond, runner: run-respond.sh}\n"
+        "    daily_fire_cap: 20\n"
+        "    cooldown_seconds: 600\n",
+        encoding="utf-8",
+    )
+    clock = {"now": dt.datetime(2026, 11, 21, 9, 0, tzinfo=dt.UTC)}
+    source = TelegramSource(
+        vault=fake_data_dir,
+        credentials=lambda: ("123456:test-token", owner),
+        http_post=http_post,
+        lock_held=lambda: False,
+        clock=lambda: clock["now"],
+    )
+    spawned: list[list[str]] = []
+    runner_installed = {"yes": False}
+
+    def spawn(cmd: list[str], env: dict[str, str]) -> int:
+        if not runner_installed["yes"]:
+            raise FileNotFoundError(cmd[0])
+        spawned.append(cmd)
+        return 4242
+
+    def tick() -> list[str]:
+        result = engine_mod.evaluate(
+            vault=fake_data_dir,
+            now=clock["now"],
+            sources={"telegram": source},
+            spawn=spawn,
+            installed_skills={"scout-respond"},
+            emit_event=lambda **kw: None,
+        )
+        return [o.status for o in result.fired]
+
+    assert tick() == ["error"]
+    clock["now"] += dt.timedelta(minutes=11)
+    runner_installed["yes"] = True
+    assert tick() == ["ok"]
+    assert len(spawned) == 1
+    msg = Ledger(fake_data_dir).get(5)
+    assert msg is not None and msg.state == DISPATCHED and msg.attempt == 2

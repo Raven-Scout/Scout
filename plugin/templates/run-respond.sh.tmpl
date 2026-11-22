@@ -121,9 +121,9 @@ export SCOUT_READER=autonomous
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
-# These write to .scout-cache/ for RESPOND.md to consume. session-context.json is
-# rebuilt here for every run, so its generated_at is this run's start: RESPOND.md
-# trusts its pending-message list, on a run started by hand, only then.
+# These write to .scout-cache/ for RESPOND.md to consume. The messages themselves are
+# never taken from there: RESPOND.md reads them from the protected ledger through
+# `scoutctl telegram pending` (the event's ids, or, on a run started by hand, all of them).
 PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"
 if [ -x "$PRE_FILTER" ]; then
     "$PRE_FILTER" respond >> "$LOG_FILE" 2>&1 || true

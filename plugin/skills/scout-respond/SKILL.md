@@ -14,4 +14,4 @@ Do the following steps, from the vault directory:
 3. Report to the user:
    - Confirm the respond session is running and show the PID
    - Show the log file path so they can tail it if they want: `tail -f <log_file>`
-   - Remind them that a respond run is short: it reads the pending Telegram messages, does what they ask within Scout's usual guardrails, commits, and sends one Telegram reply. Started by hand, it answers only the pending messages the run's own pre-session data lists; with none, it sends nothing.
+   - Remind them that a respond run is short: it reads the pending Telegram messages, does what they ask within Scout's usual guardrails, commits, and sends one Telegram reply. Started by hand, it answers every message still waiting (what `scoutctl telegram pending` lists); with none, it sends nothing.

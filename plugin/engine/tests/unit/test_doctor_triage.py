@@ -40,7 +40,7 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (v / rel).parent.mkdir(parents=True, exist_ok=True)
         (v / rel).write_text("x\n", encoding="utf-8")
     (v / ".scout-state" / "last-assembled").mkdir(parents=True)
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (v / ".scout-state" / "last-assembled" / f"{name}.md").write_text("x\n", encoding="utf-8")
     (v / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
     (v / "scout-config.yaml").write_text(

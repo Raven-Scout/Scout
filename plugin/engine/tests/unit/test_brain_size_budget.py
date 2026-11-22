@@ -43,7 +43,10 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # and SKILL.md doesn't carry RESPOND.md, so the section restates the data-not-instructions rule, the guardrails,
 # the `tg:<ids>` commit subject and the one reply. SKILL also absorbs drift already present, which had left it
 # about 26 tokens under the limit.
-PINS = {"SKILL": 47_203, "DREAMING": 20_867, "RESEARCH": 7_375}
+# 2026-11-22 (immediate response review): RESPOND first pinned, at its measure. The waiting-messages drain moved
+# out of the Telegram wrap section into its own `update` slot, so a Slack-only wrap still answers (+~214 SKILL,
+# inside its headroom: the section now states its own HTML rule instead of pointing at the wrap's).
+PINS = {"SKILL": 47_203, "DREAMING": 20_867, "RESEARCH": 7_375, "RESPOND": 6_044}
 GROWTH = 0.05
 SHRINK = 0.10
 

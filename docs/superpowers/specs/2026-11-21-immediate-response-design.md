@@ -157,6 +157,14 @@ it answered by sending a reply through the broker.
     couldn't handle this after 3 tries — I'll pick it up in the next scheduled run." A
     failed message never fires a respond run again, but it stays answerable: the next
     scheduled run's drain (§5) answers it.
+  - **Failed spawn.** A respond run that never started (the engine reports an error, say
+    `run-respond.sh` isn't installed yet) counts as an attempt too. The engine records the
+    fire whatever the outcome, so the attempt bump is what gives the retry a new event id.
+    The message stays `pending`, so it fires again after the cooldown. On the third try it
+    goes to `failed` with the same notice. _(Added 2026-11-22 from review.)_
+  - **Retention.** An answered or skipped message is dropped from `messages.json` 30 days
+    after the ledger closed it, so the owner's words aren't kept forever. The tick rewrites
+    the file only when something changed. _(Added 2026-11-22 from review.)_
 - **Broker change.** `notify telegram` gains `--reply-to <message_id>` and
   `--covers <id,id,…>`. The broker validates both against the ledger's dispatched set, and
   after delivery appends `{reply_to, covers, delivered_at}` to a reply record inside the
@@ -252,6 +260,24 @@ the "lost messages" anti-goal.
 
 A reply that names an id the ledger doesn't hold unanswered is refused for good (exit 7),
 live or from the broker's queue, so a run can't queue a reply to a message it predicts.
+
+The drain is its own section (an `update` slot in `connectors/telegram.md`), not part of
+the Telegram wrap. A vault whose `notify.wrap_channels` leaves Telegram out still answers
+waiting messages, which is what the failure notice promises. _(Added 2026-11-22 from
+review.)_
+
+**Accepted risks.** These are recorded here, not fixed in v1:
+
+- **Any run can close the owner's waiting messages.** A scheduled or respond run can send
+  `notify telegram --covers <ids>` naming any unanswered id, and that marks them answered.
+  It can't forge a message or an answer that wasn't delivered: the broker records a reply
+  only after Telegram accepted it, and the owner sees the reply in the chat. The risk is a
+  reply that claims to cover a message it didn't really deal with.
+- **A run can suppress or throttle respond runs.** The trigger engine's dedup and cooldown
+  record, `.scout-cache/trigger-fires.json`, is run-writable. A run could fill it with
+  future event ids, or with fires that hold the cooldown or the daily cap. That is a
+  denial of service only: messages stay `pending` in the protected ledger, and the next
+  scheduled run's drain still answers them.
 
 ### 6. Observability and setup
 
