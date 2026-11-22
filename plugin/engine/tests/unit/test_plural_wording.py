@@ -36,12 +36,37 @@ NOT_A_PLURAL: dict[tuple[str, str], str] = {
 _STRING_PARTS = {tokenize.STRING, getattr(tokenize, "FSTRING_MIDDLE", tokenize.STRING)}
 
 
+def _literal_text(token: str) -> str:
+    """``token`` without its f-string replacement fields, so ``{title(s)}`` is code on every Python.
+
+    3.12+ hands the fields over as code tokens already; 3.11 keeps them inside the one STRING token."""
+    prefix = token[: min(i for i in (token.find('"'), token.find("'")) if i >= 0)]
+    if "f" not in prefix.lower():
+        return token
+    out, depth, i = [], 0, 0
+    while i < len(token):
+        pair = token[i : i + 2]
+        if depth == 0 and pair in ("{{", "}}"):
+            out.append(pair[0])
+            i += 2
+            continue
+        ch = token[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+        elif depth == 0:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _paren_plurals(source: str) -> list[tuple[int, str]]:
     """(line, word) for each "(s)"-style plural in a string literal of ``source``."""
     hits = []
     for tok in tokenize.generate_tokens(io.StringIO(source).readline):
         if tok.type in _STRING_PARTS:
-            hits += [(tok.start[0], m.group()) for m in PAREN_PLURAL.finditer(tok.string)]
+            hits += [(tok.start[0], m.group()) for m in PAREN_PLURAL.finditer(_literal_text(tok.string))]
     return hits
 
 
@@ -68,8 +93,16 @@ def test_every_allowed_word_is_still_there(module: str, word: str) -> None:
 
 
 def test_the_scan_sees_plain_and_f_strings_but_not_code() -> None:
-    src = 'a = f"{n} run(s) failed"\nb = "2 cop(ies)"\nc = ", ".join(repr(s) for s in x)\nd = "3 prefix(es)"\n'
-    assert _paren_plurals(src) == [(1, "run(s)"), (2, "cop(ies)"), (4, "prefix(es)")]
+    src = (
+        'a = f"{n} run(s) failed"\nb = "2 cop(ies)"\nc = ", ".join(repr(s) for s in x)\nd = "3 prefix(es)"\n'
+        'e = f"**{title(s)}** {{literal}} x"\ng = F"{n:{w}} {f(s)!r} file(s)"\n'
+    )
+    assert _paren_plurals(src) == [(1, "run(s)"), (2, "cop(ies)"), (4, "prefix(es)"), (6, "file(s)")]
+
+
+def test_literal_text_drops_only_replacement_fields() -> None:
+    assert _literal_text('f"{title(s)} and {{x}}"') == 'f" and {x}"'
+    assert _literal_text('rb"{len(s)}"') == 'rb"{len(s)}"'
 
 
 def test_the_allow_list_is_per_module_and_per_word() -> None:
