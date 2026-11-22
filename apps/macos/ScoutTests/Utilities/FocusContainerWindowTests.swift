@@ -120,51 +120,55 @@ struct FocusContainerWindowTests {
 
     @Test("a list holding the focus rings only its current item, not every control inside")
     func onlyTheCursorItemRings() async throws {
-        let log = RingLog()
-        let window = try await open(log, focusOnAppear: true)
-        defer { window.close() }
-        try #require(log.containerFocused, "the list never took the focus")
-        #expect(log.styleFocus.values.allSatisfy { !$0 }, "a control inherits the list's focus: \(log.styleFocus)")
-        #expect(log.cursorRing == [0: true, 1: false, 2: false])
-        #expect(log.rings == 1)
+        try await KeyWindowGate.run {
+            let log = RingLog()
+            let window = try await open(log, focusOnAppear: true)
+            defer { window.close() }
+            try #require(log.containerFocused, "the list never took the focus")
+            #expect(log.styleFocus.values.allSatisfy { !$0 }, "a control inherits the list's focus: \(log.styleFocus)")
+            #expect(log.cursorRing == [0: true, 1: false, 2: false])
+            #expect(log.rings == 1)
+        }
     }
 
     @Test("Tab: the list's stop rings its current item; a button inside rings alone and the arrows leave the cursor")
     func tabStops() async throws {
         guard NSApplication.shared.isFullKeyboardAccessEnabled else { return }
-        let log = RingLog()
-        let window = try await open(log, focusOnAppear: false)
-        defer { window.close() }
-        var sawList = false, sawItem = false
-        for _ in 0..<8 {
-            press("\t", keyCode: 48, in: window)
-            try await Task.sleep(for: .milliseconds(150))
-            #expect(log.styleFocus.values.allSatisfy { !$0 }, "inherited focus: \(log.styleFocus)")
-            if log.containerFocused {
-                sawList = true
-                #expect(log.rings == 1, "list stop: \(log.cursorRing)")
+        try await KeyWindowGate.run {
+            let log = RingLog()
+            let window = try await open(log, focusOnAppear: false)
+            defer { window.close() }
+            var sawList = false, sawItem = false
+            for _ in 0..<8 {
+                press("\t", keyCode: 48, in: window)
+                try await Task.sleep(for: .milliseconds(150))
+                #expect(log.styleFocus.values.allSatisfy { !$0 }, "inherited focus: \(log.styleFocus)")
+                if log.containerFocused {
+                    sawList = true
+                    #expect(log.rings == 1, "list stop: \(log.cursorRing)")
+                }
+                if let focused = log.ownFocus.first(where: { $0.value })?.key {
+                    sawItem = true
+                    // The button has the system ring; the cursor ring is down.
+                    #expect(!log.containerFocused)
+                    #expect(log.rings == 0, "item \(focused) stop: \(log.cursorRing)")
+                    // ↓ a focused button doesn't use reaches the list's handler, which must ignore it.
+                    press("\u{F701}", keyCode: 125, in: window)
+                    try await Task.sleep(for: .milliseconds(100))
+                    #expect(log.cursorRing.values.allSatisfy { !$0 })
+                }
             }
-            if let focused = log.ownFocus.first(where: { $0.value })?.key {
-                sawItem = true
-                // The button has the system ring; the cursor ring is down.
-                #expect(!log.containerFocused)
-                #expect(log.rings == 0, "item \(focused) stop: \(log.cursorRing)")
-                // ↓ a focused button doesn't use reaches the list's handler, which must ignore it.
-                press("\u{F701}", keyCode: 125, in: window)
-                try await Task.sleep(for: .milliseconds(100))
-                #expect(log.cursorRing.values.allSatisfy { !$0 })
+            #expect(sawList && sawItem, "Tab never reached \(sawList ? "a button inside" : "the list")")
+            // Back on the list's own stop, the cursor is where the list left it: ↓ above moved nothing.
+            for _ in 0..<8 where !log.containerFocused {
+                press("\t", keyCode: 48, in: window)
+                try await Task.sleep(for: .milliseconds(150))
             }
-        }
-        #expect(sawList && sawItem, "Tab never reached \(sawList ? "a button inside" : "the list")")
-        // Back on the list's own stop, the cursor is where the list left it: ↓ above moved nothing.
-        for _ in 0..<8 where !log.containerFocused {
-            press("\t", keyCode: 48, in: window)
+            try #require(log.containerFocused)
+            #expect(log.cursorRing == [0: true, 1: false, 2: false])
+            press("\u{F701}", keyCode: 125, in: window)
             try await Task.sleep(for: .milliseconds(150))
+            #expect(log.cursorRing == [0: false, 1: true, 2: false], "↓ on the list's own stop moves the cursor")
         }
-        try #require(log.containerFocused)
-        #expect(log.cursorRing == [0: true, 1: false, 2: false])
-        press("\u{F701}", keyCode: 125, in: window)
-        try await Task.sleep(for: .milliseconds(150))
-        #expect(log.cursorRing == [0: false, 1: true, 2: false], "↓ on the list's own stop moves the cursor")
     }
 }
