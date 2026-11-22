@@ -41,11 +41,9 @@ struct SchedulesMasterCards: View {
             }
             // ↑ ↓ Home End step through the cards in reading order (#57):
             // ↓ is the next card, which in a grid is the one to the right.
-            .focusable()
-            .focused($cardsFocused)
-            .focusEffectDisabled()
-            .dsFocusContainer(cardsFocused)
+            .dsFocusContainer($cardsFocused)
             .keyboardListNavigation(
+                when: cardsFocused,
                 ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
                 selection: $selectedSlotKey
             ) { key in
@@ -65,7 +63,7 @@ struct SchedulesMasterCards: View {
                      twentyFourHour: twentyFourHour)
         }
         .buttonStyle(.dsCard(cornerRadius: 10))
-        // Tab onto the grid itself rings this card; a card Tab lands on rings itself (T4).
+        // Tab onto the grid itself rings this card; a card Tab lands on has the system ring (T4).
         .dsCursorRing(ringed == slot.key, cornerRadius: 10)
         .accessibilitySelected(isSelected)
         .id(slot.key)

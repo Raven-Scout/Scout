@@ -49,14 +49,18 @@ nonisolated enum KeyboardListNavigation {
 extension View {
     /// Moves `selection` through `ids` with ↑ ↓ Home End while this view or a
     /// row inside it has keyboard focus, then calls `onMove` with the new
-    /// item (to scroll it into view, say).
+    /// item (to scroll it into view, say). Pass `when:` the list's own focus
+    /// (`dsFocusContainer`): an arrow a focused button inside didn't use
+    /// reaches this handler too, and must not move a cursor whose ring isn't
+    /// drawn (UI audit T4).
     func keyboardListNavigation<ID: Equatable>(
+        when active: Bool = true,
         ids: @escaping () -> [ID],
         selection: Binding<ID?>,
         onMove: @escaping (ID) -> Void = { _ in }
     ) -> some View {
         onKeyPress(keys: [.upArrow, .downArrow, .home, .end], phases: [.down, .repeat]) { press in
-            guard let move = KeyboardListNavigation.move(for: press.key, modifiers: press.modifiers),
+            guard active, let move = KeyboardListNavigation.move(for: press.key, modifiers: press.modifiers),
                   let next = KeyboardListNavigation.target(from: selection.wrappedValue, in: ids(), move: move)
             else { return .ignored }
             selection.wrappedValue = next

@@ -64,11 +64,9 @@ struct SchedulesMasterTable: View {
                 }
                 // ↑ ↓ Home End move the selection once the table has keyboard
                 // focus; a click on a row gives it focus.
-                .focusable()
-                .focused($tableFocused)
-                .focusEffectDisabled()
-                .dsFocusContainer(tableFocused)
+                .dsFocusContainer($tableFocused)
                 .keyboardListNavigation(
+                    when: tableFocused,
                     ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
                     selection: $selectedSlotKey
                 ) { key in

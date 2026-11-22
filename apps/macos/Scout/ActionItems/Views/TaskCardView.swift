@@ -294,7 +294,6 @@ struct TaskCardView: View {
                 chipBody(for: chip)
             }
             .menuStyle(.borderlessButton)
-            .dsReportsOwnFocus()
             .menuIndicator(.hidden)
             .fixedSize()
             .keyWindowPointingHand()

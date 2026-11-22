@@ -2,14 +2,13 @@ import Foundation
 import Testing
 @testable import Scout
 
-/// UI audit T4: a button style's `isFocused` is the nearest focusable
-/// ancestor's focus, so while a `.focusable()` list had the keyboard focus every
-/// button inside it drew a focus ring. Each focusable container marks itself
-/// with `.dsFocusContainer(…)` so the DS styles skip the inherited ring, and
-/// rings its current item with `.dsCursorRing(…)` while it holds the focus
-/// itself: the hand check found Tab stopping on the Schedules grid with nothing
-/// drawn. This scans the app's sources so a new container can't bring either
-/// back quietly.
+/// UI audit T4: a button style's `isFocused` is never the button's own focus,
+/// only that of a focusable view around it, so a list made `.focusable()`
+/// around its buttons rang every one of them, and its `.focusEffectDisabled()`
+/// took the system ring off the one Tab was on. Lists take focus through
+/// `.dsFocusContainer($focus)`, a sink behind the content, and ring their
+/// current item with `.dsCursorRing(…)`. This scans the app's sources so a new
+/// list can't bring any of that back quietly.
 @Suite("Focusable containers mark themselves")
 struct FocusContainerGuardTests {
 
@@ -21,53 +20,63 @@ struct FocusContainerGuardTests {
         "KnowledgeBase/Views/KBTreeView.swift": "KnowledgeBase/Views/KBTreeView.swift",
     ]
 
-    /// Files whose `.focusable()` isn't on a container of buttons, and why.
+    /// Files with a `.focusable()` of their own, and why.
     static let allowlist: [String: String] = [
+        // The sink behind every container.
+        "Utilities/DSButtonStyle.swift": "dsFocusContainer itself",
         // The focus sits on the disclosure chevron itself, which holds no buttons.
         "ActionItems/TopicBoard/DisclosureRow.swift": "chevron, not a container",
     ]
 
     static let focusable = try! NSRegularExpression(pattern: #"\.focusable\("#)
-    /// How far below `.focusable()` the marker may sit (after `.focused` and `.focusEffectDisabled`).
-    static let window = 6
+    static let container = try! NSRegularExpression(pattern: #"\.dsFocusContainer\("#)
+    static let styleFocus = try! NSRegularExpression(pattern: #"Environment\(\\\.isFocused\)"#)
 
-    @Test("every .focusable() container is followed by .dsFocusContainer")
-    func everyContainerIsMarked() throws {
-        // Every source file, not the button guard's list: its allowlist is about button styles.
+    private func sources() throws -> [(String, [String])] {
         let root = ButtonStyleGuardTests.sourceRoot
         let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         var files: [(String, [String])] = []
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let relative = String(url.path.dropFirst(root.path.count + 1))
-            guard Self.allowlist[relative] == nil else { continue }
             files.append((relative, try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")))
         }
         #expect(files.count > 100, "found only \(files.count) Swift files")
-        var found = 0
-        var hits: [String] = []
-        var containers: Set<String> = []
-        for (file, lines) in files {
-            for (i, line) in lines.enumerated()
-            where !ButtonStyleGuardTests.isComment(line) && ButtonStyleGuardTests.matches(Self.focusable, line) {
-                found += 1
-                containers.insert(file)
-                let below = lines[i..<min(lines.count, i + 1 + Self.window)]
-                if !below.contains(where: { $0.contains(".dsFocusContainer(") }) {
-                    hits.append("\(file):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
-                }
-            }
+        return files
+    }
+
+    private func hits(_ pattern: NSRegularExpression, in files: [(String, [String])]) -> [(file: String, line: String)] {
+        files.flatMap { file, lines in
+            lines.enumerated()
+                .filter { !ButtonStyleGuardTests.isComment($0.element) && ButtonStyleGuardTests.matches(pattern, $0.element) }
+                .map { (file, "\(file):\($0.offset + 1): \($0.element.trimmingCharacters(in: .whitespaces))") }
         }
-        // The scan must see the containers it guards, or it proves nothing.
-        #expect(found >= 4, "found only \(found) .focusable() calls")
-        #expect(hits.isEmpty, """
-            add .dsFocusContainer(<its focus>) under each, or allowlist a non-container here:
-            \(hits.joined(separator: "\n"))
+    }
+
+    @Test("a list takes focus through .dsFocusContainer, never a .focusable() around its buttons")
+    func noFocusableAroundButtons() throws {
+        let files = try sources()
+        let stray = hits(Self.focusable, in: files).filter { Self.allowlist[$0.file] == nil }
+        #expect(stray.isEmpty, """
+            use .dsFocusContainer($focus) instead, or allowlist a non-container here:
+            \(stray.map(\.line).joined(separator: "\n"))
             """)
+        let containers = Set(hits(Self.container, in: files).map(\.file)).subtracting(["Utilities/DSButtonStyle.swift"])
+        // The scan must see the containers it guards, or it proves nothing.
+        #expect(containers.count >= 4, "found only \(containers.sorted())")
         // A container whose own focus draws nothing is a silent Tab stop.
         let unringed = containers.subtracting(Self.cursorRings.keys).sorted()
         #expect(unringed.isEmpty, """
             ring the current item with .dsCursorRing(…) and name the file in cursorRings:
             \(unringed.joined(separator: "\n"))
+            """)
+    }
+
+    @Test("no view rings @Environment(\\.isFocused): in a button style it is never the button's own")
+    func noStyleRingsInheritedFocus() throws {
+        let found = hits(Self.styleFocus, in: try sources())
+        #expect(found.isEmpty, """
+            a button's focus is the system ring; a field's is its own @FocusState (dsField):
+            \(found.map(\.line).joined(separator: "\n"))
             """)
     }
 
@@ -79,42 +88,26 @@ struct FocusContainerGuardTests {
             #expect(source.contains(".dsCursorRing("), "\(container): \(ringFile) draws no .dsCursorRing")
             let containerSource = try String(contentsOf: ButtonStyleGuardTests.sourceRoot.appendingPathComponent(container),
                                              encoding: .utf8)
-            #expect(containerSource.contains(".focusable("), "\(container) is no longer a container; drop it")
+            #expect(containerSource.contains(".dsFocusContainer("), "\(container) is no longer a container; drop it")
         }
     }
 
-    /// Where a focusable container's items are drawn. A native control there
-    /// (a `.borderless` button, a `Menu`) doesn't report its own focus the way
-    /// DS styles do, so the card around it kept its ring and the list kept
-    /// the arrows while Tab sat on "Show more" (T4 review).
-    static let containerContent: [String] = ["ActionItems/", "Schedules/", "KnowledgeBase/Views/KBTreeView.swift"]
-    static let nativeControl = try! NSRegularExpression(
-        pattern: #"\.buttonStyle\(\.(plain|borderless|link|bordered\w*)\)|\.menuStyle\(|\bLink\(destination"#)
-
-    @Test("a native control drawn inside a focusable container reports its own focus")
-    func nativeControlsReportOwnFocus() throws {
-        let root = ButtonStyleGuardTests.sourceRoot
-        let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+    @Test("a list's arrow keys act only while the list itself has the focus")
+    func listKeysAreGated() throws {
+        let navigation = try NSRegularExpression(pattern: #"\.keyboardListNavigation\("#)
         var found = 0
-        var hits: [String] = []
-        for case let url as URL in enumerator where url.pathExtension == "swift" {
-            let relative = String(url.path.dropFirst(root.path.count + 1))
-            guard Self.containerContent.contains(where: { relative.hasPrefix($0) }) else { continue }
-            let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+        var ungated: [String] = []
+        for (file, lines) in try sources() {
             for (i, line) in lines.enumerated()
-            where !ButtonStyleGuardTests.isComment(line) && ButtonStyleGuardTests.matches(Self.nativeControl, line) {
+            where !ButtonStyleGuardTests.isComment(line) && ButtonStyleGuardTests.matches(navigation, line) {
                 found += 1
-                let near = lines[i..<min(lines.count, i + 4)]
-                if !near.contains(where: { $0.contains(".dsReportsOwnFocus()") }) {
-                    hits.append("\(relative):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                if !lines[i..<min(lines.count, i + 3)].contains(where: { $0.contains("when:") }) {
+                    ungated.append("\(file):\(i + 1)")
                 }
             }
         }
-        #expect(found >= 10, "found only \(found) native controls; is the scan still looking in the right place?")
-        #expect(hits.isEmpty, """
-            add .dsReportsOwnFocus() to each (or move it to a DS style):
-            \(hits.joined(separator: "\n"))
-            """)
+        #expect(found >= 3, "found only \(found) keyboardListNavigation calls")
+        #expect(ungated.isEmpty, "pass when: <the list's own focus>:\n\(ungated.joined(separator: "\n"))")
     }
 
     @Test("a focused list rings its current item, else the first")
@@ -125,22 +118,6 @@ struct FocusContainerGuardTests {
         #expect(KeyboardListNavigation.ringed("gone", in: ["a", "b"]) == "a")
         #expect(KeyboardListNavigation.target(from: "gone", in: ["a", "b"], move: .next) == "a")
         #expect(KeyboardListNavigation.ringed("a", in: [String]()) == nil)
-    }
-
-    /// The rules the DS styles and containers draw by.
-    @Test("a control rings only its own focus; a container rings its item only when it holds the focus itself")
-    func focusRules() {
-        // Keyboard navigation off: a button never holds focus, so inside a focused list it draws nothing.
-        #expect(!DSFocus.controlDrawsRing(isFocused: true, isEnabled: true, containerHasFocus: true, keyboardNavigation: false))
-        // On: the button's isFocused is its own, so it rings inside a focused container (the hand-check failure).
-        #expect(DSFocus.controlDrawsRing(isFocused: true, isEnabled: true, containerHasFocus: true, keyboardNavigation: true))
-        #expect(DSFocus.controlDrawsRing(isFocused: true, isEnabled: true, containerHasFocus: false, keyboardNavigation: false))
-        #expect(!DSFocus.controlDrawsRing(isFocused: false, isEnabled: true, containerHasFocus: false, keyboardNavigation: true))
-        // A disabled control's focus is always inherited.
-        #expect(!DSFocus.controlDrawsRing(isFocused: true, isEnabled: false, containerHasFocus: true, keyboardNavigation: true))
-        #expect(DSFocus.containerShowsCursor(hasFocus: true, focusInside: false))
-        #expect(!DSFocus.containerShowsCursor(hasFocus: true, focusInside: true))
-        #expect(!DSFocus.containerShowsCursor(hasFocus: false, focusInside: false))
     }
 
     @Test("the allowlist names files that still exist")

@@ -17,7 +17,6 @@ struct ActionChip: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .dsReportsOwnFocus()
         .help("Tell Claude what to do; the note goes to the item's session")
     }
 }

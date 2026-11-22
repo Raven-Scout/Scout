@@ -41,8 +41,6 @@ struct ActionItemsView: View {
     @State private var cursorTaskID: UUID?
     @State private var navigableRows: [ActionItemsKeyboardContext.Row] = []
     @State private var commentEditorFocused = false
-    /// A button or menu inside the list holds the focus itself (`DSOwnFocusKey`).
-    @State private var controlFocused = false
     @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
     @FocusState private var listFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -78,7 +76,6 @@ struct ActionItemsView: View {
                                 .font(DS.font(.caption, weight: .medium))
                         }
                         .buttonStyle(.borderless)
-                        .dsReportsOwnFocus()
                         .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
                     }
                 }
@@ -219,20 +216,16 @@ struct ActionItemsView: View {
                     if commentEditorFocused, !focused, !searchFocused { listFocused = true }
                     commentEditorFocused = focused
                 }
-                .onPreferenceChange(DSOwnFocusKey.self) { controlFocused = $0 }
-                // The list takes keyboard focus (a click on it, or opening the
-                // page) so the arrows move the current card rather than scroll.
-                .focusable()
-                .focused($listFocused)
-                .focusEffectDisabled()
-                // The list's focus isn't each button's: no ring on every card,
-                // but one on the current card while the list has the keys (T4).
-                .dsFocusContainer(listFocused, showsCursor: listOwnsKeys)
+                // The list takes keyboard focus (a click on a card, or opening
+                // the page) so the arrows move the current card rather than
+                // scroll; the current card rings while it has the keys (T4).
+                .dsFocusContainer($listFocused, showsCursor: listOwnsKeys)
                 // Each handler acts only while the list itself has focus, never
-                // for keys typed into a comment editor or a focused button
-                // inside it (`listOwnsKeys`).
+                // for keys typed into a comment editor or left over by a
+                // focused button inside it (`listOwnsKeys`).
                 .keyboardListNavigation(
-                    ids: { listOwnsKeys ? navigableRows.map(\.id) : [] },
+                    when: listOwnsKeys,
+                    ids: { navigableRows.map(\.id) },
                     selection: $cursorTaskID
                 ) { id in
                     scroll(to: id, proxy: proxy, anchor: nil)
@@ -252,8 +245,7 @@ struct ActionItemsView: View {
     }
 
     private var listOwnsKeys: Bool {
-        ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused, commentEditorFocused: commentEditorFocused,
-                                                controlFocused: controlFocused)
+        ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused, commentEditorFocused: commentEditorFocused)
     }
 
     private var keyboardContext: ActionItemsKeyboardContext {
@@ -687,7 +679,6 @@ struct ActionItemsView: View {
                 toggleSelectAll()
             }
             .buttonStyle(.borderless)
-            .dsReportsOwnFocus()
             .font(DS.font(.caption))
             .help("Select or clear every action item currently visible")
             Spacer()
@@ -714,7 +705,6 @@ struct ActionItemsView: View {
                     .frame(width: 22, height: 22)
             }
             .menuStyle(.borderlessButton)
-            .dsReportsOwnFocus()
             .menuIndicator(.hidden)
             .disabled(selectedTaskIDs.isEmpty)
             .help("Choose a concise or Markdown copy format")
@@ -722,7 +712,6 @@ struct ActionItemsView: View {
 
             Button("Done") { endSelectionMode() }
                 .buttonStyle(.borderless)
-                .dsReportsOwnFocus()
                 .help("Exit selection mode")
         }
         .padding(.horizontal, 14)

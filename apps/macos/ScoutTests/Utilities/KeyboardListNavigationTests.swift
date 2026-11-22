@@ -96,10 +96,6 @@ struct KeyboardListNavigationTests {
         // Typing Return or Space into a comment must not collapse its card.
         #expect(!ActionItemsKeyboardContext.listOwnsKeys(listFocused: true, commentEditorFocused: true))
         #expect(!ActionItemsKeyboardContext.listOwnsKeys(listFocused: false, commentEditorFocused: false))
-        // A button or menu inside a card holds the focus (Keyboard navigation): the
-        // list's focus state stays true, but its keys must not move a hidden cursor.
-        #expect(!ActionItemsKeyboardContext.listOwnsKeys(listFocused: true, commentEditorFocused: false,
-                                                         controlFocused: true))
     }
 
     @Test("Schedules walks the new draft first, then the slots as drawn")

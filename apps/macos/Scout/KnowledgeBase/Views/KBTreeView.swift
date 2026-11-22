@@ -40,12 +40,10 @@ struct KBTreeView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
-            .focusable()
-            .focused($treeFocused)
-            .focusEffectDisabled()
-            .dsFocusContainer(treeFocused)
+            .dsFocusContainer($treeFocused)
             .onKeyPress(phases: [.down, .repeat]) { press in
-                guard let key = KBTreeKeyboard.Key(press.key, modifiers: press.modifiers) else { return .ignored }
+                // Not a key a focused row button inside left over (T4).
+                guard treeFocused, let key = KBTreeKeyboard.Key(press.key, modifiers: press.modifiers) else { return .ignored }
                 let out = KBTreeKeyboard.handle(key, cursor: cursor ?? selectedPath, nodes: nodes, expanded: expanded)
                 guard out.changed else { return .ignored }
                 expanded = out.expanded

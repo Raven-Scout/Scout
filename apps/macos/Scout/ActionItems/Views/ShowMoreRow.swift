@@ -18,12 +18,10 @@ struct ShowMoreRow: View {
                         .font(DS.font(.caption, weight: .medium))
                 }
                 .buttonStyle(.borderless)
-                .dsReportsOwnFocus()
                 if let showAll, window.canShowAll(in: tasks) {
                     Button("Show all", action: showAll)
                         .font(DS.font(.caption, weight: .medium))
                         .buttonStyle(.borderless)
-                        .dsReportsOwnFocus()
                 }
                 Text("\(hidden) not shown · \(ShortcutLabel.text(AppShortcut.find)) searches all of them")
                     .font(DS.font(.caption))

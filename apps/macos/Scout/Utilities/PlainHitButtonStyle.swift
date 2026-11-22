@@ -11,9 +11,9 @@ import SwiftUI
 /// whole frame hittable. The press-dim matches `.plain`'s feedback so this is a
 /// faithful swap.
 ///
-/// It also draws the keyboard focus ring (C7): custom-styled buttons get no
-/// system focus indicator, so with Keyboard navigation on, Tab moved focus
-/// through the app's chips, segments and toggles invisibly.
+/// Keyboard focus is the system ring. A style can't draw one: its
+/// `isFocused` is the view around the button's, never the button's own
+/// (UI audit T4, "Focus ring" in `DSButtonStyle.swift`).
 ///
 /// For hit areas only (chips, segments, rows, icon buttons). An action with a
 /// label (Continue, Save, Retry, Change…) uses a design-system button style
@@ -27,14 +27,11 @@ struct PlainHitButtonStyle: ButtonStyle {
 
 private struct PlainHitButtonBody: View {
     let configuration: ButtonStyleConfiguration
-    /// The nearest focusable ancestor's focus: the button's own, or its list's (`dsFocusContainer`).
-    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         configuration.label
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.75 : 1)
-            .dsControlFocusRing(isFocused)
     }
 }
 

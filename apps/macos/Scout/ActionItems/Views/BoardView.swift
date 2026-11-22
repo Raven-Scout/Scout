@@ -140,7 +140,6 @@ struct BoardView: View {
         if column.kind == .done {
             Button { doneCollapsed.toggle() } label: { row.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
-                .dsReportsOwnFocus()
         } else {
             row
         }

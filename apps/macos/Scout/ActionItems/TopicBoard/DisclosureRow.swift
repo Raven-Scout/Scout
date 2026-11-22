@@ -64,7 +64,6 @@ struct DisclosureRow<Content: View>: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .dsReportsOwnFocus()
                 .padding(.top, 6)
                 .padding(.trailing, 10)
                 .help("Ask Claude about this")

@@ -5,7 +5,7 @@
   The Doctor window had the same slip and now reads "Scheduled runs need attention" in red. A broken engine or a
   health check that couldn't run is red in Settings as in the status bar. The Health page no longer says
   "Scheduled runs are healthy · 1 problem" when the problem is the engine's: it reads "Scout's engine needs
-  fixing".
+  attention".
 - **The menu-bar panel's problem button opens Health.** It said "Open Settings" where Control Center says
   "Open Health". Failing, paused or held-back runs, a failed last run and engine warnings now open the
   Health page, from the panel and from the status bar. Settings stays the place for setting up, repairing a
@@ -25,10 +25,9 @@
   session" pane no longer takes a quarter of the window.
 - **Action Items has one "Done".** "Done" was both a status filter and a section chip. The section chip is
   gone; the status filter's Done shows the same completed list.
-- **Buttons in a list no longer all show a focus ring.** While the Action Items list, the Schedules table or
-  cards, or the KB file tree had keyboard focus (as Action Items does after Done), every button inside it drew
-  a ring: without Keyboard navigation a button takes its focus from the list around it. Now only a control
-  that has focus itself draws one, and while the list holds the focus itself, its current card or row does
-  (the first one when none is current), so Tab never stops on a list with nothing drawn. While a button or
-  menu inside a card has the focus, the arrow keys leave the list's cursor alone. Turning Keyboard
-  navigation on or off takes effect at once.
+- **One focus ring at a time in lists.** While the Action Items list, the Schedules table or cards, or the KB
+  file tree had keyboard focus (on Tab, after a click, or after Done), every button inside it drew a ring, and
+  with Keyboard navigation on, the button Tab moved to inside it drew none. Now the list's own Tab stop rings
+  only its current card or row (the first one when none is current), and a button Tab lands on inside it
+  shows the system focus ring while the list's ring goes away. While such a button has the focus, the arrow
+  keys, Return, Space and Esc leave the list's cursor alone.
