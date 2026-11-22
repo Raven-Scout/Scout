@@ -53,7 +53,7 @@ def changes_report(
 
     Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
     which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
-    from scout.changes.governance import decision, read_pending
+    from scout.changes.governance import read_pending, state_of
     from scout.changes.settings import read_settings
     from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
 
@@ -94,7 +94,7 @@ def changes_report(
             "why": p.why,
             "targets": list(p.targets),
             "path": p.path,
-            "state": decision(signals, p.id, p.hash),
+            "state": state_of(vault, signals, p),
             "diff_hash": p.hash,
             "governance": p.governance,
         }

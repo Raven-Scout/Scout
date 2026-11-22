@@ -38,10 +38,12 @@ _RS, _US = "\x1e", "\x1f"
 
 
 def parse_trailers(message: str) -> dict[str, str]:
-    """Reads the ``Scout-Change-*`` trailers (keys without the prefix, lowercased) from a commit message. A trailer
-    may be indented: a run copies its commit from a code block nested in a list, indentation and all."""
+    """Reads the ``Scout-Change-*`` trailers (keys without the prefix, lowercased) from a commit message's last
+    paragraph, the trailer block, as git reads trailers: a line quoted in the prose above never counts. There a
+    trailer may be indented, since a run copies its commit from a code block nested in a list, indentation and all."""
     out: dict[str, str] = {}
-    for line in message.splitlines():
+    paragraphs = [p for p in re.split(r"\n[ \t]*\n", message.strip()) if p.strip()]
+    for line in (paragraphs[-1] if paragraphs else "").splitlines():
         m = re.match(r"^\s*Scout-Change-(Why|Summary|Targets|Governance|Reverts):\s*(.*?)\s*$", line)
         if m:
             out[m.group(1).lower()] = m.group(2)
@@ -263,10 +265,16 @@ def _reverts_of(trailers: dict[str, str], body: str) -> str | None:
     return f"chg-{m.group(1)[:12]}" if m else None
 
 
-def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str) -> str | None:
+# How deep :func:`_rolls_back` follows a chain of rollbacks of rollbacks; past it the commit is an ordinary edit.
+_ROLLBACK_DEPTH = 8
+
+
+def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str, *, depth: int = 0) -> str | None:
     """The change id commit ``sha`` undid, or None. The candidate comes from its ``Scout-Change-Reverts:`` trailer or
-    a ``git revert`` body; it counts only when git resolves it to one commit and ``sha`` really put that commit's own
-    lines back (scout.changes.actions.restores)."""
+    a ``git revert`` body; it counts only when git resolves it to one commit, ``sha`` really put that commit's own
+    lines back and touched no other self-change path (scout.changes.actions.restores), and that commit is not itself a
+    rollback: undoing a rollback puts the change it undid back, which is an ordinary edit, tested and undoable. A
+    chain deeper than :data:`_ROLLBACK_DEPTH`, or a message git can't read, is never a rollback."""
     from scout.changes.actions import restores  # actions imports this module
 
     cid = _reverts_of(trailers, body)
@@ -279,7 +287,16 @@ def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str) -> s
             _git(vault, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{cid[4:]}^{{commit}}") or ""
         ).strip()
         full = found if _FULL_SHA_RE.match(found) and found.startswith(cid[4:]) else None
-    return cid if full is not None and restores(vault, full, sha) else None
+    if full is None or depth >= _ROLLBACK_DEPTH or not restores(vault, full, sha):
+        return None
+    target_body = _git(vault, "log", "-1", "--format=%b", full, "--")
+    if target_body is None:
+        return None
+    target_trailers = parse_trailers(target_body)
+    if "reverts" in target_trailers or _REVERTS_BODY_RE.search(target_body):
+        if _rolls_back(vault, full, target_trailers, target_body, depth=depth + 1) is not None:
+            return None
+    return cid
 
 
 def _change_from_commit(

@@ -607,7 +607,7 @@ def _record_decision(command: str, kind: str, ref: str, surface: str, installed:
 def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: str | None) -> None:
     import os
 
-    from scout.changes.governance import decision, decision_ref, read_pending
+    from scout.changes.governance import decision_ref, read_pending, state_of
     from scout.changes.store import read_signals
 
     surface = _decision_surface(command, surface)
@@ -630,7 +630,7 @@ def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: s
         raise typer.Exit(2)
     state = {"approve": "approved", "reject": "rejected"}[verb]
     signals, _ = read_signals(vault, os.environ, owner_vault=installed)
-    if decision(signals, gov_id, item.hash) == state:
+    if state_of(vault, signals, item) == state:
         typer.echo(f"already {state}")
         return
     # Not deduped on the ref: approve, reject, approve is three decisions and the newest one stands.

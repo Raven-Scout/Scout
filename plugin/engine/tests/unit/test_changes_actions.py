@@ -185,6 +185,22 @@ def test_a_real_rollback_commit_clears_the_undo(repo, env):
     assert doc["rollbacks"] == [] and doc["blocked"] == []
 
 
+@pytest.fixture
+def auto_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The automatic rollback modes acting, as they will once Plan 3 lets them (actions.AUTO_ROLLBACK_LIVE)."""
+    from scout.changes import actions
+
+    monkeypatch.setattr(actions, "AUTO_ROLLBACK_LIVE", True)
+
+
+def test_auto_modes_are_inert_for_now_whatever_the_settings_say(repo, env):
+    """#747 review: the CLI refuses to set an automatic mode, and `due` ignores one a settings file already holds."""
+    _two_hurt_changes(repo)
+    for mode in ("targeted", "one-at-a-time"):
+        write_settings(Settings(auto_rollback=mode, calibrated_on=NOW.date()), env)
+        assert _due(repo, env)["rollbacks"] == [], mode
+
+
 def _two_hurt_changes(repo: Path) -> tuple[str, str]:
     """Two run changes four days apart (one shared window), both hurt."""
     a = _cid(_brain_edit(repo, days_ago=22))
@@ -199,7 +215,7 @@ def _two_hurt_changes(repo: Path) -> tuple[str, str]:
     return a, b
 
 
-def test_one_at_a_time_waits_a_week_after_a_rollback_in_the_window(repo, env):
+def test_one_at_a_time_waits_a_week_after_a_rollback_in_the_window(repo, env, auto_live):
     """I7: after the newest suspect is rolled back, the older one is not undone on the next run, only a week later."""
     a, b = _two_hurt_changes(repo)
     write_settings(Settings(auto_rollback="one-at-a-time", calibrated_on=NOW.date()), env)
@@ -217,7 +233,7 @@ def test_one_at_a_time_waits_a_week_after_a_rollback_in_the_window(repo, env):
     ]
 
 
-def test_auto_modes_skip_a_verdict_the_owner_marked_wrong(repo, env):
+def test_auto_modes_skip_a_verdict_the_owner_marked_wrong(repo, env, auto_live):
     cid = _cid(_brain_edit(repo, days_ago=20))
     _hurt(repo, cid, days_ago=20)
     append_signal(Signal(ts=NOW, kind="verdict-wrong", surface="scoutctl", ref=cid), vault=repo, env=env)
@@ -228,7 +244,7 @@ def test_auto_modes_skip_a_verdict_the_owner_marked_wrong(repo, env):
     assert [r["reason"] for r in _due(repo, env)["rollbacks"]] == ["owner-undo"]
 
 
-def test_auto_modes_need_calibration_to_act(repo, env):
+def test_auto_modes_need_calibration_to_act(repo, env, auto_live):
     sha = _brain_edit(repo, days_ago=20)
     cid = _cid(sha)
     _hurt(repo, cid, days_ago=20)
@@ -242,7 +258,7 @@ def test_auto_modes_need_calibration_to_act(repo, env):
     assert _due(repo, env)["rollbacks"] == []
 
 
-def test_an_owner_undo_and_an_auto_match_list_the_change_once(repo, env):
+def test_an_owner_undo_and_an_auto_match_list_the_change_once(repo, env, auto_live):
     sha = _brain_edit(repo, days_ago=20)
     cid = _cid(sha)
     _hurt(repo, cid, days_ago=20)
@@ -928,6 +944,87 @@ def test_apply_governance_patches_and_moves_the_file(repo, env):
     assert _due(repo, env)["apply"] == []
 
 
+def _decide_at(repo: Path, env: dict[str, str], verb: str, gov: str, ts: datetime) -> None:
+    from scout.changes.governance import read_pending
+
+    digest = next(p.hash for p in read_pending(repo)[0] if p.id == gov)
+    append_signal(Signal(ts=ts, kind="approval", surface="scoutctl", ref=f"{verb}:{gov}@{digest}"), vault=repo, env=env)
+
+
+def test_an_approval_is_used_up_once_applied(repo, env):
+    """#747 review: the owner reverts an applied governance change by hand and a run re-files the identical file; the
+    old approval must not apply it again. A fresh approval does."""
+    _commit(repo, "dreaming [22:00]: governance-pending — skip red", {"governance-pending/skip-red.md": _PENDING},
+            date=NOW - timedelta(minutes=10))  # fmt: skip
+    gov = "gov-skip-red"
+    _decide_at(repo, env, "approve", gov, NOW - timedelta(minutes=5))
+    paths = apply_governance(repo, env, gov)
+    _git(repo, "add", "-A", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}", date=NOW - timedelta(minutes=4))
+    # By hand: SKILL.md back, the applied record gone; then a run files the same item again.
+    _commit(repo, "scout: revert the governance change", {"SKILL.md": "skill v1\n",
+            "governance-pending/applied/skip-red.md": None}, date=NOW - timedelta(minutes=3))  # fmt: skip
+    _commit(repo, "dreaming [22:30]: governance-pending — skip red", {"governance-pending/skip-red.md": _PENDING},
+            date=NOW - timedelta(minutes=2))  # fmt: skip
+    assert _due(repo, env)["apply"] == []
+    with pytest.raises(ActionRefused, match="awaiting-ok"):
+        apply_governance(repo, env, gov)
+    from scout.changes.report import changes_report
+
+    doc = changes_report(repo, now=NOW, since=NOW - timedelta(days=1), env=env, tz=TZ)
+    assert [(n["id"], n["state"]) for n in doc["needs_ok"]] == [(gov, "awaiting-ok")]
+    _decide_at(repo, env, "approve", gov, NOW - timedelta(minutes=1))
+    assert _due(repo, env)["apply"] == [gov]
+
+
+def test_a_rejection_is_used_up_once_discarded(repo, env):
+    _commit(repo, "dreaming [22:00]: file it", {"governance-pending/skip-red.md": _PENDING},
+            date=NOW - timedelta(minutes=10))  # fmt: skip
+    gov = "gov-skip-red"
+    _decide_at(repo, env, "reject", gov, NOW - timedelta(minutes=5))
+    paths = discard_governance(repo, env, gov)
+    _git(repo, "add", "-A", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:12]: discard {gov}", date=NOW - timedelta(minutes=4))
+    _commit(repo, "dreaming [22:30]: file it again", {"governance-pending/skip-red.md": _PENDING},
+            date=NOW - timedelta(minutes=2))  # fmt: skip
+    assert _due(repo, env)["discard"] == []  # waiting for the owner again, not thrown away unseen
+
+
+def test_unreadable_git_spends_every_decision(repo, env, monkeypatch):
+    from scout.changes import governance, scan
+    from scout.changes.store import read_signals
+
+    gov = _pending(repo)
+    _decide(repo, env, "approve", gov)
+    item = governance.read_pending(repo)[0][0]
+    assert governance.spent_at(repo, item) is None
+    real = scan._git
+
+    def no_log(vault, *args):
+        return None if args[:1] == ("log",) else real(vault, *args)
+
+    monkeypatch.setattr(scan, "_git", no_log)
+    assert governance.spent_at(repo, item) == governance._ALL_SPENT
+    assert governance.spent_at(repo.parent, item) is None  # not a repository: nothing was ever applied
+    signals, _ = read_signals(repo, env)
+    assert governance.state_of(repo, signals, item) == "awaiting-ok"
+
+
+def test_a_removal_of_some_other_version_spends_nothing(repo, env):
+    from scout.changes import governance
+
+    _commit(repo, "file v1", {"governance-pending/skip-red.md": _PENDING.replace("governed", "v1 governed")},
+            date=NOW - timedelta(minutes=10))  # fmt: skip
+    _commit(repo, "drop v1", {"governance-pending/skip-red.md": None}, date=NOW - timedelta(minutes=9))
+    _commit(repo, "file bad yaml", {"governance-pending/skip-red.md": "---\n: [\n---\n"},
+            date=NOW - timedelta(minutes=8))  # fmt: skip
+    _commit(repo, "drop it", {"governance-pending/skip-red.md": None}, date=NOW - timedelta(minutes=7))
+    gov = _pending(repo)
+    _decide(repo, env, "approve", gov)
+    assert governance.spent_at(repo, governance.read_pending(repo)[0][0]) is None
+    assert _due(repo, env)["apply"] == [gov]
+
+
 def test_apply_without_approval_refuses(repo, env):
     gov = _pending(repo)
     with pytest.raises(ActionRefused):
@@ -1526,6 +1623,20 @@ def test_a_committed_rollback_of_renames_and_an_added_file_is_recognized(repo, e
     assert rolled["reverts"] == cid and rolled["test"]["state"] == "not-tested"
     assert rows[cid]["test"]["rolled_back_by"] == rolled["id"]
     assert _due(repo, env)["rollbacks"] == []
+
+
+def test_a_rollback_sweeps_undo_temp_files_a_crash_left(repo, env):
+    cid = _cid(_brain_edit(repo, days_ago=3))
+    _undo(repo, env, cid)
+    stale, fresh = repo / ".SKILL.md.0123456789ab.scout-undo", repo / ".SKILL.md.ba9876543210.scout-undo"
+    for p in (stale, fresh):
+        p.write_text("half\n")
+    old = (NOW - timedelta(hours=1)).timestamp()
+    os.utime(stale, (old, old))
+    (repo / ".kept.scout-undo").mkdir()  # not a regular file: left alone
+    os.utime(repo / ".kept.scout-undo", (old, old))
+    rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert not stale.exists() and fresh.exists() and (repo / ".kept.scout-undo").is_dir()
 
 
 def test_the_tree_reader_reads_a_commit_like_the_working_tree(repo):

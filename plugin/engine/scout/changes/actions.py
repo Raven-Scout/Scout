@@ -53,6 +53,10 @@ _BINARY_PROBE = 8000
 # <unistd.h>: the per-user temp folder macOS gives an account (Python doesn't name it).
 _CS_DARWIN_USER_TEMP_DIR = 65537
 _AUTO_KEYS = {"targeted": "targeted", "one-at-a-time": "one_at_a_time"}
+# The automatic rollback modes stay inert until the unapproved-governance-move and undo-race gaps are closed: `due`
+# lists no auto rollback whatever the owner's settings say (an older engine's `scoutctl changes auto-rollback`, or a
+# hand-edited settings.json), as the CLI refuses to set one. Verdicts still say what each mode would have done.
+AUTO_ROLLBACK_LIVE = False
 
 
 class ActionRefused(Exception):  # noqa: N818 - the name the run instructions and the CLI use
@@ -441,14 +445,29 @@ def _ops(vault: Path, plan: _Plan, current: _Reader) -> list[_Op] | str:
 
 
 def restores(vault: Path, target: str, rollback: str) -> bool:
-    """Commit ``rollback`` undid commit ``target``: working the undo of ``target`` out against ``rollback``'s parent
-    (as :func:`_undo` would against the working tree) gives exactly what ``rollback`` left at every path it writes or
-    removes, executable bit included. What makes a commit a rollback (scout.changes.scan): a trailer or a ``Revert``
-    subject only names the candidate, so a commit can't claim to revert a change without putting its lines back,
-    and the claim can't hide an edit from its test or its undo. A ``git revert`` passes too (the same 3-way merge),
-    unless its conflicts were resolved by hand. False whenever anything can't be read."""
+    """Commit ``rollback`` undid commit ``target`` and nothing more: working the undo of ``target`` out against
+    ``rollback``'s parent (as :func:`_undo` would against the working tree) gives exactly what ``rollback`` left at
+    every path it writes or removes, executable bit included, and ``rollback`` touched no other self-change path (so
+    a rollback can't carry an untested edit). What makes a commit a rollback (scout.changes.scan): a trailer or a
+    ``Revert`` subject only names the candidate, so a commit can't claim to revert a change without putting its
+    lines back, and the claim can't hide an edit from its test or its undo. Both commits are immutable, so a yes is
+    cached in-process (a no may be a passing git failure); never on disk, where a run could write it. A ``git
+    revert`` passes too (the same 3-way merge), unless its conflicts were resolved by hand. False whenever anything
+    can't be read."""
     if not (_FULL_SHA_RE.match(target) and _FULL_SHA_RE.match(rollback)):
         return False
+    key = (str(vault.resolve()), target, rollback)
+    if key not in _RESTORED:
+        if not _restores(vault, target, rollback):
+            return False
+        _RESTORED.add(key)
+    return True
+
+
+_RESTORED: set[tuple[str, str, str]] = set()
+
+
+def _restores(vault: Path, target: str, rollback: str) -> bool:
     plan = _plan(vault, target)
     if isinstance(plan, str):
         return False
@@ -457,6 +476,9 @@ def restores(vault: Path, target: str, rollback: str) -> bool:
         return False
     ops = _ops(vault, plan, _tree_reader(vault, shas[1]))
     if isinstance(ops, str) or not ops:
+        return False
+    touched = name_status(vault, rollback)
+    if touched is None or not set(own_paths(touched)) <= {op.path for op in ops}:
         return False
     left = _tree_reader(vault, rollback)
     for op in ops:
@@ -495,6 +517,28 @@ def _stage(target: Path, data: bytes, mode: int) -> Path:
         os.close(fd)
         return tmp
     raise FileExistsError(f"no free temporary name beside {target.name}")  # pragma: no cover - 16 collisions
+
+
+# A temp file :func:`_stage` left behind (a crash between staging and renaming) is swept once it is this old, so a
+# rollback running now never removes another one's.
+_STALE_STAGE = timedelta(minutes=10)
+
+
+def _sweep(vault: Path, rels: Sequence[str], *, now: datetime) -> None:
+    """Remove stale ``.<name>.<hex>.scout-undo`` regular files from the folders of ``rels`` (never following a link)."""
+    for folder in sorted({(vault / rel).parent for rel in rels}):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if not (name.startswith(".") and name.endswith(".scout-undo")):
+                continue
+            path = folder / name
+            with contextlib.suppress(OSError):
+                st = os.lstat(path)
+                if stat.S_ISREG(st.st_mode) and now.timestamp() - st.st_mtime > _STALE_STAGE.total_seconds():
+                    path.unlink()
 
 
 def _make_folders(vault: Path, folder: Path) -> list[Path]:
@@ -637,7 +681,7 @@ def _compute(
     vault: Path, env: Mapping[str, str], *, now: datetime, tz: ZoneInfo, owner_vault: Path | None
 ) -> tuple[dict[str, Any], dict[str, Change]]:
     from scout.changes import report
-    from scout.changes.governance import decision, read_pending
+    from scout.changes.governance import read_pending, state_of
     from scout.changes.store import read_signals
 
     doc = report.changes_report(
@@ -654,7 +698,7 @@ def _compute(
     # Governance comes from governance-pending/ and the owner's decisions, not from change rows: listed either way.
     pending, _ = read_pending(vault)
     for p in pending:
-        state = decision(signals, p.id, p.hash)
+        state = state_of(vault, signals, p)
         if state == "approved":
             out["apply"].append(p.id)
         elif state == "rejected":
@@ -685,7 +729,7 @@ def _compute(
         if row is not None and not row["test"].get("rolled_back_by"):
             candidates.setdefault(cid, "owner-undo")
     mode = doc.get("auto_rollback", "off")
-    if mode in _AUTO_KEYS and not doc.get("calibrating", True):
+    if AUTO_ROLLBACK_LIVE and mode in _AUTO_KEYS and not doc.get("calibrating", True):
         for r in sorted(rows, key=lambda r: (r["ts"], r["id"])):
             test = r["test"]
             if (
@@ -795,12 +839,13 @@ def rollback(
     ops = _undo(vault, plan)
     if isinstance(ops, str):
         raise ActionRefused(ops)
+    _sweep(vault, plan.paths, now=now)
     _write(vault, ops)
     return list(plan.paths)
 
 
 def _pending_item(vault: Path, env: Mapping[str, str], gov_id: str, want: str, owner_vault: Path | None) -> Any:
-    from scout.changes.governance import decision, read_pending
+    from scout.changes.governance import read_pending, state_of
     from scout.changes.store import read_signals
 
     item = next((p for p in read_pending(vault)[0] if p.id == gov_id), None)
@@ -811,7 +856,7 @@ def _pending_item(vault: Path, env: Mapping[str, str], gov_id: str, want: str, o
     if md.is_symlink() or not _inside(vault, item.path):
         raise ActionRefused("path outside the vault")
     signals, _ = read_signals(vault, env, owner_vault=owner_vault)
-    state = decision(signals, gov_id, item.hash)
+    state = state_of(vault, signals, item)
     if state != want:
         raise ActionRefused(f"{gov_id} is {state}, not {want}")
     return item

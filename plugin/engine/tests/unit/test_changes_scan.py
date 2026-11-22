@@ -415,6 +415,84 @@ def test_indented_trailers_still_count():
     assert parse_trailers(msg) == {"reverts": "chg-0123456789ab", "why": "verdict:x"}
 
 
+def test_only_the_last_paragraph_holds_trailers():
+    """A line quoted in the prose above the trailer block never sets a trailer, indented or not."""
+    msg = (
+        "Quoting the old rule:\n\n    Scout-Change-Why: owner:x\nScout-Change-Targets: engagement\n\n"
+        "Scout-Change-Summary: The real one.\n"
+    )
+    assert parse_trailers(msg) == {"summary": "The real one."}
+    assert parse_trailers("") == {}
+
+
+def _two_brains(repo: Path) -> str:
+    """SKILL.md and DREAMING.md seeded, then a change that tweaks SKILL.md line 2; its sha."""
+    (repo / "DREAMING.md").write_text(_BRAIN)
+    commit(repo, "SKILL.md", "scout: seed", content=_BRAIN)
+    _git(repo, "add", "DREAMING.md")
+    _git(repo, "commit", "-q", "--amend", "--no-edit")
+    return commit(repo, "SKILL.md", "dreaming [22:00]: tweak line 2", content=_BRAIN.replace("line 2\n", "two\n"))
+
+
+def test_a_rollback_that_also_edits_another_brain_file_is_an_ordinary_edit(repo):
+    """#747 review: a commit that undoes the change AND appends a rule to DREAMING.md would carry an untested,
+    un-undoable edit if it counted as a rollback. It is a brain edit, under test."""
+    cid = "chg-" + _two_brains(repo)[:12]
+    (repo / "SKILL.md").write_text(_BRAIN)
+    (repo / "DREAMING.md").write_text(_BRAIN + "a new rule\n")
+    _git(repo, "add", "SKILL.md", "DREAMING.md")
+    _git(
+        repo,
+        "commit",
+        "-q",
+        "-m",
+        f"dreaming [22:12]: roll back {cid}\n\nScout-Change-Reverts: {cid}",
+        date=_next_date(),
+    )
+    got = next(c for c in scan(repo, since=None) if c.summary.startswith("roll back"))
+    assert (got.kind, got.reverts) == ("brain-edit", None)
+
+
+def test_reverting_a_rollback_reapplies_the_change_as_an_ordinary_edit(repo):
+    """#747 review: `git revert` of a rollback puts the change's lines back, so it is a tested, undoable edit, not a
+    rollback; and a rollback of that re-apply is a rollback again."""
+    target = _two_brains(repo)
+    _git(repo, "revert", "--no-edit", target, date=_next_date())
+    rollback = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "revert", "--no-edit", rollback, date=_next_date())
+    reapply = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "revert", "--no-edit", reapply, date=_next_date())
+    again = _git(repo, "rev-parse", "HEAD")
+    rows = {c.commit: c for c in scan(repo, since=None)}
+    assert (rows[rollback].kind, rows[rollback].reverts) == ("rollback", "chg-" + target[:12])
+    assert (rows[reapply].kind, rows[reapply].reverts) == ("brain-edit", None)
+    assert (rows[again].kind, rows[again].reverts) == ("rollback", "chg-" + reapply[:12])
+
+
+def _kind(rows: dict[str, Change | None] | None, sha: str) -> str | None:
+    row = (rows or {}).get(sha)
+    return row.kind if row is not None else None
+
+
+def test_a_rollback_chain_too_deep_or_unreadable_is_an_ordinary_edit(repo, monkeypatch):
+    from scout.changes import scan as scan_module
+
+    target = _two_brains(repo)
+    _git(repo, "revert", "--no-edit", target, date=_next_date())
+    rollback = _git(repo, "rev-parse", "HEAD")
+    assert _kind(derive(repo, [rollback]), rollback) == "rollback"
+    monkeypatch.setattr(scan_module, "_ROLLBACK_DEPTH", 0)
+    assert _kind(derive(repo, [rollback]), rollback) == "brain-edit"
+    monkeypatch.setattr(scan_module, "_ROLLBACK_DEPTH", 8)
+    real = scan_module._git
+
+    def no_target_message(vault, *args):
+        return None if args[:2] == ("log", "-1") else real(vault, *args)
+
+    monkeypatch.setattr(scan_module, "_git", no_target_message)
+    assert _kind(derive(repo, [rollback]), rollback) == "brain-edit"
+
+
 def test_verdict_why_trailer(repo):
     commit(repo, "SKILL.md", "dreaming [22:12]: x\n\nScout-Change-Why: verdict:chg-0123456789ab")
     [c] = scan(repo, since=None)

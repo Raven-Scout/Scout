@@ -134,6 +134,16 @@ def test_newest_decision_wins():
     assert decision([*sigs, _sig(f"approve:gov-a@{H}", 9)], "gov-a", H) == "approved"
     assert decision(sigs, "gov-b", H) == "awaiting-ok"
     assert decision([_sig(f"approve:gov-a@{H}", 0, kind="dm-reply")], "gov-a", H) == "awaiting-ok"
+    # Rows in any order: the newest stands, an older one read after it doesn't.
+    assert decision([_sig(f"reject:gov-a@{H}", 5), _sig(f"approve:gov-a@{H}", 0)], "gov-a", H) == "rejected"
+
+
+def test_a_spent_decision_counts_for_nothing():
+    """#747 review: a decision made at or before the file was last acted on is used up."""
+    sigs = [_sig(f"approve:gov-a@{H}", 0)]
+    spent = datetime(2026, 11, 16, 9, 1, tzinfo=UTC)
+    assert decision(sigs, "gov-a", H, spent=spent) == "awaiting-ok"
+    assert decision([*sigs, _sig(f"approve:gov-a@{H}", 2)], "gov-a", H, spent=spent) == "approved"
 
 
 def test_a_decision_counts_only_for_the_diff_it_was_made_on():

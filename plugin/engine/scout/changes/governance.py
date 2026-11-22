@@ -16,6 +16,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scout.changes.models import SUMMARY_MAX, Signal
@@ -139,7 +140,11 @@ def diff_paths(diff: str) -> list[str] | None:
 def _parse(path: Path, slug: str) -> Pending | None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_BYTES:
         return None
-    m = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
+    return _parse_text(path.read_text(encoding="utf-8"), slug)
+
+
+def _parse_text(text: str, slug: str) -> Pending | None:
+    m = _FRONTMATTER_RE.match(text)
     if m is None:
         return None
     meta = load_yaml(m.group(1))
@@ -208,18 +213,58 @@ def decision_ref(verb: str, target_id: str, digest: str) -> str:
     return f"{verb}:{target_id}@{digest}"
 
 
-def decision(signals: Sequence[Signal], target_id: str, digest: str) -> str:
+def decision(signals: Sequence[Signal], target_id: str, digest: str, *, spent: datetime | None = None) -> str:
     """``approved``, ``rejected`` or ``awaiting-ok``: the newest ``approve:<id>@<digest>`` / ``reject:<id>@<digest>``
-    row wins. A row for another digest (the file was changed after the decision) or with none counts for nothing."""
+    row wins. A row for another digest (the file was changed after the decision) or with none counts for nothing,
+    and so does one made at or before ``spent`` (:func:`spent_at`): a decision is used up once acted on."""
     wanted = {
         decision_ref("approve", target_id, digest): "approved",
         decision_ref("reject", target_id, digest): "rejected",
     }
     state, newest = "awaiting-ok", None
     for s in signals:
-        if s.kind == "approval" and s.ref in wanted and (newest is None or s.ts >= newest):
+        if s.kind != "approval" or s.ref not in wanted or (spent is not None and s.ts <= spent):
+            continue
+        if newest is None or s.ts >= newest:
             state, newest = wanted[s.ref], s.ts
     return state
+
+
+# What spent_at returns when git can't say: every decision is used up, so nothing is applied on an unread history.
+_ALL_SPENT = datetime.max.replace(tzinfo=UTC)
+
+
+def spent_at(vault: Path, item: Pending) -> datetime | None:
+    """When a decision about ``item`` was last acted on: the newest commit that took this exact file (same slug,
+    same :func:`item_hash`) out of ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a
+    ``governance: false`` one, or ``discard`` deleted it. None when none did. Read from git, which a run can add to
+    but never rewrite, so re-filing an applied file (after the owner reverted it by hand, say) waits for a new
+    decision instead of riding the old one. Outside a git repository, None; when the repository can't be read, every
+    decision counts as spent."""
+    from scout.changes.scan import _git  # the scanner's git runner: no locks, a timeout, never raises
+
+    path = f"{PENDING_DIR}/{item.slug}.md"
+    log = _git(vault, "log", "--no-renames", "--diff-filter=D", "--format=%H %cI", "--", path)
+    if log is None:
+        # No repository at all: nothing was ever applied (and `apply` refuses without git). A repository git can't
+        # read: fail closed.
+        return None if _git(vault, "rev-parse", "--git-dir") is None else _ALL_SPENT
+    for line in log.splitlines():  # newest first
+        sha, _, when = line.partition(" ")
+        text = _git(vault, "show", f"{sha}^:{path}")
+        try:
+            gone = _parse_text(text, item.slug) if text is not None else None
+            ts = datetime.fromisoformat(when)
+        except Exception:  # noqa: BLE001 - malformed YAML or date: that removal says nothing about this file
+            continue
+        if gone is not None and gone.hash == item.hash:
+            return ts
+    return None
+
+
+def state_of(vault: Path, signals: Sequence[Signal], item: Pending) -> str:
+    """:func:`decision` for a pending file as it is now, its spent decisions left out."""
+    return decision(signals, item.id, item.hash, spent=spent_at(vault, item))
 
 
 def undo_requested(signals: Sequence[Signal], change_id: str) -> bool:
