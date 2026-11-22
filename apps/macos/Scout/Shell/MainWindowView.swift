@@ -51,6 +51,11 @@ struct MainWindowView: View {
                     detail
                 }
             }
+            // Every page, onboarding included: a new version is worth
+            // seeing wherever you are (Settings ▸ Updates has the detail).
+            .safeAreaInset(edge: .top, spacing: 0) {
+                AppUpdateBanner(updates: updates)
+            }
             .background(PaperBackdrop())
             .environmentObject(appState.vaultUndo)
             .overlay(alignment: .bottomTrailing) {

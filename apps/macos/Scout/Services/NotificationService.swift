@@ -169,6 +169,57 @@ final class NotificationService: @unchecked Sendable {
     }
 }
 
+/// The "a new version of Scout is ready" notification (`UpdateService` posts
+/// it once per version). One identifier, so a newer version replaces an
+/// older one still in Notification Center. Clicking it brings up Sparkle's
+/// update alert (`AppDelegate.showAppUpdate`).
+@MainActor
+final class AppUpdateNotifier: AppUpdateNotifying {
+    nonisolated static let identifier = "scout.app-update"
+    /// The `userInfo` key holding the version; its presence is what marks a
+    /// notification as this one when clicked.
+    nonisolated static let versionKey = "appUpdateVersion"
+
+    func postAppUpdate(version: String, onPosted: @escaping @MainActor () -> Void) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard Self.allowsPosting(await center.notificationSettings().authorizationStatus) else { return }
+            do {
+                try await center.add(UNNotificationRequest(
+                    identifier: Self.identifier, content: Self.content(version: version), trigger: nil))
+                onPosted()
+            } catch {
+                // Not posted: the version stays untold, so a later find retries.
+            }
+        }
+    }
+
+    /// Whether macOS shows Scout's notifications at all. Denied or not yet
+    /// asked, a post goes nowhere and must not count as telling the user.
+    nonisolated static func allowsPosting(_ status: UNAuthorizationStatus) -> Bool {
+        status == .authorized || status == .provisional
+    }
+
+    func withdrawAppUpdate() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.identifier])
+    }
+
+    nonisolated static func content(version: String) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Scout \(version) is ready"
+        content.body = "Click to see what's new and install it."
+        content.sound = .default
+        content.userInfo = [versionKey: version]
+        return content
+    }
+
+    nonisolated static func isAppUpdate(_ userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo[versionKey] is String
+    }
+}
+
 /// Which finished runs raise a notification, as Settings ▸ Notifications
 /// sets it (card C3: the two toggles used to be stored and never read).
 nonisolated enum RunNotificationPolicy {
