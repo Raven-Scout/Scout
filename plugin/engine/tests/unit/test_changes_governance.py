@@ -11,7 +11,6 @@ from scout.changes.governance import (
     PENDING_DIR,
     decision,
     decision_ref,
-    diff_hash,
     diff_paths,
     read_pending,
     undo_requested,
@@ -149,7 +148,7 @@ def test_a_decision_counts_only_for_the_diff_it_was_made_on():
 def test_the_hash_is_the_diff_blocks_and_changes_with_it(tmp_path):
     _write(tmp_path, "skip-red.md", GOOD)
     [item] = read_pending(tmp_path)[0]
-    assert item.hash == diff_hash(item.diff) and len(item.hash) == 16
+    assert len(item.hash) == 64
     _write(tmp_path, "skip-red.md", GOOD.replace("+new", "+newer"))
     assert read_pending(tmp_path)[0][0].hash != item.hash
     # Prose outside the diff block doesn't change what was approved.

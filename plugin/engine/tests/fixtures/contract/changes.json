@@ -356,7 +356,7 @@
   "generated_at": "2026-11-16T12:00:00+00:00",
   "needs_ok": [
     {
-      "diff_hash": "6e619f465dd034f6",
+      "diff_hash": "062c40aea93c47c1d4ec600bb08634139853c2c6b0d094d9b5a5882c6f7c0a1b",
       "governance": true,
       "id": "gov-skip-carried-red",
       "path": "governance-pending/skip-carried-red.md",
@@ -368,7 +368,7 @@
       "why": "The same red item was carried for six days with no reply."
     },
     {
-      "diff_hash": "db9c703984254c16",
+      "diff_hash": "1aff12783b8fb4c0763e8274410c48cccf1c124882aeb8b093b89bdbbd3e5098",
       "governance": false,
       "id": "gov-tighten-the-wrap",
       "path": "governance-pending/tighten-the-wrap.md",

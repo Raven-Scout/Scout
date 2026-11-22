@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scout.changes.governance import diff_hash
+from scout.changes.governance import item_hash
 from scout.changes.models import CHANGE_KINDS, Change, Signal, Why
 from scout.changes.report import changes_report, daily_counts, engagement_report, pending_dm_count
 from scout.changes.store import (
@@ -143,7 +143,7 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
     )
     (pending / "not-a-proposal.md").write_text("no frontmatter\n", encoding="utf-8")
     # A harness-fallback item (`governance: false`: applying it is an ordinary change) that the owner approved; the
-    # approval names the hash of the diff they saw (scout.changes.governance.diff_hash).
+    # approval names the hash of the item they saw (scout.changes.governance.item_hash).
     fallback_diff = "--- a/DREAMING.md\n+++ b/DREAMING.md\n@@ -1 +1 @@\n-old\n+new\n"
     (pending / "tighten-the-wrap.md").write_text(
         "---\nsummary: Keep the dreaming wrap to five lines\nwhy: pattern-288\ngovernance: false\n---\n\n"
@@ -155,7 +155,7 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
             ts=datetime(2026, 11, 15, 9, 30, tzinfo=UTC),
             kind="approval",
             surface="app",
-            ref=f"approve:gov-tighten-the-wrap@{diff_hash(fallback_diff)}",
+            ref=f"approve:gov-tighten-the-wrap@{_FALLBACK_HASH(fallback_diff)}",
         ),
         vault=vault,
         env=env,
@@ -167,6 +167,12 @@ def _build(root: Path) -> tuple[Path, Path, dict]:
     with (owner_dir(env) / ENGAGEMENT_NAME).open("a", encoding="utf-8") as f:
         f.write("not json\n")
     return vault, home, env
+
+
+def _FALLBACK_HASH(diff: str) -> str:  # noqa: N802 - reads as the constant it stands for
+    return item_hash(
+        diff, governance=False, targets=(), summary="Keep the dreaming wrap to five lines", why="pattern-288"
+    )
 
 
 def _text(doc: dict) -> str:
@@ -217,11 +223,11 @@ def test_changes_contract_matches_canonical(tmp_path):
             "targets": [],
             "path": "governance-pending/tighten-the-wrap.md",
             "state": "approved",
-            "diff_hash": diff_hash("--- a/DREAMING.md\n+++ b/DREAMING.md\n@@ -1 +1 @@\n-old\n+new\n"),
+            "diff_hash": _FALLBACK_HASH("--- a/DREAMING.md\n+++ b/DREAMING.md\n@@ -1 +1 @@\n-old\n+new\n"),
             "governance": False,
         },
     ]
-    assert len(doc["needs_ok"][0]["diff_hash"]) == 16
+    assert len(doc["needs_ok"][0]["diff_hash"]) == 64
     assert doc["needs_ok_skipped"] == 1
     # The rollback (untested) and the 16-days-older wishlist-done change are not in the phase change's overlap.
     assert tests["phase"]["overlap"] == ["chg-000000000000", "chg-000000000001"]

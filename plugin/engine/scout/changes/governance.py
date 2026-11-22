@@ -4,13 +4,15 @@ A governance change (one that edits what Scout is allowed to do) waits for the o
 ``governance-pending/<slug>.md`` file: YAML frontmatter (``summary``, ``why``, optional ``targets``, optional
 ``governance: false`` for an ordinary improvement a run's harness wouldn't let it commit directly) and exactly one
 fenced ``diff`` block. The folder is the source of truth. A decision is an owner-store ``approval`` row whose ref is
-``approve:<id>@<hash>`` or ``reject:<id>@<hash>``, ``<hash>`` being :func:`diff_hash` of the diff the owner saw; the
-newest one for the file's current diff wins, so a diff edited after the decision is waiting again. Readers never
+``approve:<id>@<hash>`` or ``reject:<id>@<hash>``, ``<hash>`` being :func:`item_hash` of the item the owner saw (its
+diff and its frontmatter); the newest one for the file as it is now wins, so a file edited after the decision is
+waiting again. Readers never
 raise: a file that doesn't fit is counted."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,12 +48,18 @@ class Pending:
 
     @property
     def hash(self) -> str:
-        return diff_hash(self.diff)
+        return item_hash(
+            self.diff, governance=self.governance, targets=self.targets, summary=self.summary, why=self.why
+        )
 
 
-def diff_hash(diff: str) -> str:
-    """The first 16 hex digits of the SHA-256 of a pending file's diff block: what an owner decision is bound to."""
-    return hashlib.sha256(diff.encode("utf-8")).hexdigest()[:16]
+def item_hash(diff: str, *, governance: bool, targets: Sequence[str], summary: str, why: str) -> str:
+    """The full SHA-256 (64 hex digits) of everything the owner saw in a pending file: its diff block and its
+    frontmatter (``governance``, ``targets``, ``summary``, ``why``), canonically encoded. An owner decision is bound
+    to it, so flipping ``governance`` or adding a target after the OK voids the OK, as editing the diff does."""
+    doc = {"diff": diff, "governance": governance, "summary": summary, "targets": list(targets), "why": why}
+    canonical = json.dumps(doc, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _safe_path(raw: str) -> bool:
@@ -196,13 +204,13 @@ def read_pending(vault: Path) -> tuple[list[Pending], int]:
 
 
 def decision_ref(verb: str, target_id: str, digest: str) -> str:
-    """The ref an owner decision is recorded under: ``<verb>:<id>@<hash of the diff the owner saw>``."""
+    """The ref an owner decision is recorded under: ``<verb>:<id>@<hash of the item the owner saw>``."""
     return f"{verb}:{target_id}@{digest}"
 
 
 def decision(signals: Sequence[Signal], target_id: str, digest: str) -> str:
     """``approved``, ``rejected`` or ``awaiting-ok``: the newest ``approve:<id>@<digest>`` / ``reject:<id>@<digest>``
-    row wins. A row for another digest (the diff was changed after the decision) or with none counts for nothing."""
+    row wins. A row for another digest (the file was changed after the decision) or with none counts for nothing."""
     wanted = {
         decision_ref("approve", target_id, digest): "approved",
         decision_ref("reject", target_id, digest): "rejected",

@@ -615,7 +615,15 @@ def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: s
     if item is None:
         typer.echo(f"scoutctl changes {command}: no pending governance change {gov_id!r}", err=True)
         raise typer.Exit(2)
-    # The decision is bound to the diff as it is now (its hash), so a diff edited afterwards waits for a new one.
+    # The decision is bound to the item as it is now (its hash), so a file edited afterwards waits for a new one. An
+    # approval must name the hash the owner saw: without it, a file swapped in between reading and approving would
+    # be approved unseen.
+    if verb == "approve" and seen_hash is None:
+        typer.echo(
+            f"scoutctl changes {command}: pass --diff-hash with the diff_hash `changes --json` showed for {gov_id}",
+            err=True,
+        )
+        raise typer.Exit(2)
     if seen_hash is not None and seen_hash != item.hash:
         typer.echo(f"scoutctl changes {command}: {gov_id} changed since you saw it; review it again", err=True)
         raise typer.Exit(2)
@@ -628,7 +636,9 @@ def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: s
     _record_decision(command, "approval", decision_ref(verb, gov_id, item.hash), surface, installed, once=False)
 
 
-_DIFF_HASH_HELP = "The diff_hash `changes --json` showed for it; refused if the diff has changed since."
+_DIFF_HASH_HELP = (
+    "The diff_hash `changes --json` showed for it (required to approve); refused if the file has changed since."
+)
 
 
 @changes_app.command("approve")
@@ -713,7 +723,8 @@ def cli_changes_wrong(
 def cli_changes_auto_rollback(
     mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
 ) -> None:
-    """Set the auto-rollback mode (owner only). It acts only once calibration has ended."""
+    """Set the auto-rollback mode (owner only). Only ``off`` for now: the automatic modes stay refused until the
+    rollback race and governance-approval gaps are closed."""
     import os
     from dataclasses import replace
 
@@ -721,6 +732,14 @@ def cli_changes_auto_rollback(
 
     if mode not in AUTO_MODES:
         typer.echo(f"scoutctl changes auto-rollback: mode is one of {', '.join(AUTO_MODES)}", err=True)
+        raise typer.Exit(2)
+    if mode != "off":
+        typer.echo(
+            f"scoutctl changes auto-rollback: {mode} isn't available yet; automatic rollback stays off until two "
+            "known gaps are closed (an unapproved governance move, and a race between undo's check and its write). "
+            "Undo a change yourself with `scoutctl changes undo <id>`.",
+            err=True,
+        )
         raise typer.Exit(2)
     _owner_changes("auto-rollback")
     try:

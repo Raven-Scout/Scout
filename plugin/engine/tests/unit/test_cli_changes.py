@@ -389,7 +389,7 @@ def test_approve_reject_undo_wrong_are_owner_only(cli, git_vault, home, monkeypa
     change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
     monkeypatch.setenv("SCOUT_MODE", "dreaming")
     for args in (
-        ["approve", gov],
+        ["approve", gov, "--diff-hash", _hash(git_vault, gov)],
         ["reject", gov],
         ["undo", change],
         ["wrong", change],
@@ -405,7 +405,7 @@ def test_approve_reject_undo_wrong_are_owner_only(cli, git_vault, home, monkeypa
 def test_a_live_run_with_its_env_hidden_is_refused_too(cli, vault, home, monkeypatch):
     gov = _pending(vault)
     _a_live_run(monkeypatch, runs=True)
-    assert cli(["changes", "approve", gov]).exit_code == 2
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)]).exit_code == 2
     assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 2
     assert not any(home.rglob("engagement.jsonl")) and not any(home.rglob("settings.json"))
 
@@ -421,7 +421,7 @@ def test_approve_unknown_id_exits_2(cli, vault, home):
 def test_approve_then_changes_json_shows_the_state(cli, vault, home):
     gov = _pending(vault)
     assert _needs_ok(cli) == {gov: "awaiting-ok"}
-    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)]).exit_code == 0
     assert _needs_ok(cli) == {gov: "approved"}
     [row] = _owner_rows(home)
     digest = _hash(vault, gov)
@@ -451,7 +451,7 @@ def test_a_decision_is_bound_to_the_diff_the_owner_saw(cli, vault, home):
 def test_approve_reject_approve_ends_approved(cli, vault, home):
     gov = _pending(vault)
     for verb in ("approve", "reject", "approve"):
-        assert cli(["changes", verb, gov]).exit_code == 0
+        assert cli(["changes", verb, gov, "--diff-hash", _hash(vault, gov)]).exit_code == 0
     assert _needs_ok(cli) == {gov: "approved"}
     digest = _hash(vault, gov)
     assert [r["ref"] for r in _owner_rows(home)] == [f"{v}:{gov}@{digest}" for v in ("approve", "reject", "approve")]
@@ -459,8 +459,8 @@ def test_approve_reject_approve_ends_approved(cli, vault, home):
 
 def test_repeating_the_standing_decision_is_a_no_op(cli, vault, home):
     gov = _pending(vault)
-    assert cli(["changes", "approve", gov]).exit_code == 0
-    again = cli(["changes", "approve", gov])
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)]).exit_code == 0
+    again = cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)])
     assert again.exit_code == 0 and again.output.strip() == "already approved"
     assert len(_owner_rows(home)) == 1
     assert cli(["changes", "reject", gov]).exit_code == 0
@@ -469,7 +469,7 @@ def test_repeating_the_standing_decision_is_a_no_op(cli, vault, home):
 
 def test_bad_surface_exits_2(cli, vault, home):
     gov = _pending(vault)
-    assert cli(["changes", "approve", gov, "--surface", "kb"]).exit_code == 2
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov), "--surface", "kb"]).exit_code == 2
     assert not any(home.rglob("engagement.jsonl"))
 
 
@@ -497,7 +497,7 @@ def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
     gov = _pending(git_vault)
     _git(git_vault, "add", "-A")
     _git(git_vault, "commit", "-q", "-m", "dreaming [22:00]: governance-pending — skip red")
-    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(git_vault, gov)]).exit_code == 0
     printed = cli(["changes", "apply", gov]).stdout.splitlines()
     _git(git_vault, "add", "-A", "--", *printed)
     _git(git_vault, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}\n\nScout-Change-Governance: yes")
@@ -526,24 +526,56 @@ def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault
     assert cli(["changes", "wrong", "not-an-id"]).exit_code == 2
 
 
-def test_auto_rollback_writes_settings(cli, vault, home):
-    from scout.changes.settings import read_settings
+def test_auto_rollback_writes_off_and_refuses_the_automatic_modes_for_now(cli, vault, home):
+    """The automatic modes stay refused until the governance-approval and undo-race gaps close; only off is set."""
+    from scout.changes.settings import Settings, read_settings, write_settings
 
-    assert cli(["changes", "auto-rollback", "targeted"]).exit_code == 0
-    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
-    assert json.loads(cli(["changes", "--json"]).stdout)["auto_rollback"] == "targeted"
+    for mode in ("targeted", "one-at-a-time"):
+        r = cli(["changes", "auto-rollback", mode])
+        assert r.exit_code == 2 and "isn't available yet" in r.output, mode
+    assert not any(home.rglob("settings.json"))
+    write_settings(Settings(auto_rollback="targeted"), {"HOME": str(home)})  # an older engine's setting
+    assert cli(["changes", "auto-rollback", "off"]).exit_code == 0
+    assert read_settings({"HOME": str(home)}).auto_rollback == "off"
+    assert json.loads(cli(["changes", "--json"]).stdout)["auto_rollback"] == "off"
     assert cli(["changes", "auto-rollback", "sometimes"]).exit_code == 2
-    assert read_settings({"HOME": str(home)}).auto_rollback == "targeted"
+    assert read_settings({"HOME": str(home)}).auto_rollback == "off"
     assert not (vault / ".scout-logs/settings.json").exists()
+
+
+def test_approve_needs_the_hash_the_owner_saw(cli, vault, home):
+    gov = _pending(vault)
+    r = cli(["changes", "approve", gov])
+    assert r.exit_code == 2 and "--diff-hash" in r.output
+    assert not any(home.rglob("engagement.jsonl"))
+    assert cli(["changes", "reject", gov]).exit_code == 0  # rejecting unseen can't let anything in
+
+
+def test_flipping_governance_or_targets_after_the_ok_voids_it(cli, vault, home):
+    gov = _pending(vault)
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)]).exit_code == 0
+    assert _needs_ok(cli) == {gov: "approved"}
+    path = vault / "governance-pending/skip-red.md"
+    original = path.read_text()
+    for edited in (
+        original.replace("why:", "governance: false\nwhy:"),
+        original.replace("why:", "targets: [engagement]\nwhy:"),
+        original.replace("summary: Let", "summary: Make"),
+    ):
+        path.write_text(edited)
+        assert _needs_ok(cli) == {gov: "awaiting-ok"}, edited
+    path.write_text(original)
+    assert _needs_ok(cli) == {gov: "approved"}
+    assert len(_hash(vault, gov)) == 64
 
 
 def test_calibrated_sets_today_in_the_host_zone_and_resets(cli, vault, home):
     from datetime import datetime
 
-    from scout.changes.settings import read_settings
+    from scout.changes.settings import Settings, read_settings, write_settings
     from scout.config import resolve_timezone
 
-    assert cli(["changes", "auto-rollback", "one-at-a-time"]).exit_code == 0
+    write_settings(Settings(auto_rollback="one-at-a-time"), {"HOME": str(home)})
     assert cli(["changes", "calibrated"]).exit_code == 0
     settings = read_settings({"HOME": str(home)})
     assert settings.calibrated_on == datetime.now(resolve_timezone(vault)).date()
@@ -615,7 +647,7 @@ def test_apply_and_discard_print_paths(cli, git_vault, home):
     gov = _pending(git_vault)
     other = _pending(git_vault, "drop-me")
     assert cli(["changes", "apply", gov]).exit_code == 2  # awaiting the owner
-    assert cli(["changes", "approve", gov]).exit_code == 0
+    assert cli(["changes", "approve", gov, "--diff-hash", _hash(git_vault, gov)]).exit_code == 0
     assert cli(["changes", "reject", other]).exit_code == 0
     doc = _due_doc(cli)
     assert (doc["apply"], doc["discard"]) == ([gov], [other])
@@ -657,7 +689,7 @@ def test_a_ledger_that_cannot_be_written_is_exit_2_with_one_line(cli, git_vault,
     for args in (
         ["engagement", "record", "dm-sent", "--surface", "slack-dm", "--ref", "1790330702.929009"],
         ["engagement", "record", "app-edit", "--surface", "app"],
-        ["changes", "approve", gov],
+        ["changes", "approve", gov, "--diff-hash", _hash(git_vault, gov)],
         ["changes", "undo", cid],
         ["changes", "wrong", cid],
     ):
