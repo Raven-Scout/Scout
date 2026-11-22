@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from scout.plural import count
 from scout.sessions.derive import fmt_ago
 from scout.sessions.model import AgentSession, Index, parse_iso
 
@@ -121,7 +122,7 @@ def render_digest(
     if not active:
         out.append(f"*No non-{instance_name} Claude Code sessions with transcripts in the last {hours} hours.*")
         out.append("")
-    out.append(f"**Total:** {len(active)} session(s) active in the last {hours}h.")
+    out.append(f"**Total:** {count(len(active), 'session')} active in the last {hours}h.")
     return "\n".join(out) + "\n"
 
 

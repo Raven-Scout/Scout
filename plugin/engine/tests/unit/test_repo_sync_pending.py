@@ -68,7 +68,7 @@ def test_sync_pulls_first_when_agnes_says_it_wrote_on_top(
     assert len(result.replayed) == 1
     assert (vault / AGNES_NOTE).read_text() == "Agnes wrote this.\n"
     assert (
-        "Agnes reported 1 commit(s) on top of the last push, so this sync fetched first and replayed 1 before pushing"
+        "Agnes reported 1 commit on top of the last push, so this sync fetched first and replayed 1 before pushing"
         in result.notes
     )
     assert _bare_git(host.bare, "merge-base", "--is-ancestor", agnes_sha, "main") == ""  # pushed on top of it

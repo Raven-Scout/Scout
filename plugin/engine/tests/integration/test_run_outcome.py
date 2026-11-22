@@ -234,7 +234,7 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         # the run spent its money, so it is a budget failure, not a network one.
         pytest.param(
             "API Error: Connection closed mid-response. The response above may be incomplete.\n"
-            "attempt cost: $25.00 (1 attempt(s) recorded); this run so far $25.00\n"
+            "attempt cost: $25.00 (1 attempt recorded); this run so far $25.00\n"
             "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap\n"
             "=== Budget spent — no retry (exit 1) ===\n",
             "budget",

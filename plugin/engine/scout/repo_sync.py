@@ -97,6 +97,7 @@ from scout.kb.privacy import (
     load_yaml,
     policy_from_overlay,
 )
+from scout.plural import agree, are, count
 
 SCHEMA_VERSION = 1
 STATE_FILE = "repo-sync.json"
@@ -834,7 +835,8 @@ def check_mirror_commits(vault: Path, rules: LocalOnlyRules, revs: Iterable[str]
         if bad:
             raise RepoSyncError(
                 "local_only_path_in_push",
-                f"refused: mirror commit {rev[:12]} would carry {len(bad)} local-only path(s); nothing was pushed",
+                f"refused: mirror commit {rev[:12]} would carry {count(len(bad), 'local-only path')}; "
+                "nothing was pushed",
             )
         if policy is None:
             raise RepoSyncError(
@@ -1490,7 +1492,7 @@ def link(
     host_entries = tuple(status.local_only_paths)
     if len(wanted) > len(host_entries):
         host_entries = host.set_local_only(list(wanted))
-        notes.append(f"Agnes now keeps {len(host_entries)} Local-Only Path(s) for this vault")
+        notes.append(f"Agnes now keeps {count(len(host_entries), 'Local-Only Path')} for this vault")
     rules = LocalOnlyRules.build([policy], host_entries, pinned=pin)
     if existing is not None:
         fetch_remote(vault, host, status.clone_url)
@@ -1780,7 +1782,7 @@ def _sync_under_lease(
             save_state(vault, state)
     if status.pending_server_commits > 0:
         result.notes.append(
-            f"Agnes reported {status.pending_server_commits} commit(s) on top of the last push, so this sync "
+            f"Agnes reported {count(status.pending_server_commits, 'commit')} on top of the last push, so this sync "
             f"fetched first and replayed {len(result.replayed)} before pushing"
         )
     if rules.sync_only:
@@ -1832,7 +1834,7 @@ def _sync_under_lease(
             elif not squash:
                 message = meta.message
             elif subjects:
-                message = f"Scout sync: {len(subjects)} commit(s) from the laptop\n\n" + "".join(
+                message = f"Scout sync: {count(len(subjects), 'commit')} from the laptop\n\n" + "".join(
                     f"- {s}\n" for s in subjects
                 )
             else:
@@ -2194,17 +2196,22 @@ def _listed_files(files: Sequence[Mapping[str, str]]) -> str:
 
 
 def _replay_skipped_note(skipped: Sequence[Mapping[str, str]]) -> str:
+    n = len(skipped)
+    they, them = ("it wasn't", "it") if n == 1 else ("they weren't", "them")
     return (
-        f"warning: {len(skipped)} file(s) written in Agnes are outside privacy.sync_only, so they weren't copied to "
-        "this computer and this sync removes them from Agnes's current files. Each one is still in the repository's "
+        f"warning: {count(n, 'file')} written in Agnes {are(n)} outside privacy.sync_only, so {they} copied to "
+        f"this computer and this sync removes {them} from Agnes's current files. Each one is still in the "
+        "repository's "
         "history; to keep one, copy it into the vault:\n" + _listed_files(skipped)
     )
 
 
 def _dropped_note(dropped: Sequence[Mapping[str, str]]) -> str:
+    n = len(dropped)
     return (
-        f"warning: {len(dropped)} file(s) came from commits this vault's history no longer has (a git reset or "
-        "rebase?), so this computer no longer has these versions and this sync removes or replaces them in Agnes's "
+        f"warning: {count(n, 'file')} came from commits this vault's history no longer has (a git reset or "
+        f"rebase?), so this computer no longer has {agree(n, 'this version', 'these versions')} and this sync "
+        f"removes or replaces {agree(n, 'it', 'them')} in Agnes's "
         "current files. Each one is still in the repository's history; to keep one, copy it into the vault:\n"
         + _listed_files(dropped)
     )
@@ -2227,7 +2234,7 @@ def accept_sync_only(vault: Path, *, env: Mapping[str, str] | None = None) -> Re
     result = Result(action="sync-only")
     if policy.sync_only is not None:
         state.sync_only = list(policy.sync_only)
-        result.notes.append(f"pinned privacy.sync_only: {len(policy.sync_only)} entry(ies)")
+        result.notes.append(f"pinned privacy.sync_only: {count(len(policy.sync_only), 'entry', 'entries')}")
     elif state.sync_only is None:
         result.notes.append("no privacy.sync_only is set, and none is pinned; nothing to do")
         return result
@@ -2276,7 +2283,8 @@ class Preview:
         return out
 
     def lines(self) -> list[str]:
-        out = [f"From HEAD {self.head[:12]}, this uploads {self.total} file(s) and keeps {self.kept} on this computer."]
+        uploads = count(self.total, "file")
+        out = [f"From HEAD {self.head[:12]}, this uploads {uploads} and keeps {self.kept} on this computer."]
         if self.sync_only is None:
             out.append("There is no privacy.sync_only, so the whole vault uploads minus Local-Only Paths.")
         else:
@@ -2292,7 +2300,8 @@ class Preview:
         out += [f"  {folder}: {count}" for folder, count in sorted(self.by_folder.items())]
         if self.private:
             out.append(
-                f"{self.private} private note(s) are among them. Agnes keeps them from other readers, but whoever "
+                f"{count(self.private, 'private note')} {are(self.private)} among them. "
+                f"Agnes keeps {agree(self.private, 'it', 'them')} from other readers, but whoever "
                 "runs the server can read what is pushed."
             )
         if "scout-config.yaml" in self.paths:

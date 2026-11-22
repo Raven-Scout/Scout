@@ -30,6 +30,7 @@ import yaml
 from scout import config as scout_config
 from scout import custom_connectors, safe_write, yaml_blocks
 from scout.errors import ConfigError
+from scout.plural import noun
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -1276,7 +1277,7 @@ def _refuse_pending_sidecars(vault: Path) -> None:
     pending = blocking_sidecars(vault)
     if pending:
         raise RuntimeError(
-            f"Unresolved proposed-merge sidecar(s): {pending}. "
+            f"Unresolved proposed-merge {noun(len(pending), 'sidecar')}: {pending}. "
             f"Edit each to remove conflict markers, then "
             f"`mv <file>.proposed-merge <file>`, then re-run /scout-update."
         )

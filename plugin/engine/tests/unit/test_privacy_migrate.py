@@ -89,7 +89,7 @@ def test_report_lists_paths_only_and_says_they_count_as_private(vault: Path) -> 
     result = cli()
     assert result.exit_code == 0, result.output
     assert DRAFT in result.output
-    assert "already count as private" in result.output
+    assert "it already counts as private" in result.output
     _no_private_content(result.output)
 
     data = json.loads(cli("--json").output)
@@ -579,7 +579,7 @@ def test_strict_load_handles_an_unhashable_key() -> None:
 def test_report_lines_for_each_list_alone() -> None:
     assert pm.MigrationReport().lines() == ["privacy migration: nothing to do"]
     links = pm.MigrationReport(private_links=[("drafts/a.md", [2, 5])]).lines()
-    assert links[0].startswith("private links: 1 shared file(s)")
+    assert links[0].startswith("private links: 1 shared file")
     assert "  drafts/a.md: lines 2, 5" in links
     single = pm.MigrationReport(private_links=[("drafts/a.md", [2])]).lines()
     assert "  drafts/a.md: line 2" in single

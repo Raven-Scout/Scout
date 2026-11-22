@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from scout.plural import count
+
 SHARES_PATH = "/api/v1/me/knowledge-repository/shares"
 STOP_PATH = SHARES_PATH + "/stop"
 CLEAR_PATH = SHARES_PATH + "/clear-stop"
@@ -63,10 +65,15 @@ RETRY_NOTE = (
 )
 RETRY_AFTER_SYNC = "Agnes keeps serving the share until your next `scoutctl repo sync` (fix the token first)."
 EXPECTED_FALLBACKS = (FALLBACK_NOTE, SHARING_OFF_NOTE, UNLINKED_NOTE)  # an Agnes that can't stop: not a failure
-PENDING_PULL_NOTE = (
-    "Agnes has {n} commit(s) on top of your last push (a stop it wrote into scout-config.yaml, say). Run "
-    "`scoutctl repo sync` before you commit this change, so the two privacy edits don't clash."
-)
+
+
+def pending_pull_note(n: int) -> str:
+    """Agnes holds `n` commits the last push didn't: sync before committing a privacy edit."""
+    return (
+        f"Agnes has {count(n, 'commit')} on top of your last push (a stop it wrote into scout-config.yaml, "
+        "say). Run `scoutctl repo sync` before you commit this change, so the two privacy edits don't clash."
+    )
+
 
 _TYP_RE = re.compile(r"^[a-z_]{1,24}$")
 
@@ -601,7 +608,7 @@ def make_stops(
             outcome.notes.append(_unavailable_text(e))
             break
     if view.pending_server_commits:
-        outcome.notes.append(PENDING_PULL_NOTE.format(n=view.pending_server_commits))
+        outcome.notes.append(pending_pull_note(view.pending_server_commits))
     return outcome
 
 
@@ -674,7 +681,7 @@ def share_clears(view: SharesView, target: Any, principals: Sequence[str]) -> Cl
         elif _broader(stop.glob, target):
             plan.kept.append((stop, "a stop on the broader share; `kb share` that folder to clear it"))
     if view.pending_server_commits:
-        plan.notes.append(PENDING_PULL_NOTE.format(n=view.pending_server_commits))
+        plan.notes.append(pending_pull_note(view.pending_server_commits))
     return plan
 
 
@@ -791,8 +798,9 @@ def stop_lines(view: SharesView | None, why: str | None, listed_globs: Sequence[
         ]
     if view.pending_server_commits:
         out.append(
-            f"Agnes has {view.pending_server_commits} commit(s) on top of your last push; `scoutctl repo sync` pulls "
-            "them before it pushes."
+            f"Agnes has {count(view.pending_server_commits, 'commit')} on top of your last push; "
+            "`scoutctl repo sync` pulls "
+            f"{'it' if view.pending_server_commits == 1 else 'them'} before it pushes."
         )
     return out
 

@@ -148,6 +148,7 @@ from scout.kb.privacy import (
 from scout.kb.privacy import scope_widens as _widens
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
+from scout.plural import count
 from scout.repo_sync import LocalOnlyRules, RepoSyncError, host_cache_problem, load_host_cache, load_state
 from scout.yaml_safe import load_yaml
 
@@ -867,8 +868,9 @@ def privacy_report(repo: Path) -> PrivacyReport:
 
 def format_report(rep: PrivacyReport) -> list[str]:
     lines = [
-        f"privacy: {len(rep.markers)} marker(s), {len(rep.unmarked)} unmarked private link(s)/mention(s) "
-        f"in shared files, {len(rep.problems)} frontmatter problem(s)"
+        f"privacy: {count(len(rep.markers), 'marker')}, "
+        f"{count(len(rep.unmarked), 'unmarked private link or mention', 'unmarked private links or mentions')} "
+        f"in shared files, {count(len(rep.problems), 'frontmatter problem')}"
     ]
     lines += [f"  marker    {rel}:{n}  allow {target}" for rel, n, target in rep.markers]
     lines += [f"  unmarked  {rel}:{n}  links or names a private note" for rel, n in rep.unmarked]

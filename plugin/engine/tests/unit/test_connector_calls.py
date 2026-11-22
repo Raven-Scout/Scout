@@ -51,7 +51,7 @@ def test_the_cap_writes_one_marker_then_closes_the_day(tmp_path: Path, capsys: p
     # Full: the first row that doesn't fit becomes the marker; nothing else lands.
     assert connector_calls.append_rows(path, [_line(3), _line(4)], max_bytes=3 * one) == 0
     err = capsys.readouterr().err
-    assert "daily cap" in err and "dropped 2 row(s)" in err
+    assert "daily cap" in err and "dropped 2 rows" in err
     rows = _rows(path)
     assert [r["session_id"] for r in rows] == ["s0", "s1", "s2", "s3"]
     marker = rows[-1]

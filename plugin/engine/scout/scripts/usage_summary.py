@@ -44,6 +44,7 @@ from typing import Any
 
 from scout import paths
 from scout.config import resolve_timezone
+from scout.plural import count
 from scout.scripts import budget_check
 from scout.scripts.run_cost import SOURCE_ATTEMPT, TRACKER_FILENAME, projects_dir, transcript_dirs
 
@@ -266,7 +267,7 @@ def describe(summary: dict[str, Any]) -> str:
         if p["cost_kind"] not in ("reported", "priced"):
             cost += f" ({p['cost_kind']})"
         lines.append(
-            f"  {label}: {p['runs']} run(s), tokens from {p['runs_with_tokens']}; "
+            f"  {label}: {count(p['runs'], 'run')}, tokens from {p['runs_with_tokens']}; "
             f"in {t['input']:,} · out {t['output']:,} · cache read {t['cache_read']:,} · "
             f"cache write {t['cache_creation']:,}; cost {cost}"
         )

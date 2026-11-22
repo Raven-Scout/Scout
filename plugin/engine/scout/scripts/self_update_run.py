@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scout import events, paths, safe_write
+from scout import events, paths, plural, safe_write
 from scout.scripts.engine_pointer import EnginePointer
 from scout.scripts.self_update import ReleaseStatus, UpdateStatus, _semver_tuple, release_status
 from scout.update_outcomes import UpdateOutcome
@@ -389,7 +389,7 @@ def _verify(att: _Attempt, scoutctl: Path, conflicts: list[str]) -> UpdateOutcom
         return att.row(
             "applied_with_sidecars",
             "verify",
-            f"left {len(conflicts)} file(s) to merge",
+            f"left {plural.count(len(conflicts), 'file')} to merge",
             doctor=severity,
             sidecars=tuple(conflicts),
         )
@@ -444,7 +444,9 @@ def run_update(deps: Deps, *, scheduled: bool, dry_run: bool = False, force: boo
                 return Attempt(row=None, reason=backoff, settled=True)
         sidecars = deps.blocking_sidecars()
         if sidecars:
-            raise att.stop("held", "check", f"unresolved merge file(s): {', '.join(sidecars)}")
+            raise att.stop(
+                "held", "check", f"unresolved merge {plural.noun(len(sidecars), 'file')}: {', '.join(sidecars)}"
+            )
         severity = deps.doctor_severity()
         if severity == "red":
             raise att.stop("held", "check", "the install doctor is red", doctor=severity)

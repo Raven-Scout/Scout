@@ -457,7 +457,7 @@ def test_an_empty_pick_because_of_shares_says_so_on_stderr(kb_repo, capsys) -> N
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
     assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == [""]
     err = capsys.readouterr().err
-    assert "2 failing page(s)" in err and "nightly KB pass stopped" in err
+    assert "2 failing pages" in err and "nightly KB pass stopped" in err
     assert "widgets" not in err and "gadgets" not in err
 
 

@@ -1513,7 +1513,9 @@ def test_a_sync_that_drops_most_files_says_so(vault: Path) -> None:
     files = len(the_plan.files)
     the_plan.left_out = max(dm.DROP_WARN_MIN, files + 1)
     (note,) = dm._drop_warning("grok-personal", the_plan)
-    assert note.startswith(f"warning: {the_plan.left_out} of the {files + the_plan.left_out} file(s)")
+    assert note.startswith(
+        f"warning: {the_plan.left_out} of the {files + the_plan.left_out} files grok-personal may see were"
+    )
     the_plan.left_out = dm.DROP_WARN_MIN - 1
     the_plan.files = the_plan.files[:1]
     assert dm._drop_warning("grok-personal", the_plan) == []  # a few, even of a small mirror: no warning
@@ -1559,7 +1561,7 @@ def test_an_old_key_a_rotation_couldnt_delete_stays_on_record_until_it_goes(gith
     link = dm.load_links(github_link)["grok-personal"]
     assert (link.deploy_key_id, link.stale_key_ids) == (101, [100])
     out = runner.invoke(app, ["delegate", "status"], env={"SCOUT_DATA_DIR": str(github_link)})
-    assert "1 old key(s) still live" in out.output
+    assert "1 old key still live" in out.output
     with pytest.raises(rs.RepoSyncError) as e:
         dm.unlink(github_link, "grok-personal", gh=gh)
     assert e.value.code == "key_revoke_failed" and dm.load_links(github_link)["grok-personal"].deploy_key_id == 101

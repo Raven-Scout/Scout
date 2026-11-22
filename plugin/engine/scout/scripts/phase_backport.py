@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from scout.custom_connectors import CustomConnector
+from scout.plural import noun
 from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.phase_assembly import parse_phase_file, render_template, select_sections
 
@@ -306,7 +307,7 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
                     anchor=hunk.anchor,
                     retemplatized=retempl,
                     risky_hits=risky,
-                    reason="risky template var(s) in added text — genericize before writing",
+                    reason=f"risky template {noun(len(risky), 'var')} in added text — genericize before writing",
                 )
             )
             continue

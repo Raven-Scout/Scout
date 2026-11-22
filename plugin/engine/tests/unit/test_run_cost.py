@@ -181,7 +181,7 @@ def test_cli_record_run(env):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "run cost: $18.97 by claude's figure (1 of 1 attempt(s) measured)" in result.output
+    assert "run cost: $18.97 by claude's figure (1 of 1 attempt measured)" in result.output
     row = json.loads((vault / ".scout-logs" / "usage-tracker.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert row["type"] == "midday-consolidation" and row["budget_spent"] == 18.97 and row["budget_cap"] == 20.0
 
@@ -191,7 +191,7 @@ def test_cli_record_run_without_a_transcript_says_so(env):
         app, ["budget", "record-run", "research", "--name", NAME, "--started", str(int(STARTED.timestamp()))]
     )
     assert result.exit_code == 0, result.output
-    assert f"run cost: not measured (0 transcript(s) named {NAME}) — recorded $0" in result.output
+    assert f"run cost: not measured (0 transcripts named {NAME}) — recorded $0" in result.output
 
 
 # ----- an attempt claude never priced, and per-attempt rows (#561) ----------

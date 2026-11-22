@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -553,7 +554,7 @@ def test_kb_lint_report_keeps_working(vault: Path) -> None:
     _break_config(vault, "d: 2026-13-45\n")
     result = CliRunner().invoke(app, ["kb", "lint", "--report", "--repo", str(vault)])
     assert result.exit_code == 0, result.output
-    assert "file(s) over budget" in result.stdout
+    assert re.search(r"\b\d+ files? over budget", result.stdout)
     assert "config: scout-config.yaml could not be used (ValueError at line 1)" in result.stdout
 
 

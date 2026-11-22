@@ -58,8 +58,10 @@ def _row(started: datetime, minutes: int, **fields) -> dict:
     return row
 
 
-def build_vault(root: Path, rows: list[dict] | None = None) -> Path:
-    """A vault whose newest run's integrity check restored a protected file on a branch."""
+def build_vault(root: Path, rows: list[dict] | None = None, *, changed: str = "file") -> Path:
+    """A vault whose newest run's integrity check restored a protected file on a branch.
+
+    ``changed`` is how the log names it: "file" now, "file(s)" in logs written before v0.18.22."""
     v = root / "Scout"
     state, logs = v / ".scout-state", v / ".scout-logs"
     state.mkdir(parents=True)
@@ -75,7 +77,7 @@ def build_vault(root: Path, rows: list[dict] | None = None) -> Path:
     (logs / LOG).write_text(
         "=== Scout run starting ===\n"
         f"{CANARY_LOG}\n"
-        f"integrity check: {BRANCH} changed protected file(s): .claude/settings.local.json\n"
+        f"integrity check: {BRANCH} changed protected {changed}: .claude/settings.local.json\n"
         f"integrity check: restored them on {BRANCH} in commit {RESTORING}\n",
         encoding="utf-8",
     )
@@ -143,6 +145,26 @@ def test_integrity_finding_prompt(tmp_path, quiet_health):
     assert "started_at" in evidence and "morning-briefing" in evidence
     assert "git worktree list --porcelain" in p.prompt
     assert "7 days" in _section(p.prompt, "## Done when")
+
+
+@pytest.mark.parametrize("changed", ["file(s)", "files"])
+def test_integrity_prompt_reads_older_and_plural_log_lines(tmp_path, quiet_health, changed):
+    """A log from before real plurals said "file(s)"; one naming several files says "files"."""
+    vault = build_vault(tmp_path, changed=changed)
+    p = resolve_prompt.for_finding(vault, "run.integrity_restored", now=NOW, home=tmp_path / "home")
+    assert ".claude/settings.local.json" in p.prompt and RESTORING in p.prompt
+
+
+def test_integrity_log_line_is_the_one_resolve_prompt_reads() -> None:
+    """scout.sandbox.integrity writes the line resolve_prompt parses, for one file and for several."""
+    from scout.sandbox.integrity import Result
+
+    for paths in ([".claude/settings.local.json"], [".mcp.json", "scout-config.yaml"]):
+        result = Result(status="restored", changed={BRANCH: paths})
+        line = next(ln for ln in result.lines() if "changed protected" in ln)
+        m = resolve_prompt._INTEGRITY_CHANGED_RE.match(line)
+        assert m is not None, line
+        assert m.group("paths") == ", ".join(sorted(paths))
 
 
 def test_prompt_never_contains_file_content(tmp_path, quiet_health):

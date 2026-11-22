@@ -62,8 +62,9 @@ STANDARD_COMMANDS: tuple[str, ...] = (
 TRANSIENT_CLASSES = frozenset({"rate_limited", "auth_race", "network", "git_lock", "lease_held"})
 _LOG_SCAN_BYTES = 262144
 _REF_RE = r"(?P<ref>(?:refs/[A-Za-z0-9._/-]{1,200})|HEAD|index)"
+# "protected file" / "protected files" (scout.sandbox.integrity), and "file(s)" in logs written before v0.18.22.
 _INTEGRITY_CHANGED_RE = re.compile(
-    r"^integrity check: " + _REF_RE + r" changed protected file\(s\): (?P<paths>[A-Za-z0-9._/, -]{1,1000})$"
+    r"^integrity check: " + _REF_RE + r" changed protected (?:files?|file\(s\)): (?P<paths>[A-Za-z0-9._/, -]{1,1000})$"
 )
 _INTEGRITY_RESTORED_RE = re.compile(
     r"^integrity check: restored them on " + _REF_RE + r" in commit (?P<sha>[0-9a-f]{7,40})$"
