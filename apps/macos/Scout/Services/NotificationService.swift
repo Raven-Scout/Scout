@@ -180,9 +180,24 @@ final class AppUpdateNotifier: AppUpdateNotifying {
     /// notification as this one when clicked.
     nonisolated static let versionKey = "appUpdateVersion"
 
-    func postAppUpdate(version: String) {
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: Self.identifier, content: Self.content(version: version), trigger: nil))
+    func postAppUpdate(version: String, onPosted: @escaping @MainActor () -> Void) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard Self.allowsPosting(await center.notificationSettings().authorizationStatus) else { return }
+            do {
+                try await center.add(UNNotificationRequest(
+                    identifier: Self.identifier, content: Self.content(version: version), trigger: nil))
+                onPosted()
+            } catch {
+                // Not posted: the version stays untold, so a later find retries.
+            }
+        }
+    }
+
+    /// Whether macOS shows Scout's notifications at all. Denied or not yet
+    /// asked, a post goes nowhere and must not count as telling the user.
+    nonisolated static func allowsPosting(_ status: UNAuthorizationStatus) -> Bool {
+        status == .authorized || status == .provisional
     }
 
     func withdrawAppUpdate() {
@@ -194,7 +209,7 @@ final class AppUpdateNotifier: AppUpdateNotifying {
     nonisolated static func content(version: String) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = "Scout \(version) is ready"
-        content.body = "Click to update. Scout relaunches in a few seconds."
+        content.body = "Click to see what's new and install it."
         content.sound = .default
         content.userInfo = [versionKey: version]
         return content

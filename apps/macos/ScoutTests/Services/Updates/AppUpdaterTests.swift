@@ -31,6 +31,14 @@ struct AppUpdaterTests {
         cancellable.cancel()
         #expect(values == [false])
     }
+
+    /// Gentle reminders only work if Sparkle's user driver has our delegate:
+    /// passing nil for `userDriverDelegate` compiles, passes the selector
+    /// tests, and brings back Sparkle's own alert for scheduled finds.
+    @Test func sparklesUserDriverHasOurDelegate() {
+        let updater = AppUpdater(enabled: false) { _ in }
+        #expect(updater.userDriverDelegateForTesting === updater.delegateForTesting)
+    }
 }
 
 /// `AppUpdater.cycleEndEvent` is the Sparkle-free mapping from

@@ -35,7 +35,7 @@ struct ScoutApp: App {
         // A clicked "Scout X is ready" brings up Sparkle's alert for it.
         AppDelegate.showAppUpdate = { [weak updates] in
             NSApp.activate()
-            updates?.check(.app)
+            updates?.showAppUpdate()
         }
     }
 

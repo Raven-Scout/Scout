@@ -79,6 +79,15 @@ final class AppUpdater: AppUpdateController {
         return true
     }
 
+    /// The delegate Sparkle's user driver holds. Read back only by a test
+    /// that pins the gentle-reminder wiring: the user driver keeps it in an
+    /// ivar with no accessor, and passing nil for it in `init` compiles and
+    /// passes every other test.
+    var userDriverDelegateForTesting: AnyObject? {
+        controller.userDriver.value(forKey: "delegate") as AnyObject?
+    }
+    var delegateForTesting: AnyObject { delegate }
+
     /// Sparkle-free so it can be unit tested without starting Sparkle or
     /// importing it; the Sparkle constants are resolved into plain values
     /// at the one call site that has them, `AppUpdaterDelegate.updater(_:
@@ -141,9 +150,15 @@ final class AppUpdater: AppUpdateController {
 /// shows the update on every page of the main window and posts one macOS
 /// notification per version, both driven by `didFindValidUpdate` (which also
 /// fires when Sparkle downloads an update in the background, a path that
-/// never reaches the user driver). Clicking either calls `checkForUpdates()`,
-/// which brings the held update up in focus. Checks the user starts are
-/// unchanged: Sparkle always shows those itself.
+/// never reaches the user driver). Clicking either calls `checkForUpdates()`
+/// (through `UpdateService.showAppUpdate()`, which holds the click while
+/// `canCheckForUpdates` is false), bringing the held update up in focus.
+/// Checks the user starts are unchanged: Sparkle always shows those itself.
+///
+/// The hourly schedule (`SUScheduledCheckInterval`) pauses while an update
+/// is held this way: Sparkle schedules no further check until that update
+/// session ends (installed, skipped or dismissed). A newer release published
+/// meanwhile is found when the user opens the held one, or on next launch.
 final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate,
                                 @preconcurrency SPUStandardUserDriverDelegate {
     private let onEvent: @MainActor (AppUpdateEvent) -> Void

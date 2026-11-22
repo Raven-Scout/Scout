@@ -82,19 +82,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let info = response.notification.request.content.userInfo
-        switch response.actionIdentifier {
-        case UNNotificationDefaultActionIdentifier:
-            if AppUpdateNotifier.isAppUpdate(info) {
-                Self.showAppUpdate?()
-            } else if let id = NotificationService.runID(from: info) {
-                Self.openRun?(id)
-            }
-        case NotificationService.retryActionID:
-            if let slot = NotificationService.slotKey(from: info) { Self.retrySlot?(slot) }
-        default:
-            break
+        switch Self.click(actionIdentifier: response.actionIdentifier,
+                          userInfo: response.notification.request.content.userInfo) {
+        case .showAppUpdate: Self.showAppUpdate?()
+        case .openRun(let id): Self.openRun?(id)
+        case .retrySlot(let slot): Self.retrySlot?(slot)
+        case .nothing: break
         }
         completionHandler()
+    }
+
+    /// What a click on one of Scout's notifications does. The update
+    /// notification is checked first: it is the one that carries
+    /// `AppUpdateNotifier.versionKey`.
+    enum NotificationClick: Equatable {
+        case showAppUpdate
+        case openRun(Run.ID)
+        case retrySlot(String)
+        case nothing
+    }
+
+    nonisolated static func click(actionIdentifier: String,
+                                  userInfo: [AnyHashable: Any]) -> NotificationClick {
+        switch actionIdentifier {
+        case UNNotificationDefaultActionIdentifier:
+            if AppUpdateNotifier.isAppUpdate(userInfo) { return .showAppUpdate }
+            if let id = NotificationService.runID(from: userInfo) { return .openRun(id) }
+            return .nothing
+        case NotificationService.retryActionID:
+            return NotificationService.slotKey(from: userInfo).map { .retrySlot($0) } ?? .nothing
+        default:
+            return .nothing
+        }
     }
 }

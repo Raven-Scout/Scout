@@ -1,19 +1,22 @@
 import SwiftUI
 
 /// "Scout X is ready" across the top of every main-window page, while
-/// `UpdateService.showsAppUpdateBanner` holds. Update Now brings up Sparkle's
-/// alert for it (Install and Relaunch, or the download first); the × closes
-/// it for this version until Scout relaunches.
+/// `UpdateService.showsAppUpdateBanner` holds. Update now brings up Sparkle's
+/// alert for it, where the user installs it; while Sparkle is still busy
+/// with it (a background download), the click waits and the banner says so.
+/// The × closes it for this version until Scout relaunches.
 struct AppUpdateBanner: View {
     @ObservedObject var updates: UpdateService
 
     var body: some View {
         if updates.showsAppUpdateBanner, let version = updates.appUpdate.latestVersion {
+            let pending = updates.appUpdateShowPending
             DSBanner(tone: .info,
                      title: Self.title(version: version),
-                     message: Self.message(current: updates.appUpdate.currentVersion),
+                     message: pending ? Self.pendingMessage
+                                      : Self.message(current: updates.appUpdate.currentVersion),
                      symbol: "arrow.down.circle.fill",
-                     actions: [ProblemAction("Update Now") { updates.check(.app) }],
+                     actions: pending ? [] : [ProblemAction("Update now") { updates.showAppUpdate() }],
                      onDismiss: { updates.dismissAppUpdateBanner() })
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -26,8 +29,11 @@ struct AppUpdateBanner: View {
     }
 
     nonisolated static func message(current: String?) -> String {
-        let relaunch = "Updating relaunches Scout in a few seconds."
-        guard let current else { return relaunch }
-        return "You have \(current). \(relaunch)"
+        let action = "Click Update now to see what's new and install it."
+        guard let current else { return action }
+        return "You have \(current). \(action)"
     }
+
+    /// While a click on Update now waits for Sparkle.
+    nonisolated static let pendingMessage = "Getting the update ready. It opens as soon as it's done."
 }

@@ -65,7 +65,10 @@ protocol AppUpdateController: AnyObject {
 /// tests use a fake.
 @MainActor
 protocol AppUpdateNotifying: AnyObject {
-    func postAppUpdate(version: String)
+    /// Posts it, and calls `onPosted` only if macOS took it: not when
+    /// notifications are off for Scout, so that version is still announced
+    /// once they're turned on.
+    func postAppUpdate(version: String, onPosted: @escaping @MainActor () -> Void)
     func withdrawAppUpdate()
 }
 
@@ -133,6 +136,11 @@ final class UpdateService: ObservableObject {
     /// Mirrors the app controller's `canCheckForUpdates`. False until the
     /// controller's first value arrives.
     @Published private(set) var appCanCheck = false
+    /// Update now (or a click on the notification) came while Sparkle
+    /// couldn't take it: the launch check was still running, or the update
+    /// was still downloading in the background. The update is brought up as
+    /// soon as `appCanCheck` turns true, and the banner says it's on its way.
+    @Published private(set) var appUpdateShowPending = false
 
     private var appController: (any AppUpdateController)?
     private let appUpdateNotifier: (any AppUpdateNotifying)?
@@ -208,7 +216,10 @@ final class UpdateService: ObservableObject {
         controller.canCheckForUpdates
             .sink { [weak self] canCheck in
                 guard let self else { return }
-                MainActor.assumeIsolated { self.appCanCheck = canCheck }
+                MainActor.assumeIsolated {
+                    self.appCanCheck = canCheck
+                    if canCheck, self.appUpdateShowPending { self.showAppUpdate() }
+                }
             }
             .store(in: &cancellables)
 
@@ -265,6 +276,7 @@ final class UpdateService: ObservableObject {
             // notification clear.
             appUpdate.latestVersion = appUpdate.currentVersion
             appUpdate.state = .upToDate
+            appUpdateShowPending = false
             appUpdateNotifier?.withdrawAppUpdate()
         case .cycleEnded:
             // Only resolve a check that's still in flight from this
@@ -289,10 +301,12 @@ final class UpdateService: ObservableObject {
     /// we just note that a check is in flight — and only if one actually
     /// started, since Sparkle silently declines (no callback at all) when a
     /// session is already running or a permission prompt is showing.
-    func checkApp() {
-        guard let controller = appController, controller.isEnabled else { return }
+    /// Returns whether one started.
+    @discardableResult
+    func checkApp() -> Bool {
+        guard let controller = appController, controller.isEnabled else { return false }
         let priorState = appUpdate.state
-        guard controller.checkForUpdates() else { return }
+        guard controller.checkForUpdates() else { return false }
         // A check overlapping one still in flight keeps the first check's
         // restore state: saving `.checking` here would leave a later silent
         // `.cycleEnded` restoring `.checking`, stuck forever.
@@ -303,6 +317,21 @@ final class UpdateService: ObservableObject {
         // Sparkle's alert is in front of them now: the notification has
         // done its job.
         appUpdateNotifier?.withdrawAppUpdate()
+        return true
+    }
+
+    /// Update now on the banner, and a click on the notification: brings up
+    /// Sparkle's alert for the update. When Sparkle can't take it yet (its
+    /// launch check, or a background download, still running), the click is
+    /// held and done once it can (`appUpdateShowPending`), rather than
+    /// dropped.
+    func showAppUpdate() {
+        guard appUpdatesEnabled else { return }
+        if appCanCheck, checkApp() {
+            appUpdateShowPending = false
+        } else {
+            appUpdateShowPending = true
+        }
     }
 
     /// Closes the banner for the version it shows (see
@@ -312,14 +341,21 @@ final class UpdateService: ObservableObject {
     }
 
     /// One notification per version, ever: the hourly check finds the same
-    /// update again until it's installed or skipped. A version the user's own
-    /// check found (`post == false`) counts as told, so the next scheduled
-    /// find of it stays quiet too.
+    /// update again until it's installed or skipped. A version counts as told
+    /// once its notification posted, so with notifications off for Scout the
+    /// next find after they're turned on still announces it. A version the
+    /// user's own check found (`post == false`) counts as told at once, so
+    /// the next scheduled find of it stays quiet too.
     private func notifyAppUpdateOnce(version: String, post: Bool) {
         guard let notifier = appUpdateNotifier,
               defaults.string(forKey: Self.lastNotifiedAppVersionKey) != version else { return }
-        defaults.set(version, forKey: Self.lastNotifiedAppVersionKey)
-        if post { notifier.postAppUpdate(version: version) }
+        guard post else {
+            defaults.set(version, forKey: Self.lastNotifiedAppVersionKey)
+            return
+        }
+        notifier.postAppUpdate(version: version) { [weak self] in
+            self?.defaults.set(version, forKey: Self.lastNotifiedAppVersionKey)
+        }
     }
 
     // MARK: Plugin track

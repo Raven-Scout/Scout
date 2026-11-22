@@ -6,19 +6,34 @@ import UserNotifications
 
 @MainActor
 private final class ReminderAppController: AppUpdateController {
-    let isEnabled = true
+    let isEnabled: Bool
     let currentVersion: String? = "0.18.17"
-    var startsCheck = true
-    var canCheckForUpdates: AnyPublisher<Bool, Never> { Just(true).eraseToAnyPublisher() }
+    /// Whether `checkForUpdates()` starts one; follows `canCheck` unless set.
+    var startsCheck: Bool?
+    var checks = 0
+    let canCheck = CurrentValueSubject<Bool, Never>(true)
+
+    init(isEnabled: Bool = true) { self.isEnabled = isEnabled }
+
+    var canCheckForUpdates: AnyPublisher<Bool, Never> { canCheck.eraseToAnyPublisher() }
     @discardableResult
-    func checkForUpdates() -> Bool { startsCheck }
+    func checkForUpdates() -> Bool {
+        guard startsCheck ?? canCheck.value else { return false }
+        checks += 1
+        return true
+    }
 }
 
 @MainActor
 private final class FakeAppUpdateNotifier: AppUpdateNotifying {
     var posted: [String] = []
     var withdrawals = 0
-    func postAppUpdate(version: String) { posted.append(version) }
+    /// False: macOS refused the post (notifications off for Scout).
+    var delivers = true
+    func postAppUpdate(version: String, onPosted: @escaping @MainActor () -> Void) {
+        posted.append(version)
+        if delivers { onPosted() }
+    }
     func withdrawAppUpdate() { withdrawals += 1 }
 }
 
@@ -36,8 +51,8 @@ struct AppUpdateReminderTests {
         make(notifier: FakeAppUpdateNotifier())
     }
 
-    private func make(notifier: FakeAppUpdateNotifier?, defaults: UserDefaults? = nil)
-        -> (UpdateService, ReminderAppController) {
+    private func make(notifier: FakeAppUpdateNotifier?, defaults: UserDefaults? = nil,
+                      enabled: Bool = true) -> (UpdateService, ReminderAppController) {
         var controller: ReminderAppController!
         let service = UpdateService(
             pluginChecker: NoPluginChecker(),
@@ -45,7 +60,7 @@ struct AppUpdateReminderTests {
             appUpdateNotifier: notifier,
             defaults: defaults ?? Self.freshDefaults()
         ) { _ in
-            let c = ReminderAppController()
+            let c = ReminderAppController(isEnabled: enabled)
             controller = c
             return c
         }
@@ -91,6 +106,20 @@ struct AppUpdateReminderTests {
         #expect(notifier.posted == ["0.18.18", "0.18.19"])
     }
 
+    @Test func aPostMacOSRefusedIsNotCountedAsTold() {
+        let defaults = Self.freshDefaults()
+        let notifier = FakeAppUpdateNotifier()
+        notifier.delivers = false                            // notifications off for Scout
+        let (service, _) = make(notifier: notifier, defaults: defaults)
+        service.applyAppEvent(.found(version: "0.18.18"))
+        #expect(defaults.string(forKey: UpdateService.lastNotifiedAppVersionKey) == nil)
+        notifier.delivers = true                             // the user turns them on
+        service.applyAppEvent(.found(version: "0.18.18"))    // next hourly find
+        service.applyAppEvent(.found(version: "0.18.18"))
+        #expect(notifier.posted == ["0.18.18", "0.18.18"])
+        #expect(defaults.string(forKey: UpdateService.lastNotifiedAppVersionKey) == "0.18.18")
+    }
+
     @Test func aFindTheUserAskedForPostsNothingAndCountsAsTold() {
         let notifier = FakeAppUpdateNotifier()
         let (service, _) = make(notifier: notifier)
@@ -106,7 +135,7 @@ struct AppUpdateReminderTests {
         let notifier = FakeAppUpdateNotifier()
         let (service, _) = make(notifier: notifier)
         service.applyAppEvent(.found(version: "0.18.18"))
-        service.checkApp()                                   // banner's Update Now, or the notification's click
+        service.showAppUpdate()                              // banner's Update now, or the notification's click
         #expect(notifier.withdrawals == 1)
     }
 
@@ -114,7 +143,7 @@ struct AppUpdateReminderTests {
         let notifier = FakeAppUpdateNotifier()
         let (service, controller) = make(notifier: notifier)
         service.applyAppEvent(.found(version: "0.18.18"))
-        controller.startsCheck = false                       // Sparkle declined (downloading in the background)
+        controller.startsCheck = false                       // Sparkle declined
         service.checkApp()
         #expect(notifier.withdrawals == 0)
         #expect(service.appUpdate.state == .available)
@@ -136,6 +165,56 @@ struct AppUpdateReminderTests {
         #expect(defaults.string(forKey: UpdateService.lastNotifiedAppVersionKey) == nil)
     }
 
+    // MARK: Update now while Sparkle is busy
+
+    @Test func aClickWhileSparkleIsBusyWaitsAndThenOpensTheUpdate() {
+        let notifier = FakeAppUpdateNotifier()
+        let (service, controller) = make(notifier: notifier)
+        service.applyAppEvent(.found(version: "0.18.18"))
+        controller.canCheck.send(false)                      // downloading in the background
+        service.showAppUpdate()
+        #expect(controller.checks == 0)
+        #expect(service.appUpdateShowPending)
+        #expect(service.showsAppUpdateBanner)                // still up, saying it's on its way
+        #expect(notifier.withdrawals == 0)
+        controller.canCheck.send(true)                       // download done, update held
+        #expect(controller.checks == 1)
+        #expect(service.appUpdateShowPending == false)
+        #expect(service.appUpdate.state == .checking)
+        #expect(notifier.withdrawals == 1)
+    }
+
+    @Test func aClickSparkleDeclinesDespiteCanCheckStillWaits() {
+        let (service, controller) = make()
+        service.applyAppEvent(.found(version: "0.18.18"))
+        controller.startsCheck = false                       // canCheck was stale
+        service.showAppUpdate()
+        #expect(service.appUpdateShowPending)
+        controller.startsCheck = nil
+        controller.canCheck.send(true)
+        #expect(controller.checks == 1)
+        #expect(service.appUpdateShowPending == false)
+    }
+
+    @Test(arguments: [AppUpdateEvent.upToDate, .skipped])
+    func aWaitingClickIsDroppedOnceThereIsNothingToShow(event: AppUpdateEvent) {
+        let (service, controller) = make()
+        service.applyAppEvent(.found(version: "0.18.18"))
+        controller.canCheck.send(false)
+        service.showAppUpdate()
+        service.applyAppEvent(event)
+        #expect(service.appUpdateShowPending == false)
+        controller.canCheck.send(true)
+        #expect(controller.checks == 0)
+    }
+
+    @Test func aDisabledUpdaterNeverWaits() {
+        let (service, controller) = make(notifier: nil, enabled: false)
+        service.showAppUpdate()
+        #expect(service.appUpdateShowPending == false)
+        #expect(controller.checks == 0)
+    }
+
     // MARK: Banner
 
     @Test func bannerShowsWhileAnUpdateIsAvailable() {
@@ -150,7 +229,7 @@ struct AppUpdateReminderTests {
     @Test func bannerHidesWhileSparklesAlertIsUp() {
         let (service, _) = make()
         service.applyAppEvent(.found(version: "0.18.18"))
-        service.checkApp()
+        service.showAppUpdate()
         #expect(service.showsAppUpdateBanner == false)
         service.applyAppEvent(.cycleEnded)                   // dismissed: back to available
         #expect(service.showsAppUpdateBanner)
@@ -174,6 +253,7 @@ struct AppUpdateNotificationContentTests {
     @Test func contentNamesTheVersionAndCarriesIt() {
         let content = AppUpdateNotifier.content(version: "0.18.18")
         #expect(content.title == "Scout 0.18.18 is ready")
+        #expect(content.body == "Click to see what's new and install it.")
         #expect(content.userInfo[AppUpdateNotifier.versionKey] as? String == "0.18.18")
         #expect(AppUpdateNotifier.isAppUpdate(content.userInfo))
     }
@@ -182,10 +262,56 @@ struct AppUpdateNotificationContentTests {
         #expect(AppUpdateNotifier.isAppUpdate([NotificationService.runIDKey: "run-1"]) == false)
     }
 
+    @Test(arguments: [
+        (UNAuthorizationStatus.authorized, true),
+        (.provisional, true),
+        (.denied, false),
+        (.notDetermined, false),
+    ])
+    func postsOnlyWhereMacOSShowsThem(status: UNAuthorizationStatus, allowed: Bool) {
+        #expect(AppUpdateNotifier.allowsPosting(status) == allowed)
+    }
+
     @Test func bannerText() {
         #expect(AppUpdateBanner.title(version: "0.18.18") == "Scout 0.18.18 is ready")
         #expect(AppUpdateBanner.message(current: "0.18.17")
-            == "You have 0.18.17. Updating relaunches Scout in a few seconds.")
-        #expect(AppUpdateBanner.message(current: nil) == "Updating relaunches Scout in a few seconds.")
+            == "You have 0.18.17. Click Update now to see what's new and install it.")
+        #expect(AppUpdateBanner.message(current: nil) == "Click Update now to see what's new and install it.")
+        #expect(AppUpdateBanner.pendingMessage == "Getting the update ready. It opens as soon as it's done.")
+    }
+}
+
+/// Where a click on one of Scout's notifications goes (`AppDelegate`).
+@Suite("Notification click routing")
+struct NotificationClickRoutingTests {
+    private let open = UNNotificationDefaultActionIdentifier
+
+    @Test func theUpdateNotificationShowsTheUpdate() {
+        let info = AppUpdateNotifier.content(version: "0.18.18").userInfo
+        #expect(AppDelegate.click(actionIdentifier: open, userInfo: info) == .showAppUpdate)
+    }
+
+    @Test func theUpdateIsRoutedAheadOfARun() {
+        let info: [AnyHashable: Any] = [AppUpdateNotifier.versionKey: "0.18.18",
+                                        NotificationService.runIDKey: "run-1"]
+        #expect(AppDelegate.click(actionIdentifier: open, userInfo: info) == .showAppUpdate)
+    }
+
+    @Test func aRunNotificationOpensItsRun() {
+        let info: [AnyHashable: Any] = [NotificationService.runIDKey: "run-1"]
+        #expect(AppDelegate.click(actionIdentifier: open, userInfo: info) == .openRun("run-1"))
+    }
+
+    @Test func runAgainFiresTheSlot() {
+        let info: [AnyHashable: Any] = [NotificationService.runIDKey: "run-1",
+                                        NotificationService.slotKeyKey: "morning"]
+        #expect(AppDelegate.click(actionIdentifier: NotificationService.retryActionID, userInfo: info)
+            == .retrySlot("morning"))
+    }
+
+    @Test func anythingElseDoesNothing() {
+        #expect(AppDelegate.click(actionIdentifier: open, userInfo: [:]) == .nothing)
+        #expect(AppDelegate.click(actionIdentifier: UNNotificationDismissActionIdentifier,
+                                  userInfo: [AppUpdateNotifier.versionKey: "0.18.18"]) == .nothing)
     }
 }
