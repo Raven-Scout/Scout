@@ -66,10 +66,10 @@ struct RunRow: View {
             if run.status == .running {
                 Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
             }
-            Text(run.status.displayName)
+            Text(run.statusDisplayName)
                 .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(statusColor)
-                .help(run.status.reason ?? run.status.displayName)
+                .help(run.statusReason ?? run.statusDisplayName)
         }
     }
 

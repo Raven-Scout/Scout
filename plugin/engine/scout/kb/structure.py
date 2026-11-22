@@ -80,6 +80,7 @@ from typing import Any
 
 import yaml
 
+from scout import plural
 from scout.config import load_config, today
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
@@ -863,12 +864,14 @@ def check_folder(
     if missing:
         problems.append(f"{len(missing)} sections missing")
     if narration:
-        problems.append(f"narration: {len(narration)} marker(s)" if private else "narration: " + ",".join(narration))
+        problems.append(
+            f"narration: {plural.count(len(narration), 'marker')}" if private else "narration: " + ",".join(narration)
+        )
     for section, count in too_many.items():
         where = "" if private else f" in {section}"
         problems.append(f"{count} bullets{where} (limit {cfg.max_bullets})")
     if bullets.long:
-        problems.append(f"{bullets.long} bullet(s) over {cfg.max_bullet_chars} chars")
+        problems.append(f"{plural.count(bullets.long, 'bullet')} over {cfg.max_bullet_chars} chars")
     if as_of is None:
         # A date the check can't read is its own problem: the night must rewrite it as YYYY-MM-DD.
         problems.append("unreadable as_of" if fm.get("as_of") not in (None, "") else "no as_of")
@@ -1182,8 +1185,9 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
         blocked = sum(r["share_blocked"] for r in rows)
         if target is None and blocked:
             print(
-                f"No pick: {blocked} failing page(s) skipped because a rebuild's new notes could be shared "
-                "(`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass stopped.",
+                f"No pick: {plural.count(blocked, 'failing page')} skipped because a rebuild's new notes could be "
+                "shared (`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass "
+                "stopped.",
                 file=sys.stderr,
             )
         waiting = interactive_waits(rows, today(vault))
@@ -1192,8 +1196,9 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
             # Never private: a private page is never picked, so it is never left for a session either.
             listed = ", ".join(f"{path} ({_waited(days)})" for path, days in waiting)
             print(
-                f"Left for an interactive session: {len(waiting)} page(s) over {cfg.nightly_max_bytes // 1024} KB "
-                f"that need a full rebuild, too big for a night: {listed}. "
+                f"Left for an interactive session: {plural.count(len(waiting), 'page')} over "
+                f"{cfg.nightly_max_bytes // 1024} KB "
+                f"that {plural.agree(len(waiting), 'needs', 'need')} a full rebuild, too big for a night: {listed}. "
                 "List them in this run's report for the owner.",
                 file=sys.stderr,
             )

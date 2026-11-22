@@ -84,7 +84,7 @@ def test_a_retry_after_a_refused_push_keeps_the_agnes_commit(vault: Path, host: 
     assert _tip(host, LAPTOP_FILE) == "laptop edit\n"
     assert _stays_on_agnes_after(host, agnes_sha)
     assert _replay_commits(vault, agnes_sha) == 1
-    assert "Scout sync: 1 commit(s)" in _bare_git(host.bare, "log", "-1", "--format=%B", "main")
+    assert "Scout sync: 1 commit" in _bare_git(host.bare, "log", "-1", "--format=%B", "main")
     assert rs.sync(vault, host).pushed == []
 
 
@@ -110,7 +110,7 @@ def test_laptop_commits_after_the_failure_go_up_with_the_rest(vault: Path, host:
     assert len(result.pushed) == 1
     assert _stays_on_agnes_after(host, agnes_sha)
     message = _bare_git(host.bare, "log", "-1", "--format=%B", "main")
-    assert "Scout sync: 2 commit(s)" in message and "laptop edit" in message and "later edit" in message
+    assert "Scout sync: 2 commits" in message and "laptop edit" in message and "later edit" in message
     assert _tip(host, "knowledge-base/people/sam.md") == "later edit\n"
 
 

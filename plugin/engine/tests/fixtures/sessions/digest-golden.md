@@ -35,4 +35,4 @@ Generated 2026-09-08 12:00 EDT · 4 sessions · 1 running · 1 need you · 1 wai
 **Files touched:**
 - ~/code/example-repo/a.py
 
-**Total:** 2 session(s) active in the last 24h.
+**Total:** 2 sessions active in the last 24h.

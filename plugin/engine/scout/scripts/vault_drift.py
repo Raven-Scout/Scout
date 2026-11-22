@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from scout import safe_write
+from scout.plural import count
 from scout.scripts.three_way_merge import MergeResult, MergeUnavailable, three_way_merge
 
 SNAPSHOT_DIR = Path(".scout-state") / "last-rendered"
@@ -550,7 +551,7 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
         missing = [] if drop_update or base is None else _update_changes_missing(base, parked_update, live)
         if missing:
             raise ValueError(
-                f"{rel} doesn't have the parked update yet ({len(missing)} change(s) missing, e.g. the update "
+                f"{rel} doesn't have the parked update yet ({count(len(missing), 'change')} missing, e.g. the update "
                 f"{missing[0]}). Merge it in (draft: {_rel(vault, _drift_path(vault, rel, MERGE_SUFFIX))}), or "
                 f"take it with `cp {_rel(vault, plugin)} {rel}`; to keep your file as it is and drop what it "
                 f"lacks of the update, add --drop-update"

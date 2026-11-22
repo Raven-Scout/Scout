@@ -19,6 +19,7 @@ import yaml
 
 from scout import paths
 from scout.errors import ConfigError
+from scout.plural import noun
 from scout.schedule import SlotType
 from scout.yaml_safe import load_yaml
 
@@ -198,7 +199,7 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
             "required_in_types": sorted({t for c in members for t in c.required_in_types}),
             "remediation": {
                 "first_fix": first_fix[:180],
-                "detail": f"Custom connector(s) {keys} in connectors.custom.yaml. "
+                "detail": f"Custom {noun(len(members), 'connector')} {keys} in connectors.custom.yaml. "
                 "If the tools were renamed, update each entry there, or re-add it with "
                 "`scoutctl connectors custom add --file <definition>` "
                 "(`scoutctl connectors custom remove <key>` drops one).",

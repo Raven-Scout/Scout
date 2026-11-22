@@ -193,7 +193,7 @@ def test_owner_and_autonomous_see_private_labelled(vault: Path, reader: str) -> 
     # denied — a denial is also 3, so check the output names the errors it found.
     validated = kb(vault, "validate", reader=reader)
     assert validated.exit_code == 3
-    assert "validation error(s) found" in validated.stdout
+    assert "validation errors found" in validated.stdout
 
 
 # ----- agents: nothing ----------------------------------------------------------

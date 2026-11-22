@@ -1412,7 +1412,7 @@ def run_doctor(
 
     # Snapshots present?
     snapshot_dir = vault / ".scout-state" / "last-assembled"
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in BRAIN_KINDS:
         snap = snapshot_dir / f"{name}.md"
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")

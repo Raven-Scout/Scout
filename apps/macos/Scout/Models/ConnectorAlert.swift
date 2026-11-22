@@ -26,6 +26,10 @@ struct ConnectorAlert: Equatable, Hashable, Sendable {
     let connector: String
     let reason: String
     let firstSeen: Date
+    /// The `connector_key` exactly as the file holds it, before `ConnectorKeyAlias`
+    /// canonicalizes it into `connector`. "Resolve with Claude" passes this one to the
+    /// engine, which matches the file's own key. nil for alerts not read from the file.
+    var connectorKey: String? = nil
 
     /// `connector|level|first_seen_ts` — stable across repeated entries for
     /// the same underlying alert, so acking a CRITICAL doesn't suppress a
@@ -78,7 +82,8 @@ struct ConnectorAlert: Equatable, Hashable, Sendable {
                 ts: ts, level: level,
                 connector: ConnectorKeyAlias.canonical(key),
                 reason: a["reason"] as? String ?? "",
-                firstSeen: firstSeen
+                firstSeen: firstSeen,
+                connectorKey: key
             )
         }
     }

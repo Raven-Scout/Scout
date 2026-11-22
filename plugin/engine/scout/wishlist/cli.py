@@ -13,6 +13,8 @@ from pathlib import Path
 
 import typer
 
+from scout.plural import count
+
 app = typer.Typer(help="Checks the wishlist phase runs before it commits.", no_args_is_help=True)
 
 
@@ -90,7 +92,7 @@ def cli_check_log_move(
         )
     else:
         n = len(result.checked)
-        moved = f"; {result.moved} dated line(s) moved to progress notes" if result.moved else ""
-        sys.stdout.write(f"{name}: {n} changed card(s), no log line lost{moved}\n")
+        moved = f"; {count(result.moved, 'dated line')} moved to progress notes" if result.moved else ""
+        sys.stdout.write(f"{name}: {count(n, 'changed card')}, no log line lost{moved}\n")
     if not result.passed:
         raise typer.Exit(code=1)

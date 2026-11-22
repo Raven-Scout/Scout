@@ -30,7 +30,10 @@ struct KBReaderAndMapRulesTests {
     /// about 410 pt wide, and the header wrapped one letter per line, which
     /// made the page taller than the window.
     /// From `KnowledgeBaseView.minEditorWidth` (the narrowest the page lets
-    /// the editor get) up.
+    /// the editor get) up. `KBNoteColumnLayout` caps the column's height at
+    /// the one offered, so the height is measured with the cap out of the way
+    /// (`fixedSize` asks for the natural height): an overgrown header still
+    /// fails here instead of hiding as clipped content.
     @Test("the editor fits a narrow reader column without growing taller than the window",
           arguments: [Double(KnowledgeBaseView.minEditorWidth), 410.0, 520.0, 800.0])
     func editorFitsNarrowColumn(width: Double) async throws {
@@ -44,8 +47,10 @@ struct KBReaderAndMapRulesTests {
             onDeleted: {}, onRenamed: { _ in }, onRenameProblem: { _ in }, onOverview: {},
             linksPanelShown: true, onToggleLinksPanel: {})
             .environmentObject(vault.state.vaultUndo)
-        let size = LayoutHarness.size(of: editor, proposing: CGSize(width: width, height: 600))
-        #expect(size.height <= 600, "the editor asked for \(size.height) pt at \(width) pt wide")
+        let proposal = CGSize(width: width, height: 600)
+        let natural = LayoutHarness.size(of: editor.fixedSize(horizontal: false, vertical: true), proposing: proposal)
+        #expect(natural.height <= 600, "the editor's natural height is \(natural.height) pt at \(width) pt wide")
+        let size = LayoutHarness.size(of: editor, proposing: proposal)
         #expect(size.width <= width + 0.5, "the editor asked for \(size.width) pt at \(width) pt wide")
     }
 
@@ -82,6 +87,169 @@ struct KBReaderAndMapRulesTests {
         #expect(!KBEditorView.showsDraftBanner(restored: true, isDirty: false, dismissed: false))
         #expect(!KBEditorView.showsDraftBanner(restored: true, isDirty: true, dismissed: true))
         #expect(!KBEditorView.showsDraftBanner(restored: false, isDirty: true, dismissed: false))
+    }
+
+    /// A banner above the note jumped the whole window's content up under
+    /// the title bar (hand check of #750). The split view measures the detail
+    /// column's minimum size in its own hosting view, at a near-zero width the
+    /// window's 1070 pt minimum doesn't reach. There a banner's text wraps a
+    /// word per line and asked for 1,500-2,300 pt, and the overflow was
+    /// centred, pushing the content up by half of it. The note column caps
+    /// its height at the one offered.
+    @Test("a reader banner never makes the note column ask for more height than offered",
+          arguments: ["draft", "disk"])
+    func bannerDoesNotGrowTheWindow(kind: String) {
+        @ViewBuilder func banner() -> some View {
+            if kind == "draft" {
+                KBEditorView.draftBanner(save: {}, discard: {}, dismiss: {})
+            } else {
+                KBEditorView.changedOnDiskBanner(name: "a-long-note-name-about-the-quarterly-plan",
+                                                 saveMine: {}, reload: {})
+            }
+        }
+        func stack() -> some View {
+            VStack(spacing: 0) {
+                Text("header").lineLimit(1)
+                banner()
+                Color.clear
+            }
+        }
+        // Why the cap is needed: unwrapped, the zero-size probe is taller than any window.
+        let unwrapped = LayoutHarness.size(of: stack(), proposing: .zero)
+        #expect(unwrapped.height > LayoutSize.minimumPageHeight,
+                "the banner asked for only \(unwrapped.height) pt at zero width")
+
+        let column = KBNoteColumnLayout { stack() }
+        #expect(LayoutHarness.size(of: column, proposing: .zero).height == 0)
+        // At a real size it takes exactly what it's offered.
+        let width = Double(KnowledgeBaseView.minEditorWidth)
+        let real = LayoutHarness.size(of: column, proposing: CGSize(width: width, height: 600))
+        #expect(real.height == 600)
+        #expect(real.width <= width + 0.5, "the column asked for \(real.width) pt at \(width) pt wide")
+    }
+
+    @Test("the note editor's column is the capped one")
+    func editorUsesTheCappedColumn() async throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        let svc = vault.state.knowledgeBaseService
+        svc.load()
+        await svc.reparseAndWait()
+        let node = try #require(svc.tree.flatMap(\.allFiles).first)
+        let editor = KBEditorView(
+            node: node, service: svc, writer: vault.state.knowledgeBaseWriterBox.writer,
+            onDeleted: {}, onRenamed: { _ in }, onRenameProblem: { _ in }, onOverview: {},
+            linksPanelShown: true, onToggleLinksPanel: {})
+            .environmentObject(vault.state.vaultUndo)
+        // Without the cap the header alone answers the zero-size probe with its height.
+        #expect(LayoutHarness.size(of: editor, proposing: .zero).height == 0)
+    }
+
+    /// The bug as the window showed it: a split view whose detail column is
+    /// the note column with a banner, in a 1081 × 800 window. Uncapped, the
+    /// header was laid out at y = -304 (draft) and -720 (disk).
+    @Test("with a banner in the detail column, the header and sidebar stay in the window",
+          arguments: ["draft", "disk"])
+    func bannerKeepsTheWindowInPlace(kind: String) async {
+        final class Tops: ObservableObject { var header = CGFloat.nan; var sidebar = CGFloat.nan }
+        struct Page: View {
+            let kind: String
+            let tops: Tops
+            var body: some View {
+                NavigationSplitView {
+                    List {
+                        Text("A sidebar row")
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { tops.sidebar = $0 }
+                    }
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+                } detail: {
+                    HStack(spacing: 0) {
+                        Color.clear.frame(width: KnowledgeBaseView.treeWidth)
+                        KBNoteColumnLayout {
+                            VStack(spacing: 0) {
+                                Text("The note header").lineLimit(1).padding(12)
+                                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { tops.header = $0 }
+                                if kind == "draft" {
+                                    KBEditorView.draftBanner(save: {}, discard: {}, dismiss: {})
+                                } else {
+                                    KBEditorView.changedOnDiskBanner(name: "a-long-note-name-about-the-quarterly-plan",
+                                                                     saveMine: {}, reload: {})
+                                }
+                                Color.clear
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
+            }
+        }
+        let tops = Tops()
+        let controller = NSHostingController(rootView: Page(kind: kind, tops: tops))
+        let window = NSWindow(contentViewController: controller)
+        window.styleMask = [.titled, .resizable, .fullSizeContentView]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(CGSize(width: 1081, height: 800))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil); window.contentViewController = nil }
+        for _ in 0..<20 {
+            controller.view.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(tops.header >= 0, "the header was laid out at y = \(tops.header)")
+        #expect(tops.sidebar >= 0, "the sidebar row was laid out at y = \(tops.sidebar)")
+    }
+
+    @Test("a squeezed folders crumb truncates to an ellipsis, never a clipped glyph")
+    func folderCrumbFloor() {
+        // At Standard, so the host's saved Text size doesn't matter.
+        let floor = KBEditorView.minFolderCrumbWidth(factor: 1)
+        func crumb(_ s: String) -> some View {
+            KBCrumbFloorLayout(floor: floor) { Text(s).lineLimit(1).truncationMode(.middle) }
+        }
+        let squeezed = LayoutHarness.size(of: crumb("people / team / projects"), proposing: CGSize(width: 4, height: 20))
+        #expect(squeezed.width >= floor - 8 && squeezed.width <= floor,
+                "a squeezed crumb took \(squeezed.width) pt")
+        // A short folder keeps its own width at any proposal: no padding after it.
+        let natural = LayoutHarness.size(of: Text("ops"), proposing: CGSize(width: 200, height: 20)).width
+        #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 4, height: 20)).width == natural)
+        #expect(LayoutHarness.size(of: crumb("ops"), proposing: CGSize(width: 200, height: 20)).width == natural)
+    }
+
+    /// At Largest a fixed 280 pt floor kept the header on one row with the
+    /// folders crumb at a bare "…" and the note's name cut to about 9
+    /// characters. Measured with the header's own fonts (caption, medium for
+    /// the root crumb button and semibold for the name) at each text size,
+    /// without touching the app-wide `TextScale.shared`.
+    @Test("the header's one-row floor leaves the note's name as many letters at every text size",
+          arguments: TextScale.Size.allCases)
+    func titleFloorScalesWithTextSize(_ size: TextScale.Size) {
+        func width(_ s: String, factor: CGFloat, weight: NSFont.Weight) -> CGFloat {
+            let font = NSFont.systemFont(ofSize: DS.scaledSize(DS.TextStyle.caption.pointSize, factor: factor),
+                                         weight: weight)
+            return NSAttributedString(string: s, attributes: [.font: font]).size().width
+        }
+        /// What the floor leaves for the note's name after the root crumb,
+        /// the folders crumb at its own floor and the two separators. Mirrors
+        /// `KBEditorView.breadcrumb` (its pieces, fonts and spacing): a
+        /// change to that view's layout belongs here too.
+        func nameRoom(factor: CGFloat) -> CGFloat {
+            KBEditorView.minTitleWidth(factor: factor)
+                - width("knowledge-base", factor: factor, weight: .medium)
+                - 2 * width("/", factor: factor, weight: .regular)
+                - KBEditorView.minFolderCrumbWidth(factor: factor)
+                - 4 * KBEditorView.breadcrumbSpacing   // between the five crumb pieces
+        }
+        func letters(factor: CGFloat) -> CGFloat {
+            let sample = "rollout-checklist-launch"
+            return nameRoom(factor: factor) / (width(sample, factor: factor, weight: .semibold) / CGFloat(sample.count))
+        }
+        let standard = letters(factor: TextScale.Size.standard.factor)
+        let here = letters(factor: size.factor)
+        #expect(standard >= 18, "at Standard the name keeps \(standard) letters")
+        #expect(here >= standard - 1, "at \(size.title) the name keeps \(here) letters, \(standard) at Standard")
+        #expect(KBEditorView.minFolderCrumbWidth(factor: size.factor)
+                >= width("a…b", factor: size.factor, weight: .regular),
+                "at \(size.title) the folders crumb's floor can't hold an ellipsis and a letter either side")
     }
 
     @Test("the draft store publishes when a file gains or loses a draft, not on every keystroke")
@@ -198,6 +366,117 @@ struct KBReaderAndMapRulesTests {
         for i in 0..<50 { KBMapLayoutCache.store(["n": [Double(i), 0]]) }
         KBMapLayoutCache.waitForWrites()
         #expect(KBMapLayoutCache.read(file) == ["n": [49, 0]])
+    }
+
+    // MARK: - Layout cache permissions (only the user's account reads it)
+
+    private struct ChmodRefused: Error {}
+
+    private func mode(_ url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return try #require(attributes[.posixPermissions] as? NSNumber).intValue & 0o777
+    }
+
+    /// `<root>/kb-map/<bundle>/layout.json`, the production shape, with
+    /// `root` standing in for `Caches/Scout` at 755.
+    private func layoutTree() throws -> (root: URL, kbMap: URL, bundle: URL, file: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kb-map-perms-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        let kbMap = root.appendingPathComponent("kb-map")
+        let bundle = kbMap.appendingPathComponent("com.example.Scout")
+        return (root, kbMap, bundle, bundle.appendingPathComponent("layout.json"))
+    }
+
+    @Test("a stored layout is 0600 in 0700 folders, and the shared caches folder above is left alone")
+    func layoutCacheIsPrivateWhenNew() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let saved = (KBMapLayoutCache.file, KBMapLayoutCache.positions)
+        defer { (KBMapLayoutCache.file, KBMapLayoutCache.positions) = saved }
+        KBMapLayoutCache.file = tree.file
+        KBMapLayoutCache.store(["a": [1, 2]])
+        KBMapLayoutCache.waitForWrites()
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+        #expect(KBMapLayoutCache.read(tree.file) == ["a": [1, 2]])
+    }
+
+    @Test("an older install's 0644 layout in 0755 folders is tightened on the next store")
+    func layoutCacheTightensExistingOnStore() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let fm = FileManager.default
+        try fm.createDirectory(at: tree.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.kbMap.path)
+        try #require(KBMapLayoutCache.encode(["old": [0, 0]])).write(to: tree.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tree.file.path)
+        #expect(try mode(tree.file) == 0o644)
+
+        KBMapLayoutCache.write(try #require(KBMapLayoutCache.encode(["a": [1, 2]])), to: tree.file)
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+    }
+
+    @Test("an older install's 0644 layout is tightened when it is read")
+    func layoutCacheTightensExistingOnRead() throws {
+        let tree = try layoutTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let fm = FileManager.default
+        try fm.createDirectory(at: tree.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.kbMap.path)
+        try #require(KBMapLayoutCache.encode(["a": [1, 2]])).write(to: tree.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tree.file.path)
+
+        #expect(KBMapLayoutCache.read(tree.file) == ["a": [1, 2]])
+        #expect(try mode(tree.file) == 0o600)
+        #expect(try mode(tree.bundle) == 0o700)
+        #expect(try mode(tree.kbMap) == 0o700)
+        #expect(try mode(tree.root) == 0o755)
+    }
+
+    @Test("a layout that can't be made private is deleted, never kept open")
+    func layoutCacheDeletesWhatItCantTighten() throws {
+        let fm = FileManager.default
+        let real = KBMapLayoutCache.posixSetMode
+        let data = try #require(KBMapLayoutCache.encode(["a": [1, 2]]))
+
+        // The file's chmod fails after the write: the new file goes.
+        let one = try layoutTree()
+        defer { try? fm.removeItem(at: one.root) }
+        KBMapLayoutCache.write(data, to: one.file) { url, mode in
+            if mode == 0o600 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(!fm.fileExists(atPath: one.file.path))
+
+        // An existing 0644 file that can't be tightened on read: gone, and
+        // the map opens empty.
+        try data.write(to: one.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: one.file.path)
+        let read = KBMapLayoutCache.read(one.file) { url, mode in
+            if mode == 0o600 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(read.isEmpty)
+        #expect(!fm.fileExists(atPath: one.file.path))
+
+        // A folder that can't be made 0700: nothing is written into it, and
+        // the older 0644 layout there is deleted.
+        let two = try layoutTree()
+        defer { try? fm.removeItem(at: two.root) }
+        try fm.createDirectory(at: two.bundle, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try data.write(to: two.file)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: two.file.path)
+        KBMapLayoutCache.write(data, to: two.file) { url, mode in
+            if mode == 0o700 { throw ChmodRefused() }
+            try real(url, mode)
+        }
+        #expect(!fm.fileExists(atPath: two.file.path))
     }
 
     // MARK: - Web bridge

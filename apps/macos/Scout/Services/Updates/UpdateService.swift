@@ -60,6 +60,18 @@ protocol AppUpdateController: AnyObject {
     func checkForUpdates() -> Bool
 }
 
+/// Posts and takes back the macOS notification that says a new version of
+/// the app is ready. `AppUpdateNotifier` (UserNotifications) in production;
+/// tests use a fake.
+@MainActor
+protocol AppUpdateNotifying: AnyObject {
+    /// Posts it, and calls `onPosted` only if macOS took it: not when
+    /// notifications are off for Scout, so that version is still announced
+    /// once they're turned on.
+    func postAppUpdate(version: String, onPosted: @escaping @MainActor () -> Void)
+    func withdrawAppUpdate()
+}
+
 /// Outcome of one plugin check. `applicable == false` means the engine state
 /// the check ran against has nothing for the plugin row to show (a managed
 /// engine, no engine at all, or a broken one) — the UI hides the row; it is
@@ -90,8 +102,11 @@ nonisolated protocol PluginUpdateChecking: Sendable {
 
 /// One observable for both tracks; drives Settings ▸ Updates and the badges.
 ///
-/// App track: Sparkle owns detection *and* installation. We only mirror what
-/// it tells us (via `applyAppEvent`) and forward the user's "check now".
+/// App track: Sparkle owns detection *and* installation. We mirror what it
+/// tells us (via `applyAppEvent`) and forward the user's "check now". An
+/// update Sparkle's own scheduled check finds is Scout's to show (gentle
+/// reminders, see `AppUpdaterDelegate`): the main window's banner on every
+/// page (`showsAppUpdateBanner`) and one macOS notification per version.
 /// Plugin track: detect + hand off. The app cannot apply a plugin update —
 /// that happens inside Claude Code (`/scout-update`) — so the primary action
 /// is copying the command. The plugin row only makes sense while the engine
@@ -102,8 +117,16 @@ nonisolated protocol PluginUpdateChecking: Sendable {
 @MainActor
 final class UpdateService: ObservableObject {
     static let pluginUpdateCommand = "/scout-update"
+    /// The app version the update notification was last posted for, so the
+    /// hourly check that finds the same version again stays quiet, across
+    /// relaunches too.
+    static let lastNotifiedAppVersionKey = "lastNotifiedAppUpdateVersion"
 
     @Published private(set) var appUpdate: UpdateStatus
+    /// The version whose banner the user closed. The banner stays closed for
+    /// that version until Scout relaunches; a newer version brings it back.
+    /// The Settings badge and the menu-bar dot don't follow it.
+    @Published private(set) var dismissedAppBannerVersion: String?
     /// `.checking` is set before applicability is known (see `checkPlugin()`),
     /// so a stale/hidden check can still be mid-flight here. UI must gate on
     /// `pluginRowVisible` before reading this, not the other way around.
@@ -113,8 +136,15 @@ final class UpdateService: ObservableObject {
     /// Mirrors the app controller's `canCheckForUpdates`. False until the
     /// controller's first value arrives.
     @Published private(set) var appCanCheck = false
+    /// Update now (or a click on the notification) came while Sparkle
+    /// couldn't take it: the launch check was still running, or the update
+    /// was still downloading in the background. The update is brought up as
+    /// soon as `appCanCheck` turns true, and the banner says it's on its way.
+    @Published private(set) var appUpdateShowPending = false
 
     private var appController: (any AppUpdateController)?
+    private let appUpdateNotifier: (any AppUpdateNotifying)?
+    private let defaults: UserDefaults
     private let pluginChecker: any PluginUpdateChecking
     private var cancellables: Set<AnyCancellable> = []
 
@@ -163,13 +193,20 @@ final class UpdateService: ObservableObject {
     ///     publisher replays its current value on subscribe, which is what
     ///     drives the plugin track's launch check — there is no separate
     ///     `startLaunchChecks()` to call.
+    ///   - appUpdateNotifier: posts the "new version" notification; nil posts
+    ///     none (and then `defaults` is never touched).
+    ///   - defaults: where `lastNotifiedAppVersionKey` lives.
     ///   - makeAppController: builds the app-track controller, handing it the
     ///     sink its delegate must call. A factory (not an instance) so the
     ///     controller can capture the service's sink without a retain cycle.
     init(pluginChecker: any PluginUpdateChecking,
          engineStates: AnyPublisher<EngineState, Never>,
+         appUpdateNotifier: (any AppUpdateNotifying)? = nil,
+         defaults: UserDefaults = .standard,
          makeAppController: (@escaping @MainActor (AppUpdateEvent) -> Void) -> any AppUpdateController) {
         self.pluginChecker = pluginChecker
+        self.appUpdateNotifier = appUpdateNotifier
+        self.defaults = defaults
         self.appUpdate = UpdateStatus()
         let controller = makeAppController { [weak self] event in
             self?.applyAppEvent(event)
@@ -179,7 +216,10 @@ final class UpdateService: ObservableObject {
         controller.canCheckForUpdates
             .sink { [weak self] canCheck in
                 guard let self else { return }
-                MainActor.assumeIsolated { self.appCanCheck = canCheck }
+                MainActor.assumeIsolated {
+                    self.appCanCheck = canCheck
+                    if canCheck, self.appUpdateShowPending { self.showAppUpdate() }
+                }
             }
             .store(in: &cancellables)
 
@@ -207,6 +247,11 @@ final class UpdateService: ObservableObject {
     var appCheckAvailable: Bool {
         appUpdatesEnabled && appCanCheck && appUpdate.state != .checking
     }
+    /// Whether the main window shows the "new version" banner above every
+    /// page: an app update is available and its banner wasn't closed.
+    var showsAppUpdateBanner: Bool {
+        appUpdate.isAvailable && appUpdate.latestVersion != dismissedAppBannerVersion
+    }
     var anyUpdateAvailable: Bool { availableCount > 0 }
     var availableCount: Int {
         (appUpdate.isAvailable ? 1 : 0) + (pluginRowVisible && pluginUpdate.isAvailable ? 1 : 0)
@@ -217,13 +262,22 @@ final class UpdateService: ObservableObject {
     func applyAppEvent(_ event: AppUpdateEvent) {
         switch event {
         case .found(let version):
+            // `.checking` is only ever set by `checkApp()`: a find while it
+            // is set answers a check the user started, and Sparkle is
+            // showing it to them already. Any other find came from Sparkle's
+            // own schedule, which Scout announces itself.
+            let userStarted = appUpdate.state == .checking
             appUpdate.latestVersion = version
             appUpdate.state = .available
+            notifyAppUpdateOnce(version: version, post: !userStarted)
         case .upToDate, .skipped:
             // A skipped version is, from the badge's point of view, no
-            // update: the row, badge, menu-bar dot and footer item clear.
+            // update: the row, badge, menu-bar dot, footer item, banner and
+            // notification clear.
             appUpdate.latestVersion = appUpdate.currentVersion
             appUpdate.state = .upToDate
+            appUpdateShowPending = false
+            appUpdateNotifier?.withdrawAppUpdate()
         case .cycleEnded:
             // Only resolve a check that's still in flight from this
             // service's point of view; a cycle end arriving after `.found`
@@ -247,10 +301,12 @@ final class UpdateService: ObservableObject {
     /// we just note that a check is in flight — and only if one actually
     /// started, since Sparkle silently declines (no callback at all) when a
     /// session is already running or a permission prompt is showing.
-    func checkApp() {
-        guard let controller = appController, controller.isEnabled else { return }
+    /// Returns whether one started.
+    @discardableResult
+    func checkApp() -> Bool {
+        guard let controller = appController, controller.isEnabled else { return false }
         let priorState = appUpdate.state
-        guard controller.checkForUpdates() else { return }
+        guard controller.checkForUpdates() else { return false }
         // A check overlapping one still in flight keeps the first check's
         // restore state: saving `.checking` here would leave a later silent
         // `.cycleEnded` restoring `.checking`, stuck forever.
@@ -258,6 +314,48 @@ final class UpdateService: ObservableObject {
             appStateBeforeChecking = priorState
         }
         appUpdate.state = .checking
+        // Sparkle's alert is in front of them now: the notification has
+        // done its job.
+        appUpdateNotifier?.withdrawAppUpdate()
+        return true
+    }
+
+    /// Update now on the banner, and a click on the notification: brings up
+    /// Sparkle's alert for the update. When Sparkle can't take it yet (its
+    /// launch check, or a background download, still running), the click is
+    /// held and done once it can (`appUpdateShowPending`), rather than
+    /// dropped.
+    func showAppUpdate() {
+        guard appUpdatesEnabled else { return }
+        if appCanCheck, checkApp() {
+            appUpdateShowPending = false
+        } else {
+            appUpdateShowPending = true
+        }
+    }
+
+    /// Closes the banner for the version it shows (see
+    /// `dismissedAppBannerVersion`).
+    func dismissAppUpdateBanner() {
+        dismissedAppBannerVersion = appUpdate.latestVersion
+    }
+
+    /// One notification per version, ever: the hourly check finds the same
+    /// update again until it's installed or skipped. A version counts as told
+    /// once its notification posted, so with notifications off for Scout the
+    /// next find after they're turned on still announces it. A version the
+    /// user's own check found (`post == false`) counts as told at once, so
+    /// the next scheduled find of it stays quiet too.
+    private func notifyAppUpdateOnce(version: String, post: Bool) {
+        guard let notifier = appUpdateNotifier,
+              defaults.string(forKey: Self.lastNotifiedAppVersionKey) != version else { return }
+        guard post else {
+            defaults.set(version, forKey: Self.lastNotifiedAppVersionKey)
+            return
+        }
+        notifier.postAppUpdate(version: version) { [weak self] in
+            self?.defaults.set(version, forKey: Self.lastNotifiedAppVersionKey)
+        }
     }
 
     // MARK: Plugin track

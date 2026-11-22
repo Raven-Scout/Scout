@@ -357,7 +357,7 @@ def build_profile(vault: Path | None, env: Mapping[str, str] | None = None, *, n
 def broker_rules(vault: Path, broker_dir: Path, env: Mapping[str, str] | None = None) -> list[Rule]:
     """What a run's profile adds while its brokers run (Phase 1d, spec 2026-11-16 §5.4), to go after the rest.
 
-    The broker commits for the run, so every write in the vault's git dir(s) is denied, the 1c carve-outs
+    The broker commits for the run, so every write in the vault's git dirs is denied, the 1c carve-outs
     included; it sends the Telegram wrap, so every read in the secrets dirs is denied, the Telegram files and the
     folder listing included; and the broker's own folder (its socket) can't be changed.
     """

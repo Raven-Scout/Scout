@@ -57,7 +57,7 @@ def test_five_of_six_bullets_over_the_length_fail(kb_repo) -> None:
     kb_repo.write(FRONT, page([LONG] * 5 + [SHORT]))
     r = row(kb_repo)
     assert not r["conforms"] and r["long_bullets"] == 5
-    assert r["problems"] == ["5 bullet(s) over 300 chars"]
+    assert r["problems"] == ["5 bullets over 300 chars"]
 
 
 def test_a_paragraph_counts_as_an_entry(kb_repo) -> None:
@@ -77,7 +77,7 @@ def test_a_page_failing_only_on_bullets_waits_behind_a_page_a_reader_cant_follow
 def test_a_private_page_shows_counts_but_no_section_name(kb_repo) -> None:
     kb_repo.write(FRONT, page([LONG] * 8, private=True))
     r = row(kb_repo)
-    assert r["problems"] == ["8 bullets (limit 6)", "8 bullet(s) over 300 chars"]
+    assert r["problems"] == ["8 bullets (limit 6)", "8 bullets over 300 chars"]
     assert r["bullets"] is None
 
 

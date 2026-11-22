@@ -20,7 +20,7 @@ def _populate_minimal_vault(vault: Path) -> None:
     """The files a healthy vault has after bootstrap (as in test_bootstrap_doctor.py)."""
     (vault / ".scout-state" / "last-assembled").mkdir(parents=True)
     (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n")
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
     (vault / "scout-config.yaml").write_text(

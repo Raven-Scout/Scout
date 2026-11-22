@@ -26,6 +26,7 @@ TARGET_MODES: dict[str, set[str]] = {
     "SKILL": {"briefing", "consolidation"},
     "DREAMING": {"dreaming"},
     "RESEARCH": {"research"},
+    "RESPOND": {"respond"},
 }
 
 _CONNECTOR_VAR_RE = re.compile(r"\{\{(CONNECTOR_[A-Z_]+)\}\}")

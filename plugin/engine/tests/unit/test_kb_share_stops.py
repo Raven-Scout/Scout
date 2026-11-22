@@ -186,7 +186,7 @@ def test_unshare_says_to_pull_first_when_agnes_wrote_on_top(vault: Path, agnes: 
     shared_with(vault, agnes, "priya@example.com")
     agnes.pending_server_commits = 1
     res = kb(vault, "unshare", WIDGET)
-    assert "Agnes has 1 commit(s) on top of your last push" in res.output
+    assert "Agnes has 1 commit on top of your last push" in res.output
 
 
 def test_a_sync_only_vault_never_asks_for_a_write_back(vault: Path, agnes: FakeAgnes) -> None:

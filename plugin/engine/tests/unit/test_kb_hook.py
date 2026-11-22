@@ -53,7 +53,7 @@ def test_refuses_foreign_hook(kb_repo) -> None:
 
 def _fake_scoutctl(tmp_path: Path, rc: int, *, prints_kb_lint: bool = True) -> Path:
     p = tmp_path / "scoutctl"
-    line = 'echo "kb-lint: 1 blocking, 0 warning(s) (mode: block)" >&2' if prints_kb_lint else "echo called >&2"
+    line = 'echo "kb-lint: 1 blocking, 0 warnings (mode: block)" >&2' if prints_kb_lint else "echo called >&2"
     p.write_text(f"#!/bin/sh\n{line}\nexit {rc}\n")
     p.chmod(0o755)
     return p
@@ -218,6 +218,19 @@ def test_a_commit_during_a_live_run_is_refused_when_the_check_cant_run_whatever_
     assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
 
 
+@pytest.mark.parametrize("runner", ["run-dreaming.sh", "run-research.sh", "run-respond.sh"])
+def test_every_runner_holding_the_lock_is_a_live_run_to_the_fallback_check(tmp_path, live, runner: str) -> None:
+    """The hook's awk twin of scout.kb.live_run names the same runners."""
+    vault = _git_vault(tmp_path)
+    pid = live(vault, runner)
+    _hold_lock(vault, pid, f"{pid} {runner.removeprefix('run-').removesuffix('.sh')}\n")
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 1
+    assert "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run." in (
+        proc.stderr
+    )
+
+
 def _dead_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
@@ -310,7 +323,7 @@ def test_hook_scoutctl_path_with_space_and_dollar(tmp_path) -> None:
     weird = tmp_path / "weird $dir"
     weird.mkdir()
     scoutctl = weird / "scoutctl"
-    scoutctl.write_text('#!/bin/sh\necho "kb-lint: 0 blocking, 0 warning(s) (mode: report)" >&2\nexit 0\n')
+    scoutctl.write_text('#!/bin/sh\necho "kb-lint: 0 blocking, 0 warnings (mode: report)" >&2\nexit 0\n')
     scoutctl.chmod(0o755)
     proc = _run_hook_script(tmp_path, str(scoutctl))
     assert proc.returncode == 0
@@ -341,7 +354,7 @@ def test_the_real_hook_names_a_misspelt_path_modes_key(kb_repo) -> None:
     kb_repo.git("add", "-A")
     proc = subprocess.run(["git", "commit", "-q", "-m", "note"], cwd=kb_repo.root, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
-    assert "kb-lint: config: kb_lint has unknown key(s) ['pathmodes']" in proc.stderr
+    assert "kb-lint: config: kb_lint has unknown key ['pathmodes']" in proc.stderr
 
 
 @pytest.mark.skipif(not _scoutctl_has_kb(), reason="installed scoutctl predates `kb` (passes after merge)")

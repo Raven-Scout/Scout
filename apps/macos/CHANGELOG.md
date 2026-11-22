@@ -8,6 +8,115 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.21] - 2026-11-21
+
+### Added
+- **Review what your agents proposed, in Settings ▸ Agent copies (#550 V4b3).**
+  - **Each agent with an inbox gets its inbox in a line:** how many proposals wait for your review, or why the
+    last pull was refused. When the engine offers it, a **Review** button opens a sheet with each proposal.
+  - **How the text is shown:** each item is headed `FROM AGENT delegate-<id>`. The agent's text is plain
+    monospaced text (never Markdown, no links), with hidden characters shown as `\u{…}` and look-alike words
+    flagged.
+  - **Accepting** opens a confirmation that repeats the agent's id and the full text, with an "Accept from
+    delegate-<id>" button. Reject is one click.
+  - **Accepted observations** can be promoted or made private again. Each first shows a preview: the exact text
+    and exactly which agents will see it, or stop seeing it. The button names those agents ("Promote to
+    delegate-a, delegate-b", "Make private again: hide from …"). The app passes the preview's hash back and
+    promotes to exactly the agents it named. A refusal shows in the engine's own words.
+  - **What the app may run:** every `scoutctl inbox` command goes through `InboxReviewService`, which allows only
+    review, accept, reject, promote and unpromote. A source-scan test fails on any other use. Pull, apply,
+    revert and sync stay with the schedule and Terminal.
+- **"Resolve with Claude" on health, connector and run banners.** The Control Center's run-health and
+  connector banners, the Health page's findings and a run's problem (failures, orphaned and
+  rate-limited runs, and the safety skips, not routine skips) get a button that opens a new Claude Code
+  session in Claude Desktop, in the vault, prefilled with an investigation prompt the engine builds
+  (`scoutctl health resolve-prompt`). The chevron offers the terminal, chat and Cowork, as on action
+  items. Nothing is sent until you send it. The button shows only on an engine that advertises
+  `resolve_prompt_v1`, and the app refuses a prompt the engine built for a different vault folder.
+
+### Fixed
+- **The note header keeps the note's name readable at larger text sizes.** At Largest the folder
+  path shrank to a bare "…" and the name to a few letters before the controls moved to their own
+  row; the header now makes room in step with Settings ▸ General ▸ Text size.
+- **A refused undo no longer guesses who changed the file.** When a file changed after your edit,
+  Edit ▸ Undo said it was probably a scheduled run; it now just says the file has changed since
+  your edit, which is true whether you, another app or a run changed it.
+- **The knowledge map's saved layout is now readable only by your account.** It lists where your
+  notes are, private ones included. A layout saved by an earlier version is locked down the next
+  time the map opens.
+- **The window no longer jumps when a banner appears at the top of a note.** An "Unsaved draft" or
+  "changed on disk" banner moved the window's content up under the title bar, out of reach.
+- **The note header gives the path more room:** a narrow folder path ends in "…" instead of a clipped
+  letter, and the controls move to their own row before the note's name gets cut short.
+- **The Knowledge Base reader and map hold up at 1280 pt and on a big vault (UI audit T1).**
+  - **The note header no longer collapses in a narrow reader.** The path truncates in the middle (folders
+    first, then the note's name), Reload is an icon, Save and the Read | Rich | Source switch keep their size,
+    and when there isn't room for both the controls move to their own row above the path. Before, with the
+    sidebar, file tree and Links panel open at 1280 pt, the path wrapped a letter per line and Save stacked
+    vertically, which could push the page up under the title bar.
+  - **The Links panel can be hidden,** with a button in the note's header, and it starts hidden on a page
+    narrower than about 1180 pt (a window under about 1400 pt). Your choice is kept.
+  - **A note with an unsaved draft says so.** Opening it shows an "Unsaved draft" banner, in every mode, with
+    Save and Discard Edits…; notes with drafts get a dot in the file tree, and so does a closed folder holding
+    one. The home button and the path's root ask before leaving a note with a draft: keep the draft and leave
+    (the default), discard the edits, or stay.
+  - **A change on disk under unsaved edits shows at once,** in a banner naming the note, with Save My Version
+    and Reload… (which asks before discarding). The check also runs when you switch back to Scout.
+  - **The map no longer comes back blank.** It drew only on animation frames, which WebKit holds while it
+    treats the page as hidden, so a map could have all its notes and never draw them. It now draws as soon as
+    its notes arrive and again whenever the page is shown; a map page that hasn't started within a few seconds
+    of being shown is reloaded and given back what it showed. A new test hosts the real page in a window and
+    checks it is drawn on a first visit, after opening a note with a draft, and after leaving and coming back.
+  - **The map's Notes and Explore panels collapse,** each with its own chevron, and start collapsed on a
+    narrow map; selecting a note opens the side panel again. The map frames the notes in the space the panels
+    leave free, measured from the panels as drawn, instead of squeezing a 1,400-note vault into a 100 pt
+    cluster behind them.
+  - **The map reopens on its last layout after a relaunch** (kept in `~/Library/Caches/Scout/kb-map/`, one
+    file per vault), so a big vault no longer lays itself out from scratch on the first visit of every launch.
+    Positions that aren't finite numbers are dropped, so they can't make the map's load unencodable.
+- **Knowledge Base search no longer misses a note it hasn't seen yet.** The sidebar's "Search notes…"
+  results were worked out once, just after you typed, and then kept. A search typed while the knowledge base
+  was still being read, or before a new note was picked up, kept saying "No results" for that note even after
+  it appeared in the file tree. The results now update whenever the tree is read again, so the note shows up
+  as soon as the tree has it.
+- **One schedule has one name across Control Center.** The Upcoming strip, the menu-bar Upcoming rows and the
+  status bar's next run now name a default schedule from its slot key ("Midday consolidation", "Nightly
+  dreaming"), as the Runs list does for its finished runs. They used to name it by its type ("Consolidation",
+  "Dreaming"), which didn't tell the four consolidation schedules apart. A schedule you named like a
+  hand-started run (`weekly-manual`) reads "Weekly manual" in both places.
+- **The Runs list's Type filter files a run by its schedule.** A run's type there comes from its run ledger
+  row's key (slot, or mode when the slot is unknown), not from its log's file name and hour. A schedule you
+  made in the app, such as a 1 AM `overnight-research` slot of type research that runs `run-scout.sh`, is
+  filed under Research instead of Morning briefing, using the slot's type from the schedule. When a run's
+  slot is unknown and its mode names it, search matches the mode too.
+- **The "Started by you" badge shows on a run you started with Run now.** A run's log never says who
+  started it, so the badge never appeared. The run ledger now records Run now as `trigger: manual` (see the
+  plugin's entry), and the run shows the badge, named after its schedule ("Evening consolidation"). A
+  hand-started run whose name already says "(manual)" doesn't get it as well: the badge and the name read
+  the same key.
+- **Control Center names each run the way the Health page does (UI audit T2).** A run's name now comes from
+  its run ledger row's schedule (`slot`, or `mode` when the slot is unknown), not from its log's file name. A
+  1 AM run the ledger records as `overnight-research` used to read "Morning briefing", because its log is a
+  plain `scout-…` file and the hour alone made it a briefing. The log-name guess is still used when a run has
+  no ledger row, for example while it is still going. The run list, the run detail, the menu-bar panel,
+  status lines, notifications and Health's skip messages all use the new name, and searching the run list
+  matches the run's schedule, not the old guess. Health and Control Center now name hand-started runs the
+  same way ("Dreaming (manual)", not "Dreaming manual"; a hand-run `/scout-consolidation` at 2 PM reads
+  "Consolidation (manual)"), and the "manual" badge is left off a run whose name already says so.
+- **The run list is headed "Runs".** It was headed "Sessions", the name of the Agent Sessions page. Its
+  search field, empty state, the page subtitle and the heatmap count ("238 runs · 1 mo") now say runs too.
+- **The run list drops its commits and cost columns.** Both only ever showed dashes: commits load only when
+  a run's detail opens, and runs rarely carry a cost. The run detail still shows both.
+- **Selecting a run no longer renames the main window.** The window stays "Scout"; the detail header names
+  the run.
+- **No more raw markup in five places** (UI audit T3). A Research or Wishlist title written in YAML quotes no longer shows its escapes (`\"`), and Proposals titles read their quotes the same way. A `**` that pairs with nothing is now found wherever it is, not only when it is the last one, so Research cards stop showing a literal `**`. The run detail's fallback log tail and the Knowledge Base's "Linked from" and search-result snippets show plain text, with no `**`, backticks or table pipes. Card titles, Proposals titles and their undo labels lose their inline markup but keep a leading `>` or `#` as written. Health, problem banners and Settings help show the engine's commands in monospace instead of in backticks. The new `PlainText` helper does both, and it never makes a link. A guard test (`RawMarkupGuardTests`) keeps those places routed through it and fails on any "(s)" plural in the app's own strings.
+- **A very long line can't stall the app.** Code spans are now found by a linear scan (`CodeSpanScanner`) instead of a regex that took seconds on a 10 KB line of backticks. Unclosed `[[` and `[` no longer rescan the rest of the line. The run detail reads its log off the main thread and cuts lines longer than 2,000 UTF-16 units, at a character boundary.
+- **The diagnostics export counts in real plurals** ("1 error, 2 warnings"), not "error(s)".
+- **Unclosed math can't stall a card.** Cards clean up `\(…\)`, `\[…\]` and `$$…$$` math with a linear scan. The old regexes rescanned the line from every opener that never closed, so 25,000 unclosed `\(` took 9 s, and longer on accented text. Every replacement, and every stray `**` a card drops, is now made in one pass instead of copying the whole text once per change. The output is unchanged.
+- **A task's trailing links can't stall it either.** The row of link chips at the end of a task is found by walking back from the last link. 8,000 links followed by a word used to take 21 s.
+- **One rule for what is a wikilink.** Inline text, the Knowledge Base's links and backlinks, rename, a task's trailing link chips and its `Refs:` line now all use the same `[[target|alias]]` rule. Neither part may hold a newline, the target may not hold `[` or `]`, and the alias may hold only a balanced `[…]` (`[[alex|Alex [ext]]]`). Before, only inline text refused those, so a note could list a backlink that never showed as a link. The table form `[[target\|alias]]` now names the right target in task chips and `Refs:` too.
+- **A rename no longer rewrites what isn't a link.** Links whose target or alias holds a newline or an unmatched `[` keep the old name when the note is renamed, because the app no longer counts them as links. The engine's `kb lint` still counts them, so after a rename it reports them as dangling. An inner link inside an unclosed `[[`, as in `[[a[[alex]]`, is now found and renamed.
+
 ## [0.18.20] - 2026-11-20
 
 ### Fixed

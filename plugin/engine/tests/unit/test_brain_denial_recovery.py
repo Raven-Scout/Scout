@@ -11,6 +11,10 @@ nothing. Two things guard against it, in every brain file every run reads:
 
 from __future__ import annotations
 
+import re
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from tests.unit.test_brain_size_budget import PINS, _assemble, _config
@@ -35,6 +39,44 @@ def test_every_brain_says_a_denial_covers_one_call(brains, kind):
     assert line.index("never get the same thing another way") < line.index("otherwise redo a shell command")
     # Before any section after Step 0: it must already hold when a run's first shell call is refused.
     assert text.index(RECOVERY) < text.index("## Using Git History")
+
+
+TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
+RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl")
+PROMPT_RULE = (
+    "- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, "
+    "do that and never get the same thing another way; otherwise redo a shell command as plain single commands, "
+    "with no command substitution, variables or loops and only paths inside /v/vault, or with Read/Edit, "
+    "and carry on."
+)
+
+
+def _runner_prompt(name: str) -> str:
+    """The runner's PROMPT as bash hands it to claude: placeholders filled, quoting resolved."""
+    text = (TEMPLATES / name).read_text(encoding="utf-8")
+    start = text.index('PROMPT="')
+    block = text[start : text.index('"\n', start + len('PROMPT="')) + 1]
+    block = re.sub(r"\{\{SCOUT_DIR\}\}", "/v/vault", block)
+    block = re.sub(r"\{\{[A-Z_]+\}\}", "X", block)
+    done = subprocess.run(
+        ["bash", "-c", f'MODE=morning-consolidation\n{block}\nprintf %s "$PROMPT"'],
+        capture_output=True, text=True, check=True, env={"PATH": "/usr/bin:/bin"},
+    )  # fmt: skip
+    return done.stdout
+
+
+@pytest.mark.parametrize("name", RUNNERS)
+def test_every_runner_prompt_says_a_denial_covers_one_call(name):
+    """v0.18.21's KB gate: the session read 473 of SKILL.md's 1926 lines (one Read's share), so Step 0's
+    rule never reached it, and one denied compound Bash (a path outside the vault) ended the run. The
+    runner prompt is the one text every session (scheduled or eval, any mode) reads before its first call."""
+    prompt = _runner_prompt(name)
+    assert prompt.count(PROMPT_RULE) == 1, prompt
+    assert prompt.index(PROMPT_RULE) > prompt.index("Important:")
+    # In the template it sits inside PROMPT's double quotes: nothing bash would expand or end the string on.
+    lines = (TEMPLATES / name).read_text(encoding="utf-8").splitlines()
+    template_line = next(ln for ln in lines if "denied tool" in ln)
+    assert not set(template_line) & set('$`"\\'), template_line
 
 
 @pytest.mark.parametrize("kind", sorted(PINS))

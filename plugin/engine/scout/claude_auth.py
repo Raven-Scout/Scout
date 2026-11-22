@@ -37,6 +37,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from scout.plural import count
+
 TOKEN_FILENAME = "claude-oauth-token"
 META_FILENAME = "claude-oauth-token.meta.json"
 ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -281,12 +283,12 @@ class AuthStatus:
         return self.days_left is not None and self.days_left < EXPIRY_WARNING.days
 
     def expiry_text(self) -> str | None:
-        """'expires in N day(s) (about DATE)' / 'expired about N day(s) ago (DATE)', or None when unknown."""
+        """'expires in N days (about DATE)' / 'expired about N days ago (DATE)', or None when unknown."""
         if self.days_left is None or self.expires_at is None:
             return None
         if self.days_left >= 0:
-            return f"expires in {self.days_left} day(s) (about {self.expires_at:%Y-%m-%d})"
-        return f"expired about {-self.days_left} day(s) ago ({self.expires_at:%Y-%m-%d})"
+            return f"expires in {count(self.days_left, 'day')} (about {self.expires_at:%Y-%m-%d})"
+        return f"expired about {count(-self.days_left, 'day')} ago ({self.expires_at:%Y-%m-%d})"
 
     def describe(self, *, offer_setup: bool = True) -> str:
         if self.mode == "login":

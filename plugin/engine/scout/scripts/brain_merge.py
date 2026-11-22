@@ -1,4 +1,4 @@
-"""Upgrade policy for the assembled brain files (SKILL/DREAMING/RESEARCH.md).
+"""Upgrade policy for the assembled brain files (SKILL/DREAMING/RESEARCH/RESPOND.md).
 
 `bootstrap upgrade` reassembles each brain file from ``phases/`` and reconciles
 it with the vault's live copy against the ``.scout-state/last-assembled/``
@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
-BRAIN_KINDS: tuple[str, ...] = ("SKILL", "DREAMING", "RESEARCH")
+BRAIN_KINDS: tuple[str, ...] = ("SKILL", "DREAMING", "RESEARCH", "RESPOND")
 PROVENANCE_FILE = "provenance.json"
 PROPOSED_DIR = "proposed"
 _PROVENANCE_VERSION = 1

@@ -33,7 +33,7 @@ from scout.yaml_safe import load_yaml
 # The only scripts a slot or a trigger may start (review of #642). schedule.yaml and triggers.yaml live in the
 # vault's .scout-state/, and the tick runs the named file outside any run's sandbox, from launchd: a free-form
 # runner would let a run's write to either file choose what runs unsandboxed next.
-RUNNERS: tuple[str, ...] = ("run-scout.sh", "run-dreaming.sh", "run-research.sh")
+RUNNERS: tuple[str, ...] = ("run-scout.sh", "run-dreaming.sh", "run-research.sh", "run-respond.sh")
 
 
 def check_runner(runner: object, where: str) -> str:

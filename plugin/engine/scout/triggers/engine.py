@@ -147,6 +147,16 @@ def evaluate(
                     },
                 )
                 result.fired.append(outcome)
+                # Optional post-dispatch hook (the telegram source marks its snapshot
+                # dispatched); a failing hook is recorded, never raised into the tick.
+                hook = getattr(source, "on_fired", None)
+                if callable(hook):
+                    try:
+                        hook(event, outcome)
+                    except Exception as e:  # noqa: BLE001
+                        result.errors.append(
+                            {"source": source_name, "error": f"on_fired: {type(e).__name__}: {redact_secrets(str(e))}"}
+                        )
 
     return result
 

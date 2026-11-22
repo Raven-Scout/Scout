@@ -68,6 +68,7 @@ from scout.kb.privacy import (
     scope_admits,
 )
 from scout.kb.share_stops import VAULT_NOTE, ClearPlan, StopOutcome
+from scout.plural import agree, count, noun
 
 COPY_WARNING = (
     "Once someone's Scout has read a shared note, it can keep what it learned in their own vault. "
@@ -596,19 +597,20 @@ class SharePlan:
         if self._groups():
             out.append(f"  {GROUP_OWNER_NOTE}")
         out += [f"  warning: {w}" for w in self.warnings]
-        out.append(f"Newly shared: {len(self.newly)} note(s)")
+        out.append(f"Newly shared: {count(len(self.newly), 'note')}")
         out += [f"  {p}  +{', '.join(_display(x, self.names) for x in w)}" for p, w in self.newly]
         if self.already:
-            out.append(f"Already shared with them: {len(self.already)} note(s)")
+            out.append(f"Already shared with them: {count(len(self.already), 'note')}")
         if self.excluded:
-            out.append(f"Not shared: {len(self.excluded)} note(s)")
+            out.append(f"Not shared: {count(len(self.excluded), 'note')}")
             out += [f"  {p}  {_REASON_TEXT[r]}" for p, r in self.excluded]
         if self.private_links:
             out.append(
-                f"Warning: {len(self.private_links)} note(s) about to be shared link or name a private note "
+                f"Warning: {count(len(self.private_links), 'note')} about to be shared "
+                f"{agree(len(self.private_links), 'links to or names', 'link to or name')} a private note "
                 "(Agnes shows a link to an unshared note as its text):"
             )
-            out += [f"  {p}  line(s) {', '.join(str(n) for n in ns)}" for p, ns in self.private_links]
+            out += [f"  {p}  {noun(len(ns), 'line')} {', '.join(str(n) for n in ns)}" for p, ns in self.private_links]
         if self.enabling:
             out.append("This turns sharing on for this vault (privacy.federation.enabled: true).")
         if self.clears is not None:
@@ -785,12 +787,13 @@ class UnsharePlan:
     def lines(self) -> list[str]:
         who = "everyone" if self.principals is None else ", ".join(_display(p, {}) for p in self.principals)
         out = [f"Stop sharing {self.target.glob} with {who}"]
-        out.append(f"No longer shared: {len(self.stopped)} note(s)")
+        out.append(f"No longer shared: {count(len(self.stopped), 'note')}")
         out += [f"  {p}  -{', '.join(_display(x, {}) for x in w)}" for p, w in self.stopped]
         if self.still_by_frontmatter:
             out.append(
-                f"Still shared by their own federation_scope: {len(self.still_by_frontmatter)} note(s) "
-                "(edit those lines to stop them):"
+                f"Still shared by {agree(len(self.still_by_frontmatter), 'its', 'their')} own federation_scope: "
+                f"{count(len(self.still_by_frontmatter), 'note')} "
+                f"(edit {agree(len(self.still_by_frontmatter), 'that line to stop it', 'those lines to stop them')}):"
             )
             out += [f"  {p}" for p in self.still_by_frontmatter]
         if self.agnes is not None:
@@ -958,7 +961,7 @@ def shares_lines(
     for row in rows:
         who = ", ".join(_display(p, names) for p in row.principals)
         own = ", its own frontmatter" if row.source == "frontmatter" else ""
-        out.append(f"{row.glob}  with {who}  ({len(row.shared)} note(s){own})")
+        out.append(f"{row.glob}  with {who}  ({count(len(row.shared), 'note')}{own})")
         for stop in (stops or {}).get(row.glob, ()):
             out.append(f"  STOPPED in Agnes for {stop.who()} since {when(stop.created_at)} (stop {stop.stop_id})")
             # The vault shares with them (again, say by a hand edit), but the stop still keeps them out.

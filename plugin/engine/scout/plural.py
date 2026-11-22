@@ -1,9 +1,9 @@
 """Counted nouns for text people read: "1 run", "3 runs", never "run(s)".
 
 The app's Health page, banners and Settings show the engine's findings and
-doctor lines verbatim, so the engine writes them in real singular and plural
-(UI audit T3). `tests/unit/test_plural_wording.py` scans the modules whose text
-the app shows and fails on a new "(s)".
+doctor lines verbatim, and the CLI prints the rest, so the engine writes them in
+real singular and plural (UI audit T3). `tests/unit/test_plural_wording.py` scans
+every module under `scout/` and fails on a new "(s)".
 """
 
 from __future__ import annotations
@@ -20,6 +20,16 @@ def count(n: int, singular: str, plural: str | None = None) -> str:
 def noun(n: int, singular: str, plural: str | None = None) -> str:
     """The noun alone, singular for exactly one."""
     return singular if n == 1 else (plural or singular + "s")
+
+
+def agree(n: int, one: str, many: str) -> str:
+    """The word that agrees with `n`: ``agree(1, "waits", "wait")`` is "waits"."""
+    return one if n == 1 else many
+
+
+def are(n: int) -> str:
+    """ "is" for one, "are" otherwise."""
+    return "is" if n == 1 else "are"
 
 
 def were(n: int) -> str:

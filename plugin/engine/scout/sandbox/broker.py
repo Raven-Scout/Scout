@@ -74,6 +74,7 @@ MAX_MESSAGE_CHARS = 10_000
 MAX_PATHS = 500
 MAX_PATH_CHARS = 4096
 MAX_OVERRIDE_CHARS = 500
+MAX_COVERS = 100  # inbound message ids one Telegram reply may answer
 BLANKET = frozenset({"-A", "--all", ".", "./", ":/", ":"})
 
 QUEUE_MAX_AGE = timedelta(hours=24)
@@ -253,7 +254,7 @@ def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str])
 
 def validate_telegram(req: Mapping[str, Any], limits: Limits) -> dict[str, Any]:
     """The send's fields, or :class:`Refused`. The request names no recipient: :func:`send` reads the owner's."""
-    from scout.scripts.notify_telegram import VALID_PARSE_MODES, VALID_TIERS
+    from scout.scripts.notify_telegram import VALID_PARSE_MODES, VALID_TIERS, _is_message_id
 
     tier, parse_mode, body = req.get("tier", "info"), req.get("parse_mode", "none"), req.get("body")
     if tier not in VALID_TIERS:
@@ -267,7 +268,16 @@ def validate_telegram(req: Mapping[str, Any], limits: Limits) -> dict[str, Any]:
     flags = {k: req.get(k, False) for k in ("allow_duplicate", "dry_run")}
     if not all(isinstance(v, bool) for v in flags.values()):
         raise Refused(1, "allow_duplicate and dry_run are true or false")
-    return {"tier": tier, "parse_mode": parse_mode, "body": body, **flags}
+    # Which inbound messages the reply answers: only their shape here; Broker.telegram checks them against the ledger.
+    reply_to, covers = req.get("reply_to"), req.get("covers")
+    covers = [] if covers is None else covers
+    if reply_to is not None and not _is_message_id(reply_to):
+        raise Refused(EXIT_REFUSED, "reply_to is a positive message id")
+    if not isinstance(covers, list) or len(covers) > MAX_COVERS or not all(_is_message_id(i) for i in covers):
+        raise Refused(EXIT_REFUSED, f"covers is a list of at most {MAX_COVERS} positive message ids")
+    if covers and reply_to is None:
+        raise Refused(EXIT_REFUSED, "covers needs reply_to (a reply threads to a message)")
+    return {"tier": tier, "parse_mode": parse_mode, "body": body, **flags, "reply_to": reply_to, "covers": covers}
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -334,13 +344,14 @@ def _stop_group(proc: subprocess.Popen[str]) -> None:
             proc.wait(timeout=5)
 
 
-def send_telegram(fields: Mapping[str, Any]) -> Reply:
-    """:func:`scout.scripts.notify_telegram.cli_send` in this process, its output captured."""
-    from scout.scripts.notify_telegram import cli_send
+def send_telegram(fields: Mapping[str, Any], vault: Path | None = None) -> Reply:
+    """:func:`scout.scripts.notify_telegram.cli_send` in this process, its output captured. A reply is recorded
+    in ``vault``'s inbound ledger (the broker passes its own, so the cwd never decides which)."""
+    from scout.scripts import notify_telegram
 
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = cli_send(
+        code = notify_telegram.cli_send(
             tier=fields["tier"],
             text=fields["body"],
             parse_mode=fields["parse_mode"],
@@ -348,6 +359,9 @@ def send_telegram(fields: Mapping[str, Any]) -> Reply:
             allow_duplicate=fields["allow_duplicate"],
             echo_out=lambda s: print(s, file=sys.stdout),
             echo_err=lambda s: print(s, file=sys.stderr),
+            reply_to=fields.get("reply_to"),
+            covers=list(fields.get("covers") or []),
+            vault=vault,
         )
     return Reply(code, err.getvalue(), out.getvalue())
 
@@ -512,9 +526,12 @@ class Broker:
     vault: Path
     env: Mapping[str, str]
     limits: Limits = field(default_factory=Limits)
-    sender: Callable[[Mapping[str, Any]], Reply] = send_telegram
+    sender: Callable[[Mapping[str, Any]], Reply] | None = None  # None: :func:`send_telegram` into this vault
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     run_id: str | None = None
+
+    def _send(self, fields: Mapping[str, Any]) -> Reply:
+        return self.sender(fields) if self.sender is not None else send_telegram(fields, vault=self.vault)
 
     @classmethod
     def for_vault(cls, vault: Path, env: Mapping[str, str] | None = None, **kw: Any) -> Broker:
@@ -540,13 +557,27 @@ class Broker:
             return Reply(r.exit_code, f"git-safe-commit: {r.reason}\n", kind=REFUSED)
         return run_commit(self.vault, message, paths, override, self.env)
 
+    def _unanswerable(self, fields: Mapping[str, Any]) -> Reply | None:
+        """A reply to a message that isn't waiting (unknown, or already answered): refused for good, live or
+        drained, and before any limit, so a queued reply can't wait out a full hour for a predicted id to arrive.
+        The same check cli_send makes again as it sends; an unreadable ledger is exit 1, which the drain retries."""
+        if fields["reply_to"] is None:
+            return None
+        from scout.scripts.notify_telegram import EXIT_UNANSWERABLE, unanswerable
+
+        problem = unanswerable(self.vault, [fields["reply_to"], *fields["covers"]])
+        if problem is None:
+            return None
+        code, reason = problem
+        return Reply(code, f"scoutctl notify telegram: {reason}\n", kind=REFUSED if code == EXIT_UNANSWERABLE else "")
+
     def telegram(self, req: Mapping[str, Any]) -> Reply:
         try:
             fields = validate_telegram(req, self.limits)
         except Refused as r:
             return Reply(r.exit_code, f"scoutctl notify telegram: {r.reason}\n", kind=REFUSED)
         if fields["dry_run"]:
-            return self.sender(fields)
+            return self._send(fields)
         rid = req["rid"] if isinstance(req.get("rid"), str) and _REQUEST_ID.match(req["rid"]) else ""
         now = self.clock()
         claimed = req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else ""
@@ -565,6 +596,8 @@ class Broker:
             rows = _read_sends(self.env, now)
             if rid and any(r["rid"] == rid for r in rows):
                 return Reply(0, f"scoutctl notify telegram: request {rid} was already sent\n")
+            if (unsendable := self._unanswerable(fields)) is not None:
+                return unsendable
             mine = [r for r in rows if r["run"] == run]
             if run == UNREGISTERED:
                 mine = [r for r in mine if now - datetime.fromisoformat(r["at"]) < timedelta(hours=1)]
@@ -584,7 +617,7 @@ class Broker:
                     "the owner allows; nothing was sent\n",
                     kind=HOUR_LIMIT,
                 )
-            reply = self.sender(fields)
+            reply = self._send(fields)
             if reply.exit == 0:
                 _write_sends(self.env, [*rows, {"at": now.isoformat(), "run": run, "rid": rid}])
         return reply

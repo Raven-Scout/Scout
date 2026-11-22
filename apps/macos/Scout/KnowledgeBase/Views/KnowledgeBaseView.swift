@@ -19,9 +19,8 @@ struct KnowledgeBaseView: View {
     /// The note the overview map should select ("Show on full map").
     @State private var mapFocus: String? = nil
     @State private var expanded: Set<String> = []
-    @State private var searchQuery: String = ""
-    @State private var searchHits: [KBSearchHit] = []
-    @State private var searchTask: Task<Void, Never>? = nil
+    /// The sidebar search; its hits follow the tree as well as the query.
+    @StateObject private var search = KBNoteSearch()
     @FocusState private var searchFocused: Bool
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
@@ -199,8 +198,9 @@ struct KnowledgeBaseView: View {
         // Clicking a [#TAG] chip searches the KB for that tag: drive the same
         // search field a typed query uses, so the query is visible, the results
         // list is the familiar one, and clearing it returns to the tree.
-        .environment(\.kbTagHandler, { tag in searchQuery = "#\(tag)" })
+        .environment(\.kbTagHandler, { tag in search.query = "#\(tag)" })
         .onAppear {
+            search.attach(service)
             service.load()
             openPendingNote()
         }
@@ -209,7 +209,6 @@ struct KnowledgeBaseView: View {
         // A request still waiting on the index when the user leaves is
         // dropped, so it can't fire on some later visit.
         .onDisappear { pendingNote.wrappedValue = nil }
-        .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
             KBNewFileSheet(
                 directories: Self.directories(in: service.tree, kbRoot: service.kbDirectory),
@@ -300,7 +299,7 @@ struct KnowledgeBaseView: View {
 
             EditorialRule()
 
-            if searchQuery.isEmpty {
+            if search.query.isEmpty {
                 treeOrState
             } else {
                 searchResults
@@ -315,12 +314,12 @@ struct KnowledgeBaseView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
-            TextField("Search notes…", text: $searchQuery)
+            TextField("Search notes…", text: $search.query)
                 .textFieldStyle(.plain).font(DS.font(.label)).foregroundStyle(DS.Ink.p1)
                 .focused($searchFocused)
                 .help(ShortcutLabel.help("Search every note", AppShortcut.searchNotes))
-            if !searchQuery.isEmpty {
-                Button { searchQuery = "" } label: {
+            if !search.query.isEmpty {
+                Button { search.query = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -374,12 +373,12 @@ struct KnowledgeBaseView: View {
     private var searchResults: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
-                if searchHits.isEmpty {
-                    Text(searchQuery.count < 2 ? "Type to search…" : "No results")
+                if search.hits.isEmpty {
+                    Text(search.query.count < 2 ? "Type to search…" : "No results")
                         .font(DS.font(.label)).foregroundStyle(DS.Ink.p4)
                         .padding(.horizontal, 12).padding(.vertical, 10)
                 }
-                ForEach(searchHits) { hit in
+                ForEach(search.hits) { hit in
                     Button { navigate(toPath: hit.path) } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(hit.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
@@ -470,19 +469,9 @@ struct KnowledgeBaseView: View {
             for i in 1..<parts.count { expanded.insert(parts[0..<i].joined(separator: "/")) }
         }
         selectedPath = path
-        searchQuery = ""
+        search.query = ""
         // A "Show on full map" request is spent once you move on to a note.
         mapFocus = nil
-    }
-
-    private func scheduleSearch(_ query: String) {
-        searchTask?.cancel()
-        guard query.count >= 2 else { searchHits = []; return }
-        searchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            if Task.isCancelled { return }
-            searchHits = service.searchContent(query)
-        }
     }
 
     /// Directory the New-note sheet defaults to: the folder of the current

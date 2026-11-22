@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scout.kb import hook_paths
+from scout.plural import noun
 
 SNAPSHOT_VERSION = 1
 # Refs a run's git can create or move that a later checkout, merge or `stash pop` reads from.
@@ -83,14 +84,17 @@ class Result:
         if self.status == "error":
             return [f"integrity check: couldn't run: {self.reason}"]
         out = [
-            f"integrity check: {ref} changed protected file(s): {', '.join(sorted(paths))}; committed in linked "
+            f"integrity check: {ref} changed protected {noun(len(paths), 'file')}: {', '.join(sorted(paths))}; "
+            "committed in linked "
             f"worktree {self.left_alone_by.get(ref, '?')!r}, which has it checked out, so left alone"
             for ref, paths in sorted(self.left_alone.items())
         ]
         if self.status == "clean":
             return [*out, "integrity check: protected tracked files unchanged"]
         for where, paths in sorted(self.changed.items()):
-            out.append(f"integrity check: {where} changed protected file(s): {', '.join(sorted(paths))}")
+            out.append(
+                f"integrity check: {where} changed protected {noun(len(paths), 'file')}: {', '.join(sorted(paths))}"
+            )
         for ref, commit in sorted(self.restored.items()):
             out.append(f"integrity check: restored them on {ref} in commit {commit[:12]}")
         for ref in self.unrestored:

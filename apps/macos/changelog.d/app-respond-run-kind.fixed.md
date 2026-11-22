@@ -1,0 +1,1 @@
+- Telegram replies (the run that answers your Telegram messages) now show in the Runs list, the Health page and the Type filter as "Telegram reply", with their commits linked. Before, the app left them out. The Glossary explains the term. A run kind from a newer Scout engine is left out of the list instead of being shown as a different kind.

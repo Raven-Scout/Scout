@@ -139,7 +139,7 @@ struct SessionsListView: View {
             ? [run.type.rawValue]
             : Array(Set([run.slotKey, run.ledgerKey].compactMap { $0 })).sorted()
         let hay = [
-            run.displayName, run.status.displayName,
+            run.displayName, run.statusDisplayName,
             run.startedAt.formatted(date: .abbreviated, time: .omitted),
         ] + engineNames + ProtectionBadge.kinds(for: run).map(\.title) + run.commits.map(\.subject)
         return hay.joined(separator: " ").localizedCaseInsensitiveContains(search)
