@@ -9,6 +9,9 @@ import SwiftUI
 struct ActionItemsKeyboardContext: Equatable {
     /// The keyboard-current card.
     var cursorID: UUID?
+    /// The card the focus ring marks while the list has the keys: the current
+    /// one, else the first, where ↓ starts (`KeyboardListNavigation.ringed`).
+    var ringID: UUID?
     /// False while a comment editor has focus (⌘↵ is then its Send or Save,
     /// so Done doesn't bind it too) or the search field does.
     var commitKeyFree = true

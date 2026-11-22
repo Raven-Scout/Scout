@@ -5,10 +5,11 @@ import SwiftUI
 /// optional new-draft slot at the top, and the selection binding.
 ///
 /// Column widths come from the shared `SchedulesColumns` spec so the header and
-/// every row align (issue #14). A `GeometryReader` measures the available pane
-/// width: the NAME column flexes to fill it, and when the pane is narrower than
-/// `SchedulesColumns.minTotal` the whole table scrolls horizontally rather than
-/// clipping against the window frame (issue #13).
+/// every row align (issue #14). They widen with the Text size, and a
+/// `GeometryReader` measures the available pane width: the NAME column flexes
+/// to fill it, the days column drops its word when the words don't fit, and a
+/// pane too narrow for a row of columns shows one card per schedule instead of
+/// scrolling sideways (issue #13, UI audit T4).
 struct SchedulesMasterTable: View {
     let slots: [Slot]
     let newDraftSlot: Slot?
@@ -27,45 +28,45 @@ struct SchedulesMasterTable: View {
     }
 
     var body: some View {
+        // Reading the scale here re-lays the table out when Text size changes.
+        let columns = SchedulesColumns(scale: TextScale.shared.factor)
         GeometryReader { geo in
             let available = geo.size.width
-            let needsScroll = available < SchedulesColumns.minTotal
-            let nameWidth = SchedulesColumns.nameWidth(forAvailable: available)
-
-            if needsScroll {
-                ScrollView(.horizontal, showsIndicators: true) {
-                    table(nameWidth: nameWidth)
-                        .frame(width: SchedulesColumns.minTotal, alignment: .leading)
-                }
+            let mode = columns.mode(forAvailable: available)
+            if mode == .stacked {
+                SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
+                                     selectedSlotKey: $selectedSlotKey, warnings: warnings,
+                                     twentyFourHour: true)
             } else {
-                table(nameWidth: nameWidth)
+                table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode))
             }
         }
     }
 
-    private func table(nameWidth: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            headerRow(nameWidth: nameWidth)
+    private func table(_ columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
+        // The row the ring marks while the table has the keys (see `SchedulesMasterCards`).
+        let ringed = KeyboardListNavigation.ringed(selectedSlotKey, in: Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot))
+        return VStack(alignment: .leading, spacing: 0) {
+            headerRow(columns, mode: mode, nameWidth: nameWidth)
             Divider().background(DS.Rule.hard)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if let draft = newDraftSlot {
-                            row(for: draft, nameWidth: nameWidth)
+                            row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
                             Divider().background(DS.Rule.soft)
                         }
                         ForEach(slots) { slot in
-                            row(for: slot, nameWidth: nameWidth)
+                            row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
                             Divider().background(DS.Rule.soft)
                         }
                     }
                 }
                 // ↑ ↓ Home End move the selection once the table has keyboard
                 // focus; a click on a row gives it focus.
-                .focusable()
-                .focused($tableFocused)
-                .focusEffectDisabled()
+                .dsFocusContainer($tableFocused)
                 .keyboardListNavigation(
+                    when: tableFocused,
                     ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
                     selection: $selectedSlotKey
                 ) { key in
@@ -75,28 +76,31 @@ struct SchedulesMasterTable: View {
         }
     }
 
-    private func headerRow(nameWidth: CGFloat) -> some View {
+    private func headerRow(_ columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
         HStack(spacing: SchedulesColumns.spacing) {
-            headerCell("NAME").frame(width: nameWidth, alignment: .leading)
-            headerCell("TYPE").frame(width: SchedulesColumns.type, alignment: .leading)
-            headerCell("TIME").frame(width: SchedulesColumns.time, alignment: .leading)
-            headerCell("DAYS").frame(width: SchedulesColumns.days, alignment: .leading)
-            headerCell("ON MISS").frame(width: SchedulesColumns.onMiss, alignment: .leading)
-            headerCell("COOLDOWN").frame(width: SchedulesColumns.cooldown, alignment: .leading)
+            Self.headerCell("NAME").frame(width: nameWidth, alignment: .leading)
+            Self.headerCell("TYPE").frame(width: columns.type, alignment: .leading)
+            Self.headerCell("TIME").frame(width: columns.time, alignment: .leading)
+            Self.headerCell("DAYS").frame(width: columns.days(mode), alignment: .leading)
+            Self.headerCell("ON MISS").frame(width: columns.onMiss, alignment: .leading)
+            Self.headerCell("COOLDOWN").frame(width: columns.cooldown, alignment: .leading)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, SchedulesColumns.hPadding)
     }
 
-    private func headerCell(_ text: String) -> some View {
+    /// One line: a header never wraps a word ("COOLDOWN" did at Largest text).
+    static func headerCell(_ text: String) -> some View {
         Text(text)
             .font(DS.font(.caption2, weight: .medium))
             .tracking(1)
             .foregroundStyle(DS.Ink.p4)
+            .lineLimit(1)
     }
 
     @ViewBuilder
-    private func row(for slot: Slot, nameWidth: CGFloat) -> some View {
+    private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat,
+                     ringed: String?) -> some View {
         let isSelected = selectedSlotKey == slot.key
         // A button, not a tap gesture, so rows take keyboard focus and
         // VoiceOver reads each one as a selectable button.
@@ -105,10 +109,12 @@ struct SchedulesMasterTable: View {
             tableFocused = true
         } label: {
             SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth,
-                         warnings: warnings[slot.key] ?? [])
+                         warnings: warnings[slot.key] ?? [], columns: columns, mode: mode)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
+        // Tab onto the table itself rings this row (T4).
+        .dsCursorRing(ringed == slot.key, cornerRadius: 4)
         .accessibilitySelected(isSelected)
         .accessibilityIdentifier("schedules-row-\(slot.key)")
         .id(slot.key)

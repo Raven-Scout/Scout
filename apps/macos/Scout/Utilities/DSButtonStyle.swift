@@ -25,9 +25,10 @@ import SwiftUI
 //
 // Each takes a size, `.ds(.secondary, size: .small)`, for dense rows. The
 // style sets the font and colours itself, so callers don't add `.font` or
-// `.foregroundStyle`. Disabled, pressed and keyboard-focus states are drawn
-// for every role. `.plainHit` stays for hit areas that aren't actions in this
-// sense: chips, segments, rows, disclosure headers, icon buttons.
+// `.foregroundStyle`. Disabled and pressed states are drawn for every role;
+// keyboard focus is the system ring (see "Focus ring" below). `.plainHit`
+// stays for hit areas that aren't actions in this sense: chips, segments,
+// rows, disclosure headers, icon buttons.
 //
 // The colours are palette swatches (`DS.buttonColors`), so
 // `ContrastPairsTests` checks every label against its fill, enabled and
@@ -101,8 +102,6 @@ private struct DSButtonBody: View {
     let role: DS.ButtonRole
     let size: DS.ButtonSize
     @Environment(\.isEnabled) private var isEnabled
-    /// Inside a button style this is the button's own focus.
-    @Environment(\.isFocused) private var isFocused
     @State private var isHovering = false
 
     var body: some View {
@@ -140,7 +139,6 @@ private struct DSButtonBody: View {
             .opacity(!chromed && configuration.isPressed ? 0.7 : 1)
             .contentShape(shape)
             .onHover { hovering in if role == .quiet { isHovering = hovering } }
-            .dsFocusRing(isFocused, cornerRadius: DS.buttonCornerRadius)
     }
 }
 
@@ -163,10 +161,58 @@ extension ButtonStyle where Self == DSButtonStyle {
 
 // MARK: - Focus ring
 
+// What SwiftUI reports, measured with Keyboard navigation on (UI audit T4):
+//
+// - A button style's `@Environment(\.isFocused)` is never the button's own
+//   focus: it is the nearest focusable view *around* the button. So a style
+//   that rang `isFocused` rang every button in a list the moment the list
+//   had the focus, and never the one Tab was on.
+// - A focused button gets the system focus ring, unless a view around it set
+//   `.focusEffectDisabled()`.
+// - `@FocusState` on a `.focusable()` view stays true while a control inside
+//   it has the focus.
+//
+// So DS styles draw no ring of their own, and a list that takes the arrow
+// keys is focusable through a sink behind its content (`dsFocusContainer`),
+// never around it.
+
+extension EnvironmentValues {
+    /// A focusable container around this view holds the keyboard focus
+    /// itself, not a control inside it: its current item draws the ring
+    /// (`dsCursorRing`). See `dsFocusContainer(_:showsCursor:)`.
+    @Entry var dsFocusContainerShowsCursor: Bool = false
+}
+
 extension View {
-    /// The keyboard focus ring custom-styled controls draw for themselves
-    /// (they get no system focus indicator). Shared by `.plainHit` and the DS
-    /// button styles so focus looks the same on every control.
+    /// Makes a list or grid that takes the arrow keys focusable: a Tab stop
+    /// of its own, whose current item draws the ring (`dsCursorRing`).
+    /// Every focusable list needs one (`FocusContainerGuardTests`).
+    ///
+    /// The focus sits on a sink behind the content, not on a view around it,
+    /// so `focus` is the list's own (false while Tab is on a button inside),
+    /// no button inside inherits it, and the buttons keep their system focus
+    /// ring. Key handlers on this view also hear keys a focused button inside
+    /// didn't use: gate them on `focus` (`keyboardListNavigation(when:)`).
+    /// Pass `showsCursor: false` while a field inside has the keys.
+    func dsFocusContainer(_ focus: FocusState<Bool>.Binding, showsCursor: Bool = true) -> some View {
+        background {
+            Color.clear
+                .focusable()
+                .focused(focus)
+                .focusEffectDisabled()
+                .accessibilityHidden(true)
+        }
+        .environment(\.dsFocusContainerShowsCursor, focus.wrappedValue && showsCursor)
+    }
+
+    /// The ring on a focusable container's current item (its cursor or
+    /// selection) while the container holds the keyboard focus itself.
+    func dsCursorRing(_ isCurrent: Bool, cornerRadius: CGFloat = 6) -> some View {
+        modifier(DSCursorRing(isCurrent: isCurrent, cornerRadius: cornerRadius))
+    }
+
+    /// The keyboard focus ring Scout draws itself: on a `dsField` and on a
+    /// focusable container's current item. Buttons get the system's.
     func dsFocusRing(_ isFocused: Bool, cornerRadius: CGFloat = 6) -> some View {
         overlay {
             if isFocused {
@@ -176,5 +222,15 @@ extension View {
                     .allowsHitTesting(false)
             }
         }
+    }
+}
+
+private struct DSCursorRing: ViewModifier {
+    let isCurrent: Bool
+    let cornerRadius: CGFloat
+    @Environment(\.dsFocusContainerShowsCursor) private var showsCursor
+
+    func body(content: Content) -> some View {
+        content.dsFocusRing(isCurrent && showsCursor, cornerRadius: cornerRadius)
     }
 }

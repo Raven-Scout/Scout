@@ -48,6 +48,24 @@ struct SessionsLayoutTests {
         #expect(SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now)[.done] == nil)
     }
 
+    /// T4 hand check: with "Show recently done" on, the Done chip left every lane
+    /// empty, its cards folded behind "Done (1)". A chip that picks the state opens them.
+    @Test func theDoneChipOpensDoneCards() throws {
+        let index = try SessionsFixture.index()
+        var filter = SessionsFilter()
+        filter.showRecentlyDone = true
+        #expect(!SessionsLayout.opens(.done, filter: filter) && !SessionsLayout.opens(.stale, filter: filter))
+        filter.states = [.done]
+        #expect(SessionsLayout.opens(.done, filter: filter) && !SessionsLayout.opens(.stale, filter: filter))
+        let rows = SessionsLayout.rows(index: index, filter: filter, now: now)
+        // Every card the chip leaves is a done one, so all of them would have been folded.
+        #expect(rows.allSatisfy { $0.active.isEmpty && $0.stale.isEmpty })
+        #expect(ids(rows.flatMap(\.done)) == ["local_D"])
+        filter.states = [.stale, .running]
+        #expect(SessionsLayout.opens(.stale, filter: filter))
+        #expect(!SessionsLayout.opens(.running, filter: filter))   // never folded
+    }
+
     @Test func scoutRunsAppearOnlyWhenAskedFor() throws {
         let index = try SessionsFixture.index()
         var filter = SessionsFilter()

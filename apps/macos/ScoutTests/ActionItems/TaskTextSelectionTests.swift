@@ -80,45 +80,51 @@ struct TaskTextSelectionTests {
     }
 
     @Test func anOpenCardsBodySubBulletsAndCommentsCanBeCopied() async throws {
-        let task = SmokeFixtures.task(comments: SmokeFixtures.comments, details: SmokeFixtures.details)
-        let window = try await mount(TaskCardView(
-            task: task, kind: .urgent, displayedDate: SmokeFixtures.day,
-            scoutDirectory: URL(fileURLWithPath: "/tmp/scout"), onOp: { _, _ in }))
-        defer { window.close() }
+        try await KeyWindowGate.run {
+            let task = SmokeFixtures.task(comments: SmokeFixtures.comments, details: SmokeFixtures.details)
+            let window = try await mount(TaskCardView(
+                task: task, kind: .urgent, displayedDate: SmokeFixtures.day,
+                scoutDirectory: URL(fileURLWithPath: "/tmp/scout"), onOp: { _, _ in }))
+            defer { window.close() }
 
-        let texts = try await selectableTexts(in: window, waitingFor: [
-            "RFC by Friday", "Priya opens this tracker on Tuesday.", "Saw three alerts in ten minutes.",
-        ])
-        #expect(texts.contains { $0.contains("RFC by Friday") })
-        #expect(texts.contains("Priya opens this tracker on Tuesday."))
-        #expect(texts.contains("Saw three alerts in ten minutes."))
-        // A click on the title opens and closes the card, so it stays a click target.
-        #expect(!texts.contains { $0.contains("Reply to Priya") })
+            let texts = try await selectableTexts(in: window, waitingFor: [
+                "RFC by Friday", "Priya opens this tracker on Tuesday.", "Saw three alerts in ten minutes.",
+            ])
+            #expect(texts.contains { $0.contains("RFC by Friday") })
+            #expect(texts.contains("Priya opens this tracker on Tuesday."))
+            #expect(texts.contains("Saw three alerts in ten minutes."))
+            // A click on the title opens and closes the card, so it stays a click target.
+            #expect(!texts.contains { $0.contains("Reply to Priya") })
 
-        let comment = try #require(selectableViews(in: window).first { text(of: $0) == "Saw three alerts in ten minutes." })
-        #expect(try await copyAll(comment, in: window) == "Saw three alerts in ten minutes.")
+            let comment = try #require(selectableViews(in: window).first { text(of: $0) == "Saw three alerts in ten minutes." })
+            #expect(try await copyAll(comment, in: window) == "Saw three alerts in ten minutes.")
+        }
     }
 
     @Test func aBoardCardsSubjectCanBeCopied() async throws {
-        let window = try await mount(
-            BoardCardView(task: SmokeFixtures.task(), kind: .todo, scoutDirectory: URL(fileURLWithPath: "/tmp/scout")),
-            size: CGSize(width: 320, height: 200))
-        defer { window.close() }
+        try await KeyWindowGate.run {
+            let window = try await mount(
+                BoardCardView(task: SmokeFixtures.task(), kind: .todo, scoutDirectory: URL(fileURLWithPath: "/tmp/scout")),
+                size: CGSize(width: 320, height: 200))
+            defer { window.close() }
 
-        _ = try await selectableTexts(in: window, waitingFor: ["Reply to Priya"])
-        let subject = try #require(selectableViews(in: window).first { text(of: $0).contains("Reply to Priya") })
-        #expect(try await copyAll(subject, in: window)?.contains("Reply to Priya") == true)
+            _ = try await selectableTexts(in: window, waitingFor: ["Reply to Priya"])
+            let subject = try #require(selectableViews(in: window).first { text(of: $0).contains("Reply to Priya") })
+            #expect(try await copyAll(subject, in: window)?.contains("Reply to Priya") == true)
+        }
     }
 
     @Test func aTopicStepsDetailCanBeCopied() async throws {
-        let body = "Walk Sam through the rollout checklist before Thursday, then hand the dashboard to Priya."
-        let task = SmokeFixtures.task(body: body, details: SmokeFixtures.details)
-        let window = try await mount(StepDetailView(
-            task: task, rootSession: nil, prompt: { "" }, scoutDirectory: URL(fileURLWithPath: "/tmp/scout")))
-        defer { window.close() }
+        try await KeyWindowGate.run {
+            let body = "Walk Sam through the rollout checklist before Thursday, then hand the dashboard to Priya."
+            let task = SmokeFixtures.task(body: body, details: SmokeFixtures.details)
+            let window = try await mount(StepDetailView(
+                task: task, rootSession: nil, prompt: { "" }, scoutDirectory: URL(fileURLWithPath: "/tmp/scout")))
+            defer { window.close() }
 
-        let texts = try await selectableTexts(in: window, waitingFor: [body, "Priya opens this tracker on Tuesday."])
-        #expect(texts.contains(body))
-        #expect(texts.contains("Priya opens this tracker on Tuesday."))
+            let texts = try await selectableTexts(in: window, waitingFor: [body, "Priya opens this tracker on Tuesday."])
+            #expect(texts.contains(body))
+            #expect(texts.contains("Priya opens this tracker on Tuesday."))
+        }
     }
 }

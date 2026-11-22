@@ -48,13 +48,18 @@ struct DoctorPresentation: Equatable {
         // The same issues and count as Settings, the Health page and the status bar (UI audit R1).
         let summary = HealthSummary(doctor: doctor)
         let count = summary.attentionLabel.map { " · \($0)" } ?? ""
-        switch (doctor.severity, summary.severity) {
+        // The worse of the two verdicts sets the tone (T4): a yellow install beside a failing
+        // run used to read "works, with warnings" in amber.
+        switch (doctor.severity, summary.overall(doctor: doctor.severity)) {
         case (.red, _): headline = "Scout's engine has problems\(count)"; tone = .error
+        case (_, .red):
+            headline = summary.issues.first?.source == .install
+                ? "Scout's engine has problems\(count)" : "Scheduled runs need attention\(count)"
+            tone = .error
         case (.yellow, _): headline = "Scout's engine works, with warnings\(count)"; tone = .warn
-        case (.green, .green): headline = "Scout's engine is healthy"; tone = .ok
         // A healthy install whose runs aren't: say so, rather than "healthy" beside a warning.
-        case (.green, .red): headline = "Scheduled runs need fixing\(count)"; tone = .error
-        case (.green, .yellow): headline = "Scheduled runs need a look\(count)"; tone = .warn
+        case (_, .yellow): headline = "Scheduled runs need a look\(count)"; tone = .warn
+        case (_, .green): headline = "Scout's engine is healthy"; tone = .ok
         }
         func item(_ issue: HealthSummary.Issue) -> Item { Item(text: issue.title, fix: issue.fix, files: issue.items) }
         var groups: [Group] = []

@@ -195,7 +195,6 @@ private struct DSChipBody: View {
     let configuration: ButtonStyleConfiguration
     let selected: Bool
     @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.isFocused) private var isFocused
     @State private var hovering = false
 
     var body: some View {
@@ -222,7 +221,6 @@ private struct DSChipBody: View {
             }
             .contentShape(Capsule())
             .onHover { hovering = $0 }
-            .dsFocusRing(isFocused, cornerRadius: DS.chipHeight / 2)
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

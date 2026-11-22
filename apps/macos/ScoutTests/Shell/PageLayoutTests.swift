@@ -126,6 +126,14 @@ struct PageLayoutTests {
         #expect(FilterChipsView.statusTitle(.snoozed) == "Snoozed")
     }
 
+    /// UI audit T4: "Done" was both a status filter and a section chip. The status owns the word.
+    @Test("Done names one control: the status filter, not a section chip too")
+    func doneIsOnlyAStatus() {
+        #expect(ActionItemsFilter.Status.allCases.map(FilterChipsView.statusTitle).contains("Done"))
+        #expect(!FilterChipsView.kindOptions.map(\.label).contains("Done"))
+        #expect(!FilterChipsView.kindOptions.map(\.kind).contains(.done))
+    }
+
     // MARK: - Sessions header and detail pane
 
     @Test("the Sessions header never wraps its title and fits the board's width")
@@ -166,6 +174,23 @@ struct PageLayoutTests {
         #expect(Pane.layout(pageWidth: 1059, hasSelection: true) == .shown(width: 380, closable: false))
         #expect(Pane.layout(pageWidth: 879, hasSelection: false) == .hidden)
         #expect(Pane.layout(pageWidth: 879, hasSelection: true) == .shown(width: 340, closable: true))
+    }
+
+    /// UI audit T4: Sessions' empty "Pick a session" pane took about a quarter of the
+    /// window at 1280 and 1600 pt. With nothing picked it steps aside at every width.
+    @Test("Sessions hides its detail pane until a session is picked, and can always close it")
+    func sessionsDetailPaneHidesWhenEmpty() {
+        typealias Pane = SessionsView.DetailPane
+        for window in LayoutSize.windowWidths {
+            let page = LayoutSize.pageWidth(window: window)
+            #expect(Pane.layout(pageWidth: page, hasSelection: false, hidesWhenEmpty: true) == .hidden, "\(window) pt")
+            guard case .shown(_, let closable) = Pane.layout(pageWidth: page, hasSelection: true, hidesWhenEmpty: true)
+            else { Issue.record("no pane with a selection at \(window) pt"); continue }
+            #expect(closable, "\(window) pt")
+        }
+        #expect(Pane.layout(pageWidth: 1379, hasSelection: true, hidesWhenEmpty: true) == .shown(width: 380, closable: true))
+        #expect(Pane.layout(pageWidth: 879, hasSelection: true, hidesWhenEmpty: true) == .shown(width: 340, closable: true))
+        #expect(Pane.layout(pageWidth: nil, hasSelection: false, hidesWhenEmpty: true) == .hidden)
     }
 
     @Test("Schedules closes its pane only when compact, and never over a new slot or unsaved edits")

@@ -296,7 +296,7 @@ final class OnboardingViewModel: ObservableObject {
                                 detail: "Nothing stops Scout from running. Settings ▸ Engine lists them.",
                                 tone: .warn, details: lines)
         case .red:
-            return ReadySummary(title: "Something needs fixing before the first run",
+            return ReadySummary(title: "Something needs attention before the first run",
                                 detail: "Scout is installed, but its health check found a problem. Settings ▸ Engine has the details and a Repair button.",
                                 tone: .err, details: lines)
         }

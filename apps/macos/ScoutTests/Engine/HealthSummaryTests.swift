@@ -94,7 +94,7 @@ struct HealthSummaryTests {
 
         let settings = EngineSettingsModel(state: state, doctor: doctor, lastError: nil, bundledVersion: nil)
         #expect(settings.findingCountsLabel == "2 warnings")
-        #expect(settings.healthLabel == "Healthy, with warnings")
+        #expect(settings.healthLabel == "Needs a look")
 
         let doctorWindow = DoctorPresentation(state: state, doctor: doctor, lastError: nil)
         #expect(doctorWindow.headline.hasSuffix("· 2 warnings"))

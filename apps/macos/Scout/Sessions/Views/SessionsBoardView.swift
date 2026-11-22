@@ -32,7 +32,11 @@ struct SessionsEmptyStateView: View {
 
 /// The board (spec §6.2): a Now strip of needs-you and running cards, then one
 /// swimlane per project with cards in severity order. Stale and done cards sit
-/// behind collapsed "Stale (n)" / "Done (n)" pills at the end of each lane.
+/// behind collapsed "Stale (n)" / "Done (n)" pills beside each lane's title.
+///
+/// A lane wraps its cards onto as many rows as it needs, each row filled with
+/// whole cards (`SessionsLane`). It used to be one sideways-scrolling row,
+/// which cut the last card off at every window width (UI audit T4).
 struct SessionsBoardView: View {
     let index: SessionIndex
     let filter: SessionsFilter
@@ -55,18 +59,41 @@ struct SessionsBoardView: View {
                 // Now cards aren't repeated in the lanes below, so each one
                 // names its project.
                 if !strip.isEmpty {
-                    lane(title: "Now", counts: nil) {
-                        ForEach(strip) {
-                            card($0, titles: titles,
-                                 projectName: projectNames[$0.projectKey] ?? SessionsLayout.basename($0.projectKey))
+                    lane(title: "Now", counts: nil, chips: { EmptyView() }) {
+                        grid {
+                            ForEach(strip) {
+                                card($0, titles: titles,
+                                     projectName: projectNames[$0.projectKey] ?? SessionsLayout.basename($0.projectKey))
+                            }
                         }
                     }
                 }
                 ForEach(rows) { row in
-                    lane(title: row.name, counts: row.counts) {
-                        ForEach(row.active) { card($0, titles: titles) }
-                        collapsible("Stale", sessions: row.stale, rowID: row.id, expanded: $expandedStale, titles: titles)
-                        collapsible("Done", sessions: row.done, rowID: row.id, expanded: $expandedDone, titles: titles)
+                    // A state chip that picks stale or done opens them: folded,
+                    // the Done chip showed every lane empty (T4 hand check).
+                    let staleOpen = SessionsLayout.opens(.stale, filter: filter) || expandedStale.contains(row.id)
+                    let doneOpen = SessionsLayout.opens(.done, filter: filter) || expandedDone.contains(row.id)
+                    lane(title: row.name, counts: row.counts, chips: {
+                        if !SessionsLayout.opens(.stale, filter: filter) {
+                            toggle("Stale", count: row.stale.count, rowID: row.id, expanded: $expandedStale)
+                        }
+                        if !SessionsLayout.opens(.done, filter: filter) {
+                            toggle("Done", count: row.done.count, rowID: row.id, expanded: $expandedDone)
+                        }
+                    }) {
+                        if !row.active.isEmpty {
+                            grid { ForEach(row.active) { card($0, titles: titles) } }
+                        }
+                        // Opened stale or done cards start under a quiet rule, so they
+                        // don't read as more of the lane's active work (T4 review).
+                        if staleOpen, !row.stale.isEmpty {
+                            groupRule("Stale")
+                            grid { ForEach(row.stale) { card($0, titles: titles) } }
+                        }
+                        if doneOpen, !row.done.isEmpty {
+                            groupRule("Done")
+                            grid { ForEach(row.done) { card($0, titles: titles) } }
+                        }
                     }
                 }
                 if rows.isEmpty && strip.isEmpty,
@@ -80,8 +107,9 @@ struct SessionsBoardView: View {
         }
     }
 
-    private func lane<Cards: View>(
-        title: String, counts: [AgentSessionState: Int]?, @ViewBuilder cards: () -> Cards
+    private func lane<Chips: View, Content: View>(
+        title: String, counts: [AgentSessionState: Int]?,
+        @ViewBuilder chips: () -> Chips, @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
@@ -94,16 +122,30 @@ struct SessionsBoardView: View {
                 if let counts {
                     countPills(counts)
                 }
+                chips()
             }
-            // Indicators on: a lane wider than the page cut its last card off
-            // with no hint that it scrolls (UI audit C6).
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 10) { cards() }
-                    .padding(.vertical, 2)
-                    .padding(.bottom, 6)
-            }
-            .scrollIndicators(.visible)
+            content()
         }
+    }
+
+    /// Whole cards, as many to a row as fit (`SessionsLane`).
+    private func grid<Cards: View>(@ViewBuilder _ cards: () -> Cards) -> some View {
+        LazyVGrid(columns: SessionsLane.columns, alignment: .leading, spacing: SessionsLane.spacing) { cards() }
+            .padding(.vertical, 2)
+    }
+
+    /// A quiet labelled rule above a lane's opened stale or done cards.
+    private func groupRule(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label.uppercased())
+                .font(DS.font(.caption2, weight: .medium))
+                .tracking(1)
+                .foregroundStyle(DS.Ink.p4)
+            EditorialRule(color: DS.Rule.soft)
+        }
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     /// One tiny pill per state present in the lane, in severity order (spec §6.2).
@@ -136,27 +178,32 @@ struct SessionsBoardView: View {
         }
     }
 
+    /// Shows or hides a lane's stale or done cards, which then wrap in after its active ones.
     @ViewBuilder
-    private func collapsible(
-        _ label: String, sessions: [AgentSession], rowID: String,
-        expanded: Binding<Set<String>>, titles: [String: String]
-    ) -> some View {
-        if !sessions.isEmpty {
+    private func toggle(_ label: String, count: Int, rowID: String, expanded: Binding<Set<String>>) -> some View {
+        if count > 0 {
             let isOpen = expanded.wrappedValue.contains(rowID)
             Button {
                 if isOpen { expanded.wrappedValue.remove(rowID) } else { expanded.wrappedValue.insert(rowID) }
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: isOpen ? "chevron.left" : "chevron.right")
+                    Image(systemName: isOpen ? "chevron.down" : "chevron.right")
                         .imageScale(.small)
-                    Text("\(label) (\(sessions.count))")
+                    Text("\(label) (\(count))")
                 }
             }
             .buttonStyle(.dsChip(selected: isOpen))
-            .accessibilityLabel(isOpen ? "Hide \(label.lowercased()) sessions" : "Show \(sessions.count) \(label.lowercased()) sessions")
-            if isOpen {
-                ForEach(sessions) { card($0, titles: titles) }
-            }
+            .fixedSize()
+            .accessibilityLabel(isOpen ? "Hide \(label.lowercased()) sessions" : "Show \(count) \(label.lowercased()) sessions")
         }
     }
+}
+
+/// How a board lane lays out its cards (UI audit T4): as many whole cards per
+/// row as fit, at least `minCardWidth` each, stretched to fill the row, then
+/// the next row. Nothing is cut off at the lane's edge.
+enum SessionsLane {
+    static let minCardWidth: CGFloat = 240
+    static let spacing: CGFloat = 10
+    static let columns = [GridItem(.adaptive(minimum: minCardWidth), spacing: spacing, alignment: .top)]
 }
