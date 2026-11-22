@@ -406,6 +406,40 @@ def test_deny_list_collapses_wholly_private_folders(tmp_path: Path, monkeypatch:
     assert not any(_touches(p, exp) for p in denied)
 
 
+def test_the_snapshot_argv_names_only_a_committed_file_inside_it(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "run.py").write_text("print(1)\n")
+    (src / "sub" / "go.sh").write_text("echo\n")
+    (src / "link.py").symlink_to(src / "run.py")
+    real = os.path.realpath(src)
+    assert runner._from_snapshot(["python3", "run.py", "--n", "2"], str(src)) == [
+        "python3",
+        f"{real}/run.py",
+        "--n",
+        "2",
+    ]
+    assert runner._from_snapshot(["./sub/go.sh", "x"], str(src)) == [f"{real}/sub/go.sh", "x"]
+    for argv in (
+        ["/bin/sh", "-c", "echo"],
+        ["python3", "missing.py"],
+        ["python3", "../run.py"],
+        ["python3", "link.py"],
+    ):
+        with pytest.raises(LabError):
+            runner._from_snapshot(argv, str(src))
+    with pytest.raises(LabError, match="commit"):
+        runner.run_experiment(tmp_path, h.SLUG, h.EID, ["./x"], cap_usd=1, commit="HEAD")
+
+
+def test_the_owners_ledger_folder_unwritable_is_a_lab_error(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".local").mkdir(parents=True)
+    (home / ".local" / "state").write_text("a file where the folder would go")
+    with pytest.raises(LabError, match="ledger"):
+        runner.ledger_path(tmp_path, h.SLUG, h.EID, {"HOME": str(home)})
+
+
 def test_private_lab_folders_are_denied_whole_even_before_they_exist(tmp_path: Path) -> None:
     """I4: a private thread's folder and a private experiment's folder are denied as folders, so an output the
     private experiment writes later is denied too; the running experiment's own folder never is."""

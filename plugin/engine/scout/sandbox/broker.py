@@ -17,9 +17,9 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
 - When the broker doesn't answer, the client writes the request to a queue in the vault (:func:`enqueue`) and
   :func:`drain` applies it after the session, validated exactly like a live request.
 - ``scoutctl lab experiment run`` hands over to :func:`client_experiment`: the broker checks the experiment's
-  committed note (:func:`validate_experiment`: notice, veto, the owner's cap) and runs its script with
-  :func:`scout.lab.runner.run_experiment`, since ``sandbox-exec`` can't nest inside the run's own sandbox. An
-  experiment request is never queued.
+  committed note (:func:`validate_experiment`: notice, veto, started, the owner's cap) and runs its script with
+  :func:`scout.lab.runner.run_experiment`, from the commit it checked, since ``sandbox-exec`` can't nest inside
+  the run's own sandbox. An experiment request is never queued; a refused one doesn't use the run's allowance.
 """
 
 from __future__ import annotations
@@ -446,7 +446,7 @@ EXPERIMENT_INTERPRETERS = frozenset({"python3", "python", "sh", "bash", "node"})
 
 
 def _committed_command(
-    vault: Path, exp_rel: str, argv: list[str], runner_owned: Callable[[str], bool]
+    vault: Path, exp_rel: str, argv: list[str], runner_owned: Callable[[str], bool], commit: str = "HEAD"
 ) -> list[str]:  # fmt: skip
     """``argv`` when it runs a committed file of the experiment's own folder, else :class:`Refused` (``argv``).
 
@@ -470,7 +470,7 @@ def _committed_command(
     inner = "/".join(parts)
     if runner_owned(inner):
         raise Refused(EXIT_REFUSED, f"argv: {inner} is the runner's own file, not the experiment's script")
-    listing = _vault_git(vault, "ls-tree", "-z", "HEAD", "--", f"./{exp_rel}/{inner}") or ""
+    listing = _vault_git(vault, "ls-tree", "-z", commit, "--", f"./{exp_rel}/{inner}") or ""
     mode = listing.split(" ", 1)[0] if listing.endswith(f"\t{exp_rel}/{inner}\0") else ""
     if mode not in ("100644", "100755") or (direct and mode != "100755"):
         why = "isn't a committed executable file" if direct else "isn't a committed file"
@@ -490,14 +490,17 @@ def _shown(vault: Path, moment: datetime) -> str:
 
 def validate_experiment(
     req: Mapping[str, Any], vault: Path, limits: LabLimits, now: datetime
-) -> tuple[str, str, list[str], float]:
-    """(slug, EID, argv, cap) for an experiment request, or :class:`Refused` (exit 2).
+) -> tuple[str, str, list[str], float, str]:
+    """(slug, EID, argv, cap, commit) for an experiment request, or :class:`Refused` (exit 2).
 
-    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that). It
-    doesn't run when:
+    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that), and
+    HEAD is resolved once, to the ``commit`` every check reads and the runner runs the scripts from (ruling R30:
+    the worktree can change after this). It doesn't run when:
 
     - the note isn't at HEAD, or is ``vetoed`` there or in any earlier commit (a veto is final: ruling R22)
-    - the note or its experiment folder has uncommitted changes, other than the runner's own files (R23)
+    - the worktree note isn't ``running`` (``lab experiment start`` comes first: ruling R31)
+    - the note or its experiment folder has uncommitted changes, other than the runner's own files and the
+      lifecycle fields ``start`` writes (R23, R25)
     - the newest commit touching the note or the folder's files is more recent than the owner's notice (R23)
     - ``argv`` doesn't run a committed file of the experiment's folder (:func:`_committed_command`, R26)
 
@@ -528,7 +531,10 @@ def validate_experiment(
     if note is None:
         raise Refused(EXIT_REFUSED, f"{slug}: no experiment note for {eid}")
     rel = note.relative_to(vault).as_posix()
-    committed = _vault_git(vault, "show", f"HEAD:./{rel}")
+    commit = (_vault_git(vault, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip()
+    if not _SHA_RE.match(commit):
+        raise Refused(EXIT_REFUSED, "the vault has no commit to run an experiment from")
+    committed = _vault_git(vault, "show", f"{commit}:./{rel}")
     if committed is None:
         raise Refused(EXIT_REFUSED, f"{note.name} isn't at HEAD; an experiment runs only once its plan is committed")
     head = parse_experiment(slug, committed)
@@ -549,9 +555,11 @@ def validate_experiment(
     except (OSError, UnicodeDecodeError):
         raise Refused(EXIT_REFUSED, f"cannot read {note.name}") from None
     worktree_status = parse_experiment(slug, worktree_text).status
-    if worktree_status not in ("planned", "running"):
+    if worktree_status != "running":
         raise Refused(
-            EXIT_REFUSED, f"{eid} is {worktree_status or 'without a status'}; only a planned or running one runs"
+            EXIT_REFUSED,
+            f"{eid} is {worktree_status or 'without a status'}, not running; only a running experiment runs "
+            f"(`scoutctl lab experiment start {slug} {eid}` first)",
         )
     dirty = _uncommitted(vault, [rel, exp_rel])
     if dirty is None:
@@ -561,7 +569,7 @@ def validate_experiment(
     if dirty:
         shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
         raise Refused(EXIT_REFUSED, f"{eid} has uncommitted changes ({shown}); commit them and wait out the notice")
-    argv = _committed_command(vault, exp_rel, list(argv), lab_runner.runner_owned)
+    argv = _committed_command(vault, exp_rel, list(argv), lab_runner.runner_owned, commit)
     commits = _touched(vault, [rel, exp_rel])
     if commits is None:
         raise Refused(EXIT_REFUSED, f"git couldn't read {eid}'s history; the notice can't be counted")
@@ -592,7 +600,7 @@ def validate_experiment(
     raw = head.frontmatter.get("cost_cap_usd")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
         raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
-    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd)
+    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -871,15 +879,23 @@ class Broker:
         if self.experiments_run >= allowed:
             return Reply(EXIT_LIMIT, f"scoutctl lab: this run has run its {allowed} experiment(s)\n", kind=RUN_LIMIT)
         try:
-            slug, eid, argv, cap = validate_experiment(req, self.vault, self.lab_limits, self.clock())
+            slug, eid, argv, cap, commit = validate_experiment(req, self.vault, self.lab_limits, self.clock())
         except Refused as r:
+            # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
             return Reply(r.exit_code, f"scoutctl lab: {r.reason}\n", kind=REFUSED)
         # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
         # (a survivor of the kill sweep) still ran.
         self.experiments_run += 1
         try:
             outcome = runner.run_experiment(
-                self.vault, slug, eid, argv, cap_usd=cap, timeout_s=self.lab_limits.timeout_s, env=self.env
+                self.vault,
+                slug,
+                eid,
+                argv,
+                cap_usd=cap,
+                timeout_s=self.lab_limits.timeout_s,
+                env=self.env,
+                commit=commit,
             )
         except LabError as e:
             return Reply(e.exit_code, f"scoutctl lab: {e}\n")
@@ -1228,14 +1244,16 @@ def client_experiment(slug: str, eid: str, argv: Sequence[str], env: Mapping[str
 
     vault = _vault(env)
     try:
-        slug, eid, args, cap = validate_experiment(
+        slug, eid, args, cap, commit = validate_experiment(
             {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC)
         )
     except Refused as r:
         print(f"scoutctl lab: {r.reason}", file=sys.stderr)
         return r.exit_code
     try:
-        outcome = runner.run_experiment(vault, slug, eid, args, cap_usd=cap, timeout_s=limits.timeout_s, env=env)
+        outcome = runner.run_experiment(
+            vault, slug, eid, args, cap_usd=cap, timeout_s=limits.timeout_s, env=env, commit=commit
+        )
     except LabError as e:
         print(f"scoutctl lab: {e}", file=sys.stderr)
         return e.exit_code

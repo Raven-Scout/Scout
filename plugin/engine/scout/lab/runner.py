@@ -54,6 +54,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import hashlib
+import io
 import json
 import math
 import os
@@ -62,6 +63,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
@@ -412,8 +414,15 @@ def _allow_reads(vault: Path, source: Mapping[str, str], extra: Sequence[str]) -
 def ledger_path(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Path:
     """The experiment's spending ledger, in the owner's run-broker folder (created 0700)."""
     folder = broker.owner_dir(env) / LEDGER_DIR
-    folder.mkdir(parents=True, exist_ok=True)
-    os.chmod(folder, 0o700)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder, 0o700)
+    except OSError as exc:
+        # A scheduled run's own sandbox can't write the owner's folder: there, experiments go through the broker.
+        raise LabError(
+            f"cannot write the owner's model-call ledger folder {folder} ({exc.__class__.__name__}); "
+            "inside a scheduled run, experiments run through the run broker, not directly"
+        ) from None
     key = hashlib.sha256(os.path.realpath(vault).encode("utf-8")).hexdigest()[:16]
     return folder / f"{key}-{slug}-{eid}.jsonl"
 
@@ -623,6 +632,7 @@ def run_experiment(
     timeout_s: float = 1800,
     env: Mapping[str, str] | None = None,
     claude_argv: Sequence[str] = ("claude",),
+    commit: str | None = None,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
 
@@ -631,6 +641,13 @@ def run_experiment(
     runs for each model call; a bare program name is resolved on this process's PATH, outside the
     sandbox. Raises :class:`LabError` unless the experiment is ``running`` and ``sandbox-exec`` can
     apply the profile. Doesn't change the experiment's status and never commits.
+
+    ``commit`` is the commit the run broker validated (:func:`scout.sandbox.broker.validate_experiment`), which
+    every caller that runs a reviewed plan passes (ruling R30): the scripts then run from a snapshot of the
+    experiment folder as committed there, outside what the script or the run can write, so a script rewritten
+    in the worktree after the check isn't what runs; ``argv`` must be the form the broker returns
+    (``./<script> …`` or ``<interpreter> <script> …``). The experiment is private only when its note says so
+    both there and in the worktree. Without ``commit`` (a test of the sandbox itself) ``argv`` runs as given.
     """
     source = os.environ if env is None else env
     if not argv:
@@ -639,14 +656,87 @@ def run_experiment(
         raise LabError(f"cost cap is {cap_usd!r}; it must be a finite number greater than 0")
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         raise LabError(f"timeout is {timeout_s!r}; it must be a finite number of seconds greater than 0")
+    if commit is not None and not _SHA_RE.match(commit):
+        raise LabError(f"{commit!r} is not a commit id")
     note, private = _running_note(vault, slug, eid)
+    exp_rel = paths.experiment_dir(note).relative_to(vault).as_posix()
+    if commit is not None:
+        private = private and _committed_private(vault, slug, eid, commit, note)
     exp_real, exp_fd = _open_experiment_dir(vault, note)
     try:
         if not profile.available():
             raise LabError("experiments need macOS sandbox-exec, which isn't available here; not run")
-        return _run(vault, slug, eid, argv, private, exp_real, exp_fd, cap_usd, timeout_s, source, claude_argv)
+        source_tree = None if commit is None else (commit, exp_rel)
+        return _run(
+            vault, slug, eid, argv, private, exp_real, exp_fd, cap_usd, timeout_s, source, claude_argv, source_tree
+        )
     finally:
         os.close(exp_fd)
+
+
+# --- the committed scripts (ruling R30) --------------------------------------------------
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_GIT_TIMEOUT_S = 60
+ENV_SOURCE_DIR = "SCOUT_LAB_SOURCE_DIR"
+SOURCE_NAME = "src"
+
+
+def _git(vault: Path, *args: str) -> bytes | None:
+    """``git`` in the vault with this process's PATH, HOME and LANG only (no GIT_* from anywhere); its output,
+    or None when it fails."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if os.environ.get(k)}
+    env.setdefault("PATH", "/usr/bin:/bin")
+    env.update({"GIT_LITERAL_PATHSPECS": "1", "GIT_PAGER": "cat", "GIT_CONFIG_NOSYSTEM": "1"})
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", *args], cwd=str(vault), env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=_GIT_TIMEOUT_S, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _committed_private(vault: Path, slug: str, eid: str, commit: str, note: Path) -> bool:
+    """Whether the note as committed at ``commit`` says ``visibility: private`` (False when it can't be read)."""
+    data = _git(vault, "show", f"{commit}:./{note.relative_to(vault).as_posix()}")
+    if data is None:
+        return False
+    try:
+        exp = parse_experiment(slug, data.decode("utf-8"))
+    except UnicodeDecodeError:
+        return False
+    return exp.eid == eid and exp.frontmatter.get("visibility") == "private"
+
+
+def _snapshot(vault: Path, commit: str, exp_rel: str, dest: str) -> None:
+    """The experiment folder's tree at ``commit``, extracted into ``dest`` (a new folder in the runner's 0700
+    temp dir, which the profile doesn't let the script write). Links out of it and special files are refused."""
+    data = _git(vault, "archive", "--format=tar", f"{commit}:{exp_rel}")
+    if data is None:
+        raise LabError(f"cannot read the experiment's scripts at commit {commit[:12]}; not run")
+    os.mkdir(dest, 0o700)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
+            tar.extractall(dest, filter="data")
+    except (tarfile.TarError, OSError) as exc:
+        raise LabError(f"cannot unpack the experiment's committed scripts: {exc}") from None
+
+
+def _from_snapshot(argv: Sequence[str], src: str) -> list[str]:
+    """``argv`` (``./<script> …`` or ``<interpreter> <script> …``) with the script taken from the snapshot."""
+    if argv[0].startswith("./"):
+        at = 0
+    elif argv[0] in broker.EXPERIMENT_INTERPRETERS and len(argv) >= 2:
+        at = 1
+    else:
+        raise LabError(f"argv {list(argv)!r} doesn't name the experiment's committed script")
+    path = os.path.join(src, argv[at].removeprefix("./"))
+    real = os.path.realpath(path)
+    if not real.startswith(os.path.realpath(src) + os.sep) or os.path.islink(path) or not os.path.isfile(real):
+        raise LabError(f"{argv[at]} isn't a committed file of the experiment's; not run")
+    return [*argv[:at], real, *argv[at + 1 :]]
 
 
 def _run(
@@ -661,6 +751,7 @@ def _run(
     timeout_s: float,
     source: Mapping[str, str],
     claude_argv: Sequence[str],
+    source_tree: tuple[str, str] | None,
 ) -> RunOutcome:
     _clear(exp_fd, TMP_NAME)
     os.mkdir(TMP_NAME, 0o700, dir_fd=exp_fd)
@@ -668,6 +759,11 @@ def _run(
     private_dir = tempfile.mkdtemp(prefix="scout-lab-", dir="/tmp")  # 0700: the socket, profile and output
     server: MeterServer | None = None
     try:
+        run_argv, src = list(argv), None
+        if source_tree is not None:
+            src = os.path.join(os.path.realpath(private_dir), SOURCE_NAME)
+            _snapshot(vault, *source_tree, src)
+            run_argv = _from_snapshot(argv, src)
         sock = Path(os.path.realpath(private_dir)) / "m.sock"
         # The sweep's fingerprint: only this run's profile may write it, and the script can't remove it.
         marker = os.path.join(os.path.realpath(private_dir), "probe")
@@ -686,7 +782,7 @@ def _run(
                 deny_execs,
                 env=source,
                 probe_file=Path(marker),
-                allow_reads=_allow_reads(vault, source, []),
+                allow_reads=_allow_reads(vault, source, [] if src is None else [src]),
                 deny_read_dirs=deny_dirs,
             )
         except profile.ProfileError as exc:
@@ -737,6 +833,8 @@ def _run(
             ENV_METER: str(sock),
             ENV_EXPERIMENT_DIR: exp_real,
         }
+        if src is not None:
+            child_env[ENV_SOURCE_DIR] = src  # the committed scripts; the working folder stays exp_real
         out_path, err_path = os.path.join(private_dir, "stdout"), os.path.join(private_dir, "stderr")
         started = config.now(vault)
         timed_out = False
@@ -745,7 +843,7 @@ def _run(
             gate_r, gate_w = os.pipe()
             try:
                 proc = subprocess.Popen(
-                    [str(profile.SANDBOX_EXEC), "-f", profile_file, GATE_SHELL, "-c", _GATE, "gate", *argv],
+                    [str(profile.SANDBOX_EXEC), "-f", profile_file, GATE_SHELL, "-c", _GATE, "gate", *run_argv],
                     cwd=exp_real,
                     env=child_env,
                     stdin=gate_r,

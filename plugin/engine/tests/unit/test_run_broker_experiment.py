@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 from scout import cli
 from scout.errors import LabError
 from scout.lab import paths, runner
-from scout.sandbox import broker
+from scout.sandbox import broker, profile
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
 SLUG, EID = "monitors", "E2"
@@ -78,6 +78,7 @@ def vault(tmp_path: Path) -> Path:
     (folder / "run.sh").chmod(0o755)
     _git(v, "init", "-q", "-b", "main")
     _commit(v, T)
+    _set(v, "status", "running")  # what `lab experiment start` writes, left uncommitted (R25, R31)
     return v
 
 
@@ -235,6 +236,7 @@ def test_the_runners_own_files_are_neither_uncommitted_nor_a_new_notice(vault: P
 def test_a_start_left_uncommitted_still_runs(vault: Path, fake_run: FakeRun) -> None:
     from scout.lab import experiments, ops
 
+    _set(vault, "status", "planned")  # not started yet: this test starts it
     _set(vault, "not_before", "2026-11-20T16:00")
     ops.reply(vault, SLUG, "Q3", 2, "Will add the plain judge baseline.")  # Alex's comment holds E2 until answered
     _commit(vault, T, "lab: E2 runs after 16:00")
@@ -280,12 +282,24 @@ def test_an_uncommitted_lifecycle_edit_with_any_other_change_is_refused(vault: P
     assert fake_run.calls == []
 
 
-@pytest.mark.parametrize("status", ["done", "abandoned", "vetoed-ish"])
-def test_the_worktree_note_must_be_planned_or_running(vault: Path, fake_run: FakeRun, status: str) -> None:
+@pytest.mark.parametrize("status", ["planned", "done", "abandoned", "vetoed-ish"])
+def test_the_worktree_note_must_be_running(vault: Path, fake_run: FakeRun, status: str) -> None:
+    """R31: the broker asks for what the runner asks for, so a refusal is the broker's, before anything runs."""
     _set(vault, "status", status)  # a lifecycle-only edit: not "uncommitted", but not a runnable status either
-    reply = _broker(vault).handle(dict(REQ))
-    assert reply.exit == broker.EXIT_REFUSED and "only a planned or running one runs" in reply.stderr
+    b = _broker(vault)
+    reply = b.handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and "only a running experiment runs" in reply.stderr
+    assert f"scoutctl lab experiment start {SLUG} {EID}" in reply.stderr
     assert fake_run.calls == []
+    assert b.experiments_run == 0  # a refusal keeps the run's allowance
+    _set(vault, "status", "running")
+    assert b.handle(dict(REQ)).exit == 0 and len(fake_run.calls) == 1
+
+
+def test_the_validated_commit_is_what_the_runner_gets(vault: Path, fake_run: FakeRun) -> None:
+    assert _broker(vault).handle(dict(REQ)).exit == 0
+    head = _git(vault, "rev-parse", "HEAD").strip()
+    assert fake_run.calls[0]["commit"] == head
 
 
 def test_same_plan_compares_only_outside_status_and_started() -> None:
@@ -726,6 +740,110 @@ def test_the_client_runs_its_experiment_through_the_served_broker(
     assert "result line" in out.out and "progress line" in out.err
     assert "this run has run its 1 experiment(s)" in out.err
     assert "broker: experiment -> exit 0" in out.out
+
+
+# -- against the kernel: the real runner ---------------------------------------------------------------------------
+
+kernel = pytest.mark.skipif(not profile.available(), reason="needs sandbox-exec")
+# A committed script that says which copy of it runs and whether it can rewrite that copy.
+PROBE_SCRIPT = (
+    "import os\n"
+    "print('committed copy')\n"
+    "try:\n"
+    "    open(__file__, 'a').write('# tampered\\n')\n"
+    "    print('SNAPSHOT-WRITABLE')\n"
+    "except OSError:\n"
+    "    print('snapshot read-only')\n"
+    "print('source dir', os.environ.get('SCOUT_LAB_SOURCE_DIR') == os.path.dirname(os.path.abspath(__file__)))\n"
+    "open('out.txt', 'w').write('output in the experiment folder')\n"
+)
+
+
+def _fake_home(tmp_path: Path) -> dict[str, str]:
+    """The broker's and runner's env: HOME in the test's temp dir, so the meter ledger never lands in the real home."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "LANG": "en_US.UTF-8"}
+
+
+def _commit_probe(vault: Path) -> Path:
+    folder = paths.experiment_dir(_note(vault))
+    (folder / "probe.py").write_text(PROBE_SCRIPT, encoding="utf-8")
+    _set(vault, "status", "planned")
+    _commit(vault, T, "lab: E2 probe script")
+    _set(vault, "status", "running")
+    return folder
+
+
+@kernel
+def test_a_script_rewritten_after_the_check_is_not_what_runs(vault: Path, tmp_path: Path) -> None:
+    """I7 / R30: the broker validates the committed plan; a run rewriting the script in the worktree afterwards
+    (it may write the experiment folder) changes nothing: the runner runs the committed copy, read-only."""
+    folder = _commit_probe(vault)
+    slug, eid, argv, cap, commit = broker.validate_experiment(
+        {**REQ, "argv": ["python3", "probe.py"]}, vault, broker.LabLimits(), AFTER_NOTICE
+    )
+    (folder / "probe.py").write_text("print('REWRITTEN COPY')\n", encoding="utf-8")  # after validation
+    out = runner.run_experiment(vault, slug, eid, argv, cap_usd=cap, env=_fake_home(tmp_path), commit=commit)
+    assert out.exit == 0, out.stderr_tail
+    assert "committed copy" in out.stdout_tail and "REWRITTEN" not in out.stdout_tail
+    assert "snapshot read-only" in out.stdout_tail and "source dir True" in out.stdout_tail
+    assert (folder / "out.txt").read_text() == "output in the experiment folder"  # cwd is still the folder
+    assert (folder / "probe.py").read_text() == "print('REWRITTEN COPY')\n"
+    # Run directly too: the committed executable, not the worktree's.
+    (folder / "run.sh").write_text("#!/bin/sh\necho REWRITTEN\n", encoding="utf-8")
+    direct = runner.run_experiment(vault, SLUG, EID, ["./run.sh"], cap_usd=1, env=_fake_home(tmp_path), commit=commit)
+    assert direct.exit == 0 and direct.stdout_tail.strip() == "hi", direct.stderr_tail
+
+
+@kernel
+def test_the_private_flag_needs_the_committed_note_too(vault: Path, tmp_path: Path) -> None:
+    """R30: a worktree note flipped to private after the check doesn't open the private files to the script."""
+    secret = vault / "knowledge-base" / "people" / "sam.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("---\nvisibility: private\n---\nCANARY-PRIV-BROKER\n", encoding="utf-8")
+    (paths.experiment_dir(_note(vault)) / "cat.sh").write_text(f"#!/bin/sh\ncat '{secret}'\n", encoding="utf-8")
+    (paths.experiment_dir(_note(vault)) / "cat.sh").chmod(0o755)
+    _set(vault, "status", "planned")
+    _commit(vault, T, "lab: E2 cat")
+    commit = _git(vault, "rev-parse", "HEAD").strip()
+    _set(vault, "status", "running")
+    _set(vault, "visibility", "private")  # the run's rewrite, after the broker checked HEAD
+    out = runner.run_experiment(vault, SLUG, EID, ["./cat.sh"], cap_usd=1, env=_fake_home(tmp_path), commit=commit)
+    assert out.exit != 0 and "CANARY" not in out.stdout_tail and "not permitted" in out.stderr_tail
+    _set(vault, "status", "planned")
+    _commit(vault, T, "lab: E2 private")  # private in the commit too: now it reads private files
+    _set(vault, "status", "running")
+    commit = _git(vault, "rev-parse", "HEAD").strip()
+    shown = runner.run_experiment(vault, SLUG, EID, ["./cat.sh"], cap_usd=1, env=_fake_home(tmp_path), commit=commit)
+    assert shown.exit == 0 and "CANARY-PRIV-BROKER" in shown.stdout_tail, shown.stderr_tail
+
+
+@kernel
+def test_end_to_end_plan_notice_start_broker_run_finish(vault: Path, tmp_path: Path) -> None:
+    """I8: the whole path with nothing replaced: a committed plan, the notice passing, ``start``, the broker's
+    ``experiment`` verb running the real runner under the kernel's sandbox, then ``finish``."""
+    from scout.lab import experiments, ops
+
+    folder = paths.experiment_dir(_note(vault))
+    (folder / "probe.py").write_text(PROBE_SCRIPT, encoding="utf-8")
+    _set(vault, "status", "planned")
+    _set(vault, "not_before", "2026-11-20T16:00")
+    ops.reply(vault, SLUG, "Q3", 2, "Will add the plain judge baseline.")  # Alex's comment holds E2 until answered
+    _commit(vault, T, "lab: plan E2")
+    env = _fake_home(tmp_path)
+    b = broker.Broker.for_vault(vault, env, clock=lambda: AFTER_NOTICE)
+    req = {**REQ, "argv": ["python3", "probe.py"]}
+    early = b.handle(dict(req))  # planned, not started: refused, and the run keeps its allowance
+    assert early.exit == broker.EXIT_REFUSED and "not running" in early.stderr and b.experiments_run == 0
+    experiments.start(vault, SLUG, EID, now=AFTER_NOTICE)
+    reply = b.handle(dict(req))
+    assert reply.exit == 0, reply.stderr
+    assert "committed copy" in reply.stdout and "snapshot read-only" in reply.stdout
+    assert (folder / "out.txt").is_file() and len(list(folder.glob("run-*.log"))) == 1
+    done = experiments.finish(vault, SLUG, EID, "It ran.", "Nothing yet.", "ran end to end", now=AFTER_NOTICE)
+    assert done.status == "done"
+    assert b.handle(dict(req)).exit == broker.EXIT_LIMIT  # one experiment a run
 
 
 # -- the CLI -----------------------------------------------------------------------------------------------------
