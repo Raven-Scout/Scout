@@ -12,6 +12,7 @@ prompt="$(cat)"
 } >> "$log"
 case "$prompt" in
   *BADJSON*) echo "not json at all"; exit 0 ;;
+  *BADUTF8*) printf '\377\376{"result":"x","total_cost_usd":0.1}\n'; exit 0 ;;
   *SLEEPCALL*) sleep 5; exit 0 ;;
   *NOCOST*) echo '{"result":"free"}'; exit 0 ;;
   *NEGCOST*) echo '{"result":"neg","total_cost_usd":-5}'; exit 0 ;;

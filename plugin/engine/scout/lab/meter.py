@@ -229,6 +229,16 @@ class MeterServer:
                     "error": f"model call timed out after {self.call_timeout_s:g}s; remaining budget charged",
                     "spent_usd": spent + charge,
                 }
+            except UnicodeDecodeError:
+                # claude answered with bytes that aren't UTF-8: it ran, so the call was billed, at a cost we
+                # can't read. Fail closed, like a timeout.
+                charge = max(self.cap_usd - spent, 0.0)
+                self._record(charge, False)
+                return {
+                    "ok": False,
+                    "error": "model call answered with undecodable output; remaining budget charged",
+                    "spent_usd": spent + charge,
+                }
             except OSError as exc:
                 self._record(0.0, False)  # claude never started: nothing was billed
                 return {"ok": False, "error": f"cannot run claude: {exc.__class__.__name__}"}

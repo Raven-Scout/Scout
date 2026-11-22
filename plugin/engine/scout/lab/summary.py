@@ -138,6 +138,26 @@ def _summary(vault: Path, thread: Thread, now: _dt.datetime) -> dict[str, Any]:
     }
 
 
+def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, Any]:
+    """The row for a thread whose summary couldn't be built: the same keys, nothing counted, the failure named
+    in ``error`` and counted as one more problem, so the app shows it as not matching the lab format."""
+    return {
+        "slug": thread.slug,
+        "path": _rel(vault, paths.front_page(vault, thread.slug)),
+        "title": str(thread.title),
+        "question": str(thread.question),
+        "status": thread.status,
+        "visibility": thread.visibility,
+        "counts": {"open": 0, "answered": 0, "dropped": 0, "raised_7d": 0},
+        "unanswered_comments": 0,
+        "scout_replies": [],
+        "experiments": {"planned": [], "running": [], "due": []},
+        "last_run": None,
+        "problems": len(thread.problems) + 1,
+        "error": f"cannot summarize this thread: {exc.__class__.__name__}: {exc}"[:300],
+    }
+
+
 def _status_rank(status: str) -> int:
     return THREAD_STATUSES.index(status) if status in THREAD_STATUSES else len(THREAD_STATUSES)
 
@@ -157,7 +177,11 @@ def lab_list(
         rel = _rel(vault, paths.front_page(vault, thread.slug))
         if not full and (rel not in seen or thread.visibility == "private"):
             continue
-        rows.append((thread, _summary(vault, thread, moment)))
+        try:
+            row = _summary(vault, thread, moment)
+        except Exception as exc:  # noqa: BLE001 - one malformed thread must not empty the whole list
+            row = _broken_summary(vault, thread, exc)
+        rows.append((thread, row))
     rows.sort(key=lambda pair: (_status_rank(pair[0].status), pair[0].title.lower(), pair[0].slug))
     return {
         "schema_version": SCHEMA_VERSION,

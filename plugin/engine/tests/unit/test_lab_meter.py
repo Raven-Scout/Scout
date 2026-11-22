@@ -180,7 +180,7 @@ def test_protocol_rejections(d: Path) -> None:
     assert not (d / "calls.log").exists()
 
 
-@pytest.mark.parametrize("prompt", ["FAILCALL", "BADJSON", "NOCOST", "NEGCOST", "SLEEPCALL"])
+@pytest.mark.parametrize("prompt", ["FAILCALL", "BADJSON", "NOCOST", "NEGCOST", "SLEEPCALL", "BADUTF8"])
 def test_ambiguous_call_charges_remaining_budget(d: Path, prompt: str) -> None:
     s = meter.MeterServer(
         d / "m.sock", d / "ledger.jsonl", 1.0, claude_argv=(str(FAKE), str(d / "calls.log")), call_timeout_s=0.5

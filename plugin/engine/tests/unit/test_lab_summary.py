@@ -54,6 +54,26 @@ def test_list_counts_fixture(tmp_path: Path) -> None:
     json.dumps(doc)  # plain json.dumps works: no dates or other Python objects
 
 
+def test_one_malformed_thread_does_not_empty_the_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = _vault(tmp_path)
+    shutil.copytree(FIXTURES / "monitors", paths.thread_dir(vault, "broken"))
+    (paths.thread_dir(vault, "broken") / "monitors.md").rename(paths.front_page(vault, "broken"))
+    real = summary._experiment_ids
+
+    def flaky(v: Path, thread: summary.Thread, now: dt.datetime) -> dict[str, list[str]]:
+        if thread.slug == "broken":
+            raise ValueError("a value the summary can't handle")
+        return real(v, thread, now)
+
+    monkeypatch.setattr(summary, "_experiment_ids", flaky)
+    doc = summary.lab_list(vault, None, full=True, now=BEFORE)
+    rows = {t["slug"]: t for t in doc["threads"]}
+    assert set(rows) == {"broken", "monitors"}
+    assert rows["monitors"]["problems"] == 0 and "error" not in rows["monitors"]
+    assert rows["broken"]["problems"] == 1 and "ValueError" in rows["broken"]["error"]
+    assert set(rows["broken"]) - {"error"} == set(rows["monitors"])  # the same keys the app reads
+
+
 def test_due_depends_on_not_before_only(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     after = summary.lab_list(vault, {REL: "normal"}, full=False, now=AFTER)
