@@ -28,10 +28,16 @@ What it holds the script to, and why each piece is where it is:
   group (``setsid``, a double fork) still carries the profile, so the sweep finds it whatever its
   parentage. Matches are frozen (SIGSTOP) until a pass finds no new one, then killed, until a sweep
   finds none; a probe file that isn't a plain file any more is "not clean".
-- **The sweep fails closed (ruling R21).** The script starts behind a gate (a ``sh`` that waits on
+- **The sweep fails closed (ruling R21).** The script starts behind a gate (a ``bash`` that waits on
   its stdin pipe): the runner first checks the kernel's answers about that live, sandboxed process
   (sandboxed, may write the probe file, may not write outside). On a wrong or missing answer it
-  kills the group and raises :class:`LabError`; the script never ran.
+  kills the group, then closes the pipe, and raises :class:`LabError`; the script never ran. Only
+  the runner's "go" opens the gate: an end of file (a runner that died after starting it) exits.
+  The gate also caps the size of any file the script writes at 1 GiB.
+- **The script can't stop its supervisor.** The profile lets it signal only processes holding its own
+  sandbox, so it can't freeze or kill the runner (which would leave its own setsid children
+  unswept). A runner killed from outside (by the owner, or the OS) still leaves them: then
+  ``ps`` shows them, and a later run of the same experiment doesn't sweep them.
 - **Private bytes outside knowledge-base/ are denied too** (ruling R18): the git objects, the inbox,
   the engine cache, every other checkout of the vault's repo (``.claude/worktrees/`` and each git
   worktree), ``Raw/`` and ``action-items/``. Transcripts and ``.scout-logs`` stay readable (spec §6.3).
@@ -89,8 +95,15 @@ PRIVATE_ROOT_DIRS: tuple[str, ...] = ("Raw", "action-items", ".claude/worktrees"
 CHECKOUT_PRIVATE_DIRS: tuple[str, ...] = ("knowledge-base", "Raw", "action-items", INBOX_DIR, ".scout-cache")
 _SWEEP_ROUNDS = 20
 # Runs inside the sandbox ahead of the script: wait until the runner has checked the sandboxed process
-# (R21), give the script /dev/null for stdin, and become the script (same pid, same process group).
-_GATE = 'read -r _ || :; exec </dev/null; exec "$@"'
+# (R21), give the script /dev/null for stdin, cap the size of any file it writes, and become the script
+# (same pid, same process group). Only the runner's "go" opens the gate: an end of file (the runner
+# refused, or died before writing it) exits without running the script.
+# bash, not sh: /bin/sh may be any shell (dash and POSIX-mode bash count `ulimit -f` in 512-byte blocks), while
+# bash run as bash counts it in 1024-byte blocks in every version.
+GATE_SHELL = "/bin/bash"
+GATE_EXIT = 125
+FILE_SIZE_BLOCKS = 1024 * 1024  # 1 GiB, in bash's 1024-byte `ulimit -f` blocks
+_GATE = f'read -r _ || exit {GATE_EXIT}; exec </dev/null; ulimit -f {FILE_SIZE_BLOCKS} || exit {GATE_EXIT}; exec "$@"'
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
     "/usr/bin/git",
@@ -678,7 +691,7 @@ def _run(
             gate_r, gate_w = os.pipe()
             try:
                 proc = subprocess.Popen(
-                    [str(profile.SANDBOX_EXEC), "-f", profile_file, "/bin/sh", "-c", _GATE, "sh", *argv],
+                    [str(profile.SANDBOX_EXEC), "-f", profile_file, GATE_SHELL, "-c", _GATE, "gate", *argv],
                     cwd=exp_real,
                     env=child_env,
                     stdin=gate_r,
@@ -691,12 +704,17 @@ def _run(
             try:
                 try:
                     if not _positive_control(proc, probe, marker, outside):
+                        # Kill before the gate's pipe closes: the gate would see the end of file and exit, but
+                        # nothing the script could do may race that.
+                        with contextlib.suppress(OSError):
+                            os.killpg(proc.pid, signal.SIGKILL)
                         raise LabError(
                             "sandbox_check gave the wrong answer about the sandboxed script before it started; "
                             "its processes couldn't be found afterwards, so it was not run"
                         )
                     if proc.poll() is None:
-                        os.write(gate_w, b"go\n")  # the gate opens: the script runs
+                        with contextlib.suppress(BrokenPipeError):  # sandbox-exec failed meanwhile: its exit says so
+                            os.write(gate_w, b"go\n")  # the gate opens: the script runs
                 finally:
                     os.close(gate_w)
                 try:

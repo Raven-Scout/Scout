@@ -203,6 +203,76 @@ def test_wrong_probe_answers_refuse_before_the_script_runs(tmp_path: Path, monke
     assert logs == []
 
 
+def _gate(script: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [runner.GATE_SHELL, "-c", runner._GATE, "gate", "/bin/sh", "-c", script], stdin=subprocess.PIPE
+    )
+
+
+def test_the_gate_runs_nothing_when_its_pipe_closes_without_go(tmp_path: Path) -> None:
+    """I3: an end of file at the gate (a refused launch, or a runner that died before writing "go") exits; only
+    "go" runs the script."""
+    marker = tmp_path / "ran.txt"
+    closed = _gate(f"echo ran > '{marker}'")
+    assert closed.stdin is not None
+    closed.stdin.close()  # the write end closes without "go"
+    assert closed.wait(timeout=10) == runner.GATE_EXIT
+    assert not marker.exists()
+    opened = _gate(f"echo ran > '{marker}'")
+    opened.communicate(b"go\n", timeout=10)
+    assert opened.returncode == 0 and marker.read_text() == "ran\n"
+
+
+def test_the_gate_caps_the_size_of_files_the_script_writes(tmp_path: Path) -> None:
+    out = tmp_path / "limit.txt"
+    py = "import resource; print(*resource.getrlimit(resource.RLIMIT_FSIZE))"
+    gate = _gate(f"{h.PY} -I -c '{py}' > '{out}'")
+    gate.communicate(b"go\n", timeout=10)
+    assert out.read_text().split() == [str(1 << 30)] * 2  # soft and hard: 1 GiB
+
+
+@kernel
+def test_a_refused_launch_is_killed_before_the_gate_pipe_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I3: on a failed positive control the script's group is SIGKILLed first; only then does the gate see an end
+    of file."""
+    vault = h.make_vault(tmp_path)
+    events: list[tuple[str, int]] = []
+    pipes: list[tuple[int, int]] = []
+    real_pipe, real_close, real_killpg = os.pipe, os.close, os.killpg
+
+    def pipe() -> tuple[int, int]:
+        fds = real_pipe()
+        pipes.append(fds)
+        return fds
+
+    def close(fd: int) -> None:
+        events.append(("close", fd))
+        real_close(fd)
+
+    def killpg(pgid: int, sig: int) -> None:
+        events.append(("killpg", pgid))
+        real_killpg(pgid, sig)
+
+    leaders: list[int] = []
+
+    def refuse(proc: subprocess.Popen[bytes], *_: object) -> bool:
+        leaders.append(proc.pid)
+        return False
+
+    monkeypatch.setattr(runner, "_positive_control", refuse)
+    monkeypatch.setattr(runner.os, "pipe", pipe)
+    monkeypatch.setattr(runner.os, "close", close)
+    monkeypatch.setattr(runner.os, "killpg", killpg)
+    with pytest.raises(LabError, match="sandbox_check"):
+        h.run(vault, tmp_path, "echo ran > ran.txt")
+    monkeypatch.undo()
+    gate_w = pipes[0][1]
+    assert events.index(("killpg", leaders[0])) < events.index(("close", gate_w))
+    assert not (h.exp_dir(vault) / "ran.txt").exists()
+
+
 @pytest.mark.parametrize("status", ["planned", "done", "abandoned", "vetoed"])
 def test_refuses_unless_running(tmp_path: Path, status: str) -> None:
     vault = h.make_vault(tmp_path, status=status)
