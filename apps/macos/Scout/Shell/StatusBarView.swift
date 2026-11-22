@@ -16,28 +16,43 @@ struct StatusBarView: View {
     private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(spacing: 14) {
-            health
-            spacer
-            nextRun
-            spacer
-            todayCost
-            Spacer()
-            viewItem
+        Self.chrome {
+            HStack(spacing: 14) {
+                health
+                spacer
+                nextRun
+                spacer
+                todayCost
+                Spacer()
+                viewItem
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .frame(height: 26)
-        .background(
-            LinearGradient(
-                colors: [DS.Paper.base, DS.Paper.sunk],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .overlay(alignment: .top) { EditorialRule(color: DS.Rule.hard) }
         .onReceive(tick) { now = $0 }
     }
+
+    /// The strip around the bar's row: 26 pt at Standard text, taller when
+    /// the row is. A fixed 26 pt let the row spill upward at Largest text,
+    /// over the bottom of the page, whose safe area reserved only 26 pt: the
+    /// last Schedules card ended under the bar (UI audit T4 hand re-check).
+    static func chrome<Row: View>(@ViewBuilder _ row: () -> Row) -> some View {
+        row()
+            .padding(.horizontal, 14)
+            .padding(.vertical, verticalPadding)
+            .frame(minHeight: minHeight)
+            .background(
+                LinearGradient(
+                    colors: [DS.Paper.base, DS.Paper.sunk],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(alignment: .top) { EditorialRule(color: DS.Rule.hard) }
+    }
+
+    static let minHeight: CGFloat = 26
+    /// 5, not 6: the Standard row is 16 pt, so the bar stays 26 pt there, as
+    /// it looked when the fixed height squeezed a 6 pt padding to 5.
+    static let verticalPadding: CGFloat = 5
 
     // MARK: - Cells
 

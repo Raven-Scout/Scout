@@ -17,6 +17,8 @@
 - **Schedule cards never break a word.** At Largest text a narrow card broke "Consolidation" mid-word and grew
   taller than its neighbours. The type pill keeps one line, moving under the time when the two don't fit side
   by side, and cards in a row line up at the top.
+- **The status bar grows with the Text size.** At Largest text its row was taller than the bar, spilled over
+  the bottom of the page and covered the end of the last Schedules card. The bar is now as tall as its row.
 - **Sessions lanes show whole cards.** A lane wraps its cards onto more rows instead of scrolling sideways,
   which cut the last card off at 1280 and 1600 pt. Its Stale and Done buttons sit beside the lane's title, and
   the cards they open start under a labelled rule. The Stale and Done state filters show those cards open:
