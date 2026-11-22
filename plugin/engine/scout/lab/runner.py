@@ -35,6 +35,9 @@ What it holds the script to, and why each piece is where it is:
 - **Private bytes outside knowledge-base/ are denied too** (ruling R18): the git objects, the inbox,
   the engine cache, every other checkout of the vault's repo (``.claude/worktrees/`` and each git
   worktree), ``Raw/`` and ``action-items/``. Transcripts and ``.scout-logs`` stay readable (spec §6.3).
+- **Nothing else under a home folder is readable** (ruling R32): only the vault, the engine and its
+  interpreter, the vault's session transcripts and the allowlisted interpreters on the run's PATH
+  (:func:`_allow_reads`). The rendered profile itself is unreadable too: it names every private file.
 - **The experiment's status is left alone.** The run finishes or abandons it.
 """
 
@@ -283,6 +286,61 @@ def _deny_execs(path_values: Sequence[str | None]) -> list[Path]:
                 out.append(Path(os.path.realpath(found)))
     out += [Path(p) for p in KNOWN_GITS if os.path.exists(p) and Path(p) not in out]
     return out
+
+
+def _encoded(path: str) -> str:
+    """Claude Code's name for a project folder under ``~/.claude/projects/``: every character but a letter or a
+    digit becomes ``-``."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def _below(path: str, root: str) -> int | None:
+    """How many folders ``path`` is below ``root`` (0 for ``root`` itself), or None when it isn't inside it."""
+    if path == root:
+        return 0
+    if not path.startswith(root.rstrip("/") + "/"):
+        return None
+    return len(path[len(root.rstrip("/")) + 1 :].split("/"))
+
+
+def _interpreter_root(real: str, homes: Sequence[str]) -> str:
+    """The folder to allow back for an interpreter at ``real``: its install prefix (``<prefix>/bin/python3``),
+    narrowed when the prefix is a home folder, above one, or a folder right inside one (``~/.local``), to the
+    interpreter's own folder, or to the file itself."""
+
+    def too_wide(folder: str) -> bool:
+        return any(_within(home, folder) or _below(folder, home) == 1 for home in homes)
+
+    for folder in (os.path.dirname(os.path.dirname(real)), os.path.dirname(real)):
+        if not too_wide(folder):
+            return folder
+    return real
+
+
+def _allow_reads(vault: Path, source: Mapping[str, str], extra: Sequence[str]) -> list[Path]:
+    """What a script may read under a home folder (ruling R32): the vault, the engine and the interpreter
+    running it, the vault's Claude Code session transcripts (spec §6.3), the allowlisted interpreters the run's
+    PATH finds, and ``extra`` (the runner's snapshot of the experiment's scripts)."""
+    import sys
+
+    homes = sandbox.homes(source)
+    out: list[str] = [os.path.realpath(vault), *extra]
+    out.append(str(Path(__file__).resolve().parents[2]))  # the engine (plugin/engine), its .venv included
+    for prefix in (sys.prefix, sys.exec_prefix, sys.base_prefix):
+        out.append(os.path.realpath(prefix))
+    for spelling in {os.path.realpath(vault), os.path.abspath(vault)}:
+        for home in homes:
+            out.append(os.path.join(home, ".claude", "projects", _encoded(spelling)))
+    for name in sorted(broker.EXPERIMENT_INTERPRETERS):
+        for value in (source.get("PATH"), os.environ.get("PATH")):
+            found = shutil.which(name, path=value)
+            if found is not None:
+                out.append(_interpreter_root(os.path.realpath(found), homes))
+    seen: list[Path] = []
+    for path in out:
+        if Path(path) not in seen:
+            seen.append(Path(path))
+    return seen
 
 
 def ledger_path(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Path:
@@ -549,11 +607,20 @@ def _run(
         marker = os.path.join(os.path.realpath(private_dir), "probe")
         for path in (marker, _decoy(marker)):
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+        profile_file = os.path.join(private_dir, "experiment.sb")
         deny_reads = [] if private else _deny_reads(vault, exp_real)
+        deny_reads.append(Path(profile_file))  # it names every private file the profile denies
         deny_execs = _deny_execs([source.get("PATH"), os.environ.get("PATH")])
         try:
             text = sandbox.experiment_profile(
-                Path(exp_real), Path(tmp_real), sock, deny_reads, deny_execs, env=source, probe_file=Path(marker)
+                Path(exp_real),
+                Path(tmp_real),
+                sock,
+                deny_reads,
+                deny_execs,
+                env=source,
+                probe_file=Path(marker),
+                allow_reads=_allow_reads(vault, source, []),
             )
         except profile.ProfileError as exc:
             raise LabError(f"cannot build the experiment sandbox: {exc}") from None
@@ -573,7 +640,6 @@ def _run(
             or not stat.S_ISDIR(os.stat(TMP_NAME, dir_fd=exp_fd, follow_symlinks=False).st_mode)
         ):
             raise LabError("the experiment folder changed while the sandbox was being built; not run")
-        profile_file = os.path.join(private_dir, "experiment.sb")
         safe_write.atomic_write_text(profile_file, text)  # a file, not -p: thousands of denies outgrow argv
 
         # The folder of experiment notes: the experiment may not write it; the run itself may, so a run's

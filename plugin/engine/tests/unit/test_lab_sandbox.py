@@ -7,6 +7,7 @@ macOS). They are the proof of the owner's decision that experiment scripts are h
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -44,7 +45,22 @@ def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
     for item in (f'(subpath "{real(exp)}")', f'(subpath "{real(exp / ".tmp")}")', '(literal "/dev/null")'):
         assert item in allow_form
     # R20: the script's own terminal only, never a regex that reaches the owner's /dev/ttys* terminals.
-    assert '(literal "/dev/tty")' in allow_form and "^/dev/tty" not in text
+    assert '(literal "/dev/tty")' in allow_form and "^/dev/tty" not in allow_form
+    # I2: the other terminals are denied to read and to write, after every allow.
+    for op in ("file-read*", "file-write*"):
+        form = text[text.rindex(f"(deny {op}") :]
+        assert '(regex #"^/dev/ttys[0-9]+$")' in form and '(regex #"^/dev/pty")' in form, op
+    # I1/I5: signals and process information only within the experiment's own sandbox.
+    for form in (
+        "(deny signal)\n(allow signal (target same-sandbox))",
+        "(deny process-info*)\n(allow process-info* (target same-sandbox))",
+        '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
+    ):
+        assert form in text, form
+    # R32: the home folder's reads are denied before the allow-backs, which come before the private denies.
+    home_deny = text.index(f'(subpath "{real(tmp_path / "home")}")')
+    assert text.index("(deny file-read-data") < home_deny < text.index("(allow file-read-data")
+    assert text.index("(allow file-read-data") < text.index(f'(literal "{real(private)}")')
     # Every path is resolved (/tmp is /private/tmp), and the socket sits in a path-literal.
     assert f'(path-literal "{real(sock)}")' in text and real(sock).startswith("/private/tmp/")
     reads = text[text.index("(deny file-read-data") :]
@@ -61,7 +77,8 @@ def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
     for form in ("(deny job-creation)", "(deny appleevent-send)", "(deny file-mount)"):
         assert form in text
     mach = text[text.index("(deny mach-lookup") :]
-    for name in ("com.apple.SecurityServer", "com.apple.securityd", "com.apple.pasteboard.1"):
+    names = ("com.apple.SecurityServer", "com.apple.securityd", "com.apple.pasteboard.1", "com.apple.nsurlsessiond")
+    for name in names:
         assert f'(global-name "{name}")' in mach, name
 
 
@@ -296,3 +313,110 @@ def test_main_checkout_unreadable_from_a_linked_worktree(tmp_path: Path, layout:
         assert "not permitted" in out.stderr_tail, path
     own = h.run(linked, tmp_path, f"cat '{linked / h.NORMAL_NOTE}'")
     assert own.exit == 0 and "normal-note-text" in own.stdout_tail
+
+
+@kernel
+def test_other_terminals_unreadable(vault: Path, tmp_path: Path) -> None:
+    """I2: a terminal can't be opened to read what is typed in it. The terminal is a pty this test opens
+    itself, never one of the owner's, and nothing is read from it: the open alone is refused."""
+    master, slave = os.openpty()
+    try:
+        name = os.ttyname(slave)
+        probe = f"import os; os.close(os.open({name!r}, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)); print('opened')"
+        out = h.run(vault, tmp_path, f'{h.PY} -I -c "{probe}"')
+        assert out.exit != 0 and "opened" not in out.stdout_tail
+        assert "not permitted" in out.stderr_tail, out.stderr_tail
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@kernel
+def test_the_runner_and_other_processes_cant_be_signalled_but_own_children_can(vault: Path, tmp_path: Path) -> None:
+    """I1: the script's parent is this test process; only signal 0 (no signal at all) is sent to it, and to an
+    unrelated process of the test's own. A real signal goes only to the script's own child."""
+    other = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        script = (
+            f"kill -0 $PPID && echo PARENT-REACHED; kill -0 {other.pid} && echo OTHER-REACHED; "
+            "/bin/sleep 30 & c=$!; kill -TERM $c && echo CHILD-SIGNALLED; wait $c; echo done"
+        )
+        out = h.run(vault, tmp_path, script)
+        assert "PARENT-REACHED" not in out.stdout_tail and "OTHER-REACHED" not in out.stdout_tail
+        assert "CHILD-SIGNALLED" in out.stdout_tail and "done" in out.stdout_tail, out.stderr_tail
+        assert "not permitted" in out.stderr_tail
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+_PROCINFO = """
+import ctypes, os, subprocess
+libc = ctypes.CDLL(None, use_errno=True)
+libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+def args(pid):
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2: argv and environment
+    size = ctypes.c_size_t(1 << 20)
+    buf = ctypes.create_string_buffer(size.value)
+    return libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) == 0
+def path(pid):
+    buf = ctypes.create_string_buffer(4096)
+    return libproc.proc_pidpath(pid, buf, 4096) > 0
+child = subprocess.Popen(["/bin/sleep", "5"])
+print("parent-args", args(os.getppid()), "parent-path", path(os.getppid()))
+print("child-args", args(child.pid), "child-path", path(child.pid))
+child.kill(); child.wait()
+"""
+
+
+@kernel
+def test_the_runners_arguments_and_environment_cant_be_read(vault: Path, tmp_path: Path) -> None:
+    """I5: the runner (here this test process, the script's parent) holds the model-call token in its
+    environment; the script can't read its arguments, environment or path, but can read its own child's."""
+    probe = tmp_path / "procinfo.py"
+    probe.write_text(_PROCINFO, encoding="utf-8")
+    out = h.run(vault, tmp_path, f"{h.PY} -I '{probe}'")
+    assert out.exit == 0, out.stderr_tail
+    assert "parent-args False parent-path False" in out.stdout_tail, out.stdout_tail
+    assert "child-args True child-path True" in out.stdout_tail, out.stdout_tail
+    ps = h.run(vault, tmp_path, "/bin/ps -ww -E -p $PPID -o command=")
+    assert ps.exit != 0 and "not permitted" in ps.stderr_tail
+
+
+@kernel
+def test_home_is_unreadable_but_the_vault_and_interpreters_work(tmp_path: Path) -> None:
+    """R32 / I6, on a fake HOME that holds the vault: a file elsewhere under HOME is refused; the vault, its
+    session transcripts, the engine's interpreter and the shell still work."""
+    home = tmp_path / "home"
+    vault = h.make_vault(home)  # <home>/vault
+    notes = home / "Documents" / "notes.txt"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("CANARY-HOME")
+    sessions = home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(vault))
+    sessions.mkdir(parents=True)
+    (sessions / "s.jsonl").write_text("in-bounds-transcript")
+    elsewhere = home / ".claude" / "projects" / "-other-project"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "s.jsonl").write_text("CANARY-OTHER-PROJECT")
+    for path in (notes, elsewhere / "s.jsonl"):
+        out = h.run(vault, tmp_path, f"cat '{path}'")
+        assert out.exit != 0 and "CANARY" not in out.stdout_tail, path
+        assert "not permitted" in out.stderr_tail, path
+    for path, text in ((vault / h.NORMAL_NOTE, "normal-note-text"), (sessions / "s.jsonl", "in-bounds-transcript")):
+        out = h.run(vault, tmp_path, f"cat '{path}'")
+        assert out.exit == 0 and text in out.stdout_tail, (path, out.stderr_tail)
+    py = h.run(vault, tmp_path, f"{h.PY} -c 'import json, sqlite3; print(\"py-ok\")'")
+    assert py.exit == 0 and "py-ok" in py.stdout_tail, py.stderr_tail
+    private = h.run(vault, tmp_path, f"cat '{vault / h.PRIVATE_NOTE}'")  # the private deny still holds inside
+    assert private.exit != 0 and "CANARY-PRIV-LAB" not in private.stdout_tail
+
+
+@kernel
+def test_a_hard_link_to_a_file_the_script_cant_write_is_refused(vault: Path, tmp_path: Path) -> None:
+    """A link made in the experiment folder to a vault file would let the script write that file through it."""
+    target = vault / h.NORMAL_NOTE
+    out = h.run(vault, tmp_path, f"ln '{target}' linked.md && echo LINKED")
+    assert out.exit != 0 and "LINKED" not in out.stdout_tail
+    assert not (h.exp_dir(vault) / "linked.md").exists()
+    assert target.stat().st_nlink == 1
