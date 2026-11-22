@@ -374,7 +374,9 @@ because they spend model usage. `release.sh prepare` prints each step.
    - the front page gained narration, a dated or "update" bullet, a new paragraph, or a bullet over the 300-character
      cap.
 
-   Exit 0 is a pass, 1 a fail, 2 a run that couldn't be scored. Paste the JSON report it prints (also saved as
+   Exit 0 is a pass, 1 a fail, 2 a run that couldn't be scored, 3 a void run: the session had a call refused and
+   then did nothing (no commit, no file written), so rerun it; it is not a verdict on the release, and the report's
+   `void` lists the refused calls. Paste the JSON report it prints (also saved as
    `kb-gate-report.json` in the result dir) into the release PR, check that the commit it names is the release
    branch's head, and don't merge on a fail. `plugin/scripts/eval.sh kb-score <result dir>/vault` re-scores a kept run
    without starting a session.
