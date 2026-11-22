@@ -364,14 +364,14 @@ def test_marker_entries_without_a_readable_time_are_dropped(vault, home):
 
 @pytest.mark.parametrize("failing", ["replace", "mkstemp"])
 def test_marker_write_failure_is_swallowed_and_leaves_no_temp_file(vault, home, monkeypatch, failing):
-    from scout.changes import reliance
+    from scout.changes import store  # the atomic write lives in store (store.atomic_write_json)
 
     env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
 
     def boom(*a, **k):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(reliance.os if failing == "replace" else reliance.tempfile, failing, boom)
+    monkeypatch.setattr(store.os if failing == "replace" else store.tempfile, failing, boom)
     t = transcript(cwd=vault, tool_uses=[("Bash", {"command": "scoutctl status"})])
     assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) == 2
     assert not list(owner_dir(env).glob("reliance-seen*"))
@@ -567,3 +567,21 @@ def test_stop_hook_writes_the_token_row_before_the_reliance_pass(vault, home, tm
     assert session_tokens.run(stdin=io.StringIO(json.dumps(payload(t, vault)))) is not None
     assert seen == [1]
     assert len(tracker.read_text().splitlines()) == 1
+
+
+def test_empty_session_id_records_no_reliance(vault, home):
+    t = transcript(cwd=vault, user_texts=["/scout-work"])
+    env = {"HOME": str(home), "SCOUT_DATA_DIR": str(vault)}
+    assert record_reliance(payload(t, vault), t, owner_ctx(vault), env, now=NOW) > 0  # control: a real id counts
+    for row in home.rglob("engagement.jsonl"):
+        row.unlink()
+    (owner_dir(env) / "reliance-seen.json").unlink(missing_ok=True)
+    assert record_reliance({**payload(t, vault), "session_id": ""}, t, owner_ctx(vault), env, now=NOW) == 0
+    assert record_reliance({"cwd": str(vault)}, t, owner_ctx(vault), env, now=NOW) == 0
+    assert not any(home.rglob("engagement.jsonl"))
+
+
+def test_deeply_nested_transcript_line_is_skipped(vault, home, other_repo, tmp_path):
+    read = {"type": "tool_use", "name": "Read", "input": {"file_path": str(vault / "knowledge-base" / "a.md")}}
+    t = _raw_transcript(tmp_path, ["[" * 100_000, _assistant(read)])
+    assert surfaces_used(t, vault, cwd=str(other_repo)) == {"kb"}

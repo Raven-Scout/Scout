@@ -1,101 +1,9 @@
 {
+  "auto_rollback": "off",
+  "calibrating": true,
   "changes": [
     {
-      "author_lane": "interactive",
-      "backfilled": false,
-      "commit": "0000000000000000000000000000000000000000",
-      "files": [
-        "SKILL.md"
-      ],
-      "governance": false,
-      "id": "chg-000000000000",
-      "kind": "brain-edit",
-      "schema_version": 1,
-      "summary": "A brain-edit change",
-      "targets": [
-        "briefing"
-      ],
-      "ts": "2026-11-15T12:00:00+00:00",
-      "why": {
-        "gloss": null,
-        "inferred": true,
-        "ref": "",
-        "type": "unknown"
-      }
-    },
-    {
       "author_lane": "dreaming",
-      "backfilled": false,
-      "commit": "0000000000000000000000000000000000000001",
-      "files": [
-        "knowledge-base/a.md",
-        "DREAMING.md"
-      ],
-      "governance": true,
-      "id": "chg-000000000001",
-      "kind": "driver",
-      "schema_version": 1,
-      "summary": "A driver change",
-      "targets": [
-        "briefing"
-      ],
-      "ts": "2026-11-14T12:00:00+00:00",
-      "why": {
-        "gloss": "Why it happened",
-        "inferred": false,
-        "ref": "Pattern #249",
-        "type": "pattern"
-      }
-    },
-    {
-      "author_lane": "interactive",
-      "backfilled": true,
-      "commit": "0000000000000000000000000000000000000002",
-      "files": [
-        "SKILL.md"
-      ],
-      "governance": false,
-      "id": "chg-000000000002",
-      "kind": "kb-structure",
-      "schema_version": 1,
-      "summary": "A kb-structure change",
-      "targets": [
-        "briefing"
-      ],
-      "ts": "2026-11-13T12:00:00+00:00",
-      "why": {
-        "gloss": "Why it happened",
-        "inferred": false,
-        "ref": "Pattern #249",
-        "type": "pattern"
-      }
-    },
-    {
-      "author_lane": "dreaming",
-      "backfilled": false,
-      "commit": "0000000000000000000000000000000000000003",
-      "files": [
-        "knowledge-base/a.md",
-        "DREAMING.md"
-      ],
-      "governance": false,
-      "id": "chg-000000000003",
-      "kind": "phase",
-      "schema_version": 1,
-      "summary": "A phase change",
-      "targets": [
-        "briefing"
-      ],
-      "ts": "2026-11-12T12:00:00+00:00",
-      "why": {
-        "gloss": "Why it happened",
-        "inferred": false,
-        "ref": "Pattern #249",
-        "type": "pattern"
-      }
-    },
-    {
-      "author_lane": "interactive",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000004",
       "files": [
@@ -104,63 +12,334 @@
       "governance": false,
       "id": "chg-000000000004",
       "kind": "rollback",
+      "reverts": "chg-000000000000",
       "schema_version": 1,
       "summary": "A rollback change",
       "targets": [
         "briefing"
       ],
-      "ts": "2026-11-11T12:00:00+00:00",
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-16T00:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "The test found it hurt",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "verdict:chg-000000000000",
+        "type": "verdict"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000000",
+      "files": [
+        "SKILL.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000000",
+      "kind": "brain-edit",
+      "reverts": null,
+      "schema_version": 1,
+      "summary": "A brain-edit change",
+      "targets": [
+        "pattern-288"
+      ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.6429,
+          "noise": 0.0714,
+          "recurrences": {
+            "pattern-288": 0
+          }
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000001",
+          "chg-000000000003"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-29",
+        "rolled_back_by": "chg-000000000004",
+        "state": "testing",
+        "suspect": false,
+        "verdict": "rolled back",
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-15T12:00:00+00:00",
+      "why": {
+        "gloss": "A mistake that kept recurring",
+        "inferred": false,
+        "ref": "pattern-288",
         "type": "pattern"
       }
     },
     {
       "author_lane": "dreaming",
       "backfilled": false,
+      "commit": "0000000000000000000000000000000000000001",
+      "files": [
+        "scripts/check-clock.py"
+      ],
+      "governance": false,
+      "id": "chg-000000000001",
+      "kind": "driver",
+      "reverts": null,
+      "schema_version": 1,
+      "summary": "A driver change",
+      "targets": [
+        "briefing"
+      ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.5,
+          "noise": 0.0714,
+          "recurrences": {}
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000000",
+          "chg-000000000003"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-28",
+        "rolled_back_by": null,
+        "state": "testing",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-14T12:00:00+00:00",
+      "why": {
+        "gloss": null,
+        "inferred": true,
+        "ref": "",
+        "type": "unknown"
+      }
+    },
+    {
+      "author_lane": "interactive",
+      "backfilled": true,
+      "commit": "0000000000000000000000000000000000000002",
+      "files": [
+        "knowledge-base/topics/a.md"
+      ],
+      "governance": false,
+      "id": "chg-000000000002",
+      "kind": "kb-structure",
+      "reverts": null,
+      "schema_version": 1,
+      "summary": "A kb-structure change",
+      "targets": [
+        "briefing"
+      ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-13T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "pattern-249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "dreaming",
+      "backfilled": false,
+      "commit": "0000000000000000000000000000000000000003",
+      "files": [
+        "DREAMING.md"
+      ],
+      "governance": true,
+      "id": "chg-000000000003",
+      "kind": "phase",
+      "reverts": null,
+      "schema_version": 1,
+      "summary": "A phase change",
+      "targets": [
+        "briefing"
+      ],
+      "test": {
+        "after": null,
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.3571,
+          "noise": 0.0,
+          "recurrences": {}
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [
+          "chg-000000000000",
+          "chg-000000000001"
+        ],
+        "reasons": [],
+        "review_on": "2026-11-26",
+        "rolled_back_by": null,
+        "state": "testing",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-11-12T12:00:00+00:00",
+      "why": {
+        "gloss": "Why it happened",
+        "inferred": false,
+        "ref": "pattern-249",
+        "type": "pattern"
+      }
+    },
+    {
+      "author_lane": "update",
+      "backfilled": false,
       "commit": "0000000000000000000000000000000000000005",
       "files": [
-        "knowledge-base/a.md",
-        "DREAMING.md"
+        "scripts/upgrade.sh"
       ],
       "governance": false,
       "id": "chg-000000000005",
       "kind": "upgrade",
+      "reverts": null,
       "schema_version": 1,
       "summary": "A upgrade change",
       "targets": [
         "briefing"
       ],
+      "test": {
+        "after": null,
+        "baseline": null,
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": false,
+        "overlap": [],
+        "reasons": [],
+        "review_on": null,
+        "rolled_back_by": null,
+        "state": "not-tested",
+        "suspect": false,
+        "verdict": null,
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
       "ts": "2026-11-10T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     },
     {
-      "author_lane": "interactive",
+      "author_lane": "work",
       "backfilled": false,
       "commit": "0000000000000000000000000000000000000006",
       "files": [
-        "SKILL.md"
+        "docs/wishlist/red-carry.md"
       ],
       "governance": false,
       "id": "chg-000000000006",
       "kind": "wishlist-done",
+      "reverts": null,
       "schema_version": 1,
       "summary": "A wishlist-done change",
       "targets": [
-        "briefing"
+        "pattern-249"
       ],
-      "ts": "2026-11-09T12:00:00+00:00",
+      "test": {
+        "after": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.0714,
+          "noise": 0.0,
+          "recurrences": {
+            "pattern-249": 2
+          }
+        },
+        "baseline": {
+          "away_days": 0,
+          "days": 14,
+          "engagement": 0.0,
+          "noise": 0.0,
+          "recurrences": {
+            "pattern-249": 0
+          }
+        },
+        "calibrating": true,
+        "engagement_targeted": false,
+        "marked_wrong": true,
+        "overlap": [],
+        "reasons": [
+          "recurrence-up"
+        ],
+        "review_on": "2026-11-10",
+        "rolled_back_by": null,
+        "state": "done",
+        "suspect": true,
+        "verdict": "hurt",
+        "would_have_done": {
+          "one_at_a_time": false,
+          "targeted": false
+        }
+      },
+      "ts": "2026-10-27T12:00:00+00:00",
       "why": {
         "gloss": "Why it happened",
         "inferred": false,
-        "ref": "Pattern #249",
+        "ref": "pattern-249",
         "type": "pattern"
       }
     }
@@ -175,8 +354,34 @@
     "wishlist-done": 1
   },
   "generated_at": "2026-11-16T12:00:00+00:00",
+  "needs_ok": [
+    {
+      "diff_hash": "062c40aea93c47c1d4ec600bb08634139853c2c6b0d094d9b5a5882c6f7c0a1b",
+      "governance": true,
+      "id": "gov-skip-carried-red",
+      "path": "governance-pending/skip-carried-red.md",
+      "state": "awaiting-ok",
+      "summary": "Let the briefing drop a red item nobody answered for six days",
+      "targets": [
+        "briefing"
+      ],
+      "why": "The same red item was carried for six days with no reply."
+    },
+    {
+      "diff_hash": "1aff12783b8fb4c0763e8274410c48cccf1c124882aeb8b093b89bdbbd3e5098",
+      "governance": false,
+      "id": "gov-tighten-the-wrap",
+      "path": "governance-pending/tighten-the-wrap.md",
+      "state": "approved",
+      "summary": "Keep the dreaming wrap to five lines",
+      "targets": [],
+      "why": "pattern-288"
+    }
+  ],
+  "needs_ok_skipped": 1,
   "schema_version": 1,
   "since": "2026-10-17T12:00:00+00:00",
   "skipped_rows": 1,
-  "truncated": false
+  "truncated": false,
+  "verified": false
 }

@@ -20,6 +20,8 @@ from scout.errors import ConfigError, ScoutError
 from scout.plural import agree, count
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from scout.agent_runtimes.base import AgentRuntime
     from scout.repo_sync import AgnesHost
     from scout.scripts.bootstrap import BootstrapConfig
@@ -445,7 +447,11 @@ def _changes_document(command: str, since: str, build: Callable[..., dict], *, i
     except ValueError as e:
         typer.echo(f"scoutctl {command}: {e}", err=True)
         raise typer.Exit(code=2) from None
-    vault = installed_vault(os.environ) if installed else _paths.data_dir()
+    try:
+        vault = installed_vault(os.environ) if installed else _paths.data_dir()
+    except ValueError as e:  # no home directory to find the installed vault from
+        typer.echo(f"scoutctl {command}: {e}", err=True)
+        raise typer.Exit(code=2) from None
     if not vault.is_dir():
         typer.echo(f"scoutctl {command}: vault directory missing", err=True)
         raise typer.Exit(code=2)
@@ -464,11 +470,25 @@ def cli_changes(
     if not json_out:
         typer.echo(ctx.get_help())
         return
-    from scout.changes.report import changes_report
+    import os
 
-    _changes_document(
-        "changes", since, lambda vault, now, cutoff: changes_report(vault, now=now, since=cutoff, limit=limit)
-    )
+    from scout.changes.report import changes_report
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    def build(vault: Path, now: datetime, cutoff: datetime) -> dict:
+        # Git and .scout-logs/ come from the vault resolved here (it may be the cwd's); owner rows are keyed to the
+        # installed vault, as `engagement --json` reads them, so a worktree cwd doesn't undercount the owner.
+        try:
+            owner = installed_vault(os.environ)
+        except ValueError as e:  # no home directory to find the installed vault from
+            typer.echo(f"scoutctl changes: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        return changes_report(
+            vault, now=now, since=cutoff, env=os.environ, tz=resolve_timezone(vault), limit=limit, owner_vault=owner
+        )
+
+    _changes_document("changes", since, build)
 
 
 @engagement_app.callback()
@@ -529,45 +549,427 @@ def cli_changes_scan(
     typer.echo(count(len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill)), "new change"))
 
 
-@engagement_app.command("record")
-def cli_engagement_record(
-    kind: str = typer.Argument(
-        ..., help="session-reliance, app-edit, inline-comment, approval (owner only) or a run kind."
-    ),
-    surface: str = typer.Option(
-        ..., "--surface", help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app."
-    ),
-    ref: str | None = typer.Option(
-        None,
-        "--ref",
-        help="An id: a Slack message ts, a commit sha or a slug. Never content; a path outside the vault is refused.",
-    ),
-    sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
-    ts: str | None = typer.Option(None, "--ts", help="ISO time; default now."),
-) -> None:
-    """Append one engagement row. Owner kinds are refused (exit 2) in a scheduled run."""
+def _owner_changes(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for an owner-only ``scoutctl changes`` command; exit 2 (nothing written) for anyone else.
+
+    Both are the installed vault (a linked worktree resolves to its main one, scout.changes.vault.main_worktree):
+    git, ``.scout-logs/`` and ``governance-pending/`` are read from the vault the runs use, and owner rows and
+    settings are keyed to it, as ``changes --json`` and ``changes due`` read them. A decision made from a vault
+    worktree is filed where the runs look."""
+    import os
+
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        installed = installed_vault(os.environ)
+        if not is_owner_caller(os.environ, installed):
+            raise PermissionError("this is the owner's decision; a scheduled run may not make it")
+        if not installed.is_dir():
+            raise ValueError("vault directory missing")
+    except (ValueError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return installed, installed
+
+
+def _decision_surface(command: str, surface: str) -> str:
+    if surface not in ("scoutctl", "app"):
+        typer.echo(f"scoutctl changes {command}: --surface is scoutctl or app", err=True)
+        raise typer.Exit(2)
+    return surface
+
+
+_SURFACE_HELP = "Where the owner decided: scoutctl (default) or app."
+
+
+def _record_decision(command: str, kind: str, ref: str, surface: str, installed: Path, *, once: bool) -> None:
+    """Append an owner ``approval`` / ``verdict-wrong`` row, keyed to the installed vault. ``once``: dedupe on ref."""
     import os
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from scout.changes.models import OWNER_KINDS, Signal
-    from scout.changes.store import append_signal, is_owner_caller
+    from scout.changes.models import Signal
+    from scout.changes.store import append_signal, append_signal_once
+
+    signal = Signal(ts=_dt.now(UTC), kind=kind, surface=surface, ref=ref)
+    try:
+        if once:
+            if not append_signal_once(signal, vault=installed, env=os.environ):
+                typer.echo("already recorded")
+        else:
+            append_signal(signal, vault=installed, env=os.environ)
+    except (OSError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: str | None) -> None:
+    import os
+
+    from scout.changes.governance import decision_ref, filed_by, read_pending, state_of
+    from scout.changes.store import read_signals
+
+    surface = _decision_surface(command, surface)
+    vault, installed = _owner_changes(command)
+    item = next((p for p in read_pending(vault)[0] if p.id == gov_id), None)
+    if item is None:
+        typer.echo(f"scoutctl changes {command}: no pending governance change {gov_id!r}", err=True)
+        raise typer.Exit(2)
+    # The decision is bound to the item as it is now (its hash), so a file edited afterwards waits for a new one. An
+    # approval must name the hash the owner saw: without it, a file swapped in between reading and approving would
+    # be approved unseen.
+    if verb == "approve" and seen_hash is None:
+        typer.echo(
+            f"scoutctl changes {command}: pass --diff-hash with the diff_hash `changes --json` showed for {gov_id}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if seen_hash is not None and seen_hash != item.hash:
+        typer.echo(f"scoutctl changes {command}: {gov_id} changed since you saw it; review it again", err=True)
+        raise typer.Exit(2)
+    state = {"approve": "approved", "reject": "rejected"}[verb]
+    signals, _ = read_signals(vault, os.environ, owner_vault=installed)
+    if state_of(vault, signals, item) == state:
+        typer.echo(f"already {state}")
+        return
+    # Bound to the commit that filed it, when it is committed, so a later re-filing waits for a new decision. Not
+    # deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
+    ref = decision_ref(verb, gov_id, item.hash, filed_by(vault, item))
+    _record_decision(command, "approval", ref, surface, installed, once=False)
+
+
+_DIFF_HASH_HELP = (
+    "The diff_hash `changes --json` showed for it (required to approve); refused if the file has changed since."
+)
+
+
+@changes_app.command("approve")
+def cli_changes_approve(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
+) -> None:
+    """Approve a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("approve", "approve", gov_id, surface, diff_hash)
+
+
+@changes_app.command("reject")
+def cli_changes_reject(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
+) -> None:
+    """Reject a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("reject", "reject", gov_id, surface, diff_hash)
+
+
+@changes_app.command("undo")
+def cli_changes_undo(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose test has started."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Ask for a tested change to be rolled back (owner only). Governance changes can't be undone this way."""
+    import os
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from scout.changes.models import CHANGE_ID_RE
+    from scout.changes.report import changes_report
+    from scout.config import resolve_timezone
+
+    surface = _decision_surface("undo", surface)
+    vault, installed = _owner_changes("undo")
+    now = _dt.now(UTC)
+    doc = changes_report(
+        vault,
+        now=now,
+        since=now - timedelta(days=3650),
+        env=os.environ,
+        tz=resolve_timezone(vault),
+        limit=5000,
+        owner_vault=installed,
+    )
+    change = next((c for c in doc["changes"] if c["id"] == change_id), None) if CHANGE_ID_RE.match(change_id) else None
+    if change is None:
+        typer.echo(f"scoutctl changes undo: no such change {change_id!r}", err=True)
+        raise typer.Exit(2)
+    if change["governance"]:
+        typer.echo("scoutctl changes undo: a governance change is never undone automatically", err=True)
+        raise typer.Exit(2)
+    if change["test"]["state"] == "not-tested":
+        typer.echo(
+            "scoutctl changes undo: this change isn't under test (interactive, backfilled or not a brain edit)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _record_decision("undo", "approval", f"undo:{change_id}", surface, installed, once=True)
+
+
+@changes_app.command("wrong")
+def cli_changes_wrong(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose verdict you disagree with."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Mark a change's verdict wrong (owner only); it counts as feedback."""
+    from scout.changes.models import CHANGE_ID_RE
+
+    surface = _decision_surface("wrong", surface)
+    _, installed = _owner_changes("wrong")
+    if not CHANGE_ID_RE.match(change_id):
+        typer.echo(f"scoutctl changes wrong: not a change id: {change_id!r}", err=True)
+        raise typer.Exit(2)
+    _record_decision("wrong", "verdict-wrong", change_id, surface, installed, once=True)
+
+
+@changes_app.command("auto-rollback")
+def cli_changes_auto_rollback(
+    mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
+) -> None:
+    """Set the auto-rollback mode (owner only). Only ``off`` for now: the automatic modes stay refused until the
+    rollback race and governance-approval gaps are closed."""
+    import os
+    from dataclasses import replace
+
+    from scout.changes.settings import AUTO_MODES, read_settings, write_settings
+
+    if mode not in AUTO_MODES:
+        typer.echo(f"scoutctl changes auto-rollback: mode is one of {', '.join(AUTO_MODES)}", err=True)
+        raise typer.Exit(2)
+    if mode != "off":
+        typer.echo(
+            f"scoutctl changes auto-rollback: {mode} isn't available yet; automatic rollback stays off until two "
+            "known gaps are closed (an unapproved governance move, and a race between undo's check and its write). "
+            "Undo a change yourself with `scoutctl changes undo <id>`.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _owner_changes("auto-rollback")
+    try:
+        write_settings(replace(read_settings(os.environ), auto_rollback=mode), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes auto-rollback: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@changes_app.command("calibrated")
+def cli_changes_calibrated(
+    reset: bool = typer.Option(False, "--reset", help="Go back to calibrating (clears the date)."),
+) -> None:
+    """End calibration as of today in the host timezone (owner only), or `--reset` to start it again."""
+    import os
+    from dataclasses import replace
+    from datetime import datetime as _dt
+
+    from scout.changes.settings import read_settings, write_settings
+    from scout.config import resolve_timezone
+
+    vault, _ = _owner_changes("calibrated")
+    today = None if reset else _dt.now(resolve_timezone(vault)).date()
+    try:
+        write_settings(replace(read_settings(os.environ), calibrated_on=today), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes calibrated: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+def _run_vaults(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for a run-facing ``scoutctl changes`` command (no owner gate): git, ``.scout-logs/`` and
+    ``governance-pending/`` from the CLI's vault, owner rows keyed to the installed vault. Exit 2 when either is
+    missing."""
+    import os
+
+    from scout import paths as _paths
     from scout.changes.vault import installed_vault
 
-    vault = installed_vault(os.environ)
     try:
+        installed = installed_vault(os.environ)
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            raise ValueError("vault directory missing")
+    except ValueError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return vault, installed
+
+
+@changes_app.command("due")
+def cli_changes_due(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document a run reads."),
+) -> None:
+    """What a run must do now: rollbacks, blocked ones, governance to apply or discard, unannounced suspects.
+
+    Never fails: anything it can't read lists nothing to do."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.actions import due, empty_due
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    doc = empty_due()
+    try:
+        # The installed vault (a linked worktree resolves to its main one): where the owner's decisions are keyed
+        # and where the runs keep .scout-logs/ and governance-pending/.
+        vault = installed_vault(os.environ)
+        if vault.is_dir():
+            doc = due(vault, os.environ, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=vault)
+        else:
+            typer.echo("scoutctl changes due: vault directory missing", err=True)
+    except Exception as e:  # noqa: BLE001 - a run reads this every time; a broken input is nothing to do
+        typer.echo(f"scoutctl changes due: {e}", err=True)
+    typer.echo(_json.dumps(doc))
+
+
+def _changes_action(command: str, act: Callable[[Path, Path], list[str]]) -> None:
+    """Run one action and print its paths, one per line; ``ActionRefused`` (or a failed write) is exit 2."""
+    from scout.changes.actions import ActionRefused
+
+    vault, installed = _run_vaults(command)
+    try:
+        paths = act(vault, installed)
+    except ActionRefused as e:
+        typer.echo(f"scoutctl changes {command}: {e.reason}", err=True)
+        raise typer.Exit(2) from None
+    except OSError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    for p in paths:
+        typer.echo(p)
+
+
+@changes_app.command("rollback")
+def cli_changes_rollback(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) listed in `changes due --json` rollbacks."),
+) -> None:
+    """Undo a due change in the working tree; prints the paths to commit with git-safe-commit.sh."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.actions import rollback
+    from scout.config import resolve_timezone
+
+    _changes_action(
+        "rollback",
+        lambda vault, installed: rollback(
+            vault, os.environ, change_id, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=installed
+        ),
+    )
+
+
+@changes_app.command("apply")
+def cli_changes_apply(
+    gov_id: str = typer.Argument(..., help="An approved governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Apply an approved governance change to the working tree; prints the paths to commit."""
+    import os
+
+    from scout.changes.actions import apply_governance
+
+    _changes_action(
+        "apply", lambda vault, installed: apply_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("discard")
+def cli_changes_discard(
+    gov_id: str = typer.Argument(..., help="A rejected governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Delete a rejected governance change's pending file; prints its path to commit."""
+    import os
+
+    from scout.changes.actions import discard_governance
+
+    _changes_action(
+        "discard", lambda vault, installed: discard_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("announced")
+def cli_changes_announced(
+    change_ids: list[str] = typer.Argument(..., help="Change ids (chg-...) the wrap just announced."),
+    blocked: bool = typer.Option(False, "--blocked", help="They were reported as blocked undos, not as suspects."),
+) -> None:
+    """Record that these suspects (or, with --blocked, blocked undos) were reported, so no later run repeats them."""
+    from scout.changes.actions import mark_announced
+
+    vault, _ = _run_vaults("announced")
+    try:
+        mark_announced(vault, change_ids, blocked=blocked)
+    except (ValueError, OSError) as e:
+        typer.echo(f"scoutctl changes announced: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@engagement_app.command("record")
+def cli_engagement_record(
+    kind: str = typer.Argument(
+        ...,
+        help="session-reliance, app-edit, inline-comment, approval, verdict-wrong (owner only) or a run kind.",
+    ),
+    surface: str = typer.Option(
+        ...,
+        "--surface",
+        help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app, mistake-audit, calendar.",
+    ),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="An id: a Slack message ts, a commit sha or a slug. Never content; a path outside the vault is refused. "
+        "Required for every kind but session-reliance, app-edit and inline-comment.",
+    ),
+    sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
+    ts: str | None = typer.Option(None, "--ts", help="ISO time or a Slack ts (epoch seconds, UTC); default now."),
+    change: str | None = typer.Option(
+        None, "--change", help="dm-reply only: the id (chg-...) of the change the reply is about."
+    ),
+) -> None:
+    """Append one engagement row, once per kind and ref. Owner kinds are refused (exit 2) in a scheduled run."""
+    import os
+    import re
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.models import OWNER_KINDS, REF_REQUIRED, Signal
+    from scout.changes.store import append_signal_once, is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        vault = installed_vault(os.environ)
         if ref is not None and ref.startswith(("/", "~")):
             raise ValueError("--ref is an id (a Slack ts, a commit sha), not a path")
-        when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
+        if kind in REF_REQUIRED and not ref:
+            raise ValueError(f"{kind!r} needs --ref (an id to dedupe and join on)")
+        if change is not None and kind != "dm-reply":
+            raise ValueError("--change is for dm-reply only")
+        if ts and re.fullmatch(r"\d{9,11}(\.\d+)?", ts):
+            when = _dt.fromtimestamp(float(ts), UTC)
+        else:
+            when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
         signal = Signal.from_row(
-            {"ts": when.isoformat(), "kind": kind, "surface": surface, "ref": ref, "sentiment": sentiment}
+            {
+                "ts": when.isoformat(),
+                "kind": kind,
+                "surface": surface,
+                "ref": ref,
+                "sentiment": sentiment,
+                "change": change,
+            }
         )
         if signal.kind in OWNER_KINDS and not is_owner_caller(os.environ, vault):
             raise PermissionError(f"{signal.kind!r} is owner-sourced; a run may not write it")
         if not vault.is_dir():
             raise ValueError(f"vault directory missing: {vault}")
-        append_signal(signal, vault=vault, env=os.environ)
-    except (ValueError, PermissionError) as e:
+        if not append_signal_once(signal, vault=vault, env=os.environ):
+            typer.echo("already recorded")
+    except (ValueError, PermissionError, OSError) as e:  # OSError: the ledger couldn't be written
         typer.echo(f"scoutctl engagement record: {e}", err=True)
         raise typer.Exit(2) from None
 
@@ -598,7 +1000,7 @@ def cli_engagement_consent(
         if not is_owner_caller(os.environ, installed_vault(os.environ)):
             raise PermissionError("the consent answer is the owner's; a scheduled run may not write it")
         consent.set_out_of_vault(out_of_vault == "yes", os.environ)
-    except PermissionError as e:
+    except (PermissionError, ValueError) as e:
         typer.echo(f"scoutctl engagement consent: {e}", err=True)
         raise typer.Exit(2) from None
 

@@ -17,13 +17,13 @@ mkdir -p {{SCOUT_DIR}}/action-items/archive
 
 ## Step 0.5: Critical Blocks Check
 
-Before building the list, read the mistake audit with `scripts/scoutctl kb read knowledge-base/scout-mistake-audit.md`. For every pattern with status **Open** that carries a {{USER_NAME}}-facing blocker — a setup task {{USER_NAME}} must do, an unanswered question {{INSTANCE_NAME}} asked him, or an approved-but-unapplied proposal:
+Before building the list, read the mistake audit with `scripts/scoutctl kb read knowledge-base/scout-mistake-audit.md`. For every pattern with status **Open** that carries a {{USER_NAME}}-facing blocker — a setup task {{USER_NAME}} must do, an unanswered question {{INSTANCE_NAME}} asked him, or an approved-but-unapplied proposal (`dreaming-proposals.md`) or governance change (a `governance-pending/<slug>.md` file; `scripts/scoutctl changes --json` lists its `gov-<slug>` id under `needs_ok` with `state: approved`):
 
 1. Check whether it's been resolved since last run (search messaging, verify files/state).
-2. If still unresolved and >24h old, surface it today. When {{USER_NAME}} has to act, make it a **🔴** item: "**Still blocked:** [pattern] — [what {{USER_NAME}} needs to do]". An approved-but-unapplied proposal is Scout's own move: leave it to the next dreaming run's feedback processing (`phases/modes/feedback-processing.md`), as a 🟢 Watching item until then.
+2. If still unresolved and >24h old, surface it today. When {{USER_NAME}} has to act, make it a **🔴** item: "**Still blocked:** [pattern] — [what {{USER_NAME}} needs to do]". An approved proposal or governance change still waiting to be applied is Scout's own move: the next dreaming run applies it (`phases/modes/feedback-processing.md`, Steps 1d and 1e), so it is a 🟢 Watching item until then. A governance change still waiting for {{USER_NAME}}'s OK is not a blocker: the wrap already told {{USER_NAME}} how to decide it (`scoutctl changes approve` or `reject`).
 3. If stuck 48h+, call it out explicitly in the run summary/notification so it isn't lost.
 
-This makes the mistake audit an active tracker, not a passive log — {{USER_NAME}} expects every run type (not just dreaming) to keep pushing critical blocks toward resolution. Track specifically: unresolved setup/integration tasks, open questions awaiting {{USER_NAME}}'s answer, and approved proposals not yet applied.
+This makes the mistake audit an active tracker, not a passive log — {{USER_NAME}} expects every run type (not just dreaming) to keep pushing critical blocks toward resolution. Track specifically: unresolved setup/integration tasks, open questions awaiting {{USER_NAME}}'s answer, and approved proposals or governance changes not yet applied.
 
 ## Action Item Categories
 
