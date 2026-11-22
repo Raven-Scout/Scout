@@ -216,16 +216,16 @@ struct ActionItemsView: View {
                     if commentEditorFocused, !focused, !searchFocused { listFocused = true }
                     commentEditorFocused = focused
                 }
-                // The list takes keyboard focus (a click on it, or opening the
-                // page) so the arrows move the current card rather than scroll.
-                .focusable()
-                .focused($listFocused)
-                .focusEffectDisabled()
+                // The list takes keyboard focus (a click on a card, or opening
+                // the page) so the arrows move the current card rather than
+                // scroll; the current card rings while it has the keys (T4).
+                .dsFocusContainer($listFocused, showsCursor: listOwnsKeys)
                 // Each handler acts only while the list itself has focus, never
-                // for keys typed into a comment editor or a focused button
-                // inside it (`listOwnsKeys`).
+                // for keys typed into a comment editor or left over by a
+                // focused button inside it (`listOwnsKeys`).
                 .keyboardListNavigation(
-                    ids: { listOwnsKeys ? navigableRows.map(\.id) : [] },
+                    when: listOwnsKeys,
+                    ids: { navigableRows.map(\.id) },
                     selection: $cursorTaskID
                 ) { id in
                     scroll(to: id, proxy: proxy, anchor: nil)
@@ -251,6 +251,7 @@ struct ActionItemsView: View {
     private var keyboardContext: ActionItemsKeyboardContext {
         ActionItemsKeyboardContext(
             cursorID: cursorTaskID,
+            ringID: KeyboardListNavigation.ringed(cursorTaskID, in: navigableRows.map(\.id)),
             commitKeyFree: !commentEditorFocused && !searchFocused,
             toggleRequest: toggleRequest,
             setCursor: StableAction { id in cursorTaskID = id },

@@ -35,10 +35,21 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
     nonisolated enum Fix: Equatable, Sendable {
         /// Finish setup: the main window shows the setup flow.
         case setUp
-        /// Settings ▸ Engine has the details and the repair.
+        /// Settings ▸ Engine has the repair: a broken engine, an unreadable health
+        /// check, an agent that isn't allowed to run.
         case openSettings
+        /// The Health page explains it, with each problem's fix: failing or paused
+        /// runs, a red or warning doctor, a run held back (UI audit T4, as Control
+        /// Center's "Open Health").
+        case openHealth
 
-        var title: String { self == .setUp ? "Set up Scout…" : "Open Settings" }
+        var title: String {
+            switch self {
+            case .setUp: "Set up Scout…"
+            case .openSettings: "Open Settings"
+            case .openHealth: "Open Health"
+            }
+        }
     }
 
     let kind: Kind
@@ -62,7 +73,7 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
             let n = max(summary.attentionCount, 1)
             status = ScoutStatus(kind: .ready, title: "Ready · \(n) warning\(n == 1 ? "" : "s")",
                                  detail: summary.reason ?? status.detail,
-                                 tone: .warn, fix: .openSettings)
+                                 tone: .warn, fix: .openHealth)
         }
         return status
     }
@@ -91,7 +102,7 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         if let doctor, doctor.severity == .red {
             let n = max(doctor.errors.count, 1)
             return ScoutStatus(kind: .needsAttention, title: "Scout needs attention",
-                               detail: "\(n) problem\(n == 1 ? "" : "s") with the engine", tone: .err, fix: .openSettings)
+                               detail: "\(n) problem\(n == 1 ? "" : "s") with the engine", tone: .err, fix: .openHealth)
         }
         return nil
     }
@@ -101,11 +112,11 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
         if finding.id == "runs.paused" {
             let lifts = finding.until.flatMap { ISO8601DateFormatter().date(from: $0) }
             let detail = lifts.map { "Claude usage limit · resumes \(relative($0, now: now))" } ?? "Claude usage limit"
-            return ScoutStatus(kind: .paused, title: "Runs paused", detail: detail, tone: .warn, fix: .openSettings)
+            return ScoutStatus(kind: .paused, title: "Runs paused", detail: detail, tone: .warn, fix: .openHealth)
         }
         guard runHealth.severity == .red else { return nil }
         return ScoutStatus(kind: .needsAttention, title: "Scheduled runs need attention",
-                           detail: finding.summary, tone: .err, fix: .openSettings)
+                           detail: finding.summary, tone: .err, fix: .openHealth)
     }
 
     // MARK: - Latest run
@@ -135,7 +146,7 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
             let reason = latest.status.skipReason ?? "skipped"
             if latest.status.isSafetySkip {
                 return ScoutStatus(kind: .heldForSafety, title: "Run held back for safety",
-                                   detail: "\(name) · \(reason)", tone: .err, fix: .openSettings)
+                                   detail: "\(name) · \(reason)", tone: .err, fix: .openHealth)
             }
             // Not routine either: every run on that agent stops until its
             // permission is changed in Settings ▸ Engine.
@@ -153,7 +164,8 @@ nonisolated struct ScoutStatus: Equatable, Sendable {
     }
 
     private static func failed(_ name: String, _ what: String) -> ScoutStatus {
-        ScoutStatus(kind: .lastFailed, title: "Last run needs attention", detail: "\(name) \(what)", tone: .err)
+        ScoutStatus(kind: .lastFailed, title: "Last run needs attention", detail: "\(name) \(what)", tone: .err,
+                    fix: .openHealth)
     }
 
     private static func relative(_ date: Date, now: Date) -> String {

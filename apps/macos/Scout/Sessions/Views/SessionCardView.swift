@@ -78,7 +78,8 @@ struct SessionCardView: View {
         .editorialCard(padding: 12, selected: isSelected,
                        accentBar: SessionStateStyle.color(session.state, isOpen: session.isOpen))
         .dsCardHovered(hovered || isHighlighted)
-        .frame(width: 240, alignment: .leading)
+        // At least a lane's minimum, stretched to its grid cell (`SessionsLane`).
+        .frame(minWidth: SessionsLane.minCardWidth, maxWidth: .infinity, alignment: .leading)
         // The state is read from its label above, not repeated as a value.
         .accessibilityElement(children: .combine)
     }

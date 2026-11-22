@@ -10,13 +10,29 @@ struct HealthPanelModelTests {
         let doctor = DoctorReport(severity: .green, errors: [], warnings: [], notes: ["write protection is on"])
         let model = HealthPanelModel(ledger: try RunLedgerContractTests.fixture(), doctor: doctor)
         #expect(model.severity == .red)
-        #expect(model.headline == "Scheduled runs need fixing · 2 problems · 1 warning")
+        #expect(model.headline == "Scheduled runs need attention · 2 problems · 1 warning")
         #expect(model.groups.map(\.group) == [.red, .yellow])
         #expect(model.groups.first?.findings.map(\.id) == ["gates.probe_unsafe", "run.integrity_restored"])
         #expect(model.groups.last?.findings.map(\.id) == ["runs.failed_today"])
         #expect(model.engineIssues.isEmpty)
         #expect(model.everythingElse.count == 2)
         #expect(model.everythingElse.last == "write protection is on")
+    }
+
+    /// T4 review: healthy runs beside an engine problem named the runs healthy next to
+    /// Settings' "Needs attention". The engine's problem leads; engine warnings keep R1's wording.
+    @Test func anEngineProblemBesideHealthyRunsNamesTheEngine() {
+        let green = RunHealth(severity: .green, evaluatedAt: "x", lastOkAt: nil, findings: [], slots: [])
+        let problem = HealthSummary(doctor: DoctorReport(severity: .red, errors: ["launchd job missing"], warnings: []),
+                                    runHealth: .some(green))
+        #expect(HealthPanelModel.headline(runs: .green, shared: problem) == "Scout's engine needs attention · 1 problem")
+        let warning = HealthSummary(doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), runHealth: .some(green))
+        #expect(HealthPanelModel.headline(runs: .green, shared: warning) == "Scheduled runs are healthy · 1 warning")
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let both = HealthSummary(doctor: DoctorReport(severity: .red, errors: ["e"], warnings: []), runHealth: .some(red))
+        #expect(HealthPanelModel.headline(runs: .red, shared: both) == "Scheduled runs need attention · 2 problems")
     }
 
     @Test func summarisesTheRuns() throws {
@@ -115,7 +131,7 @@ struct RunOutcomeDisplayTests {
     @Test func groupsAndHeadlines() {
         #expect(RunOutcomeDisplay.Group(severity: "red") == .red)
         #expect(RunOutcomeDisplay.Group(severity: "purple") == .note)
-        #expect(RunOutcomeDisplay.Group.allCases.map(\.title) == ["Needs fixing", "Worth a look", "Everything else"])
+        #expect(RunOutcomeDisplay.Group.allCases.map(\.title) == ["Needs attention", "Worth a look", "Everything else"])
         #expect(RunOutcomeDisplay.overall(.green) == "Scheduled runs are healthy")
         #expect(RunOutcomeDisplay.overall(.yellow) == "Scheduled runs need a look")
     }

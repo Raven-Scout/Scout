@@ -307,7 +307,7 @@ struct ShellViewSmokeTests {
     /// One status per kind, with and without a fix button.
     static let sampleStatuses: [ScoutStatus] = ScoutStatus.Kind.allCases.map {
         ScoutStatus(kind: $0, title: "Title \($0)", detail: "Detail", tone: .warn,
-                    fix: $0 == .needsSetup ? .setUp : $0 == .needsAttention ? .openSettings : nil)
+                    fix: $0 == .needsSetup ? .setUp : $0 == .needsAttention ? .openSettings : $0 == .lastFailed ? .openHealth : nil)
     }
 
     @Test("the menu bar extra renders for each status")
