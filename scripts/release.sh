@@ -157,7 +157,8 @@ kb_gate_reminder() {
   echo "  On ${release_branch}, before merging the release PR (1 session on your Claude login, no API key):"
   echo "    plugin/scripts/eval.sh kb-gate"
   echo "  Merge only on \"verdict\": \"pass\" (exit 0) from a report whose commit is ${release_branch}'s head,"
-  echo "  with that JSON report pasted into the release PR."
+  echo "  with that JSON report pasted into the release PR. \"void\" (exit 3) is no verdict: the session"
+  echo "  did nothing (its \"void\" lists the denied calls), so rerun it; \"fail\" (exit 1) blocks the release."
 }
 
 cmd_prepare() {

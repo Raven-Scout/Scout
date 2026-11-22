@@ -134,10 +134,20 @@ def _write_report(report: dict[str, Any], paths: list[Path]) -> None:
 def _cmd_kb_gate(args: argparse.Namespace) -> int:
     """The KB-writing release gate: ONE consolidation session, scored, with a JSON report.
 
-    Exit 0 pass, 1 fail, 2 when it couldn't decide (no login, an aborted session, an unscored check).
+    Exit 0 pass, 1 fail, 2 when it couldn't decide (no login, an aborted session, an unscored check),
+    3 for a void run (the session finished but did nothing; the report lists its denied calls).
     """
     from .checks.kb_writing import KB_CHECKS
-    from .kb_gate import REPORT_NAME, checkout_state, exit_code, gate_report, spec_for
+    from .kb_gate import (
+        REPORT_NAME,
+        checkout_state,
+        commits_since_fixture,
+        exit_code,
+        gate_report,
+        pages_changed,
+        spec_for,
+        void_run,
+    )
     from .plan import DEFAULT_MODEL
     from .runner import LoginRequired, run_sample
 
@@ -172,10 +182,20 @@ def _cmd_kb_gate(args: argparse.Namespace) -> int:
         return 2
     checks = [c for c in sample.checks if c.name in KB_CHECKS]
     meta = {k: sample.meta.get(k) for k in ("model", "resolved_model", "cli_version", "today", "started_at")}
+    vault, spec = sample.result_dir / "vault", spec_for(scenario)
+    void = None if sample.aborted else void_run(
+        sample.metrics, commits_since_fixture(vault), pages_changed(vault, spec.project)
+    )  # fmt: skip
     report = gate_report(
-        sample.result_dir / "vault", spec_for(scenario), checks, scenario=scenario.name,
+        vault, spec, checks, scenario=scenario.name, void=void,
         sample={"result_dir": str(sample.result_dir), **meta, "checkout": checkout, "aborted": sample.aborted},
     )  # fmt: skip
+    if void:
+        denied = "; ".join(f"{d['tool']}: {d['input'][:120]}" for d in void["denials"]) or "none"
+        print(
+            f"eval: VOID run, not a verdict on the release: {void['reason']}. Denied calls: {denied}. Rerun the gate.",
+            file=sys.stderr,
+        )
     _write_report(report, [sample.result_dir / REPORT_NAME] + ([Path(args.report)] if args.report else []))
     return exit_code(report)
 

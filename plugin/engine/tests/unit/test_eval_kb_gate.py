@@ -29,7 +29,19 @@ from tests.eval.harness.checks.kb_writing import (
     source_keys,
 )
 from tests.eval.harness.dates import render_dates
-from tests.eval.harness.kb_gate import exit_code, gate_report, score_kb, spec_for, structure_row
+from tests.eval.harness.kb_gate import (
+    DENIED_INPUT_CHARS,
+    EXIT_VOID,
+    commits_since_fixture,
+    exit_code,
+    gate_report,
+    pages_changed,
+    score_kb,
+    spec_for,
+    structure_row,
+    void_run,
+)
+from tests.eval.harness.metrics import SampleMetrics, ToolCall
 from tests.eval.harness.scenario import load_scenario
 
 TODAY = date(2026, 10, 14)
@@ -548,6 +560,98 @@ def test_bad_kb_settings_fail_before_a_session_is_spent(
         load_scenario(_probe(tmp_path, monkeypatch, extra))
 
 
+# ----- void runs: the session finished but did nothing ----------------------------------------
+
+
+def _metrics(*calls: ToolCall, denials: tuple[str, ...] | None = None) -> SampleMetrics:
+    return SampleMetrics(
+        calls=calls, tool_call_count=len(calls), error_count=sum(c.is_error for c in calls), turns=5,
+        input_tokens=1, output_tokens=1, cache_read_tokens=0, cost_usd=0.3, duration_s=18.9,
+        denials=tuple(c.name for c in calls if c.denied) if denials is None else denials, model="m",
+        mcp_servers=(), result_subtype="success", skipped_lines=0,
+    )  # fmt: skip
+
+
+def _call(name: str, inp: dict, *, error: bool = False, denied: bool = False) -> ToolCall:
+    return ToolCall(seq=1, name=name, input=inp, is_error=error or denied, position=0.5, denied=denied)
+
+
+DENIED_BASH = _call("Bash", {"command": "ls .scout-state ../.scout-state 2>/dev/null; " + "x" * 400}, denied=True)
+
+
+def test_a_session_that_did_nothing_is_void_with_its_denials() -> None:
+    void = void_run(_metrics(_call("Read", {"file_path": "SKILL.md"}), DENIED_BASH), 0, False)
+    assert void is not None and void["result"] == "success"
+    assert (void["duration_s"], void["turns"], void["tool_calls"]) == (18.9, 5, 2)
+    [denied] = void["denials"]
+    assert denied["tool"] == "Bash" and denied["input"].startswith("ls .scout-state ../.scout-state")
+    assert len(denied["input"]) == DENIED_INPUT_CHARS
+
+
+def test_a_denied_read_is_listed_by_its_path() -> None:
+    void = void_run(_metrics(_call("Read", {"file_path": "/elsewhere/x.md"}, denied=True)), 0, False)
+    assert void is not None and void["denials"] == [{"tool": "Read", "input": "/elsewhere/x.md"}]
+    mcp = void_run(_metrics(_call("mcp__x__send", {"to": "a"}, denied=True)), 0, False)
+    assert mcp is not None and mcp["denials"] == [{"tool": "mcp__x__send", "input": '{"to": "a"}'}]
+
+
+def test_an_older_transcript_names_the_denied_tool_without_its_input() -> None:
+    void = void_run(_metrics(_call("Bash", {"command": "ls"}, error=True), denials=("Bash",)), 0, False)
+    assert void is not None and void["denials"] == [{"tool": "Bash", "input": ""}]
+
+
+@pytest.mark.parametrize(
+    ("calls", "commits", "changed"),
+    [
+        ((DENIED_BASH,), 1, False),  # it committed: it worked
+        ((DENIED_BASH,), 0, True),  # it changed the project's pages
+        ((DENIED_BASH, _call("Write", {"file_path": "a.md"})), 0, False),  # a write went through
+        ((DENIED_BASH, _call("Edit", {"file_path": "a.md"})), 0, False),
+        ((DENIED_BASH,), None, False),  # git couldn't say: the checks decide
+        ((DENIED_BASH,), 0, None),
+    ],
+)
+def test_a_session_that_did_something_or_cannot_be_measured_is_not_void(calls, commits, changed) -> None:
+    assert void_run(_metrics(*calls), commits, changed) is None
+
+
+def test_a_failed_write_still_counts_as_nothing_written() -> None:
+    assert void_run(_metrics(_call("Write", {"file_path": "a.md"}, error=True)), 0, False) is not None
+
+
+def test_no_transcript_is_never_void() -> None:
+    assert void_run(None, 0, False) is None
+
+
+def test_commits_and_page_changes_are_measured_against_the_fixture(tmp_path: Path, scenario) -> None:
+    vault = _snapshot(tmp_path)
+    assert commits_since_fixture(vault) == 0 and pages_changed(vault, scenario.kb_project) is False
+    front = vault / PROJECT / "report-builder.md"
+    front.write_text(front.read_text(encoding="utf-8") + "\n- one more\n", encoding="utf-8")
+    assert pages_changed(vault, scenario.kb_project) is True  # uncommitted, like the checks
+    _git(vault, "commit", "-q", "-am", "run", when=f"{TODAY}T07:10:00")
+    assert commits_since_fixture(vault) == 1
+
+
+def test_an_unreadable_vault_measures_nothing(tmp_path: Path, scenario) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert commits_since_fixture(bare) is None and pages_changed(bare, scenario.kb_project) is None
+
+
+def test_void_outranks_fail_and_aborted_outranks_void(tmp_path: Path, scenario) -> None:
+    vault, spec = _snapshot(tmp_path), spec_for(scenario)
+    checks = score_kb(vault, spec)
+    assert any(c.passed is False for c in checks)  # the untouched fixture leaves the facts unfiled
+    void = void_run(_metrics(DENIED_BASH), 0, False)
+    report = gate_report(vault, spec, checks, scenario=scenario.name, void=void)
+    assert report["verdict"] == "void" and report["void"] == void and not report["passed"]
+    assert report["checks"] and exit_code(report) == EXIT_VOID == 3
+    aborted = gate_report(vault, spec, checks, scenario=scenario.name, void=void, sample={"aborted": {"r": 1}})
+    assert aborted["verdict"] == "aborted" and exit_code(aborted) == 2
+    assert gate_report(vault, spec, checks, scenario=scenario.name)["void"] is None
+
+
 # ----- the commands ---------------------------------------------------------------------------
 
 
@@ -580,20 +684,29 @@ import json, os, sys
     + HOOKED_CLAUDE_PRELUDE
     + """
 servers = [s for s in os.environ["EVAL_FAKE_SERVERS"].split(",") if s]
+action = os.environ.get("EVAL_FAKE_ACTION", "")
+denials = []
 print(json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "apiKeySource": "none",
                   "mcp_servers": [{"name": s, "status": "connected"} for s in servers]}), flush=True)
+if action == "deny":  # the v0.18.21 void run's shape: one compound Bash refused, then the session stops
+    command = "cat .scout-cache/run-health.json | head -30; ls .scout-state ../.scout-state 2>/dev/null"
+    use = {"type": "tool_use", "id": "toolu_d1", "name": "Bash", "input": {"command": command}}
+    print(json.dumps({"type": "assistant", "message": {"id": "m1", "content": [use]}}))
+    print(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_d1",
+                      "is_error": True, "content": "Permission to use Bash has been denied."}]}}))
+    denials = [{"tool_name": "Bash", "tool_use_id": "toolu_d1", "tool_input": {"command": command}}]
+if action == "commit":  # a session that did work: one commit past the fixture
+    import subprocess
+    subprocess.run(["git", "-c", "user.name=Alex Example", "-c", "user.email=alex@example.com", "commit",
+                    "-q", "--no-verify", "--allow-empty", "-m", "run"], check=True)
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,
                   "duration_ms": 1000, "total_cost_usd": 0.01, "result": "Nothing to do.",
-                  "usage": {"input_tokens": 1, "output_tokens": 1}}))
+                  "permission_denials": denials, "usage": {"input_tokens": 1, "output_tokens": 1}}))
 """
 )
 
 
-def test_kb_gate_runs_one_session_and_writes_the_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A stand-in session that writes nothing: the front page is untouched, so the gate fails on
-    the facts alone, and says so in the report it leaves in the result dir."""
+def _fake_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, *extra_args: str) -> int:
     from tests.eval.harness.cli import main
 
     fake = tmp_path / "fake-claude"
@@ -601,13 +714,25 @@ def test_kb_gate_runs_one_session_and_writes_the_report(
     fake.chmod(0o755)
     servers = "claude_ai_Gmail,claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack"
     monkeypatch.setenv("EVAL_FAKE_SERVERS", servers)
+    monkeypatch.setenv("EVAL_FAKE_ACTION", action)
+    return main(["kb-gate", "--yes", "--claude", str(fake), "--cli-version", "2.1.278 (Claude Code)",
+                 "--results", str(tmp_path / "results"), *extra_args])  # fmt: skip
+
+
+def test_kb_gate_runs_one_session_and_writes_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A stand-in session that writes nothing: the front page is untouched and nothing was committed,
+    so the run tested no KB writing. The gate calls it void (exit 3), never a fail, still reports the
+    checks, and says so in the report it leaves in the result dir."""
     extra = tmp_path / "out" / "gate.json"
-    code = main(["kb-gate", "--yes", "--claude", str(fake), "--cli-version", "2.1.278 (Claude Code)",
-                 "--results", str(tmp_path / "results"), "--report", str(extra)])  # fmt: skip
+    code = _fake_gate(tmp_path, monkeypatch, "", "--report", str(extra))
     captured = capsys.readouterr()
     assert "Will start 1 session (kb-front-page ×1, morning-consolidation) on sonnet" in captured.err
     report = json.loads(captured.out)
-    assert code == 1 and report["verdict"] == "fail"
+    assert code == 3 and report["verdict"] == "void" and report["passed"] is False
+    assert report["void"]["denials"] == [] and report["void"]["result"] == "success"
+    assert "VOID run, not a verdict on the release" in captured.err and "Denied calls: none" in captured.err
     assert {c["name"]: c["passed"] for c in report["checks"]} == {
         **dict.fromkeys(KB_CHECKS, True),
         "kb_facts_cited": False,
@@ -623,3 +748,27 @@ def test_kb_gate_runs_one_session_and_writes_the_report(
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=EVAL_ROOT, capture_output=True, text=True).stdout.strip()
     assert checkout["commit"] == head and checkout["branch"] and isinstance(checkout["dirty"], bool)
     shutil.rmtree(tmp_path / "results")
+
+
+def test_kb_gate_lists_the_denied_call_of_a_void_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """v0.18.21's run 1: one Bash refused, the session ended "success" having done nothing. Reported
+    as void with the refused command, so the release flow can tell it from a KB-writing fail."""
+    code = _fake_gate(tmp_path, monkeypatch, "deny")
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert code == 3 and report["verdict"] == "void"
+    [denied] = report["void"]["denials"]
+    assert denied["tool"] == "Bash" and "../.scout-state" in denied["input"]
+    assert (report["void"]["turns"], report["void"]["tool_calls"]) == (1, 1)
+    assert "Bash: cat .scout-cache/run-health.json" in captured.err
+
+
+def test_kb_gate_fails_a_run_that_did_work_but_cited_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A commit past the fixture means the session worked: unfiled facts are a fail, not void."""
+    code = _fake_gate(tmp_path, monkeypatch, "commit")
+    report = json.loads(capsys.readouterr().out)
+    assert code == 1 and report["verdict"] == "fail" and report["void"] is None

@@ -95,6 +95,7 @@ Step 5: Commit results to git.
 Step 6: Send the wrap notification summarizing what was researched and key findings, through the channel and recipient that each of RESEARCH.md's notification steps names, sending every one it has (in a stock install, Step 4d: Slack Notification and, when Telegram is set up, Step 4d: Telegram Notification as well), or SKILL.md's notification section when RESEARCH.md has none. Do not assume Slack. If neither file has one, send nothing and say so in your final message.
 
 Important:
+- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, do that and never get the same thing another way; otherwise redo a shell command as plain single commands on paths inside {{SCOUT_DIR}}, or with Read/Edit, and carry on.
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
 - The knowledge base is in {{SCOUT_DIR}}/knowledge-base/.
 - Always use [[wikilinks]] when referencing KB files.
