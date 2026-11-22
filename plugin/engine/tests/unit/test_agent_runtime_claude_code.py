@@ -14,7 +14,7 @@ from scout.agent_runtimes.claude_code import ClaudeCode
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
 WRAPPER = TEMPLATES / "scripts" / "claude-with-retry.sh.tmpl"
-RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl")
+RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl", "run-respond.sh.tmpl")
 
 
 def _req(**over: object) -> RunRequest:

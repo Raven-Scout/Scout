@@ -5,6 +5,9 @@
 # host's push state and lock, not vault content.
 .scout-state/health-notify.*
 .scout-state/telegram-sent.jsonl*
+# The inbound Telegram ledger (schedule tick, notify telegram --reply-to): the owner's
+# messages and this host's poll offset, not vault content.
+.scout-state/telegram-inbound/
 # Agnes sync commit map, cached Local-Only list and pending-push note (scoutctl repo): this computer's state.
 .scout-state/repo-sync.json
 .scout-state/repo-sync-host.json

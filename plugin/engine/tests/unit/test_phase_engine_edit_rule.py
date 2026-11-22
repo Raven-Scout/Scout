@@ -31,7 +31,7 @@ RULE = ("core/git-setup.md", "## Engine Changes: Never in the Live Engine Checko
 def test_the_rule_reaches_every_scheduled_mode() -> None:
     (sec,) = parse_phase_file(PHASES / RULE[0])
     assert sec.requires is None
-    assert set(sec.mode or []) == {"briefing", "consolidation", "dreaming", "research"}
+    assert set(sec.mode or []) == {"briefing", "consolidation", "dreaming", "research", "respond"}
     assert RULE[1] in sec.body
 
 

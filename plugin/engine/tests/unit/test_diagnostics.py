@@ -77,7 +77,7 @@ def _synthetic_vault(tmp_path: Path) -> tuple[Path, Path]:
         f"  {CANARIES['slot_key']}:\n    type: briefing\n    weekdays: [mon]\n    fires_at_local: '07:00'\n"
         "    on_miss: fire\n    runner: run-scout.sh\n    missed_window_hours: 4\n    cooldown_minutes: 0\n"
     )
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
     (vault / "scout-config.yaml").write_text(

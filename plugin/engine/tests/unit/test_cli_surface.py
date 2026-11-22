@@ -951,7 +951,7 @@ def test_bootstrap_resolve_records_each_named_brain_file(vault: Path, monkeypatc
 def test_bootstrap_resolve_rejects_a_file_that_is_not_a_brain_file(vault: Path) -> None:
     result = runner.invoke(cli.app, ["bootstrap", "resolve", "parser.py"])
     assert result.exit_code == 2
-    assert "SKILL.md, DREAMING.md or RESEARCH.md" in result.output
+    assert "SKILL.md, DREAMING.md, RESEARCH.md or RESPOND.md" in result.output
 
 
 def test_bootstrap_resolve_refusal_exits_one(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

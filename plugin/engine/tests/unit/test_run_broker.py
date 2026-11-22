@@ -12,6 +12,7 @@ import os
 import stat
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -155,7 +156,135 @@ def test_the_send_carries_only_the_message_never_a_recipient(vault: Path) -> Non
     sender = Sender()
     reply = broker.Broker(vault, _env(), sender=sender).handle(_tg(chat_id="12345", token="t", url="https://x"))
     assert reply.exit == 0
-    assert set(sender.calls[0]) == {"tier", "parse_mode", "body", "allow_duplicate", "dry_run"}
+    assert set(sender.calls[0]) == {"tier", "parse_mode", "body", "allow_duplicate", "dry_run", "reply_to", "covers"}
+    assert sender.calls[0]["reply_to"] is None and sender.calls[0]["covers"] == []
+
+
+def _inbound(vault: Path, *ids: int) -> None:
+    from scout.telegram_inbound.ledger import InboundMessage, Ledger
+
+    ledger = Ledger(vault)
+    with ledger.locked():
+        for i in ids:
+            ledger.add(InboundMessage(message_id=i, date=0, text="q", reply_to_text=None, forwarded=False, kind="text"))
+
+
+def test_broker_passes_reply_to_and_covers_through(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _inbound(vault, 5, 6, 7)
+    sender = Sender()
+    live = broker.Broker(vault, _env(), sender=sender, run_id="scout-broker.reply")
+    assert live.handle(_tg(reply_to=7, covers=[5, 6])).exit == 0
+    assert sender.calls[0]["reply_to"] == 7 and sender.calls[0]["covers"] == [5, 6]
+    # The default sender is cli_send in this process: it records the reply in this broker's vault, whatever the cwd.
+    seen: dict[str, Any] = {}
+
+    def fake_cli_send(**kw: Any) -> int:
+        seen.update(kw)
+        return 0
+
+    from scout.scripts import notify_telegram
+
+    monkeypatch.setattr(notify_telegram, "cli_send", fake_cli_send)
+    monkeypatch.chdir("/")
+    assert broker.Broker(vault, _env(), run_id="scout-broker.reply").handle(_tg("b", reply_to=7, covers=[5])).exit == 0
+    assert seen["reply_to"] == 7 and seen["covers"] == [5] and seen["vault"] == vault
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"covers": "5,6"},
+        {"covers": ["5"]},
+        {"covers": [True]},
+        {"covers": [0]},
+        {"covers": [-3]},
+        {"covers": [1.5]},
+        {"covers": list(range(1, 102))},
+        {"reply_to": "7"},
+        {"reply_to": 0},
+        {"reply_to": True},
+        {"reply_to": 7.0},
+        {"reply_to": None, "covers": [5]},  # a reply threads to a message
+    ],
+)
+def test_broker_refuses_non_int_covers(vault: Path, extra: dict[str, Any]) -> None:
+    sender = Sender()
+    reply = broker.Broker(vault, _env(), sender=sender).handle(_tg(**{"reply_to": 7, **extra}))
+    assert reply.exit == broker.EXIT_REFUSED and reply.kind == broker.REFUSED
+    assert sender.calls == []
+
+
+def test_queued_reply_with_covers_is_validated_on_drain(vault: Path) -> None:
+    _inbound(vault, 5, 7)
+    broker.enqueue(vault, "telegram", _tg("forged", reply_to=7, covers=["all"]), now=NOW)
+    broker.enqueue(vault, "telegram", _tg("answer", reply_to=7, covers=[5, 7]), now=NOW)
+    sender = Sender()
+    result = broker.drain(vault, broker=broker.Broker(vault, _env(), sender=sender, clock=lambda: NOW))
+    assert result.failed == 1 and result.done == 1
+    assert [(c["body"], c["reply_to"], c["covers"]) for c in sender.calls] == [("answer", 7, [5, 7])]
+
+
+@dataclass
+class _Event:
+    id: str = "01EVENT"
+
+
+def _real_sender(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The default sender (cli_send in-process, with its ledger check), with only the network send faked."""
+    from scout.scripts import notify_telegram
+
+    sent: list[dict[str, Any]] = []
+
+    def fake_send(**kw: Any) -> _Event:
+        sent.append(kw)
+        return _Event()
+
+    monkeypatch.setattr(notify_telegram, "send", fake_send)
+    return sent
+
+
+def test_a_reply_to_a_message_not_yet_received_is_refused_for_good(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run can't queue a reply to a message id it predicts and have it "answer" that message once it
+    arrives: the first drain fails the entry instead of keeping it as transient."""
+    sent = _real_sender(monkeypatch)
+    _inbound(vault, 5)
+    broker.enqueue(vault, "telegram", _tg("pre-answer", reply_to=9, covers=[5]), now=NOW)
+    first = broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW))
+    assert (first.failed, first.kept, first.done) == (1, 0, 0)
+    _inbound(vault, 9)  # the predicted message arrives
+    later = broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW + timedelta(minutes=5)))
+    assert (later.failed, later.kept, later.done) == (0, 0, 0)
+    assert sent == []
+    from scout.telegram_inbound.ledger import Ledger
+
+    assert Ledger(vault).unanswered_ids() == {5, 9}
+
+
+def test_a_reply_drained_twice_is_already_sent_not_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A drain stopped between the send and the unlink leaves the entry: the next drain finds its request id in
+    the send log (done), before the ledger check that would now refuse it as already answered."""
+    sent = _real_sender(monkeypatch)
+    _inbound(vault, 5)
+    req = _tg("answer", reply_to=5, rid="01REPLYRID")
+    broker.enqueue(vault, "telegram", req, now=NOW)
+    assert broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW)).done == 1
+    broker.enqueue(vault, "telegram", req, now=NOW)
+    again = broker.drain(vault, broker=broker.Broker(vault, _env(), clock=lambda: NOW))
+    assert (again.done, again.failed) == (1, 0)
+    assert len(sent) == 1
+
+
+def test_a_live_reply_to_an_unknown_message_is_a_refusal(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent = _real_sender(monkeypatch)
+    _inbound(vault, 5)
+    live = broker.Broker(vault, _env(), run_id="scout-broker.reply", clock=lambda: NOW)
+    reply = live.handle(_tg("x", reply_to=9))
+    assert reply.exit == 7 and reply.kind == broker.REFUSED
+    assert "unknown or already answered message ids: 9" in reply.stderr
+    assert sent == []
+    assert live.handle(_tg("y", reply_to=5)).exit == 0 and len(sent) == 1
 
 
 def test_the_per_run_limit_holds(vault: Path) -> None:
@@ -539,6 +668,16 @@ def test_the_tightened_rules_refuse_git_dir_writes_and_secret_reads_and_keep_ord
     for ok in (vault / "notes" / "a.md", vault / ".scout-state" / "broker-queue" / "commit" / "x.json"):
         assert sbx.decide(rules, str(ok)) == "allow"
         assert sbx.decide(rules, str(ok), "read") == "allow"
+
+
+def test_a_run_reads_the_telegram_inbound_ledger_but_never_writes_it(vault: Path, tmp_path: Path) -> None:
+    """`scoutctl telegram pending` runs inside the run's sandbox: the ledger is write-protected, not read-protected."""
+    env = _env()
+    rules = sbx.build_rules(vault, env) + sbx.broker_rules(vault, tmp_path / "broker", env)
+    inbound = vault / ".scout-state" / "telegram-inbound"
+    for name in ("messages.json", "replies.jsonl", "offset.json", ".lock"):
+        assert sbx.decide(rules, str(inbound / name), "read") == "allow", name
+        assert sbx.decide(rules, str(inbound / name)) == "deny", name
 
 
 def test_the_rules_render_after_the_base_profile(vault: Path, tmp_path: Path) -> None:

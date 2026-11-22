@@ -247,7 +247,7 @@ agent_runtime = os.environ.get("SCOUT_AGENT_RUNTIME", "")
 if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", agent_runtime):
     row["agent_runtime"] = agent_runtime
 runner = os.environ.get("SCOUT_RUNNER_KIND")
-if runner in ("scout", "dreaming", "research"):
+if runner in ("scout", "dreaming", "research", "respond"):
     row["runner"] = runner
 if resets_at:
     row["resets_at"] = int(resets_at)

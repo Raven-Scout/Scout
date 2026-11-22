@@ -25,7 +25,12 @@ from scout.scripts.bootstrap import BootstrapConfig, install
 
 runner = CliRunner()
 PLUGIN = Path(cli.__file__).resolve().parent.parent.parent
-RUNNERS = {"run-scout.sh": "scout", "run-dreaming.sh": "dreaming", "run-research.sh": "research"}
+RUNNERS = {
+    "run-scout.sh": "scout",
+    "run-dreaming.sh": "dreaming",
+    "run-research.sh": "research",
+    "run-respond.sh": "respond",
+}
 
 # The block a runner's log-name lines are now, and the two lines it replaced.
 _NEW_BLOCK = re.compile(

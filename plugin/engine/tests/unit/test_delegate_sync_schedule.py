@@ -263,7 +263,9 @@ def test_ages_read_in_minutes_hours_then_days() -> None:
 # ----- the runners --------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"])
+@pytest.mark.parametrize(
+    "name", ["run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl", "run-respond.sh.tmpl"]
+)
 def test_every_runner_syncs_the_mirrors_when_it_finishes_and_never_fails_for_it(name: str) -> None:
     text = (TEMPLATES / name).read_text(encoding="utf-8")
     guard = 'if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then'
