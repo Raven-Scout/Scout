@@ -208,26 +208,73 @@ def read_pending(vault: Path) -> tuple[list[Pending], int]:
     return out, bad
 
 
-def decision_ref(verb: str, target_id: str, digest: str) -> str:
-    """The ref an owner decision is recorded under: ``<verb>:<id>@<hash of the item the owner saw>``."""
-    return f"{verb}:{target_id}@{digest}"
+def decision_ref(verb: str, target_id: str, digest: str, filed: str | None = None) -> str:
+    """The ref an owner decision is recorded under: ``<verb>:<id>@<hash of the item the owner saw>``, and
+    ``@<sha>`` of the commit that filed it (:func:`filed_by`) when it is committed, which binds the decision to that
+    one filing."""
+    return f"{verb}:{target_id}@{digest}" + (f"@{filed}" if filed else "")
 
 
-def decision(signals: Sequence[Signal], target_id: str, digest: str, *, spent: datetime | None = None) -> str:
-    """``approved``, ``rejected`` or ``awaiting-ok``: the newest ``approve:<id>@<digest>`` / ``reject:<id>@<digest>``
-    row wins. A row for another digest (the file was changed after the decision) or with none counts for nothing,
-    and so does one made at or before ``spent`` (:func:`spent_at`): a decision is used up once acted on."""
-    wanted = {
+def decision(
+    signals: Sequence[Signal],
+    target_id: str,
+    digest: str,
+    *,
+    filed: str | None = None,
+    spent: datetime | None = None,
+) -> str:
+    """``approved``, ``rejected`` or ``awaiting-ok``: the newest matching ``approve`` / ``reject`` row wins. A row for
+    another digest (the file was changed after the decision) or with none counts for nothing. A decision is used up
+    once acted on:
+
+    - a row bound to a filing (``…@<digest>@<sha>``) counts only while ``filed`` is that sha, so once the file has
+      left ``governance-pending/`` and come back, by any commit, it waits for a new decision. Commit order, not a
+      clock: a run can't forge it;
+    - an unbound row (an older engine's, or a file not yet committed) counts only after ``spent`` (:func:`spent_at`),
+      compared in whole seconds because git keeps no finer time."""
+    base = {
         decision_ref("approve", target_id, digest): "approved",
         decision_ref("reject", target_id, digest): "rejected",
     }
+    bound = (
+        {
+            decision_ref(v, target_id, digest, filed): state
+            for v, state in (("approve", "approved"), ("reject", "rejected"))
+        }
+        if filed
+        else {}
+    )
     state, newest = "awaiting-ok", None
     for s in signals:
-        if s.kind != "approval" or s.ref not in wanted or (spent is not None and s.ts <= spent):
+        if s.kind != "approval" or s.ref is None:
+            continue
+        if s.ref in bound:
+            got = bound[s.ref]
+        elif s.ref in base and (spent is None or s.ts.replace(microsecond=0) > spent):
+            got = base[s.ref]
+        else:
             continue
         if newest is None or s.ts >= newest:
-            state, newest = wanted[s.ref], s.ts
+            state, newest = got, s.ts
     return state
+
+
+def filed_by(vault: Path, item: Pending) -> str | None:
+    """The sha of the commit that filed ``item`` as it is now: the newest commit that added its
+    ``governance-pending/<slug>.md``, provided ``HEAD`` holds that file with this exact :func:`item_hash` (so no
+    removal came after it). None when the file isn't committed as it is, or git can't say."""
+    from scout.changes.scan import _FULL_SHA_RE, _git
+
+    path = f"{PENDING_DIR}/{item.slug}.md"
+    text = _git(vault, "show", f"HEAD:{path}")
+    try:
+        head = _parse_text(text, item.slug) if text is not None else None
+    except Exception:  # noqa: BLE001 - malformed YAML at HEAD: not this file
+        head = None
+    if head is None or head.hash != item.hash:
+        return None
+    sha = (_git(vault, "log", "-n", "1", "--no-renames", "--diff-filter=A", "--format=%H", "--", path) or "").strip()
+    return sha if _FULL_SHA_RE.match(sha) else None
 
 
 # What spent_at returns when git can't say: every decision is used up, so nothing is applied on an unread history.
@@ -235,12 +282,11 @@ _ALL_SPENT = datetime.max.replace(tzinfo=UTC)
 
 
 def spent_at(vault: Path, item: Pending) -> datetime | None:
-    """When a decision about ``item`` was last acted on: the newest commit that took this exact file (same slug,
-    same :func:`item_hash`) out of ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a
-    ``governance: false`` one, or ``discard`` deleted it. None when none did. Read from git, which a run can add to
-    but never rewrite, so re-filing an applied file (after the owner reverted it by hand, say) waits for a new
-    decision instead of riding the old one. Outside a git repository, None; when the repository can't be read, every
-    decision counts as spent."""
+    """For decisions not bound to a filing (:func:`decision`): when a decision about ``item`` was last acted on, the
+    commit time of the newest commit that took this exact file (same slug, same :func:`item_hash`) out of
+    ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a ``governance: false`` one, or
+    ``discard`` deleted it. None when none did. Outside a git repository, None; when the repository can't be read,
+    every decision counts as spent. A bound decision needs none of this: commit order says which filing it was for."""
     from scout.changes.scan import _git  # the scanner's git runner: no locks, a timeout, never raises
 
     path = f"{PENDING_DIR}/{item.slug}.md"
@@ -264,7 +310,7 @@ def spent_at(vault: Path, item: Pending) -> datetime | None:
 
 def state_of(vault: Path, signals: Sequence[Signal], item: Pending) -> str:
     """:func:`decision` for a pending file as it is now, its spent decisions left out."""
-    return decision(signals, item.id, item.hash, spent=spent_at(vault, item))
+    return decision(signals, item.id, item.hash, filed=filed_by(vault, item), spent=spent_at(vault, item))
 
 
 def undo_requested(signals: Sequence[Signal], change_id: str) -> bool:

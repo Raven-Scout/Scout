@@ -146,6 +146,34 @@ def test_a_spent_decision_counts_for_nothing():
     assert decision([*sigs, _sig(f"approve:gov-a@{H}", 2)], "gov-a", H, spent=spent) == "approved"
 
 
+def test_an_unbound_decision_in_the_same_second_as_its_use_is_spent():
+    """Git keeps whole seconds: an approval at 09:00:00.7 applied by a commit at 09:00:00 is used up."""
+    row = Signal(
+        ts=datetime(2026, 11, 16, 9, 0, 0, 700_000, tzinfo=UTC),
+        kind="approval",
+        surface="app",
+        ref=f"approve:gov-a@{H}",
+    )
+    assert decision([row], "gov-a", H, spent=datetime(2026, 11, 16, 9, 0, 0, tzinfo=UTC)) == "awaiting-ok"
+    assert decision([row], "gov-a", H, spent=datetime(2026, 11, 16, 8, 59, 59, tzinfo=UTC)) == "approved"
+
+
+def test_a_bound_decision_counts_only_for_its_filing_whatever_the_clocks_say():
+    """#747 review: a decision names the commit that filed the file; a later filing (a new commit) waits for a new
+    one, however the commit dates were set."""
+    first, second = "a" * 40, "b" * 40
+    assert decision_ref("approve", "gov-a", H, first) == f"approve:gov-a@{H}@{first}"
+    rows = [_sig(decision_ref("approve", "gov-a", H, first), 0)]
+    assert decision(rows, "gov-a", H, filed=first) == "approved"
+    assert decision(rows, "gov-a", H, filed=second) == "awaiting-ok"
+    assert decision(rows, "gov-a", H) == "awaiting-ok"  # not committed as it is now: no filing to match
+    rows.append(_sig(decision_ref("reject", "gov-a", H, second), 1))
+    assert decision(rows, "gov-a", H, filed=second) == "rejected"
+    # A bound row ignores `spent`: commit order already said which filing it was for.
+    spent = datetime(2026, 11, 17, tzinfo=UTC)
+    assert decision(rows[:1], "gov-a", H, filed=first, spent=spent) == "approved"
+
+
 def test_a_decision_counts_only_for_the_diff_it_was_made_on():
     """I3: a row for another hash (the diff changed after the decision) or with none (the old ref form) is nothing."""
     assert decision([_sig("approve:gov-a", 0)], "gov-a", H) == "awaiting-ok"

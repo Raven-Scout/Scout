@@ -551,6 +551,20 @@ def test_approve_needs_the_hash_the_owner_saw(cli, vault, home):
     assert cli(["changes", "reject", gov]).exit_code == 0  # rejecting unseen can't let anything in
 
 
+def test_approving_a_committed_file_binds_it_to_the_commit_that_filed_it(cli, git_vault, home):
+    gov = _pending(git_vault)
+    _git(git_vault, "add", "-A")
+    _git(git_vault, "commit", "-q", "-m", "dreaming [22:00]: governance-pending — skip red")
+    filing = subprocess.run(
+        ["git", "-C", str(git_vault), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    digest = _hash(git_vault, gov)
+    assert cli(["changes", "approve", gov, "--diff-hash", digest]).exit_code == 0
+    [row] = _owner_rows(home)
+    assert row["ref"] == f"approve:{gov}@{digest}@{filing}"
+    assert _needs_ok(cli) == {gov: "approved"}
+
+
 def test_flipping_governance_or_targets_after_the_ok_voids_it(cli, vault, home):
     gov = _pending(vault)
     assert cli(["changes", "approve", gov, "--diff-hash", _hash(vault, gov)]).exit_code == 0

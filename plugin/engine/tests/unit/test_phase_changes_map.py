@@ -243,6 +243,7 @@ def test_git_trailers_name_the_trailers_outside_respond() -> None:
         assert needle in rule, needle
     assert "Scout-Change-Governance" not in rule  # I2: only the apply step's move makes a governance change
     assert "at most one such change per run" in rule  # m10
+    assert "**last paragraph**" in rule  # N3: trailers after more prose are ignored (scan.parse_trailers)
     assert re.search(r'git-safe-commit\.sh "[^"$`\\]*\n\nScout-Change-Why: ', rule)
     for kind in ("SKILL", "DREAMING", "RESEARCH"):
         brain = _assemble(_config(set()), kind, custom={})

@@ -607,7 +607,7 @@ def _record_decision(command: str, kind: str, ref: str, surface: str, installed:
 def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: str | None) -> None:
     import os
 
-    from scout.changes.governance import decision_ref, read_pending, state_of
+    from scout.changes.governance import decision_ref, filed_by, read_pending, state_of
     from scout.changes.store import read_signals
 
     surface = _decision_surface(command, surface)
@@ -633,8 +633,10 @@ def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: s
     if state_of(vault, signals, item) == state:
         typer.echo(f"already {state}")
         return
-    # Not deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
-    _record_decision(command, "approval", decision_ref(verb, gov_id, item.hash), surface, installed, once=False)
+    # Bound to the commit that filed it, when it is committed, so a later re-filing waits for a new decision. Not
+    # deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
+    ref = decision_ref(verb, gov_id, item.hash, filed_by(vault, item))
+    _record_decision(command, "approval", ref, surface, installed, once=False)
 
 
 _DIFF_HASH_HELP = (

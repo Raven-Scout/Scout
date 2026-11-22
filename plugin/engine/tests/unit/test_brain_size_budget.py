@@ -58,15 +58,15 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # inside its headroom: the section now states its own HTML rule instead of pointing at the wrap's).
 # 2026-11-22 (changes map plan 2, after review): all four re-pinned to their measure on the merged tree. What plan 2
 # adds over main, per block, each one the only place a run learns that duty:
-#   DREAMING +~2,170 (+10%): Step 1e, the loop that carries out the owner's undos and governance decisions (+~1,540,
+#   DREAMING +~2,210 (+10%): Step 1e, the loop that carries out the owner's undos and governance decisions (+~1,540,
 #   trimmed by ~320 in review); feedback processing's signal recording (each DM reply, reaction and recurrence), the
 #   governance-pending/ file format and the restored opt-out proposals, net of what they replaced (+~225); the
-#   change-trailer rule every self-edit commit needs (+~330, core/git-trailers.md); privacy's dm-sent record (+~100).
-#   SKILL +~630: the same trailer rule and dm-sent record, the owner-away record in the calendar scan (+~130) and the
-#   critical-blocks check naming governance files (+~100). RESEARCH +~400: the trailer rule and the dm-sent record.
+#   change-trailer rule every self-edit commit needs (+~370, core/git-trailers.md); privacy's dm-sent record (+~100).
+#   SKILL +~670: the same trailer rule and dm-sent record, the owner-away record in the calendar scan (+~130) and the
+#   critical-blocks check naming governance files (+~100). RESEARCH +~440: the trailer rule and the dm-sent record.
 #   RESPOND +~100: privacy's dm-sent record only; the trailer rule is its own section, kept out of respond runs, which
-#   never change Scout itself. (Measured against main's phases at bdcbd6c6: 47,464 / 21,743 / 7,615 / 6,044.)
-PINS = {"SKILL": 48_098, "DREAMING": 23_914, "RESEARCH": 8_017, "RESPOND": 6_147}
+#   never change Scout itself. (Measured against main's phases at 895a11b2: 47,464 / 21,743 / 7,615 / 6,044.)
+PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 8_057, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10
 

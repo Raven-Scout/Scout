@@ -951,6 +951,64 @@ def _decide_at(repo: Path, env: dict[str, str], verb: str, gov: str, ts: datetim
     append_signal(Signal(ts=ts, kind="approval", surface="scoutctl", ref=f"{verb}:{gov}@{digest}"), vault=repo, env=env)
 
 
+def test_a_bound_approval_is_used_up_by_commit_order_not_dates(repo, env):
+    """#747 review N1: the approval names the commit that filed the file, so a re-filing rides nothing, even when the
+    re-filing's commits are dated before the approval (a run can set GIT_COMMITTER_DATE)."""
+    from scout.changes.governance import decision_ref, filed_by, read_pending, state_of
+    from scout.changes.store import read_signals
+
+    gov = "gov-skip-red"
+    files: dict[str, str | None] = {"governance-pending/skip-red.md": _PENDING}
+    _commit(repo, "dreaming [22:00]: file it", files, date=NOW - timedelta(minutes=10))
+    item = read_pending(repo)[0][0]
+    filing = filed_by(repo, item)
+    assert filing == _git(repo, "rev-parse", "HEAD")
+    ref = decision_ref("approve", gov, item.hash, filing)
+    append_signal(Signal(ts=NOW, kind="approval", surface="app", ref=ref), vault=repo, env=env)
+    assert _due(repo, env)["apply"] == [gov]
+    paths = apply_governance(repo, env, gov)
+    _git(repo, "add", "-A", "--", *paths)
+    past = NOW - timedelta(days=3)  # every later commit back-dated before the approval
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}", date=past)
+    _commit(repo, "scout: revert by hand", {"SKILL.md": "skill v1\n", "governance-pending/applied/skip-red.md": None},
+            date=past)  # fmt: skip
+    _commit(repo, "dreaming [22:30]: file it again", files, date=past)
+    item = read_pending(repo)[0][0]
+    assert filed_by(repo, item) not in (None, filing)
+    signals, _ = read_signals(repo, env)
+    assert state_of(repo, signals, item) == "awaiting-ok"
+    assert _due(repo, env)["apply"] == []
+    # Uncommitted as it is now: no filing, so a bound decision matches nothing.
+    (repo / "governance-pending/skip-red.md").write_text(_PENDING.replace("governed", "edited"))
+    assert filed_by(repo, read_pending(repo)[0][0]) is None
+
+
+def test_a_filing_needs_the_file_committed_as_it_is(repo):
+    from scout.changes.governance import filed_by, read_pending
+
+    _commit(repo, "dreaming [22:00]: a broken file", {"governance-pending/skip-red.md": "---\n: [\n---\n"})
+    gov = _pending(repo)  # the working tree holds a good one; HEAD's doesn't parse
+    item = next(p for p in read_pending(repo)[0] if p.id == gov)
+    assert filed_by(repo, item) is None
+
+
+def test_an_unbound_approval_applied_in_the_same_second_is_used_up(repo, env):
+    """N1: an older engine's approval row (no filing sha) has microseconds, git's commit time has none."""
+    second = NOW.replace(microsecond=0)
+    _commit(repo, "dreaming [22:00]: file it", {"governance-pending/skip-red.md": _PENDING},
+            date=second - timedelta(minutes=1))  # fmt: skip
+    gov = "gov-skip-red"
+    _decide_at(repo, env, "approve", gov, second + timedelta(microseconds=700_000))
+    paths = apply_governance(repo, env, gov)
+    _git(repo, "add", "-A", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:12]: apply {gov}", date=second)
+    _commit(repo, "scout: revert by hand", {"SKILL.md": "skill v1\n", "governance-pending/applied/skip-red.md": None},
+            date=second + timedelta(seconds=1))  # fmt: skip
+    _commit(repo, "dreaming [22:30]: file it again", {"governance-pending/skip-red.md": _PENDING},
+            date=second + timedelta(seconds=2))  # fmt: skip
+    assert _due(repo, env)["apply"] == []
+
+
 def test_an_approval_is_used_up_once_applied(repo, env):
     """#747 review: the owner reverts an applied governance change by hand and a run re-files the identical file; the
     old approval must not apply it again. A fresh approval does."""
