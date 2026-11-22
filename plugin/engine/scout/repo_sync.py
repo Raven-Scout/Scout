@@ -2297,7 +2297,7 @@ class Preview:
                 "lists until you run scoutctl repo sync-only --accept."
             )
         out.append("By folder:")
-        out += [f"  {folder}: {count}" for folder, count in sorted(self.by_folder.items())]
+        out += [f"  {folder}: {files}" for folder, files in sorted(self.by_folder.items())]
         if self.private:
             out.append(
                 f"{count(self.private, 'private note')} {are(self.private)} among them. "

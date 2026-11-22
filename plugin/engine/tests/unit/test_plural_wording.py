@@ -40,8 +40,8 @@ def _literal_text(token: str) -> str:
     """``token`` without its f-string replacement fields, so ``{title(s)}`` is code on every Python.
 
     3.12+ hands the fields over as code tokens already; 3.11 keeps them inside the one STRING token."""
-    prefix = token[: min(i for i in (token.find('"'), token.find("'")) if i >= 0)]
-    if "f" not in prefix.lower():
+    quotes = [i for i in (token.find('"'), token.find("'")) if i >= 0]
+    if not quotes or "f" not in token[: min(quotes)].lower():  # a 3.12+ FSTRING_MIDDLE is literal text already
         return token
     out, depth, i = [], 0, 0
     while i < len(token):
@@ -95,7 +95,7 @@ def test_every_allowed_word_is_still_there(module: str, word: str) -> None:
 def test_the_scan_sees_plain_and_f_strings_but_not_code() -> None:
     src = (
         'a = f"{n} run(s) failed"\nb = "2 cop(ies)"\nc = ", ".join(repr(s) for s in x)\nd = "3 prefix(es)"\n'
-        'e = f"**{title(s)}** {{literal}} x"\ng = F"{n:{w}} {f(s)!r} file(s)"\n'
+        'e = f"**{title(s)}** {{literal}} x"\ng = F"{n:{w}} {f(s)!r} file(s)"\nh = f"{_quoted(s)} now has"\n'
     )
     assert _paren_plurals(src) == [(1, "run(s)"), (2, "cop(ies)"), (4, "prefix(es)"), (6, "file(s)")]
 

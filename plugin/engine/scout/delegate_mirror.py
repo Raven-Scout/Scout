@@ -2075,7 +2075,7 @@ def _agent_files_note(delegate: str, the_plan: Plan) -> list[str]:
                      f"({listing(github)})")  # fmt: skip
     return [
         f"left out as agent config: {count(len(the_plan.agent_files), 'file')}: {'; '.join(parts)}. "
-        f"{agree(len(the_plan.agent_files), 'It', 'They')}'re for the "
+        f"{agree(len(the_plan.agent_files), 'It is', 'They are')} for the "
         f"owner's computer; {delegate}'s mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. Rename or move a "
         "note to keep it in the mirror"
     ]

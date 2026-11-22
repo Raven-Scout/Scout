@@ -495,6 +495,17 @@ def test_root_github_files_are_counted_and_named_apart(vault: Path, tmp_path: Pa
     only_github = dm.Plan(delegate="d", agent_files=[".github/x.md"])
     (alone,) = dm._agent_files_note("d", only_github)
     assert alone.startswith("left out as agent config: 1 file: 1 under the root's .github/")
+    assert alone.endswith(
+        "). It is for the owner's computer; d's mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. "
+        "Rename or move a note to keep it in the mirror"
+    )
+    (two,) = dm._agent_files_note("d", dm.Plan(delegate="d", agent_files=[".github/x.md", ".github/y.md"]))
+    assert two.startswith("left out as agent config: 2 files: 2 under the root's .github/")
+    assert two.endswith(
+        "). They are for the owner's computer; d's mirror has Scout's guide (AGENTS.md, CLAUDE.md) instead. "
+        "Rename or move a note to keep it in the mirror"
+    )
+    assert "They are for the owner's computer" in note
     many = dm.Plan(delegate="d", agent_files=[f"tools/{i}/claude.md" for i in range(dm.LEFT_OUT_LISTED + 2)])
     assert "and 2 more" in dm._agent_files_note("d", many)[0]
 
