@@ -82,9 +82,22 @@ def test_step_1d_routes_governance_to_a_pending_file() -> None:
     assert "```diff" in step_1d or "`diff` block" in step_1d
     assert "never applied by the run that wrote it" in step_1d
     assert "Harness fallback" in step_1d
-    # I2: a fallback item is an ordinary change once applied; I3: a decision is bound to the diff the owner saw.
-    assert "`governance: false`" in step_1d
+    # I3: a decision is bound to the file the owner saw, and the wrap says how to make it without an app tab.
     assert "Never edit a pending file once committed" in step_1d and "new slug" in step_1d
+    assert "scoutctl changes approve gov-<slug> --diff-hash <its diff_hash>" in step_1d
+    assert "Changes tab" not in step_1d
+
+
+def test_step_1d_keeps_ordinary_proposals_until_the_app_can_show_changes() -> None:
+    """#747 review: only governance goes to governance-pending/; a large or uncertain change is still an opt-out
+    proposal in dreaming-proposals.md, which the app's Proposals tab reads, and approved or ripe ones are applied."""
+    step_1d = _step(_text(FEEDBACK), "### Step 1d")
+    assert "dreaming-proposals.md" in step_1d
+    assert "Pending (auto-apply after [today + 3 days])" in step_1d
+    assert "`Approved`" in step_1d and "not `Rejected`" in step_1d and "Applied — [today's date]" in step_1d
+    assert "**Before writing new ones, apply**" in step_1d
+    fallback = step_1d[step_1d.index("**Harness fallback.**") :]
+    assert "opt-out `Pending` proposal" in fallback and "governance-pending" not in fallback
 
 
 def test_step_1e_is_its_own_dreaming_fragment_with_no_connector() -> None:
@@ -113,7 +126,7 @@ def test_step_1e_acts_on_due() -> None:
     # I2: the move into applied/ makes a governance change, never a trailer; a fallback item is deleted instead.
     assert "Scout-Change-Governance" not in step_1e
     assert "move into `applied/` is what marks the commit as a governance change" in step_1e
-    assert "`governance: false`" in step_1e
+    assert "puts the change's lines back; the trailer just names it" in step_1e
     assert "blocked" in step_1e and "edited-since" in step_1e
     # I5: a blocked undo is reported once.
     assert "scripts/scoutctl changes announced --blocked <id>" in step_1e
@@ -123,13 +136,14 @@ def test_step_1e_acts_on_due() -> None:
     assert "at most one per run" in step_1e
     assert "Never edit a pending file once committed" in step_1e
     assert "Slack" not in step_1e.replace("with or without Slack", "")  # the wrap, whatever its channel
-    assert "Undo in the Changes tab, or run `scoutctl changes undo <id>`" in step_1e
+    assert "To undo it, run `scoutctl changes undo <id>`" in step_1e
+    assert "Changes tab" not in step_1e
     assert "scoutctl changes announced" in step_1e
     assert "engagement_tests_running" in step_1e
     assert "calibration_report_due" in step_1e and "docs/changes-calibration-report.md" in step_1e
     assert "governance-pending/" in step_1e
     assert "`verified` is false" in step_1e
-    assert "Engine back-port" in step_1e
+    assert "Engine back-port" in step_1e and "dreaming-proposals.md" in step_1e
 
 
 def test_runs_never_call_owner_only_commands() -> None:
@@ -164,14 +178,14 @@ def test_no_phase_tells_a_run_to_run_an_owner_only_command() -> None:
     assert not re.search(_OWNER_ONLY, "or run `scoutctl changes undo <id>`")
 
 
-def test_no_phase_routes_to_dreaming_proposals() -> None:
-    hits = [str(p.relative_to(PHASES)) for p in sorted(PHASES.rglob("*.md")) if "dreaming-proposals" in _text(p)]
+def test_no_phase_points_at_a_changes_tab_the_app_does_not_have_yet() -> None:
+    hits = [str(p.relative_to(PHASES)) for p in sorted(PHASES.rglob("*.md")) if "Changes tab" in _text(p)]
     assert hits == []
 
 
-def test_action_items_blocker_is_the_governance_pending_equivalent() -> None:
+def test_action_items_blocker_covers_proposals_and_governance() -> None:
     text = _text(PHASES / "core" / "action-items.md")
-    assert "approved-but-unapplied proposal" not in text
+    assert "approved-but-unapplied proposal" in text
     assert "governance-pending/" in text
 
 
@@ -225,7 +239,7 @@ def test_git_setup_names_the_trailers() -> None:
         assert needle in rule, needle
     assert "Scout-Change-Governance" not in rule  # I2: only the apply step's move makes a governance change
     assert "at most one such change per run" in rule  # m10
-    assert re.search(r"git-safe-commit\.sh \$'(?:[^'\\]|\\.)*\\n\\nScout-Change-Why: ", rule)
+    assert re.search(r'git-safe-commit\.sh "[^"$`\\]*\n\nScout-Change-Why: ', rule)
     for kind in ("SKILL", "DREAMING", "RESEARCH"):
         brain = _assemble(_config(set()), kind, custom={})
         assert "Scout-Change-Why:" in brain and "Scout-Change-Summary:" in brain, kind
@@ -277,29 +291,32 @@ def test_every_engagement_record_names_a_run_kind_and_a_known_surface() -> None:
     }
 
 
-# --- $'…' commit messages survive an apostrophe (I6) ----------------------------------------------------------------
+# --- commit messages are plain double-quoted strings (I6, #747 review) ------------------------------------------------
 
 
-def _dollar_quoted(text: str) -> list[str]:
-    """Every `$'…'` string in ``text``, escapes kept (a `\\'` doesn't end it)."""
-    return re.findall(r"\$'((?:[^'\\]|\\.)*)'", text)
+def _double_quoted_commits(text: str) -> list[str]:
+    """The message of every `git-safe-commit.sh "…"` call that spans lines (one with trailers)."""
+    return [m for m in re.findall(r'git-safe-commit\.sh "([^"]*)"', text) if "\n" in m]
 
 
 @pytest.mark.parametrize("path", [GIT_SETUP, DECISIONS])
-def test_commit_messages_say_how_to_write_an_apostrophe(path: Path) -> None:
+def test_trailer_commits_use_plain_double_quotes_bash_reads_as_written(path: Path) -> None:
+    """`$'…'` may not pass the runner's command check, so a trailer message is a plain double-quoted string with
+    real newlines; bash must read it back exactly (an apostrophe included), and nothing in it may expand."""
     import shutil
     import subprocess
 
     text = _text(path)
-    assert "write `\\'` for an apostrophe and `\\\\` for a backslash" in text
-    examples = [e for e in _dollar_quoted(text) if "\\'" in e]
-    if path == GIT_SETUP:
-        assert examples, "the example message carries an apostrophe"
+    assert "$'" not in text
+    assert 'never write `"`, `$`, a backtick or a backslash' in text
+    messages = _double_quoted_commits(text)
+    assert messages, "the trailer example is double-quoted across lines"
     bash = shutil.which("bash")
     if bash is None:  # pragma: no cover - every CI image has bash
         pytest.skip("no bash")
-    for example in examples:
-        out = subprocess.run(
-            [bash, "-c", f"printf '%s' $'{example}'"], capture_output=True, text=True, check=True
-        ).stdout
-        assert "'s " in out and "\n\nScout-Change-Why: " in out, out
+    for message in messages:
+        assert not set(message) & set("$`\\"), message
+        out = subprocess.run([bash, "-c", f'printf %s "{message}"'], capture_output=True, text=True, check=True).stdout
+        assert out == message and "\n\n" in out and "Scout-Change-" in out, out
+    if path == GIT_SETUP:
+        assert any("'s " in m for m in messages), "the example message carries an apostrophe"
