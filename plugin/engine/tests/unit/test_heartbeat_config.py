@@ -178,7 +178,7 @@ def _args(tmp_path: Path, **over: object) -> dict:
         "budget_ok": True,
         "session_already_running": False,
         "uncommitted_vault_changes": False,
-        "research_queue_open": False,
+        "research_wanted": False,
         "research_runner": _executable(tmp_path, "run-research.sh"),
         "dreaming_runner": _executable(tmp_path, "run-dreaming.sh"),
     }
@@ -211,7 +211,7 @@ def test_the_reason_names_both_operands_when_both_fire(tmp_path: Path) -> None:
 
 def test_the_research_reason_names_the_operand_too(tmp_path: Path) -> None:
     stats = TrackerStats(minutes_since_last_session=300, hours_since_dreaming=5, hours_since_research=30)
-    decision = decide(**_args(tmp_path, stats=stats, research_queue_open=True))
+    decision = decide(**_args(tmp_path, stats=stats, research_wanted=True))
     assert decision.session_type == "research"
     assert decision.reason.endswith(", trigger=signal_hours")
 

@@ -19,8 +19,8 @@ Gating order (preserved from bash):
        * uncommitted changes in the vault git repo, outside Scout's own
          machine-state dirs (``dirty_tree``; ``heartbeat.dirty_tree_triggers``)
   7. Pick runner:
-       * research, if >=24 h since last research AND research-queue has
-         an open item AND ``run-research.sh`` exists
+       * research, if >=24 h since last research AND the lab has work for it
+         (``research_wanted``) AND ``run-research.sh`` exists
        * otherwise dreaming
   8. Launch the chosen runner detached, log the PID
 
@@ -34,13 +34,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from scout import events, paths, safe_write
-from scout.kb.privacy import Policy, label_file, load_policy, normalize_rel
 from scout.scripts._config_scan import scan_overrides
 
 # Defaults mirror heartbeat.sh constants so behavior is preserved when no
@@ -57,8 +57,6 @@ EXIT_SKIPPED = 0  # bash returns 0 on intentional skip too
 EXIT_ERROR = 1
 
 _TRACKER_FILENAME = "usage-tracker.jsonl"
-_RESEARCH_QUEUE_REL = "knowledge-base/research-queue.md"
-_RESEARCH_QUEUE_DIR_REL = "knowledge-base/research-queue"
 
 # Every knob, with its inclusive range. Hours of the day go to 24 so an
 # "always off-peak" window (start 0, end 24) stays expressible.
@@ -323,76 +321,35 @@ def vault_has_uncommitted_changes(vault: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() != ""
 
 
-def research_queue_has_unchecked(queue_path: Path) -> bool:
-    """True iff *queue_path* exists and contains at least one ``- [ ]`` line."""
-    if not queue_path.exists():
-        return False
-    try:
-        with queue_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("- [ ]"):
-                    return True
-    except OSError:
-        return False
-    return False
+def research_wanted(vault: Path) -> bool:
+    """Whether the lab has work a research run could do.
 
+    True when any of these holds (spec §7):
 
-def _item_status(path: Path) -> str | None:
-    """Read the frontmatter ``status:`` of a per-file queue item (lowercased), or None."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not text.startswith("---"):
-        return None
-    # scan the leading frontmatter block (between the first two '---' fences)
-    lines = text.splitlines()
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        m = re.match(r"\s*status\s*:\s*(\S+)", line)
-        if m:
-            return m.group(1).strip().lower()
-    else:
-        return None  # no closing fence → malformed frontmatter, treat as no status
-    return None  # closing fence found, no status key
+    * a thread is ``active`` and not private: a normal thread is always worth a run (this also covers a
+      due experiment, which only runs in an active thread);
+    * an ``active`` or ``paused`` thread of any visibility has an owner comment still waiting for a reply;
+    * fewer than ``lab.max_open_proposals`` threads are ``proposed``, so Scout may propose another.
 
-
-def _private(vault: Path, path: Path, policy: Policy) -> bool:
-    """Whether ``path`` (inside ``vault``) is labelled private, by the engine's classifier.
-
-    Anything the classifier can't place (a path outside the vault) counts as
-    private: a research run may not take it as a target.
+    A vault with no lab folder has no threads, so Scout may propose its first. A lab that cannot be read
+    allows research and says so on stderr: a broken lab must not silence the run that could report it.
     """
+    # Imported here: the heartbeat fires every 30 minutes and its cold start is measured.
     try:
-        rel = normalize_rel(vault, path)
-    except ValueError:
+        from scout.lab import ops, summary
+
+        doc = summary.lab_list(vault, None, full=True)
+        limit = int(ops._lab_settings(vault).get("max_open_proposals", 5))
+    except Exception as exc:  # noqa: BLE001 - any failure reading the lab allows research
+        print(f"heartbeat: lab unreadable ({type(exc).__name__}); research allowed", file=sys.stderr)
         return True
-    return label_file(vault, rel, policy).visibility == "private"
-
-
-def research_queue_has_open(vault: Path) -> bool:
-    """True iff the research queue has at least one open item a research run may take.
-
-    Current per-file format: any ``knowledge-base/research-queue/*.md`` with
-    frontmatter ``status: open`` or ``in-progress``. Falls back to the legacy
-    single-file ``research-queue.md`` (``- [ ]`` lines) for pre-migration vaults.
-
-    Private items are ignored (#453, spec §4.2/§6.3): a research run may not
-    research a private entity, so a queue holding only private items gives it
-    nothing to do. The label is the engine classifier's, same as ``scoutctl kb``.
-    """
-    policy = load_policy(vault)
-    queue_dir = vault / _RESEARCH_QUEUE_DIR_REL
-    if queue_dir.is_dir():
-        try:
-            items = sorted(queue_dir.glob("*.md"))
-        except OSError:
-            return False
-        return any(_item_status(i) in ("open", "in-progress") and not _private(vault, i, policy) for i in items)
-    # Legacy single-file fallback (pre-migration vaults only):
-    legacy = vault / _RESEARCH_QUEUE_REL
-    return research_queue_has_unchecked(legacy) and not _private(vault, legacy, policy)
+    for row in doc["threads"]:
+        status = row["status"]
+        if status == "active" and row["visibility"] != "private":
+            return True
+        if status in ("active", "paused") and row["unanswered_comments"] > 0:
+            return True
+    return int(doc["needs_you"]["proposals"]) < limit
 
 
 def run_budget_check(scoutctl_bin: str | None = None) -> int:
@@ -439,7 +396,7 @@ def decide(
     budget_ok: bool,
     session_already_running: bool,
     uncommitted_vault_changes: bool,
-    research_queue_open: bool,
+    research_wanted: bool,
     research_runner: Path,
     dreaming_runner: Path,
 ) -> Decision:
@@ -483,7 +440,7 @@ def decide(
 
     pick_research = (
         stats.hours_since_research >= config.research_min_gap_hours
-        and research_queue_open
+        and research_wanted
         and research_runner.is_file()
         and os.access(research_runner, os.X_OK)
     )
@@ -613,7 +570,7 @@ def run(
         session_already_running=scout_session_running(),
         # Skip the git probe entirely when its answer cannot trigger a launch.
         uncommitted_vault_changes=config.dirty_tree_triggers and vault_has_uncommitted_changes(target),
-        research_queue_open=research_queue_has_open(target),
+        research_wanted=research_wanted(target),
         research_runner=research_runner,
         dreaming_runner=dreaming_runner,
     )
@@ -663,8 +620,7 @@ __all__ = [
     "load_config_with_issues",
     "main",
     "read_tracker_stats",
-    "research_queue_has_open",
-    "research_queue_has_unchecked",
+    "research_wanted",
     "run",
     "run_budget_check",
     "scout_session_running",
