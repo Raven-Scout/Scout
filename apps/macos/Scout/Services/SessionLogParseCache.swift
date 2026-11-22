@@ -18,8 +18,9 @@ extension SessionLogService {
         /// Bump when `Entry`/`ParsedBody` shape changes so stale caches are
         /// discarded rather than mis-decoded. 3: `DetectedError` gained a kind
         /// and a block, and the scanner finds tracebacks, so every log is
-        /// re-scanned once (card R3).
-        static let version = 3
+        /// re-scanned once (card R3). 4: `ParsedBody` gained `lockWaitSecs`, so a
+        /// log cached while it waited for the session lock is read again.
+        static let version = 4
 
         var version: Int
         var entries: [String: Entry]
