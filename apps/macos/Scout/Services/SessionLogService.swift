@@ -841,7 +841,12 @@ extension RunType {
         case .research:
             return 2 * 3600          // 2 h — unchanged, research can legitimately churn
         case .respond:
-            return 20 * 60           // 20 min — a Telegram reply should land within minutes
+            // 75 min. A reply usually lands in minutes, but a run queued
+            // behind another one waits for the session lock first
+            // (SCOUT_LOCK_WAIT_SECS, 30 min) with no watcher yet and only one
+            // "waiting up to …" log line, then gets the default run timeout
+            // (DEFAULT_RUN_TIMEOUT_MINUTES, 45: respond has no kind of its own).
+            return 30 * 60 + 45 * 60
         case .manual:
             return 45 * 60           // 45 min — catch-all, prefer to orphan fast
         }
