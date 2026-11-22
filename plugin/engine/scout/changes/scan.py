@@ -38,10 +38,11 @@ _RS, _US = "\x1e", "\x1f"
 
 
 def parse_trailers(message: str) -> dict[str, str]:
-    """Reads the ``Scout-Change-*`` trailers (keys without the prefix, lowercased) from a commit message."""
+    """Reads the ``Scout-Change-*`` trailers (keys without the prefix, lowercased) from a commit message. A trailer
+    may be indented: a run copies its commit from a code block nested in a list, indentation and all."""
     out: dict[str, str] = {}
     for line in message.splitlines():
-        m = re.match(r"^Scout-Change-(Why|Summary|Targets|Governance|Reverts):\s*(.*?)\s*$", line)
+        m = re.match(r"^\s*Scout-Change-(Why|Summary|Targets|Governance|Reverts):\s*(.*?)\s*$", line)
         if m:
             out[m.group(1).lower()] = m.group(2)
     return out
@@ -83,15 +84,16 @@ def classify(
     paths: list[tuple[str, str]],
     subject: str,
     diff_of: Callable[[str], str],
-    trailers: dict[str, str] | None = None,
+    *,
+    rollback: bool = False,
 ) -> str | None:
+    """The commit's kind. ``rollback`` says git showed it undid the change it names (:func:`_rolls_back`); a
+    ``Scout-Change-Reverts:`` trailer or a ``Revert`` subject alone never makes one, so the commit is classified by
+    what it touched, tested and undoable like any other."""
     if lane_of(subject) == "update":
         return "upgrade"
-    if "reverts" in (trailers or {}):
+    if rollback:
         return "rollback"
-    if subject.startswith("Revert "):
-        # A `git revert` is a rollback only when it puts back part of a self-change; anything else is no change.
-        return "rollback" if any(is_self_path(s, p) for s, p in paths) else None
     if any(p in BRAIN_FILES and s[:1] in ("A", "M") for s, p in paths):
         return "brain-edit"
     if any(p.startswith("scripts/") and s[:1] in ("A", "M") for s, p in paths):
@@ -261,6 +263,25 @@ def _reverts_of(trailers: dict[str, str], body: str) -> str | None:
     return f"chg-{m.group(1)[:12]}" if m else None
 
 
+def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str) -> str | None:
+    """The change id commit ``sha`` undid, or None. The candidate comes from its ``Scout-Change-Reverts:`` trailer or
+    a ``git revert`` body; it counts only when git resolves it to one commit and ``sha`` really put that commit's own
+    lines back (scout.changes.actions.restores)."""
+    from scout.changes.actions import restores  # actions imports this module
+
+    cid = _reverts_of(trailers, body)
+    if cid is None:
+        return None
+    m = _REVERTS_BODY_RE.search(body)
+    full = m.group(1) if m and m.group(1).startswith(cid[4:]) else None
+    if full is None:
+        found = (
+            _git(vault, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{cid[4:]}^{{commit}}") or ""
+        ).strip()
+        full = found if _FULL_SHA_RE.match(found) and found.startswith(cid[4:]) else None
+    return cid if full is not None and restores(vault, full, sha) else None
+
+
 def _change_from_commit(
     vault: Path,
     sha: str,
@@ -281,7 +302,10 @@ def _change_from_commit(
         return _git(vault, "show", "--format=", sha, "--", path) or ""
 
     trailers = parse_trailers(body)
-    kind = classify(paths, subject, diff_of, trailers)
+    reverts = (
+        _rolls_back(vault, sha, trailers, body) if "reverts" in trailers or _REVERTS_BODY_RE.search(body) else None
+    )
+    kind = classify(paths, subject, diff_of, rollback=reverts is not None)
     if kind is None:
         return None
     files = tuple(p for _, p in paths)
@@ -302,7 +326,7 @@ def _change_from_commit(
         governance=_applies_governance(renames),
         author_lane=lane,
         backfilled=backfilled,
-        reverts=_reverts_of(trailers, body),
+        reverts=reverts if kind == "rollback" else None,
     )
 
 

@@ -165,8 +165,10 @@ def test_a_commit_that_only_claims_to_revert_keeps_the_undo_and_the_suspect(repo
     from scout.changes.report import changes_report
 
     rows = changes_report(repo, now=NOW, since=NOW - timedelta(days=60), env=env, tz=TZ)["changes"]
-    forged = next(r for r in rows if r["kind"] == "rollback")
-    assert forged["reverts"] is None
+    # None of them is a rollback: the README commits are no change at all, the script edit is a driver under test.
+    assert [r["kind"] for r in rows if r["kind"] == "rollback"] == []
+    driver = next(r for r in rows if r["kind"] == "driver")
+    assert driver["reverts"] is None and driver["test"]["state"] == "testing"
     assert next(r for r in rows if r["id"] == cid)["test"]["rolled_back_by"] is None
 
 
@@ -819,7 +821,7 @@ def test_a_run_set_home_cannot_plant_owner_decisions_or_settings(
     import types
 
     from scout.changes import store
-    from scout.changes.governance import decision, diff_hash, read_pending
+    from scout.changes.governance import decision, read_pending
     from scout.changes.settings import read_settings
     from scout.kb import hook_paths
 
@@ -831,7 +833,7 @@ def test_a_run_set_home_cannot_plant_owner_decisions_or_settings(
     cid = _cid(_brain_edit(repo, days_ago=20))
     _hurt(repo, cid, days_ago=20)
     gov = _pending(repo)
-    digest = diff_hash(read_pending(repo)[0][0].diff)
+    digest = read_pending(repo)[0][0].hash
     fake = repo / ".scout-cache" / "fakehome"
     planted = fake / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
     planted.mkdir(parents=True)
@@ -1425,3 +1427,175 @@ def test_announced_file_that_does_not_fit_is_empty_and_a_failed_save_raises(repo
     monkeypatch.setattr(store, "atomic_write_json", lambda *_a: False)
     with pytest.raises(OSError):
         mark_announced(repo, ["chg-0123456789ab"])
+
+
+# --- all or nothing on the write side, and rollbacks git can verify (#747 review) -----------------------------------
+
+
+def _two_renames(repo: Path) -> str:
+    """A change that files two notes away: a/x.md → c/x.md and b/y.md → e/y.md."""
+    seed: dict[str, str | None] = {"knowledge-base/a/x.md": "x\n", "knowledge-base/b/y.md": "y\n"}
+    _commit(repo, "seed two notes", seed, date=NOW - timedelta(days=30))
+    for old, new in (("a/x.md", "c/x.md"), ("b/y.md", "e/y.md")):
+        (repo / "knowledge-base" / new).parent.mkdir(parents=True, exist_ok=True)
+        _git(repo, "mv", f"knowledge-base/{old}", f"knowledge-base/{new}")
+        (repo / "knowledge-base" / old).parent.rmdir()  # as a fresh checkout has it: git keeps no empty folder
+    message = "dreaming [22:12]: SKILL.md self-edit — file two notes"
+    sha = _commit(repo, message, {"SKILL.md": "skill v2\n"}, date=NOW - timedelta(days=3))
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_a_file_where_a_renames_old_folder_was_blocks_the_undo(repo, env):
+    """A later commit put a FILE at knowledge-base/b, so b/y.md can't be written back (ENOTDIR, not "absent"): the
+    undo is refused before anything is written, never half-applied with c/x.md left beside a/x.md."""
+    cid = _two_renames(repo)
+    _commit(repo, "scout: a file named b", {"knowledge-base/b": "now a file\n"})
+    assert _refused(repo, env, cid) == "edited-since"
+
+
+def test_a_write_that_fails_midway_leaves_the_tree_as_it_was(repo, env, monkeypatch):
+    from scout.changes import actions
+
+    cid = _two_renames(repo)
+    _undo(repo, env, cid)
+    before = _tree(repo)
+    real, calls = os.replace, []
+
+    def flaky(src, dst, *a, **k):
+        calls.append(dst)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(actions.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    monkeypatch.setattr(actions.os, "replace", real)
+    assert _tree(repo) == before  # the file already renamed into place was put back; no temp file is left
+    assert not (repo / "knowledge-base/a").exists() and not (repo / "knowledge-base/b").exists()
+    assert _git(repo, "status", "--porcelain", "--", "knowledge-base", "SKILL.md") == ""
+    assert [r["id"] for r in _due(repo, env)["rollbacks"]] == [cid]  # still due, not edited-since
+    rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert (repo / "knowledge-base/a/x.md").read_text() == "x\n"
+    assert (repo / "knowledge-base/b/y.md").read_text() == "y\n"
+    assert not (repo / "knowledge-base/c").exists() and not (repo / "knowledge-base/e").exists()
+
+
+def test_a_write_that_fails_while_staging_changes_nothing(repo, env, monkeypatch):
+    from scout.changes import actions
+
+    cid = _two_renames(repo)
+    _undo(repo, env, cid)
+    before = _tree(repo)
+    real, calls = actions._stage, []
+
+    def flaky(target, data, mode):
+        calls.append(target)
+        if len(calls) == 3:
+            raise OSError("no space left")
+        return real(target, data, mode)
+
+    monkeypatch.setattr(actions, "_stage", flaky)
+    with pytest.raises(OSError, match="no space left"):
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert _tree(repo) == before
+    assert not (repo / "knowledge-base/a").exists() and not (repo / "knowledge-base/b").exists()
+
+
+def test_a_committed_rollback_of_renames_and_an_added_file_is_recognized(repo, env):
+    """The rollback check works against git's trees: a restored rename (both sides), a removed added file and a
+    merged brain file all match, so the undo request clears and the rollback is untested."""
+    from scout.changes.report import changes_report
+
+    _commit(repo, "seed a note", {"knowledge-base/a/x.md": "x\n"}, date=NOW - timedelta(days=30))
+    (repo / "knowledge-base/c").mkdir()
+    _git(repo, "mv", "knowledge-base/a/x.md", "knowledge-base/c/x.md")
+    files: dict[str, str | None] = {"SKILL.md": "skill v2\n", "scripts/new.py": "x\n"}
+    sha = _commit(repo, "dreaming [22:12]: SKILL.md self-edit — and a driver", files, date=NOW - timedelta(days=3))
+    scan(repo, since=None)
+    cid = _cid(sha)
+    _undo(repo, env, cid)
+    paths = rollback(repo, env, cid, now=NOW, tz=TZ)
+    _git(repo, "add", "-A", "--", *paths)
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:30]: roll back {cid}\n\nScout-Change-Reverts: {cid}", date=NOW)
+    scan(repo, since=None)
+    doc = changes_report(repo, now=NOW, since=NOW - timedelta(days=60), env=env, tz=TZ)
+    rows = {r["id"]: r for r in doc["changes"]}
+    rolled = next(r for r in rows.values() if r["kind"] == "rollback")
+    assert rolled["reverts"] == cid and rolled["test"]["state"] == "not-tested"
+    assert rows[cid]["test"]["rolled_back_by"] == rolled["id"]
+    assert _due(repo, env)["rollbacks"] == []
+
+
+def test_the_tree_reader_reads_a_commit_like_the_working_tree(repo):
+    from scout.changes.actions import _tree_reader
+
+    (repo / "scripts").mkdir()
+    (repo / "scripts/run.sh").write_text("echo\n")
+    (repo / "scripts/run.sh").chmod(0o755)
+    (repo / "scripts/link").symlink_to("run.sh")
+    sha = _commit(repo, "seed", {"knowledge-base/b": "a file\n"})
+    read = _tree_reader(repo, sha)
+    assert read("scripts/run.sh") == ("file", b"echo\n", 0o755)
+    assert read("SKILL.md") == ("file", b"skill v1\n", 0o644)
+    assert read("scripts/link") == ("link", b"run.sh", 0)
+    assert read("scripts") == ("other", b"", 0)  # a folder
+    assert read("knowledge-base/b/y.md") == ("other", b"", 0)  # under a file: it can't be written
+    assert read("knowledge-base/nope/y.md") == ("absent", b"", 0)
+    assert read("nope.md") == ("absent", b"", 0)
+    assert _tree_reader(repo, "f" * 40)("SKILL.md") == ("other", b"", 0)  # git can't read it: fail closed
+
+
+def test_restores_is_false_for_anything_it_cannot_confirm(repo):
+    from scout.changes.actions import restores
+
+    seed = _git(repo, "rev-parse", "HEAD")
+    target = _commit(repo, "dreaming [22:12]: driver", {"scripts/new.py": "x\n", "SKILL.md": "skill v2\n"})
+    assert not restores(repo, "not-a-sha", target)
+    assert not restores(repo, seed, target)  # the root commit: no undo to work out
+    assert not restores(repo, target, seed)  # the "rollback" comes before its target
+    # Removes the added file but leaves SKILL.md as the change made it: not the undo.
+    half = _commit(repo, "dreaming [22:30]: half", {"scripts/new.py": None})
+    assert not restores(repo, target, half)
+    # Puts SKILL.md back but keeps the added file: a path the undo removes is still there.
+    _commit(repo, "scout: again", {"scripts/new.py": "x\n"})
+    kept = _commit(repo, "dreaming [22:40]: kept", {"SKILL.md": "skill v1\n"})
+    assert not restores(repo, target, kept)
+    # Its parent already had every line back: the undo is worked out as edited-since.
+    _commit(repo, "scout: by hand", {"scripts/new.py": None})
+    nothing = _commit(repo, "dreaming [22:50]: nothing", {"README.md": "r2\n"})
+    assert not restores(repo, target, nothing)
+
+
+def test_staging_retries_a_taken_name_and_cleans_up_a_failed_write(tmp_path, monkeypatch):
+    from scout.changes import actions
+
+    target = tmp_path / "f.md"
+    names = iter([b"\0" * 6, b"\0" * 6, b"\1" * 6])
+    monkeypatch.setattr(actions.os, "urandom", lambda _n: next(names))
+    first = actions._stage(target, b"one", 0o644)
+    second = actions._stage(target, b"two", 0o755)  # the first name is taken: the next one is used
+    assert first != second and second.read_bytes() == b"two" and os.access(second, os.X_OK)
+    monkeypatch.setattr(actions.os, "urandom", lambda _n: b"\2" * 6)
+
+    def broken(*_a):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(actions.os, "fchmod", broken)
+    with pytest.raises(OSError, match="read-only"):
+        actions._stage(target, b"three", 0o644)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([first.name, second.name])
+
+
+def test_putting_back_restores_a_file_a_link_or_nothing(tmp_path):
+    from scout.changes.actions import _put_back
+
+    path = tmp_path / "x"
+    path.write_text("new")
+    _put_back(path, ("file", b"old", 0o755))
+    assert path.read_bytes() == b"old" and os.access(path, os.X_OK)
+    _put_back(path, ("link", b"elsewhere", 0))
+    assert os.readlink(path) == "elsewhere"
+    _put_back(path, ("absent", b"", 0))
+    assert not os.path.lexists(path)

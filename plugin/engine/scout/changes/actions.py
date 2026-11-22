@@ -15,6 +15,7 @@ git call goes through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``,
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -22,7 +23,7 @@ import shutil
 import stat
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -314,12 +315,52 @@ def _merge(vault: Path, current: bytes, base: bytes, other: bytes) -> bytes | st
     return forward
 
 
-def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
+# What stands at a vault-relative path in some tree (the working tree, or a commit's): see :func:`_current`.
+_Reader = Callable[[str], tuple[str, bytes, int]]
+
+
+def _tree_reader(vault: Path, rev: str) -> _Reader:
+    """:func:`_current` for the tree of commit ``rev``: a regular file's bits are 0o644 or 0o755, a path under a file
+    (git can't list it) is ``other`` as in the working tree, and anything git can't read is ``other`` (fail closed)."""
+
+    def entries(raw: bytes) -> list[tuple[str, str, str, str]]:
+        out = []
+        for rec in os.fsdecode(raw).split("\0"):
+            meta, _, path = rec.partition("\t")
+            cols = meta.split(" ")
+            if path and len(cols) == 3:
+                out.append((cols[0], cols[1], cols[2], path))
+        return out
+
+    def read(rel: str) -> tuple[str, bytes, int]:
+        raw = _git_bytes(vault, "--literal-pathspecs", "ls-tree", "-z", rev, "--", rel)
+        if raw is None:
+            return "other", b"", 0
+        found = [e for e in entries(raw) if e[3] == rel]
+        if not found:
+            folders = [str(p) for p in PurePosixPath(rel).parents if str(p) != "."]
+            up = _git_bytes(vault, "--literal-pathspecs", "ls-tree", "-z", rev, "--", *folders) if folders else b""
+            # Only the folders asked about: to look for a missing one, git also lists what is beside it.
+            if up is None or any(kind != "tree" for _, kind, _, path in entries(up) if path in folders):
+                return "other", b"", 0
+            return "absent", b"", 0
+        mode, _, oid, _ = found[0]
+        data = _git_bytes(vault, "cat-file", "blob", oid) if mode in (*_RESTORABLE_MODES, _LINK_MODE) else None
+        if data is None:
+            return "other", b"", 0
+        if mode == _LINK_MODE:
+            return "link", data, 0
+        return "file", data, _file_mode(mode)
+
+    return read
+
+
+def _undo_step(vault: Path, step: _Step, current: _Reader) -> list[_Op] | str:
     before = _blob(vault, step.before)
     after = _blob(vault, step.after)
     if before is None or after is None:
         return "git-unreadable"
-    kind, now, bits = _current(vault / step.read)
+    kind, now, bits = current(step.read)
     if step.after is None:  # the change deleted it: put it back, unless something stands there now
         if kind != "absent" or step.before is None:
             return "edited-since"
@@ -328,8 +369,10 @@ def _undo_step(vault: Path, step: _Step) -> list[_Op] | str:
         return "edited-since"
     if step.before is None:  # the change added it (a symlink: its target): remove it, unless edited since
         return [_Op(step.read, None)] if now == after else "edited-since"
-    if step.read != step.write and os.path.lexists(vault / step.write):
-        return "edited-since"  # a rename whose old path was made again since
+    if step.read != step.write and current(step.write)[0] != "absent":
+        # A rename whose old path was made again since, or can't be made (a file now stands where a folder on its way
+        # was): either way the undo couldn't write it.
+        return "edited-since"
     if step.after.mode == _LINK_MODE or any(_binary(b) for b in (before, after, now)):
         if now != after:  # a changed symlink or a binary file: only exactly as the change left it
             return "edited-since"
@@ -383,37 +426,163 @@ def _undo(vault: Path, plan: _Plan) -> list[_Op] | str:
         return "git-unreadable"
     if dirty.strip(b"\0"):
         return "edited-since"
+    return _ops(vault, plan, lambda rel: _current(vault / rel))
+
+
+def _ops(vault: Path, plan: _Plan, current: _Reader) -> list[_Op] | str:
+    """:func:`_undo` against the tree ``current`` reads, without the uncommitted-edits check."""
     ops: list[_Op] = []
     for step in plan.steps:
-        got = _undo_step(vault, step)
+        got = _undo_step(vault, step, current)
         if isinstance(got, str):
             return got
         ops += got
     return ops
 
 
-def _write(vault: Path, ops: Sequence[_Op]) -> None:
-    """Write an undo worked out in full: every file first, then the removals (so a rename's old side is back before
-    its new side goes). A symlink at a target is replaced, never written through."""
+def restores(vault: Path, target: str, rollback: str) -> bool:
+    """Commit ``rollback`` undid commit ``target``: working the undo of ``target`` out against ``rollback``'s parent
+    (as :func:`_undo` would against the working tree) gives exactly what ``rollback`` left at every path it writes or
+    removes, executable bit included. What makes a commit a rollback (scout.changes.scan): a trailer or a ``Revert``
+    subject only names the candidate, so a commit can't claim to revert a change without putting its lines back,
+    and the claim can't hide an edit from its test or its undo. A ``git revert`` passes too (the same 3-way merge),
+    unless its conflicts were resolved by hand. False whenever anything can't be read."""
+    if not (_FULL_SHA_RE.match(target) and _FULL_SHA_RE.match(rollback)):
+        return False
+    plan = _plan(vault, target)
+    if isinstance(plan, str):
+        return False
+    shas = (_git(vault, "rev-list", "--parents", "-n", "1", rollback, "--") or "").split()
+    if len(shas) < 2 or _git(vault, "merge-base", "--is-ancestor", target, shas[1]) is None:
+        return False
+    ops = _ops(vault, plan, _tree_reader(vault, shas[1]))
+    if isinstance(ops, str) or not ops:
+        return False
+    left = _tree_reader(vault, rollback)
+    for op in ops:
+        kind, data, bits = left(op.path)
+        if op.data is None:
+            if kind != "absent":
+                return False
+        elif kind != "file" or data != op.data or (bits & stat.S_IXUSR) != (op.mode & stat.S_IXUSR):
+            return False
+    return True
+
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+
+def _stage(target: Path, data: bytes, mode: int) -> Path:
+    """``data`` with bits ``mode`` in a fresh temp file beside ``target`` (``O_EXCL | O_NOFOLLOW``: never a name that
+    was already there), synced; its path."""
+    for _ in range(16):
+        tmp = target.with_name(f".{target.name}.{os.urandom(6).hex()}.scout-undo")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            os.fchmod(fd, mode)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+            os.fsync(fd)
+        except BaseException:
+            os.close(fd)
+            tmp.unlink(missing_ok=True)
+            raise
+        os.close(fd)
+        return tmp
+    raise FileExistsError(f"no free temporary name beside {target.name}")  # pragma: no cover - 16 collisions
+
+
+def _make_folders(vault: Path, folder: Path) -> list[Path]:
+    """Make ``folder`` and the missing folders above it (never above the vault); the ones made, outermost first."""
+    missing = []
+    while folder != vault and not os.path.lexists(folder):
+        missing.append(folder)
+        folder = folder.parent
+    made = []
+    for f in reversed(missing):
+        f.mkdir()
+        made.append(f)
+    return made
+
+
+def _put_back(target: Path, was: tuple[str, bytes, int]) -> None:
+    """Best effort: make ``target`` what :func:`_current` read there before a write."""
     from scout.safe_write import atomic_write_bytes
 
-    for op in ops:
-        if op.data is not None:
-            target = vault / op.path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_bytes(target, op.data, mode=op.mode)
-    for op in ops:
-        if op.data is None:
-            target = vault / op.path
-            target.unlink()
-            # As git does when it deletes a file: folders left empty go too, never the vault itself.
-            folder = target.parent
-            while folder != vault:
-                try:
-                    folder.rmdir()
-                except OSError:
-                    break
-                folder = folder.parent
+    kind, data, bits = was
+    with contextlib.suppress(OSError):
+        if kind == "file":
+            atomic_write_bytes(target, data, mode=bits)
+        else:
+            target.unlink(missing_ok=True)
+            if kind == "link":
+                os.symlink(data, target)
+
+
+def _unmake(made: Sequence[Path]) -> None:
+    """Remove the folders :func:`_make_folders` made, innermost first, each only while empty."""
+    for folder in reversed(made):
+        with contextlib.suppress(OSError):
+            folder.rmdir()
+
+
+def _prune(vault: Path, folder: Path) -> None:
+    """As git does when it deletes a file: folders left empty go, never the vault itself."""
+    while folder != vault:
+        try:
+            folder.rmdir()
+        except OSError:
+            break
+        folder = folder.parent
+
+
+def _write(vault: Path, ops: Sequence[_Op]) -> None:
+    """Write an undo worked out in full, all or nothing as far as the filesystem allows. First every new file is
+    written in full to a fresh temp file beside its target (making any folder it needs); a failure there removes the
+    temp files and those folders, so nothing changed. Then the temp files are renamed into place and the removals
+    done (a rename's old side is back before its new side goes); a failure there puts back what it had already
+    replaced or removed. Either way the error is raised. A symlink at a target is replaced, never written through."""
+    made: list[Path] = []
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for op in ops:
+            if op.data is not None:
+                target = vault / op.path
+                made += _make_folders(vault, target.parent)
+                staged.append((_stage(target, op.data, op.mode), target))
+    except BaseException:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        _unmake(made)
+        raise
+    done: list[tuple[Path, tuple[str, bytes, int]]] = []
+    removed: list[Path] = []
+    try:
+        for tmp, target in staged:
+            was = _current(target)
+            os.replace(tmp, target)
+            done.append((target, was))
+        for op in ops:
+            if op.data is None:
+                target = vault / op.path
+                was = _current(target)
+                target.unlink()
+                done.append((target, was))
+                removed.append(target)
+    except BaseException:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)  # the ones not renamed yet
+        for target, was in reversed(done):
+            _put_back(target, was)
+        _unmake(made)
+        raise
+    for target in removed:
+        _prune(vault, target.parent)
 
 
 def rollback_problem(vault: Path, change: Change, test: Mapping[str, Any]) -> str | None:

@@ -137,11 +137,11 @@ def test_non_repo_is_no_changes(tmp_path):
 
 
 def test_revert_update_and_summary_cap(repo):
-    commit(repo, "scripts/x.py", 'Revert "dreaming [01:00]: bad"')
+    commit(repo, "scripts/x.py", 'Revert "dreaming [01:00]: bad"')  # restores nothing: an ordinary driver edit
     commit(repo, "y.md", "scout-update: upgrade to v0.19")
     commit(repo, "SKILL.md", "dreaming [03:00]: " + "w" * 300)
     got = {c.kind: c for c in scan(repo, since=None)}
-    assert set(got) == {"rollback", "upgrade", "brain-edit"}
+    assert set(got) == {"driver", "upgrade", "brain-edit"}
     assert got["upgrade"].author_lane == "update"
     assert len(got["brain-edit"].summary) == 120
 
@@ -152,14 +152,16 @@ def test_a_git_revert_touching_no_self_change_path_is_not_a_change(repo):
     commit(repo, "knowledge-base/x.md", 'Revert "dreaming [22:13]: kb note"')
     assert scan(repo, since=None) == []
     assert classify([("M", "action-items/a.md")], 'Revert "x"', lambda p: "") is None
-    assert classify([("R100", "knowledge-base/b.md")], 'Revert "x"', lambda p: "") == "rollback"
-    assert classify([("M", "docs/wishlist/w.md")], 'Revert "x"', lambda p: "") == "rollback"
+    assert classify([("R100", "knowledge-base/b.md")], 'Revert "x"', lambda p: "") == "kb-structure"
+    assert classify([("M", "SKILL.md")], "dreaming [22:12]: x", lambda p: "", rollback=True) == "rollback"
+    assert classify([("M", "SKILL.md")], "scout-update: x", lambda p: "", rollback=True) == "upgrade"
 
 
-def test_revert_touching_brain_file_is_rollback(repo):
+def test_a_revert_subject_that_restores_nothing_is_an_ordinary_edit(repo):
+    """A `Revert` subject alone makes no rollback: the commit is classified by what it touched, so it is tested."""
     commit(repo, "SKILL.md", 'Revert "dreaming [22:12]: SKILL.md self-edit"')
     [c] = scan(repo, since=None)
-    assert c.kind == "rollback"
+    assert (c.kind, c.reverts) == ("brain-edit", None)
 
 
 def test_non_ascii_path_is_recorded_unquoted(repo):
@@ -351,24 +353,66 @@ def test_a_mark_that_fails_to_save_is_swallowed_and_leaves_no_temp_file(repo, mo
 # --- rows that can't be forged: the report re-derives every row from git (parked M3) ---
 
 
-def test_trailer_reverts_makes_a_rollback_row(repo):
-    commit(repo, "SKILL.md", "dreaming [22:12]: undo it\n\nScout-Change-Reverts: chg-0123456789ab")
-    [c] = scan(repo, since=None)
-    assert (c.kind, c.reverts) == ("rollback", "chg-0123456789ab")
+_BRAIN = "".join(f"line {i}\n" for i in range(1, 11))
+
+
+def test_a_trailer_on_a_commit_that_puts_the_lines_back_makes_a_rollback_row(repo):
+    commit(repo, "SKILL.md", "scout: seed", content=_BRAIN)
+    target = commit(repo, "SKILL.md", "dreaming [22:00]: tweak line 2", content=_BRAIN.replace("line 2\n", "two\n"))
+    cid = "chg-" + target[:12]
+    # A later edit elsewhere in the file stays: the rollback undoes only the change's own lines.
+    commit(
+        repo,
+        "SKILL.md",
+        "dreaming [22:05]: tweak line 9",
+        content=(repo / "SKILL.md").read_text().replace("line 9", "nine"),
+    )
+    undone = _BRAIN.replace("line 9", "nine")
+    commit(repo, "SKILL.md", f"dreaming [22:12]: roll back {cid}\n\nScout-Change-Reverts: {cid}", content=undone)
+    got = {c.summary: c for c in scan(repo, since=None)}
+    rolled = got[f"roll back {cid}"]
+    assert (rolled.kind, rolled.reverts) == ("rollback", cid)
+
+
+def test_a_trailer_that_restores_nothing_is_tested_and_undoable(repo):
+    """Any `Scout-Change-Reverts:` value on a brain edit that doesn't put the named change's lines back (no such
+    change, a malformed id, or one whose files it touches without restoring them) is an ordinary, tested change."""
+    commit(repo, "SKILL.md", "scout: seed", content=_BRAIN)
+    target = commit(repo, "SKILL.md", "dreaming [22:00]: tweak line 2", content=_BRAIN.replace("line 2\n", "two\n"))
+    cid = "chg-" + target[:12]
+    for n, value in enumerate(("nothing", "not-an-id", "chg-0123456789ab", cid)):
+        text = (repo / "SKILL.md").read_text() + f"added {n}\n"  # touches the target's file, restores none of it
+        commit(repo, "SKILL.md", f"dreaming [22:1{n}]: edit {n}\n\nScout-Change-Reverts: {value}", content=text)
+    edits = [c for c in scan(repo, since=None) if c.summary.startswith("edit ")]
+    assert [(c.kind, c.reverts) for c in edits] == [("brain-edit", None)] * 4
+    doc = changes_report(repo, now=datetime(2026, 11, 18, tzinfo=UTC), since=datetime(2026, 11, 1, tzinfo=UTC),
+                         env={"HOME": str(repo / ".home")}, tz=ZoneInfo("UTC"))  # fmt: skip
+    tests = {c["summary"]: c["test"] for c in doc["changes"]}
+    assert all(tests[f"edit {n}"]["state"] == "testing" for n in range(4))
+    assert tests["tweak line 2"]["rolled_back_by"] is None
 
 
 def test_git_revert_body_sets_reverts(repo):
-    target = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x")
-    commit(repo, "SKILL.md", f'Revert "x"\n\nThis reverts commit {target}.')
+    commit(repo, "SKILL.md", "scout: seed", content=_BRAIN)
+    target = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x", content=_BRAIN + "x\n")
+    _git(repo, "revert", "--no-edit", target, date=_next_date())
     got = {c.kind: c for c in scan(repo, since=None)}
     assert got["rollback"].reverts == "chg-" + target[:12]
     assert got["brain-edit"].reverts is None
 
 
-def test_a_malformed_reverts_trailer_is_still_a_rollback_without_a_target(repo):
-    commit(repo, "SKILL.md", "dreaming [22:12]: undo\n\nScout-Change-Reverts: not-an-id")
-    [c] = scan(repo, since=None)
-    assert (c.kind, c.reverts) == ("rollback", None)
+def test_a_revert_body_naming_a_commit_it_does_not_undo_is_no_rollback(repo):
+    commit(repo, "SKILL.md", "scout: seed", content=_BRAIN)
+    target = commit(repo, "SKILL.md", "dreaming [22:12]: SKILL.md self-edit — x", content=_BRAIN + "x\n")
+    commit(repo, "SKILL.md", f'Revert "x"\n\nThis reverts commit {target}.', content=_BRAIN + "x\ny\n")
+    got = [c for c in scan(repo, since=None) if c.summary.startswith("Revert")]
+    assert [(c.kind, c.reverts) for c in got] == [("brain-edit", None)]
+
+
+def test_indented_trailers_still_count():
+    """A run copies the rollback commit from a code block inside a list item, so its trailers may keep the indent."""
+    msg = "dreaming [22:30]: roll back x\n\n  Scout-Change-Reverts: chg-0123456789ab\n  Scout-Change-Why: verdict:x\n"
+    assert parse_trailers(msg) == {"reverts": "chg-0123456789ab", "why": "verdict:x"}
 
 
 def test_verdict_why_trailer(repo):
