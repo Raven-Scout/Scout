@@ -104,7 +104,7 @@ def test_the_fixture_exercises_the_contract_shape(vault: Path) -> None:
     assert by_key[LINEAR]["level"] == "WARNING"
     assert by_key[LINEAR]["first_seen"] == by_key[LINEAR]["ts"]
     assert by_key[SLACK]["name"] == "Slack"
-    assert "failed call(s)" in by_key[SLACK]["reason"]
+    assert "failed calls" in by_key[SLACK]["reason"]
 
 
 def test_a_clean_run_empties_the_state_and_a_recurrence_starts_a_new_streak(vault: Path) -> None:

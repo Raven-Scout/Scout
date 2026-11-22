@@ -33,19 +33,25 @@
 
   <aside id="legend" class="surface" aria-label="Note types">
     <div class="legend-head">
+      <button type="button" id="legend-toggle" class="panel-toggle" aria-controls="legend-body"
+              aria-expanded="true" aria-label="Hide note types" title="Hide">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <span class="legend-title">Notes</span>
       <div class="seg" role="radiogroup" aria-label="Colour notes by">
         <button type="button" role="radio" data-color="type" aria-checked="true">Type</button>
         <button type="button" role="radio" data-color="fresh" aria-checked="false">Freshness</button>
       </div>
     </div>
-    <div id="fresh-key" hidden>
-      <span class="ramp"></span>
-      <span class="ramp-labels"><span>Today</span><span>Week</span><span>Month</span><span>Older</span></span>
+    <div id="legend-body">
+      <div id="fresh-key" hidden>
+        <span class="ramp"></span>
+        <span class="ramp-labels"><span>Today</span><span>Week</span><span>Month</span><span>Older</span></span>
+      </div>
+      <ul id="groups"></ul>
+      <label class="toggle"><input id="unlinked" type="checkbox"> <span>Show unlinked notes <b id="unlinked-count"></b></span></label>
+      <div id="shown" class="legend-foot"></div>
     </div>
-    <ul id="groups"></ul>
-    <label class="toggle"><input id="unlinked" type="checkbox"> <span>Show unlinked notes <b id="unlinked-count"></b></span></label>
-    <div id="shown" class="legend-foot"></div>
   </aside>
 
   <div id="controls" class="surface" role="toolbar" aria-label="Zoom">
@@ -56,7 +62,16 @@
     </button>
   </div>
 
-  <aside id="card" class="surface" aria-live="polite"></aside>
+  <aside id="card" class="surface">
+    <div class="card-head">
+      <button type="button" id="card-toggle" class="panel-toggle" aria-controls="card-body"
+              aria-expanded="true" aria-label="Hide the side panel" title="Hide">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <span id="card-title" class="legend-title">Explore</span>
+    </div>
+    <div id="card-body" aria-live="polite"></div>
+  </aside>
 
   <div id="tooltip" role="tooltip" hidden></div>
   <div id="empty" hidden></div>

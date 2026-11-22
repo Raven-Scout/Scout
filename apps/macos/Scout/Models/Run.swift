@@ -144,6 +144,25 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// `integrity`); nil without a ledger row. Never worked out from the log.
     var protection: Protection? = nil
 
+    /// The run's name from its run ledger row's `slot` or `mode`
+    /// (`DisplayName.ledgerRun`): "Overnight research" for a run whose log is
+    /// a plain `scout-…` file that the hour alone would call a briefing. nil
+    /// without a ledger row, or when the row names nothing; `displayName` then
+    /// falls back to the log-name guess.
+    var ledgerName: String? = nil
+
+    /// The key the run ledger names this run by: its row's `slot`, or `mode`
+    /// when the slot is missing or `unknown` (`DisplayName.ledgerRunKey`).
+    /// `ledgerName` comes from it, and so do `showsManualBadge`, `listType`
+    /// and the run list's search, so the name, the badge and the Type filter
+    /// read one key. nil without a ledger row or when the row names nothing.
+    var ledgerKey: String? = nil
+
+    /// `ledgerKey` is one of the schedule's slot keys (`SessionLogService.applyScheduleKeys`). An
+    /// owner may name a schedule `weekly-manual`; it is still a schedule, not a hand-started run,
+    /// for the badge and the Type filter.
+    var ledgerKeyIsSchedule: Bool = false
+
     /// The ledger's word on a run's write protection and the post-run integrity check.
     struct Protection: Equatable, Hashable, Sendable {
         /// enforced | unavailable | off | conflict | failed; nil from an older runner.
@@ -211,11 +230,16 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         return pid.map { "\(base)-\($0)" } ?? base
     }
 
-    /// Display name for the Control Center. When the typed bucket is `.manual`
-    /// (the catch-all for runs that didn't match any scheduled slot), fall
-    /// back to the runner script's family so the row still tells the user
-    /// what kind of work happened — "Briefing (manual)" beats just "manual".
+    /// The run's name on every page that lists or details runs. The run
+    /// ledger's word wins (`ledgerName`, from the row's slot or mode), since
+    /// the log's file name only says which runner script ran and the hour it
+    /// started (card T2: a 1 AM `overnight-research` run read as "Morning
+    /// briefing"). Without one, the log-name guess: the type, or, when the
+    /// typed bucket is `.manual` (the catch-all for runs that didn't match any
+    /// scheduled slot), the runner script's family so the row still tells the
+    /// user what kind of work happened — "Briefing (manual)" beats just "manual".
     var displayName: String {
+        if let ledgerName { return ledgerName }
         if type != .manual { return type.displayName }
         switch runnerScript {
         case "run-dreaming.sh": return "Dreaming (manual)"
@@ -225,9 +249,52 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// True when this run was triggered explicitly (Run-now) rather than by
-    /// launchd. Used to surface a small "manual" badge in run rows.
+    /// launchd. Used to surface a small "manual" badge in run rows. Runs built
+    /// from logs always have `source: .launchdScheduled` (the log never says
+    /// who started it), so the run ledger's `trigger: manual` is what marks a
+    /// hand-started one.
     var wasManuallyTriggered: Bool {
-        source == .manual || source == .retry || type == .manual
+        source == .manual || source == .retry || type == .manual || trigger == "manual"
+    }
+
+    /// Whether a row or header should add its "manual" / "Started by you" mark:
+    /// a hand-started run whose name doesn't already say so. With a ledger
+    /// row, the name's own key decides (`ledgerKey`, slot or mode): a
+    /// `dreaming-manual` run reads "Dreaming (manual)" and gets no badge, an
+    /// `evening-consolidation` run someone started with Run now (fire-now
+    /// records `trigger: manual` with the schedule's slot) reads "Evening
+    /// consolidation" and gets one, and so does a schedule the owner named
+    /// `weekly-manual`. Without a row, the log-name guess calls a `.manual`
+    /// run "Briefing (manual)", so that one gets none.
+    var showsManualBadge: Bool {
+        guard wasManuallyTriggered else { return false }
+        if let key = ledgerKey ?? slotKey.flatMap({ DisplayName.ledgerRunKey(slot: $0, mode: nil) }) {
+            return ledgerKeyIsSchedule || !DisplayName.isHandRunKey(key)
+        }
+        return type != .manual
+    }
+
+    /// The type the run list's Type filter files this run under. The log's
+    /// `type` is a guess from the runner script and the hour (a 1 AM
+    /// `overnight-research` run on `run-scout.sh` reads as a morning
+    /// briefing), so the ledger's key wins. A schedule comes first: a default
+    /// key through `RunType(slotKey:)`, then one the owner made by its
+    /// `slot_type` (`scheduleTypes`, keyed by slot key, from the schedule),
+    /// even one shaped like a hand-run key (`weekly-manual`). Then a run
+    /// started by hand (`manual`, `*-manual`) by its runner script. Anything
+    /// else keeps the log's type.
+    func listType(scheduleTypes: [String: RunType] = [:]) -> RunType {
+        guard let key = ledgerKey else { return type }
+        if let schedule = RunType(slotKey: key) ?? scheduleTypes[key] { return schedule }
+        if DisplayName.isHandRunKey(key) {
+            switch runnerScript {
+            case "run-dreaming.sh": return .dreaming
+            case "run-research.sh": return .research
+            // run-scout.sh: the log's guess is already the runner's, by the hour.
+            default: return type
+            }
+        }
+        return type
     }
 
     /// Copy with a different `status`. Used by the stale-running reconciler
@@ -241,7 +308,8 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
             model: model, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
-            protection: protection
+            protection: protection, ledgerName: ledgerName, ledgerKey: ledgerKey,
+            ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
     }
 }
@@ -266,7 +334,10 @@ extension Run {
         slotKey: String? = nil,
         trigger: String? = nil,
         failureClass: String? = nil,
-        protection: Protection? = nil
+        protection: Protection? = nil,
+        ledgerName: String? = nil,
+        ledgerKey: String? = nil,
+        ledgerKeyIsSchedule: Bool = false
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -296,7 +367,10 @@ extension Run {
             slotKey: slotKey,
             trigger: trigger,
             failureClass: failureClass,
-            protection: protection
+            protection: protection,
+            ledgerName: ledgerName,
+            ledgerKey: ledgerKey,
+            ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
     }
 }

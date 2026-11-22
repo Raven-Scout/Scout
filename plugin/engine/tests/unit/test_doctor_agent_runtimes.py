@@ -224,4 +224,4 @@ def test_an_empty_schedule_checks_the_default_runtime(vault: Path, tmp_path: Pat
     with registered(DummyRuntime("dummy", binary=None)):
         report = _doctor(vault, tmp_path / "home")
     dummy = [e for e in report.errors if "Dummy CLI" in e]
-    assert len(dummy) == 1 and "slot(s) (none)" in dummy[0] and "`scoutctl agent-runtime show`" in dummy[0]
+    assert len(dummy) == 1 and "slots (none)" in dummy[0] and "`scoutctl agent-runtime show`" in dummy[0]

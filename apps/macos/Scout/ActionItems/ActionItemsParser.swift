@@ -160,14 +160,9 @@ nonisolated extension ActionItemsParser {
 
     /// `owner/repo#N` GitHub shorthand. Compiled once — `parseRefs` runs per
     /// task, and `NSRegularExpression` compilation dominates the cost
-    /// (cf. `InlineMarkdownText.wikilinkRe`).
+    /// (cf. `Wikilink.regex`).
     private static let ghShorthandRe = try! NSRegularExpression(
         pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#
-    )
-
-    /// `[[entity]]` / `[[entity|Label]]` wikilink ref.
-    private static let wikilinkRe = try! NSRegularExpression(
-        pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#
     )
 
     /// Parse the ` · `-separated token list from a task's `- Refs:` sub-bullet
@@ -201,11 +196,9 @@ nonisolated extension ActionItemsParser {
                 continue
             }
 
-            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`.
-            if let m = wikilinkRe.firstMatch(in: token, range: full) {
-                let path = ns.substring(with: m.range(at: 1))
-                let label = m.range(at: 2).location == NSNotFound ? nil : ns.substring(with: m.range(at: 2))
-                result.append(.entity(path: path, label: label))
+            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`, by `Wikilink`'s rule.
+            if let link = Wikilink.whole(token) {
+                result.append(.entity(path: link.target, label: link.alias))
                 continue
             }
 

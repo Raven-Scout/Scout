@@ -75,6 +75,26 @@ html, body { height: 100%; overflow: hidden; user-select: none; -webkit-user-sel
 .toggle b { font-weight: 400; color: var(--ink-4); font-family: var(--font-mono); font-size: 0.92em; }
 .legend-foot { margin: 6px 6px 0; color: var(--ink-4); font-size: calc(10.5px * var(--scale)); }
 #fresh-key { margin: 2px 6px 8px; }
+
+/* ---------- collapsible panels ---------- */
+.panel-toggle {
+  border: 0; background: transparent; width: 20px; height: 20px; padding: 0; border-radius: 5px;
+  display: grid; place-items: center; color: var(--ink-4); flex: none;
+}
+.panel-toggle svg { width: 12px; height: 12px; transition: transform 0.15s; }
+.panel-toggle:hover { background: var(--paper-sunk); color: var(--ink-1); }
+.panel-toggle:focus-visible { outline: 2px solid var(--accent-fill); outline-offset: 0; }
+.collapsed .panel-toggle svg { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .panel-toggle svg { transition: none; } }
+.legend-head .legend-title { flex: 1; margin-left: 4px; }
+#legend.collapsed { width: auto; padding: 6px 10px 6px 6px; }
+#legend.collapsed #legend-body, #legend.collapsed .seg { display: none; }
+#legend.collapsed .legend-head { margin-bottom: 0; gap: 4px; }
+.card-head { display: flex; align-items: center; gap: 4px; margin: -4px 0 6px -6px; }
+#card.collapsed { width: auto; padding: 6px 12px 6px 8px; }
+#card.collapsed #card-body { display: none; }
+#card.collapsed .card-head { margin: 0; }
+body.card-open.card-collapsed #controls { right: 12px; }
 .ramp { display: block; height: 6px; border-radius: 3px;
   background: linear-gradient(90deg, var(--accent-fill), color-mix(in srgb, var(--accent-fill) 45%, var(--ink-decorative)), var(--ink-decorative)); }
 .ramp-labels { display: flex; justify-content: space-between; color: var(--ink-4); font-size: calc(10px * var(--scale)); margin-top: 3px; }

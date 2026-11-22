@@ -222,7 +222,7 @@ struct DiagnosticsBundleTests {
         let bundle = try await Self.collector(sandbox, runner: MissingCommandRunner(), doctor: doctor).collect()
         Self.assertNoCanary(bundle.text, home: sandbox.home)
         #expect(bundle.text.contains("This engine has no `scoutctl diagnostics`"))
-        #expect(bundle.text.contains("Doctor: red · 1 error(s), 1 warning(s)"))
+        #expect(bundle.text.contains("Doctor: red · 1 error, 1 warning"))
         #expect(bundle.text.contains("red runs.failing (ledger)"))
     }
 

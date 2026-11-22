@@ -203,7 +203,7 @@ struct ControlCenterView: View {
             Text("Control Center")
                 .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
-            Text("Status · Activity · Sessions")
+            Text("Status · Activity · Runs")
                 .font(DS.font(.headline))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
@@ -220,8 +220,8 @@ struct ControlCenterView: View {
             NowStripView()
             UpcomingStripView()
             ActivityHeatmapView(dayFilter: $dayFilter)
-            // Sessions list + side detail share their own row so the detail
-            // panel sits beside the Sessions section instead of spanning the
+            // Run list + side detail share their own row so the detail
+            // panel sits beside the Runs section instead of spanning the
             // full content height from the top (issue #54).
             HStack(alignment: .top, spacing: 28) {
                 SessionsListView(

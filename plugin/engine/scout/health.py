@@ -24,6 +24,7 @@ from pathlib import Path
 from scout.config import config_load_problem, resolve_timezone
 from scout.engine_checkout import WORKTREES_HINT, checkout_state
 from scout.errors import ConfigError
+from scout.plural import count, have, last_runs_were_skipped, noun, the_last, were
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
 from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
 from scout.scripts.rate_limit_reset import LOG_TAIL_BYTES, reset_from_log
@@ -321,11 +322,11 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         started_at=started,
         finished_at=finished,
         exit_code=exit_code,
-        failure_class=str(obj.get("failure_class") or ""),
+        failure_class=_failure_class(obj.get("failure_class")),
         outcome=outcome,
-        log=str(log) if log else None,
+        log=_log_name(log),
         commits_in_window=_opt_int(obj.get("commits_in_window")),
-        newest_commit=str(commit) if commit else None,
+        newest_commit=_opt_token(commit, _COMMIT_RE),
         resets_at=_opt_epoch(obj.get("resets_at")),
         sandbox=str(obj["sandbox"]) if isinstance(obj.get("sandbox"), str) else None,
         sandbox_source=str(obj["sandbox_source"]) if isinstance(obj.get("sandbox_source"), str) else None,
@@ -344,6 +345,29 @@ _RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
 _RUNNERS = frozenset({"scout", "dreaming", "research"})
 _TRIGGERS = frozenset({"schedule", "heartbeat", "manual", "event"})
+# A failure class is a snake_case code; a run log is a bare file name under .scout-logs/; a commit is hex.
+_FAILURE_CLASS_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_LOG_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+_COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
+
+
+# A failure class that isn't a code (a forged or hand-edited row): never free text, and never a class the code acts
+# on. run_ledger's and diagnostics' own allow-lists both read it as odd (null / "<other>").
+OTHER_FAILURE_CLASS = "<other>"
+
+
+def _failure_class(value: object) -> str:
+    """The row's failure class; "" when it has none, ``OTHER_FAILURE_CLASS`` when it isn't a code."""
+    if value is None or value == "":
+        return ""
+    return value if isinstance(value, str) and _FAILURE_CLASS_RE.fullmatch(value) else OTHER_FAILURE_CLASS
+
+
+def _log_name(value: object) -> str | None:
+    """The row's run log as a bare file name under .scout-logs/ (the runner writes its basename), or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    return _opt_token(Path(value).name, _LOG_NAME_RE)
 
 
 def _opt_nonneg(value: object) -> int | None:
@@ -530,7 +554,7 @@ def _window_text(row: OutcomeRow) -> str:
     if row.commits_in_window == 0:
         return " No commits in that run's window."
     newest = f" (newest {row.newest_commit})" if row.newest_commit else ""
-    return f" {row.commits_in_window} commit(s) in that run's window{newest}."
+    return f" {count(row.commits_in_window, 'commit')} in that run's window{newest}."
 
 
 # The sign-in race (failure_class auth_race): the login is fine, and the retry wrapper already retried it.
@@ -639,9 +663,11 @@ def open_failures_today(
 
     "Today" is the vault's day (``user.timezone``, else the host's zone), the same day the usage
     summary counts. A scheduled slot recovers when it next finishes a run: a success of another
-    slot doesn't count, which is the case the trailing streak misses. A run no schedule runs
-    (trigger ``manual``, or a slot the schedule doesn't name, such as a trigger's skill) has no
-    next scheduled run, so any later finished run clears it; one that nothing has followed is in
+    slot doesn't count, which is the case the trailing streak misses. A schedule someone started
+    with Run now (``fire-now``: trigger ``manual``, the schedule's slot) is still that schedule's
+    run, so its failure waits for that slot's next run too. A run no schedule runs (a slot the
+    schedule doesn't name: a hand-started ``manual`` or ``dreaming-manual`` run, a trigger's
+    skill) has no next scheduled run, so any later finished run clears it; one that nothing has followed is in
     the trailing streak, which runs.failing, auth.expired or runs.paused already report, so this
     never names one. Skips clear nothing.
     """
@@ -650,7 +676,11 @@ def open_failures_today(
     loaded = _load_schedule(vault)
 
     def is_scheduled(r: OutcomeRow) -> bool:
-        return r.trigger != "manual" and (loaded is None or r.slot in loaded[0])
+        # The slot decides, not the trigger: fire-now records `manual` for a real schedule.
+        # Without a readable schedule, only a hand-run trigger is known not to be one.
+        if loaded is None:
+            return r.trigger != "manual"
+        return r.slot in loaded[0]
 
     in_streak = {r.slot for r in _trailing_failures(rows)}
     open_: dict[str, list[OutcomeRow]] = {}
@@ -773,7 +803,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     since=last_ok,
                     summary=(
                         "Scout can't run: your Claude login expired. "
-                        f"{streak} failed run(s) since the last success ({when})."
+                        f"{count(streak, 'failed run')} since the last success ({when})."
                     ),
                     fix=_AUTH_FIX,
                     source="ledger",
@@ -792,7 +822,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     since=last_ok,
                     summary=(
                         f"Claude usage limit — runs paused until {iso_z(pause.lifts)}. "
-                        f"The last {pause.failed_runs} scheduled run(s) failed on the limit."
+                        f"{the_last(pause.failed_runs, 'scheduled run')} failed on the limit."
                     ),
                     fix="Nothing to fix: the first scheduled run after the reset picks up.",
                     source="ledger",
@@ -813,7 +843,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     severity="red" if streak >= red_at else "yellow",
                     since=last_ok,
                     summary=(
-                        f"The last {streak} scheduled run(s) failed ({newest.failure_class})." + _window_text(newest)
+                        f"{the_last(streak, 'scheduled run')} failed ({newest.failure_class})." + _window_text(newest)
                     ),
                     fix=_AUTH_RACE_FIX if races else f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
                     source="ledger",
@@ -924,7 +954,7 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 severity="red",
                 since=streak[0].finished_at,
                 summary=(
-                    f"The last {len(streak)} scheduled run(s) were skipped: Scout couldn't check its privacy hooks "
+                    f"{last_runs_were_skipped(len(streak))}: Scout couldn't check its privacy hooks "
                     f"safely, because {cause}."
                 ),
                 fix=f"{fix} Runs resume on their own once `scoutctl gates probe` passes.",
@@ -938,7 +968,7 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
             severity="red",
             since=streak[0].finished_at,
             summary=(
-                f"The last {len(streak)} scheduled run(s) were skipped: the claude the runners use didn't load "
+                f"{last_runs_were_skipped(len(streak))}: the claude the runners use didn't load "
                 "Scout's privacy hooks (for example in bare mode), so no run may read the vault."
             ),
             fix=(
@@ -971,9 +1001,10 @@ def runtime_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
             severity="red",
             since=streak[0].finished_at,
             summary=(
-                f"The last {len(streak)} scheduled run(s) were skipped: Scout refused the agent runtime they were "
-                "set to use here (its privacy gates aren't proven, its provider isn't consented, or the check "
-                "couldn't run). Scout never falls back to another runtime on its own."
+                f"{last_runs_were_skipped(len(streak))}: Scout refused the agent runtime "
+                f"{'it was' if len(streak) == 1 else 'they were'} set to use here (its privacy gates aren't "
+                "proven, its provider isn't consented, or the check couldn't run). Scout never falls back to "
+                "another runtime on its own."
             ),
             fix=(
                 "Run `scoutctl agent-runtime check --slot <slot>` to see why. Fix that, or set the slot back to "
@@ -1028,7 +1059,7 @@ def sandbox_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 severity="red",
                 since=streak[0].finished_at,
                 summary=(
-                    f"The last {len(streak)} scheduled run(s) were skipped: the write sandbox that keeps a run from "
+                    f"{last_runs_were_skipped(len(streak))}: the write sandbox that keeps a run from "
                     "switching off Scout's gates couldn't be set up on this machine."
                 ),
                 fix=(
@@ -1086,9 +1117,9 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
                 severity="red",
                 since=recent[0].finished_at,
                 summary=(
-                    f"{len(recent)} scheduled run(s) in the last {INTEGRITY_WINDOW.days} days changed a protected "
-                    "file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new "
-                    "commit" + ("; a tag or the stash still holds the change." if still else ".")
+                    f"{count(len(recent), 'scheduled run')} in the last {INTEGRITY_WINDOW.days} days changed a "
+                    "protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it "
+                    "back in a new commit" + ("; a tag or the stash still holds the change." if still else ".")
                 ),
                 fix=(
                     "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and "
@@ -1175,8 +1206,8 @@ def broker_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
                 severity="yellow",
                 since=None,
                 summary=(
-                    f"{len(failed)} commit or Telegram request(s) a run queued couldn't be applied after the session "
-                    "(refused, older than 24 h, or out of retries)."
+                    f"{count(len(failed), 'commit or Telegram request')} a run queued couldn't be applied after the "
+                    "session (refused, older than 24 h, or out of retries)."
                 ),
                 fix=(
                     "Look in .scout-state/broker-queue/failed/: commit the paths yourself or delete the entry. The "
@@ -1200,7 +1231,7 @@ def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> 
                 severity="red" if len(streak) >= LEASE_UNAVAILABLE_RED else "yellow",
                 since=streak[0].finished_at,
                 summary=(
-                    f"The last {len(streak)} scheduled run(s) were skipped: Agnes couldn't grant the repository "
+                    f"{last_runs_were_skipped(len(streak))}: Agnes couldn't grant the repository "
                     "writer lease, so Scout didn't write the vault."
                 ),
                 fix=(
@@ -1220,8 +1251,8 @@ def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> 
                 severity="note",
                 since=None,
                 summary=(
-                    f"{len(held)} run(s) skipped in the last 24 h because Agnes held the repository writer lease "
-                    f"(an Agnes-hosted run): {slots}."
+                    f"{count(len(held), 'run')} skipped in the last 24 h because Agnes held the repository writer "
+                    f"lease (an Agnes-hosted run): {slots}."
                 ),
                 fix="Nothing to fix if Agnes runs that work. To stop the overlap, give each slot one place to run.",
                 source="ledger",
@@ -1497,8 +1528,8 @@ def delegate_inbox_findings(
                     id="delegate.inbox_waiting",
                     severity="yellow",
                     since=reviewed,
-                    summary=f"Delegate inbox {key}: {box['review']} proposal(s) have waited over a week for your "
-                    "review (observations and comments)",
+                    summary=f"Delegate inbox {key}: {count(box['review'], 'proposal')} {have(box['review'])} "
+                    "waited over a week for your review (observations and comments)",
                     fix="Look at them with: scoutctl inbox review",
                     source="state",
                 )
@@ -1509,8 +1540,8 @@ def delegate_inbox_findings(
                     id="delegate.inbox_untaken",
                     severity="yellow",
                     since=None,
-                    summary=f"Delegate inbox {key}: {box['untaken']} file(s) in .scout-inbox/agents/{key}/ were "
-                    "never taken by a pull (something else put them there); they are ignored",
+                    summary=f"Delegate inbox {key}: {count(box['untaken'], 'file')} in .scout-inbox/agents/{key}/ "
+                    f"{were(box['untaken'])} never taken by a pull (something else put them there); they are ignored",
                     fix=f"Look at them, then delete them: .scout-inbox/agents/{key}/",
                     source="state",
                 )
@@ -2221,6 +2252,8 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
     found = []
     if st.changes:
         named = st.changes[0] if len(st.changes) == 1 else f"e.g. {st.changes[0]}"
+        it = "it runs" if len(st.changes) == 1 else "they run"
+        blocks = "blocks" if len(st.changes) == 1 else "block"
         found.append(
             Finding(
                 id="engine.dirty",
@@ -2228,7 +2261,8 @@ def engine_findings(*, home: Path | None) -> list[Finding]:
                 since=None,
                 summary=(
                     f"The engine checkout scheduled runs use ({st.root}) has {len(st.changes)} uncommitted "
-                    f"change(s) ({named}): they run in every scheduled run, unreviewed, and block upgrades."
+                    f"{noun(len(st.changes), 'change')} ({named}): {it} in every scheduled run, unreviewed, "
+                    f"and {blocks} upgrades."
                 ),
                 fix=(
                     f"Save the work as a branch or PR from a clone under {WORKTREES_HINT}, then in Terminal: "

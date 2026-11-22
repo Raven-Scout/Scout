@@ -1038,7 +1038,7 @@ def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
     report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
     assert report.severity is Severity.YELLOW
     (line,) = [w for w in report.warnings if "privacy check could not run" in w]
-    assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line
+    assert line.startswith("privacy: 1 commit in the last 7 days was made") and "NOT checked" in line
 
 
 # ---------- repo sync: the cached host Local-Only list (#596) ----------

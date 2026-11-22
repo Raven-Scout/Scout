@@ -142,7 +142,7 @@ struct WriteProblem: Equatable, Identifiable {
                                 retryable: false)
         case .undoStale(let f):
             return WriteProblem(kind: .undoStale, title: title,
-                                message: "\(f) changed after your edit, probably in a scheduled run. Undoing now would overwrite that change, so Scout left the file as it is.",
+                                message: "\(f) has changed since your edit. Undoing now would overwrite that change, so Scout left the file as it is.",
                                 retryable: false)
         case .readFailed(let f, let m):
             return WriteProblem(kind: .failed, title: title, message: "Scout couldn't read \(f).", details: m, retryable: true)

@@ -66,7 +66,7 @@
     {
       "id": "run.integrity_restored",
       "severity": "red",
-      "summary": "1 scheduled run(s) in the last 7 days changed a protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new commit.",
+      "summary": "1 scheduled run in the last 7 days changed a protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it back in a new commit.",
       "fix": "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and its session, to see what made it change them.",
       "action": "show_log",
       "log": ".scout-logs/scout-1794818880.log"

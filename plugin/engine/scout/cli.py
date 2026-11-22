@@ -4279,6 +4279,33 @@ def _register_health() -> None:
         if not sent and not quiet:
             typer.echo("nothing to push")
 
+    @health_app.command("resolve-prompt")
+    def cli_health_resolve_prompt(
+        kind: str = typer.Argument(..., help="finding, connector or run."),
+        key: str = typer.Argument(..., help="A finding id, a connector_key, or a run log's file name."),
+        json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    ) -> None:
+        """Print an investigation prompt for one alert ("Resolve with Claude"). Read-only; exit 2 on a bad key."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout import resolve_prompt as _rp
+
+        def fail(error: str) -> NoReturn:
+            typer.echo(f"resolve-prompt: {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"schema_version": _rp.SCHEMA_VERSION, "error": error}))
+            raise typer.Exit(code=2)
+
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            fail(f"vault directory missing: {vault}")
+        try:
+            prompt = _rp.build(vault, kind, key)
+        except _rp.ResolveError as e:
+            fail(str(e))
+        typer.echo(_json.dumps(prompt.to_dict()) if json_out else prompt.prompt)
+
 
 _register_health()
 

@@ -252,7 +252,7 @@ def test_health_rejected_stored_token_points_at_the_token_not_the_login(tmp_path
     auth = next(f for f in report.findings if f.id == "auth.expired")
     assert auth.severity == "red"
     assert "stored Claude token was rejected" in auth.summary
-    assert "2 failed run(s)" in auth.summary
+    assert "2 failed runs" in auth.summary
     assert "scoutctl auth setup-token" in auth.fix and "claude auth login" not in auth.fix
 
 
