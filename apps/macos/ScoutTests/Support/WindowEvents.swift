@@ -1,7 +1,7 @@
 import AppKit
 
-/// Real key and mouse events into one in-process window, and the places to
-/// click found through its accessibility tree. Nothing reaches other apps.
+/// Real key and mouse events into one in-process window, and a way to find
+/// where to click without an accessibility tree. Nothing reaches other apps.
 /// Tests that use it make their window key: run them in `KeyWindowGate`.
 @MainActor
 enum WindowEvents {
