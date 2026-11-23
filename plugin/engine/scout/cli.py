@@ -1708,17 +1708,48 @@ def kb_search(
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
     fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
     ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    max_matches: int | None = typer.Option(
+        None, "--max-matches", help="Matching lines printed in all. Default 200; 0 = no limit."
+    ),
+    max_per_file: int | None = typer.Option(
+        None, "--max-per-file", help="Matching lines printed per file. Default 20; 0 = no limit."
+    ),
+    max_line: int | None = typer.Option(
+        None, "--max-line", help="Characters printed per line, around the match. Default 400; 0 = whole lines."
+    ),
+    everything: bool = typer.Option(
+        False, "--all", help="Print every matching line: the same as --max-matches 0 --max-per-file 0."
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern."""
-    args = _kb_args("search", dict(locals()))
-    from scout.kb.read import cmd_search
+    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern.
 
-    _kb_run(
-        args, reader, repo, as_json, lambda who, vault: cmd_search(vault, who, pattern, glob or (), fixed, ignore_case)
-    )
+    With no --glob it searches every listed file, not only knowledge-base/. The text output is bounded:
+    closing lines in parentheses say how many matches were left out, per top-level folder, and how
+    to narrow. --json prints every match whole unless a --max-* option is given (then they go to stderr).
+    """
+    params = dict(locals())
+    given = {k: params.pop(k) for k in ("max_matches", "max_per_file", "max_line")}
+    given = {k: v for k, v in given.items() if v is not None}
+    if not params["everything"]:
+        del params["everything"]
+    # a search at the default caps keeps the audit arguments it had before the caps existed
+    args = _kb_args("search", params | given)
+    from scout.kb.read import Output, cmd_search
+
+    lifted = dict.fromkeys(("max_matches", "max_per_file"), 0) if everything or as_json else {}
+    caps = lifted | ({"max_line": 0} if as_json else {}) | given
+
+    def body(who: str, vault: Path) -> Output:
+        out = cmd_search(vault, who, pattern, glob or (), fixed, ignore_case, **caps)
+        if as_json:  # the JSON form stays a list of matches: what was left out goes to stderr
+            for line in out.notice:
+                print(line, file=sys.stderr)
+        return out
+
+    _kb_run(args, reader, repo, as_json, body)
 
 
 @kb_app.command("read")
