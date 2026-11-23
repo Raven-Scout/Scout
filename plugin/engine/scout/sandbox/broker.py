@@ -555,7 +555,21 @@ class Broker:
             message, paths, override = validate_commit(req, self.vault, self.env)
         except Refused as r:
             return Reply(r.exit_code, f"git-safe-commit: {r.reason}\n", kind=REFUSED)
-        return run_commit(self.vault, message, paths, override, self.env)
+        from scout.changes import run_commits
+
+        # The changes map's run-commit ledger (scout.changes.run_commits), the record a run can't forge: a begin row
+        # before the helper runs and an end row after, so a commit whose result is lost (the broker stopped, a row
+        # that couldn't be written) is a gap the readers see, never silence.
+        run = self.run_id or (req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else None)
+        mode = self.env.get("SCOUT_MODE")
+        rid = run_commits.broker_begin(self.vault, run, mode)
+        reply = run_commit(self.vault, message, paths, override, self.env)
+        # The helper names the commit git just made (its reflog entry, by a nonce of its own); a helper from before
+        # that line, or one that couldn't, names none, and a commit with no sha is a gap. Never HEAD read now.
+        _, sha = run_commits.sha_from_helper(reply.stdout) if reply.exit == 0 else (False, None)
+        if rid is None or not run_commits.broker_end(self.vault, rid, run, mode, exit_code=reply.exit, sha=sha):
+            print("broker: couldn't record the commit for the changes map", file=sys.stderr)
+        return reply
 
     def _unanswerable(self, fields: Mapping[str, Any]) -> Reply | None:
         """A reply to a message that isn't waiting (unknown, or already answered): refused for good, live or

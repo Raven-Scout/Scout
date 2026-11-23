@@ -81,7 +81,7 @@ def lane_of(subject: str, run: RunCommit | None = None) -> str | None:
     the one its prefix names, else the generic ``run`` lane; never ``interactive``, ``update`` or None. A commit
     with no ledger row, or one an owner worktree vouched for, is classified by its subject prefix: history from
     before the ledger existed, and the owner's own commits."""
-    if run is not None and run.by == "run":
+    if run is not None and run.by in ("broker", "run"):
         lane = run_commits.mode_lane(run.mode)
         if lane == "run":
             lane = next((p for p in _PHASE_LANES if subject.startswith(f"{p} [")), lane)
@@ -153,7 +153,8 @@ def _git_raw(vault: Path, args: Sequence[str], stdin: bytes | None = None) -> by
     """The one git runner: stdout bytes, or None on a non-zero exit, a timeout or no git. ``stdin`` is fed to git
     (``git apply`` reading a patch); without it git reads nothing."""
     # Never take the index lock: a read must not make a concurrent run's `git add` fail.
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    # Replace refs, grafts and a planted .git/shallow are ignored: a run can't hide history from the scan with them.
+    env = {**os.environ, **run_commits.HARDENED_GIT_ENV, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
@@ -342,7 +343,7 @@ def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str, *, d
 
 class _Runs:
     """The run-commit ledger for one read: a commit's own row, or the window it falls in (each window's commits
-    worked out once, from git). A run row beats a worktree row, as in the ledger itself."""
+    worked out once, from git). A broker or run row beats a worktree row, as in the ledger itself."""
 
     def __init__(self, vault: Path, ledger: Ledger | None = None) -> None:
         self.vault = vault
@@ -350,15 +351,25 @@ class _Runs:
         self._members: dict[int, frozenset[str]] = {}
 
     def _in(self, i: int, w: Window) -> frozenset[str]:
+        """The window's commits. A known commit gone since (the owner's gc) is never dropped from the exclusion
+        silently, which would make all history the run's: the window is bounded by its snapshot time instead, or is
+        empty without one."""
         if i not in self._members:
+            self._members[i] = frozenset()
+            present = set((_git(self.vault, "rev-list", "--no-walk", "--ignore-missing", *w.known, "--") or "").split())
             args = ["rev-list", "--no-merges", "--ignore-missing", "--stdin"]
+            if len(present) < len(set(w.known)):
+                if w.taken_at is None:
+                    return self._members[i]
+                args.append(f"--since={w.taken_at.isoformat()}")
             raw = _git_raw(self.vault, args, w.rev_list_input())
-            self._members[i] = frozenset(raw.decode().split()) if raw is not None else frozenset()
+            if raw is not None:
+                self._members[i] = frozenset(raw.decode().split())
         return self._members[i]
 
     def get(self, sha: str) -> RunCommit | None:
         hit = self.ledger.commits.get(sha)
-        if hit is not None and hit.by == "run":
+        if hit is not None and hit.by in ("broker", "run"):
             return hit
         for i, w in enumerate(self.ledger.windows):
             if sha in self._in(i, w):
@@ -368,7 +379,9 @@ class _Runs:
     def recent(self, since: datetime) -> list[str]:
         """The run commits recorded at or after ``since``, once each."""
         out = dict.fromkeys(
-            c.sha for c in self.ledger.commits.values() if c.by == "run" and c.ts is not None and c.ts >= since
+            c.sha
+            for c in self.ledger.commits.values()
+            if c.by in ("broker", "run") and c.ts is not None and c.ts >= since
         )
         for i, w in enumerate(self.ledger.windows):
             if w.ts is not None and w.ts >= since:

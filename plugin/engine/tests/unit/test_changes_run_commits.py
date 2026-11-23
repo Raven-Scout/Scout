@@ -66,9 +66,17 @@ def owner_env() -> dict[str, str]:
     return {"HOME": os.environ["HOME"]}
 
 
-def _run(repo: Path, label: str, make: Callable[[], list[str]]) -> list[str]:
-    """Snapshot, let ``make`` commit as a run would, then record the window as ``sandbox verify`` does."""
+def _snap(repo: Path) -> dict:
+    """The start snapshot `scoutctl sandbox snapshot` takes: the integrity check's, plus the ledger's extra."""
     snap = integrity.snapshot(repo, os.environ)
+    snap["changes"] = run_commits.snapshot_extra(repo)
+    return snap
+
+
+def _run(repo: Path, label: str, make: Callable[[], list[str]]) -> list[str]:
+    """Snapshot, let ``make`` commit as a broker-less run would, then record the git window as ``sandbox verify``
+    does."""
+    snap = _snap(repo)
     shas = make()
     assert run_commits.record(repo, snap, label=label) is not None
     return shas
@@ -432,7 +440,7 @@ def test_past_the_cap_the_whole_window_is_the_runs(repo: Path, monkeypatch: pyte
             _git(repo, "commit", "-q", "--allow-empty", "-m", f"chore {i}")
         return [sha]
 
-    snap = integrity.snapshot(repo, os.environ)
+    snap = _snap(repo)
     [sha] = make()
     recorded = run_commits.record(repo, snap, label="dreaming-nightly")
     assert recorded == run_commits.Recorded(commits=0, windows=1)
@@ -530,10 +538,11 @@ def test_verify_says_what_it_recorded(repo: Path, monkeypatch: pytest.MonkeyPatc
     snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(repo)])
     _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
     result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
-    assert result.exit_code == 0 and "changes map: recorded 1 commit this run made" in result.stdout
+    assert result.exit_code == 0
+    assert "no commit broker, so 1 commit this run made was worked out from git (best effort)" in result.stdout
     monkeypatch.setattr(run_commits, "record", lambda *a, **k: run_commits.Recorded(0, 1))
     result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
-    assert "recorded 0 commits this run made, and 1 window too big to list" in result.stdout
+    assert "0 commits this run made were worked out from git (best effort), and 1 window too big" in result.stdout
 
 
 def test_a_tip_git_cant_list_is_recorded_as_a_window(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -544,9 +553,429 @@ def test_a_tip_git_cant_list_is_recorded_as_a_window(repo: Path, monkeypatch: py
             raise integrity.IntegrityError("rev-list failed")
         return real(vault, args, env, **kw)  # type: ignore[arg-type]
 
-    snap = integrity.snapshot(repo, os.environ)
+    snap = _snap(repo)
     sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
     monkeypatch.setattr(integrity, "_git", flaky)
     assert run_commits.record(repo, snap, label="research") == run_commits.Recorded(commits=0, windows=1)
     monkeypatch.setattr(integrity, "_git", real)
     assert _lane(repo, sha) == "research"
+
+
+# --- the broker's record (exact, Phase 1d) ---------------------------------------------------------------------------
+
+TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
+
+
+@pytest.fixture
+def helper_vault(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The scratch vault with the real git-safe-commit.sh rendered into scripts/, as /scout-update installs it."""
+    from scout.scripts.phase_assembly import render_template
+
+    helper = repo / "scripts" / "git-safe-commit.sh"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    template = (TEMPLATES / "scripts" / "git-safe-commit.sh.tmpl").read_text()
+    helper.write_text(render_template(template, {"SCOUT_DIR": str(repo)}))
+    helper.chmod(0o755)
+    (repo / ".gitignore").write_text(".scout-cache/\n.scout-logs/\n.scout-state/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "helper", "--no-verify")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(repo))
+    monkeypatch.setenv("SCOUT_MODE", "dreaming-nightly")
+    return repo
+
+
+def _broker_commit(vault: Path, message: str, rel: str, text: str) -> str:
+    from scout.sandbox import broker
+
+    (vault / rel).write_text(text)
+    reply = broker.Broker.for_vault(vault).handle({"v": 1, "verb": "commit", "message": message, "paths": [rel]})
+    assert reply.exit == 0, reply.stderr
+    return _git(vault, "rev-parse", "HEAD")
+
+
+def _broker_row(vault: Path, sha: str, mode: str = "research", run: str = "scout-broker.abc123") -> None:
+    """What `Broker.commit` writes around a commit that landed: a begin row, then an end row with its sha."""
+    rid = run_commits.broker_begin(vault, run, mode)
+    assert rid is not None
+    assert run_commits.broker_end(vault, rid, run, mode, exit_code=0, sha=sha)
+
+
+def test_the_broker_records_the_exact_commit_it_made(helper_vault: Path) -> None:
+    sha = _broker_commit(helper_vault, "fix: tighten the wrap", "SKILL.md", "brokered\n")
+    ledger = run_commits.read()
+    row = ledger.commits[sha]
+    assert (row.by, row.mode) == ("broker", "dreaming-nightly") and ledger.gaps == ()
+    assert run_commits.is_broker_recorded(sha)
+    assert _lane(helper_vault, sha) == "dreaming"
+
+
+def test_an_owner_commit_racing_the_runs_never_takes_its_place(helper_vault: Path) -> None:
+    """The coordinator's requirement: the sha is the commit git just made, never HEAD read afterwards. An owner
+    commit lands between the run's commit and the sha read (a post-commit hook commits as the owner, from its own
+    process: no nonce); the broker still records the run's commit, and only it."""
+    hook = helper_vault / ".git" / "hooks" / "post-commit"
+    hook.write_text(
+        "#!/bin/bash\nunset GIT_REFLOG_ACTION\n"
+        'cd "$(git rev-parse --show-toplevel)" && echo owner >> README.md && '
+        "git -c core.hooksPath=/dev/null commit -q -m 'owner: racing edit' -- README.md\n"
+    )
+    hook.chmod(0o755)
+    from scout.sandbox import broker
+
+    (helper_vault / "SKILL.md").write_text("run\n")
+    reply = broker.Broker.for_vault(helper_vault).handle(
+        {"v": 1, "verb": "commit", "message": "fix: run's edit", "paths": ["SKILL.md"]}
+    )
+    assert reply.exit == 0, reply.stderr
+    owner = _git(helper_vault, "rev-parse", "HEAD")
+    run = _git(helper_vault, "rev-parse", "HEAD~1")
+    assert _git(helper_vault, "log", "-1", "--format=%s", owner) == "owner: racing edit"
+    assert set(run_commits.read().commits) == {run}
+
+
+def test_a_hook_that_commits_with_the_nonce_still_leaves_the_runs_commit_named(helper_vault: Path) -> None:
+    hook = helper_vault / ".git" / "hooks" / "post-commit"
+    hook.write_text(
+        "#!/bin/bash\n"  # inherits GIT_REFLOG_ACTION: its own commit's reflog entry carries the nonce too
+        'cd "$(git rev-parse --show-toplevel)" && echo hook >> README.md && '
+        "git -c core.hooksPath=/dev/null commit -q -m 'hook: after' -- README.md\n"
+    )
+    hook.chmod(0o755)
+    _broker_commit(helper_vault, "fix: run's edit", "SKILL.md", "run\n")
+    assert set(run_commits.read().commits) == {_git(helper_vault, "rev-parse", "HEAD~1")}
+
+
+def test_the_helper_names_its_sha_last_on_stdout(helper_vault: Path) -> None:
+    (helper_vault / "SKILL.md").write_text("direct\n")
+    out = subprocess.run(
+        ["bash", str(helper_vault / "scripts" / "git-safe-commit.sh"), "notes: direct", "SKILL.md"],
+        capture_output=True, text=True, check=True, env={**os.environ, "SCOUT_RUN_BROKER": ""},
+    )  # fmt: skip
+    assert run_commits.sha_from_helper(out.stdout) == (True, _git(helper_vault, "rev-parse", "HEAD"))
+    assert run_commits.sha_from_helper("scout-commit unresolved\n") == (True, None)
+    assert run_commits.sha_from_helper("") == (False, None)
+    assert run_commits.sha_from_helper("scout-commit HEAD\n") == (False, None)
+
+
+def test_a_helper_without_a_reflog_says_unresolved_and_the_commit_is_a_gap(helper_vault: Path) -> None:
+    _git(helper_vault, "config", "core.logAllRefUpdates", "false")
+    for log in (helper_vault / ".git" / "logs").rglob("*"):
+        if log.is_file():
+            log.unlink()
+    sha = _broker_commit(helper_vault, "fix: x", "SKILL.md", "x\n")
+    ledger = run_commits.read()
+    assert sha not in ledger.commits
+    [gap] = ledger.gaps
+    assert gap.mode == "dreaming-nightly"
+
+
+def test_a_helper_from_before_the_sha_line_leaves_a_gap_not_a_guess(helper_vault: Path) -> None:
+    old = helper_vault / "scripts" / "git-safe-commit.sh"
+    old.write_text(old.read_text().replace('echo "scout-commit ${SHA:-unresolved}"', ""))
+    sha = _broker_commit(helper_vault, "fix: old helper", "SKILL.md", "old\n")
+    ledger = run_commits.read()
+    assert sha not in ledger.commits and len(ledger.gaps) == 1
+
+
+def test_a_failed_commit_is_no_gap(helper_vault: Path) -> None:
+    from scout.sandbox import broker
+
+    reply = broker.Broker.for_vault(helper_vault).handle(
+        {"v": 1, "verb": "commit", "message": "fix: nothing", "paths": ["SKILL.md"]}
+    )
+    assert reply.exit == 4  # nothing to commit
+    assert run_commits.read().gaps == ()
+
+
+def test_a_begin_with_no_end_is_a_gap(repo: Path) -> None:
+    assert run_commits.broker_begin(repo, "scout-broker.abc123", "research") is not None
+    [gap] = run_commits.broker_gaps(repo, NOW - timedelta(days=1))
+    assert (gap.run, gap.mode) == ("scout-broker.abc123", "research")
+    assert run_commits.broker_gaps(repo.parent, NOW - timedelta(days=1)) == []
+
+
+def test_a_broker_that_cant_record_says_so_and_the_commit_stands(
+    helper_vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(run_commits, "broker_end", lambda *a, **k: False)
+    sha = _broker_commit(helper_vault, "fix: x", "SKILL.md", "x\n")
+    assert "couldn't record the commit for the changes map" in capsys.readouterr().err
+    ledger = run_commits.read()
+    assert sha not in ledger.commits and len(ledger.gaps) == 1  # the begin row says a commit went missing
+
+
+def test_recording_never_raises(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> Path:
+        raise OSError("no")
+
+    monkeypatch.setattr(run_commits, "path", boom)
+    assert run_commits.broker_begin(repo, "r", "research") is None
+    assert not run_commits.broker_end(repo, "x", "r", "research", exit_code=0, sha="a" * 40)
+    assert not run_commits.mark_broker_profile(repo, "r", tightened=True)
+
+
+def test_a_brokered_run_records_no_window_so_an_owner_commit_in_the_vault_stays_the_owners(repo: Path) -> None:
+    """The known limit the broker removes: under the git window an owner commit made in the vault's own checkout
+    during a run was the run's. With the broker on, verify records nothing from git."""
+    runner = CliRunner()
+    snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(repo)])
+    assert run_commits.mark_broker_profile(repo, "scout-broker.abc123", tightened=True)
+    owner = _commit(repo, "fix: the owner's own edit", {"SKILL.md": "owner\n"})
+
+    result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
+
+    assert result.exit_code == 0 and "recorded by its commit broker" in result.stdout
+    assert owner not in run_commits.read().commits
+    assert _lane(repo, owner) == "interactive"
+
+
+def test_a_brokered_run_with_a_gap_also_records_the_git_window(repo: Path) -> None:
+    snap = _snap(repo)
+    assert run_commits.mark_broker_profile(repo, "scout-broker.abc123", tightened=True)
+    assert run_commits.broker_begin(repo, "scout-broker.abc123", "research")  # the end row was lost
+    assert not run_commits.broker_was_on(repo, snap)
+
+
+def test_broker_was_on_needs_every_broker_since_the_snapshot_tightened(repo: Path) -> None:
+    assert run_commits.mark_broker_profile(repo, "earlier", tightened=True)
+    snap = _snap(repo)
+    assert not run_commits.broker_was_on(repo, snap)  # an earlier run's mark doesn't count
+    assert run_commits.mark_broker_profile(repo, "scout-broker.abc123", tightened=True)
+    assert run_commits.broker_was_on(repo, snap)
+    assert not run_commits.broker_was_on(repo.parent, snap)  # another vault's
+    assert run_commits.mark_broker_profile(repo, "scout-broker.def456", tightened=False)  # one fell back to 1c
+    assert not run_commits.broker_was_on(repo, snap)
+    runs = run_commits.broker_runs(repo, NOW - timedelta(days=1))
+    assert [(r.run, r.tightened) for r in runs] == [
+        ("earlier", True), ("scout-broker.abc123", True), ("scout-broker.def456", False),
+    ]  # fmt: skip
+    assert not run_commits.broker_was_on(repo, {"changes": {}})  # a snapshot from before the extra
+    assert not run_commits.broker_was_on(repo, {})
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_broker_profile_marks_the_run_either_way(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ok: bool
+) -> None:
+    from scout.sandbox import broker
+
+    def build(*_a: object, **_k: object) -> str:
+        if not ok:
+            raise broker.BrokerError("no socket")
+        return "(version 1)\n"
+
+    monkeypatch.setattr(broker, "build_profile", build)
+    snap = _snap(repo)
+    bdir = tmp_path / "scout-broker.abc123"
+    result = CliRunner().invoke(app, ["broker", "profile", "--vault", str(repo), "--dir", str(bdir)], input="")
+    assert result.exit_code == (0 if ok else 1), result.output
+    [r] = run_commits.broker_runs(repo, NOW - timedelta(days=1))
+    assert (r.run, r.tightened) == ("scout-broker.abc123", ok)
+    assert run_commits.broker_was_on(repo, snap) is ok
+
+
+def test_bare_broker_rows_are_never_trusted() -> None:
+    _write_rows({"schema": 1, "sha": "a" * 40, "mode": "research", "by": "broker", "ts": NOW.isoformat()})
+    assert run_commits.read().commits == {}
+
+
+# --- round 2 of the review: the git window's hardening (best effort, not sound) --------------------------------------
+
+
+def test_head_pointed_at_a_ref_outside_refs_heads_is_still_a_tip(repo: Path) -> None:
+    def make() -> list[str]:
+        _git(repo, "update-ref", "refs/x/main", "HEAD")
+        _git(repo, "symbolic-ref", "HEAD", "refs/x/main")
+        return [_commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})]
+
+    [sha] = _run(repo, "dreaming-nightly", make)
+    _git(repo, "symbolic-ref", "HEAD", "refs/heads/main")
+    assert run_commits.read().commits[sha].by == "run"
+
+
+def test_a_planted_shallow_file_hides_nothing(repo: Path) -> None:
+    def make() -> list[str]:
+        hidden = _commit(repo, "fix: brain edit", {"SKILL.md": "evil\n"})
+        harmless = _commit(repo, "notes: t", {"README.md": "t\n"})
+        (repo / ".git" / "shallow").write_text(harmless + "\n")
+        return [hidden, harmless]
+
+    hidden, harmless = _run(repo, "dreaming-nightly", make)
+    assert {hidden, harmless} <= set(run_commits.read().commits)
+    (repo / ".git" / "shallow").unlink()
+    assert _lane(repo, hidden) == "dreaming"
+
+
+def test_a_worktree_vouches_for_one_new_commit_on_its_snapshot_tip_only(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 2: a run moved the worktree's branch to B (the old tip's tree) with parent A, a brain edit; the net
+    diff was empty, so A and B were both vouched. Two new commits are the run's."""
+    monkeypatch.setenv("SCOUT_SANDBOX_STATUS", "enforced")
+    _worktree(repo)
+
+    def make() -> list[str]:
+        tip = _git(repo, "rev-parse", f"refs/heads/{WORKTREE_BRANCH}")
+        tree = _git(repo, "rev-parse", f"{tip}^{{tree}}")
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input="evil\n", text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()  # fmt: skip
+        idx = {**os.environ, "GIT_INDEX_FILE": str(repo.parent / "planted-index")}
+        for args in (["read-tree", tip], ["update-index", "--cacheinfo", f"100644,{blob},SKILL.md"]):
+            subprocess.run(["git", "-C", str(repo), *args], env=idx, check=True, capture_output=True)
+        a_tree = subprocess.run(
+            ["git", "-C", str(repo), "write-tree"], env=idx, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        a = _git(repo, "commit-tree", a_tree, "-p", tip, "-m", "fix: a")
+        b = _git(repo, "commit-tree", tree, "-p", a, "-m", "fix: b")
+        _git(repo, "update-ref", f"refs/heads/{WORKTREE_BRANCH}", b, tip)
+        return [a, b]
+
+    a, b = _run(repo, "dreaming-nightly", make)
+    ledger = run_commits.read().commits
+    assert (ledger[a].by, ledger[b].by) == ("run", "run")
+
+
+def test_a_replace_ref_hides_nothing_at_record_or_read_time(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_commits, "MAX_PER_RUN", 1)
+    seed = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+
+    def make() -> list[str]:
+        x = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+        _commit(repo, "chore", {"README.md": "c\n"})
+        _git(repo, "replace", "--graft", "HEAD", seed)  # HEAD's parent is now the seed, to anything that honours it
+        return [x]
+
+    [x] = _run(repo, "dreaming-nightly", make)
+    assert len(run_commits.read().windows) == 1
+    assert _lane(repo, x) == "dreaming"
+
+
+def test_a_known_commit_gone_by_the_end_of_the_run_is_refused_not_ignored(repo: Path) -> None:
+    """Round 2: pruning a commit the run started with made rev-list fail, and the window that replaced the list
+    dropped the exclusion: all history became the run's, the owner's own edits included."""
+    owner = _commit(repo, "fix: owner edit", {"SKILL.md": "owner\n"})
+    snap = _snap(repo)
+    _git(repo, "reset", "-q", "--soft", "HEAD~1")
+    _commit(repo, "fix: run edit", {"SKILL.md": "run\n"})
+    _git(repo, "reflog", "expire", "--expire=now", "--all")
+    _git(repo, "gc", "-q", "--prune=now")
+    assert subprocess.run(["git", "-C", str(repo), "cat-file", "-e", owner], check=False).returncode != 0
+    assert run_commits.record(repo, snap, label="research") is None
+    assert run_commits.read() == run_commits.Ledger()
+
+
+def test_a_window_with_a_known_commit_gone_since_is_bounded_by_its_snapshot_time(repo: Path) -> None:
+    old = _commit(repo, "fix: owner edit long ago", {"SKILL.md": "old\n"}, date=NOW - timedelta(days=30))
+    new = _commit(repo, "fix: run edit", {"SKILL.md": "new\n"}, date=NOW)
+    head = _git(repo, "rev-parse", "HEAD")
+    window = {"tips": [head], "known": ["f" * 40], "taken_at": (NOW - timedelta(hours=1)).isoformat()}
+    _write_rows({"schema": 1, "window": window, "mode": "research", "ts": NOW.isoformat()})
+    assert (_lane(repo, new), _lane(repo, old)) == ("research", "interactive")
+    _write_rows({"schema": 1, "window": {**window, "taken_at": None}, "mode": "research", "ts": NOW.isoformat()})
+    assert _lane(repo, new) == "interactive"  # no time to bound it by: the window holds nothing
+
+
+def test_an_owner_fetch_during_a_broker_less_run_is_counted_as_the_runs(repo: Path) -> None:
+    """A known limit of the git window, failing closed: a remote-tracking ref that moved is a tip like any other."""
+
+    def make() -> list[str]:
+        _git(repo, "checkout", "-q", "--detach")
+        fetched = _commit(repo, "owner: elsewhere", {"README.md": "elsewhere\n"})
+        _git(repo, "update-ref", "refs/remotes/origin/main", fetched)
+        _git(repo, "checkout", "-q", "main")
+        return [fetched]
+
+    [fetched] = _run(repo, "research", make)
+    assert run_commits.read().commits[fetched].by == "run"
+
+
+# --- automatic rollback acts only on what the broker recorded --------------------------------------------------------
+
+
+def test_auto_rollback_acts_only_on_broker_recorded_changes(
+    helper_vault: Path, owner_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout.changes import actions
+    from scout.changes.settings import Settings, write_settings
+
+    monkeypatch.setattr(actions, "AUTO_ROLLBACK_LIVE", True)
+    when = NOW - timedelta(days=20)
+    brokered = _commit(helper_vault, "fix: brokered edit", {"SKILL.md": "b\n"}, date=when)
+    _broker_row(helper_vault, brokered, "dreaming-nightly")
+    windowed = _commit(helper_vault, "fix: windowed edit", {"DREAMING.md": "w\n"}, date=when)
+    store_row = {"schema": 1, "sha": windowed, "mode": "dreaming-nightly", "by": "run", "ts": NOW.isoformat()}
+    from scout.changes.store import _append
+
+    _append(run_commits.path(), store_row)
+    scan(helper_vault, since=None)
+    for sha in (brokered, windowed):
+        ts = when + timedelta(days=2)
+        append_signal(
+            Signal(
+                ts=ts, kind="dm-reply", surface="slack-dm", ref=f"{ts.timestamp()}/{sha[:4]}", sentiment="negative",
+                change=f"chg-{sha[:12]}",
+            ),
+            vault=helper_vault,
+            env={},
+        )  # fmt: skip
+    write_settings(Settings(auto_rollback="targeted", calibrated_on=NOW.date()), owner_env)
+
+    doc = due(helper_vault, owner_env, now=NOW, tz=TZ)
+
+    assert [(r["id"], r["reason"]) for r in doc["rollbacks"]] == [(f"chg-{brokered[:12]}", "auto-targeted")]
+    assert actions.auto_eligible(brokered) and not actions.auto_eligible(windowed)
+    assert not actions.auto_eligible("0" * 40)
+
+
+# --- run health says when a run was attributed without its broker ----------------------------------------------------
+
+
+def test_health_flags_runs_attributed_without_the_broker(repo: Path) -> None:
+    from scout.health import unbrokered_attribution_findings
+
+    assert unbrokered_attribution_findings(vault=repo, now=NOW) == []
+    sha = _broker_commit_row(repo)
+    assert unbrokered_attribution_findings(vault=repo, now=NOW) == []  # brokered: exact, nothing to say
+    _run(repo, "research", lambda: [_commit(repo, "fix: x", {"SKILL.md": "x\n"})])
+    [finding] = unbrokered_attribution_findings(vault=repo, now=NOW + timedelta(seconds=1))
+    assert (finding.id, finding.severity) == ("changes.unbrokered_attribution", "yellow")
+    assert "1 run in the last 7 days committed without the commit broker" in finding.summary
+    assert sha
+    assert unbrokered_attribution_findings(vault=repo.parent, now=NOW) == []  # another vault's runs
+
+
+def _broker_commit_row(repo: Path) -> str:
+    sha = _git(repo, "rev-parse", "HEAD")
+    _broker_row(repo, sha)
+    return sha
+
+
+def test_malformed_broker_rows_are_skipped() -> None:
+    ts = NOW.isoformat()
+    _write_rows(
+        {"schema": 1, "broker": "profile", "run": "r", "tightened": True, "ts": ts},  # no vault key
+        {"schema": 1, "broker": "end", "id": "x", "run": "r", "exit": 0, "vault_key": "k"},  # no time
+        {"schema": 1, "broker": "begin", "run": "r", "vault_key": "k", "ts": ts},  # no id: can't be matched
+        {"schema": 1, "broker": "end", "id": 7, "run": 7, "exit": 1, "vault_key": "k", "ts": ts},  # failed, no id
+    )
+    ledger = run_commits.read()
+    assert (ledger.commits, ledger.profiles, ledger.gaps) == ({}, (), ())
+
+
+def test_an_unborn_or_missing_vault_snapshots_empty(tmp_path: Path) -> None:
+    extra = run_commits.snapshot_extra(tmp_path)
+    assert (extra["refs"], extra["known"]) == ({}, [])
+    empty = tmp_path / "unborn"
+    empty.mkdir()
+    _git(empty, "init", "-q")
+    extra = run_commits.snapshot_extra(empty)
+    assert (extra["refs"], extra["known"]) == ({}, [])
+    assert run_commits._missing(empty, [], os.environ) == []
+
+
+def test_a_ref_line_git_didnt_give_in_full_is_skipped(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    head = _git(repo, "rev-parse", "HEAD")
+    monkeypatch.setattr(integrity, "_git", lambda *a, **k: f"garbage\n{head} commit   refs/heads/main\n")
+    assert run_commits._all_refs(repo, os.environ) == {"refs/heads/main": (head, head)}

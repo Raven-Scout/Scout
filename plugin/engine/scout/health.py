@@ -876,6 +876,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     findings.extend(sandbox_findings(rows, vault=vault))
     findings.extend(integrity_findings(rows, vault=vault, now=now))
     findings.extend(broker_findings(rows, vault=vault))
+    findings.extend(unbrokered_attribution_findings(vault=vault, now=now))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -1145,6 +1146,34 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
             )
         ]
     return []
+
+
+def unbrokered_attribution_findings(*, vault: Path, now: datetime) -> list[Finding]:
+    """Runs in the last week whose commits the changes map had to work out from git, without the run broker's record
+    (scout.changes.run_commits): best effort, not sound against a run that rewrites the vault's git dir."""
+    from scout.changes import run_commits
+
+    when = run_commits.unbrokered_since(vault, now - INTEGRITY_WINDOW)
+    if not when:
+        return []
+    return [
+        Finding(
+            id="changes.unbrokered_attribution",
+            severity="yellow",
+            since=when[0],
+            summary=(
+                f"{count(len(when), 'run')} in the last {INTEGRITY_WINDOW.days} days committed without the commit "
+                "broker, so the changes map worked out which commits were Scout's from git. A run that can write "
+                "the git dir can hide its own commits there, so those runs' changes may not all be tested, and "
+                "automatic rollback never acts on them."
+            ),
+            fix=(
+                "See `runs.broker_unavailable` (or why the sandbox was off) for why the broker didn't run; "
+                "/scout-update brings an old git-safe-commit.sh up to date."
+            ),
+            source="state",
+        )
+    ]
 
 
 def broker_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:

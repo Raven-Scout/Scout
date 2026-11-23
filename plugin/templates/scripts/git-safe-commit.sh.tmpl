@@ -229,9 +229,22 @@ done
 
 # A pathspec-scoped commit, not a bare `git commit`: the bare form writes the
 # whole index, so anything a peer left staged would ride along.
-git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
+# GIT_REFLOG_ACTION tags this commit's reflog entry with a nonce only this
+# helper knows, so the sha below is the commit git just made, never "whatever
+# HEAD is now": the owner's own commits don't take this mutex.
+NONCE="git-safe-commit-$$-$(date +%s)-$RANDOM$RANDOM"
+GIT_REFLOG_ACTION="$NONCE" git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
   unstage_ours
   die 5 "git commit failed"
 }
 trap - TERM INT  # committed: nothing of ours is left staged to take back
-echo "git-safe-commit: committed $(git rev-parse --short HEAD) (${#COMMIT[@]} path(s))" >&2
+# Newest first; the oldest match is ours (a hook that commits inherits the nonce).
+SHA=""
+while IFS=$'\t' read -r h gs; do
+  case "$gs" in "$NONCE: "* | "$NONCE") SHA="$h" ;; esac
+done < <(git reflog show --format='%H%x09%gs' -n 200 HEAD 2>/dev/null || true)
+echo "git-safe-commit: committed $(git rev-parse --short "${SHA:-HEAD}") (${#COMMIT[@]} path(s))" >&2
+# The last stdout line, for the run broker: it records the commit as the run's
+# (the changes map, scout.changes.run_commits). "unresolved" (no reflog) makes a
+# gap the readers see, never a guess.
+echo "scout-commit ${SHA:-unresolved}"
