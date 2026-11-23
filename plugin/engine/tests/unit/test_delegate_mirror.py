@@ -175,6 +175,31 @@ def test_a_normal_only_mirror_has_no_canary_no_local_only_path_and_a_label_per_f
     assert list(policy["policy"]["delegates"]) == ["grok-personal"]
 
 
+def test_a_lab_experiments_folder_never_reaches_a_normal_only_mirror(vault: Path, tmp_path: Path) -> None:
+    """The shipped policy forces an experiment folder's files private (#761 review item 3), whatever their own
+    frontmatter says: its scripts, outputs and run logs reach no normal-only mirror, while the experiment's note
+    beside it does."""
+    folder = "knowledge-base/lab/drift/experiments/drift-E1-hash"
+    note = f"{folder}.md"
+    (vault / folder).mkdir(parents=True)
+    (vault / note).write_text("---\ntype: lab-experiment\nid: E1\nvisibility: normal\n---\n## Method\nHash.\n", "utf-8")
+    names = ("run.py", "out.csv", "run-1.log", "claims-normal.md", "claims-normal.txt")
+    outputs = {f"{folder}/{name}": f"CANARY-LAB-{i}" for i, name in enumerate(names)}
+    for rel, canary in outputs.items():
+        # The last two label themselves normal, as a script copying private text out could write them.
+        head = "---\nvisibility: normal\n---\n" if "claims-normal" in rel else ""
+        (vault / rel).write_text(f"{head}{canary}\n", "utf-8")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "lab experiment")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert note in files
+    assert not any(f.startswith(f"{folder}/") for f in files)
+    text = "\n".join(_all_blobs(bare).values())
+    assert not any(canary in text for canary in outputs.values())
+
+
 def test_a_delegate_with_private_sees_private_notes_but_never_the_inbox_provenance_trading_or_broken(
     vault: Path, tmp_path: Path
 ) -> None:

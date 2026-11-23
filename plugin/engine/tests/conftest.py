@@ -26,6 +26,27 @@ from _pytest.runner import runtestprotocol
 # starts failing more often stays visible. Remove the marker when the issue is
 # fixed; never add one without an issue.
 
+# ---- SCOUT_TEST_NO_KERNEL: the ubuntu legs' view of the macOS sandbox, on a Mac --------
+#
+# The kernel tests (the lab's and the run sandbox's) are gated on
+# ``scout.sandbox.profile.available()``, which is False off macOS; the gate
+# probe's sandbox tests on ``sys.platform == "darwin"`` and
+# ``gate_probe.SANDBOX_EXEC`` existing. With SCOUT_TEST_NO_KERNEL=1 both say no
+# here too, before any test module is imported, so a Mac runs the suite as the
+# ubuntu coverage leg does: every sandbox-exec test skips, and the code under
+# test sees no sandbox-exec. Read once at import; the per-test SCOUT_* scrub
+# below doesn't undo it. Not covered: tests gated on other macOS facts (a
+# case-insensitive disk, /dev/ttys*, launchd's branch, Homebrew git), which still
+# run on a Mac.
+if os.environ.get("SCOUT_TEST_NO_KERNEL") == "1":
+    from pathlib import Path as _Path
+
+    from scout.agent_runtimes import gate_probe as _gate_probe
+    from scout.sandbox import profile as _sandbox_profile
+
+    _sandbox_profile.available = lambda: False
+    _gate_probe.SANDBOX_EXEC = _Path("/nonexistent/sandbox-exec")
+
 _FLAKY_RERUN_PROPERTY = "quarantined-flaky-rerun"
 # This session's rerun lines. pytest_runtest_logreport gets no config to stash
 # them on, so they're module state, reset per session so an in-process pytest

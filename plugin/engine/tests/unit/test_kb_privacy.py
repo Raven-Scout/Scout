@@ -322,7 +322,8 @@ def test_overlay_visibility_defaults_go_first(tmp_path: Path) -> None:
         )
     )
     assert pol.visibility_defaults[0] == ("knowledge-base/topics/billing/**", "private")
-    assert pol.visibility_defaults[-2:] == privacy.load_policy(None).visibility_defaults
+    engine = privacy.load_policy(None).visibility_defaults
+    assert pol.visibility_defaults[-len(engine) :] == engine
     rollout = classify("knowledge-base/topics/billing/rollout.md", _fm("name: Rollout"), pol)
     assert (rollout.visibility, rollout.visibility_source) == ("private", "path_default")
     shared = classify("knowledge-base/personal/shared/list.md", None, pol)
@@ -629,6 +630,7 @@ def test_engine_default_policy_matches_spec(policy: Policy) -> None:
         ("knowledge-base/personal/**", "private"),
         (".scout-inbox/**", "private"),
     )
+    assert policy.visibility_forced_private == ("knowledge-base/lab/*/experiments/*/**",)
     assert policy.owner_only_surfaces == frozenset(
         {"vault", "app", "telegram_private_chat", "agnes_owner_conversation", "agnes_personal_memory", "vault_sync"}
     )

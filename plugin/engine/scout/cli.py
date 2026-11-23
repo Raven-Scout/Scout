@@ -88,6 +88,15 @@ def _register_action_items() -> None:
 _register_action_items()
 
 
+def _register_lab() -> None:
+    from scout.lab.cli import app as lab_app
+
+    app.add_typer(lab_app, name="lab")
+
+
+_register_lab()
+
+
 def _register_planning() -> None:
     from scout.planning.cli import app as planning_app
 

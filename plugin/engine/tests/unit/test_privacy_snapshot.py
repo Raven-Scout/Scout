@@ -47,6 +47,7 @@ def test_snapshot_policy_reflects_raw_yaml() -> None:
     assert raw["schema_version"] == 1
     assert policy["local_only"] == raw["local_only"]
     assert policy["visibility_defaults"] == raw["visibility_defaults"]
+    assert policy["visibility_forced_private"] == raw["visibility_forced_private"]
     assert policy["shared_files"] == raw["shared_files"]
     assert policy["surfaces"] == {k: sorted(v) for k, v in raw["surfaces"].items()}
 

@@ -40,6 +40,7 @@ SESSION_CONTEXT_MAX_BYTES = 320_000
 PROJECT_KNOWLEDGE_MAX_BYTES = 64_000
 PEOPLE_CONTEXT_MAX_BYTES = 24_000
 RESEARCH_QUEUE_MAX_BYTES = 16_000
+LAB_MAX_BYTES = 16_000
 
 GO_DEEPER_MAX_ENTRIES = 25
 GO_DEEPER_ENTRY_CHARS = 200
@@ -479,6 +480,16 @@ def research_queue(vault: Path, labels: Mapping[str, str], *, full: bool) -> dic
     return {"open": rows, "open_total": len(rows), "counts": dict(sorted(counts.items()))}
 
 
+# ----- lab ------------------------------------------------------------------------
+
+
+def lab_block(vault: Path, labels: Mapping[str, str], *, full: bool) -> dict[str, Any]:
+    """The lab's threads as ``scout.lab.summary.lab_list`` returns them: what a research run plans from."""
+    from scout.lab import summary
+
+    return summary.lab_list(vault, labels, full=full)
+
+
 # ----- budget --------------------------------------------------------------------
 
 
@@ -524,10 +535,24 @@ def _trim_queue(queue: dict[str, Any], limit: int) -> dict[str, Any]:
     return queue
 
 
+def _trim_lab(lab: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Drop closed and rejected threads first, then the thread with the oldest ``last_run``. ``needs_you`` stays."""
+    lab = {**lab, "threads": list(lab.get("threads") or [])}
+    while lab["threads"] and _size(lab) > limit:
+        threads = lab["threads"]
+        done = [i for i, t in enumerate(threads) if t.get("status") in ("closed", "rejected")]
+        # No last_run sorts as the oldest; ties go to the later row.
+        drop = done[-1] if done else min(range(len(threads)), key=lambda i: (str(threads[i].get("last_run") or ""), -i))
+        threads.pop(drop)
+        lab["truncated"] = True
+    return lab
+
+
 _SECTIONS: tuple[tuple[str, int, Callable[[Any, int], Any]], ...] = (
     ("project_knowledge", PROJECT_KNOWLEDGE_MAX_BYTES, _trim_projects),
     ("people_context", PEOPLE_CONTEXT_MAX_BYTES, _trim_people),
     ("research_queue", RESEARCH_QUEUE_MAX_BYTES, _trim_queue),
+    ("lab", LAB_MAX_BYTES, _trim_lab),
 )
 
 
@@ -553,11 +578,13 @@ def fit_budget(data: dict[str, Any], max_bytes: int = SESSION_CONTEXT_MAX_BYTES)
 __all__ = [
     "PEOPLE_CONTEXT_MAX_BYTES",
     "PROJECT_KNOWLEDGE_MAX_BYTES",
+    "LAB_MAX_BYTES",
     "RESEARCH_QUEUE_MAX_BYTES",
     "SESSION_CONTEXT_MAX_BYTES",
     "fit_budget",
     "is_active_project",
     "items_text_for",
+    "lab_block",
     "leave_state",
     "mentioned_people",
     "people_context",

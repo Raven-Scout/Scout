@@ -87,6 +87,9 @@
         "glob": ".scout-inbox/**",
         "visibility": "private"
       }
+    ],
+    "visibility_forced_private": [
+      "knowledge-base/lab/*/experiments/*/**"
     ]
   },
   "schema_version": 1

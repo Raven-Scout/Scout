@@ -70,6 +70,15 @@ class ActionItemAmbiguous(ActionItemError):
     exit_code = 23
 
 
+class LabError(ScoutError):
+    """Lab operation failure: a malformed or hand-edited front page, an
+    unknown thread, question or experiment ID, or an argument the format
+    can't carry. The message names the heading or ID so the owner can fix
+    the file; the lab never rewrites a page it can't parse."""
+
+    exit_code = 2
+
+
 class ExternalProcessError(ScoutError):
     """Subprocess (git, claude, launchctl) failed."""
 
