@@ -1056,7 +1056,8 @@ def test_a_config_that_cant_be_regenerated_is_refused(vault: Path) -> None:  # n
     terms = terms_of([note_from_text("people/sam-lee.md", "---\nname: Sam Lee\n---\n")])
     policy = dataclasses.replace(load_policy(vault), delegates=(DelegateRule(id="d"),))
     source = b"privacy:\n  surfaces: {owner_only: [Sam Lee]}\n"
-    assert not dm._config_regenerates(b"x", source, "d", policy, [], dm.Scanner(terms))
+    for privacy_only in (False, True):
+        assert not dm._config_regenerates(b"x", source, "d", policy, [], dm.Scanner(terms), privacy_only=privacy_only)
 
 
 def test_key_lookups_on_github(github_link: Path) -> None:  # noqa: F811

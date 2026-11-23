@@ -100,7 +100,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.resources import as_file, files
@@ -685,6 +685,45 @@ def _narrowing_overlay(overlay: Any) -> Any:
         surfaces = overlay["surfaces"]
         kept["surfaces"] = {"shared": surfaces.get("shared", [])} if isinstance(surfaces, dict) else surfaces
     return kept
+
+
+def overlay_for_mirror(overlay: Any, keep: Callable[[str], bool]) -> dict[str, Any]:
+    """The ``privacy:`` overlay a delegate mirror's config holds: only keys and fields :func:`policy_from_overlay`
+    reads, each rewritten in its canonical form, so nothing else in the owner's block rides along (#550).
+
+    ``keep(glob)`` says whether a path entry stays (its glob matches a mirrored file). A key with the wrong
+    shape is dropped, as the policy ignores it; an entry the policy keeps fail-closed (a bad visibility, ceiling
+    or scope) is written as the value the policy uses. ``sync_only`` (an upload allowlist no label depends on)
+    and ``delegates`` (the caller writes it) never appear.
+    """
+    if not isinstance(overlay, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("local_only_add", "shared_files_add"):
+        if key in overlay and (globs := _str_list(overlay[key])) is not None:
+            out[key] = [g for g in globs if keep(g)]
+    entries = overlay.get("visibility_defaults")
+    if isinstance(entries, list):
+        out["visibility_defaults"] = [
+            {"glob": e["glob"], "visibility": _parse_visibility(e.get("visibility")) or "private"}
+            for e in entries
+            if isinstance(e, dict) and isinstance(e.get("glob"), str) and keep(e["glob"])
+        ]
+    surfaces = overlay.get("surfaces")
+    if isinstance(surfaces, dict):
+        owner, shared = _str_list(surfaces.get("owner_only", [])), _str_list(surfaces.get("shared", []))
+        if owner is not None and shared is not None:
+            out["surfaces"] = {"owner_only": list(owner), "shared": list(shared)}
+    fed = overlay.get("federation")
+    if isinstance(fed, Mapping):
+        out["federation"] = {"enabled": fed["enabled"] is True} if "enabled" in fed else {}
+    if isinstance(overlay.get("federation_ceilings"), list):
+        rules = (_ceiling_rule(e)[0] for e in overlay["federation_ceilings"])
+        out["federation_ceilings"] = [r.to_json() for r in rules if r is not None and keep(r.glob)]
+    if isinstance(overlay.get("federation_defaults"), list):
+        defaults = (_scope_default(e)[0] for e in overlay["federation_defaults"])
+        out["federation_defaults"] = [d.to_json() for d in defaults if d is not None and keep(d.glob)]
+    return out
 
 
 def policy_from_overlay(overlay: Mapping[str, Any] | None, *, literal_true: frozenset[str] | None = None) -> Policy:
