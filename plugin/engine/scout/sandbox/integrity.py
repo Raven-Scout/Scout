@@ -420,12 +420,13 @@ def broker_record(vault: Path, start: dict, env: Mapping[str, str]) -> BrokerRec
     """
     if env.get("SCOUT_SANDBOX_STATUS") != "enforced":
         return None
-    try:
-        from scout.changes import run_commits  # type: ignore[attr-defined]  # the shared ledger (#768)
-    except ImportError:
+    from scout.changes import run_commits  # the shared ledger; imported here, as it imports this module's helpers
+
+    # broker_was_on: a broker of this vault decided its profile after the snapshot, every one got the tightened
+    # profile, and none left a commit it couldn't name. The session lock serialises a vault's runs.
+    if not run_commits.broker_was_on(vault, start):
         return None
-    found = run_commits.integrity_record(vault, start, env)
-    return found if isinstance(found, BrokerRecord) else None
+    return BrokerRecord(frozenset(sha for sha, c in run_commits.read().commits.items() if c.by == "broker"))
 
 
 def _new_commits(vault: Path, tip: str, start: dict, env: Mapping[str, str]) -> list[str] | None:

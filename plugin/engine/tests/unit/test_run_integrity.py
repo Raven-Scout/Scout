@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from scout.changes import run_commits
 from scout.cli import app
 from scout.kb import hook_paths
 from scout.sandbox import integrity
@@ -528,6 +529,8 @@ def _the_night(vault: Vault) -> tuple[dict, list[str], dict[str, Path]]:
     vault.git("commit", "-qm", "settings")
     trees = {"claude/older": _worktree(vault, "older", "claude/older")}  # there before the run
     snap = vault.snapshot()
+    # What `scoutctl sandbox snapshot` adds for the shared ledger: when the run started.
+    snap["changes"] = run_commits.snapshot_extra(vault.path, vault.env)
     run1 = _commit(vault, vault.path, "notes/dream-1.md", "one\n", "dreaming: notes")
     # 22:32: an owner session commits the settings change in its worktree, then fast-forwards main in the vault.
     trees["claude/owner"] = _worktree(vault, "owner", "claude/owner")
@@ -754,13 +757,99 @@ def test_a_branch_the_main_work_tree_has_checked_out_isnt_rewritten(vault: Vault
 
     assert result.status == "unrestored"
     assert result.held_by == {"refs/heads/main": "main work tree"}
+    # A main work tree on a detached HEAD holds no branch.
+    vault.git("checkout", "-q", "--detach")
+    assert integrity._checked_out_elsewhere(run_wt, integrity._git_env(vault.env)) == {}
+
+
+# -- the broker record, read from the shared ledger (scout.changes.run_commits) ---------------------------------------
+
+
+@pytest.fixture
+def ledger(vault: Vault, monkeypatch: pytest.MonkeyPatch) -> Vault:
+    """The owner store (and so the ledger) under the vault's scratch HOME, where its git and sandbox rules look too."""
+    monkeypatch.setenv("HOME", str(vault.home))
+    return vault
+
+
+def _broker_run(vault: Vault, shas: list[str], *, tightened: bool = True, gap: bool = False) -> None:
+    """What a run's broker writes to the ledger, outside the sandbox: its profile, then a begin/end per commit."""
+    run = "scout-broker.abc123"
+    run_commits.mark_broker_profile(vault.path, run, tightened=tightened)
+    for sha in shas:
+        rid = run_commits.broker_begin(vault.path, run, "dreaming")
+        run_commits.broker_end(vault.path, rid, run, "dreaming", exit_code=0, sha=sha)
+    if gap:
+        run_commits.broker_begin(vault.path, run, "dreaming")  # stopped before it could write the end row
+
+
+def test_the_night_through_the_ledger_blames_nobody(ledger: Vault) -> None:
+    snap, runs, _ = _the_night(ledger)
+    _broker_run(ledger, runs)
+    before = _tips(ledger)
+
+    result = ledger.verify(snap)  # the record comes from the ledger, as `scoutctl sandbox verify` reads it
+
+    assert (result.status, result.exit_code) == ("clean", 0)
+    assert _tips(ledger) == before
+    assert "refs/heads/main" in result.foreign and result.changed == {}
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["profile not tightened", "a gap", "no broker run", "sandbox not enforced", "no start time"],
+)
+def test_a_ledger_that_doesnt_cover_the_run_leaves_the_check_conservative(ledger: Vault, case: str) -> None:
+    snap, runs, _ = _the_night(ledger)
+    if case != "no broker run":
+        _broker_run(ledger, runs, tightened=case != "profile not tightened", gap=case == "a gap")
+    if case == "sandbox not enforced":
+        ledger.env["SCOUT_SANDBOX_STATUS"] = "unavailable"
+    if case == "no start time":
+        del snap["changes"]
+
+    assert integrity.broker_record(ledger.path, snap, ledger.env) is None
+    result = ledger.verify(snap)
+    assert set(result.restored) == {"refs/heads/main"}  # blamed, as before
+    assert result.foreign == {}
+
+
+def test_a_broker_run_from_before_the_snapshot_doesnt_count(ledger: Vault) -> None:
+    _enforced(ledger)
+    _broker_run(ledger, [])  # an earlier run's broker
+    snap = ledger.snapshot()
+    snap["changes"] = run_commits.snapshot_extra(ledger.path, ledger.env)
+    assert integrity.broker_record(ledger.path, snap, ledger.env) is None
+
+
+def test_the_ledger_record_names_only_broker_commits(ledger: Vault) -> None:
+    _enforced(ledger)
+    snap = ledger.snapshot()
+    snap["changes"] = run_commits.snapshot_extra(ledger.path, ledger.env)
+    run = _commit(ledger, ledger.path, RUNNER_SCRIPT, "#!/bin/sh\necho run\n", "dreaming: tidy")
+    _broker_run(ledger, [run])
+
+    record = integrity.broker_record(ledger.path, snap, ledger.env)
+
+    assert record == integrity.BrokerRecord(frozenset({run}))
+    assert ledger.verify(snap).status == "restored"
+
+
+def test_a_sandboxed_run_cant_write_the_ledger(ledger: Vault) -> None:
+    # The broker record is trusted because a run can't write it: the ledger sits in a protected engine root, denied
+    # by the run's 1c profile and so by the tightened one built on it.
+    rules = sbx.build_rules(ledger.path, ledger.env)
+    tightened = rules + sbx.broker_rules(ledger.path, ledger.path.parent / "b", ledger.env)
+    target = run_commits.path()
+    assert target.is_relative_to(ledger.home)
+    for r in (rules, tightened):
+        assert sbx.decide(r, str(target)) == "deny"
+        assert sbx.decide(r, str(target.parent / "other.jsonl")) == "deny"
 
 
 def test_the_broker_record_is_trusted_only_under_an_enforced_sandbox(vault: Vault) -> None:
     snap = vault.snapshot()
     assert integrity.broker_record(vault.path, snap, vault.env) is None
-    _enforced(vault)
-    assert integrity.broker_record(vault.path, snap, vault.env) is None  # no ledger reader in this build
 
 
 def test_the_git_env_drops_what_would_point_git_elsewhere() -> None:
