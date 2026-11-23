@@ -49,7 +49,7 @@ A "✅ transcript captured" / "notes available for [meeting]" line is **not** ex
 **Pre-commit self-check:** before committing, search the run's notes/KB/action-items for transcript breadcrumb rows that carry no extracted substance:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb search -i 'transcript (captured|available)|notes (captured|available)' \
+cd {{SCOUT_DIR}} && scripts/scoutctl kb search --all -i 'transcript (captured|available)|notes (captured|available)' \
   --glob "action-items/$(basename "$DAILY_FILE")" --glob 'knowledge-base/**'
 ```
 

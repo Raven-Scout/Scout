@@ -10,6 +10,7 @@ in v1, and nothing under the vault is listed or opened for it.
   (ruling R13, below).
 - :func:`search` runs ``rg`` over the visible paths, in batches of
   :data:`SEARCH_BATCH`, never over the tree; a Python scan when ``rg`` is absent.
+  ``kb search`` prints a bounded part of it (below).
 - :func:`read_file`, :func:`resolve`, and the graph commands over the engine's
   labelled :class:`~scout.kb.ontology.KnowledgeGraph`. The parser-compat ones
   (``entity``, ``name-lookup``, ``export``, ``stats``, ``validate``, and
@@ -49,6 +50,22 @@ explicitly: a glob that starts with a literal character (``.scout-logs/**``,
 (``**/*.md``) never pulls plumbing in. ``kb read`` and ``kb classify`` still
 reach any vault file. The overlay's ``local_only_add`` paths (``trading/**``)
 are vault content: listed and searched as usual, labelled ``local_only``.
+
+**What ``kb search`` prints.** A search with no ``--glob`` covers every listed
+file, not only ``knowledge-base/``: the phases rely on that (finding every link
+to a moved folder, wherever it is). So the scope stays and the output is
+bounded instead: at most :data:`SEARCH_MAX_PER_FILE` matching lines per file
+and :data:`SEARCH_MAX_MATCHES` in all, each cut to :data:`SEARCH_MAX_LINE`
+characters around its match. When the total cap bites, every top-level folder
+with matches keeps a share (taken in turn: a folder's files in turn, a file's
+lines in order), so a large ``action-items/`` can't crowd the knowledge base
+out. Closing lines in parentheses give the real totals, what was left out per
+top-level folder, and how to narrow or lift the caps (``--max-matches``,
+``--max-per-file``, ``--max-line``, 0 = no limit; ``--all`` lifts the first
+two, for a caller that must act on every match). ``--json`` is for programs:
+it prints every match whole unless a ``--max-*`` option is given, and then the
+output stays a list of matches and the closing lines go to stderr.
+:func:`search` itself returns every match.
 """
 
 from __future__ import annotations
@@ -65,6 +82,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -106,6 +124,12 @@ INDEX_FILENAME = "privacy-index.json"
 # 3: entries may carry the graph's parsed frontmatter ("fm")
 INDEX_VERSION = 5
 SEARCH_BATCH = 500
+# What one `kb search` prints unless the caller asks for more (0 lifts a cap): a
+# reader with a context window gets a result it can hold, and is told the rest.
+SEARCH_MAX_MATCHES = 200
+SEARCH_MAX_PER_FILE = 20
+SEARCH_MAX_LINE = 400
+_NOTICE_FOLDERS = 8
 ENGINE_SCHEMA = Path(__file__).with_name("schema.yaml")
 _RACY_WINDOW_NS = 2_000_000_000
 _INDEX_PREFIXES = (f".scout-cache/{INDEX_FILENAME}", f".scout-cache/.{INDEX_FILENAME}.")
@@ -850,7 +874,8 @@ class Output:
     ``labels`` are the labels of the paths returned (the audit log counts them).
     ``surface`` and ``blocked`` are a ``check-outbound``/``check-query`` call's
     surface and verdict, for the audit log (a blocked check is logged for every
-    reader, ``owner`` included).
+    reader, ``owner`` included). ``notice`` is what the result left out: already
+    the last of ``lines``; ``kb search --json`` writes it to stderr.
     """
 
     data: Any
@@ -861,6 +886,7 @@ class Output:
     raw: str | None = None
     surface: str | None = None
     blocked: bool = False
+    notice: list[str] = field(default_factory=list)
 
 
 def _labels_json(labels: Sequence[Label]) -> list[Mapping[str, Any]]:
@@ -876,17 +902,108 @@ def cmd_files(vault: Path, reader: str, globs: Sequence[str]) -> Output:
     )
 
 
-def cmd_search(vault: Path, reader: str, pattern: str, globs: Sequence[str], fixed: bool, ignore_case: bool) -> Output:
+def _top_folder(path: str) -> str:
+    head, sep, _ = path.partition("/")
+    return head + sep
+
+
+def _bounded(hits: Sequence[Match], max_matches: int, max_per_file: int) -> list[Match]:
+    """The matches to print: ``max_per_file`` a file, ``max_matches`` in all (0 = no limit), sorted.
+
+    Over the total, top-level folders take turns, a folder's files take turns,
+    and a file gives its lines in order.
+    """
+    nth: Counter[str] = Counter()
+    by_folder: dict[str, list[tuple[int, Match]]] = {}
+    for m in sorted(hits):
+        if not max_per_file or nth[m.path] < max_per_file:
+            by_folder.setdefault(_top_folder(m.path), []).append((nth[m.path], m))
+        nth[m.path] += 1
+    turns: list[tuple[int, str, Match]] = []
+    for folder, rows in by_folder.items():
+        turns += [(turn, folder, m) for turn, (_, m) in enumerate(sorted(rows))]
+    if max_matches and len(turns) > max_matches:
+        turns = sorted(turns)[:max_matches]
+    return sorted(m for _, _, m in turns)
+
+
+def _clip(text: str, regex: re.Pattern[str] | None, width: int) -> str:
+    """``text`` cut to ``width`` characters around its match (0 = whole), marked where it was cut."""
+    if not width or len(text) <= width:
+        return text
+    hit = regex.search(text) if regex else None
+    start = max(0, min(hit.start() - width // 4, len(text) - width)) if hit else 0
+    end = start + width
+    cut = f"{'… ' if start else ''}{text[start:end]}{' …' if end < len(text) else ''}"
+    return f"{cut} [line of {len(text):,} characters]"
+
+
+def _search_notice(
+    hits: Sequence[Match], shown: Sequence[Match], clipped: int, max_matches: int, max_per_file: int, max_line: int
+) -> list[str]:
+    """The closing lines of a search that left something out; none when it didn't."""
+    notice: list[str] = []
+    if len(shown) < len(hits):
+        caps = [f"at most {max_per_file} per file"] if max_per_file else []
+        caps += [f"{max_matches} in all"] if max_matches else []
+        files = len({m.path for m in hits})
+        notice.append(
+            f"(Showing {len(shown):,} of {len(hits):,} matching lines in {count(files, 'file')}: {' and '.join(caps)}.)"
+        )
+        left = Counter(_top_folder(m.path) for m in hits)
+        left.subtract(_top_folder(m.path) for m in shown)
+        rows = [(folder, n) for folder, n in sorted(left.items(), key=lambda kv: (-kv[1], kv[0])) if n]
+        more = len(rows) - _NOTICE_FOLDERS
+        notice.append(
+            "(Left out, by top-level folder: "
+            + ", ".join(f"{folder} {n:,}" for folder, n in rows[:_NOTICE_FOLDERS])
+            + (f", and {count(more, 'other')}" if more > 0 else "")
+            + ".)"
+        )
+        notice.append(
+            "(To see them: narrow with --glob '<folder>/**' or a more specific pattern, "
+            "raise --max-matches / --max-per-file, or pass --all for every match.)"
+        )
+    if clipped:
+        notice.append(
+            f"({count(clipped, 'long line')} cut to {max_line} characters around the match; "
+            "--max-line 0 prints whole lines.)"
+        )
+    return notice
+
+
+def cmd_search(
+    vault: Path,
+    reader: str,
+    pattern: str,
+    globs: Sequence[str],
+    fixed: bool,
+    ignore_case: bool,
+    max_matches: int = SEARCH_MAX_MATCHES,
+    max_per_file: int = SEARCH_MAX_PER_FILE,
+    max_line: int = SEARCH_MAX_LINE,
+) -> Output:
+    if min(max_matches, max_per_file, max_line) < 0:
+        raise UsageError("--max-matches, --max-per-file and --max-line take 0 (no limit) or more")
     hits = search(vault, reader, pattern, globs, fixed=fixed, ignore_case=ignore_case)
-    by_path = {m.path: m.label for m in hits}
+    shown = _bounded(hits, max_matches, max_per_file)
+    try:  # only to centre a cut line on its match: rg's syntax is wider than Python's
+        regex = re.compile(re.escape(pattern) if fixed else pattern, re.IGNORECASE if ignore_case else 0)
+    except re.error:
+        regex = None
+    texts = [_clip(m.text, regex, max_line) for m in shown]
+    clipped = sum(text is not m.text for text, m in zip(texts, shown, strict=True))
+    notice = _search_notice(hits, shown, clipped, max_matches, max_per_file, max_line)
+    by_path = {m.path: m.label for m in shown}
     return Output(
         data=[
-            {"path": m.path, "line": m.line, "text": m.text, "label": m.label.to_json()}
+            {"path": m.path, "line": m.line, "text": text, "label": m.label.to_json()}
             | ({"from_agent": m.label.delegate_author or True} if from_agent(m.label) else {})
-            for m in hits
+            for m, text in zip(shown, texts, strict=True)
         ],
-        lines=[f"{_mark(m.label)}{m.path}:{m.line}:{m.text}" for m in hits],
+        lines=[f"{_mark(m.label)}{m.path}:{m.line}:{text}" for m, text in zip(shown, texts, strict=True)] + notice,
         labels=_labels_json(list(by_path.values())),
+        notice=notice,
     )
 
 

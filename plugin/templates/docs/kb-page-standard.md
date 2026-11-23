@@ -186,7 +186,7 @@ shrink), and rewrite it once the rest fits.
    10 KB each) and the decisions into the decisions note. An old `decision-log.md` merges into it.
    Meetings, docs, PRs and decision threads go in source notes. Sort every other loose file in the
    folder into `documents/`, `research/` or `archive/` (or out of the folder) with `mv`: an old
-   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --fixed
+   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --all --fixed
    'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
    commit with `scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only
    where it is. Don't drop facts. Superseded facts go into a topic's
