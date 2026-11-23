@@ -10,6 +10,59 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.22] - 2026-11-22
+
+### Added
+- **The changes map, part 2: verdicts and the phases that act on them.** Each change Scout makes to itself from a scheduled run now gets a before/after test: the 14 days before the change against a review window (14 days by default). The verdict is one of helped, no clear effect, hurt, can't tell, or rolled back. `scoutctl changes --json` works verdicts out again on every read and checks each change row against the vault's git history, so a run can't write its own verdicts or invent a change. A commit counts as a rollback only when git shows it really put the named change's lines back and changed no other part of Scout; naming a change in a trailer is not enough, and undoing a rollback counts as an ordinary change.
+  - Noise now also counts a direct message to the owner with no reply or reaction within 48 hours, and a 🔴 action item left untouched for 3 days (the daily materializer records it once).
+  - Owner-only commands: `scoutctl changes approve <id> --diff-hash <hash>` and `reject <id>` for a governance change, `undo <id>` and `wrong <id>` for a change or its verdict, `auto-rollback off` (the automatic modes are refused, and ignored if a settings file names one, for now), and `calibrated [--reset]`. Scheduled runs are refused. An approval holds only for the exact pending file the owner saw, its diff and its frontmatter, and only once: if the file is edited afterwards, or filed again after it was applied, it waits for a new decision.
+  - Each dreaming run checks `scoutctl changes due --json` and carries out the owner's undos and approved or rejected governance changes. An undo takes back only the lines the change made in its own files, so later edits to other parts of the same file stay and don't block it, and it writes all of its files or none of them. Governance edits now wait in `governance-pending/` for the owner's OK; ordinary proposals still go through `dreaming-proposals.md` as before.
+- **Immediate responses to your Telegram messages** (opt-in; `engine/scout/telegram_inbound/`, `engine/scout/cli.py`). The trigger engine polls your bot for new messages, records each one in a ledger, and starts a short respond run (`RESPOND.md`, `run-respond.sh`) that replies in the chat, instead of waiting for the next scheduled run.
+  - **Turn it on.** Run `/scout-update` first: it installs `RESPOND.md` and `run-respond.sh`. Then create `<vault>/.scout-state/triggers.yaml` with exactly:
+    ```yaml
+    schema_version: 1
+    triggers:
+      - id: telegram-respond
+        source: telegram
+        match: { type: message }
+        action: { kind: run_skill, skill: scout-respond, runner: run-respond.sh }
+        daily_fire_cap: 20
+        cooldown_seconds: 600
+    ```
+  - **Turn it off** by deleting that file. Scout goes back to answering only at scheduled runs.
+  - **`scoutctl telegram find-chat-id`** lists the private chats that have messaged your bot, without confirming any update. Use it instead of a raw `getUpdates` call, which comes back empty once the trigger has confirmed the updates.
+  - **`scoutctl telegram inbound-status [--json]`** shows the ledger counts, the last poll time and the last poll error. `/scout-status` shows them when the trigger is on.
+  - **`scoutctl telegram pending [--json] [--ids 5,6] [--exclude-in-flight]`** lists the messages still waiting for an answer, read-only. Runs read your messages only through it, never from a file a run can write.
+  - **Safety net.** A briefing or consolidation answers any message still waiting, whichever channels carry its wrap. A message whose respond run never starts (say, `triggers.yaml` was added before `/scout-update`) is retried, and after 3 tries the bot tells you and leaves it for that safety net.
+  - **Known limits.**
+    - `scoutctl trigger test` on the Telegram trigger is not a dry run: it consumes and acknowledges real messages.
+    - Private chats only, and text and captions only. Photos, voice notes and other attachments are ignored.
+
+### Fixed
+- **One denied tool call no longer ends a run, scheduled or eval: the rule is now in the runner prompt**
+  (`templates/run-scout.sh.tmpl`, `run-dreaming.sh.tmpl`, `run-research.sh.tmpl`). The v0.18.21 KB gate's
+  session stopped after 19 s because one compound Bash (a path outside the vault) was denied, which it
+  read as "Bash is denied in this session". SKILL.md's Step 0 already said a denial covers one call, but
+  it sits past what one Read of SKILL.md returns, so the session never saw it. Every runner prompt now
+  says it, before the first tool call, including "no command substitution, variables or loops" (the
+  v0.18.19 cause). Vaults get it with `/scout-update`.
+- **The KB-writing gate reports a run that stopped after a refused call as `void`, not `fail`**
+  (`engine/tests/eval/harness/kb_gate.py`). A session that had at least one call refused (by Claude
+  Code's permissions or a Scout gate hook) and then ended with no commit, no file written and the
+  project's pages unchanged tested no KB writing: `eval.sh kb-gate` now says `"verdict": "void"`
+  (exit 3, rerun it), with a `void` block listing each refused call, what refused it and its command;
+  the checks are still reported. A run that did nothing with no refusal stays a `fail`, so a change
+  that makes runs skip KB writing still blocks the release. The transcript metrics mark each call
+  Claude Code refused (`ToolCall.denied`).
+- **Engine and CLI text counts in real plurals everywhere** ("1 proposal waits", "2 copies were never
+  taken", "1 commit on top of your last push"), not "proposal(s) wait" or "cop(ies)". The last ~100
+  "(s)"-style plurals across `scoutctl` output, delegate inbox and mirror notes, repo sync warnings, KB
+  read, lint, share and structure lines now go through `engine/scout/plural.py`, with the verb agreeing for
+  0, 1 and many (new helpers `agree` and `are`). `engine/tests/unit/test_plural_wording.py` now scans every
+  module under `engine/scout/`, not three, with an explicit allow-list for the few "(s)" that count nothing
+  (`http(s)`, a docstring quoting code). The "Resolve with Claude" prompt still reads the protected-file
+  line from run logs written before this change.
+
 ## [0.18.21] - 2026-11-21
 
 ### Added
