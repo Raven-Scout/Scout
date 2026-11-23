@@ -25,7 +25,7 @@ from scout import delegate_mirror as dm
 from scout import repo_sync as rs
 from scout.cli import app, delegate_write_refusal
 from scout.kb.outbound import PrivateTerms, clear_cache, find_mentions, note_from_text, terms_of
-from scout.kb.privacy import load_frontmatter_yaml, load_policy
+from scout.kb.privacy import load_frontmatter_yaml, load_policy, policy_from_config_text
 from scout.scripts import privacy_migrate
 
 from . import office_fixtures as of
@@ -953,7 +953,28 @@ def test_config_keys_that_name_a_hidden_note_are_dropped_but_a_broken_privacy_bl
     with pytest.raises(rs.RepoSyncError) as e:
         dm.mirror_config("privacy:\n  surfaces: {owner_only: [Sam Lee]}\n", "d", False, [], scan)
     assert e.value.code == "config_names_hidden"
-    assert dm._scoped(["a/**", {"glob": "b/**"}, 3, {"x": 1}], ["a/1.md"]) == ["a/**"]
+    two = "privacy:\n  local_only_add: [a/**, b/**]\n"
+    scoped = yaml.safe_load(dm.mirror_config(two, "d", False, ["a/1.md"], scan))
+    assert scoped["privacy"]["local_only_add"] == ["a/**"]
+
+
+def test_the_mirror_config_drops_unknown_privacy_keys_and_fields(vault: Path) -> None:
+    """Only what the policy reads goes, at every level: a note or an address beside a setting stays home."""
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+    text = (
+        "privacy:\n"
+        "  federation: {enabled: false, note: token-ABC123 ops@example.com}\n"
+        "  surfaces: {owner_only: [x], shared: [], comment: ops@example.com}\n"
+        "  visibility_defaults: [{glob: a/**, visibility: private, why: token-ABC123}]\n"
+        "  sync_only: [a/**]\n"
+        "  notes: token-ABC123\n"
+    )
+    for privacy_only in (False, True):
+        out = dm.mirror_config(text, "d", False, ["a/1.md"], scan, privacy_only=privacy_only)
+        assert b"token" not in out and b"example.com" not in out, out
+        block = yaml.safe_load(out)["privacy"]
+        assert block["federation"] == {"enabled": False} and "sync_only" not in block and "notes" not in block
+        assert block["visibility_defaults"] == [{"glob": "a/**", "visibility": "private"}]
 
 
 def _tampered(vault: Path, delegate: str, swap: dict[str, bytes]) -> tuple[str, str]:
@@ -1489,8 +1510,9 @@ def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Pa
         f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
         for f in files
     ), files
-    # The allowlist lists the config, so the mirror's keeps its other keys.
-    assert yaml.safe_load(_show(bare, "scout-config.yaml"))["user"] == {"name": "Alex"}
+    # The allowlist lists the config, so the mirror's keeps its other keys, but never the allowlist itself.
+    mirrored = yaml.safe_load(_show(bare, "scout-config.yaml"))
+    assert mirrored["user"] == {"name": "Alex"} and "sync_only" not in mirrored["privacy"]
 
 
 def _sync_only_kb(vault: Path) -> None:
@@ -1518,6 +1540,7 @@ def test_sync_only_without_the_config_mirrors_its_privacy_block_alone(vault: Pat
     assert set(mirrored) == {"privacy"}, mirrored
     assert mirrored["privacy"]["delegates"] == {"grok-personal": {}}
     assert "Alex" not in text and "user" not in mirrored
+    assert "sync_only" not in mirrored["privacy"]  # the allowlist is for uploads; no label depends on it
     # A later sync checks the mirror again (check_tree) and passes.
     _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
     assert not dm.sync(vault, "grok-personal").unchanged
@@ -1539,6 +1562,38 @@ def test_check_tree_refuses_a_full_config_where_sync_only_keeps_it_home(vault: P
     with pytest.raises(rs.RepoSyncError) as e:
         dm.check_tree(vault, commit, "grok-personal", head)
     assert e.value.code == "delegate_mirror_unsafe"
+
+
+def _with_heads_config(vault: Path, delegate: str) -> tuple[str, str]:
+    """A mirror commit of HEAD for ``delegate`` holding HEAD's own config blob, its policy file made to match."""
+    head = rs._head(vault)
+    raw = (vault / "scout-config.yaml").read_bytes()
+    theirs = policy_from_config_text(raw.decode("utf-8"))
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, delegate, blobs)[0]
+        the_plan.files = [
+            dm.MirrorFile(f.path, f.mode, raw, "") if f.path == "scout-config.yaml" else f for f in the_plan.files
+        ]
+        the_plan.labels = [
+            dm._classify(f.path, dm._note_head(f.path, f.data if f.data is not None else blobs.read(f.sha)), theirs)
+            for f in the_plan.files
+        ]
+    finally:
+        blobs.close()
+    the_plan.mirror_policy = theirs
+    return git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip(), head
+
+
+def test_check_tree_refuses_heads_own_config_unchanged(vault: Path) -> None:
+    """The config is always regenerated: HEAD's blob as it is (every delegate, every glob) never passes."""
+    for allowlist in (False, True):
+        if allowlist:
+            _sync_only_kb(vault)
+        commit, head = _with_heads_config(vault, "grok-personal")
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", allowlist
 
 
 def test_a_hidden_note_named_scout_keeps_the_config_in_the_mirror(vault: Path, tmp_path: Path) -> None:

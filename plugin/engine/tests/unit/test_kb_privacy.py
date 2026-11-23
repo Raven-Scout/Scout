@@ -873,3 +873,59 @@ def test_label_file_matches_classify(tmp_path: Path, policy: Policy) -> None:
     assert privacy.label_file(tmp_path, "knowledge-base/personal/gone.md", policy).visibility_source == "path_default"
     (tmp_path / "x.md").mkdir()
     assert privacy.label_file(tmp_path, "x.md", policy).warnings == ("file-unreadable",)
+
+
+# ----- overlay_for_mirror (#550: a delegate mirror's privacy block) ----------------------------
+
+
+_MESSY_OVERLAY = {
+    "local_only_add": ["a/**", "elsewhere/**"],
+    "shared_files_add": ["a/shared/**", 3],  # a non-string entry: the policy ignores the whole list
+    "visibility_defaults": [
+        {"glob": "a/p/**", "visibility": "private", "note": "token-ABC123"},
+        {"glob": "a/n/**", "visibility": "loud"},  # kept fail-closed as private
+        {"visibility": "private"},
+        "a/x/**",
+    ],
+    "surfaces": {"owner_only": ["slack"], "shared": ["mail"], "comment": "ops@example.com"},
+    "federation": {"enabled": "yes", "note": "token-ABC123 ops@example.com"},  # not a bool: false
+    "federation_ceilings": [{"glob": "a/**", "ceiling": "huge", "kinds": "person", "why": "secret"}],
+    "federation_defaults": [{"glob": "a/**", "scope": ["group:abc"], "owner": "ops@example.com"}, {"x": 1}],
+    "sync_only": ["a/**"],
+    "delegates": {"other": {"include_private": True}},
+    "shared_edits": "refuse",
+    "notes": "token-ABC123",
+}
+
+
+def test_overlay_for_mirror_keeps_only_what_the_policy_reads_in_canonical_form() -> None:
+    out = privacy.overlay_for_mirror(_MESSY_OVERLAY, lambda g: g.startswith("a/"))
+    assert out == {
+        "local_only_add": ["a/**"],
+        "visibility_defaults": [
+            {"glob": "a/p/**", "visibility": "private"},
+            {"glob": "a/n/**", "visibility": "private"},
+        ],
+        "surfaces": {"owner_only": ["slack"], "shared": ["mail"]},
+        "federation": {"enabled": False},
+        "federation_ceilings": [{"glob": "a/**", "ceiling": "none"}],
+        "federation_defaults": [{"glob": "a/**", "scope": ["group:abc"]}],
+    }
+    assert "token" not in yaml.safe_dump(out) and "example.com" not in yaml.safe_dump(out)
+    assert privacy.overlay_for_mirror("not a mapping", lambda g: True) == {}
+    assert privacy.overlay_for_mirror({"surfaces": {"owner_only": [1]}, "federation": {}}, lambda g: True) == {
+        "federation": {}
+    }
+
+
+def test_overlay_for_mirror_builds_the_same_policy_bar_sync_only_and_delegates() -> None:
+    def shape(p: Policy) -> dict[str, object]:
+        out = p.to_json()
+        for key in ("sync_only", "delegates", "warnings"):
+            out.pop(key, None)
+        return out
+
+    for overlay in (_MESSY_OVERLAY, {"federation": {"enabled": True}}, {}):
+        mirrored = privacy.overlay_for_mirror(overlay, lambda g: True)
+        assert shape(privacy.policy_from_overlay(mirrored)) == shape(privacy.policy_from_overlay(overlay))
+        assert privacy.policy_from_overlay(mirrored).sync_only is None

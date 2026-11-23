@@ -57,8 +57,11 @@ case-folded.
   preview's notes (``left_out_files`` in ``--json``); the mirror itself holds
   only counts.
 - ``scout-config.yaml`` is rewritten (:func:`mirror_config`): ``privacy``
-  keeps only known keys, and of their path entries only those that match a
-  mirrored file, so no local-only or hidden folder is named; ``delegates``
+  keeps only the keys and fields the policy reads, each in its canonical form
+  (:func:`scout.kb.privacy.overlay_for_mirror`), and of their path entries
+  only those that match a mirrored file, so no local-only or hidden folder is
+  named and nothing else in the block rides along. ``sync_only`` never goes:
+  it is an upload allowlist no label depends on. ``delegates``
   lists only this delegate; any other top-level key that names a hidden note
   is dropped. It is the one file ``privacy.sync_only`` can't keep home, since
   the clone needs it to show the delegate anything (as ``repo_sync``'s policy
@@ -176,6 +179,7 @@ from scout.kb.privacy import (
     load_policy,
     load_yaml,
     note_facts,
+    overlay_for_mirror,
     policy_from_config_text,
     visible_to,
 )
@@ -265,17 +269,6 @@ def _agent_config(rel: str) -> bool:
 
 ENGINE_INSTALL = (
     'uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"'
-)
-# The privacy keys a mirror's config keeps (overlay keys; see scout.kb.privacy.load_policy).
-PRIVACY_KEYS = (
-    "local_only_add",
-    "visibility_defaults",
-    "shared_files_add",
-    "surfaces",
-    "federation",
-    "federation_ceilings",
-    "federation_defaults",
-    "sync_only",
 )
 
 _GITHUB = re.compile(
@@ -1061,26 +1054,6 @@ def _same_label(a: Label, b: Label) -> bool:
     return key(a) == key(b)
 
 
-def _scoped(value: Any, mirrored: Sequence[str]) -> Any:
-    """A privacy list without the entries whose glob matches no mirrored file; other values as they are."""
-    if not isinstance(value, list):
-        return value
-
-    def glob_of(entry: Any) -> str | None:
-        if isinstance(entry, str):
-            return entry
-        if isinstance(entry, dict) and isinstance(entry.get("glob"), str):
-            return str(entry["glob"])
-        return None
-
-    out = []
-    for entry in value:
-        g = glob_of(entry)
-        if g is not None and any(glob_match(g, rel) for rel in mirrored):
-            out.append(entry)
-    return out
-
-
 def mirror_config(
     text: str,
     delegate: str,
@@ -1099,10 +1072,7 @@ def mirror_config(
         raise RepoSyncError("privacy_overlay_unreadable", f"refused: {paths.VAULT_MARKER} can't be read")
     raw = data.get("privacy")
     source: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    privacy: dict[str, Any] = {}
-    for key in PRIVACY_KEYS:
-        if key in source:
-            privacy[key] = _scoped(source[key], mirrored)
+    privacy = overlay_for_mirror(source, lambda g: any(glob_match(g, rel) for rel in mirrored))
     privacy["delegates"] = {delegate: {"include_private": True} if include_private else {}}
     out: dict[str, Any] = {}
     for key, value in data.items():
@@ -1815,7 +1785,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
     own ``scout-config.yaml``. Every path must be one ``HEAD`` shows the
     delegate and must name no hidden file; every file must be HEAD's blob at
     that path, or (redacted) that blob with lines removed, or for the config
-    nothing HEAD's config doesn't hold, so no file can carry another file's
+    exactly :func:`mirror_config` of HEAD's (always regenerated, so HEAD's own
+    config, unchanged, is refused too), so no file can carry another file's
     content; every file must be visible under both
     policies with the same label; every text file, the config included, must
     name no hidden file; a file that isn't text must pass :func:`binary_verdict`
@@ -1870,19 +1841,24 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             if e.mode != source.mode:
                 bad += 1
                 continue
-            if e.sha != source.sha:  # a changed blob must come from HEAD's at this path
+            if e.path == paths.VAULT_MARKER:  # always regenerated, so HEAD's own config, unchanged, is refused too
+                if not _config_regenerates(
+                    data,
+                    blobs.read(source.sha),
+                    delegate,
+                    seen.policy,
+                    tree_paths,
+                    scan,
+                    privacy_only=_privacy_only(seen.rules),
+                ):
+                    bad += 1
+                    continue
+            elif e.sha != source.sha:  # a changed blob must come from HEAD's at this path
                 if e.mode == SYMLINK_MODE:
                     bad += 1
                     continue
                 at_source = blobs.read(source.sha)
-                derived = (
-                    _config_regenerates(
-                        data, at_source, delegate, seen.policy, tree_paths, scan, privacy_only=_privacy_only(seen.rules)
-                    )
-                    if e.path == paths.VAULT_MARKER
-                    else _content(e.path, at_source)[0] == "text" and _derives(data, at_source)
-                )
-                if not derived:
+                if not (_content(e.path, at_source)[0] == "text" and _derives(data, at_source)):
                     bad += 1
                     continue
             if e.mode == SYMLINK_MODE:
