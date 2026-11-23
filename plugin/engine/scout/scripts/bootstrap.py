@@ -42,11 +42,11 @@ from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
-    WRAP_CHANNELS,
     parse_phase_file,
     parse_wrap_channels,
     render_template,
     select_sections,
+    wrap_channels_problem,
 )
 from scout.scripts.three_way_merge import three_way_merge
 from scout.scripts.vault_drift import VaultEdit
@@ -808,12 +808,9 @@ def config_from_vault(
         raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
     enabled = set(connectors.get("enabled") or [])
     wrap_channels = parse_wrap_channels(_submapping("notify").get("wrap_channels"))
-    if wrap_channels is not None and not wrap_channels & normalize_connector_keys(enabled):
-        print(
-            f"warning: scout-config.yaml: notify.wrap_channels ({', '.join(sorted(wrap_channels))}) "
-            f"names no enabled connector among {', '.join(WRAP_CHANNELS)}: runs will send no wrap notification",
-            file=sys.stderr,
-        )
+    if problem := wrap_channels_problem(wrap_channels, enabled):
+        # Also a `bootstrap doctor` warning (_check_wrap_channels): stderr alone is easy to miss.
+        print(f"warning: {problem}", file=sys.stderr)
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,

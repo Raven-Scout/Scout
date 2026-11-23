@@ -1002,6 +1002,30 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     return warnings
 
 
+def _check_wrap_channels(*, vault: Path) -> list[str]:
+    """A warning when notify.wrap_channels names no enabled connector, so runs send no wrap (#559).
+
+    Until now only a stderr line of whichever command loaded the config said so. A missing,
+    unreadable or malformed scout-config.yaml, and a bad wrap_channels value, are not this
+    check's to report: `bootstrap upgrade` fails on those by name.
+    """
+    from scout.scripts.phase_assembly import parse_wrap_channels, wrap_channels_problem
+
+    try:
+        cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        wrap_channels = parse_wrap_channels(cfg["notify"]["wrap_channels"])
+        enabled = cfg.get("connectors", {}).get("enabled") or []
+        problem = wrap_channels_problem(wrap_channels, {k for k in enabled if isinstance(k, str)})
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError, AttributeError, ValueError):
+        return []
+    if problem is None:
+        return []
+    return [
+        f"{problem}. Add the channel's connector to connectors.enabled or change notify.wrap_channels, "
+        "then run `scoutctl bootstrap upgrade`"
+    ]
+
+
 def _check_heartbeat_config(*, vault: Path) -> list[str]:
     """One warning per bad value or unknown key in the heartbeat's config (#231).
 
@@ -1474,6 +1498,7 @@ def run_doctor(
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
 
     warnings.extend(_check_custom_connectors(vault=vault))
+    warnings.extend(_check_wrap_channels(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_action_items_size(vault=vault))
     warnings.extend(_check_backlog_lint(vault=vault))

@@ -20,9 +20,12 @@ from scout.yaml_safe import load_yaml
 # what gets written into scout-config.yaml `connectors.enabled`, and phase
 # sections are gated on `requires:` matching it exactly — a stale key in an
 # existing vault would silently drop every section it gates (#172: `gmail` vs
-# the phase key `email`).
+# the phase key `email`). `notify:telegram` is Telegram's key in the health
+# roster (connectors.yaml), not a probe key: setup writes `telegram`, but a vault
+# that enabled the roster key by hand got no Telegram section at all (#559).
 CONNECTOR_KEY_ALIASES: dict[str, str] = {
     "gmail": "email",
+    "notify:telegram": "telegram",
 }
 
 
