@@ -56,14 +56,22 @@ case-folded.
   isn't text and is left out is listed, with why, in the sync's and the
   preview's notes (``left_out_files`` in ``--json``); the mirror itself holds
   only counts.
-- ``scout-config.yaml`` is rewritten (:func:`mirror_config`): ``privacy``
-  keeps only the keys and fields the policy reads, each in its canonical form
-  (:func:`scout.kb.privacy.overlay_for_mirror`), and of their path entries
-  only those that match a mirrored file, so no local-only or hidden folder is
-  named and nothing else in the block rides along. ``sync_only`` never goes:
-  it is an upload allowlist no label depends on. ``delegates``
-  lists only this delegate; any other top-level key that names a hidden note
-  is dropped. It is the one file ``privacy.sync_only`` can't keep home, since
+- ``scout-config.yaml`` is rebuilt from an allowlist (:func:`mirror_config`),
+  never copied: it holds only what an engine in the clone reads (``delegate
+  init``, the ``kb`` commands, ``pre-session data``), so the owner's
+  connectors, tokens, addresses and every other setting stay home, at every
+  level. ``privacy`` keeps only the keys and fields a delegate's labels read,
+  each in its canonical form (:func:`scout.kb.privacy.overlay_for_mirror`),
+  and of their path entries only those that match a mirrored file, so no
+  local-only or hidden folder is named. ``sync_only`` never goes: it is an
+  upload allowlist no label depends on. ``surfaces`` and the ``federation*``
+  keys never go either: no delegate's label or read depends on them (surfaces
+  class the laptop's outbound checks, federation is for ``agent:*`` readers),
+  and they name chat ids and email addresses. ``delegates`` lists only this
+  delegate. ``user`` keeps ``timezone`` (a real zone), ``name`` and
+  ``display_name``; ``kb_structure`` keeps ``projects_dir`` and
+  ``skip_projects`` when they point at mirrored folders. A string that names a
+  hidden note is dropped. It is the one file ``privacy.sync_only`` can't keep home, since
   the clone needs it to show the delegate anything (as ``repo_sync``'s policy
   file is for Agnes); when the allowlist doesn't list it, the mirror's copy
   holds the ``privacy`` block alone. Its path is Scout's own fixed name, so it
@@ -145,7 +153,7 @@ import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote
 
@@ -1054,6 +1062,56 @@ def _same_label(a: Label, b: Label) -> bool:
     return key(a) == key(b)
 
 
+def _mirror_user(data: Mapping[str, Any], clean: Callable[[Any], str | None]) -> dict[str, str]:
+    """The ``user`` fields an engine in the mirror reads (module docstring), each a plain string.
+
+    ``timezone`` (the day boundary of every date ``kb`` and ``pre-session data`` print) only when it names a real
+    zone, and from the legacy top-level ``timezone`` when ``user`` has none, as :func:`scout.config.load_config`
+    reads it. ``name`` and ``display_name`` find the owner's person note (``pre-session data``'s
+    ``owner_managers``). Never ``email``, Slack or GitHub ids, or anything else the owner keeps under ``user``.
+    """
+    from zoneinfo import ZoneInfo
+
+    raw = data.get("user")
+    user: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    out: dict[str, str] = {}
+    zone = clean(user.get("timezone")) or clean(data.get("timezone"))
+    if zone:
+        with contextlib.suppress(Exception):  # ValueError, ZoneInfoNotFoundError: not a zone, so it doesn't go
+            ZoneInfo(zone)
+            out["timezone"] = zone
+    for key in ("name", "display_name"):
+        if value := clean(user.get(key)):
+            out[key] = value
+    return out
+
+
+def _mirror_kb_structure(raw: Any, mirrored: Sequence[str], clean: Callable[[Any], str | None]) -> dict[str, Any]:
+    """The ``kb_structure`` fields ``pre-session data`` reads for its project rows: ``projects_dir``, when a
+    mirrored file is under it, and the ``skip_projects`` that name a mirrored folder of it. The page and lint
+    settings are the laptop's runs' alone. A ``projects_dir`` the mirror holds nothing from goes too, so its name
+    stays home: the clone then looks in the default folder, among notes the delegate may read anyway."""
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    root = "knowledge-base/projects"
+    if "projects_dir" in raw:
+        given = clean(raw["projects_dir"])
+        parts = PurePosixPath(given.strip("/")).parts if given else ()
+        if not parts or ".." in parts:
+            return {}  # the engine refuses it and uses its default: so does the mirror
+        root = "/".join(parts)
+        if not any(rel.startswith(root + "/") for rel in mirrored):
+            return {}
+        out["projects_dir"] = root
+    skip = raw.get("skip_projects")
+    if isinstance(skip, list):
+        names = [n for n in map(clean, skip) if n and "/" not in n]
+        if names := [n for n in names if any(rel.startswith(f"{root}/{n}/") for rel in mirrored)]:
+            out["skip_projects"] = names
+    return out
+
+
 def mirror_config(
     text: str,
     delegate: str,
@@ -1065,7 +1123,10 @@ def mirror_config(
 ) -> bytes:
     """``scout-config.yaml`` for the mirror (module docstring): nothing in it names what the mirror leaves out.
 
-    With ``privacy_only`` (``privacy.sync_only`` keeps the config home) it holds the ``privacy`` block alone.
+    Built from an allowlist, never copied: the ``privacy`` block (:func:`overlay_for_mirror`, this delegate's
+    entry), ``user`` (:func:`_mirror_user`) and ``kb_structure`` (:func:`_mirror_kb_structure`), the only keys an
+    engine in the clone reads. Every other key, at every level, stays home. With ``privacy_only``
+    (``privacy.sync_only`` keeps the config home) it holds the ``privacy`` block alone.
     """
     data = load_yaml(text)
     if not isinstance(data, dict):  # pragma: no cover - delegate_policy refused a broken config
@@ -1074,18 +1135,16 @@ def mirror_config(
     source: dict[str, Any] = raw if isinstance(raw, dict) else {}
     privacy = overlay_for_mirror(source, lambda g: any(glob_match(g, rel) for rel in mirrored))
     privacy["delegates"] = {delegate: {"include_private": True} if include_private else {}}
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if key == "privacy":
-            out[key] = privacy
-            continue
-        if privacy_only:
-            continue
-        if not isinstance(key, str) or scan.names(key):
-            continue
-        dumped = yaml.safe_dump({key: value}, allow_unicode=True)
-        if not scan.lines(dumped):
-            out[key] = value
+    out: dict[str, Any] = {"privacy": privacy}
+    if not privacy_only:
+
+        def clean(value: Any) -> str | None:
+            return value.strip() if isinstance(value, str) and value.strip() and not scan.lines(value) else None
+
+        if user := _mirror_user(data, clean):
+            out["user"] = user
+        if structure := _mirror_kb_structure(data.get("kb_structure"), mirrored, clean):
+            out["kb_structure"] = structure
     rendered = yaml.safe_dump(out, sort_keys=False, allow_unicode=True)
     if scan.lines(rendered):
         raise RepoSyncError("config_names_hidden", f"refused: {paths.VAULT_MARKER}'s privacy block names a hidden file")
