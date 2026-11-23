@@ -18,6 +18,13 @@ cannot change a match, and that nothing else in the pattern moved.
 
 A deliberate change to a filter belongs in ``INTENDED_DIFFERENCES`` with the reason; until then any
 difference fails.
+
+One deliberate change so far: the Bash pattern gained ``EXPANSION_ALTERNATIVES`` (a glob, a ``$``, a backtick, a
+brace list, a leading ``~``, an absolute path, ``xargs``, a ``cd`` into action-items/), because a word the shell
+rewrites need not spell the KB path it becomes. The pattern must be the old one plus exactly those, and a case may
+differ from the old command only by now reaching Python where the old one let it through, for a command those
+alternatives match. And a run's payload over ``MAX_PAYLOAD`` bytes is blocked before either stage (no corpus case
+is that long).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -52,6 +60,31 @@ ENTRIES: dict[str, tuple[str, str]] = {
 
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
+
+# The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: a word the shell
+# rewrites before the program sees it (so its text need not spell the KB path it becomes), a program that takes
+# its paths from another's output, and a change of directory into action-items/.
+EXPANSION_ALTERNATIVES = (
+    r"\*",
+    r"(^|[^$])\?",
+    r"(^|[^[])\[[^ []",
+    r"\[\[[^ ]",
+    r"\$([^?#!$]|$)",
+    "`",
+    r"\{[^}]*(,|\.\.)",
+    r"(^|[^A-Za-z0-9_.}^@/~-]|\\[nt])~",
+    r"(^|[^A-Za-z0-9_.~-]|\\[nt])/",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)",
+    r"(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items",
+    r"\(",
+)
+EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
+# A KB folder's name in any letter case (macOS's default disk ignores case), as prefilter.sh matches it.
+KB_NAME_ANY_CASE = (
+    "[Kk][Nn][Oo][Ww][Ll][Ee][Dd][Gg][Ee][-_][Bb][Aa][Ss][Ee]"
+    "|[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]/[Cc][Oo][Nn][Tt][Ee][Xx][Tt]"
+)
+MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
 
 # The gate tests whose string literals make up the Bash corpus.
 CORPUS_SOURCES = (
@@ -239,9 +272,9 @@ DESCRIBED_FORMS = (
 
 # Forms the open gate issues name (#610, #541, #611, #618), and launchers called by their full path,
 # with what the shell stage does with each: True when Python gets to judge the call, False when the
-# shell lets it through unjudged. This refactor fixes none of them and worsens none: the answers below
-# are the inline commands' answers, and the test holds the script to them. A fix flips a False to True
-# here, in the PR that makes it.
+# shell lets it through unjudged. The move to prefilter.sh fixed none of them and worsened none. A fix
+# flips a False to True here, in the PR that makes it; the expansion alternatives flipped those marked
+# so (a `$`, or an absolute path, now reaches Python, which decides as it always has).
 KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     # #610: env changes and detaching through a wrapper or an indirect name
     ("command -p env -u FOO git commit -m x", True),
@@ -249,8 +282,8 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("timeout 60 env -u FOO ls", True),
     ("time -p ls", False),
     ("exec -a x bash -c ls", True),
-    ("unset $v", False),
-    ("$'SCOUT\\x5fMODE'= git commit -m x", False),
+    ("unset $v", True),  # expansion: `$`
+    ("$'SCOUT\\x5fMODE'= git commit -m x", True),  # expansion: `$`
     ("git ci -m x", False),
     ("make commit", False),
     ("./commit.sh", False),
@@ -267,8 +300,8 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("ugrep -r widgets .", True),
     # #618: hook-skip forms
     ("git config core.hooksPath get", True),
-    ('git -C "$R" $SUB -m x', False),
-    ("git -C $R $SUB", False),
+    ('git -C "$R" $SUB -m x', True),  # expansion: `$`
+    ("git -C $R $SUB", True),  # expansion: `$`
     ("git rebase --exec 'git commit --no-verify' HEAD~1", True),
     ("timeout 5 rm .git/hooks/x", True),
     ("git stash create", False),
@@ -277,12 +310,166 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("cd .git/hooks && ls > ../../out", True),
     # #611: persistence through a shell rc file
     ("echo x >> ~/.zshrc", True),
-    # a launcher or `env` called by its full path: the detach group wants no `/` before the name
-    ("/usr/bin/nohup sleep 9", False),
-    ("/usr/bin/env -i ls", False),
-    ("/usr/bin/open notes.txt", False),
-    ("/bin/launchctl list", False),
-    ("/usr/bin/ssh host ls", False),
+    # a launcher or `env` called by its full path: the detach group wants no `/` before the name, but an
+    # absolute path now reaches Python on its own
+    ("/usr/bin/nohup sleep 9", True),  # expansion: absolute path
+    ("/usr/bin/env -i ls", True),  # expansion: absolute path
+    ("/usr/bin/open notes.txt", True),  # expansion: absolute path
+    ("/bin/launchctl list", True),  # expansion: absolute path
+    ("/usr/bin/ssh host ls", True),  # expansion: absolute path
+)
+
+# The forms #779's security review found: each reads a KB note in a run, and #779's filter let each through.
+REVIEW_FORMS = (
+    "cat k*/projects/a/a.md",
+    "head k*e/*/*.md",
+    "K=knowledge; cat ${K}-base/x.md",
+    'cat "$(printf knowl%sdge-base/a.md e)"',
+    "less $HOME/Scout/kn*",
+)
+
+# The forms the Python gate's own tests (#790) deny, or must see to record as unresolved, that the lists above
+# do not already hold. The shell stage must send each to Python, or #790's answer is never asked for.
+GATE_FORMS = (
+    "cat $HOME/Vault/action-items/c*/x.md",
+    "wc -l < k*/a.md",
+    "grep -n x k*/a.md",
+    "sed -n 1,5p action-items/con*/x.md",
+    "find k* -name '*.md'",
+    "export D=action-items; cat $D/context/x.md",
+    "for d in docs knowledge-base; do cat $d/a.md; done",
+    "cat $'\\x6bnowledge-base/x.md'",
+    "cat k{m..o}owledge-base/a.md",
+    "echo knowledge-base/a.md | xargs head -3",
+    "cd action-items; ls context",
+    "pushd action-items && cat context/x.md",
+    "env -C action-items cat context/x.md",
+    "bash -c 'cat k*/a.md'",
+    "timeout 5 cat k*/a.md",
+    "if true; then head k*/x.md; fi",
+    'f=knowledge-base/a.md && echo "lines: $(wc -l < $f)"',
+    'for f in docs/a.md knowledge-base/a.md; do echo "$(grep -c x $f)"; done',
+    'grep -n "alpha\\|beta" knowledge-base/a.md',
+    "sed -n '/^## /{=;p;}' knowledge-base/a.md",
+    "git ls-files | xargs grep -l alpha",
+    "find . -name '*.md' | xargs cat",
+    "find action-items -type f | xargs wc -l",
+    "grep -rl alpha . | xargs cat",
+    "rg --files knowledge-base | xargs head -1",
+    "echo knowledge-base/a.md | xargs -I{} cat {}",
+    "echo knowledge-base/a.md | xargs -I % head %",
+    'cat "$HOME"/Vault/kn*/projects/a/a.md # it\'s',
+    'grep -n x "$HOME"/Vault/k*/a.md # don\'t',
+    "cat **/x.md",
+    "grep -n x **/a.md",
+    "cat k*/**/a.md",
+    "cat (knowledge|x)-base/a.md",
+    "cat kn(o|)wledge-base/a.md",
+    "ls (knowledge-base|docs)",
+    "cat 'kn'(o|)wledge-base/a.md",
+    "cat knowledge-bas[e\\$]/a.md",
+    "cat k[n$]owledge-base/a.md",
+    "cat ~+/k*/a.md",
+    "cat ${HOME:-/nowhere}/Vault/k*/a.md",
+    "cat ${UNSET_HERE:-k}nowledge-base/a.md",
+    "cat ${PWD%/}/k*/a.md",
+    "d=knowledge-base/; cat ${d%/}/a.md",
+    "f=docs/knowledge-base; cat ${f#docs/}/a.md",
+    "ls action-items/*",
+    "grep -rn x action-items/*",
+    "ag x k*",
+    "cat `echo knowledge-base/a.md`",
+    "cat $UNSET_SOMEWHERE/a.md",
+    'while read -r f; do cat "$f"; done < /tmp/list.txt',
+    "ls scripts | xargs cat",
+    "cat < $(echo /tmp/x)",
+    'cd "$(git rev-parse --show-toplevel)" && cat docs/a.md',
+    "cat action-items/$(date +%Y/%m)/x.md",
+    "cat action-items/$(TZ=$(scripts/run.sh) date +%F; cat x).md",
+    "find docs -exec basename {} \\; | xargs cat",
+    "git ls-files --full-name docs | xargs cat",
+    "find docs | sort | xargs cat",
+    "find docs | xargs -I{} cat x{}",
+    "wc -l *.md",
+    "echo knowledge-base/a.md | xargs -I{} head -1 {}",
+    'f=knowledge-base/a.md && echo "$(head -1 $f)"',
+    "for f in " + " ".join(f"docs/n{i}.md" for i in range(300)) + " knowledge-base/a.md; do cat $f 2>/dev/null; done",
+    # zsh alternation with no glob character: a group glued to a word, or to another group
+    "cat (a|b)(c|d)/x.md",
+    "cat kn(o|w)ledge-base/a.md",
+    "ls (docs|kn)",
+    # a KB folder named in another letter case (one folder on a case-insensitive disk)
+    "cat KNOWLEDGE-BASE/x.md",
+    "head Knowledge_Base/a.md",
+    "cat ACTION-ITEMS/Context/x.md",
+    "cat KNOW''LEDGE-BASE/x.md",
+)
+
+# Commands that read a KB note once the shell has expanded them, though their text spells no KB path (the
+# review's forms, and close variants). In a run every one must reach Python. All synthetic.
+EXPANSION_FORMS = (
+    *REVIEW_FORMS,
+    # a glob in a path word
+    "cat */a.md",
+    "ls k*",
+    "cat kn?wledge-base/a.md",
+    "cat k[n]owledge-base/a.md",
+    "cat kn[[o]wledge-base/a.md",
+    "cat action-items/[c]ontext/x.md",
+    "wc -l */*/*",
+    "cat 'k'*'/a.md'",
+    'cat "kn"*/a.md',
+    # a variable, a substitution, a backtick
+    "K=knowledge-; cat ${K}base/x.md",
+    "a=k; b=nowledge-base/a.md; cat $a$b",
+    "cat $(echo kn)owledge-base/a.md",
+    "cat `echo kn`owledge-base/a.md",
+    "cat $'knowledge\\x2dbase/a.md'",
+    "set -- knowledge; cat $1-base/a.md",
+    "head -n 5 ${D:-knowledge}-base/a.md",
+    # $HOME, ~, an absolute path
+    "less ${HOME}/Vault/kn*",
+    "cat ~/Vault/k*/a.md",
+    "cat ~/Vault/kn\\owledge-base/a.md",
+    "cd ~/Vault && cat kn''owledge-base/a.md",
+    "cat /home/u/Vault/k*/a.md",
+    "cat /home/u/link-to-notes/a.md",
+    "x=~/Vault; ls $x",
+    # a brace list or range
+    "cat kn{o,}wledge-base/a.md",
+    "cat {knowledge,x}-base/a.md",
+    "cat knowledge{-,_}base/a.md",
+    "cat action-items/{context,x}/x.md",
+    # paths built by another program, a change of directory into action-items/
+    "printf 'knowledge%sbase/a.md' - | xargs cat",
+    "echo knowledge@base | tr @ - | xargs -I{} cat {}/a.md",
+    "parallel cat ::: kn",
+    "cd action-items && cat context/x.md",
+    "pushd action-items; cat context/x.md",
+    "git -C action-items show HEAD:context/x.md",
+    # the same over two lines
+    "true\ncat k*/a.md",
+    "true\n~/Vault/kno",
+    "true\n/bin/cat x",
+    *GATE_FORMS,
+)
+
+# Their harmless neighbours, which must stay in the shell: no expansion, or one that cannot make a path.
+NOT_EXPANSIONS = (
+    "git status",
+    "git log --oneline -5",
+    "git log HEAD~1..HEAD",
+    "git diff HEAD~3",
+    "echo $?",
+    "echo done; exit $?",
+    "[ -f notes/a.md ] && echo yes",
+    "[[ -n x ]] && echo yes",
+    'grep -c "^- \\[ \\]" notes/a.md',
+    "date +%Y-%m-%d",
+    "wc -l notes/a.md",
+    "scripts/scoutctl kb search widgets",
+    "cat notes/a.md",
+    "ls action-items",
 )
 
 RUN = {"SCOUT_MODE": "briefing"}
@@ -377,7 +564,7 @@ class World:
             cwd=self.cwd(case.cwd),
             input=case.payload,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=60,
             check=False,
         )
@@ -390,12 +577,43 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
     return World(tmp_path_factory.mktemp("prefilter"))
 
 
+def _command_of(payload: str) -> str | None:
+    try:
+        command = json.loads(payload)["tool_input"]["command"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return command if isinstance(command, str) else None
+
+
+def _widened(case: Case, old: Outcome, new: Outcome, expansions: set[str]) -> bool:
+    """The one difference allowed: a run's Bash call the old command let through unjudged, whose command the
+    expansion alternatives match, now reaches Python with the same payload, and ends as Python's answer does."""
+    if case.entry != "kb-read-gate" or _command_of(case.payload) not in expansions:
+        return False
+    if old != Outcome(0, "", "", ""):
+        return False
+    if new.python != f"hook kb-read-gate\n{case.payload}":
+        return False
+    if case.stub_exit == 0:
+        return new[:3] == (0, "", "")
+    return new.returncode == 2 and new.stdout == "" and "could not run" in new.stderr
+
+
+def _expansion_matches(commands: list[str]) -> set[str]:
+    """The commands EXPANSION_PATTERN matches, as the hook sees them (the JSON-escaped command value), and those
+    that name a KB folder in another letter case once quotes and backslashes are gone (they now reach Python too)."""
+    values = ['"command": ' + json.dumps(c) for c in commands]
+    matched = {commands[n - 1] for n in _matching_lines(EXPANSION_PATTERN, values)}
+    return matched | {c for c in commands if re.search(KB_NAME_ANY_CASE, re.sub(r"[\"'\\]", "", c))}
+
+
 def _differences(world: World, cases: list[Case]) -> list[str]:
-    """The cases where the old and the new command disagree, one line each."""
+    """The cases where the old and the new command disagree, one line each, but for an intended widening."""
+    expansions = _expansion_matches([c for c in {_command_of(case.payload) for case in cases} if c is not None])
 
     def both(case: Case) -> str | None:
         old, new = world.run(OLD[case.entry], case), world.run(NEW[case.entry], case)
-        if old == new or case.id in INTENDED_DIFFERENCES:
+        if old == new or case.id in INTENDED_DIFFERENCES or _widened(case, old, new, expansions):
             return None
         return f"{case.id}: old={old!r} new={new!r}"
 
@@ -454,11 +672,15 @@ def _balanced(pattern: str) -> bool:
     return depth == 0
 
 
-def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block() -> None:
-    old = _pattern(OLD["kb-read-gate"])
-    new = subprocess.run(
+def _new_pattern() -> str:
+    return subprocess.run(
         ["/bin/sh", str(PREFILTER), "print-bash-pattern"], capture_output=True, text=True, check=True
     ).stdout.rstrip("\n")
+
+
+def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block_plus_the_expansions() -> None:
+    old = _pattern(OLD["kb-read-gate"])
+    new = _new_pattern()
 
     start = old.index("(^|[^A-Za-z0-9_./-]|\\\\[nt])(env|nohup|")
     end = old.index("SCOUT_SECRETS", start) + len("SCOUT_SECRETS")
@@ -470,7 +692,9 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block() -> None:
     assert head.endswith("|") and tail.startswith("|")
     # Each piece is a run of whole top-level alternatives, so `X|B|B|Y` and `X|B|Y` match the same lines.
     assert _balanced(head[:-1]) and _balanced(block) and _balanced(tail[1:])
-    assert new == f"{head}{block}{tail}"
+    # The expansions only add whole alternatives at the end, so they can add matches and never remove one.
+    assert all(_balanced(a) for a in EXPANSION_ALTERNATIVES)
+    assert new == f"{head}{block}{tail}|{EXPANSION_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -498,22 +722,25 @@ def _matching_lines(pattern: str, lines: list[str]) -> set[int]:
     return {int(line.split(":", 1)[0]) for line in out.stdout.splitlines()}
 
 
-def test_bash_corpus_matches_the_old_pattern_exactly() -> None:
+def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> None:
     """Every string of the gate tests, as the hook sees it (the payload's JSON-escaped command value, one
-    line each), through the old pattern and the new one. One grep per pattern, so the whole corpus costs
-    two processes; the end-to-end runs below cover the shell around the pattern."""
-    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *_harvested()]))
+    line each), through the old pattern, the new one and the expansion alternatives alone. One grep per
+    pattern, so the whole corpus costs three processes; the end-to-end runs below cover the shell around it.
+    The new pattern matches what the old one did and what the expansions add, nothing else: no old match
+    is lost, and nothing beyond the expansions is gained."""
+    known = [form for form, _ in KNOWN_MISSED_FORMS]
+    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *known, *EXPANSION_FORMS, *NOT_EXPANSIONS, *_harvested()]))
     assert len(corpus) > 1000
     values = ['"command": ' + json.dumps(c) for c in corpus]
     assert all("\n" not in v for v in values)
-    new_pattern = subprocess.run(
-        ["/bin/sh", str(PREFILTER), "print-bash-pattern"], capture_output=True, text=True, check=True
-    ).stdout.rstrip("\n")
 
-    old, new = _matching_lines(_pattern(OLD["kb-read-gate"]), values), _matching_lines(new_pattern, values)
-    assert old == new, sorted(corpus[n - 1] for n in old ^ new)
+    old = _matching_lines(_pattern(OLD["kb-read-gate"]), values)
+    new = _matching_lines(_new_pattern(), values)
+    added = _matching_lines(EXPANSION_PATTERN, values)
+    assert new == old | added, sorted(corpus[n - 1] for n in new ^ (old | added))
+    assert old < new  # the widening widened
     # The corpus exercises both answers, or the comparison above proves little.
-    assert len(new) > 300 and len(values) - len(new) > 300
+    assert len(old) > 300 and len(values) - len(new) > 300
 
 
 @pytest.mark.slow
@@ -521,7 +748,8 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
     cases = []
     # This filter asks only "is it a run?"; owner sessions are covered by the entry matrix below.
     readers = ({"SCOUT_READER": "agent:helper"},)
-    for i, command in enumerate((*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS))):
+    forms = (*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *EXPANSION_FORMS, *NOT_EXPANSIONS)
+    for i, command in enumerate(forms):
         for j, env in enumerate(readers):
             cases.append(
                 Case(f"bash[{i}] env[{j}] {command!r}", "kb-read-gate", _bash(command, compact=True), env, "deep")
@@ -615,12 +843,116 @@ def test_an_owner_session_never_starts_python_for_the_run_only_hooks(world: Worl
                 assert out == Outcome(0, "", "", ""), (entry, env, payload)
 
 
-def test_known_missed_forms_are_kept_exactly_as_they_were(world: World) -> None:
+def test_known_missed_forms_are_kept_as_they_were_but_for_the_expansions(world: World) -> None:
+    expansions = _expansion_matches([form for form, _ in KNOWN_MISSED_FORMS])
     for form, python_judges in KNOWN_MISSED_FORMS:
         case = Case(form, "kb-read-gate", _bash(form), RUN, "vault")
         old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
-        assert old == new, form
+        assert old == new or _widened(case, old, new, expansions), form
         assert bool(new.python) is python_judges, form
+
+
+# ----- the expansions: every form reaches Python in a run, and its harmless neighbours do not ------
+
+
+def _judged(world: World, command: str, shell: str = "sh") -> bool:
+    out = world.run(NEW["kb-read-gate"], Case(command, "kb-read-gate", _bash(command), RUN, "vault", shell=shell))
+    assert out.returncode == 0 and out.stdout == "" and out.stderr == "", (command, out)
+    return out.python == f"hook kb-read-gate\n{_bash(command)}"
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_every_expansion_form_reaches_python_in_a_run(world: World, shell: str) -> None:
+    assert [c for c in EXPANSION_FORMS if not _judged(world, c, shell)] == []
+
+
+def test_the_old_filter_let_the_reviews_forms_through() -> None:
+    """What this change is for: the five forms #779's review found reached no gate before."""
+    values = ['"command": ' + json.dumps(c) for c in REVIEW_FORMS]
+    assert _matching_lines(_pattern(OLD["kb-read-gate"]), values) == set()
+    unquoted = [c.replace("'", "").replace('"', "") for c in REVIEW_FORMS]
+    assert not any(kb in c for c in unquoted for kb in ("knowledge-base", "knowledge_base"))
+
+
+def test_harmless_neighbours_stay_in_the_shell(world: World) -> None:
+    assert [c for c in NOT_EXPANSIONS if _judged(world, c)] == []
+
+
+def _in_cwd(command: str, cwd: str, *, compact: bool) -> str:
+    payload = {"session_id": "s1", "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": command}}
+    return json.dumps(payload, separators=(",", ":")) if compact else json.dumps(payload)
+
+
+@pytest.mark.parametrize("compact", [True, False])
+def test_a_run_whose_cwd_is_in_action_items_reaches_python(world: World, compact: bool) -> None:
+    """From <vault>/action-items, `cat context/x.md` reads a KB note without naming one (#790's case)."""
+    reach = [
+        ("cat context/x.md", "/home/u/Vault/action-items"),
+        ("cat ../context/x.md", "/home/u/Vault/action-items/done"),
+        ("cat context/x.md", "/home/u/Vault/Action-Items"),
+    ]
+    stay = [
+        ("cat a.md", "/home/u/Vault/docs"),
+        ("cat a.md", "/home/u/Vault/action-items-old"),
+        ("ls action-items", "/home/u/Vault"),
+    ]
+    for command, cwd in reach + stay:
+        payload = _in_cwd(command, cwd, compact=compact)
+        out = world.run(NEW["kb-read-gate"], Case(command, "kb-read-gate", payload, RUN, "vault"))
+        assert out[:3] == (0, "", ""), (command, cwd, out)
+        assert (out.python == f"hook kb-read-gate\n{payload}") is ((command, cwd) in reach), (command, cwd)
+        owner = world.run(NEW["kb-read-gate"], Case(command, "kb-read-gate", payload, {}, "vault"))
+        assert owner == Outcome(0, "", "", ""), (command, cwd)
+
+
+def test_the_owner_still_never_starts_python_for_an_expansion(world: World) -> None:
+    for command in EXPANSION_FORMS:
+        for env in ({}, {"SCOUT_READER": "owner"}):
+            out = world.run(NEW["kb-read-gate"], Case("owner", "kb-read-gate", _bash(command), env, "vault"))
+            assert out == Outcome(0, "", "", ""), (command, env)
+
+
+# ----- a payload too long to judge in time is blocked in a run -------------------------------------
+
+
+def _sized(nbytes: int, unit: str = "ab cd ") -> str:
+    """A Bash payload of exactly ``nbytes`` bytes (UTF-8) whose command is harmless words.
+
+    Non-ASCII stays raw UTF-8, as Claude Code sends it (json.dumps would write `é` as the 6 bytes `\\u00e9`).
+    """
+
+    def payload_of(command: str) -> str:
+        return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}, ensure_ascii=False)
+
+    empty = len(payload_of("echo ").encode())
+    unit_bytes = len(unit.encode())
+    command = "echo " + unit * ((nbytes - empty) // unit_bytes)
+    command += "x" * (nbytes - len(payload_of(command).encode()))
+    payload = payload_of(command)
+    assert len(payload.encode()) == nbytes
+    return payload
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_a_payload_over_the_cap_is_blocked_in_a_run_without_python(world: World, shell: str) -> None:
+    at_cap = world.run(NEW["kb-read-gate"], Case("cap", "kb-read-gate", _sized(MAX_PAYLOAD), RUN, "vault", shell=shell))
+    assert at_cap == Outcome(0, "", "", "")  # harmless, and not over: the filter judged it, in the shell
+    for payload in (_sized(MAX_PAYLOAD + 1), _sized(MAX_PAYLOAD + 2, "é "), _sized(4 * 1024 * 1024)):
+        for env in RUNS:
+            out = world.run(NEW["kb-read-gate"], Case("over", "kb-read-gate", payload, env, "vault", shell=shell))
+            assert out.returncode == 2 and out.python == "" and f"over {MAX_PAYLOAD} bytes" in out.stderr, env
+        for env in OWNERS:
+            assert world.run(NEW["kb-read-gate"], Case("over", "kb-read-gate", payload, env, "vault")) == Outcome(
+                0, "", "", ""
+            )
+
+
+def test_the_cap_counts_bytes_in_a_utf8_locale(world: World) -> None:
+    payload = _sized(MAX_PAYLOAD + 2, "é ")
+    assert len(payload) <= MAX_PAYLOAD  # fewer characters than the cap, more bytes
+    for locale in ({"LC_ALL": "en_US.UTF-8"}, {"LANG": "en_US.UTF-8"}, {"LC_ALL": "C.UTF-8"}):
+        out = world.run(NEW["kb-read-gate"], Case("utf8", "kb-read-gate", payload, {**RUN, **locale}, "vault"))
+        assert out.returncode == 2 and f"over {MAX_PAYLOAD} bytes" in out.stderr, locale
 
 
 # ----- a pre-filter that is missing or broken is never trusted ---------------------------------
