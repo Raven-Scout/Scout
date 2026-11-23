@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from scout.changes import store
+from scout.plural import agree, count
 
 RUN_COMMITS_NAME = "run-commits.jsonl"
 SCHEMA = 1
@@ -390,7 +391,9 @@ def window(vault: Path, start: dict, env: Mapping[str, str], *, label: str) -> t
     known: list[str] = sorted({str(k) for k in known_at_start} | ({start_head} if start_head else set()))
     gone = _missing(vault, known, genv)
     if gone:
-        raise ig.IntegrityError(f"{len(gone)} commit(s) the run started with are gone")
+        raise ig.IntegrityError(
+            f"{count(len(gone), 'commit')} the run started with {agree(len(gone), 'is', 'are')} gone"
+        )
     head, branch = ig._head(vault, genv)
     tips: dict[str, str] = {}
     for ref, (sha, commit) in _all_refs(vault, genv).items():
