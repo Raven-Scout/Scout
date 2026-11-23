@@ -527,12 +527,14 @@ def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault
 
 
 def test_auto_rollback_writes_off_and_refuses_the_automatic_modes_for_now(cli, vault, home):
-    """The automatic modes stay refused until the governance-approval and undo-race gaps close; only off is set."""
+    """The governance-approval and undo-race gaps are closed, but the automatic modes stay refused until the
+    calibration review (turning one on is a governance change); only off is set."""
     from scout.changes.settings import Settings, read_settings, write_settings
 
     for mode in ("targeted", "one-at-a-time"):
         r = cli(["changes", "auto-rollback", mode])
         assert r.exit_code == 2 and "isn't available yet" in r.output, mode
+        assert "gaps are closed" in r.output and "calibration review" in r.output, mode
     assert not any(home.rglob("settings.json"))
     write_settings(Settings(auto_rollback="targeted"), {"HOME": str(home)})  # an older engine's setting
     assert cli(["changes", "auto-rollback", "off"]).exit_code == 0

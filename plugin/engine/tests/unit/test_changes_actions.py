@@ -756,7 +756,8 @@ def _apply_and_commit(repo: Path, env: dict[str, str], gov: str) -> str:
 def test_the_commit_that_moves_an_approved_item_to_applied_is_governance(repo, env):
     gov = _pending(repo)
     _commit(repo, "dreaming [22:00]: governance-pending — skip red", {}, date=NOW - timedelta(days=2))
-    _decide(repo, env, "approve", gov)
+    # Unbound (an older engine's row), so it counts only up to the apply commit's time: made before it.
+    _decide_at(repo, env, "approve", gov, NOW - timedelta(days=1, hours=1))
     cid = _apply_and_commit(repo, env, gov)
     _undo(repo, env, cid)
     doc = _due(repo, env)
@@ -764,6 +765,84 @@ def test_the_commit_that_moves_an_approved_item_to_applied_is_governance(repo, e
     with pytest.raises(ActionRefused) as exc:
         rollback(repo, env, cid, now=NOW, tz=TZ)
     assert exc.value.reason == "governance"
+
+
+def _move_to_applied(repo: Path, env: dict[str, str], *, approve: bool) -> str:
+    """A run files a pending item, then commits its diff and the pending→applied move itself (no `changes apply`),
+    with the owner's approval bound to the filing commit or with none. Returns the change id."""
+    from scout.changes.governance import decision_ref, filed_by, read_pending
+
+    files: dict[str, str | None] = {"governance-pending/skip-red.md": _PENDING}
+    _commit(repo, "dreaming [22:00]: governance-pending — skip red", files, date=NOW - timedelta(days=2))
+    if approve:
+        item = read_pending(repo)[0][0]
+        ref = decision_ref("approve", item.id, item.hash, filed_by(repo, item))
+        append_signal(Signal(ts=NOW - timedelta(days=1, hours=1), kind="approval", surface="app", ref=ref),
+                      vault=repo, env=env)  # fmt: skip
+    (repo / "SKILL.md").write_text("skill v1, governed\n")
+    (repo / "governance-pending/applied").mkdir()
+    _git(repo, "mv", "governance-pending/skip-red.md", "governance-pending/applied/skip-red.md")
+    sha = _commit(repo, "dreaming [22:40]: apply gov-skip-red", {}, date=NOW - timedelta(days=1))
+    scan(repo, since=None)
+    return _cid(sha)
+
+
+def test_an_unapproved_move_into_applied_is_an_ordinary_change(repo, env):
+    """Plan 2 gap: the move alone made a commit governance, so a run could make any edit untested and un-undoable."""
+    from scout.changes import actions
+
+    cid = _move_to_applied(repo, env, approve=False)
+    row = next(r for r in _changes_rows(repo, env) if r["id"] == cid)
+    assert row["governance"] is False and row["test"]["state"] == "testing"
+    assert actions.rollback_problem(repo, Change.from_row(row), row["test"]) is None
+
+
+def test_an_approved_move_stays_governance(repo, env):
+    cid = _move_to_applied(repo, env, approve=True)
+    row = next(r for r in _changes_rows(repo, env) if r["id"] == cid)
+    assert row["governance"] is True
+
+
+def _sweep_then(monkeypatch: pytest.MonkeyPatch, after) -> None:
+    """Run ``after`` inside `rollback` between the undo's check and its write (`_sweep` runs between them)."""
+    from scout.changes import actions
+
+    real = actions._sweep
+
+    def racing(*a, **k):
+        real(*a, **k)
+        after()
+
+    monkeypatch.setattr(actions, "_sweep", racing)
+
+
+def test_an_edit_between_check_and_write_refuses_and_keeps_the_edit(repo, env, monkeypatch):
+    cid = _cid(_brain_edit(repo))
+    _undo(repo, env, cid)
+
+    def append() -> None:
+        with (repo / "SKILL.md").open("a") as f:
+            f.write("added meanwhile\n")
+
+    _sweep_then(monkeypatch, append)
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since"
+    assert (repo / "SKILL.md").read_text().endswith("added meanwhile\n")
+    assert [p.name for p in repo.iterdir() if p.name.endswith(".scout-undo")] == []
+
+
+def test_a_folder_swapped_for_a_symlink_before_the_write_writes_nothing_outside(repo, env, monkeypatch, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cid = _two_renames(repo)  # the undo writes knowledge-base/a/x.md back; knowledge-base/a is gone until then
+    _undo(repo, env, cid)
+    before = _tree(repo)
+    _sweep_then(monkeypatch, lambda: (repo / "knowledge-base/a").symlink_to(outside))
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since" and list(outside.iterdir()) == []
+    assert _tree(repo) == before and not (repo / "knowledge-base/b").exists()
 
 
 def test_a_harness_fallback_item_is_deleted_on_apply_and_stays_undoable(repo, env):
@@ -1645,11 +1724,11 @@ def test_a_write_that_fails_while_staging_changes_nothing(repo, env, monkeypatch
     before = _tree(repo)
     real, calls = actions._stage, []
 
-    def flaky(target, data, mode):
-        calls.append(target)
+    def flaky(folder, name, data, mode):
+        calls.append(name)
         if len(calls) == 3:
             raise OSError("no space left")
-        return real(target, data, mode)
+        return real(folder, name, data, mode)
 
     monkeypatch.setattr(actions, "_stage", flaky)
     with pytest.raises(OSError, match="no space left"):
@@ -1740,21 +1819,24 @@ def test_restores_is_false_for_anything_it_cannot_confirm(repo):
 def test_staging_retries_a_taken_name_and_cleans_up_a_failed_write(tmp_path, monkeypatch):
     from scout.changes import actions
 
-    target = tmp_path / "f.md"
-    names = iter([b"\0" * 6, b"\0" * 6, b"\1" * 6])
-    monkeypatch.setattr(actions.os, "urandom", lambda _n: next(names))
-    first = actions._stage(target, b"one", 0o644)
-    second = actions._stage(target, b"two", 0o755)  # the first name is taken: the next one is used
-    assert first != second and second.read_bytes() == b"two" and os.access(second, os.X_OK)
-    monkeypatch.setattr(actions.os, "urandom", lambda _n: b"\2" * 6)
+    folder = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        names = iter([b"\0" * 6, b"\0" * 6, b"\1" * 6])
+        monkeypatch.setattr(actions.os, "urandom", lambda _n: next(names))
+        first = actions._stage(folder, "f.md", b"one", 0o644)
+        second = actions._stage(folder, "f.md", b"two", 0o755)  # the first name is taken: the next one is used
+        assert first != second and (tmp_path / second).read_bytes() == b"two" and os.access(tmp_path / second, os.X_OK)
+        monkeypatch.setattr(actions.os, "urandom", lambda _n: b"\2" * 6)
 
-    def broken(*_a):
-        raise OSError("read-only")
+        def broken(*_a):
+            raise OSError("read-only")
 
-    monkeypatch.setattr(actions.os, "fchmod", broken)
-    with pytest.raises(OSError, match="read-only"):
-        actions._stage(target, b"three", 0o644)
-    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([first.name, second.name])
+        monkeypatch.setattr(actions.os, "fchmod", broken)
+        with pytest.raises(OSError, match="read-only"):
+            actions._stage(folder, "f.md", b"three", 0o644)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted([first, second])
+    finally:
+        os.close(folder)
 
 
 def test_putting_back_restores_a_file_a_link_or_nothing(tmp_path):
@@ -1762,9 +1844,88 @@ def test_putting_back_restores_a_file_a_link_or_nothing(tmp_path):
 
     path = tmp_path / "x"
     path.write_text("new")
-    _put_back(path, ("file", b"old", 0o755))
-    assert path.read_bytes() == b"old" and os.access(path, os.X_OK)
-    _put_back(path, ("link", b"elsewhere", 0))
-    assert os.readlink(path) == "elsewhere"
-    _put_back(path, ("absent", b"", 0))
-    assert not os.path.lexists(path)
+    folder = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _put_back(folder, "x", ("file", b"old", 0o755))
+        assert path.read_bytes() == b"old" and os.access(path, os.X_OK)
+        _put_back(folder, "x", ("link", b"elsewhere", 0))
+        assert os.readlink(path) == "elsewhere"
+        _put_back(folder, "x", ("absent", b"", 0))
+        assert not os.path.lexists(path)
+        _put_back(folder, "x", ("absent", b"", 0))  # nothing there already: still nothing
+        assert not os.path.lexists(path) and list(tmp_path.iterdir()) == []
+    finally:
+        os.close(folder)
+
+
+def test_reading_through_a_folder_descriptor_never_follows_a_link(tmp_path):
+    from scout.changes.actions import _current_at
+
+    (tmp_path / "f").write_bytes(b"data")
+    (tmp_path / "f").chmod(0o755)
+    (tmp_path / "l").symlink_to("f")
+    (tmp_path / "d").mkdir()
+    os.mkfifo(tmp_path / "p")
+    folder = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert _current_at(folder, "f") == ("file", b"data", 0o755)
+        assert _current_at(folder, "l") == ("link", b"f", 0)
+        assert _current_at(folder, "d") == ("other", b"", 0)
+        assert _current_at(folder, "p") == ("other", b"", 0)  # a FIFO is never opened
+        assert _current_at(folder, "nope") == ("absent", b"", 0)
+        assert _current_at(folder, "f/under") == ("other", b"", 0)  # under a file: ENOTDIR
+    finally:
+        os.close(folder)
+
+
+def test_the_folder_opener_refuses_what_changed_and_raises_what_it_cannot_explain(tmp_path, monkeypatch):
+    from scout.changes import actions
+
+    (tmp_path / "kb").mkdir()
+    (tmp_path / "file").write_text("x")
+    folders = actions._Folders(tmp_path)
+    try:
+        assert folders.fd(("kb",)) == folders.fd(("kb",))  # opened once
+        for parts in (("gone",), ("file",)):  # gone (and not to be made), or a file now
+            with pytest.raises(actions.ActionRefused) as exc:
+                folders.fd(parts)
+            assert exc.value.reason == "edited-since"
+        made = folders.fd(("new", "deeper"), make=True)
+        assert (tmp_path / "new/deeper").is_dir() and folders.made == [("new",), ("new", "deeper")]
+        os.close(os.open("leftover", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=made))
+        folders.unmake()  # each only while empty: new/deeper holds a file, so both stay
+        assert (tmp_path / "new/deeper/leftover").exists()
+        os.unlink("leftover", dir_fd=made)
+        folders.prune(("new", "deeper"))  # empty now: both go, never the vault itself
+        assert not (tmp_path / "new").exists() and tmp_path.is_dir()
+        real = os.open
+
+        def denied(name, flags, *a, **k):
+            if name == "locked":
+                raise PermissionError("denied")
+            return real(name, flags, *a, **k)
+
+        monkeypatch.setattr(actions.os, "open", denied)
+        with pytest.raises(PermissionError):
+            folders.fd(("locked",))
+    finally:
+        folders.close()
+
+
+def test_a_removal_whose_folder_went_away_refuses_and_puts_back(repo, env, monkeypatch):
+    """The undo of an added driver removes scripts/new.py; the folder is gone by the write: refused, nothing done."""
+    sha = _commit(repo, "dreaming [22:12]: driver", {"scripts/new.py": "print()\n", "SKILL.md": "skill v2\n"})
+    scan(repo, since=None)
+    cid = _cid(sha)
+    _undo(repo, env, cid)
+
+    def gone() -> None:
+        (repo / "scripts/new.py").unlink()
+        (repo / "scripts").rmdir()
+
+    _sweep_then(monkeypatch, gone)
+    with pytest.raises(ActionRefused) as exc:
+        rollback(repo, env, cid, now=NOW, tz=TZ)
+    assert exc.value.reason == "edited-since"
+    assert (repo / "SKILL.md").read_text() == "skill v2\n"  # renamed into place, then put back
+    assert [p.name for p in repo.iterdir() if p.name.endswith(".scout-undo")] == []

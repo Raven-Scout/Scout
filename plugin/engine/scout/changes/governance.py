@@ -281,16 +281,19 @@ def filed_by(vault: Path, item: Pending) -> str | None:
 _ALL_SPENT = datetime.max.replace(tzinfo=UTC)
 
 
-def spent_at(vault: Path, item: Pending) -> datetime | None:
+def spent_at(vault: Path, item: Pending, *, before: str | None = None) -> datetime | None:
     """For decisions not bound to a filing (:func:`decision`): when a decision about ``item`` was last acted on, the
     commit time of the newest commit that took this exact file (same slug, same :func:`item_hash`) out of
     ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a ``governance: false`` one, or
     ``discard`` deleted it. None when none did. Outside a git repository, None; when the repository can't be read,
-    every decision counts as spent. A bound decision needs none of this: commit order says which filing it was for."""
+    every decision counts as spent. A bound decision needs none of this: commit order says which filing it was for.
+
+    ``before`` (a commit sha) reads only the history before that commit instead of all of ``HEAD``'s."""
     from scout.changes.scan import _git  # the scanner's git runner: no locks, a timeout, never raises
 
     path = f"{PENDING_DIR}/{item.slug}.md"
-    log = _git(vault, "log", "--no-renames", "--diff-filter=D", "--format=%H %cI", "--", path)
+    revs = [f"{before}^"] if before else []
+    log = _git(vault, "log", "--no-renames", "--diff-filter=D", "--format=%H %cI", *revs, "--", path)
     if log is None:
         # No repository at all: nothing was ever applied (and `apply` refuses without git). A repository git can't
         # read: fail closed.
@@ -311,6 +314,64 @@ def spent_at(vault: Path, item: Pending) -> datetime | None:
 def state_of(vault: Path, signals: Sequence[Signal], item: Pending) -> str:
     """:func:`decision` for a pending file as it is now, its spent decisions left out."""
     return decision(signals, item.id, item.hash, filed=filed_by(vault, item), spent=spent_at(vault, item))
+
+
+_MOVED_RE = re.compile(rf"^{PENDING_DIR}/([a-z0-9][a-z0-9-]{{0,60}})\.md$")
+
+
+def approved_application(vault: Path, signals: Sequence[Signal], apply_sha: str) -> bool:
+    """Whether commit ``apply_sha`` applied governance items the owner approved: it moves at least one
+    ``governance-pending/<slug>.md`` to ``governance-pending/applied/<slug>.md`` (what makes a commit governance,
+    scout.changes.scan), and for every such move the owner's decision on the applied file as the commit holds it (its
+    :func:`item_hash`) was ``approved`` as of the commit. The scanner trusts the move alone, so without this a run
+    could make any edit immune to its test and its undo by moving an unapproved pending file itself.
+
+    As of the commit means :func:`decision` with the filing (the newest commit before ``apply_sha`` that added the
+    pending file) and with unbound rows counted only up to the commit's time, in whole seconds, and only after an
+    earlier application of the same file (:func:`spent_at` before ``apply_sha``). A bound row counts whatever its time:
+    commit order ties it to its filing. The applied file must parse as a governance item (a ``governance: false``
+    item is deleted on apply, never moved). False whenever git can't say."""
+    from scout.changes.scan import name_status
+
+    slugs = []
+    for status, sides in name_status(vault, apply_sha) or ():
+        m = _MOVED_RE.match(sides[0]) if status[:1] == "R" else None
+        if m and sides[1] == f"{PENDING_DIR}/applied/{m.group(1)}.md":
+            slugs.append(m.group(1))
+    applied_at = _commit_time(vault, apply_sha) if slugs else None
+    if applied_at is None:
+        return False
+    return all(_approved_move(vault, signals, apply_sha, slug, applied_at) for slug in slugs)
+
+
+def _commit_time(vault: Path, sha: str) -> datetime | None:
+    from scout.changes.scan import _git
+
+    raw = _git(vault, "log", "-1", "--format=%cI", sha, "--")
+    try:
+        return datetime.fromisoformat(raw.strip()) if raw else None
+    except ValueError:
+        return None
+
+
+def _approved_move(vault: Path, signals: Sequence[Signal], apply_sha: str, slug: str, applied_at: datetime) -> bool:
+    from scout.changes.scan import _FULL_SHA_RE, _git
+
+    text = _git(vault, "show", f"{apply_sha}:{PENDING_DIR}/applied/{slug}.md")
+    try:
+        item = _parse_text(text, slug) if text is not None else None
+    except Exception:  # noqa: BLE001 - malformed YAML: not an item the owner could have approved
+        item = None
+    if item is None or not item.governance:
+        return False
+    path = f"{PENDING_DIR}/{slug}.md"
+    found = _git(vault, "log", "-n", "1", "--no-renames", "--diff-filter=A", "--format=%H", f"{apply_sha}^", "--", path)
+    filing = (found or "").strip()
+    unbound = {decision_ref(verb, item.id, item.hash) for verb in ("approve", "reject")}
+    rows = [s for s in signals if s.ref not in unbound or s.ts.replace(microsecond=0) <= applied_at]
+    filed = filing if _FULL_SHA_RE.match(filing) else None
+    spent = spent_at(vault, item, before=apply_sha)
+    return decision(rows, item.id, item.hash, filed=filed, spent=spent) == "approved"
 
 
 def undo_requested(signals: Sequence[Signal], change_id: str) -> bool:

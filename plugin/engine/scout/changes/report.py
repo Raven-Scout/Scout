@@ -50,15 +50,19 @@ def changes_report(
     every readable ``governance-pending/`` file with the owner's decision on its current diff (``awaiting-ok``,
     ``approved`` or ``rejected``), that diff's ``diff_hash`` and whether applying it is a ``governance`` change;
     ``needs_ok_skipped`` counts files that didn't fit. A row is a rollback, with ``reverts``, only when git shows its
-    commit put the target's own lines back (scout.changes.scan, re-derived on every read).
+    commit put the target's own lines back (scout.changes.scan, re-derived on every read). A row is ``governance``
+    only when its commit moved pending files to ``applied/`` that the owner approved
+    (scout.changes.governance.approved_application). While ``verified`` is false nothing is re-derived, so the
+    ledger's own flag shows unconfirmed; nothing can be undone then either.
 
     Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
     which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
-    from scout.changes.governance import read_pending, state_of
+    from scout.changes.governance import approved_application, read_pending, state_of
     from scout.changes.settings import read_settings
     from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
 
     changes, skipped = read_changes(vault)
+    signals, _ = read_signals(vault, env, owner_vault=owner_vault)
     unique: dict[str, Change] = {}
     for c in changes:
         unique.setdefault(c.id, c)
@@ -73,6 +77,10 @@ def changes_report(
             if cid != f"chg-{c.commit[:12]}" or row is None:
                 skipped += 1
                 continue
+            # The scanner calls a commit governance from its pending→applied move alone; it stays one only when the
+            # owner approved what it applied. An unapproved move is an ordinary change: tested and undoable.
+            if row.governance and not approved_application(vault, signals, row.commit):
+                row = replace(row, governance=False)
             kept[cid] = replace(row, backfilled=c.backfilled)
         unique = kept
     inside = sorted((c for c in unique.values() if since <= c.ts <= now), key=lambda c: c.ts, reverse=True)
@@ -81,7 +89,6 @@ def changes_report(
     for c in inside:
         counts[c.kind] += 1
     settings = read_settings(env)
-    signals, _ = read_signals(vault, env, owner_vault=owner_vault)
     # A shown change's overlap partners are at most review_days local dates from it (under review_days + 1 days of
     # clock, plus a DST hour), and what rolls it back comes after it, so older rows can't change what is shown.
     # Leaving them out bounds the work a stale or forged row can cause.

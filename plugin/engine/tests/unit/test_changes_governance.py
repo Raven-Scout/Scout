@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import pytest
 
 from scout.changes.governance import (
     PENDING_DIR,
+    _parse_text,
+    approved_application,
     decision,
     decision_ref,
     diff_paths,
@@ -245,3 +249,147 @@ def test_no_newline_markers_frontmatter_shapes_and_empty_targets(tmp_path):
 def test_undo_requested():
     assert undo_requested([_sig("undo:chg-0123456789ab", 0)], "chg-0123456789ab")
     assert not undo_requested([_sig("approve:chg-0123456789ab", 0)], "chg-0123456789ab")
+
+
+# --- approved_application: is a pending→applied move one the owner approved? -----------------------------------------
+
+AT = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
+
+
+def _git(repo: Path, *args: str, at: datetime | None = None) -> str:
+    env = dict(os.environ)
+    if at is not None:
+        env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = at.isoformat()
+    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True, env=env)
+    return out.stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    r = tmp_path / "vault"
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "user.name", "Scout Test")
+    _git(r, "config", "user.email", "scout@example.invalid")
+    _git(r, "config", "commit.gpgsign", "false")
+    (r / "SKILL.md").write_text("old\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "seed", at=AT - timedelta(days=9))
+    return r
+
+
+def _file(repo: Path, slug: str, text: str, at: datetime) -> str:
+    """Commit ``governance-pending/<slug>.md``; the filing commit's sha."""
+    _write(repo, f"{slug}.md", text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"dreaming [22:00]: file {slug}", at=at)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _move(repo: Path, *slugs: str, at: datetime, to: str = "applied") -> str:
+    """Commit the move of each pending file into ``to`` (``applied/`` by default); the commit's sha."""
+    (repo / PENDING_DIR / to).mkdir(exist_ok=True)
+    for slug in slugs:
+        _git(repo, "mv", f"{PENDING_DIR}/{slug}.md", f"{PENDING_DIR}/{to}/{slug}.md")
+    _git(repo, "commit", "-q", "-m", "dreaming [22:40]: apply", at=at)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _hash_of(text: str) -> str:
+    item = _parse_text(text, "x")
+    assert item is not None
+    return item.hash
+
+
+def _row(verb: str, slug: str, digest: str, ts: datetime, filed: str | None = None) -> Signal:
+    return Signal(ts=ts, kind="approval", surface="app", ref=decision_ref(verb, f"gov-{slug}", digest, filed))
+
+
+def test_a_bound_approval_makes_the_move_approved_only_for_its_filing(repo):
+    filing = _file(repo, "a", GOOD, AT - timedelta(hours=2))
+    sha = _move(repo, "a", at=AT)
+    h = _hash_of(GOOD)
+    assert approved_application(repo, [], sha) is False
+    # Bound rows count whatever their time says: commit order already ties them to the filing.
+    assert approved_application(repo, [_row("approve", "a", h, AT + timedelta(days=1), filing)], sha) is True
+    assert approved_application(repo, [_row("approve", "a", h, AT, "f" * 40)], sha) is False
+    assert approved_application(repo, [_row("approve", "b", h, AT, filing)], sha) is False
+    assert approved_application(repo, [_row("approve", "a", "0" * 64, AT, filing)], sha) is False
+
+
+def test_an_unbound_approval_counts_only_up_to_the_apply_commit(repo):
+    _file(repo, "a", GOOD, AT - timedelta(hours=2))
+    sha = _move(repo, "a", at=AT)
+    h = _hash_of(GOOD)
+    assert approved_application(repo, [_row("approve", "a", h, AT - timedelta(hours=1))], sha) is True
+    # The same second as the commit (git keeps no finer time) is before it; a later one isn't.
+    assert approved_application(repo, [_row("approve", "a", h, AT + timedelta(microseconds=700_000))], sha) is True
+    assert approved_application(repo, [_row("approve", "a", h, AT + timedelta(seconds=1))], sha) is False
+    # A newer rejection before the apply wins; one after it is not counted.
+    rows = [_row("approve", "a", h, AT - timedelta(hours=1)), _row("reject", "a", h, AT - timedelta(minutes=1))]
+    assert approved_application(repo, rows, sha) is False
+    rows = [_row("approve", "a", h, AT - timedelta(hours=1)), _row("reject", "a", h, AT + timedelta(minutes=1))]
+    assert approved_application(repo, rows, sha) is True
+
+
+def test_an_approval_used_by_an_earlier_application_is_spent(repo):
+    """Applied, reverted by hand, filed again and moved again by a run: the first unbound approval is used up."""
+    _file(repo, "a", GOOD, AT - timedelta(hours=5))
+    first = _move(repo, "a", at=AT - timedelta(hours=4))
+    _git(repo, "rm", "-q", f"{PENDING_DIR}/applied/a.md")
+    _git(repo, "commit", "-q", "-m", "scout: revert by hand", at=AT - timedelta(hours=3))
+    _file(repo, "a", GOOD, AT - timedelta(hours=2))
+    second = _move(repo, "a", at=AT)
+    rows = [_row("approve", "a", _hash_of(GOOD), AT - timedelta(hours=4, minutes=30))]
+    assert approved_application(repo, rows, first) is True
+    assert approved_application(repo, rows, second) is False
+
+
+def test_every_move_in_the_commit_needs_its_own_approval(repo):
+    other = GOOD.replace("+new", "+other")
+    fa = _file(repo, "a", GOOD, AT - timedelta(hours=3))
+    fb = _file(repo, "b", other, AT - timedelta(hours=2))
+    sha = _move(repo, "a", "b", at=AT)
+    a = _row("approve", "a", _hash_of(GOOD), AT, fa)
+    assert approved_application(repo, [a], sha) is False
+    assert approved_application(repo, [a, _row("approve", "b", _hash_of(other), AT, fb)], sha) is True
+
+
+_FALLBACK = GOOD.replace("targets:", "governance: false\ntargets:")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "---\n: [\n---\n",  # malformed YAML
+        "no frontmatter\n",
+        _FALLBACK,  # a fallback item is deleted on apply, never moved: moved, it is no governance change
+    ],
+)
+def test_an_applied_file_that_is_not_a_governance_item_is_never_approved(repo, text):
+    filing = _file(repo, "a", text, AT - timedelta(hours=2))
+    sha = _move(repo, "a", at=AT)
+    assert approved_application(repo, [_row("approve", "a", _hash_of(_FALLBACK), AT, filing)], sha) is False
+
+
+def test_a_commit_that_moves_nothing_into_applied_is_not_an_approved_application(repo, monkeypatch):
+    from scout.changes import scan
+
+    assert approved_application(repo, [], "not-a-sha") is False
+    assert approved_application(repo, [], _git(repo, "rev-parse", "HEAD")) is False  # the seed: nothing moved
+    _file(repo, "a", GOOD, AT - timedelta(hours=1))
+    assert approved_application(repo, [], _move(repo, "a", at=AT, to="elsewhere")) is False
+    # git can't say when the apply commit was made: not approved.
+    filing = _file(repo, "b", GOOD, AT)
+    sha = _move(repo, "b", at=AT + timedelta(hours=1))
+    rows = [_row("approve", "b", _hash_of(GOOD), AT, filing)]
+    assert approved_application(repo, rows, sha) is True
+    real = scan._git
+
+    def no_time(vault, *args):
+        return "not a date\n" if "--format=%cI" in args and "-1" in args else real(vault, *args)
+
+    monkeypatch.setattr(scan, "_git", no_time)
+    assert approved_application(repo, rows, sha) is False
+    monkeypatch.setattr(scan, "_git", lambda vault, *args: None if "-1" in args else real(vault, *args))
+    assert approved_application(repo, rows, sha) is False

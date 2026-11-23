@@ -772,8 +772,9 @@ def cli_changes_wrong(
 def cli_changes_auto_rollback(
     mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
 ) -> None:
-    """Set the auto-rollback mode (owner only). Only ``off`` for now: the automatic modes stay refused until the
-    rollback race and governance-approval gaps are closed."""
+    """Set the auto-rollback mode (owner only). Only ``off`` for now: the rollback race and governance-approval gaps
+    are closed, but the automatic modes stay refused until the calibration review (turning one on is a governance
+    change, spec §7a)."""
     import os
     from dataclasses import replace
 
@@ -784,8 +785,9 @@ def cli_changes_auto_rollback(
         raise typer.Exit(2)
     if mode != "off":
         typer.echo(
-            f"scoutctl changes auto-rollback: {mode} isn't available yet; automatic rollback stays off until two "
-            "known gaps are closed (an unapproved governance move, and a race between undo's check and its write). "
+            f"scoutctl changes auto-rollback: {mode} isn't available yet. The two known gaps are closed (an "
+            "unapproved governance move, and a race between undo's check and its write); turning a mode on waits for "
+            "the calibration review, and is itself a governance change. "
             "Undo a change yourself with `scoutctl changes undo <id>`.",
             err=True,
         )
