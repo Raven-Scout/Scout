@@ -105,6 +105,14 @@ def test_change_diff_is_none_when_git_cannot_show_it(repo, monkeypatch):
     assert change_diff(repo, _id(sha)) is None
 
 
+def test_change_diff_with_no_own_paths_is_empty(repo):
+    sha = commit(repo, {"action-items/x.md": "private item\n"}, "upgrade to 1.2.3")
+    scan(repo, since=None)
+    row = derive(repo, [sha])[sha]
+    assert row is not None and row.kind == "upgrade"
+    assert change_diff(repo, _id(sha)) == ""
+
+
 def test_change_diff_is_none_outside_a_repo(tmp_path):
     (tmp_path / "v").mkdir()
     assert change_diff(tmp_path / "v", "chg-aaaaaaaaaaaa") is None

@@ -240,7 +240,10 @@ def change_diff(vault: Path, change_id: str) -> str | None:
     entries = name_status(vault, sha)
     if not derived or derived.get(sha) is None or entries is None:
         return None
-    raw = _git_bytes(vault, "show", "--format=", "-M", sha, "--", *own_paths(entries))
+    paths = own_paths(entries)
+    if not paths:
+        return ""  # an empty pathspec would print every file the commit touched, which is never shown
+    raw = _git_bytes(vault, "show", "--format=", "-M", sha, "--", *paths)
     if raw is None:
         return None
     if len(raw) <= DIFF_MAX_BYTES:
