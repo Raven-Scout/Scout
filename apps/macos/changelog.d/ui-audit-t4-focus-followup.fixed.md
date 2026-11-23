@@ -5,6 +5,8 @@
 - **The Schedules table keeps the keys when it stacks into cards.** At narrow widths, a click on a row opens the
   details pane and the table becomes cards. The focus now stays on the list, at the clicked schedule, instead
   of jumping to the "Table" button.
+- **Switching between Schedules' Table and Cards keeps the keys on the list.** Before, the switch sent them to
+  the sidebar, or with Keyboard navigation on, to the status bar.
 - **One Tab stop per list.** With Keyboard navigation on, every Schedules row and card and every Knowledge Base
   tree row was a Tab stop of its own, and the Table's first row came before the list. Now Tab stops once on
   the list, before its rows, and the arrow keys (and Return in the tree) reach every item.

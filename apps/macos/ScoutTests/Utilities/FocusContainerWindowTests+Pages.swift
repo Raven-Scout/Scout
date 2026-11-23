@@ -13,6 +13,8 @@ private final class PageLog {
     var focusSidebar: () -> Void = {}
     /// Clears the pick and lets the next one open the detail pane.
     var startOver: () -> Void = {}
+    /// Switches between the Table and Cards views, as the page's picker does.
+    var switchView: () -> Void = {}
 }
 
 /// The Schedules list as the page lays it out: a chip above, optionally a
@@ -26,6 +28,7 @@ private struct SchedulesProbe: View {
     var sidebar = false
     var paneWidth: CGFloat = 0
     @State private var selection: String?
+    @State private var showsCards: Bool?
     @State private var paneOpens = true
     @State private var page: String? = "Schedules"
     @FocusState private var chipFocused: Bool
@@ -43,6 +46,7 @@ private struct SchedulesProbe: View {
         .onAppear {
             log.focusSidebar = { sidebarFocused = true }
             log.startOver = { selection = nil; paneOpens = true }
+            log.switchView = { showsCards = !(showsCards ?? cards) }
         }
         .onChange(of: selection) { _, key in log.selection = key }
         .onChange(of: chipFocused) { _, focused in log.chipFocused = focused }
@@ -53,14 +57,10 @@ private struct SchedulesProbe: View {
         VStack(spacing: 0) {
             Button("Chip") {}.buttonStyle(.plainHit).focused($chipFocused).frame(height: 24)
             HStack(spacing: 0) {
-                Group {
-                    if cards {
-                        SchedulesMasterCards(slots: SmokeFixtures.slots, newDraftSlot: nil, selectedSlotKey: $selection)
-                    } else {
-                        SchedulesMasterTable(slots: SmokeFixtures.slots, newDraftSlot: nil, selectedSlotKey: $selection)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The page's own wrapper: one Tab stop and key handler around both views.
+                SchedulesMasterList(cards: showsCards ?? cards, slots: SmokeFixtures.slots, newDraftSlot: nil,
+                                    selectedSlotKey: $selection)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if paneWidth > 0, paneOpens, selection != nil {
                     Color.gray.frame(width: paneWidth)
                 }
@@ -152,6 +152,26 @@ extension FocusContainerWindowTests {
             try await settle()
             #expect(log.selection == after(clicked),
                     "↓ after the stacking click did nothing; the keys are on \(responder(window))")
+        }
+    }
+
+    @Test("switching between Table and Cards, as the picker does, keeps the keys on the list",
+          arguments: [false, true])
+    func switchingViewsKeepsTheFocus(cards: Bool) async throws {
+        try await KeyWindowGate.run {
+            let log = PageLog()
+            let window = try await open(SchedulesProbe(log: log, cards: cards, sidebar: true),
+                                        width: SchedulesProbe.sidebarWidth + 1000)
+            defer { window.close() }
+            let clicked = try await clickFirstItem(log, in: window)
+            log.switchView()
+            try await settle()
+            #expect(!log.sidebarFocused, "the switch handed the keys to the sidebar")
+            #expect(!log.chipFocused, "the switch handed the keys to the control above")
+            WindowEvents.press(WindowEvents.down, in: window)
+            try await settle()
+            #expect(log.selection == after(clicked),
+                    "↓ after switching views did nothing; the keys are on \(responder(window))")
         }
     }
 

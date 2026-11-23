@@ -10,10 +10,11 @@ struct SchedulesMasterCards: View {
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
     /// Set when the Table view stacks into cards: keep its 24-hour times.
     var twentyFourHour = false
-    /// Set when the Table view stacks into cards: the table's focus, whose
-    /// Tab stop and arrow keys sit around both of its layouts, so a click
-    /// that stacks the table keeps the keys (UI audit T4). The grid then
-    /// adds no stop or key handler of its own.
+    /// Set by a view around the grid that holds the Tab stop and arrow keys:
+    /// the Table's, around both of its layouts, so a click that stacks the
+    /// table keeps the keys (UI audit T4), and `SchedulesMasterList`'s, around
+    /// the Table and Cards views, so the picker keeps them (review of #767).
+    /// The grid then adds no stop or key handler of its own.
     var tableFocus: FocusState<Bool>.Binding?
 
     /// Keyboard focus, set by a click on a card (see `SchedulesMasterTable`).
@@ -71,6 +72,7 @@ struct SchedulesMasterCards: View {
         let isSelected = selectedSlotKey == slot.key
         Button {
             selectedSlotKey = slot.key
+            // In the click's own action (see `SchedulesMasterTable.row`).
             focus.wrappedValue = true
         } label: {
             SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [],

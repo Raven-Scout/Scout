@@ -5,7 +5,9 @@ import Testing
 /// A view with text selected, as a selectable SwiftUI text reports it.
 private final class SelectedTextView: NSView {
     var range = NSRange(location: 0, length: 0)
+    var role: NSAccessibility.Role = .staticText
     override func accessibilitySelectedTextRange() -> NSRange { range }
+    override func accessibilityRole() -> NSAccessibility.Role? { role }
 }
 
 /// A click on an Action Items card takes the list's keys unless the click
@@ -39,6 +41,24 @@ struct CardClickFocusTests {
         #expect(!Holder(responder: view).holdsText)
         view.range = NSRange(location: 3, length: 4)
         #expect(Holder(responder: view).holdsText)
+        view.range = NSRange(location: NSNotFound, length: 4)
+        #expect(!Holder(responder: view).holdsText)
+    }
+
+    @Test("the sidebar, a list or a button holds no text, whatever it reports selected: the click takes the keys")
+    func sidebarGivesUpTheKeys() {
+        // The sidebar is an outline view with a selected row.
+        let sidebar = NSOutlineView()
+        #expect(!Holder(responder: sidebar).holdsText)
+        #expect(takes(Holder(responder: sidebar, hit: NSView()), Holder(responder: sidebar)))
+        for role: NSAccessibility.Role in [.outline, .list, .table, .button, .group] {
+            let view = SelectedTextView()
+            view.role = role
+            view.range = NSRange(location: 0, length: 3)
+            #expect(!Holder(responder: view).holdsText, "\(role.rawValue) held text")
+            #expect(takes(Holder(responder: view, hit: NSView()), Holder(responder: view)))
+        }
+        #expect(takes(Holder(responder: NSButton()), Holder(responder: NSButton())))
     }
 
     @Test("a click lands inside what holds the keys when it hits that view or one inside it")
@@ -104,24 +124,35 @@ struct CardClickFocusTests {
         #expect(!takes(Holder(responder: nil), Holder(responder: nil), claimed: true))
     }
 
-    @Test("CardClickFocus decides after the click's actions: a claim made after the card's tap still wins")
-    func claimAfterTheTap() async throws {
+    @Test("CardClickFocus decides in the card's tap: a focus set a turn later is dropped out of the sidebar")
+    func decidesInTheTap() {
         let id = UUID()
         let focus = CardClickFocus()
         var cursor: UUID?
         var listFocused = false
+        // No claim: the list has the keys before the tap returns.
         focus.mouseDown(in: nil, at: .zero)
         focus.clicked(id, setCursor: { cursor = $0 }, focusList: { listFocused = true })
         #expect(cursor == id, "the card isn't current at once")
-        focus.claimKeys()   // Add comment's action, run after the card's tap
-        try await Task.sleep(for: .milliseconds(50))
+        #expect(listFocused, "the list didn't get the keys in the tap")
+
+        // Add comment's action ran first: the editor's control has the keys.
+        listFocused = false
+        focus.mouseDown(in: nil, at: .zero)
+        focus.claimKeys()
+        focus.clicked(id, setCursor: { cursor = $0 }, focusList: { listFocused = true })
         #expect(!listFocused, "the list took the keys from the editor's control")
 
-        // Without a claim, the same click gives the list the keys, and the
-        // claim doesn't outlive the click it was made in.
+        // Its action ran after the tap: the list has them, and the editor
+        // takes them from it a turn later (FocusContainerWindowTests). The
+        // claim doesn't outlive its click.
         focus.mouseDown(in: nil, at: .zero)
         focus.clicked(id, setCursor: { cursor = $0 }, focusList: { listFocused = true })
-        try await Task.sleep(for: .milliseconds(50))
+        focus.claimKeys()
         #expect(listFocused)
+        listFocused = false
+        focus.mouseDown(in: nil, at: .zero)
+        focus.clicked(id, setCursor: { cursor = $0 }, focusList: { listFocused = true })
+        #expect(listFocused, "a claim carried over to the next click")
     }
 }
